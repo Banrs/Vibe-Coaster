@@ -1934,40 +1934,31 @@ int main(int argc, char **argv) {
         auto drawVBent = [&](Vector3 p, float topY, float gC, Vector3 lat, Vector3 tang, Vector3 railUp, Color sc) {
             float hgt = topY - gC;
             if (hgt < 1.0f) return;
-            float baseHalf = Clamp(hgt * 0.20f, 1.5f, 4.5f);   // base splay (grows with height, capped)
-            float topHalf  = 0.55f;                            // half-gap between leg tops at the apex
-            // The bent caps in a single node block tucked flush under the spine,
-            // tilted to the rail frame (carries pitch+bank). Intamin-style: the raked
-            // legs weld into that node, not into thin air. The block's lower face is
-            // the joint plane the legs terminate on, so its centre sits half its
-            // height below the apex, measured down the rail-up so it stays put when banked.
-            float blkH = 0.7f;                                  // node block thickness (along rail-up)
-            Vector3 apex = { p.x + railUp.x * (topY - p.y), topY, p.z + railUp.z * (topY - p.y) };
-            Vector3 node = { apex.x - railUp.x * blkH * 0.5f, apex.y - railUp.y * blkH * 0.5f,
-                             apex.z - railUp.z * blkH * 0.5f };   // centre of the node block
-            for (float s : { -1.0f, 1.0f }) {                  // two raked legs, each a single solid beam
-                Vector3 top  = { p.x + lat.x * s * topHalf, topY, p.z + lat.z * s * topHalf };
+            float baseHalf = Clamp(hgt * 0.20f, 1.5f, 4.5f);   // ground splay (grows with height, capped)
+            float topHalf  = 0.16f;                            // leg tops converge tightly under the spine
+            // Build the whole TOP of the bent in the rail frame (railUp / rRight) so it
+            // tucks under the box-spine even where the track banks — no world-vertical
+            // hybrid that drifts sideways and floats on a bank. The legs converge into a
+            // small node, no wider than the spine, recessed UP into the spine underside
+            // (spine: 0.38 wide, underside ~0.57 below the rail centreline along railUp).
+            Vector3 rRight = Vector3Normalize(Vector3CrossProduct(railUp, tang));   // track lateral (tilts with bank)
+            float nodeDrop = 0.58f;                            // node centre below the centreline, along railUp
+            Vector3 node = Vector3Subtract(p, Vector3Scale(railUp, nodeDrop));
+            for (float s : { -1.0f, 1.0f }) {                  // two raked legs, each one solid beam
+                Vector3 top  = Vector3Add(node, Vector3Scale(rRight, s * topHalf));   // welds into the node
                 float bx = p.x + lat.x * s * baseHalf, bz = p.z + lat.z * s * baseHalf;
                 Vector3 foot = { bx, groundTopAt(bx, bz), bz };
                 Vector3 dir  = Vector3Subtract(foot, top);
                 float len = Vector3Length(dir);
-                Vector3 axis = Vector3Normalize(dir);          // local +z runs down the leg
-                // Trim the leg top back to the node's lower face so no corner pokes
-                // above the joint: pull the top down along the leg axis by however far
-                // it sits above the node underside, then the node block caps the seam.
-                float trim = (apex.y - blkH - top.y) / axis.y;   // axis.y is negative (leg points down)
-                if (trim < 0.0f) trim = 0.0f;
-                Vector3 ttop = { top.x + axis.x * trim, top.y + axis.y * trim, top.z + axis.z * trim };
-                float tlen = Vector3Length(Vector3Subtract(foot, ttop));
-                Vector3 mid = { (ttop.x + foot.x) * 0.5f, (ttop.y + foot.y) * 0.5f, (ttop.z + foot.z) * 0.5f };
-                pushFrame(mid, axis, WUP);
-                drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.52f, 0.52f, tlen + 0.2f, sc);
+                Vector3 mid = Vector3Scale(Vector3Add(top, foot), 0.5f);
+                pushFrame(mid, Vector3Normalize(dir), WUP);    // local +z runs down the leg
+                drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.36f, 0.36f, len, sc);
                 popFrame();
             }
-            // single node block bridging the leg tops, flush under the (pitched/banked)
-            // rails — it caps the leg seams and joins the bent to the track underside.
+            // small node block nested INSIDE the spine (0.34 < spine's 0.38), oriented to
+            // the rail frame so it carries pitch + bank and caps where the legs converge.
             pushFrame(node, tang, railUp);
-            drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 2.0f * topHalf + 0.5f, blkH, 1.3f, sc);
+            drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.34f, 0.42f, 1.0f, sc);
             popFrame();
         };
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {

@@ -62,7 +62,12 @@ static const float BOOST_V   = 79.0f;    // mid-course LSM re-launch target (~28
 static const Vector3 WUP = { 0, 1, 0 };
 
 // soft, vibrant palette (modern texture-pack feel, not gritty old-Minecraft)
-static const Color SKY    = {186, 205, 232, 255};   // matches the scattered horizon (fog blends into it)
+static const Color SKY    = {186, 205, 232, 255};   // depth-clear fallback (the sky shader overdraws it)
+// FOG: the colour distant terrain/track dissolve into. Tuned to the SKY shader's
+// near-horizon band (HORIZON vec3(0.74,0.84,0.98) lifted toward the bright hazy
+// band) so the far terrain melts into atmosphere instead of reading as a flat grey
+// wall at the cull radius. Slightly brighter + bluer than the old SKY tint.
+static const Color FOG    = {191, 211, 238, 255};
 static const Color GRASS  = {130, 206, 102, 255};
 static const Color SAND   = {242, 228, 184, 255};
 static const Color DIRT   = {158, 116,  82, 255};
@@ -381,8 +386,8 @@ static const char *SKY_FS =
     // colours; only the sun glow uses the reconstructed world ray.
     "const vec3 ZENITH  = vec3(0.12, 0.34, 0.76);\n"          // saturated blue overhead
     "const vec3 MIDSKY  = vec3(0.36, 0.62, 0.92);\n"
-    "const vec3 HORIZON = vec3(0.74, 0.84, 0.98);\n"          // bright airy horizon
-    "const vec3 GROUND  = vec3(0.58, 0.66, 0.78);\n"          // hazy band just below horizon
+    "const vec3 HORIZON = vec3(0.78, 0.87, 0.98);\n"          // bright airy horizon
+    "const vec3 GROUND  = vec3(0.74, 0.82, 0.93);\n"          // luminous haze band at the horizon (was a muddy grey wall)
     "void main(){\n"
     "  vec3 dir = normalize(camDir + camRight*(uv.x*2.0-1.0)*tanHalfFovY*aspect\n"
     "                              + camUp *((1.0-uv.y)*2.0-1.0)*tanHalfFovY);\n"
@@ -916,15 +921,15 @@ static void drawStation(const Track &trk, Vector3 pos, float yaw, Vector3 camP, 
     float fog = Clamp((dist - fogEnd * 0.7f) / (fogEnd * 0.7f), 0.0f, 1.0f);
     if (fog > 0.98f) return;
 
-    Color deckC  = mixc(Color{ 214, 218, 224, 255 }, SKY, fog);     // light concrete deck
-    Color deckD  = mixc(Color{ 96, 102, 112, 255 }, SKY, fog);      // dark deck fascia (modern)
-    Color postC  = mixc(Color{ 92, 98, 110, 255 }, SKY, fog);       // slim dark-steel structure
-    Color roofC  = mixc(Color{ 232, 236, 242, 255 }, SKY, fog);     // clean white canopy
-    Color trimC  = mixc(Color{ 250, 252, 255, 255 }, SKY, fog);     // bright fascia trim
-    Color glassC = mixc(Color{ 130, 178, 206, 200 }, SKY, fog);     // tinted curtain glass
-    Color mullC  = mixc(Color{ 62, 68, 80, 255 }, SKY, fog);        // window mullions
-    Color accent = mixc(trk.spineC, SKY, fog);                      // themed structural accent
-    Color led    = mixc(trk.trainAccent, SKY, fog);                 // bright edge / sign lighting
+    Color deckC  = mixc(Color{ 214, 218, 224, 255 }, FOG, fog);     // light concrete deck
+    Color deckD  = mixc(Color{ 96, 102, 112, 255 }, FOG, fog);      // dark deck fascia (modern)
+    Color postC  = mixc(Color{ 92, 98, 110, 255 }, FOG, fog);       // slim dark-steel structure
+    Color roofC  = mixc(Color{ 232, 236, 242, 255 }, FOG, fog);     // clean white canopy
+    Color trimC  = mixc(Color{ 250, 252, 255, 255 }, FOG, fog);     // bright fascia trim
+    Color glassC = mixc(Color{ 130, 178, 206, 200 }, FOG, fog);     // tinted curtain glass
+    Color mullC  = mixc(Color{ 62, 68, 80, 255 }, FOG, fog);        // window mullions
+    Color accent = mixc(trk.spineC, FOG, fog);                      // themed structural accent
+    Color led    = mixc(trk.trainAccent, FOG, fog);                 // bright edge / sign lighting
 
     float deckTopY = -1.3f;                                  // local: below the track
     float deckBotLocal = deckTopY - 1.0f;                    // underside of the deck slab
@@ -945,7 +950,7 @@ static void drawStation(const Track &trk, Vector3 pos, float yaw, Vector3 camP, 
     pushFrame(pos, startHeading, WUP);
     const float CZ = 22.0f, LEN = 92.0f, Z0 = -28.0f, Z1 = 72.0f;   // station footprint along the launch track
     const float roofY = 9.6f, roofW = 17.5f;                        // a low, modern floating canopy
-    Color downl = mixc(COIN_GOLD, SKY, fog);                        // warm recessed downlight
+    Color downl = mixc(COIN_GOLD, FOG, fog);                        // warm recessed downlight
 
     // --- two clean boarding decks flanking the launch track ---
     for (float sx : { -4.6f, 4.6f }) {
@@ -1099,6 +1104,15 @@ int main(int argc, char **argv) {
     bool orbitShot  = (argc > 1 && TextIsEqual(argv[1], "--orbitshot"));    // DEBUG: aerial 3/4 view to inspect platform/helix/support structures
     bool waterShot  = (argc > 1 && TextIsEqual(argv[1], "--watershot"));    // DEBUG: grazing view over the lake to inspect the fresnel water
     bool cobraShot  = (argc > 1 && TextIsEqual(argv[1], "--cobrashot"));     // forces a cobra-roll circuit, captures the train at the peak-g bottom hood
+    // --elementshot <NAME> [outdir] : generalises --cobrashot to ANY element. Forces
+    // the generator to emit only <NAME>, rides the natural track live (so the element
+    // builds with its proper lead-in), then captures an external 3/4 hero frame at that
+    // element's SIGNATURE MOMENT (inversion apex / airtime crest / dive bottom) and
+    // writes <outdir>/<NAME>.png. A shell loop over all names produces the full set.
+    bool elemShot   = (argc > 2 && TextIsEqual(argv[1], "--elementshot"));
+    int  elemShotElem = -1;                 // resolved SegMode for --elementshot
+    const char *elemShotName = "";          // label used for the PNG filename
+    char elemShotPath[1024] = {0};
     bool shotMode = framesMode || rasterShot || orbitShot || waterShot || (argc > 1 && TextIsEqual(argv[1], "--shot"));
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));   // TEMP: verify live RT
 
@@ -1267,7 +1281,35 @@ int main(int argc, char **argv) {
     // full-ride g-FORCE GRAPH to gtrace.png so the spikes/jerks/elements are visible.
     bool gtraceMode = (argc > 1 && TextIsEqual(argv[1], "--gtrace"));
     if (gtraceMode) { gForceSpeed = -1.0f; benchMode = true; }   // -1 = log+graph sentinel (no speed pin)
-    g_rng = (shotMode || benchMode || rttestMode || cobraShot) ? 1337u : ((uint32_t)time(NULL) | 1u);
+    // --elementshot <NAME> [outdir] : resolve the requested element name to a SegMode and
+    // force the generator to emit only that element. Accepts the user-facing names
+    // (TOP-HAT / TOPHAT -> the launched M_CLIMB top hat; SPLASHDOWN -> M_DIP) as well as
+    // the raw enum names. The forced element rides live like --cobrashot.
+    if (elemShot) {
+        struct { const char *name; int mode; } EM[] = {
+            { "LOOP", M_LOOP }, { "ROLL", M_ROLL }, { "IMMEL", M_IMMEL }, { "STALL", M_STALL },
+            { "DIVELOOP", M_DIVELOOP }, { "COBRA", M_COBRA }, { "HEARTLINE", M_HEARTLINE },
+            { "HILLS", M_HILLS }, { "BANKAIR", M_BANKAIR }, { "DIP", M_DIP }, { "PRETZEL", M_PRETZEL },
+            { "STENGEL", M_STENGEL }, { "BANANA", M_BANANA }, { "HELIX", M_HELIX }, { "WINGOVER", M_WINGOVER },
+            { "TOPHAT", M_CLIMB }, { "TOP-HAT", M_CLIMB }, { "LAUNCH", M_CLIMB }, { "CLIMB", M_CLIMB },
+            { "SPLASHDOWN", M_DIP },
+        };
+        for (auto &e : EM) if (TextIsEqual(argv[2], e.name)) { elemShotElem = e.mode; elemShotName = e.name; break; }
+        if (elemShotElem < 0) { printf("elementshot: unknown element '%s'\n", argv[2]); return 1; }
+        gForceElem = elemShotElem;
+        const char *outdir = (argc > 3) ? argv[3] : ".";
+        snprintf(elemShotPath, sizeof(elemShotPath), "%s/%s.png", outdir, elemShotName);
+        printf("[elementshot] element=%s (mode %d) -> %s\n", elemShotName, elemShotElem, elemShotPath);
+    }
+    g_rng = (shotMode || benchMode || rttestMode || cobraShot || elemShot) ? 1337u : ((uint32_t)time(NULL) | 1u);
+    // --elementshot: forcing the generator to emit ONE element works for almost every
+    // type, but at the default seed-1337 a forced HELIX routes through the launch/boost
+    // re-launch queue that defers forever — the live train rides a permanent booster
+    // straight and never lands a coil. At other RNG states the forced helix DOES land, so
+    // for the helix we shift to a seed where the forced live ride reaches a real coil.
+    // Every other element keeps the original forced seed-1337 ride untouched.
+    if (elemShot && elemShotElem == M_HELIX)
+        g_rng = 1337u * 2654435761u | 1u;   // forced helix lands here (verified: train reaches a coil tag)
     if (cobraShot && argc > 2) g_rng = (uint32_t)strtoul(argv[2], nullptr, 10);   // --cobrashot <seed>: pick a layout that contains a cobra
 
     SetTraceLogLevel(LOG_WARNING);
@@ -1353,7 +1395,7 @@ int main(int argc, char **argv) {
     double gEvAcc[M_COUNT] = {0};                            // signed-vertical sum (to spot true 0g elements)
     double gEEdgePk[M_COUNT] = {0}; double gEIntPk[M_COUNT] = {0}; // peak g at element EDGES vs INTERIOR (locate join spikes)
     bool  paused = false;
-    bool  dispatched = (shotMode || benchMode || rttestMode || cobraShot);   // wait at station until SPACE
+    bool  dispatched = (shotMode || benchMode || rttestMode || cobraShot || elemShot);   // wait at station until SPACE
     int   camMode = 0;                     // 0 fp, 1 chase, 2 side (2.5D)
     Vector3 camSmooth = { 0, 10, -10 };
     bool  freeLook = false;                // F: unlock the mouse to look around in any view
@@ -1362,6 +1404,13 @@ int main(int argc, char **argv) {
     int   frame = 0;
     bool  cobraArmed = false;       // --cobrashot: peak-g capture latched for THIS frame
     float cobraPrevG = 1.0f;        // previous frame's vertical g (rising-edge detector)
+    // --elementshot: latch the signature-moment frame. We track a per-element "score"
+    // (inversion = most upside-down; airtime/top-hat = highest; dip = lowest) while the
+    // lead car is ON the forced element, and capture at the score's local peak.
+    bool  elemArmed   = false;      // capture THIS frame
+    float elemBest    = -1e9f;      // best signature score seen on the current element pass
+    int   elemBestAge = 0;          // frames since the score last improved (falling edge -> peak passed)
+    Camera3D elemBestCam{};         // camera framing latched at the best score
 
     Camera3D cam{};
     cam.up = { 0, 1, 0 };
@@ -1383,8 +1432,8 @@ int main(int argc, char **argv) {
     };
 
     // ---- on-foot character: walk the platform, board/exit, re-board at stations
-    bool    onFoot    = !(shotMode || benchMode || rttestMode || cobraShot);   // start by walking the launch hall
-    bool    atStation = !(shotMode || benchMode || rttestMode || cobraShot);   // berthed at the launch platform
+    bool    onFoot    = !(shotMode || benchMode || rttestMode || cobraShot || elemShot);   // start by walking the launch hall
+    bool    atStation = !(shotMode || benchMode || rttestMode || cobraShot || elemShot);   // berthed at the launch platform
     bool    midStation = false;                     // berthed at a mid-ride station (not the launch hall)
     Vector3 curPlatPos = trk.startPos;              // platform the train is parked at
     float   curPlatYaw = trk.startYaw;
@@ -1423,7 +1472,7 @@ int main(int argc, char **argv) {
         // data (track, height cache, carve maps) is mutated this frame — the worker
         // has been reading exactly that data, lock-free, since it was dispatched.
         gTerrainMesh.finish();
-        float rawDt = (shotMode || benchMode || rttestMode || cobraShot) ? (1.0f / 60.0f) : GetFrameTime();
+        float rawDt = (shotMode || benchMode || rttestMode || cobraShot || elemShot) ? (1.0f / 60.0f) : GetFrameTime();
         float dt = fminf(rawDt, 0.05f);                  // cap the physics step so a hitch can't explode the sim
         // when the real frame time exceeds the cap the world runs in slow-motion, so
         // the km/h readout no longer matches real-time motion — flag it for a moment.
@@ -1514,7 +1563,7 @@ int main(int argc, char **argv) {
         }
 
         // SPACE launches the seated train from the platform, then doubles as boost
-        if ((cobraShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
+        if ((cobraShot || elemShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
             !dispatched && atStation && !paused) {
             dispatched = true; atStation = false; midStation = false; v = 12.0f; simTime = 0;
             sinceStation = 0;                                              // the launch track does the surge
@@ -1552,6 +1601,16 @@ int main(int argc, char **argv) {
                 for (float la = -1.0f; la <= 10.0f; la += 1.0f)
                     if (trk.tagAt(u + la) == M_COBRA) { cobraNear = true; break; }
                 if (cobraNear && v > 24.0f) v = 24.0f;
+            }
+            // --elementshot: cap the entry speed near the forced element so the signature
+            // moment reads at a realistic g (the launch otherwise rams the train through
+            // big inversions far too fast for a clean hero frame).
+            if (elemShot) {
+                bool near = false;
+                for (float la = -1.0f; la <= 10.0f; la += 1.0f)
+                    if (trk.tagAt(u + la) == (unsigned char)elemShotElem) { near = true; break; }
+                float cap = 26.0f;   // ~94 km/h: sane g through loops/cobras/rolls
+                if (near && v > cap) v = cap;
             }
 
             // hydraulic launch: a strong Kingda-Ka-style surge on the launch track AND
@@ -1821,6 +1880,64 @@ int main(int argc, char **argv) {
             cam.up       = Vector3{ 0, 1, 0 };
             cam.fovy     = 60;
         }
+        if (elemShot) {
+            // an external 3/4 hero shot pulled back to the side + above so the element
+            // reads in profile around the train. Aimed slightly up so tall inversions /
+            // top hats fit; the distance scales a little with speed so fast crossings
+            // still frame the whole element.
+            float alt = P.y - groundTopAt(P.x, P.z);
+            Vector3 side = Vector3Normalize(Vector3CrossProduct(Th, Vector3{ 0, 1, 0 }));
+            // dist = pull-back, camY = camera height above the TRAIN, aimY = vertical
+            // offset of the look-at FROM THE TRAIN. For tall inversions the train sits at
+            // the apex, so the camera aims DOWN (negative aimY) to frame the whole loop.
+            float dist = 34.0f, camY = 6.0f, aimY = -6.0f;
+            switch (elemShotElem) {
+                case M_LOOP: case M_PRETZEL:
+                               dist = 62.0f; camY = -4.0f; aimY = -22.0f; break; // big vertical loop: pull way back, frame down to the base
+                case M_DIVELOOP:
+                               dist = 56.0f; camY = -2.0f; aimY = -20.0f; break;
+                case M_IMMEL: case M_COBRA:
+                               dist = 50.0f; camY =  0.0f; aimY = -16.0f; break;
+                case M_HELIX:  dist = -58.0f; camY = 10.0f; aimY = -10.0f; break; // shoot from OUTSIDE the coil (away from the flattened interior) so the banked track + tower legs read against the trees
+                case M_CLIMB:  dist = 58.0f; camY = -6.0f; aimY = -24.0f; break; // top hat is tall — frame the whole crest+legs
+                case M_ROLL: case M_BANANA: case M_HEARTLINE: case M_WINGOVER: case M_STALL:
+                               dist = 40.0f; camY =  4.0f; aimY =  -4.0f; break; // inline rolls / 0g read at train height
+                case M_DIP:    dist = 34.0f; camY =  8.0f; aimY =  -6.0f; break; // splashdown, look down at the water
+                case M_HILLS: case M_BANKAIR: case M_STENGEL:
+                               dist = 38.0f; camY =  7.0f; aimY =  -3.0f; break; // airtime crest
+                default: break;
+            }
+            cam.position = Vector3Add(P, Vector3Add(Vector3Add(Vector3Scale(side, dist),
+                                       Vector3Scale(Th, -dist * 0.32f)), Vector3{ 0, camY, 0 }));
+            cam.target   = Vector3Add(P, Vector3{ 0, aimY, 0 });
+            cam.up       = Vector3{ 0, 1, 0 };
+            cam.fovy     = 62;
+
+            // signature score per family: inversions peak when most upside-down, airtime
+            // and the top hat peak at the highest point, the splashdown dip at the lowest.
+            bool onElem = trk.tagAt(u) == (unsigned char)elemShotElem;
+            float score;
+            switch (elemShotElem) {
+                case M_LOOP: case M_ROLL: case M_IMMEL: case M_DIVELOOP: case M_COBRA:
+                case M_PRETZEL: case M_WINGOVER: case M_HEARTLINE: case M_BANANA: case M_STALL:
+                    score = -N.y;   break;                 // most inverted (N.y minimal)
+                case M_DIP:
+                case M_HELIX:
+                    score = -alt;   break;                 // splashdown / helix: latch near the coil base so the whole descending spiral sits above the train, in frame
+                default:
+                    score =  alt;   break;                 // crest / top hat peak
+            }
+            if (onElem && frame > 90) {
+                if (score > elemBest) { elemBest = score; elemBestAge = 0; elemBestCam = cam; }
+                else                  { elemBestAge++; }
+                // peak passed: score has fallen for ~8 frames since the best -> latch it
+                if (elemBest > -1e8f && elemBestAge >= 8) elemArmed = true;
+            } else if (!onElem && elemBest > -1e8f && elemBestAge >= 2) {
+                elemArmed = true;       // left the element having seen a peak -> use the best frame
+            }
+            if (frame >= 4000) { elemArmed = true; if (elemBest <= -1e8f) elemBestCam = cam; }  // fallback: never hang
+            if (elemArmed) cam = elemBestCam;   // shoot the latched signature frame, not the current one
+        }
 
         // ------------------------------------------------------- render ----
         // terrain + trees
@@ -2011,8 +2128,8 @@ int main(int argc, char **argv) {
                         Color lush = Color{ 96, 188, 96, 255 }, dry = Color{ 196, 206, 120, 255 };
                         capC = mixc(capC, mixc(lush, dry, patch), 0.35f);
                     }
-                    cap = mixc(shade(capC, sh), SKY, fog);
-                    col = mixc(shade(colC, sh * 0.95f), SKY, fog);
+                    cap = mixc(shade(capC, sh), FOG, fog);
+                    col = mixc(shade(colC, sh * 0.95f), FOG, fog);
                 }
                 // only draw the top slab of each column (can't see underground) so
                 // 256m-tall columns don't blow up overdraw. depth > worst slope gap.
@@ -2114,22 +2231,22 @@ int main(int argc, char **argv) {
                             drawCubeTex(T_LEAF, Vector3{ (LX) + _s.x, (LY), (LZ) + _s.z }, W, HH, LL, C); } while (0)
                         switch (treeType) {
                             case 0:                                                  // oak  (~10m: 5m trunk, round crown)
-                                tr = mixc(shade(WOOD, sh), SKY, fog);
-                                lf = mixc(shade(LEAF, sh), SKY, fog);
+                                tr = mixc(shade(WOOD, sh), FOG, fog);
+                                lf = mixc(shade(LEAF, sh), FOG, fog);
                                 drawCubeTex(T_LOG,  Vector3{ wx, top + 2.6f, wz }, 0.8f, 5.2f, 0.8f, tr);
                                 LEAF_AT(wx, top + 6.6f, wz, 4.6f, 2.6f, 4.6f, lf);
                                 LEAF_AT(wx, top + 8.8f, wz, 3.0f, 1.9f, 3.0f, shade(lf, 1.08f));
                                 break;
                             case 1:                                                  // birch (~12m: tall slim trunk)
-                                tr = mixc(shade(Color{214,209,194,255}, sh), SKY, fog);
-                                lf = mixc(shade(Color{112,162, 81,255}, sh), SKY, fog);
+                                tr = mixc(shade(Color{214,209,194,255}, sh), FOG, fog);
+                                lf = mixc(shade(Color{112,162, 81,255}, sh), FOG, fog);
                                 drawCubeTex(T_LOG,  Vector3{ wx, top + 3.3f, wz }, 0.7f, 6.6f, 0.7f, tr);
                                 LEAF_AT(wx, top + 7.8f, wz, 3.6f, 2.4f, 3.6f, lf);
                                 LEAF_AT(wx, top + 10.2f, wz, 2.3f, 1.6f, 2.3f, shade(lf, 1.07f));
                                 break;
                             case 2:                                                  // spruce (~14m: tall conifer, tiered)
-                                tr = mixc(shade(Color{ 82, 60, 40,255}, sh), SKY, fog);
-                                lf = mixc(shade(Color{ 65,101, 65,255}, sh), SKY, fog);
+                                tr = mixc(shade(Color{ 82, 60, 40,255}, sh), FOG, fog);
+                                lf = mixc(shade(Color{ 65,101, 65,255}, sh), FOG, fog);
                                 drawCubeTex(T_LOG,  Vector3{ wx, top + 3.2f, wz }, 0.7f, 6.4f, 0.7f, tr);
                                 LEAF_AT(wx, top + 4.4f, wz, 4.4f, 1.8f, 4.4f, lf);
                                 LEAF_AT(wx, top + 6.6f, wz, 3.4f, 1.8f, 3.4f, shade(lf, 1.05f));
@@ -2137,8 +2254,8 @@ int main(int argc, char **argv) {
                                 LEAF_AT(wx, top + 10.8f, wz, 1.3f, 1.6f, 1.3f, shade(lf, 1.15f));
                                 break;
                             case 3:                                                  // acacia (~8m: short trunk, broad flat crown)
-                                tr = mixc(shade(Color{106, 82, 53,255}, sh), SKY, fog);
-                                lf = mixc(shade(Color{131,144, 65,255}, sh), SKY, fog);
+                                tr = mixc(shade(Color{106, 82, 53,255}, sh), FOG, fog);
+                                lf = mixc(shade(Color{131,144, 65,255}, sh), FOG, fog);
                                 drawCubeTex(T_LOG,  Vector3{ wx, top + 1.9f, wz }, 0.65f, 3.8f, 0.65f, tr);
                                 LEAF_AT(wx, top + 4.6f, wz, 5.2f, 2.0f, 5.2f, lf);
                                 LEAF_AT(wx, top + 6.0f, wz, 3.4f, 1.4f, 3.4f, shade(lf, 1.07f));
@@ -2152,22 +2269,22 @@ int main(int argc, char **argv) {
                     Color fc = pick < 0.33f ? Color{226, 86, 96, 255}
                              : pick < 0.66f ? Color{236, 206, 96, 255}
                                             : Color{170, 120, 232, 255};
-                    fc = mixc(fc, SKY, fog);
+                    fc = mixc(fc, FOG, fog);
                     for (int q = 0; q < 3; q++) {
                         float ox = (hashf(cx * 7 + q, cz * 3 + 1) - 0.5f) * 1.2f;
                         float oz = (hashf(cx * 2 + 9, cz * 7 + q) - 0.5f) * 1.2f;
                         drawCubeTex(T_LEAF,  Vector3{ wx + ox, top + 0.18f, wz + oz }, 0.10f, 0.36f, 0.10f,
-                                    mixc(Color{ 96, 168, 92, 255 }, SKY, fog));               // stem
+                                    mixc(Color{ 96, 168, 92, 255 }, FOG, fog));               // stem
                         drawCubeTex(T_WHITE, Vector3{ wx + ox, top + 0.42f, wz + oz }, 0.26f, 0.22f, 0.26f, fc); // bloom
                     }
                 } else if (!depthPass && treeType >= 0 && gateFog < 0.6f && h < 150 &&
                            hashf(cx * 17 + 3, cz * 11 + 7) > 0.982f) {
                     // scattered mossy boulders / rocks
-                    Color rk = mixc(shade(Color{ 138, 140, 148, 255 }, sh), SKY, fog);
+                    Color rk = mixc(shade(Color{ 138, 140, 148, 255 }, sh), FOG, fog);
                     float rs = 0.9f + hashf(cx * 3 + 2, cz * 5 + 4) * 1.4f;
                     drawCubeTex(T_GRAIN, Vector3{ wx, top + rs * 0.4f, wz }, rs, rs * 0.8f, rs * 0.9f, rk);
                     drawCubeTex(T_LEAF,  Vector3{ wx, top + rs * 0.78f, wz }, rs * 0.7f, 0.18f, rs * 0.6f,
-                                mixc(shade(LEAF, sh), SKY, fog));                             // moss cap
+                                mixc(shade(LEAF, sh), FOG, fog));                             // moss cap
                 }
             }
         }
@@ -2183,7 +2300,7 @@ int main(int argc, char **argv) {
             mat.shader = depthPass ? gShadow.depth : gShadow.lit;
             if (!depthPass) {
                 float fe = fogEnd;
-                float fc[3] = { SKY.r / 255.0f, SKY.g / 255.0f, SKY.b / 255.0f };
+                float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
             }
@@ -2240,7 +2357,7 @@ int main(int argc, char **argv) {
             float ddxA = hxAxis.x - P.x, ddzA = hxAxis.z - P.z;
             float fogA = Clamp((sqrtf(ddxA*ddxA+ddzA*ddzA) - trackFog*0.70f)/(trackFog*0.27f), 0.0f, 1.0f);
             if (fogA < 0.97f && th > 3.0f) {
-                Color scA = mixc(Color{ 122, 126, 134, 255 }, SKY, fogA);
+                Color scA = mixc(Color{ 122, 126, 134, 255 }, FOG, fogA);
                 // OPEN 4-post lattice tower (NOT a solid central block) — 4 thin corner posts
                 // the full height + horizontal ring braces, with the coils' radial struts tying in.
                 float tw = 1.4f;                                                          // tower half-width
@@ -2331,7 +2448,7 @@ int main(int argc, char **argv) {
             if (p.y - g < 1.5f) continue;
             Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
             Vector3 lat = Vector3Normalize(Vector3CrossProduct(Vector3{ t.x, 0, t.z }, Vector3{ 0, 1, 0 }));
-            Color sc = mixc(Color{ 118, 122, 130, 255 }, SKY, fog);   // steel support legs
+            Color sc = mixc(Color{ 118, 122, 130, 255 }, FOG, fog);   // steel support legs
             if (tg == M_HELIX && haveHx) {                            // helix: short radial strut IN to the central tower
                 drawCubeTex(T_IRON, Vector3{ (p.x + hxAxis.x)*0.5f, p.y - 0.6f, (p.z + hxAxis.z)*0.5f },
                             fabsf(hxAxis.x - p.x) + 0.4f, 0.30f, fabsf(hxAxis.z - p.z) + 0.4f, sc);
@@ -2358,8 +2475,8 @@ int main(int argc, char **argv) {
             if (tg == M_LAUNCH || tg == M_BOOST) {
                 Vector3 fwd = Vector3Normalize(Vector3{ t.x, 0, t.z });
                 pushFrame(Vector3{ p.x, p.y, p.z }, fwd, WUP);
-                Color grate = mixc(Color{ 150, 154, 162, 255 }, SKY, fog);   // steel grating
-                Color rail2 = mixc(Color{ 236, 214, 96, 255 }, SKY, fog);    // yellow safety handrail
+                Color grate = mixc(Color{ 150, 154, 162, 255 }, FOG, fog);   // steel grating
+                Color rail2 = mixc(Color{ 236, 214, 96, 255 }, FOG, fog);    // yellow safety handrail
                 drawTiledBox(T_IRON, Vector3{ 2.0f, -0.55f, 0 }, 1.5f, 0.12f, SEG_LEN, grate, 1.6f); // walkway
                 for (float ry : { 0.25f, 0.75f })                                               // two handrail bars
                     drawCubeTex(T_IRON, Vector3{ 2.7f, ry, 0 }, 0.08f, 0.08f, SEG_LEN, rail2);
@@ -2411,12 +2528,12 @@ int main(int argc, char **argv) {
                 // climb. These get the coloured box-beam spine + bright LSM stator fins.
                 bool poweredSpine = (segTag == M_LAUNCH || segTag == M_BOOST ||
                                      (segTag == M_CLIMB && !chain));
-                Color rc = mixc(trk.railC,  SKY, fog);
-                Color tie = mixc(Color{ 96, 99, 108, 255 }, SKY, fog);   // steel cross-tie
+                Color rc = mixc(trk.railC,  FOG, fog);
+                Color tie = mixc(Color{ 96, 99, 108, 255 }, FOG, fog);   // steel cross-tie
                 pushFrame(p, t, uvec);
                 if (poweredSpine) {
-                    Color sc  = mixc(trk.spineC, SKY, fog);
-                    Color fin = mixc(trk.trainAccent, SKY, fog);
+                    Color sc  = mixc(trk.spineC, FOG, fog);
+                    Color fin = mixc(trk.trainAccent, FOG, fog);
                     drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.38f, 0.54f, rl, sc);     // box-beam spine
                     if ((j & 1) == 0)                                                       // studded LSM stator fins
                         // sunk so its top clears the spine top (-0.03) — no coplanar z-fight
@@ -2426,7 +2543,7 @@ int main(int argc, char **argv) {
                     // tube runs the whole track with the rails standing off it. The
                     // themed (orange) accent is reserved for powered sections only,
                     // so non-powered track stays neutral.
-                    Color sc  = mixc(Color{ 44, 47, 55, 255 }, SKY, fog);                   // dark steel tube
+                    Color sc  = mixc(Color{ 44, 47, 55, 255 }, FOG, fog);                   // dark steel tube
                     drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.30f, 0.46f, rl, sc);     // box-beam spine
                 }
                 drawCubeTex(T_IRON, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);   // running rails
@@ -2436,7 +2553,7 @@ int main(int argc, char **argv) {
                     // top (-0.07): reads as a cross-member beneath the rails, no z-fight
                     drawCubeTex(T_IRON, Vector3{ 0, -0.17f, 0 }, 1.35f, 0.14f, 0.45f, tie); // cross-tie
                 if (chain)                                                            // lift chain, centred between rails
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.05f, 0 }, 0.14f, 0.14f, rl, mixc(CHAINC, SKY, fog));
+                    drawCubeTex(T_IRON, Vector3{ 0, -0.05f, 0 }, 0.14f, 0.14f, rl, mixc(CHAINC, FOG, fog));
                 popFrame();
             }
         }
@@ -2675,7 +2792,7 @@ int main(int argc, char **argv) {
             float wt = simTime;
             SetShaderValue(gShadow.lit, gShadow.locTime, &wt, SHADER_UNIFORM_FLOAT);
             float fe = fogEnd;
-            float fc[3] = { SKY.r / 255.0f, SKY.g / 255.0f, SKY.b / 255.0f };
+            float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
             SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
 
@@ -3212,6 +3329,17 @@ int main(int argc, char **argv) {
             rlDrawRenderBatchActive();
             TakeScreenshot("cobra_peakg.png");
             printf("cobra peak-g  g=%.1f  -> cobra_peakg.png\n", cobraPrevG);
+            fflush(stdout);
+            lastShot = true;
+        }
+        if (elemShot && elemArmed) {                        // element signature hero frame
+            rlDrawRenderBatchActive();
+            // TakeScreenshot() strips the directory (GetFileName), so write the full
+            // <outdir>/<NAME>.png path ourselves via LoadImageFromScreen + ExportImage.
+            Image img = LoadImageFromScreen();
+            ExportImage(img, elemShotPath);
+            UnloadImage(img);
+            printf("elementshot %s  score=%.2f  -> %s\n", elemShotName, elemBest, elemShotPath);
             fflush(stdout);
             lastShot = true;
         }

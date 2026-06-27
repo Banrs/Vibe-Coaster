@@ -55,6 +55,10 @@ struct Renderer {
     float rideU = 6.0f;       // current parameter along the spline
     bool  useExplicitFrame = false;          // ride cam supplies its own basis
     float3 exFwd, exUp;                       // explicit forward/up for ride cam
+    // live ride physics (real speed -> working boosts + HUD), run on the loaded map
+    float rideSpeed = 65.0f;  // m/s
+    float rideAlt   = 0.0f;   // height above ground at the train
+    int   rideKind  = 0;      // current SegMode tag
 
     void init();
     void rideAdvance(float dt);              // step the ride camera one frame
@@ -200,15 +204,40 @@ void Renderer::buildAccelerationStructure(const Terrain& t) {
 // steady pace, place the eye just above the track, look down the tangent with
 // the rider-up (so banking/inversions roll the view). Loops at the circuit end.
 void Renderer::rideAdvance(float dt) {
-    // pace ~ constant world speed; speedScale-free, just a smooth crawl.
-    rideU += dt * 4.0f;
+    // Real ride physics on the loaded map (mirrors the software game's constants):
+    // gravity along the slope, quadratic air drag, low rolling friction, and active
+    // launch/boost/lift acceleration on powered sections -> the boosts actually work
+    // (the orange spine sections noticeably surge), instead of a constant crawl.
+    const float GRAV=22.0f, DRAG=0.0016f, FRICTION=0.016f;
+    const float LAUNCH_V=108.0f, BOOST_V=74.0f, CLIMB_V=40.0f;
+    const int   M_CLIMB=1, M_LAUNCH=9, M_BOOST=11;
+
+    float3 a = coaster.pos(rideU), b = coaster.pos(rideU + 0.1f);
+    float mpu = length(b - a) / 0.1f;                       // metres per u-unit
+    if (mpu < 1e-3f) mpu = 1e-3f;
+    float3 d3 = coaster.pos(rideU + 0.05f) - coaster.pos(rideU - 0.05f);
+    float ds = length(d3);
+    float slope = (ds > 1e-4f) ? d3.y / ds : 0.0f;          // sin(pitch)
+    int ki = (int)(rideU + 0.5f);
+    if (ki < 0) ki = 0; if (ki >= coaster.nFull) ki = coaster.nFull - 1;
+    rideKind = coaster.cps[ki].kind;
+
+    rideSpeed += (-GRAV * slope - DRAG * rideSpeed * rideSpeed - FRICTION) * dt;
+    if      (rideKind == M_LAUNCH && rideSpeed < LAUNCH_V) rideSpeed = fminf(rideSpeed + 85.0f * dt, LAUNCH_V);
+    else if (rideKind == M_BOOST  && rideSpeed < BOOST_V ) rideSpeed = fminf(rideSpeed + 55.0f * dt, BOOST_V);
+    else if (rideKind == M_CLIMB  && rideSpeed < CLIMB_V ) rideSpeed = fminf(rideSpeed + 22.0f * dt, CLIMB_V);
+    if (rideSpeed < 8.0f) rideSpeed = 8.0f;                 // never stall to a stop
+
+    rideU += (rideSpeed / mpu) * dt;
     float uMax = (float)(nRender - 1);
-    if (rideU > uMax) rideU = 6.0f;          // loop back to the launch
+    if (rideU > uMax) { rideU = 6.0f; rideSpeed = LAUNCH_V * 0.6f; }   // loop the lap
+
     float3 p   = coaster.pos(rideU);
     float3 fwd = coaster.tangent(rideU);
     float3 up  = orthoUp(fwd, coaster.upAt(rideU));
     camPos = p + up * 2.0f;                   // eye ~2m above the track
     exFwd = fwd; exUp = up;
+    rideAlt = p.y - groundTopAt(p.x, p.z);
     useExplicitFrame = true;
 }
 
@@ -367,6 +396,15 @@ static int runBench(Renderer& r) {
 }
 @end
 
+// SegMode tag -> short HUD label (matches src/main.cpp enum order).
+static const char* kindName(int k) {
+    static const char* N[] = {"CRUISE","LIFT","DROP","AIRTIME","TURN","LOOP","CORKSCREW",
+        "STATION","DIP","LAUNCH","HELIX","BOOST","IMMELMANN","S-CURVE","DIVE","BANKED AIR",
+        "WAVE TURN","ZERO-G STALL","DIVE LOOP","COBRA ROLL","WINGOVER","HEARTLINE",
+        "PRETZEL","STENGEL DIVE","BANANA ROLL"};
+    return (k >= 0 && k < (int)(sizeof(N)/sizeof(N[0]))) ? N[k] : "TRACK";
+}
+
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property (nonatomic) NSWindow* window;
 @property (nonatomic) MetalView* view;
@@ -376,6 +414,7 @@ static int runBench(Renderer& r) {
 @property (nonatomic) double lastTime;
 @property (nonatomic) int frameCount;
 @property (nonatomic) double fpsClock;
+@property (nonatomic) NSTextField* hud;
 @end
 
 @implementation AppDelegate
@@ -400,6 +439,19 @@ static int runBench(Renderer& r) {
     self.view.metalLayer = layer;
 
     [self.window setContentView:self.view];
+
+    // HUD overlay: speed / altitude / current element, top-left over the Metal view.
+    self.hud = [[NSTextField alloc] initWithFrame:NSMakeRect(16, frame.size.height - 78, 360, 64)];
+    [self.hud setBezeled:NO];
+    [self.hud setDrawsBackground:NO];
+    [self.hud setEditable:NO];
+    [self.hud setSelectable:NO];
+    [self.hud setTextColor:[NSColor whiteColor]];
+    [self.hud setFont:[NSFont monospacedSystemFontOfSize:18 weight:NSFontWeightBold]];
+    [self.hud setAutoresizingMask:NSViewMinYMargin];
+    self.hud.maximumNumberOfLines = 3;
+    [self.view addSubview:self.hud];
+
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.view];
     [NSApp activateIgnoringOtherApps:YES];
@@ -414,6 +466,16 @@ static int runBench(Renderer& r) {
 
 - (void)frame:(NSTimer*)t {
     [self.view tick];
+
+    // HUD: speed (km/h) + altitude above ground + current element (ride mode only).
+    Renderer* r = self.renderer;
+    if (r->rideMode) {
+        [self.hud setStringValue:[NSString stringWithFormat:@"%.0f KM/H\nALT %.0f m\n%s",
+                                  r->rideSpeed * 3.6f, r->rideAlt, kindName(r->rideKind)]];
+    } else {
+        [self.hud setStringValue:@"FREE-FLY\nWASD+QE / mouse\nF: ride"];
+    }
+
     CAMetalLayer* layer = self.view.metalLayer;
     CGSize ds = layer.drawableSize;
     if (ds.width < 1) {

@@ -12,6 +12,92 @@
 #include <cstdio>
 #include "../src/coaster_track.cpp"   // struct Track (uses the shim + coaster.h, NOT raylib)
 
+// --- terrain ring extent (file scope so both StreamTrack + TrackSnapshot use it) ---
+// The terrain ring must reach the track far-edge; the track build is clipped to
+// this same radius so no track ever floats beyond the terrain edge. 1m blocks
+// (CELL=1) keep true Minecraft scale on all sides.
+static constexpr float TG_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
+static constexpr float TG_RING = 600.0f;   // half-extent meshed around the train
+
+// ---------------------------------------------------------------------------
+// A self-contained, copyable snapshot of the spline window the meshing reads:
+// flat copies of the control-point arrays + the window params. It exposes the
+// SAME sampling interface (pos/tangent/upAt/tagAt/chainAt/cp[]/up[]/npts/mpu) as
+// StreamTrack so the meshing code (templated below) runs against either. The
+// snapshot is taken cheaply on the main thread, then meshed on a BACKGROUND
+// thread so the ~100ms terrain build never stalls the frame loop.
+struct TrackSnapshot {
+    std::vector<Vector3>       cpv;     // control points
+    std::vector<Vector3>       upv;     // rider-up per cp
+    std::vector<unsigned char> kindv;   // SegMode tag per cp
+    std::vector<unsigned char> chainv;  // chain-lift flag per cp
+    float trainU = 6.0f;
+    int   winLo = 4, buildAhead = 130;
+    int   nptsv = 0;
+
+    int npts() const { return nptsv; }
+    // cp/up indexers (named to match StreamTrack's gen.cp[i]/gen.up[i] usage). They
+    // reference THIS object's vectors via a member pointer, so they stay valid
+    // through copies/moves (a cached raw pointer would dangle when the snapshot is
+    // copied into the worker block).
+    struct Idx {
+        const std::vector<Vector3> TrackSnapshot::*m;
+        const TrackSnapshot* owner;
+        Vector3 operator[](int i) const { return (owner->*m)[i]; }
+    };
+    Idx cp{&TrackSnapshot::cpv, this};
+    Idx up{&TrackSnapshot::upv, this};
+
+    // copies/moves must re-point the indexers at the NEW object.
+    TrackSnapshot() = default;
+    TrackSnapshot(const TrackSnapshot& o) { *this = o; }
+    TrackSnapshot& operator=(const TrackSnapshot& o) {
+        cpv=o.cpv; upv=o.upv; kindv=o.kindv; chainv=o.chainv;
+        trainU=o.trainU; winLo=o.winLo; buildAhead=o.buildAhead; nptsv=o.nptsv;
+        cp = {&TrackSnapshot::cpv, this}; up = {&TrackSnapshot::upv, this};
+        return *this;
+    }
+
+    Vector3 pos(float u) const {
+        if (u < 0) u = 0;
+        int k = (int)u;
+        if (k > (int)cpv.size() - 4) k = (int)cpv.size() - 4;
+        if (k < 0) k = 0;
+        return catmull(cpv[k], cpv[k+1], cpv[k+2], cpv[k+3], u - k);
+    }
+    Vector3 upAt(float u) const {
+        if (u < 0) u = 0;
+        int k = (int)u;
+        if (k > (int)upv.size() - 4) k = (int)upv.size() - 4;
+        if (k < 0) k = 0;
+        Vector3 a = catmull(upv[k], upv[k+1], upv[k+2], upv[k+3], u - k);
+        if (Vector3Length(a) < 1e-4f) return vec3(0,1,0);
+        return Vector3Normalize(a);
+    }
+    Vector3 tangent(float u) const {
+        Vector3 d = Vector3Subtract(pos(u + 0.05f), pos(u - 0.05f));
+        float L = Vector3Length(d);
+        if (L < 1e-5f) return Vector3{0,0,1};
+        return Vector3Scale(d, 1.0f / L);
+    }
+    int  tagAt(float u) const {
+        int k = (int)u; if (k < 0) k = 0; if (k >= (int)kindv.size()) k = (int)kindv.size()-1;
+        return kindv.empty() ? 0 : kindv[k];
+    }
+    bool chainAt(float u) const {
+        int k = (int)u; if (k < 0) k = 0; if (k >= (int)chainv.size()) k = (int)chainv.size()-1;
+        return !chainv.empty() && chainv[k] != 0;
+    }
+    float mpu(float u) const {
+        Vector3 a = pos(u), b = pos(u + 0.1f);
+        float m = Vector3Length(Vector3Subtract(b, a)) / 0.1f;
+        return m < 1e-3f ? 1e-3f : m;
+    }
+};
+
+// Full scene mesh for a snapshot (defined after the free meshing templates below).
+static void meshSnapshot(const TrackSnapshot& s, std::vector<MeshVertex>& out);
+
 // ---------------------------------------------------------------------------
 // Streaming state: one Track, a train parameter in LOCAL u (relative to the
 // current deque front), and a tessellation window that slides with the train.
@@ -127,171 +213,187 @@ struct StreamTrack {
         return shifted;
     }
 
-    // Tessellate the visible track window + a terrain ring around the train into
-    // `out`. Returns the world-space train position for camera placement.
-    void buildGeometry(std::vector<MeshVertex>& out) const {
-        out.clear();
-        buildTerrainRing(out);
-        buildTrack(out);
+    // Snapshot the spline window the meshing reads into a self-contained, copyable
+    // TrackSnapshot (flat arrays). Cheap (a few hundred element copies) so it can run
+    // on the main thread, then meshSnapshot() runs the heavy build on a worker thread.
+    TrackSnapshot snapshot() const {
+        TrackSnapshot s;
+        s.trainU = trainU; s.winLo = winLo; s.buildAhead = buildAhead;
+        s.nptsv = npts();
+        int n = npts();
+        s.cpv.resize(n); s.upv.resize(n); s.kindv.resize(n); s.chainv.resize(n);
+        for (int i = 0; i < n; i++) {
+            s.cpv[i]    = gen.cp[i];
+            s.upv[i]    = gen.up[i];
+            s.kindv[i]  = (unsigned char)gen.kind[i];
+            s.chainv[i] = (unsigned char)(gen.chainf[i] ? 1 : 0);
+        }
+        return s;
     }
 
-    // --- terrain: a square ring of voxel cells centred on the train ---
-    // The terrain ring must reach at least the track far-edge (TERRAIN_RING below);
-    // the track build is clipped to this same radius so no track ever floats beyond
-    // the terrain edge (see buildTrack). 1m blocks (CELL=1) keep true Minecraft scale.
-    static constexpr float CELL = 1.0f;            // 1m voxel blocks (true MC scale, all sides)
-    static constexpr float RING = 360.0f;          // half-extent meshed around the train (1m blocks)
-    void buildTerrainRing(std::vector<MeshVertex>& out) const {
-        Vector3 tp = gen.pos(trainU);
-        int N = (int)(2.0f * RING / CELL);
-        // Snap the ring centre to the voxel grid so the cell boundaries (and the
-        // world-keyed trees) land on the SAME absolute grid every rebuild -> the
-        // streamed terrain is rock-stable as the window slides (no wobble/flicker).
-        tp.x = floorf(tp.x / CELL) * CELL;
-        tp.z = floorf(tp.z / CELL) * CELL;
-        // collect nearby track points so trees stay clear of the coaster
-        std::vector<float3> trackPts;
-        int lastU = (int)trainU + buildAhead;
-        if (lastU > npts() - 1) lastU = npts() - 1;
-        for (int i = winLo; i <= lastU; i++) {
-            Vector3 p = gen.cp[i];
-            trackPts.push_back(vec3(p.x, p.y, p.z));
-        }
-        Terrain t = buildTerrain(tp.x, tp.z, N, CELL, trackPts.data(), (int)trackPts.size());
-        out.insert(out.end(), t.verts.begin(), t.verts.end());
+    // Mesh the current generator window synchronously (used by the --shot path).
+    void buildGeometry(std::vector<MeshVertex>& out) const { meshSnapshot(snapshot(), out); }
+};
+
+// ===========================================================================
+// Free meshing functions. They take any source `s` exposing the StreamTrack /
+// TrackSnapshot sampling interface (pos/tangent/upAt/tagAt/chainAt/cp/up/npts/mpu
+// + trainU/winLo/buildAhead). Identical geometry to the old StreamTrack methods;
+// just hoisted out so they can run on a background thread against a snapshot.
+// ===========================================================================
+template<class Src>
+static void buildTerrainRingT(const Src& s, std::vector<MeshVertex>& out) {
+    Vector3 tp = s.pos(s.trainU);
+    int N = (int)(2.0f * TG_RING / TG_CELL);
+    // Snap the ring centre to the voxel grid so the cell boundaries (and the
+    // world-keyed trees) land on the SAME absolute grid every rebuild -> the
+    // streamed terrain is rock-stable as the window slides (no wobble/flicker).
+    tp.x = floorf(tp.x / TG_CELL) * TG_CELL;
+    tp.z = floorf(tp.z / TG_CELL) * TG_CELL;
+    std::vector<float3> trackPts;
+    int lastU = (int)s.trainU + s.buildAhead;
+    if (lastU > s.npts() - 1) lastU = s.npts() - 1;
+    for (int i = s.winLo; i <= lastU; i++) {
+        Vector3 p = s.cp[i];
+        trackPts.push_back(vec3(p.x, p.y, p.z));
     }
+    Terrain t = buildTerrain(tp.x, tp.z, N, TG_CELL, trackPts.data(), (int)trackPts.size());
+    out.insert(out.end(), t.verts.begin(), t.verts.end());
+}
 
-    // --- track: rails, spine, ties, supports, train (window in local u) ---
-    void buildTrack(std::vector<MeshVertex>& out) const {
-        int last = (int)trainU + buildAhead;
-        if (last > npts() - 4) last = npts() - 4;
-        float uLo = (float)winLo;
-        float uHi = (float)last;
+template<class Src>
+static void buildTrainT(const Src& s, std::vector<MeshVertex>& out) {
+    float3 bodyCol   = vec3(0.10f, 0.45f, 0.85f);
+    float3 accentCol = vec3(0.95f, 0.85f, 0.20f);
+    const float CAR_HALF_LEN = 2.0f, CAR_PITCH = 4.6f;
+    float u = s.trainU;
+    for (int car = 0; car < 5; car++) {
+        if (u >= (float)(s.npts() - 4)) break;
+        float3 c   = s.pos(u);
+        float3 fwd = s.tangent(u);
+        float3 up  = orthoUp(fwd, s.upAt(u));
+        float3 lat = normalize(cross(up, fwd));
+        float3 carC = c + up * 0.7f;
+        pushBox(out, carC, lat, up, fwd, 1.1f, 0.7f, CAR_HALF_LEN, car == 0 ? accentCol : bodyCol);
+        pushBox(out, carC + up * 0.8f, lat, up, fwd, 0.8f, 0.25f, CAR_HALF_LEN * 0.82f, accentCol);
+        float m = s.mpu(u);
+        u -= CAR_PITCH / fmaxf(m, 1e-3f);   // cars trail BEHIND the lead (camera) car
+        if (u < (float)s.winLo) break;
+    }
+}
 
-        // Clip the meshed track to the terrain ring (snapped centre, same as the
-        // terrain): never emit track beyond the terrain edge so distant track can't
-        // float in empty space. RING - a small margin so supports still land on dirt.
-        Vector3 tc = gen.pos(trainU);
-        float ringCx = floorf(tc.x / CELL) * CELL, ringCz = floorf(tc.z / CELL) * CELL;
-        const float ringClip = RING - 6.0f;
-        auto inRing = [&](float3 p) {
-            return fabsf(p.x - ringCx) <= ringClip && fabsf(p.z - ringCz) <= ringClip;
-        };
+template<class Src>
+static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
+    int last = (int)s.trainU + s.buildAhead;
+    if (last > s.npts() - 4) last = s.npts() - 4;
+    float uLo = (float)s.winLo;
+    float uHi = (float)last;
 
-        const float RAIL_GAUGE = 1.3f, RAIL_R = 0.18f;
-        const float SPINE_DROP = 1.0f, SPINE_HALF = 0.55f;
-        float3 railCol   = vec3(0.82f, 0.83f, 0.86f);
-        float3 spineSteel= vec3(0.46f, 0.48f, 0.52f);
-        float3 spineHot  = vec3(1.00f, 0.45f, 0.10f);
-        float3 tieCol    = vec3(0.30f, 0.31f, 0.34f);
-        float3 supCol    = vec3(0.46f, 0.48f, 0.52f);
+    Vector3 tc = s.pos(s.trainU);
+    float ringCx = floorf(tc.x / TG_CELL) * TG_CELL, ringCz = floorf(tc.z / TG_CELL) * TG_CELL;
+    const float ringClip = TG_RING - 6.0f;
+    auto inRing = [&](float3 p) {
+        return fabsf(p.x - ringCx) <= ringClip && fabsf(p.z - ringCz) <= ringClip;
+    };
 
-        const float STEP = 0.20f;
-        int tieEvery = 3, segCount = 0;
-        float3 prevL{}, prevR{}; bool havePrev = false;
+    const float RAIL_GAUGE = 1.3f, RAIL_R = 0.18f;
+    const float SPINE_DROP = 1.0f, SPINE_HALF = 0.55f;
+    float3 railCol   = vec3(0.82f, 0.83f, 0.86f);
+    float3 spineSteel= vec3(0.46f, 0.48f, 0.52f);
+    float3 spineHot  = vec3(1.00f, 0.45f, 0.10f);
+    float3 tieCol    = vec3(0.30f, 0.31f, 0.34f);
+    float3 supCol    = vec3(0.46f, 0.48f, 0.52f);
 
-        for (float u = uLo; u <= uHi; u += STEP, segCount++) {
-            float3 c   = pos(u);
-            if (!inRing(c)) { havePrev = false; continue; }   // clip track to terrain ring
-            float3 fwd = tangent(u);
-            float3 up  = orthoUp(fwd, upAt(u));
-            float3 lat = normalize(cross(up, fwd));
-            float3 railL = c + lat * RAIL_GAUGE;
-            float3 railR = c - lat * RAIL_GAUGE;
-            if (havePrev) {
-                auto railSeg = [&](float3 a, float3 b) {
-                    float3 d = b - a; float L = length(d);
-                    if (L < 1e-4f) return;
-                    float3 f = d * (1.0f / L);
-                    float3 u2 = orthoUp(f, up);
-                    float3 r2 = normalize(cross(u2, f));
-                    pushBox(out, (a + b) * 0.5f, r2, u2, f, RAIL_R, RAIL_R, L * 0.5f, railCol);
-                };
-                railSeg(prevL, railL);
-                railSeg(prevR, railR);
-            }
-            prevL = railL; prevR = railR; havePrev = true;
+    const float STEP = 0.20f;
+    int tieEvery = 3, segCount = 0;
+    float3 prevL{}, prevR{}; bool havePrev = false;
 
-            int kn = tagAt(u);
-            bool powered = (kn == M_LAUNCH || kn == M_BOOST);
-            float3 spineC = c - up * SPINE_DROP;
-            float spineHalfF = length(pos(u + STEP) - c) * 0.6f;
-            pushBox(out, spineC, lat, up, fwd, SPINE_HALF, SPINE_HALF, spineHalfF,
-                    powered ? spineHot : spineSteel);
-
-            if (segCount % tieEvery == 0) {
-                float3 tieC = c - up * (SPINE_DROP * 0.4f);
-                pushBox(out, tieC, lat, up, fwd, RAIL_GAUGE + 0.25f, 0.15f, 0.30f, tieCol);
-            }
-        }
-
-        // support bents (A-frame V to the terrain), ported from drawVBent / coaster.h
-        const float NODE_DROP = 1.5f;
-        for (int i = winLo + 1; i < last; i += 2) {
-            Vector3 cpP = gen.cp[i], cpU = gen.up[i];
-            float3 fwd = tangent((float)i);
-            float3 up  = orthoUp(fwd, vec3(cpU.x, cpU.y, cpU.z));
-            if (up.y < 0.30f) continue;                  // inverted span -> no ground support
-            float3 p = vec3(cpP.x, cpP.y, cpP.z);
-            if (!inRing(p)) continue;                     // clip supports to terrain ring
-            float3 node = p - up * NODE_DROP;
-            float gC = groundTopAt(p.x, p.z);
-            float hgt = node.y - gC;
-            if (hgt < 3.0f) continue;
-            float3 rRight = normalize(cross(up, fwd));
-            float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));
-            float baseHalf = t_Clamp(hgt * 0.20f, 1.8f, 5.5f);
-            float topHalf  = 0.34f;
-            // trussed pair of legs (one box each side); ground splay grows with height
-            for (float s = -1.0f; s <= 1.0f; s += 2.0f) {
-                float3 top  = node + rRight * (s * topHalf);
-                float3 foot = vec3(p.x + latH.x * s * baseHalf, 0.0f, p.z + latH.z * s * baseHalf);
-                foot.y = groundTopAt(foot.x, foot.z);
-                float3 d = foot - top; float L = length(d);
-                if (L < 0.5f) continue;
-                float3 f  = d * (1.0f / L);
-                float3 u2 = orthoUp(f, vec3(0,1,0));
+    for (float u = uLo; u <= uHi; u += STEP, segCount++) {
+        float3 c   = s.pos(u);
+        if (!inRing(c)) { havePrev = false; continue; }   // clip track to terrain ring
+        float3 fwd = s.tangent(u);
+        float3 up  = orthoUp(fwd, s.upAt(u));
+        float3 lat = normalize(cross(up, fwd));
+        float3 railL = c + lat * RAIL_GAUGE;
+        float3 railR = c - lat * RAIL_GAUGE;
+        if (havePrev) {
+            auto railSeg = [&](float3 a, float3 b) {
+                float3 d = b - a; float L = length(d);
+                if (L < 1e-4f) return;
+                float3 f = d * (1.0f / L);
+                float3 u2 = orthoUp(f, up);
                 float3 r2 = normalize(cross(u2, f));
-                pushBox(out, (top + foot) * 0.5f, r2, u2, f, 0.40f, 0.40f, L * 0.5f, supCol);
-                // a couple of horizontal cross-braces for a trussed look on tall spans
-                if (hgt > 24.0f) {
-                    for (float fr = 0.34f; fr < 0.85f; fr += 0.32f) {
-                        float3 mid = top + (foot - top) * fr;
-                        float3 inner = vec3(p.x, mid.y, p.z);
-                        float3 bd = inner - mid; float bl = length(bd);
-                        if (bl < 0.5f) continue;
-                        float3 bf = bd * (1.0f / bl);
-                        float3 bu = orthoUp(bf, vec3(0,1,0));
-                        float3 br = normalize(cross(bu, bf));
-                        pushBox(out, (mid + inner) * 0.5f, br, bu, bf, 0.18f, 0.18f, bl * 0.5f, supCol);
-                    }
+                pushBox(out, (a + b) * 0.5f, r2, u2, f, RAIL_R, RAIL_R, L * 0.5f, railCol);
+            };
+            railSeg(prevL, railL);
+            railSeg(prevR, railR);
+        }
+        prevL = railL; prevR = railR; havePrev = true;
+
+        int kn = s.tagAt(u);
+        bool powered = (kn == M_LAUNCH || kn == M_BOOST);
+        float3 spineC = c - up * SPINE_DROP;
+        float spineHalfF = length(s.pos(u + STEP) - c) * 0.6f;
+        pushBox(out, spineC, lat, up, fwd, SPINE_HALF, SPINE_HALF, spineHalfF,
+                powered ? spineHot : spineSteel);
+
+        if (segCount % tieEvery == 0) {
+            float3 tieC = c - up * (SPINE_DROP * 0.4f);
+            pushBox(out, tieC, lat, up, fwd, RAIL_GAUGE + 0.25f, 0.15f, 0.30f, tieCol);
+        }
+    }
+
+    // support bents (A-frame V to the terrain), ported from drawVBent / coaster.h
+    const float NODE_DROP = 1.5f;
+    for (int i = s.winLo + 1; i < last; i += 2) {
+        Vector3 cpP = s.cp[i], cpU = s.up[i];
+        float3 fwd = s.tangent((float)i);
+        float3 up  = orthoUp(fwd, vec3(cpU.x, cpU.y, cpU.z));
+        if (up.y < 0.30f) continue;                  // inverted span -> no ground support
+        float3 p = vec3(cpP.x, cpP.y, cpP.z);
+        if (!inRing(p)) continue;                     // clip supports to terrain ring
+        float3 node = p - up * NODE_DROP;
+        float gC = groundTopAt(p.x, p.z);
+        float hgt = node.y - gC;
+        if (hgt < 3.0f) continue;
+        float3 rRight = normalize(cross(up, fwd));
+        float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));
+        float baseHalf = t_Clamp(hgt * 0.20f, 1.8f, 5.5f);
+        float topHalf  = 0.34f;
+        // trussed pair of legs (one box each side); ground splay grows with height
+        for (float sgn = -1.0f; sgn <= 1.0f; sgn += 2.0f) {
+            float3 top  = node + rRight * (sgn * topHalf);
+            float3 foot = vec3(p.x + latH.x * sgn * baseHalf, 0.0f, p.z + latH.z * sgn * baseHalf);
+            foot.y = groundTopAt(foot.x, foot.z);
+            float3 d = foot - top; float L = length(d);
+            if (L < 0.5f) continue;
+            float3 f  = d * (1.0f / L);
+            float3 u2 = orthoUp(f, vec3(0,1,0));
+            float3 r2 = normalize(cross(u2, f));
+            pushBox(out, (top + foot) * 0.5f, r2, u2, f, 0.40f, 0.40f, L * 0.5f, supCol);
+            // a couple of horizontal cross-braces for a trussed look on tall spans
+            if (hgt > 24.0f) {
+                for (float fr = 0.34f; fr < 0.85f; fr += 0.32f) {
+                    float3 mid = top + (foot - top) * fr;
+                    float3 inner = vec3(p.x, mid.y, p.z);
+                    float3 bd = inner - mid; float bl = length(bd);
+                    if (bl < 0.5f) continue;
+                    float3 bf = bd * (1.0f / bl);
+                    float3 bu = orthoUp(bf, vec3(0,1,0));
+                    float3 br = normalize(cross(bu, bf));
+                    pushBox(out, (mid + inner) * 0.5f, br, bu, bf, 0.18f, 0.18f, bl * 0.5f, supCol);
                 }
             }
-            pushBox(out, node, rRight, up, fwd, 0.55f, 0.55f, 0.55f, supCol);
         }
-
-        // train consist near the head (a few cars ahead of nothing — rides with cam)
-        buildTrain(out);
+        pushBox(out, node, rRight, up, fwd, 0.55f, 0.55f, 0.55f, supCol);
     }
 
-    // Train cars sitting on the rails AT the train parameter (so they ride along).
-    void buildTrain(std::vector<MeshVertex>& out) const {
-        float3 bodyCol   = vec3(0.10f, 0.45f, 0.85f);
-        float3 accentCol = vec3(0.95f, 0.85f, 0.20f);
-        const float CAR_HALF_LEN = 2.0f, CAR_PITCH = 4.6f;
-        float u = trainU;
-        for (int car = 0; car < 5; car++) {
-            if (u >= (float)(npts() - 4)) break;
-            float3 c   = pos(u);
-            float3 fwd = tangent(u);
-            float3 up  = orthoUp(fwd, upAt(u));
-            float3 lat = normalize(cross(up, fwd));
-            float3 carC = c + up * 0.7f;
-            pushBox(out, carC, lat, up, fwd, 1.1f, 0.7f, CAR_HALF_LEN, car == 0 ? accentCol : bodyCol);
-            pushBox(out, carC + up * 0.8f, lat, up, fwd, 0.8f, 0.25f, CAR_HALF_LEN * 0.82f, accentCol);
-            float m = mpu(u);
-            u -= CAR_PITCH / fmaxf(m, 1e-3f);   // cars trail BEHIND the lead (camera) car
-            if (u < (float)winLo) break;
-        }
-    }
-};
+    buildTrainT(s, out);   // train consist near the head (rides with the camera)
+}
+
+// Full scene mesh for a snapshot (terrain ring + clipped track + train).
+static void meshSnapshot(const TrackSnapshot& s, std::vector<MeshVertex>& out) {
+    out.clear();
+    buildTerrainRingT(s, out);
+    buildTrackT(s, out);
+}

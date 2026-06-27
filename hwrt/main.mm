@@ -93,7 +93,7 @@ struct Renderer {
     // benchmark: a 1m terrain ring + clipped track that FOLLOWS the ride camera
     // (so blocks stay 1m everywhere without meshing the whole 2km circuit at once).
     static constexpr float BENCH_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-    static constexpr float BENCH_RING = 360.0f;   // ring half-extent around the camera
+    static constexpr float BENCH_RING = 600.0f;   // ring half-extent around the camera
     std::vector<float3> trackPts;          // all track control points (for trees)
     std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
     float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
@@ -107,6 +107,13 @@ struct Renderer {
     // Async chunk rebuild: upload `verts` into the BACK pair and kick a non-blocking
     // GPU AS build; the front pair keeps rendering. Swaps in pollAsyncBuild().
     void rebuildAsync(const std::vector<MeshVertex>& verts);
+#ifdef RT_STREAM
+    // Full async rebuild: the heavy CPU meshing of `snap` ALSO runs on a worker
+    // thread (not just the GPU AS build), so the ~100ms terrain build never stalls
+    // the frame loop. Renderer keeps rendering the front pair until the swap.
+    void rebuildAsyncSnapshot(TrackSnapshot snap);
+    std::vector<MeshVertex> bgVerts;         // worker-thread mesh target (back CPU buffer)
+#endif
     void pollAsyncBuild();                   // swap front<->back once the back build is done
     void forceSyncRebuild();                 // rebuild current geometry into FRONT, blocking (--shot)
     void updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h);
@@ -296,6 +303,32 @@ void Renderer::rebuildAsync(const std::vector<MeshVertex>& verts) {
     asScratch = scratch;
 }
 
+#ifdef RT_STREAM
+// Full async rebuild: mesh the snapshot on a WORKER thread, then upload + submit
+// the GPU AS build from that same worker (Metal resource creation/encoding is
+// thread-safe). The frame loop never touches this path's CPU cost. buildInFlight
+// is set on the main thread BEFORE dispatch so a second trigger can't race in;
+// the GPU completion handler flips buildDone, and the main thread swaps in poll.
+void Renderer::rebuildAsyncSnapshot(TrackSnapshot snap) {
+    if (buildInFlight) return;                     // a rebuild is already running
+    buildDone.store(false);
+    buildInFlight = true;
+    // Move the snapshot into the block; bgVerts is the worker's private mesh target
+    // (only this path writes it, and only one runs at a time).
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        meshSnapshot(snap, bgVerts);               // ~100ms terrain+track build (off the frame thread)
+        uint32_t tris = (uint32_t)(bgVerts.size() / 3);
+        size_t bytes = bgVerts.size() * sizeof(MeshVertex);
+        vertexBufferBack = growVertexBuffer(device, vertexBufferBack, bytes);
+        memcpy([vertexBufferBack contents], bgVerts.data(), bytes);
+        triCountBack = tris;
+        id<MTLBuffer> scratch = asScratch;
+        accelBack = buildAS(device, queue, vertexBufferBack, tris, &scratch, false, &buildDone);
+        asScratch = scratch;
+    });
+}
+#endif
+
 // If the back build has finished on the GPU, swap it to the front so the next
 // frame renders the new geometry. Cheap pointer swap on the main thread.
 void Renderer::pollAsyncBuild() {
@@ -377,12 +410,14 @@ void Renderer::rideAdvance(float dt) {
     // Rebuild the scene geometry + AS as the train travels. Rebuild on a window
     // shift OR every REBUILD_PTS control points of travel (a chunk boundary), so
     // the AS refresh is amortised instead of happening every frame.
+    // Rebuild only when the train has travelled a chunk AND no rebuild is already
+    // in flight. Meshing + AS build run entirely on a worker thread, so the trigger
+    // here is just a cheap snapshot (a few hundred element copies).
     const int REBUILD_PTS = 4;
     sinceRebuildPts += (int)stream.trainU - prevPt;
-    if (shifted || sinceRebuildPts >= REBUILD_PTS) {
+    if (!buildInFlight && (shifted || sinceRebuildPts >= REBUILD_PTS)) {
         sinceRebuildPts = 0;
-        stream.buildGeometry(scratchVerts);
-        rebuildAsync(scratchVerts);            // non-blocking: front keeps rendering
+        rebuildAsyncSnapshot(stream.snapshot());   // snapshot on main, mesh+build on worker
     }
     return;
 #else

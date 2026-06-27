@@ -2582,9 +2582,11 @@ int main(int argc, char **argv) {
             float fog = Clamp((sqrtf(ddx * ddx + ddz * ddz) - fogEnd * 0.70f) / (fogEnd * 0.27f), 0.0f, 1.0f);   // fully fades to sky BEFORE the cull radius (no hard circular edge)
             Color w = mixc(WATER, SKY, fog);
             w.a = 150;
-            // flat + slightly OVERSIZED so neighbouring cells overlap and the per-cell grid
-            // seams disappear into one continuous sheet (was reading as tiles).
-            drawCubeTex(T_WHITE, Vector3{ wc.x, WATER_Y - 0.05f, wc.z }, wc.y * 1.10f, 0.10f, wc.y * 1.10f, w);
+            // a SOLID block from just below the surface up to exactly WATER_Y (top face
+            // is the waterline). Thicker than the old 0.10 wafer so it doesn't vanish
+            // edge-on when the ride skims the surface, and only lightly oversized (1.04)
+            // so neighbouring translucent cells don't heavily double-blend and shimmer.
+            drawCubeTex(T_WHITE, Vector3{ wc.x, WATER_Y - 0.40f, wc.z }, wc.y * 1.04f, 0.80f, wc.y * 1.04f, w);
         }
         endVoxelBatch();
 

@@ -56,39 +56,48 @@
         // rider up = inward normal (toward loop centre): UP at the bottom (ang~0),
         // DOWN at the crest (ang~PI) -> single inversion over the top.
         Vector3 upv = Vector3Normalize(Vector3{ pzF.x * (-sinf(ang)), cosf(ang), pzF.z * (-sinf(ang)) });
-        if (--remain <= 0) { gyaw = atan2f(pzF.x, pzF.z); mode = M_DROP; remain = irnd(2, 4); }
+        if (--remain <= 0) { gyaw = atan2f(pzF.x, pzF.z); enterDrop(irnd(2, 4)); }
         return upv;
     }
 
     // ---------------------------------------------------------------- STENGEL DIVE
-    //  Camelback airtime hill whose apex snaps PAST vertical bank (>90deg) for an
-    //  instant while turning gently to the side. Floater/ejector airtime at the crest,
-    //  0 inversions. Bank beta spikes to ~1.9rad (~109deg overbank) only at the apex.
+    //  A true dive drop: rise to an early airtime crest, snap the bank PAST vertical
+    //  (>90deg) as the train tips over, then DIVE down to an exit LOWER than the entry
+    //  (net descent) while turning gently to the side. Ejector airtime at the crest,
+    //  0 inversions. The dive depth is sized to the height available above terrain so
+    //  it never plunges into the ground.
     void initStengel() {
         mode = M_STENGEL;
         sdF    = headingVec();
         sdSide = Vector3Normalize(Vector3CrossProduct(WUP, sdF)) ;
-        if (rnd01() < 0.5f) sdSide = Vector3Scale(sdSide, -1.0f); // turn either way
+        if (rnd01() < 0.5f) sdSide = Vector3Scale(sdSide, -1.0f); // dive either way
         sdBase = gpos;
-        // hill height sized so the crest gives ~ -0.3g airtime: a parabola/cosine hump
-        // over a forward run of sdSteps*SEG_LEN. crest -g ~ v^2 * (d2y/dx2)/GRAV.
         float v   = Clamp(genV, 40.0f, 95.0f);
         sdSteps   = 13;
         float L   = sdSteps * SEG_LEN;              // forward run length
-        // cosine hump y = H/2*(1-cos(2pi x/L)) has crest curvature H*2pi^2/L^2, so the
-        // felt vertical g at the crest = 1 - v^2*H*2pi^2/(L^2*GRAV). Solve for ~ -0.35g
-        // (ejector) -> H = 1.35*GRAV*L^2/(v^2*2pi^2). Clamp to a sane visible hump.
-        sdH       = Clamp(1.35f * GRAV * L * L / (v * v * 2.0f * PI * PI), 6.0f, 34.0f);
-        sdSpan    = L * 0.18f;                       // gentle lateral traverse (~18% of length)
+        // crest hop sized for ejector airtime (-0.35g) over the rise portion, kept
+        // modest so the DIVE, not the hump, is the dominant feature.
+        sdH       = Clamp(1.35f * GRAV * L * L / (v * v * 2.0f * PI * PI), 6.0f, 20.0f);
+        // dive depth: a real plunge, but clamped to the height available above the
+        // terrain at entry (keep ~14m clearance at the exit) so it can't clip ground.
+        float avail = sdBase.y - groundTopAt(sdBase.x, sdBase.z) - 14.0f;
+        sdDrop    = Clamp(0.60f * 0.68f * L, 24.0f, 64.0f);     // ~64m over the dive run
+        sdDrop    = fminf(sdDrop, fmaxf(avail, 0.0f));
+        sdSpan    = L * 0.16f;                       // gentle lateral traverse
         remain    = sdSteps;
     }
     Vector3 stepStengel() {
         int   i = sdSteps - remain;
         float t = (float)(i + 1) / (float)sdSteps;  // (0..1]
-        // forward advances uniformly; hump rises then falls (flat ends -> blends level)
+        const float tc = 0.32f;                     // crest fraction, then dive
         float L   = sdSteps * SEG_LEN;
-        float ff  = L * t;
-        float fU  = sdH * 0.5f * (1.0f - cosf(2.0f * PI * t));   // 0 at ends, crest at t=0.5
+        float ff  = L * t;                           // forward advances uniformly
+        // vertical: rise to +sdH at the crest (airtime), then DIVE to -sdDrop at the
+        // exit. Both halves are raised-cosines with zero slope at the crest and exit,
+        // so the tip-over is smooth and the pull-out eases level (mild exit g).
+        float fU;
+        if (t < tc) fU = sdH * 0.5f * (1.0f - cosf(PI * (t / tc)));                          // 0 -> +sdH
+        else        fU = sdH - (sdH + sdDrop) * 0.5f * (1.0f - cosf(PI * ((t - tc) / (1.0f - tc))));  // +sdH -> -sdDrop
         float fS  = sdSpan * 0.5f * (1.0f - cosf(PI * t));       // gentle turn 0 -> sdSpan
         gpos = { sdBase.x + sdF.x * ff + sdSide.x * fS,
                  sdBase.y + fU,
@@ -98,15 +107,16 @@
             sdF.x + sdSide.x * (sdSpan / L) * PI * 0.5f * sinf(PI * t),
             0,
             sdF.z + sdSide.z * (sdSpan / L) * PI * 0.5f * sinf(PI * t) });
-        // bank overshoots vertical only at the apex: beta peaks ~1.9rad at t=0.5
-        float beta = 1.9f * powf(sinf(PI * t), 4.0f);
+        // bank overshoots vertical at the tip-over: gaussian beta peaks ~1.95rad
+        // (~112deg overbank) centred on the crest (t = tc) as it noses into the dive.
+        float bx   = (t - tc) / 0.20f;
+        float beta = 1.95f * expf(-bx * bx);
         Vector3 latAx = Vector3Normalize(Vector3CrossProduct(H, WUP));
-        // overbank toward the turn side: use signed lateral axis
         float sgn = (Vector3CrossProduct(H, WUP).x * sdSide.x +
                      Vector3CrossProduct(H, WUP).z * sdSide.z) >= 0 ? 1.0f : -1.0f;
         Vector3 upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(beta)),
                                                   Vector3Scale(latAx, sinf(beta) * sgn)));
-        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); mode = M_DROP; remain = irnd(2, 3); }
+        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); enterDrop(irnd(2, 3)); }
         return upv;
     }
 
@@ -151,6 +161,6 @@
         Vector3 latAx = Vector3Normalize(Vector3CrossProduct(H, WUP));
         Vector3 upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(beta)),
                                                   Vector3Scale(latAx, sinf(beta))));
-        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); mode = M_DROP; remain = irnd(2, 3); }
+        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); enterDrop(irnd(2, 3)); }
         return upv;
     }

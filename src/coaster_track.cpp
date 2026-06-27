@@ -69,7 +69,7 @@ struct Track {
     int     cbIdx = 0;
     // new elements (pretzel teardrop loop / stengel over-tipped airtime / banana 0g winder)
     Vector3 pzF{}, pzBase{};            float pzR = 30, pzDrift = 0; int pzSteps = 26;
-    Vector3 sdF{}, sdSide{}, sdBase{};  float sdH = 12, sdSpan = 0;  int sdSteps = 13;
+    Vector3 sdF{}, sdSide{}, sdBase{};  float sdH = 12, sdSpan = 0, sdDrop = 0;  int sdSteps = 13;
     Vector3 brF{}, brSide{}, brBase{};  float brH = 18, brSpan = 0, brDir = 1; int brSteps = 26;
     // heartline-roll state (straight, level inline twist — hangtime, low g)
     Vector3 hlF{}, hlSide{};
@@ -592,6 +592,16 @@ struct Track {
         }
     }
 
+    // Enter a descent recovery. A steep plunging DROP is only physical right off a
+    // powered launch/boost or a lift crest; every other recovery (inversion/element
+    // exit) eases out LEVEL (M_FLAT) instead of plunging. (user rule: no DROP unless
+    // powered.) Call this wherever an element would otherwise drop out.
+    void enterDrop(int n) {
+        bool powered = (mode == M_LAUNCH || mode == M_BOOST || mode == M_CLIMB);
+        mode   = powered ? M_DROP : M_FLAT;
+        remain = n;
+    }
+
     void nextMode() {
         float h = gpos.y - groundTopAt(gpos.x, gpos.z);
         // a speed-trim run just finished -> the train is now at the inversion's safe
@@ -651,9 +661,9 @@ struct Track {
                 else                       chooseElement(h);
                 queuedInv = 0;
                 break;
-            case M_CLIMB:                                 // crest -> drop sized to the hill
+            case M_CLIMB:                                 // crest -> drop sized to the hill (powered: launch->climb->crest)
                 mega = false;
-                mode = M_DROP; remain = Clamp((int)(h / 14.0f), 2, 8);
+                enterDrop(Clamp((int)(h / 14.0f), 2, 8));
                 break;
             case M_DROP:
                 if (h > 30.0f) { remain = 2; return; }    // ride a big drop all the way down
@@ -661,8 +671,8 @@ struct Track {
                 break;
             case M_LOOP:
             case M_ROLL:
-            case M_IMMEL:                                 // swoop out of an inversion
-                mode = M_DROP; remain = irnd(4, 6);       // longer, gentler swoop-out of the inversion
+            case M_IMMEL:                                 // ease out of an inversion (level pull-out, not a plunge)
+                enterDrop(irnd(4, 6));                     // -> M_FLAT recovery (unpowered)
                 break;
             default:                                      // HILLS / TURN / HELIX / DIP / FLAT
                 if (elems >= elemLimit || h < 14.0f) startLaunch();   // re-energize with a launch, not a chain hill
@@ -845,7 +855,7 @@ struct Track {
                  gpos.y + tang.y * R * dphi,
                  gpos.z + tang.z * R * dphi + (lf.z * ldrift + lside.z * llat) / lsteps };
         Vector3 upv = Vector3Normalize(Vector3{ -lf.x * sinf(ltheta), cosf(ltheta), -lf.z * sinf(ltheta) });
-        if (--remain <= 0) { gyaw = atan2f(lf.x, lf.z); mode = M_DROP; remain = irnd(3, 4); }
+        if (--remain <= 0) { gyaw = atan2f(lf.x, lf.z); enterDrop(irnd(3, 4)); }
         return upv;
     }
 
@@ -871,7 +881,7 @@ struct Track {
                                               Vector3Scale(lside, sinf(ang) * immelDir)));
             gyaw = atan2f(back.x, back.z);
         }
-        if (--remain <= 0) { mode = M_DROP; remain = irnd(2, 3); }
+        if (--remain <= 0) { enterDrop(irnd(2, 3)); }
         return upv;
     }
 
@@ -884,7 +894,7 @@ struct Track {
                  raxis.y +               radial.y * rR,
                  raxis.z + rf.z * rfwd + radial.z * rR };
         Vector3 upv = Vector3Normalize(Vector3Scale(radial, -1.0f));
-        if (--remain <= 0) { mode = M_DROP; remain = irnd(2, 3); }
+        if (--remain <= 0) { enterDrop(irnd(2, 3)); }
         return upv;
     }
 
@@ -900,7 +910,7 @@ struct Track {
         float roll = PI * (1.0f - cosf(PI * t));                // 0 -> PI (inverted at crest) -> 2PI
         Vector3 upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(roll)),
                                                   Vector3Scale(stallSide, sinf(roll) * stallDir)));
-        if (--remain <= 0) { mode = M_DROP; remain = irnd(2, 3); }
+        if (--remain <= 0) { enterDrop(irnd(2, 3)); }
         return upv;
     }
 
@@ -918,7 +928,7 @@ struct Track {
                  dlcenter.y + radial.y * dlR,
                  dlcenter.z + radial.z * dlR + side.z * lat };
         Vector3 upv = Vector3Normalize(Vector3Scale(radial, -1.0f));
-        if (--remain <= 0) { gyaw = atan2f(f.x, f.z); mode = M_DROP; remain = irnd(2, 3); }
+        if (--remain <= 0) { gyaw = atan2f(f.x, f.z); enterDrop(irnd(2, 3)); }
         return upv;
     }
 
@@ -931,7 +941,7 @@ struct Track {
         gpos = cbPts[i];
         Vector3 upv = cbUps[i];
         cbIdx++;
-        if (--remain <= 0) { gyaw = atan2f(-cbF.x, -cbF.z); mode = M_DROP; remain = irnd(3, 4); }  // exit reversed
+        if (--remain <= 0) { gyaw = atan2f(-cbF.x, -cbF.z); enterDrop(irnd(3, 4)); }  // exit reversed
         return upv;
     }
 
@@ -947,7 +957,7 @@ struct Track {
         float roll = 2.0f * PI * hlTurns * t;        // n full rotations, upright at both ends
         Vector3 upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(roll)),
                                                   Vector3Scale(hlSide, sinf(roll) * hlDir)));
-        if (--remain <= 0) { mode = M_DROP; remain = irnd(2, 3); }
+        if (--remain <= 0) { enterDrop(irnd(2, 3)); }
         return upv;
     }
 

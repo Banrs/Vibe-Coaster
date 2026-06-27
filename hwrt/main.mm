@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 
 #include <vector>
+#include <map>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -46,32 +47,60 @@ struct Renderer {
     id<MTLComputePipelineState> tracePSO;
     id<MTLBuffer> camBuffer;
 
-    // --- Split two-geometry instance AS ---
-    // Geometry is split into a big STATIC terrain primitive-AS (rebuilt rarely, only
-    // when the camera moves a good fraction of the ring -- on a worker thread, double
-    // buffered) and a tiny DYNAMIC track+train primitive-AS (rebuilt cheaply every
-    // few frames so the train stays glued to the camera). A small instance-AS over
-    // the two is what the kernel traces. This keeps the heavy terrain rebuild OFF the
-    // hot path while the train never lags -> high steady-state fps at long distance.
-    id<MTLBuffer> vertexBufferT;                // FRONT terrain verts (instance 0)
-    id<MTLAccelerationStructure> accelT;        // FRONT terrain prim-AS
-    id<MTLBuffer> vertexBufferTBack;            // BACK terrain verts (worker build)
-    id<MTLAccelerationStructure> accelTBack;    // BACK terrain prim-AS
-    uint32_t triCountT = 0, triCountTBack = 0;
+    // --- Chunked instance AS (INCREMENTAL terrain) ---
+    // The static terrain is a grid of fixed CHUNK-sized voxel chunks, each its OWN
+    // primitive-AS that shares one big terrain vertex buffer (vertexBufferT) at a
+    // per-chunk slot offset. When the ring re-centres we mesh + build prim-AS for
+    // ONLY the chunks that newly entered the ring (one batched GPU build on a worker)
+    // and drop the ones that left -> no whole-ring re-mesh / multi-million-tri AS
+    // rebuild hitch. The traced instance-AS lists all live chunks + the track as the
+    // LAST instance. The shader picks a chunk's verts via a per-instance base offset
+    // (chunkVertOffBuf); the track instance id is in trackInstBuf.
+    static constexpr float RING_CELL = 1.0f;         // 1m voxel blocks (true MC scale)
+    static constexpr int   CHUNK_M = 64;             // chunk edge in cells (=metres at CELL=1)
+    static constexpr int   SLOT_TRIS = 24000;        // fixed vertex slot capacity per chunk
+                                                     // (worst observed 1m-block chunk ~22k tris)
+    static constexpr int   SLOT_VERTS = SLOT_TRIS * 3;
 
-    id<MTLBuffer> vertexBufferK;                // track+train verts (instance 1)
-    id<MTLAccelerationStructure> accelK;        // track+train prim-AS (cheap, frequent)
+    struct Chunk {
+        id<MTLAccelerationStructure> prim;   // this chunk's primitive-AS
+        int      slot;                       // vertex slot index in vertexBufferT
+        uint32_t tris;                       // triangle count
+    };
+    std::map<uint64_t, Chunk> chunks;        // key = packChunk(icx,icz) -> live chunk
+    std::vector<int> freeSlots;              // recyclable vertex slots
+    int slotHighWater = 0;                   // next fresh slot index
+
+    id<MTLBuffer> vertexBufferT;             // shared terrain verts (all chunk slots)
+    id<MTLBuffer> chunkVertOffBuf;           // per-instance base vertex offset (uint[])
+    id<MTLBuffer> trackInstBuf;              // uint: instance id of the track (= #chunks)
+    std::vector<id<MTLAccelerationStructure>> instAS; // ordered children for the instance-AS
+
+    id<MTLBuffer> vertexBufferK;             // track+train verts (LAST instance)
+    id<MTLAccelerationStructure> accelK;     // track+train prim-AS (cheap, frequent)
     uint32_t triCountK = 0;
 
-    id<MTLAccelerationStructure> accel;         // instance-AS over {terrain, track} (traced)
-    id<MTLBuffer> instanceDescBuf;              // MTLAccelerationStructureInstanceDescriptor[2]
+    id<MTLAccelerationStructure> accel;      // instance-AS over {chunks..., track} (traced)
+    id<MTLBuffer> instanceDescBuf;           // MTLAccelerationStructureInstanceDescriptor[]
 
-    id<MTLBuffer> asScratch;                    // main-thread scratch (track + instance builds)
-    id<MTLBuffer> asScratchBg;                  // worker-thread scratch (terrain build) — SEPARATE
-                                                // so the two never stomp each other's scratch
-    bool  buildInFlight = false;                // a terrain back build is running on the GPU
-    std::atomic<bool> buildDone{false};         // GPU completion handler flips this true
+    id<MTLBuffer> asScratch;                 // main-thread scratch (track + instance builds)
+    id<MTLBuffer> asScratchBg;               // worker-thread scratch (chunk builds) — SEPARATE
+    bool  buildInFlight = false;             // a chunk back build is running on the GPU
+    std::atomic<bool> buildDone{false};      // GPU completion handler flips this true
+
+    // Staging filled by the worker; committed by pollAsyncBuild on the main thread.
+    struct PendingChunk { uint64_t key; int slot; uint32_t tris; id<MTLAccelerationStructure> prim; };
+    std::vector<PendingChunk> pendingAdd;    // chunks built this re-centre
+    std::vector<uint64_t>     pendingRemove; // chunks dropped this re-centre
     uint32_t frameIdx = 0;    // animates cloud drift / sampling
+
+    static uint64_t packChunk(int icx, int icz) {
+        return ((uint64_t)(uint32_t)icx << 32) | (uint32_t)icz;
+    }
+    // Mesh + build prim-AS for every chunk newly inside the `ring` at (cx,cz); free the
+    // ones that left. Heavy work (mesh + GPU build) batched into ONE command buffer.
+    void recentreChunks(float cx, float cz, float ring, const std::vector<float3>& cps, bool sync);
+    void commitChunks();                     // apply pendingAdd/Remove, rebuild instance-AS
 
     // camera
     float3 camPos;
@@ -105,7 +134,7 @@ struct Renderer {
     // benchmark: a 1m terrain ring + clipped track that FOLLOWS the ride camera
     // (so blocks stay 1m everywhere without meshing the whole 2km circuit at once).
     static constexpr float BENCH_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-    static constexpr float BENCH_RING = 400.0f;   // ring half-extent around the camera
+    static constexpr float BENCH_RING = 1200.0f;  // ring half-extent around the camera
     std::vector<float3> trackPts;          // all track control points (for trees)
     std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
     float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
@@ -116,13 +145,9 @@ struct Renderer {
     void rideAdvance(float dt);              // step the ride camera one frame
     // Build/refresh the tiny track+train prim-AS from `verts` (synchronous, cheap).
     void buildTrackAS(const std::vector<MeshVertex>& verts);
-    // (Re)build the instance-AS over the current terrain + track prim-AS (cheap).
+    // (Re)build the instance-AS over all live terrain chunks + the track prim-AS.
     void buildInstanceAS();
-    // Async terrain rebuild: mesh `snap`'s terrain on a worker thread + build its
-    // prim-AS, swap to front on completion. The frame loop never pays the ~100ms.
-    void rebuildTerrainAsync(const std::vector<MeshVertex>& verts);
-    std::vector<MeshVertex> bgVerts;         // worker-thread terrain mesh target
-    void pollAsyncBuild();                   // swap terrain front<->back once its build is done
+    void pollAsyncBuild();                   // commit a finished worker chunk build
     void forceSyncRebuild();                 // rebuild current geometry into FRONT, blocking (--shot)
     void updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h);
     void render(id<MTLTexture> target, uint32_t w, uint32_t h);
@@ -176,8 +201,9 @@ void Renderer::init() {
         lastStreamCx = floorf(tc.x / TG_CELL) * TG_CELL;
         lastStreamCz = floorf(tc.z / TG_CELL) * TG_CELL;
     }
-    fprintf(stderr, "[stream] initial scene: %u terrain + %u track tris (infinite generator)\n",
-            triCountT, triCountK);
+    { uint32_t tt = 0; for (auto& kv : chunks) tt += kv.second.tris;
+      fprintf(stderr, "[stream] initial scene: %u terrain (%zu chunks) + %u track tris (infinite generator)\n",
+              tt, chunks.size(), triCountK); }
 
     // start the ride camera on the train
     rideU = stream.trainU;
@@ -209,8 +235,9 @@ void Renderer::init() {
     // without meshing the whole ~2km circuit at once (see buildBenchScene).
     rideU = 6.0f;
     buildBenchScene(false);
-    fprintf(stderr, "benchmark: 1m terrain ring (R=%.0f) -> %u terrain + %u track tris\n",
-            BENCH_RING, triCountT, triCountK);
+    { uint32_t tt = 0; for (auto& kv : chunks) tt += kv.second.tris;
+      fprintf(stderr, "benchmark: 1m terrain ring (R=%.0f) -> %u terrain (%zu chunks) + %u track tris\n",
+              BENCH_RING, tt, chunks.size(), triCountK); }
 
     // Hero shot: stand off to the side of the launch run and look up at the
     // signature opening top-hat tower so the rails/spine/ties and train read.
@@ -287,37 +314,219 @@ void Renderer::buildTrackAS(const std::vector<MeshVertex>& verts) {
     buildInstanceAS();
 }
 
-// (Re)build the instance-AS over the two child prim-AS: instance 0 = terrain (accelT),
-// instance 1 = track+train (accelK). Both at identity transform. Cheap (2 instances).
-void Renderer::buildInstanceAS() {
-    if (!accelT || !accelK) return;
-    NSArray* children = @[accelT, accelK];
+// Build a primitive-AS for a chunk that lives at `slot` inside the shared terrain
+// buffer (vertexBufferT). The geometry's vertexBufferOffset points at the slot so all
+// chunks share one buffer; the shader picks the slot via the per-instance offset.
+static id<MTLAccelerationStructure>
+buildChunkPrimAS(id<MTLDevice> dev, id<MTLAccelerationStructureCommandEncoder> enc,
+                 id<MTLBuffer> vbuf, size_t vertOffset, uint32_t tris,
+                 id<MTLBuffer> __strong* scratchInOut, size_t* scratchCursor) {
+    MTLAccelerationStructureTriangleGeometryDescriptor* geo =
+        [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    geo.vertexBuffer = vbuf;
+    geo.vertexBufferOffset = vertOffset * sizeof(MeshVertex);
+    geo.vertexStride = sizeof(MeshVertex);
+    geo.vertexFormat = MTLAttributeFormatFloat3;
+    geo.triangleCount = tris;
+    MTLPrimitiveAccelerationStructureDescriptor* desc =
+        [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+    desc.geometryDescriptors = @[geo];
+    MTLAccelerationStructureSizes sizes = [dev accelerationStructureSizesWithDescriptor:desc];
+    id<MTLAccelerationStructure> as = [dev newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+    // Pack all chunk builds in one batch into one scratch buffer (distinct offsets).
+    size_t need = *scratchCursor + sizes.buildScratchBufferSize + 256;
+    if (!*scratchInOut || (size_t)[*scratchInOut length] < need)
+        *scratchInOut = [dev newBufferWithLength:(NSUInteger)(need * 1.5 + 4096)
+                                         options:MTLResourceStorageModePrivate];
+    [enc buildAccelerationStructure:as descriptor:desc
+                      scratchBuffer:*scratchInOut scratchBufferOffset:*scratchCursor];
+    *scratchCursor = (need + 255) & ~(size_t)255;       // keep 256B alignment
+    return as;
+}
 
-    if (!instanceDescBuf) {
-        instanceDescBuf = [device newBufferWithLength:2 * sizeof(MTLAccelerationStructureInstanceDescriptor)
-                                              options:MTLResourceStorageModeShared];
+// Re-mesh + build prim-AS for chunks newly inside the ring centred at (cx,cz), and
+// drop the ones that left. ONLY the changed edge strips are touched. The heavy mesh
+// + GPU build run on a worker (sync=false) batched into ONE command buffer; results
+// land in pendingAdd/pendingRemove for commitChunks() to apply on the main thread.
+// sync=true does it inline (init / --shot).
+void Renderer::recentreChunks(float cx, float cz, float ring, const std::vector<float3>& cps, bool sync) {
+    if (buildInFlight) {
+        if (!sync) return;                               // async: skip; a build is already running
+        // sync (init / --shot): an async build may be mid-flight (e.g. fired by the --shot
+        // advance loop which never render()s to poll it). Drain it FIRST so we don't run two
+        // builds over the same slots/buffer concurrently -> commit it, then proceed cleanly.
+        while (!buildDone.load()) { }
+        commitChunks();
     }
+    int M = CHUNK_M;
+    int icx = (int)floorf(cx / (M * RING_CELL));
+    int icz = (int)floorf(cz / (M * RING_CELL));
+    int reach = (int)ceilf(ring / (M * RING_CELL));      // chunks each side of centre
+
+    // desired live set; figure out adds (in range & not present) and removes (present & out of range)
+    std::vector<std::pair<int,int>> toAdd;
+    for (int dz = -reach; dz <= reach; dz++)
+        for (int dx = -reach; dx <= reach; dx++) {
+            int ax = icx + dx, az = icz + dz;
+            if (chunks.find(packChunk(ax, az)) == chunks.end())
+                toAdd.push_back({ax, az});
+        }
+    pendingRemove.clear();
+    for (auto& kv : chunks) {
+        int ax = (int)(int32_t)(kv.first >> 32), az = (int)(int32_t)(kv.first & 0xffffffff);
+        if (std::abs(ax - icx) > reach || std::abs(az - icz) > reach)
+            pendingRemove.push_back(kv.first);
+    }
+    if (toAdd.empty() && pendingRemove.empty()) return;
+
+    // The shared terrain vertex buffer is pre-sized ONCE to the full ring's slot count
+    // (+ headroom for one edge strip of new chunks coexisting with the about-to-be-freed
+    // ones) so it NEVER reallocates mid-run -> no giant copy stalls.
+    int side = 2 * reach + 1;
+    int maxSlots = side * side + 4 * side + 16;
+    if (!vertexBufferT) {
+        size_t bytes = (size_t)maxSlots * SLOT_VERTS * sizeof(MeshVertex);
+        vertexBufferT = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    }
+
+    // SYNC (init / --shot teleport): no render is tracing concurrently, so the removed
+    // chunks' slots can be recycled IMMEDIATELY — this bounds slot usage to one ring even
+    // when the camera teleports and the whole ring is replaced. (The ASYNC live path must
+    // NOT do this: a removed chunk is still being traced until commitChunks drops it, so
+    // its slot is only recycled there, one re-centre later.)
+    if (sync) {
+        for (uint64_t k : pendingRemove) { freeSlots.push_back(chunks[k].slot); chunks.erase(k); }
+        pendingRemove.clear();
+    }
+
+    // reserve a slot for each new chunk now (stable offsets the worker memcpys into).
+    struct AddPlan { int ax, az, slot; };
+    std::vector<AddPlan> plan;
+    plan.reserve(toAdd.size());
+    for (auto& a : toAdd) {
+        int slot;
+        if (!freeSlots.empty()) { slot = freeSlots.back(); freeSlots.pop_back(); }
+        else slot = slotHighWater++;
+        if (slot >= maxSlots) { slot = maxSlots - 1; }   // guard (should not happen)
+        plan.push_back({a.first, a.second, slot});
+    }
+
+    std::vector<float3> cpsCopy = cps;
+    buildInFlight = true;
+    buildDone.store(false);
+    auto doBuild = [this, plan, cpsCopy, M](bool wait) {
+        pendingAdd.clear();
+        // mesh each new chunk into its slot (CPU)
+        std::vector<std::vector<MeshVertex>> meshes(plan.size());
+        for (size_t i = 0; i < plan.size(); i++) {
+            buildTerrainChunk(meshes[i], plan[i].ax * M, plan[i].az * M, M, RING_CELL,
+                              cpsCopy.empty() ? nullptr : cpsCopy.data(), (int)cpsCopy.size());
+            size_t off = (size_t)plan[i].slot * SLOT_VERTS;
+            size_t n = meshes[i].size();
+            if (n > (size_t)SLOT_VERTS) n = SLOT_VERTS;  // clamp (slot capacity guard)
+            if (n) memcpy((MeshVertex*)[vertexBufferT contents] + off, meshes[i].data(), n * sizeof(MeshVertex));
+            pendingAdd.push_back({ packChunk(plan[i].ax, plan[i].az), plan[i].slot,
+                                   (uint32_t)(n / 3), nil });
+        }
+        // Build the new chunks' prim-AS on the AS queue, but split into SMALL command
+        // buffers (a handful of chunks each) instead of one big blob. A long edge strip
+        // (big RING) is many chunks; one giant GPU submit would block render frames for
+        // its whole duration, whereas several short submits let render frames interleave
+        // between them on the GPU -> the re-centre cost is spread, not a single stall.
+        id<MTLBuffer> scratch = asScratchBg;
+        const int GROUP = 6;
+        id<MTLCommandBuffer> cb = nil;
+        for (size_t g = 0; g < pendingAdd.size(); g += GROUP) {
+            cb = [asQueue commandBuffer];
+            id<MTLAccelerationStructureCommandEncoder> enc = [cb accelerationStructureCommandEncoder];
+            size_t cursor = 0;                       // each small CB reuses scratch from 0
+            size_t end = std::min(g + GROUP, pendingAdd.size());
+            for (size_t i = g; i < end; i++) {
+                size_t off = (size_t)pendingAdd[i].slot * SLOT_VERTS;
+                pendingAdd[i].prim = buildChunkPrimAS(device, enc, vertexBufferT, off,
+                                                      pendingAdd[i].tris, &scratch, &cursor);
+            }
+            [enc endEncoding];
+            if (end < pendingAdd.size()) [cb commit];   // intermediate group: fire and continue
+        }
+        asScratchBg = scratch;
+        std::atomic<bool>* d = &buildDone;
+        [cb addCompletedHandler:^(id<MTLCommandBuffer>) { d->store(true); }];
+        [cb commit];
+        if (wait) [cb waitUntilCompleted];
+    };
+    if (sync) { doBuild(true); commitChunks(); }
+    else dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ doBuild(false); });
+}
+
+// Apply a finished chunk build: drop removed chunks (recycle slots), insert the new
+// ones, then rebuild the instance-AS + per-instance offset table. Main thread.
+void Renderer::commitChunks() {
+    for (uint64_t k : pendingRemove) {
+        auto it = chunks.find(k);
+        if (it != chunks.end()) { freeSlots.push_back(it->second.slot); chunks.erase(it); }
+    }
+    pendingRemove.clear();
+    for (auto& pc : pendingAdd) chunks[pc.key] = { pc.prim, pc.slot, pc.tris };
+    pendingAdd.clear();
+    buildInstanceAS();
+    buildInFlight = false;
+}
+
+// (Re)build the instance-AS: instances [0,#chunks) are the live terrain chunks, the
+// last instance is the track. Also refresh the per-instance vertex-offset table
+// (chunkVertOffBuf) + the track instance id (trackInstBuf) the shader reads. Cheap
+// (the children are tiny prim-AS already built; this is just the top-level build).
+void Renderer::buildInstanceAS() {
+    if (chunks.empty() || !accelK) return;
+    uint32_t nChunk = (uint32_t)chunks.size();
+    uint32_t nInst  = nChunk + 1;
+
+    instAS.clear();
+    instAS.reserve(nInst);
+    size_t descBytes = nInst * sizeof(MTLAccelerationStructureInstanceDescriptor);
+    if (!instanceDescBuf || (size_t)[instanceDescBuf length] < descBytes)
+        instanceDescBuf = [device newBufferWithLength:descBytes options:MTLResourceStorageModeShared];
+    if (!chunkVertOffBuf || (size_t)[chunkVertOffBuf length] < nInst * sizeof(uint32_t))
+        chunkVertOffBuf = [device newBufferWithLength:nInst * sizeof(uint32_t) options:MTLResourceStorageModeShared];
     auto* inst = (MTLAccelerationStructureInstanceDescriptor*)[instanceDescBuf contents];
-    for (int i = 0; i < 2; i++) {
-        inst[i].accelerationStructureIndex = i;          // 0=terrain, 1=track
+    auto* offs = (uint32_t*)[chunkVertOffBuf contents];
+    uint32_t i = 0;
+    uint32_t terrainTris = 0;
+    for (auto& kv : chunks) {
+        instAS.push_back(kv.second.prim);
+        offs[i] = (uint32_t)(kv.second.slot * SLOT_VERTS);   // base vertex offset of this chunk
+        inst[i].accelerationStructureIndex = i;
         inst[i].options = MTLAccelerationStructureInstanceOptionOpaque;
         inst[i].mask = 0xFF;
         inst[i].intersectionFunctionTableOffset = 0;
-        // identity transform (3x4, column-major)
-        for (int c = 0; c < 4; c++)
-            for (int r = 0; r < 3; r++)
-                inst[i].transformationMatrix.columns[c][r] = (c == r) ? 1.0f : 0.0f;
+        for (int c = 0; c < 4; c++) for (int r = 0; r < 3; r++)
+            inst[i].transformationMatrix.columns[c][r] = (c == r) ? 1.0f : 0.0f;
+        terrainTris += kv.second.tris;
+        i++;
     }
+    // track instance (last)
+    instAS.push_back(accelK);
+    offs[i] = 0;                                  // unused for the track (it reads vertsK)
+    inst[i].accelerationStructureIndex = i;
+    inst[i].options = MTLAccelerationStructureInstanceOptionOpaque;
+    inst[i].mask = 0xFF;
+    inst[i].intersectionFunctionTableOffset = 0;
+    for (int c = 0; c < 4; c++) for (int r = 0; r < 3; r++)
+        inst[i].transformationMatrix.columns[c][r] = (c == r) ? 1.0f : 0.0f;
 
+    if (!trackInstBuf) trackInstBuf = [device newBufferWithLength:sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    *(uint32_t*)[trackInstBuf contents] = nChunk;
+
+    NSArray* children = [NSArray arrayWithObjects:instAS.data() count:instAS.size()];
     MTLInstanceAccelerationStructureDescriptor* idesc =
         [MTLInstanceAccelerationStructureDescriptor descriptor];
     idesc.instancedAccelerationStructures = children;
-    idesc.instanceCount = 2;
+    idesc.instanceCount = nInst;
     idesc.instanceDescriptorBuffer = instanceDescBuf;
 
     MTLAccelerationStructureSizes sizes = [device accelerationStructureSizesWithDescriptor:idesc];
-    id<MTLAccelerationStructure> ias =
-        [device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+    id<MTLAccelerationStructure> ias = [device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
     id<MTLBuffer> scratch = asScratch;
     if (!scratch || (size_t)[scratch length] < sizes.buildScratchBufferSize)
         scratch = [device newBufferWithLength:(NSUInteger)(sizes.buildScratchBufferSize * 1.4 + 1024)
@@ -335,52 +544,30 @@ void Renderer::buildInstanceAS() {
     if (!announced) {
         announced = true;
         fprintf(stdout,
-                "[RT] HARDWARE RAY TRACING ACTIVE: instance acceleration structure over "
-                "terrain (%u tris) + track (%u tris). Shaders trace via "
+                "[RT] HARDWARE RAY TRACING ACTIVE: chunked instance-AS over %u terrain chunks "
+                "(%u tris) + track (%u tris). Shaders trace via "
                 "raytracing::intersector<instancing> (no raster/DDA fallback).\n",
-                triCountT, triCountK);
+                nChunk, terrainTris, triCountK);
     }
 }
 
-// Async TERRAIN rebuild: upload the worker-meshed `verts` into the BACK terrain pair
-// and submit a non-blocking prim-AS build (on the AS queue). The front terrain keeps
-// being traced until pollAsyncBuild() swaps. Called FROM the worker thread.
-void Renderer::rebuildTerrainAsync(const std::vector<MeshVertex>& verts) {
-    uint32_t tris = (uint32_t)(verts.size() / 3);
-    size_t bytes = verts.size() * sizeof(MeshVertex);
-    vertexBufferTBack = growVertexBuffer(device, vertexBufferTBack, bytes);
-    if (bytes) memcpy([vertexBufferTBack contents], verts.data(), bytes);
-    triCountTBack = tris;
-    id<MTLBuffer> scratch = asScratchBg;   // worker's OWN scratch (never the main-thread one)
-    accelTBack = buildPrimAS(device, asQueue, vertexBufferTBack, tris, &scratch, false, &buildDone);
-    asScratchBg = scratch;
-}
-
-// If the back terrain build finished, swap it to the front and rebuild the instance
-// AS so it's traced. Runs on the main thread.
+// If a worker chunk build finished, commit it (drop+add chunks, rebuild instance-AS).
 void Renderer::pollAsyncBuild() {
     if (!buildInFlight || !buildDone.load()) return;
-    std::swap(accelT, accelTBack);
-    std::swap(vertexBufferT, vertexBufferTBack);
-    triCountT = triCountTBack;
-    buildInFlight = false;
-    buildInstanceAS();             // re-point instance 0 at the new terrain
+    commitChunks();
 }
 
-// Rebuild the CURRENT scene geometry synchronously into the FRONT pairs. Used by
-// --shot, where the tight advance loop has no render() calls to poll async swaps.
+// Rebuild the CURRENT scene geometry synchronously into FRONT. Used by --shot / init,
+// where the tight advance loop has no render() calls to poll async swaps.
 void Renderer::forceSyncRebuild() {
 #ifdef RT_STREAM
     TrackSnapshot snap = stream.snapshot();
-    std::vector<MeshVertex> tv, kv;
-    meshTerrainOnly(snap, tv);
+    std::vector<MeshVertex> kv;
     meshTrackOnly(snap, kv);
-    // terrain front (sync)
-    triCountT = (uint32_t)(tv.size() / 3);
-    size_t tb = tv.size() * sizeof(MeshVertex);
-    vertexBufferT = growVertexBuffer(device, vertexBufferT, tb);
-    if (tb) memcpy([vertexBufferT contents], tv.data(), tb);
-    { id<MTLBuffer> sc = asScratch; accelT = buildPrimAS(device, queue, vertexBufferT, triCountT, &sc, true, nullptr); asScratch = sc; }
+    // chunks first (sync), then the track AS + instance AS
+    float3 tc = stream.pos(stream.trainU);
+    std::vector<float3> cps = snapshotTrackPts(snap);
+    recentreChunks(tc.x, tc.z, TG_RING, cps, true);
     buildTrackAS(kv);              // builds track AS + instance AS
 #else
     buildBenchScene(false);
@@ -393,34 +580,17 @@ void Renderer::forceSyncRebuild() {
 // grid so the terrain is stable between rebuilds; the track is clipped to the
 // ring so no track floats past the terrain edge.
 void Renderer::buildBenchScene(bool async) {
-    // Don't recentre the ring while a previous terrain rebuild is still in flight.
+    // Don't recentre the ring while a previous chunk rebuild is still in flight.
     if (async && buildInFlight) return;
     float3 c = coaster.pos(rideU);
     float cx = floorf(c.x / BENCH_CELL) * BENCH_CELL;
     float cz = floorf(c.z / BENCH_CELL) * BENCH_CELL;
     lastRingCx = cx; lastRingCz = cz;
-    int N = (int)(2.0f * BENCH_RING / BENCH_CELL);
     float ru = rideU;
-    if (async) {
-        // Mesh ONLY the big terrain ring on a worker thread (track/train rebuild
-        // separately + cheaply each frame). trackPts/coaster are immutable.
-        buildInFlight = true;
-        buildDone.store(false);
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            Terrain t = buildTerrain(cx, cz, N, BENCH_CELL, trackPts.data(), (int)trackPts.size());
-            bgVerts.swap(t.verts);
-            rebuildTerrainAsync(bgVerts);
-        });
-    } else {
-        // init: terrain prim-AS (sync) + track prim-AS + instance-AS.
-        scratchVerts.clear();
-        Terrain t = buildTerrain(cx, cz, N, BENCH_CELL, trackPts.data(), (int)trackPts.size());
-        scratchVerts.swap(t.verts);
-        triCountT = (uint32_t)(scratchVerts.size() / 3);
-        size_t tb = scratchVerts.size() * sizeof(MeshVertex);
-        vertexBufferT = growVertexBuffer(device, vertexBufferT, tb);
-        if (tb) memcpy([vertexBufferT contents], scratchVerts.data(), tb);
-        { id<MTLBuffer> sc = asScratch; accelT = buildPrimAS(device, queue, vertexBufferT, triCountT, &sc, true, nullptr); asScratch = sc; }
+    // INCREMENTAL: only the chunks that newly entered the ring are meshed + built.
+    recentreChunks(cx, cz, BENCH_RING, trackPts, !async);
+    if (!async) {
+        // init: also build the track AS + instance AS once chunks are in.
         scratchVerts.clear();
         buildCoaster(coaster, scratchVerts, nRender, vec3(cx, 0, cz), BENCH_RING - 6.0f, ru);
         buildTrackAS(scratchVerts);   // track prim-AS + instance-AS
@@ -465,23 +635,18 @@ void Renderer::rideAdvance(float dt) {
         meshTrackOnly(stream.snapshot(), scratchVerts);
         buildTrackAS(scratchVerts);                // sync, cheap; refreshes the instance AS
     }
-    // --- terrain: re-mesh the big ring ONLY when its snapped centre has moved a good
-    // fraction of the ring (worker thread, double-buffered). Firing it every window
-    // slide saturated CPU/GPU and tanked steady-state fps; the ring is large vs. the
-    // per-rebuild movement so the terrain stays valid under the train between builds. ---
+    // --- terrain: INCREMENTAL re-centre. Because only the new edge chunks are meshed +
+    // built (the rest are kept), the ring can re-centre as soon as the camera has moved
+    // ~one chunk -> the terrain edge stays well ahead of the train with no whole-ring
+    // rebuild hitch. The chunk build runs on a worker (one batched GPU submit). ---
     float3 tc = stream.pos(stream.trainU);
     float ccx = floorf(tc.x / TG_CELL) * TG_CELL, ccz = floorf(tc.z / TG_CELL) * TG_CELL;
     if (!buildInFlight &&
-        (fabsf(ccx - lastStreamCx) > TG_RING * 0.18f ||
-         fabsf(ccz - lastStreamCz) > TG_RING * 0.18f)) {
+        (fabsf(ccx - lastStreamCx) > (float)CHUNK_M ||
+         fabsf(ccz - lastStreamCz) > (float)CHUNK_M)) {
         lastStreamCx = ccx; lastStreamCz = ccz;
-        buildInFlight = true;
-        buildDone.store(false);
-        TrackSnapshot snap = stream.snapshot();
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            meshTerrainOnly(snap, bgVerts);        // ~100ms terrain build, off the frame thread
-            rebuildTerrainAsync(bgVerts);
-        });
+        std::vector<float3> cps = snapshotTrackPts(stream.snapshot());
+        recentreChunks(ccx, ccz, TG_RING, cps, false);
     }
     return;
 #else
@@ -538,11 +703,12 @@ void Renderer::rideAdvance(float dt) {
                      vec3(lastRingCx, 0, lastRingCz), BENCH_RING - 6.0f, rideU);
         buildTrackAS(scratchVerts);
     }
-    // --- terrain: re-mesh the big ring only on a significant camera move (async).
+    // --- terrain: INCREMENTAL re-centre once the camera has moved ~one chunk (only the
+    // new edge chunks are meshed + built; the rest are kept) -> no whole-ring rebuild.
     {
         float3 cc = coaster.pos(rideU);
-        if (fabsf(cc.x - lastRingCx) > BENCH_RING * 0.15f ||
-            fabsf(cc.z - lastRingCz) > BENCH_RING * 0.15f)
+        if (fabsf(cc.x - lastRingCx) > (float)CHUNK_M ||
+            fabsf(cc.z - lastRingCz) > (float)CHUNK_M)
             buildBenchScene(true);
     }
 
@@ -606,11 +772,14 @@ void Renderer::render(id<MTLTexture> target, uint32_t w, uint32_t h) {
     [enc setTexture:target atIndex:0];
     [enc setBuffer:camBuffer offset:0 atIndex:0];
     [enc setAccelerationStructure:accel atBufferIndex:1];
-    [enc setBuffer:vertexBufferT offset:0 atIndex:2];   // terrain verts (instance 0)
-    [enc setBuffer:vertexBufferK offset:0 atIndex:3];   // track+train verts (instance 1)
-    // the instance AS references the child prim-AS; make them resident for the trace.
-    if (accelT) [enc useResource:accelT usage:MTLResourceUsageRead];
-    if (accelK) [enc useResource:accelK usage:MTLResourceUsageRead];
+    [enc setBuffer:vertexBufferT offset:0 atIndex:2];     // terrain chunk verts (shared)
+    [enc setBuffer:vertexBufferK offset:0 atIndex:3];     // track+train verts (last instance)
+    [enc setBuffer:chunkVertOffBuf offset:0 atIndex:4];   // per-instance base offset in vertsT
+    [enc setBuffer:trackInstBuf offset:0 atIndex:5];      // track instance id (= #chunks)
+    // the instance AS references the child prim-AS; make them all resident for the trace
+    // in ONE batched call (instAS already lists chunks... + track, kept fresh by buildInstanceAS).
+    if (!instAS.empty())
+        [enc useResources:instAS.data() count:instAS.size() usage:MTLResourceUsageRead];
 
     MTLSize tg = MTLSizeMake(8, 8, 1);
     MTLSize grid = MTLSizeMake((w + 7) / 8 * 8, (h + 7) / 8 * 8, 1);
@@ -708,8 +877,9 @@ static int runBench(Renderer& r) {
     // wildly overstating the steady-state rebuild load. Realtime models the actual
     // ride pace -> honest steady-state fps. Set BENCH_REALTIME=1 to enable.
     bool realtime = getenv("BENCH_REALTIME") != nullptr;
-    r.render(tex, W, H); // warm-up
+    for (int i = 0; i < 8; i++) r.render(tex, W, H); // warm-up (let the GPU clock ramp)
     double worst = 0.0; int over = 0;          // worst frame ms + frames slower than 1/120
+    std::vector<double> fmsAll; fmsAll.reserve(N);
     double t0 = CACurrentMediaTime(), prev = t0;
     for (int i = 0; i < N; i++) {
         r.rideMode = true;
@@ -721,12 +891,18 @@ static int runBench(Renderer& r) {
         double fa = CACurrentMediaTime();
         r.render(tex, W, H);
         double fms = (CACurrentMediaTime() - fa) * 1000.0;
+        fmsAll.push_back(fms);
         if (fms > worst) worst = fms;
         if (fms > 1000.0 / 120.0) over++;
     }
     double dt = CACurrentMediaTime() - t0;
-    fprintf(stderr, "bench: %d frames in %.3fs -> %.1f fps (%.2f ms/frame) worst=%.1fms over120=%d/%d at %ux%u\n",
-            N, dt, N / dt, dt / N * 1000.0, worst, over, N, W, H);
+    // Steady-state = the MEDIAN frame (robust to the occasional re-centre transient);
+    // p95 shows the worst the transients reach. The mean fps is feedback-sensitive in
+    // realtime mode, so the median is the honest steady-state number.
+    std::vector<double> s = fmsAll; std::sort(s.begin(), s.end());
+    double med = s[s.size()/2], p95 = s[(size_t)(s.size()*0.95)];
+    fprintf(stderr, "bench: %d frames in %.3fs -> mean %.1f fps (%.2f ms) | STEADY(median) %.1f fps (%.2f ms) | p95=%.1fms worst=%.1fms over120=%d/%d at %ux%u\n",
+            N, dt, N / dt, dt / N * 1000.0, 1000.0/med, med, p95, worst, over, N, W, H);
     return 0;
 }
 

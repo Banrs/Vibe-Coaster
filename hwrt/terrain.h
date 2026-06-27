@@ -355,3 +355,180 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
     }
     return t;
 }
+
+// ===========================================================================
+// INCREMENTAL CHUNK MESHER
+// ---------------------------------------------------------------------------
+// Mesh a SINGLE fixed-size terrain chunk keyed to ABSOLUTE world cell coords, so
+// the ring can re-mesh only the edge strips that scrolled into view (and drop the
+// ones that left) instead of re-meshing the whole multi-million-tri ring on every
+// re-centre. A chunk covers cells [cellX0, cellX0+M) x [cellZ0, cellZ0+M) at 1m.
+//
+// SEAM HANDLING: heights are sampled over an (M+2)x(M+2) grid with a 1-cell border
+// of padding, but tops/walls/water/trees are emitted ONLY for the inner MxM cells.
+// The padding gives the border cells their TRUE neighbour heights (which live in the
+// adjacent chunk) so side walls at chunk boundaries are emitted correctly. Wall
+// ownership is unambiguous: a wall between cell A (higher) and neighbour B (lower)
+// is emitted only by A's chunk (B's chunk sees nb>=h and skips it) -> every seam
+// wall appears exactly once, no holes, no double walls. Because heights come from
+// the deterministic terrainH() and trees are world-cell-keyed, a chunk meshes
+// identically no matter which ring re-centre brought it into view -> no popping.
+static void buildTerrainChunk(std::vector<MeshVertex>& out,
+                              int cellX0, int cellZ0, int M, float cell,
+                              const float3* cps, int ncps) {
+    const int P = M + 2;                       // padded grid (1-cell border each side)
+    float ox = cellX0 * cell, oz = cellZ0 * cell;
+    auto worldX = [&](int x) { return ox + x * cell; };   // x in [0,M] indexes inner-cell world
+    auto worldZ = [&](int z) { return oz + z * cell; };
+
+    // Sample padded heights: padded index (px,pz) maps to inner cell (px-1, pz-1).
+    std::vector<int> H(P * P);
+    {
+        int* Hp = H.data();
+        dispatch_apply((size_t)P, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(size_t pz) {
+            for (int px = 0; px < P; px++) {
+                float wx = ox + (px - 1) * cell + cell * 0.5f;
+                float wz = oz + ((int)pz - 1) * cell + cell * 0.5f;
+                Hp[(int)pz * P + px] = (int)floorf((float)terrainH(wx, wz) / cell + 0.5f);
+            }
+        });
+    }
+    // h_at takes INNER cell coords (0..M-1 valid; -1 and M reach into the padding).
+    auto h_at = [&](int x, int z) -> int { return H[(z + 1) * P + (x + 1)]; };
+
+    int waterLvl = (int)floorf(WATER_Y / cell + 0.5f);
+    float3 grass = vec3(0.22f, 0.42f, 0.15f);
+    float3 grassHi = vec3(0.24f, 0.44f, 0.16f);
+    float3 dirt  = vec3(0.36f, 0.25f, 0.15f);
+    float3 rock  = vec3(0.40f, 0.39f, 0.40f);
+    float3 snow  = vec3(0.90f, 0.92f, 0.96f);
+    float3 sand  = vec3(0.76f, 0.69f, 0.46f);
+    float3 water = vec3(0.16f, 0.34f, 0.46f);
+    int snowLvl = (int)(200.0f / cell);
+    int rockLvl = (int)(150.0f / cell);
+
+    // albedo class per inner cell (matches buildTerrain). x^z grass dither is keyed to
+    // ABSOLUTE cell coords so it doesn't flip across chunk seams.
+    auto albClassAt = [&](int x, int z) -> int {
+        int h = h_at(x, z);
+        int slope = std::abs(h - h_at(x-1,z)) + std::abs(h - h_at(x+1,z)) +
+                    std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
+        if      (h <= waterLvl + 1)          return 0;
+        else if (h >= snowLvl)               return 1;
+        else if (h >= rockLvl || slope >= 6) return 2;
+        else return (((cellX0 + x) ^ (cellZ0 + z)) & 1) ? 3 : 4;
+    };
+    float3 classAlb[5] = { sand, snow, rock, grass, grassHi };
+
+    // --- trees (deterministic, world-cell-keyed, track-cleared) — same rule as buildTerrain
+    for (int z = 0; z < M; z++)
+        for (int x = 0; x < M; x++) {
+            int h = h_at(x, z);
+            int slope = std::abs(h - h_at(x-1,z)) + std::abs(h - h_at(x+1,z)) +
+                        std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
+            int ac = albClassAt(x, z);
+            bool isGrass = (ac == 3 || ac == 4);
+            if (cps && isGrass && h < snowLvl && slope < 4) {
+                float wcx = worldX(x) + cell * 0.5f, wcz = worldZ(z) + cell * 0.5f;
+                float topY = h * cell;
+                int ax = cellX0 + x, az = cellZ0 + z;
+                float dens = 0.07f * (cell / 6.0f) * (cell / 6.0f);
+                if (hashf(ax * 7 + 1, az * 7 + 3) < dens) {
+                    bool clear = true;
+                    for (int k = 0; k < ncps; k++) {
+                        float dx = cps[k].x - wcx, dz = cps[k].z - wcz;
+                        if (dx*dx + dz*dz < 49.0f) { clear = false; break; }
+                    }
+                    if (clear) {
+                        float r2 = hashf(ax * 3 + 5, az * 9 + 2);
+                        int type = (h > rockLvl - 6) ? 2 : (r2 < 0.30f ? 1 : 0);
+                        float s  = 1.3f + hashf(ax * 5 + 7, az * 5 + 1) * 0.9f;
+                        pushTree(out, wcx, topY, wcz, type, s);
+                    }
+                }
+            }
+        }
+
+    // --- GREEDY top faces over the inner MxM cells ---
+    std::vector<char> done(M * M, 0);
+    for (int z = 0; z < M; z++)
+        for (int x = 0; x < M; x++) {
+            if (done[z * M + x]) continue;
+            int h = h_at(x, z), ac = albClassAt(x, z);
+            int w = 1;
+            while (x + w < M && !done[z * M + x + w] &&
+                   h_at(x + w, z) == h && albClassAt(x + w, z) == ac) w++;
+            int d = 1;
+            for (; z + d < M; d++) {
+                bool ok = true;
+                for (int k = 0; k < w; k++)
+                    if (done[(z + d) * M + x + k] || h_at(x + k, z + d) != h ||
+                        albClassAt(x + k, z + d) != ac) { ok = false; break; }
+                if (!ok) break;
+            }
+            for (int dz = 0; dz < d; dz++)
+                for (int dx = 0; dx < w; dx++) done[(z + dz) * M + x + dx] = 1;
+            float topY = h * cell;
+            float x0 = worldX(x), x1 = worldX(x + w), z0 = worldZ(z), z1 = worldZ(z + d);
+            pushQuad(out, vec3(x0, topY, z0), vec3(x1, topY, z0),
+                     vec3(x1, topY, z1), vec3(x0, topY, z1), vec3(0, 1, 0), classAlb[ac]);
+        }
+
+    // --- GREEDY side walls (neighbours may be in the padding -> seam walls correct) ---
+    auto wallX = [&](int sign) {
+        for (int x = 0; x < M; x++)
+            for (int z = 0; z < M; ) {
+                int h = h_at(x, z), nb = h_at(x + sign, z);
+                if (nb >= h) { z++; continue; }
+                int run = 1;
+                while (z + run < M && h_at(x, z + run) == h && h_at(x + sign, z + run) == nb) run++;
+                float y0 = nb * cell, y1 = h * cell;
+                float zz0 = worldZ(z), zz1 = worldZ(z + run);
+                float wx = (sign < 0) ? worldX(x) : worldX(x + 1);
+                if (sign < 0)
+                    pushQuad(out, vec3(wx,y0,zz0), vec3(wx,y0,zz1), vec3(wx,y1,zz1), vec3(wx,y1,zz0), vec3(-1,0,0), dirt);
+                else
+                    pushQuad(out, vec3(wx,y0,zz1), vec3(wx,y0,zz0), vec3(wx,y1,zz0), vec3(wx,y1,zz1), vec3(1,0,0), dirt);
+                z += run;
+            }
+    };
+    auto wallZ = [&](int sign) {
+        for (int z = 0; z < M; z++)
+            for (int x = 0; x < M; ) {
+                int h = h_at(x, z), nb = h_at(x, z + sign);
+                if (nb >= h) { x++; continue; }
+                int run = 1;
+                while (x + run < M && h_at(x + run, z) == h && h_at(x + run, z + sign) == nb) run++;
+                float y0 = nb * cell, y1 = h * cell;
+                float xx0 = worldX(x), xx1 = worldX(x + run);
+                float wz = (sign < 0) ? worldZ(z) : worldZ(z + 1);
+                if (sign < 0)
+                    pushQuad(out, vec3(xx1,y0,wz), vec3(xx0,y0,wz), vec3(xx0,y1,wz), vec3(xx1,y1,wz), vec3(0,0,-1), dirt);
+                else
+                    pushQuad(out, vec3(xx0,y0,wz), vec3(xx1,y0,wz), vec3(xx1,y1,wz), vec3(xx0,y1,wz), vec3(0,0,1), dirt);
+                x += run;
+            }
+    };
+    wallX(-1); wallX(+1); wallZ(-1); wallZ(+1);
+
+    // --- GREEDY water surface over submerged inner cells ---
+    std::fill(done.begin(), done.end(), 0);
+    for (int z = 0; z < M; z++)
+        for (int x = 0; x < M; x++) {
+            if (done[z * M + x] || h_at(x, z) >= waterLvl) continue;
+            int w = 1;
+            while (x + w < M && !done[z * M + x + w] && h_at(x + w, z) < waterLvl) w++;
+            int d = 1;
+            for (; z + d < M; d++) {
+                bool ok = true;
+                for (int k = 0; k < w; k++)
+                    if (done[(z + d) * M + x + k] || h_at(x + k, z + d) >= waterLvl) { ok = false; break; }
+                if (!ok) break;
+            }
+            for (int dz = 0; dz < d; dz++)
+                for (int dx = 0; dx < w; dx++) done[(z + dz) * M + x + dx] = 1;
+            float x0 = worldX(x), x1 = worldX(x + w), z0 = worldZ(z), z1 = worldZ(z + d);
+            pushQuad(out, vec3(x0, WATER_Y, z0), vec3(x1, WATER_Y, z0),
+                     vec3(x1, WATER_Y, z1), vec3(x0, WATER_Y, z1), vec3(0, 1, 0), water);
+        }
+}

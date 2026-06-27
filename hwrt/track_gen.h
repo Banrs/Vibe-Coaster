@@ -17,7 +17,8 @@
 // this same radius so no track ever floats beyond the terrain edge. 1m blocks
 // (CELL=1) keep true Minecraft scale on all sides.
 static constexpr float TG_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-static constexpr float TG_RING = 400.0f;   // half-extent meshed around the train
+static constexpr float TG_RING = 1200.0f;  // half-extent meshed around the train
+                                           // (incremental chunked meshing keeps re-centring cheap)
 
 // ---------------------------------------------------------------------------
 // A self-contained, copyable snapshot of the spline window the meshing reads:
@@ -404,6 +405,19 @@ static void meshSnapshot(const TrackSnapshot& s, std::vector<MeshVertex>& out) {
 static void meshTerrainOnly(const TrackSnapshot& s, std::vector<MeshVertex>& out) {
     out.clear();
     buildTerrainRingT(s, out);
+}
+
+// The track control points used to keep trees clear of the coaster, for the chunked
+// terrain mesher (same window the ring mesher uses).
+static std::vector<float3> snapshotTrackPts(const TrackSnapshot& s) {
+    std::vector<float3> pts;
+    int lastU = (int)s.trainU + s.buildAhead;
+    if (lastU > s.npts() - 1) lastU = s.npts() - 1;
+    for (int i = s.winLo; i <= lastU; i++) {
+        Vector3 p = s.cp[i];
+        pts.push_back(vec3(p.x, p.y, p.z));
+    }
+    return pts;
 }
 // Track + supports + train only (instance 1 — tiny, rebuilt every few frames).
 static void meshTrackOnly(const TrackSnapshot& s, std::vector<MeshVertex>& out) {

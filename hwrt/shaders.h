@@ -205,19 +205,24 @@ struct Hit {
     int    mat;
 };
 
-// Two-instance AS: instance 0 = terrain (vertsT), instance 1 = track+train (vertsK).
-// Splitting them lets the big terrain AS rebuild rarely (only on ring-centre moves)
-// while the tiny track/train AS rebuilds every few frames -> steady-state fps.
+// Multi-instance AS: instances [0, trackInst) are terrain CHUNKS (one prim-AS each,
+// all sharing the single vertsT buffer at a per-instance base offset), and instance
+// `trackInst` is the track+train (vertsK). Chunking the static terrain lets the ring
+// re-mesh + build ONLY the edge strips that scrolled into view on a re-centre (instead
+// of rebuilding the whole multi-million-tri terrain), removing the big GPU AS hitch.
+// `vertOff[i]` is the first-vertex offset of instance i's chunk inside vertsT.
 static Hit traceRay(ray r, instance_acceleration_structure accel,
-                    device const Vertex* vertsT, device const Vertex* vertsK) {
+                    device const Vertex* vertsT, device const Vertex* vertsK,
+                    device const uint* vertOff, uint trackInst) {
     intersector<triangle_data, instancing> it;
     it.assume_geometry_type(geometry_type::triangle);
     intersection_result<triangle_data, instancing> h = it.intersect(r, accel);
     Hit out;
     out.valid = (h.type != intersection_type::none);
     if (out.valid) {
-        device const Vertex* verts = (h.instance_id == 0) ? vertsT : vertsK;
-        Vertex v0 = verts[h.primitive_id * 3 + 0];
+        Vertex v0;
+        if (h.instance_id == trackInst) v0 = vertsK[h.primitive_id * 3 + 0];
+        else                            v0 = vertsT[vertOff[h.instance_id] + h.primitive_id * 3 + 0];
         out.n      = normalize(float3(v0.normal));
         out.albedo = float3(v0.albedo);
         out.dist   = h.distance;
@@ -322,8 +327,10 @@ static float3 shadeSurface(float3 pos, float3 n, float3 albedo, int mat,
 kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
                         constant CameraUniforms& cam [[buffer(0)]],
                         instance_acceleration_structure accel [[buffer(1)]],
-                        device const Vertex* vertsT [[buffer(2)]],   // terrain (instance 0)
-                        device const Vertex* vertsK [[buffer(3)]],   // track+train (instance 1)
+                        device const Vertex* vertsT [[buffer(2)]],   // terrain chunks (shared)
+                        device const Vertex* vertsK [[buffer(3)]],   // track+train (last instance)
+                        device const uint*   vertOff [[buffer(4)]],  // per-instance base offset in vertsT
+                        constant uint&       trackInst [[buffer(5)]],// instance id of the track
                         uint2 gid [[thread_position_in_grid]])
 {
     if (gid.x >= cam.width || gid.y >= cam.height) return;
@@ -350,7 +357,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
 
     float3 L = normalize(cam.sunDir);
     float3 V = -dir;
-    Hit hit = traceRay(r, accel, vertsT, vertsK);
+    Hit hit = traceRay(r, accel, vertsT, vertsK, vertOff, trackInst);
 
     float3 color;
     if (!hit.valid) {
@@ -379,7 +386,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             gr.direction = sdir;
             gr.min_distance = 0.002;
             gr.max_distance = 60.0;             // local occlusion / colour bleed
-            Hit gh = traceRay(gr, accel, vertsT, vertsK);
+            Hit gh = traceRay(gr, accel, vertsT, vertsK, vertOff, trackInst);
             if (gh.valid) {
                 // near hits occlude strongly, distant ones fade out (range AO)
                 aoSum += 1.0 - smoothstep(2.0, 28.0, gh.dist);
@@ -410,7 +417,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             rr.direction = refl;
             rr.min_distance = 0.002;
             rr.max_distance = 10000.0;
-            Hit rh = traceRay(rr, accel, vertsT, vertsK);
+            Hit rh = traceRay(rr, accel, vertsT, vertsK, vertOff, trackInst);
             float3 reflCol = rh.valid
                 ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, L, -refl, rng, accel, 1)
                 : sampleSky(rr.origin, refl, L, t);

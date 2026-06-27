@@ -1089,6 +1089,7 @@ int main(int argc, char **argv) {
     bool rasterShot = (argc > 1 && TextIsEqual(argv[1], "--rastershot"));   // capture the RASTER game view (not the path tracer)
     bool orbitShot  = (argc > 1 && TextIsEqual(argv[1], "--orbitshot"));    // DEBUG: aerial 3/4 view to inspect platform/helix/support structures
     bool waterShot  = (argc > 1 && TextIsEqual(argv[1], "--watershot"));    // DEBUG: grazing view over the lake to inspect the fresnel water
+    bool cobraShot  = (argc > 1 && TextIsEqual(argv[1], "--cobrashot"));     // forces a cobra-roll circuit, captures the train at the peak-g bottom hood
     bool shotMode = framesMode || rasterShot || orbitShot || waterShot || (argc > 1 && TextIsEqual(argv[1], "--shot"));
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));   // TEMP: verify live RT
 
@@ -1249,11 +1250,16 @@ int main(int argc, char **argv) {
         printf("[gtest] forcing element=%s (%d) speed=%s\n",
                argv[2], gForceElem, gForceSpeed > 0 ? argv[3] : "natural");
     }
+    // --cobrashot : ride the NATURAL track LIVE (so the cobra builds with its proper
+    // lead-in) and capture the train at the cobra's peak-g bottom hood with an
+    // external 3/4 camera. (Forcing gForceElem=M_COBRA makes the generator emit only
+    // approach/exit segments — no actual inversion — so we watch the real track tag.)
     // --gtrace : ride a long full circuit (visible), record g per frame, then render a
     // full-ride g-FORCE GRAPH to gtrace.png so the spikes/jerks/elements are visible.
     bool gtraceMode = (argc > 1 && TextIsEqual(argv[1], "--gtrace"));
     if (gtraceMode) { gForceSpeed = -1.0f; benchMode = true; }   // -1 = log+graph sentinel (no speed pin)
-    g_rng = (shotMode || benchMode || rttestMode) ? 1337u : ((uint32_t)time(NULL) | 1u);
+    g_rng = (shotMode || benchMode || rttestMode || cobraShot) ? 1337u : ((uint32_t)time(NULL) | 1u);
+    if (cobraShot && argc > 2) g_rng = (uint32_t)strtoul(argv[2], nullptr, 10);   // --cobrashot <seed>: pick a layout that contains a cobra
 
     SetTraceLogLevel(LOG_WARNING);
     // MSAA 4x anti-aliases the crisp rasterised coaster (its thin steel rails /
@@ -1337,13 +1343,15 @@ int main(int argc, char **argv) {
     double gEvAcc[M_COUNT] = {0};                            // signed-vertical sum (to spot true 0g elements)
     double gEEdgePk[M_COUNT] = {0}; double gEIntPk[M_COUNT] = {0}; // peak g at element EDGES vs INTERIOR (locate join spikes)
     bool  paused = false;
-    bool  dispatched = (shotMode || benchMode || rttestMode);   // wait at station until SPACE
+    bool  dispatched = (shotMode || benchMode || rttestMode || cobraShot);   // wait at station until SPACE
     int   camMode = 0;                     // 0 fp, 1 chase, 2 side (2.5D)
     Vector3 camSmooth = { 0, 10, -10 };
     bool  freeLook = false;                // F: unlock the mouse to look around in any view
     float flYaw = 0, flPitch = 0;          // free-look offsets from the view's default aim
     float fov = 78;
     int   frame = 0;
+    bool  cobraArmed = false;       // --cobrashot: peak-g capture latched for THIS frame
+    float cobraPrevG = 1.0f;        // previous frame's vertical g (rising-edge detector)
 
     Camera3D cam{};
     cam.up = { 0, 1, 0 };
@@ -1365,8 +1373,8 @@ int main(int argc, char **argv) {
     };
 
     // ---- on-foot character: walk the platform, board/exit, re-board at stations
-    bool    onFoot    = !(shotMode || benchMode || rttestMode);   // start by walking the launch hall
-    bool    atStation = !(shotMode || benchMode || rttestMode);   // berthed at the launch platform
+    bool    onFoot    = !(shotMode || benchMode || rttestMode || cobraShot);   // start by walking the launch hall
+    bool    atStation = !(shotMode || benchMode || rttestMode || cobraShot);   // berthed at the launch platform
     bool    midStation = false;                     // berthed at a mid-ride station (not the launch hall)
     Vector3 curPlatPos = trk.startPos;              // platform the train is parked at
     float   curPlatYaw = trk.startYaw;
@@ -1405,7 +1413,7 @@ int main(int argc, char **argv) {
         // data (track, height cache, carve maps) is mutated this frame — the worker
         // has been reading exactly that data, lock-free, since it was dispatched.
         gTerrainMesh.finish();
-        float rawDt = (shotMode || benchMode || rttestMode) ? (1.0f / 60.0f) : GetFrameTime();
+        float rawDt = (shotMode || benchMode || rttestMode || cobraShot) ? (1.0f / 60.0f) : GetFrameTime();
         float dt = fminf(rawDt, 0.05f);                  // cap the physics step so a hitch can't explode the sim
         // when the real frame time exceeds the cap the world runs in slow-motion, so
         // the km/h readout no longer matches real-time motion — flag it for a moment.
@@ -1496,7 +1504,8 @@ int main(int argc, char **argv) {
         }
 
         // SPACE launches the seated train from the platform, then doubles as boost
-        if (!dispatched && !onFoot && atStation && !paused && IsKeyPressed(KEY_SPACE)) {
+        if ((cobraShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
+            !dispatched && atStation && !paused) {
             dispatched = true; atStation = false; midStation = false; v = 12.0f; simTime = 0;
             sinceStation = 0;                                              // the launch track does the surge
         }
@@ -1525,6 +1534,15 @@ int main(int argc, char **argv) {
             else            boost = fminf(100, boost + 4.0f * dt);
             if (braking)    acc -= 16.0f;
             v += acc * dt;
+
+            // --cobrashot: cap the entry speed near the cobra so the bottom hood pulls a
+            // realistic ~3-4g (the launch otherwise rams it through at 10g+ for a messy shot).
+            if (cobraShot) {
+                bool cobraNear = false;
+                for (float la = -1.0f; la <= 10.0f; la += 1.0f)
+                    if (trk.tagAt(u + la) == M_COBRA) { cobraNear = true; break; }
+                if (cobraNear && v > 24.0f) v = 24.0f;
+            }
 
             // hydraulic launch: a strong Kingda-Ka-style surge on the launch track AND
             // continuing UP the launched top-hat, so the train powers over even the
@@ -1762,6 +1780,25 @@ int main(int argc, char **argv) {
             cam.target   = Vector3Add(wctr, Vector3Scale(dir, 34.0f));
             cam.up       = Vector3{ 0, 1, 0 };
             cam.fovy     = 64;
+        }
+        if (cobraShot) {
+            // Capture at the cobra's peak g (bottom hood). Use the SMOOTHED g (gVert), not
+            // the raw per-frame curvature, which spikes hard at element joins. Require the
+            // lead car to be ON a cobra point and upright (the hood bottom, not the inverted
+            // top), then latch the first rising-edge local peak of that smoothed g.
+            bool onCobra = trk.tagAt(u) == M_COBRA;
+            bool peakHood = onCobra && gVert >= 2.0f && gVert < cobraPrevG && N.y > 0.35f;
+            if (frame > 120 && peakHood) cobraArmed = true;
+            if (frame >= 4000) cobraArmed = true;        // fallback: never hang
+            cobraPrevG = gVert;
+            // external 3/4 hero shot: pulled back to the side + above so the cobra's twin
+            // hoods read in profile above the train at the bottom hood.
+            Vector3 side = Vector3Normalize(Vector3CrossProduct(Th, Vector3{ 0, 1, 0 }));
+            cam.position = Vector3Add(P, Vector3Add(Vector3Add(Vector3Scale(side, 26.0f),
+                                       Vector3Scale(Th, -10.0f)), Vector3{ 0, 12.0f, 0 }));
+            cam.target   = Vector3Add(P, Vector3{ 0, 8.0f, 0 });   // aim up at the hoods
+            cam.up       = Vector3{ 0, 1, 0 };
+            cam.fovy     = 60;
         }
 
         // ------------------------------------------------------- render ----
@@ -2358,7 +2395,8 @@ int main(int argc, char **argv) {
                     Color fin = mixc(trk.trainAccent, SKY, fog);
                     drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.38f, 0.54f, rl, sc);     // box-beam spine
                     if ((j & 1) == 0)                                                       // studded LSM stator fins
-                        drawCubeTex(T_IRON, Vector3{ 0, -0.14f, 0 }, 0.62f, 0.22f, rl * 0.6f, fin);
+                        // sunk so its top clears the spine top (-0.03) — no coplanar z-fight
+                        drawCubeTex(T_IRON, Vector3{ 0, -0.18f, 0 }, 0.62f, 0.22f, rl * 0.6f, fin);
                 } else if (fog < 0.85f) {
                     // modern B&M/Intamin read: a continuous dark structural box-beam
                     // tube runs the whole track with the rails standing off it. The
@@ -2370,7 +2408,9 @@ int main(int argc, char **argv) {
                 drawCubeTex(T_IRON, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);   // running rails
                 drawCubeTex(T_IRON, Vector3{  0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
                 if ((j & 1) == 0)
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.13f, 0 }, 1.35f, 0.14f, 0.45f, tie); // cross-tie
+                    // sunk so its top (-0.10) clears the rail bottom (-0.09) and spine
+                    // top (-0.07): reads as a cross-member beneath the rails, no z-fight
+                    drawCubeTex(T_IRON, Vector3{ 0, -0.17f, 0 }, 1.35f, 0.14f, 0.45f, tie); // cross-tie
                 if (chain)                                                            // lift chain, centred between rails
                     drawCubeTex(T_IRON, Vector3{ 0, -0.05f, 0 }, 0.14f, 0.14f, rl, mixc(CHAINC, SKY, fog));
                 popFrame();
@@ -2775,7 +2815,7 @@ int main(int argc, char **argv) {
         // Accumulates many samples per pixel into an HDR buffer, then tonemaps.
         // Only run the expensive trace on the screenshot frames themselves (we grab
         // the capture later this same frame) — otherwise the loop would crawl.
-        if (shotFrame && !rasterShot && !orbitShot && !waterShot) {
+        if (shotFrame && !rasterShot && !orbitShot && !waterShot && !cobraShot) {
             int rw = GetRenderWidth(), rh = GetRenderHeight();
             if (gPT.W != rw || gPT.H != rh) { gPT.initBuffers(rw, rh); }
 
@@ -3143,6 +3183,13 @@ int main(int argc, char **argv) {
             printf("rt fps %d  -> %s\n", GetFPS(), name);
             fflush(stdout);
             if (frame == 560) lastShot = true;
+        }
+        if (cobraShot && cobraArmed) {                      // peak-g cobra hero frame
+            rlDrawRenderBatchActive();
+            TakeScreenshot("cobra_peakg.png");
+            printf("cobra peak-g  g=%.1f  -> cobra_peakg.png\n", cobraPrevG);
+            fflush(stdout);
+            lastShot = true;
         }
 
         EndDrawing();

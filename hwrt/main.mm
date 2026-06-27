@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <string>
 #include <ctime>
+#include <atomic>
 
 // Directory the executable lives in, resolved from argv[0] in main(). Asset
 // files (track.txt) are loaded relative to this so the app works no matter what
@@ -41,9 +42,22 @@ struct Renderer {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     id<MTLComputePipelineState> tracePSO;
-    id<MTLBuffer> vertexBuffer;
     id<MTLBuffer> camBuffer;
-    id<MTLAccelerationStructure> accel;
+
+    // --- Double-buffered geometry + AS (async rebuild to hide the rebuild stall) ---
+    // The AS rebuild (139MB vertex memcpy + GPU build) used to run synchronously on
+    // the frame's critical path, spiking one frame to 15-20ms every chunk boundary.
+    // Now we ping-pong two vertex buffers + two AS slots: rendering always uses the
+    // FRONT pair while a new mesh is uploaded+built into the BACK pair WITHOUT
+    // waiting; we swap only once the GPU signals the back build is done.
+    id<MTLBuffer> vertexBuffer;                 // FRONT verts (rendered)
+    id<MTLAccelerationStructure> accel;         // FRONT AS (rendered)
+    id<MTLBuffer> vertexBufferBack;             // BACK verts (being built)
+    id<MTLAccelerationStructure> accelBack;     // BACK AS (being built)
+    id<MTLBuffer> asScratch;                    // persistent scratch (grown on demand)
+    bool  buildInFlight = false;                // a back build is running on the GPU
+    std::atomic<bool> buildDone{false};         // GPU completion handler flips this true
+    uint32_t triCountBack = 0;                  // tri count of the in-flight back build
     uint32_t triCount = 0;
     uint32_t frameIdx = 0;    // animates cloud drift / sampling
 
@@ -83,13 +97,18 @@ struct Renderer {
     std::vector<float3> trackPts;          // all track control points (for trees)
     std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
     float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
-    void buildBenchScene();                // (re)mesh the 1m ring around rideU
+    void buildBenchScene(bool async);      // (re)mesh the 1m ring around rideU
 #endif
 
     void init();
     void rideAdvance(float dt);              // step the ride camera one frame
-    void buildAccelerationStructure();       // (re)build the AS from current vertexBuffer/triCount
-    void uploadVerts(const std::vector<MeshVertex>& verts);  // refresh vertexBuffer + triCount
+    void buildAccelerationStructure();       // synchronous build of the FRONT AS (init only)
+    void uploadVerts(const std::vector<MeshVertex>& verts);  // refresh FRONT vertexBuffer + triCount
+    // Async chunk rebuild: upload `verts` into the BACK pair and kick a non-blocking
+    // GPU AS build; the front pair keeps rendering. Swaps in pollAsyncBuild().
+    void rebuildAsync(const std::vector<MeshVertex>& verts);
+    void pollAsyncBuild();                   // swap front<->back once the back build is done
+    void forceSyncRebuild();                 // rebuild current geometry into FRONT, blocking (--shot)
     void updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h);
     void render(id<MTLTexture> target, uint32_t w, uint32_t h);
 };
@@ -170,7 +189,7 @@ void Renderer::init() {
     // ring follows the camera (rebuilt as it rides) so blocks stay 1m everywhere
     // without meshing the whole ~2km circuit at once (see buildBenchScene).
     rideU = 6.0f;
-    buildBenchScene();
+    buildBenchScene(false);
     fprintf(stderr, "benchmark: 1m terrain ring (R=%.0f) -> %u tris total\n",
             BENCH_RING, triCount);
 
@@ -186,50 +205,70 @@ void Renderer::init() {
 #endif
 }
 
-// Refresh the vertex buffer + triangle count from a CPU vertex list. Reallocates
-// the buffer only when the list grows past the current capacity (streaming reuses it).
+// Grow a shared-storage vertex buffer to hold `bytes`, with headroom so we don't
+// reallocate every rebuild. Returns the (possibly reallocated) buffer.
+static id<MTLBuffer> growVertexBuffer(id<MTLDevice> dev, id<MTLBuffer> buf, size_t bytes) {
+    if (!buf || (size_t)[buf length] < bytes) {
+        size_t cap = (size_t)(bytes * 1.4) + 1024;
+        return [dev newBufferWithLength:cap options:MTLResourceStorageModeShared];
+    }
+    return buf;
+}
+
+// Refresh the FRONT vertex buffer + triangle count from a CPU vertex list.
 void Renderer::uploadVerts(const std::vector<MeshVertex>& verts) {
     triCount = (uint32_t)(verts.size() / 3);
     size_t bytes = verts.size() * sizeof(MeshVertex);
-    if (!vertexBuffer || (size_t)[vertexBuffer length] < bytes) {
-        // grow with headroom so we don't reallocate every rebuild
-        size_t cap = (size_t)(bytes * 1.4) + 1024;
-        vertexBuffer = [device newBufferWithLength:cap options:MTLResourceStorageModeShared];
-    }
+    vertexBuffer = growVertexBuffer(device, vertexBuffer, bytes);
     memcpy([vertexBuffer contents], verts.data(), bytes);
 }
 
-void Renderer::buildAccelerationStructure() {
+// Build a primitive AS for (vbuf, tris) into *outAS, using/growing the persistent
+// scratch buffer. If `sync` is false the command buffer is committed but NOT waited
+// on, and a completion handler flips *donePtr — the caller polls it.
+// Builds an AS for (vbuf, tris). The scratch buffer is passed in by value and a
+// (possibly grown) one is RETURNED via `scratchInOut` (a local in the caller), to
+// avoid taking the address of an ARC strong ivar across the call boundary.
+static id<MTLAccelerationStructure>
+buildAS(id<MTLDevice> dev, id<MTLCommandQueue> q, id<MTLBuffer> vbuf, uint32_t tris,
+        id<MTLBuffer> __strong* scratchInOut, bool sync, std::atomic<bool>* donePtr) {
     MTLAccelerationStructureTriangleGeometryDescriptor* geo =
         [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-    geo.vertexBuffer = vertexBuffer;
+    geo.vertexBuffer = vbuf;
     geo.vertexBufferOffset = 0;
     geo.vertexStride = sizeof(MeshVertex);
     geo.vertexFormat = MTLAttributeFormatFloat3;
-    geo.triangleCount = triCount;
+    geo.triangleCount = tris;
 
     MTLPrimitiveAccelerationStructureDescriptor* desc =
         [MTLPrimitiveAccelerationStructureDescriptor descriptor];
     desc.geometryDescriptors = @[geo];
 
-    MTLAccelerationStructureSizes sizes =
-        [device accelerationStructureSizesWithDescriptor:desc];
-
-    accel = [device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
-    id<MTLBuffer> scratch =
-        [device newBufferWithLength:sizes.buildScratchBufferSize
-                            options:MTLResourceStorageModePrivate];
-
-    id<MTLCommandBuffer> cb = [queue commandBuffer];
-    id<MTLAccelerationStructureCommandEncoder> enc =
-        [cb accelerationStructureCommandEncoder];
-    [enc buildAccelerationStructure:accel
-                         descriptor:desc
-                      scratchBuffer:scratch
-                scratchBufferOffset:0];
+    MTLAccelerationStructureSizes sizes = [dev accelerationStructureSizesWithDescriptor:desc];
+    id<MTLAccelerationStructure> as =
+        [dev newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+    if (!*scratchInOut || (size_t)[*scratchInOut length] < sizes.buildScratchBufferSize) {
+        *scratchInOut = [dev newBufferWithLength:(NSUInteger)(sizes.buildScratchBufferSize * 1.4 + 1024)
+                                         options:MTLResourceStorageModePrivate];
+    }
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+    id<MTLAccelerationStructureCommandEncoder> enc = [cb accelerationStructureCommandEncoder];
+    [enc buildAccelerationStructure:as descriptor:desc
+                      scratchBuffer:*scratchInOut scratchBufferOffset:0];
     [enc endEncoding];
+    if (donePtr) {
+        std::atomic<bool>* d = donePtr;
+        [cb addCompletedHandler:^(id<MTLCommandBuffer>) { d->store(true); }];
+    }
     [cb commit];
-    [cb waitUntilCompleted];
+    if (sync) [cb waitUntilCompleted];
+    return as;
+}
+
+void Renderer::buildAccelerationStructure() {
+    id<MTLBuffer> scratch = asScratch;
+    accel = buildAS(device, queue, vertexBuffer, triCount, &scratch, true, nullptr);
+    asScratch = scratch;
     static bool announced = false;
     if (!announced) {
         announced = true;
@@ -241,12 +280,54 @@ void Renderer::buildAccelerationStructure() {
     }
 }
 
+// Kick a non-blocking rebuild into the BACK pair. If a build is already in flight
+// we skip (the next rebuild call will catch up) so we never stomp an in-use buffer.
+void Renderer::rebuildAsync(const std::vector<MeshVertex>& verts) {
+    if (buildInFlight) return;                         // back pair still busy
+    triCountBack = (uint32_t)(verts.size() / 3);
+    size_t bytes = verts.size() * sizeof(MeshVertex);
+    vertexBufferBack = growVertexBuffer(device, vertexBufferBack, bytes);
+    memcpy([vertexBufferBack contents], verts.data(), bytes);
+    buildDone.store(false);
+    buildInFlight = true;
+    id<MTLBuffer> scratch = asScratch;
+    accelBack = buildAS(device, queue, vertexBufferBack, triCountBack,
+                        &scratch, false, &buildDone);
+    asScratch = scratch;
+}
+
+// If the back build has finished on the GPU, swap it to the front so the next
+// frame renders the new geometry. Cheap pointer swap on the main thread.
+void Renderer::pollAsyncBuild() {
+    if (!buildInFlight || !buildDone.load()) return;
+    std::swap(accel, accelBack);
+    std::swap(vertexBuffer, vertexBufferBack);
+    triCount = triCountBack;
+    buildInFlight = false;
+}
+
+// Rebuild the CURRENT scene geometry synchronously into the FRONT pair. Used by
+// --shot, where the tight advance loop has no render() calls to poll async swaps,
+// so we re-tessellate at the final camera position and block-build before the shot.
+void Renderer::forceSyncRebuild() {
+#ifdef RT_STREAM
+    stream.buildGeometry(scratchVerts);
+    uploadVerts(scratchVerts);
+    buildAccelerationStructure();
+#else
+    buildBenchScene(false);
+#endif
+}
+
 #ifndef RT_STREAM
 // Benchmark: (re)mesh a 1m terrain ring + ring-clipped track around the ride
 // camera (rideU), then rebuild the AS. The ring centre is snapped to the voxel
 // grid so the terrain is stable between rebuilds; the track is clipped to the
 // ring so no track floats past the terrain edge.
-void Renderer::buildBenchScene() {
+void Renderer::buildBenchScene(bool async) {
+    // Don't recentre the ring while a previous async rebuild is still in flight
+    // (the back buffer is busy); the next frame will catch up.
+    if (async && buildInFlight) return;
     float3 c = coaster.pos(rideU);
     float cx = floorf(c.x / BENCH_CELL) * BENCH_CELL;
     float cz = floorf(c.z / BENCH_CELL) * BENCH_CELL;
@@ -257,8 +338,12 @@ void Renderer::buildBenchScene() {
     scratchVerts.swap(t.verts);
     buildCoaster(coaster, scratchVerts, nRender,
                  vec3(cx, 0, cz), BENCH_RING - 6.0f, rideU);
-    uploadVerts(scratchVerts);
-    buildAccelerationStructure();
+    if (async) {
+        rebuildAsync(scratchVerts);            // non-blocking
+    } else {
+        uploadVerts(scratchVerts);
+        buildAccelerationStructure();
+    }
 }
 #endif
 
@@ -297,8 +382,7 @@ void Renderer::rideAdvance(float dt) {
     if (shifted || sinceRebuildPts >= REBUILD_PTS) {
         sinceRebuildPts = 0;
         stream.buildGeometry(scratchVerts);
-        uploadVerts(scratchVerts);
-        buildAccelerationStructure();
+        rebuildAsync(scratchVerts);            // non-blocking: front keeps rendering
     }
     return;
 #else
@@ -350,7 +434,7 @@ void Renderer::rideAdvance(float dt) {
         float3 cc = coaster.pos(rideU);
         if (fabsf(cc.x - lastRingCx) > BENCH_RING * 0.15f ||
             fabsf(cc.z - lastRingCz) > BENCH_RING * 0.15f)
-            buildBenchScene();
+            buildBenchScene(true);
     }
 
     float3 p   = coaster.pos(rideU);
@@ -402,6 +486,7 @@ void Renderer::updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h) {
 }
 
 void Renderer::render(id<MTLTexture> target, uint32_t w, uint32_t h) {
+    pollAsyncBuild();                  // swap in a finished back build before rendering
     CameraUniforms cam;
     updateCamera(cam, w, h);
     memcpy([camBuffer contents], &cam, sizeof(cam));
@@ -472,6 +557,7 @@ static int runShot(Renderer& r) {
     }
 #endif
 
+    r.forceSyncRebuild();   // tessellate + block-build at the final camera position
     r.render(tex, W, H);
 
     std::vector<uint8_t> pixels(W * H * 4);

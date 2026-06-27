@@ -213,13 +213,54 @@ static const char *SKY_FS =
     "in vec2 uv; out vec4 finalColor;\n"
     "uniform vec3 camDir; uniform vec3 camRight; uniform vec3 camUp;\n"
     "uniform float tanHalfFovY; uniform float aspect;\n"
-    "uniform vec3 sunDir;\n"
+    "uniform vec3 sunDir; uniform vec3 camPos;\n"
     "const vec3 ZENITH  = vec3(0.045, 0.26, 0.74);\n"
     "const vec3 MIDSKY  = vec3(0.16, 0.50, 0.95);\n"
     "const vec3 HORIZON = vec3(0.40, 0.70, 1.02);\n"   // vibrant saturated horizon (was pale near-white)
     "const vec3 HAZE    = vec3(1.00, 0.74, 0.42);\n"
     "const vec3 GROUND  = vec3(0.30, 0.38, 0.47);\n"
     "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
+    // --- 3D value noise -> raymarched VOLUMETRIC clouds (ported verbatim from the
+    // path tracer's skyCol): a real cloud slab the view ray marches through, a
+    // smooth low-coverage fbm base lit by a short 2-tap march toward the sun for
+    // self-shadow. World-anchored via camPos so the clouds hold still as the train moves.
+    "float h13(vec3 p){ p=fract(p*0.1031); p+=dot(p,p.yzx+33.33); return fract((p.x+p.y)*p.z); }\n"
+    "float vn3(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n"
+    "  return mix(mix(mix(h13(i+vec3(0,0,0)),h13(i+vec3(1,0,0)),f.x), mix(h13(i+vec3(0,1,0)),h13(i+vec3(1,1,0)),f.x),f.y),\n"
+    "             mix(mix(h13(i+vec3(0,0,1)),h13(i+vec3(1,0,1)),f.x), mix(h13(i+vec3(0,1,1)),h13(i+vec3(1,1,1)),f.x),f.y), f.z); }\n"
+    "float cloudDens(vec3 p){\n"
+    "  float cb=300.0, ct=470.0; float hf=(p.y-cb)/(ct-cb);\n"
+    "  if(hf<0.0||hf>1.0) return 0.0;\n"
+    "  hf = smoothstep(0.0,0.32,hf)*smoothstep(1.0,0.5,hf);\n"              // soft top & base
+    "  vec3 q=p*0.0013;\n"
+    "  float base = vn3(q*4.0+3.1)*0.6 + vn3(q*8.0)*0.3 + vn3(q*16.0)*0.15;\n"
+    "  return smoothstep(0.62,0.95, base) * hf;\n"                          // high threshold -> sparse, wispy
+    "}\n"
+    "vec4 cloudVolume(vec3 ro, vec3 rd, vec3 sun, float lift){\n"
+    "  if(rd.y < 0.03) return vec4(0.0);\n"
+    "  float cb=300.0, ct=470.0;\n"
+    "  float t0=(cb-ro.y)/rd.y, t1=(ct-ro.y)/rd.y;\n"
+    "  float tn=max(min(t0,t1),0.0), tf=max(t0,t1);\n"
+    "  if(tf<=tn) return vec4(0.0); tf=min(tf,tn+1500.0);\n"
+    "  const int N=14; float dt=(tf-tn)/float(N);\n"                         // more steps -> smoother volume
+    "  float t=tn+dt*h13(vec3(gl_FragCoord.xy,1.0));\n"                       // jitter -> no banding
+    "  float trans=1.0; vec3 acc=vec3(0.0);\n"
+    "  vec3 sunC=mix(vec3(1.0,0.85,0.70), vec3(1.0,0.97,0.92), lift);\n"
+    "  vec3 ambC=vec3(0.60,0.67,0.80);\n"
+    "  for(int i=0;i<N;i++){\n"
+    "    vec3 p=ro+rd*t; float d=cloudDens(p);\n"
+    "    if(d>0.01){\n"
+    "      float ld=cloudDens(p+sun*42.0)+cloudDens(p+sun*95.0)*0.6;\n"       // 2-tap light march
+    "      float sh=exp(-ld*1.5);\n"
+    "      vec3 cc=ambC + sunC*sh*1.6;\n"
+    "      float a=clamp(d*0.9,0.0,1.0);\n"                                   // softer per-step opacity
+    "      acc+=trans*a*cc; trans*=(1.0-a);\n"
+    "      if(trans<0.03) break;\n"
+    "    }\n"
+    "    t+=dt;\n"
+    "  }\n"
+    "  return vec4(acc, 1.0-trans);\n"
+    "}\n"
     "void main(){\n"
     "  vec2 ndc = uv*2.0-1.0;\n"
     "  vec3 dir = normalize(camDir + camRight*ndc.x*tanHalfFovY*aspect + camUp*(-ndc.y)*tanHalfFovY);\n"
@@ -280,13 +321,16 @@ static const char *SKY_FS =
     "  col += vec3(1.0,0.93,0.74)*corona*0.58*sunLift*mix(0.4,1.0,lookGate);\n"
     "  col = mix(col, vec3(1.0,0.94,0.78), disc*0.78*sunLift);\n"
     "  col += vec3(1.0,0.97,0.84)*disc*1.15*sunLift;\n"
+    // composite raymarched volumetric clouds over the sky along the world view ray
+    "  vec4 cl = cloudVolume(camPos, dir, sun, sunLift);\n"
+    "  col = col*(1.0-cl.a) + cl.rgb;\n"
     "  col = aces(col*1.08);\n"
     "  finalColor = vec4(pow(clamp(col, 0.0, 1.0), vec3(1.0/2.2)), 1.0);\n"
     "}\n";
 
 struct SkySys {
     Shader sh{};
-    int locCamDir=-1, locCamRight=-1, locCamUp=-1, locTan=-1, locAspect=-1, locSun=-1, locRes=-1;
+    int locCamDir=-1, locCamRight=-1, locCamUp=-1, locTan=-1, locAspect=-1, locSun=-1, locRes=-1, locCamPos=-1;
     void init() {
         sh = LoadShaderFromMemory(SKY_VS, SKY_FS);
         locCamDir   = GetShaderLocation(sh, "camDir");
@@ -296,6 +340,7 @@ struct SkySys {
         locAspect   = GetShaderLocation(sh, "aspect");
         locSun      = GetShaderLocation(sh, "sunDir");
         locRes      = GetShaderLocation(sh, "resolution");
+        locCamPos   = GetShaderLocation(sh, "camPos");
     }
 };
 static SkySys gSky;

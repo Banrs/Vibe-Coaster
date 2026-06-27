@@ -2064,12 +2064,11 @@ int main(int argc, char **argv) {
                         drawCubeTex(T_IRON, Vector3{ 0, -0.14f, 0 }, 0.62f, 0.22f, rl * 0.6f, fin);
                 } else if (fog < 0.85f) {
                     // modern B&M/Intamin read: a continuous dark structural box-beam
-                    // tube runs the whole track with the rails standing off it, topped
-                    // by a thin themed accent so the coaster colour reads everywhere.
+                    // tube runs the whole track with the rails standing off it. The
+                    // themed (orange) accent is reserved for powered sections only,
+                    // so non-powered track stays neutral.
                     Color sc  = mixc(Color{ 44, 47, 55, 255 }, SKY, fog);                   // dark steel tube
-                    Color stp = mixc(trk.spineC, SKY, fog);
                     drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.30f, 0.46f, rl, sc);     // box-beam spine
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.07f, 0 }, 0.32f, 0.07f, rl, stp);    // themed accent stripe
                 }
                 drawCubeTex(T_IRON, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);   // running rails
                 drawCubeTex(T_IRON, Vector3{  0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
@@ -2135,6 +2134,7 @@ int main(int argc, char **argv) {
             float res[2] = { (float)rw, (float)rh };
             float cd[3] = { cdir.x, cdir.y, cdir.z }, cr[3] = { crt.x, crt.y, crt.z }, cu[3] = { cup.x, cup.y, cup.z };
             float sd[3] = { g_sunDir.x, g_sunDir.y, g_sunDir.z };
+            float cp[3] = { cam.position.x, cam.position.y, cam.position.z };
             SetShaderValue(gSky.sh, gSky.locCamDir, cd, SHADER_UNIFORM_VEC3);
             SetShaderValue(gSky.sh, gSky.locCamRight, cr, SHADER_UNIFORM_VEC3);
             SetShaderValue(gSky.sh, gSky.locCamUp, cu, SHADER_UNIFORM_VEC3);
@@ -2142,6 +2142,7 @@ int main(int argc, char **argv) {
             SetShaderValue(gSky.sh, gSky.locAspect, &asp, SHADER_UNIFORM_FLOAT);
             SetShaderValue(gSky.sh, gSky.locSun, sd, SHADER_UNIFORM_VEC3);
             SetShaderValue(gSky.sh, gSky.locRes, res, SHADER_UNIFORM_VEC2);
+            SetShaderValue(gSky.sh, gSky.locCamPos, cp, SHADER_UNIFORM_VEC3);
             // restore the 2D screen-space matrices (PASS 1 left light-space ones set,
             // which would project this fullscreen quad off-screen)
             rlDrawRenderBatchActive();

@@ -1935,18 +1935,21 @@ int main(int argc, char **argv) {
             float hgt = topY - gC;
             if (hgt < 1.0f) return;
             float baseHalf = Clamp(hgt * 0.20f, 1.5f, 4.5f);   // ground splay (grows with height, capped)
-            float topHalf  = 0.16f;                            // leg tops converge tightly under the spine
+            float topHalf  = 0.22f;                            // leg tops attach just inside the node edges
             // Build the whole TOP of the bent in the rail frame (railUp / rRight) so it
             // tucks under the box-spine even where the track banks — no world-vertical
-            // hybrid that drifts sideways and floats on a bank. The legs converge into a
-            // small node, no wider than the spine, recessed UP into the spine underside
-            // (spine: 0.38 wide, underside ~0.57 below the rail centreline along railUp).
+            // hybrid that drifts sideways and floats on a bank. The legs splay from a node
+            // recessed UP into the spine underside (spine underside ~0.57 below the rail
+            // centreline along railUp). CRITICAL: tops and feet must splay along the SAME
+            // lateral sense or the legs cross into an X — so derive both from rRight (the
+            // passed-in `lat` is the world-horizontal across-track and points the OTHER way).
             Vector3 rRight = Vector3Normalize(Vector3CrossProduct(railUp, tang));   // track lateral (tilts with bank)
+            Vector3 latH   = Vector3Normalize(Vector3{ rRight.x, 0.0f, rRight.z }); // its ground projection: feet splay here
             float nodeDrop = 0.58f;                            // node centre below the centreline, along railUp
             Vector3 node = Vector3Subtract(p, Vector3Scale(railUp, nodeDrop));
             for (float s : { -1.0f, 1.0f }) {                  // two raked legs, each one solid beam
-                Vector3 top  = Vector3Add(node, Vector3Scale(rRight, s * topHalf));   // welds into the node
-                float bx = p.x + lat.x * s * baseHalf, bz = p.z + lat.z * s * baseHalf;
+                Vector3 top  = Vector3Add(node, Vector3Scale(rRight, s * topHalf));   // welds into the node, +s -> +rRight side
+                float bx = p.x + latH.x * s * baseHalf, bz = p.z + latH.z * s * baseHalf;  // foot on the SAME side
                 Vector3 foot = { bx, groundTopAt(bx, bz), bz };
                 Vector3 dir  = Vector3Subtract(foot, top);
                 float len = Vector3Length(dir);
@@ -1955,10 +1958,10 @@ int main(int argc, char **argv) {
                 drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.36f, 0.36f, len, sc);
                 popFrame();
             }
-            // small node block nested INSIDE the spine (0.34 < spine's 0.38), oriented to
-            // the rail frame so it carries pitch + bank and caps where the legs converge.
+            // node block where the legs converge, oriented to the rail frame so it carries
+            // pitch + bank; 0.56 wide (substantial, sits a touch proud of the 0.38 spine).
             pushFrame(node, tang, railUp);
-            drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.34f, 0.42f, 1.0f, sc);
+            drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.56f, 0.42f, 1.0f, sc);
             popFrame();
         };
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {

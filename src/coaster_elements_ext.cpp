@@ -35,9 +35,9 @@
         pzSide = Vector3Normalize(Vector3CrossProduct(WUP, pzF));
         if (rnd01() < 0.5f) pzSide = Vector3Scale(pzSide, -1.0f);   // sweep either way
         pzBase = gpos;
-        // REAL teardrop-loop bottom radius (~18-22m); the managed entry speed sets the g
-        // (g_bottom ~ v^2/(pzR*GRAV)), not an inflated radius.
-        pzR    = frnd(19.0f, 23.0f);
+        // SPEED-DICTATES-SIZE teardrop-loop bottom radius (up to 1.30x record at speed); the
+        // bigger-at-speed bottom keeps g near target while the crest stays fast.
+        { float bt; pzR = invRFor(M_PRETZEL, bt); }
         pzDrift = pzR * 1.5f;                        // forward creep so the descending leg doesn't sit on the ascending one
         pzLat   = pzR * frnd(1.4f, 1.9f);            // LATERAL sweep so the loop veers off the entry line (was planar -> sat 1:1 on the existing track)
         pzSteps = 26;
@@ -142,6 +142,7 @@
         // It still gives sustained hangtime because the slow roll keeps the rider near
         // weightless through the inverted middle; we don't need a full freefall arch.
         brH    = Clamp(0.35f * v, 22.0f, 28.0f);     // low crest (~22-28m)
+        brH    = fminf(brH, maxClearH());            // energy-budget cap -> the slow 0g roll keeps gliding, never stalls
         brSpan = Clamp(1.9f * v, 90.0f, 170.0f);     // significant lateral traverse
         remain = brSteps;
     }

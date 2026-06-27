@@ -123,7 +123,7 @@ struct Track {
         gpos = { 0, maxG + 6.0f, 0 };
         startPos = gpos; startYaw = gyaw;
         mode = M_FLAT; remain = 3; turnDir = 1; turnMag = 0.4f; mega = false; elems = 0;
-        elemLimit = irnd(5, 8); queuedInv = 0; launchElem = M_CLIMB;
+        elemLimit = irnd(7, 11); queuedInv = 0; launchElem = M_CLIMB;
         lastElem = M_FLAT; prevElem = M_FLAT; helixDrop = -3.4f; genV = LAUNCH_V;
         setClearance(10.0f, 24.0f);
 
@@ -153,7 +153,7 @@ struct Track {
     }
 
     void initLoop() {
-        lR     = frnd(17.0f, 21.0f);                         // REAL vertical-loop radius (~17-21m -> ~34-42m tall, B&M/Intamin); the felt g comes from a MANAGED entry speed, not an inflated radius
+        { float bt; lR = invRFor(M_LOOP, bt); }              // SPEED-DICTATES-SIZE: ~17m (34m tall) -> up to 31m (62m, 1.30x record) as the entry speed rises; bigger-at-speed keeps the crest fast
         lf     = headingVec();
         lside  = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -167,7 +167,7 @@ struct Track {
     // direction change). reuses the loop frame; lsteps drives a 180° arc.
     void initImmel() {
         mode    = M_IMMEL;
-        lR      = frnd(16.0f, 20.0f);                   // REAL Immelmann loop-up radius (~16-20m -> ~32-40m tall; managed entry speed sets the g, not the radius)
+        { float bt; lR = invRFor(M_IMMEL, bt); }       // SPEED-DICTATES-SIZE Immelmann radius (up to 1.30x record at speed)
         lf      = headingVec();
         lside   = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -198,6 +198,7 @@ struct Track {
         // so v^2 * (8H/L^2) = g  ->  H = g L^2 / (8 v^2) at the entry speed.
         { float L = stallLen * SEG_LEN;
           stallH  = Clamp(GRAV * L * L / (8.0f * genV * genV), 18.0f, 34.0f); }
+        stallH      = fminf(stallH, maxClearH());     // never taller than the entry speed can float over -> the zero-g crest keeps gliding, never stalls
         stallEntryY = gpos.y;
         stallF      = headingVec();
         stallSide   = Vector3Normalize(Vector3CrossProduct(WUP, stallF));
@@ -209,7 +210,7 @@ struct Track {
     void initDiveLoop() {
         mode = M_DIVELOOP;
         setClearance(18.0f, 40.0f);
-        dlR      = frnd(16.0f, 21.0f);                       // REAL dive-loop radius (~16-21m -> ~32-42m tall); managed entry speed sets the g
+        { float bt; dlR = invRFor(M_DIVELOOP, bt); }         // SPEED-DICTATES-SIZE dive-loop radius (up to 1.30x record at speed)
         dlf      = headingVec();
         dlside   = Vector3Normalize(Vector3CrossProduct(WUP, dlf));
         dlcenter = { gpos.x, gpos.y + dlR, gpos.z };
@@ -242,7 +243,7 @@ struct Track {
     void initCobra() {
         mode = M_COBRA;
         setClearance(24.0f, 58.0f);
-        cbR     = frnd(13.5f, 18.0f);         // REAL cobra-roll size: hood height ~2*R = 27-36m (real cobras are 25-37m tall). bigger radius -> gentler hoods, not so tight. managed entry speed keeps g sane.
+        { float bt; cbR = invRFor(M_COBRA, bt); }  // SPEED-DICTATES-SIZE cobra: hood ~2R, 27m -> up to ~48m (1.30x record) as speed rises
         cbF     = headingVec();
         float side = (rnd01() < 0.5f) ? 1.0f : -1.0f;
         cbSide  = Vector3Scale(Vector3Normalize(Vector3CrossProduct(WUP, cbF)), side);
@@ -279,6 +280,7 @@ struct Track {
         bankT     = frnd(1.12f, 1.42f);                  // overbanked, past vertical
         hillBumps = 1;
         hillH     = frnd(26.0f, 38.0f);
+        hillH     = fminf(hillH, maxClearH());           // energy-budget cap -> the wing-over crest never stalls
         hillLen   = irnd(7, 10);                         // length of the up-and-over
         remain    = hillLen;
     }
@@ -300,6 +302,7 @@ struct Track {
             float L = hlSteps * SEG_LEN;
             float vRef = 56.0f;                          // typical post-booster roll speed
             hlH = Clamp(GRAV * L * L / (8.0f * vRef * vRef), 6.0f, 30.0f);
+            hlH = fminf(hlH, maxClearH());            // energy-budget cap on the inline-roll airtime arc
         }
         remain  = hlSteps;
     }
@@ -307,7 +310,7 @@ struct Track {
     // ------- ride-script helpers -------
     // hydraulic launch straight (re-energizes mid-ride), then into a top-hat
     void startLaunch() {
-        elems = 0; elemLimit = irnd(5, 8); chainMode = false; launchElem = pickLaunchExit();
+        elems = 0; elemLimit = irnd(7, 11); chainMode = false; launchElem = pickLaunchExit();
         setClearance(10.0f, 36.0f);
         mode = M_LAUNCH; remain = irnd(4, 6);   // short, punchy launch — accelerates the whole way (never sits pinned at peak)
     }
@@ -334,11 +337,52 @@ struct Track {
         float v = Clamp(genV, 30.0f, 120.0f);
         return Clamp(0.68f * v * v / (gT * GRAV), lo, hi);
     }
+    // ENERGY-BUDGET height cap: the tallest crest the train can clear at the current
+    // forward-sim speed and still carry ~crestMin over the top (v_crest^2 = v^2 - 2*g*H).
+    // Caps airtime-element height so a slow train gets a SHORTER hill (it clears the crest
+    // and keeps flowing) and a fast train a taller one -> the speed is dictated by physics
+    // and never has to be pinned at a MIN_V floor. Only bites when genV is low; at cruise
+    // (64+ m/s) the natural element heights are well under the cap, so they're unchanged.
+    float maxClearH(float crestMin = 28.0f) const {
+        return fmaxf((genV * genV - crestMin * crestMin) / (2.0f * GRAV) - 5.0f, 6.0f);
+    }
+    // SPEED-DICTATES-SIZE (user model): make the inversion as BIG as the entry speed warrants
+    // — up to 1.30x the world-record radius — while aiming for ~gT felt g. Real loop physics:
+    // g_bottom = 1 + v^2/(R*GRAV), so R = v^2/((gT-1)*GRAV); clamp to the real envelope
+    // [rMin .. rMaxRec*1.30]. Sizing UP with speed keeps the CREST fast (a bigger loop entered
+    // fast crests far above the old MIN_V crawl) and the geometry record-class. Only when the
+    // train is so fast that even the 1.30x element busts the +10g ceiling do we trim.
+    struct InvSpec { float gT, rMin, rMaxRec; };
+    static InvSpec invSpec(SegMode m) {
+        switch (m) {
+            case M_LOOP:     return {5.5f, 17.0f, 24.0f}; // vertical loop, record ~49m tall -> rMaxRec 24m; 1.30x -> ~62m
+            case M_IMMEL:    return {5.5f, 16.0f, 22.0f}; // Immelmann half-loop
+            case M_DIVELOOP: return {5.0f, 16.0f, 22.0f}; // dive loop
+            case M_COBRA:    return {4.6f, 13.5f, 18.5f}; // cobra hood ~2R; record ~37m tall -> 1.30x -> ~48m
+            case M_PRETZEL:  return {5.5f, 19.0f, 23.0f}; // teardrop loop, wide bottom
+            default:         return {0.0f,  0.0f,  0.0f};
+        }
+    }
+    // radius for entry speed v; sets brakeTo (0 = none). STATIC so the live-ride trim brakes to
+    // the IDENTICAL target the generator sized the geometry for (no ride/geometry mismatch).
+    static float invRAt(SegMode m, float v, float &brakeTo) {
+        InvSpec s = invSpec(m);
+        if (s.gT <= 0.0f) { brakeTo = 0.0f; return 0.0f; }
+        const float gCeil = 10.0f;                                 // arcadey ceiling (+10g; real loops ~5-6g) — braking is rare, so crests stay fast
+        float rMax = s.rMaxRec * 1.30f;
+        float vv   = Clamp(v, 28.0f, 135.0f);
+        float R    = Clamp(vv * vv / ((s.gT - 1.0f) * GRAV), s.rMin, rMax);
+        float g    = 1.0f + vv * vv / (R * GRAV);
+        brakeTo    = (g > gCeil) ? sqrtf((gCeil - 1.0f) * GRAV * rMax) : 0.0f;
+        return R;
+    }
+    float invRFor(SegMode m, float &brakeTo) const { return invRAt(m, genV, brakeTo); }
     void initHills() {
         mode = M_HILLS;
         setClearance(7.0f, 38.0f);
         hillBumps = irnd(1, 3);                    // varied camelback count
         hillH     = frnd(14.0f, 28.0f) + (clearanceBase > 32.0f ? frnd(4.0f, 12.0f) : 0.0f);
+        hillH     = fminf(hillH, maxClearH());     // never demand more height than the speed can clear (no stall, no MIN_V pin)
         // size the camelback LENGTH to hold a target airtime g at the ENTRY SPEED. valley g
         // = 1 + v^2*kappa/GRAV, crest g = 1 - v^2*kappa/GRAV, kappa = 0.5*H*(2*pi*bumps/L)^2.
         // solve L for v^2*kappa/GRAV = gT -> valley ~ +4.5g / crest ~ -2.5g, not the old +14/-7.
@@ -407,6 +451,7 @@ struct Track {
         setClearance(12.0f, 52.0f);
         hillBumps = irnd(2, 3);
         hillH     = frnd(14.0f, 32.0f) + (clearanceBase > 38.0f ? frnd(6.0f, 18.0f) : 0.0f);
+        hillH     = fminf(hillH, maxClearH());     // energy-budget cap -> the airtime crest stays in motion
         { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 64); }  // speed-aware -> sane airtime g
         hillTurn  = frnd(-0.09f, 0.09f);
         bankT     = frnd(0.18f, 0.42f);
@@ -418,6 +463,7 @@ struct Track {
         setClearance(7.0f, 38.0f);
         hillBumps = irnd(1, 2);
         hillH     = frnd(13.0f, 28.0f) + (clearanceBase > 30.0f ? frnd(5.0f, 14.0f) : 0.0f);
+        hillH     = fminf(hillH, maxClearH());     // energy-budget cap -> the wave crest stays in motion
         { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 64); }  // speed-aware -> sane airtime g
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
         hillTurn  = turnDir * frnd(0.08f, 0.16f);
@@ -468,26 +514,10 @@ struct Track {
     static bool isHardInversion(SegMode m) {       // the positive-g inversions (NOT the 0g float ones)
         return m == M_LOOP || m == M_ROLL || m == M_IMMEL || m == M_DIVELOOP || m == M_COBRA || m == M_PRETZEL;
     }
-    // REAL coaster physics: each fixed-size inversion is only safe up to a certain ENTRY
-    // SPEED (g ~ v^2 on its fixed radius). Rather than inflate the radius at speed (which
-    // makes the element tame), we BLEED the train down to this entry speed in a trim run
-    // before the element, then re-accelerate out — exactly like a real ride. Returns the
-    // target entry speed for an element (0 = no trim, take it at whatever speed it carries).
-    static float elemEntryV(SegMode m) {
-        switch (m) {
-            case M_LOOP:     return 50.0f;   // ~14.5m loop -> ~6G at the bottom
-            case M_IMMEL:    return 50.0f;
-            case M_DIVELOOP: return 53.0f;   // larger radius -> a touch more entry speed for a punchy ~5.5G
-            case M_COBRA:    return 47.0f;   // tightest hoods
-            case M_PRETZEL:  return 53.0f;   // wide teardrop bottom
-            case M_ROLL:     return 54.0f;   // gentle helical corkscrew tolerates more
-            default:         return 0.0f;
-        }
-    }
     bool eligibleElem(SegMode m) const {
         // Tight inversions are no longer gated OUT at speed (that left half of them
-        // un-spawnable). They are kept REAL-SIZED and instead entered via a speed-managed
-        // trim (see elemEntryV / nextMode), so every element can appear over a long ride.
+        // un-spawnable). They are SPEED-SIZED (invRAt) and entered at the carried speed,
+        // trimming only when even the 1.30x-record element would exceed +10g.
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
     }
     // pick from the pool weighted toward the LEAST-recently-used eligible type, so
@@ -527,9 +557,9 @@ struct Track {
     // section that bleeds the train's speed down to the element's safe ENTRY SPEED, then
     // the element is initialised when the trim completes (see nextMode's trimNext branch).
     // length is sized so the (mirrored) live brake has room to shed the excess speed.
-    void startTrim(SegMode elem) {
+    void startTrim(SegMode elem, float targetV) {
         trimNext = elem;
-        trimV    = elemEntryV(elem);
+        trimV    = targetV;
         mode     = M_FLAT;
         // brake budget ~ a real trim (~0.8g). distance to bleed v->trimV: (v^2-trimV^2)/(2a).
         float a  = 0.8f * GRAV;
@@ -540,12 +570,16 @@ struct Track {
     void chooseElement(float h) {
         (void)h;
         SegMode pick = rollElementPick();
-        // a fixed-size tight inversion ridden too fast = lethal g. If we're above its
-        // safe entry speed, run a trim brake first (real-coaster style) and init it after.
-        if (isHardInversion(pick) && genV > elemEntryV(pick) + 3.0f) {
-            rememberElement(pick);
-            startTrim(pick);
-            return;
+        // SPEED-DICTATES-SIZE: the inversion is sized to the entry speed (invRFor), so it only
+        // needs a trim when the train is so fast that even the 1.30x-record element would bust
+        // the +10g ceiling. brakeTo says how far to bleed first; otherwise it's taken at speed.
+        if (isHardInversion(pick)) {
+            float bt; invRFor(pick, bt);
+            if (bt > 0.0f && genV > bt + 3.0f) {
+                rememberElement(pick);
+                startTrim(pick, bt);
+                return;
+            }
         }
         rememberElement(pick);
 
@@ -674,19 +708,25 @@ struct Track {
             case M_IMMEL:                                 // ease out of an inversion (level pull-out, not a plunge)
                 enterDrop(irnd(4, 6));                     // -> M_FLAT recovery (unpowered)
                 break;
-            default:                                      // HILLS / TURN / HELIX / DIP / FLAT
-                if (elems >= elemLimit || h < 14.0f) startLaunch();   // re-energize with a launch, not a chain hill
-                // SPEED-AWARE re-energize: if the forward-sim speed has bled down near
-                // the floor, insert a booster straight BEFORE chaining another slowing
-                // element, instead of letting a run of slow elements decay to MIN_V.
-                // (since inversions now exit level rather than dropping out, the old
-                // logic had nothing to claw the speed back between chained elements.)
-                else if (genV < MIN_V + 12.0f) startBoost();
+            default: {                                    // HILLS / TURN / HELIX / DIP / FLAT
+                // RE-ENERGIZE POLICY (realistic element density): a full launch + signature
+                // top-hat is a RARE, deliberate moment, NOT inserted after every element.
+                // Between launches we chain real elements, clawing speed back with the cheapest
+                // device that fits — a short LSM booster straight (no top-hat). Boosters fire
+                // EARLY (keep the cruise speed up) so the train carries margin into the next big
+                // element instead of bleeding to the MIN_V floor. Upward elements (loops, hills)
+                // regain their own height, so there's no need to launch just because we're low.
+                bool slow = genV < MIN_V + 22.0f;         // ~64 m/s — re-energize EARLY with a cheap booster so the cruise stays fast (fewer MIN_V-floor touches) without resorting to a launch+top-hat
+                if (elems >= elemLimit)        startLaunch();   // periodic signature launch + top-hat (every elemLimit elements)
+                else if (slow && h < 22.0f)    startLaunch();   // slow AND low -> full re-launch+top-hat (also recovers height)
+                else if (slow)                 startBoost();    // slow but has height -> quick LSM booster (filler, no top-hat); keeps elements flowing
                 // real coasters never butt two g-elements together — insert a LEVEL transition
                 // (trim/brake-run). DILATED to several points so banking eases fully to level and
                 // the felt g recovers GENTLY between pulls (low curvature gradient, no sharp dip)
-                else if (mode != M_FLAT)     { mode = M_FLAT; remain = irnd(4, 6); }
-                else                         chooseElement(h);
+                else if (mode != M_FLAT)       { mode = M_FLAT; remain = irnd(4, 6); }
+                else                           chooseElement(h);
+                break;
+            }
         }
     }
 
@@ -1050,7 +1090,7 @@ struct Track {
                 // safe entry speed during its level trim run (mirrors the live brake below)
                 if (trimNext != M_FLAT && trimV > 0.0f && genV > trimV)
                     genV = fmaxf(genV - 18.0f * gdt, trimV);
-                genV = fmaxf(genV, MIN_V); genV = fminf(genV, 135.0f);
+                genV = fmaxf(genV, 20.0f); genV = fminf(genV, 135.0f);   // 20 = stall-only safety net, NOT a cruise floor: speed is physics-driven (maxClearH keeps the natural crest ~26-30, so this never pins). 135 = runaway guard.
             }
         }
     }

@@ -1124,7 +1124,7 @@ int main(int argc, char **argv) {
                 if (t.tagAt(u) == M_LAUNCH && v < LAUNCH_V) v = fminf(v + 40 * dt, LAUNCH_V);
                 if (t.tagAt(u) == M_BOOST) v += Clamp(BOOST_V - v, -55.0f * dt, 30.0f * dt);
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
-                v = fmaxf(v, MIN_V); v = fminf(v, 135.0f);   // NO speed cap — 135 m/s is just a runaway safety guard
+                v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);   // 20 = stall-only safety net (physics dictates speed; the train is never PINNED at a cruise floor). 135 = runaway guard, not a cap.
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
                 if (!(du == du)) du = 0;
                 u += fminf(du, 1.5f);
@@ -1162,6 +1162,7 @@ int main(int argc, char **argv) {
     // export the generated circuit's control points to a text file for the
     // standalone Metal ray-tracer to load: one line per CP "x y z upx upy upz kind".
     if (argc > 2 && TextIsEqual(argv[1], "--exporttrack")) {
+        if (argc > 3) g_rng = (uint32_t)atoi(argv[3]) * 2654435761u | 1u;   // optional seed for sweeping many circuits
         Track trk; trk.reset();
         while ((int)trk.cp.size() < 480) trk.ensureAhead((float)trk.cp.size() + 8.0f);
         FILE* fp = fopen(argv[2], "w");
@@ -1195,7 +1196,7 @@ int main(int argc, char **argv) {
                 v += acc * dt;
                 if (t.tagAt(u) == M_LAUNCH && v < LAUNCH_V) v = fminf(v + 40 * dt, LAUNCH_V);
                 if (t.tagAt(u) == M_BOOST) v += Clamp(BOOST_V - v, -55.0f * dt, 30.0f * dt);
-                v = fmaxf(v, MIN_V); v = fminf(v, 135.0f);   // NO speed cap — 135 m/s is just a runaway safety guard
+                v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);   // 20 = stall-only safety net (physics dictates speed; the train is never PINNED at a cruise floor). 135 = runaway guard, not a cap.
 
                 sinceStation += dt;
                 if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
@@ -1551,13 +1552,14 @@ int main(int argc, char **argv) {
             for (float la = 1.0f; la <= 9.0f; la += 1.0f) {   // window spans the full trim run (up to ~9 points)
                 SegMode ahead = (SegMode)trk.tagAt(u + la);
                 if (!Track::isHardInversion(ahead)) continue;
-                float ev = Track::elemEntryV(ahead);
-                // brake harder the closer the inversion is, so the entry speed is always met
-                if (v > ev) v = fmaxf(v - (la <= 4.0f ? 24.0f : 16.0f) * dt, ev);
+                // brake ONLY to the same target the generator sized the geometry for (the +10g
+                // ceiling speed) — usually 0 (no brake) since elements are sized to the speed.
+                float bt; Track::invRAt(ahead, v, bt);
+                if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
                 break;
             }
 
-            v = fmaxf(v, MIN_V); v = fminf(v, 135.0f);   // NO speed cap — 135 m/s is just a runaway safety guard
+            v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);   // 20 = stall-only safety net (physics dictates speed; never PINNED at a cruise floor). 135 = runaway guard, not a cap.
             if (gForceSpeed > 0.0f) v = gForceSpeed;      // --gtest: pin ride speed to isolate element geometry g
 
             // arm an exit station after ~95s of riding (interactive only)

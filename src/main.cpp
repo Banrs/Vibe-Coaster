@@ -39,7 +39,8 @@
 static const float SEG_LEN   = 14.0f;   // distance between track control points
 static const float CELL      = 2.0f;    // terrain block size
 static const int   TERRA_R   = 96;      // terrain radius in cells (192m view ≈ Minecraft 12-chunk) — threaded height cache keeps it cheap
-static const int   SHADOW_TERRAIN_R = 40; // nearby terrain only in the shadow depth pass (smaller = faster)
+// (the cached terrain mesh is drawn whole in the shadow depth pass too, so terrain
+//  casts shadows across the entire light frustum — no separate depth-pass radius.)
 static const float WATER_Y   = 30.0f;   // sea level (Minecraft-ish)
 static const float BUILD_MAX  = 430.0f; // max coaster build height: record-scale hyper/top-hat moments
 static const float TERRA_MAX  = 320.0f; // modern Minecraft-ish vertical terrain budget
@@ -530,6 +531,107 @@ static void endVoxelBatch() {
     }
 }
 
+// ---- retained terrain mesh capture -----------------------------------------
+// The terrain (~37k columns + trees) only changes when the camera crosses a cell
+// boundary or the track's carve window shifts. So we emit it into CPU-side vertex
+// arrays ONCE per such change, upload a single VBO, and just DrawMesh it every
+// frame in between (instead of re-batching every column on the CPU each frame).
+// When gCapture is on, emitCubeTex appends quads here instead of rlVertex3f.
+// thread_local so the background build's capture flag is invisible to the main
+// thread: while the worker emits terrain (gCapture=true on ITS thread), the main
+// thread keeps drawing the immediate-mode coaster with its own gCapture=false.
+static thread_local bool gCapture = false;
+static std::vector<float>         gCapPos, gCapUV, gCapNrm;
+static std::vector<unsigned char> gCapCol;
+static inline void capVert(float x, float y, float z, float u, float v,
+                           float nx, float ny, float nz, Color c) {
+    gCapPos.push_back(x); gCapPos.push_back(y); gCapPos.push_back(z);
+    gCapUV.push_back(u);  gCapUV.push_back(v);
+    gCapNrm.push_back(nx); gCapNrm.push_back(ny); gCapNrm.push_back(nz);
+    gCapCol.push_back(c.r); gCapCol.push_back(c.g); gCapCol.push_back(c.b); gCapCol.push_back(c.a);
+}
+
+// The emit (~2M verts) is the expensive part and is pure CPU, so it runs on a
+// BACKGROUND THREAD overlapping the GPU-bound part of the frame. The worker reads
+// the terrain height cache + carve maps + track, none of which the main thread
+// mutates between when the worker is dispatched (end of render) and joined (top of
+// the next frame, before physics/prefill/carve rebuild) — so no locking is needed.
+// Only the GL UploadMesh runs on the main thread, after the join.
+struct TerrainMesh {
+    Mesh mesh{};
+    bool live = false;
+    int keyCx = INT_MIN, keyCz = INT_MIN, keyU = INT_MIN;
+    std::thread worker;
+    bool building = false;
+    int  pendCx = 0, pendCz = 0, pendU = 0;   // key the in-flight build is for
+
+    // The mesh covers the full TERRA_R disc (192m), so it can drift a few cells
+    // off-centre with no visible change at the far fog edge. Rebuilding only when
+    // the camera has crossed a small CELL BLOCK (or the carve window has advanced
+    // a couple control points) keeps the cache useful at full ride speed, where
+    // the camera otherwise crosses one cell almost every frame.
+    static const int REBUILD_CELLS = 6;   // rebuild after the camera moves this many cells
+    static const int REBUILD_U     = 3;   // ...or the track carve window advances this far
+    bool needsRebuild(int cx, int cz, int uIdx) const {
+        if (building) return false;       // a build is already in flight for this move
+        return !live || abs(cx - keyCx) >= REBUILD_CELLS || abs(cz - keyCz) >= REBUILD_CELLS
+                     || abs(uIdx - keyU) >= REBUILD_U;
+    }
+    // run the (caller-provided) emit on a worker thread; capture buffers are filled
+    // off the main thread while the GPU finishes the frame.
+    template <class EmitFn>
+    void dispatch(EmitFn &&emit, int cx, int cz, int uIdx) {
+        pendCx = cx; pendCz = cz; pendU = uIdx; building = true;
+        gCapPos.clear(); gCapUV.clear(); gCapNrm.clear(); gCapCol.clear();
+        // gCapture is thread_local: set it ON the worker so it captures, while the
+        // main thread's gCapture stays false for its immediate-mode coaster draws.
+        worker = std::thread([emit]() { gCapture = true; emit(); gCapture = false; });
+    }
+    // join the worker (if any) and upload the freshly-built buffers into the VBO.
+    // MUST be called on the main thread before any terrain data is mutated again.
+    // The VBO is allocated ONCE at a generous capacity (dynamic) and refilled with
+    // glBufferSubData (UpdateMeshBuffer) each rebuild — no per-rebuild VBO realloc.
+    int capVerts = 0;                      // allocated vertex capacity of the dynamic VBO
+    void finish() {
+        if (!building) return;
+        if (worker.joinable()) worker.join();
+        int vcount = (int)(gCapPos.size() / 3);
+        if (vcount > 0) {
+            if (live && vcount <= capVerts) {
+                // reuse the existing dynamic VBO: just stream the new vertices in
+                mesh.vertexCount   = vcount;
+                mesh.triangleCount = vcount / 3;
+                UpdateMeshBuffer(mesh, 0, gCapPos.data(), (int)(gCapPos.size() * sizeof(float)), 0);
+                UpdateMeshBuffer(mesh, 1, gCapUV.data(),  (int)(gCapUV.size()  * sizeof(float)), 0);
+                UpdateMeshBuffer(mesh, 2, gCapNrm.data(), (int)(gCapNrm.size() * sizeof(float)), 0);
+                UpdateMeshBuffer(mesh, 3, gCapCol.data(), (int)(gCapCol.size() * sizeof(unsigned char)), 0);
+            } else {
+                // (re)allocate a dynamic VBO at 1.25x so growth doesn't realloc often
+                if (live) { UnloadMesh(mesh); mesh = Mesh{}; live = false; }
+                capVerts = (vcount * 5) / 4;
+                mesh.vertexCount   = capVerts;     // allocate at capacity...
+                mesh.triangleCount = capVerts / 3;
+                mesh.vertices  = (float *)RL_CALLOC(capVerts * 3, sizeof(float));
+                mesh.texcoords = (float *)RL_CALLOC(capVerts * 2, sizeof(float));
+                mesh.normals   = (float *)RL_CALLOC(capVerts * 3, sizeof(float));
+                mesh.colors    = (unsigned char *)RL_CALLOC(capVerts * 4, sizeof(unsigned char));
+                std::copy(gCapPos.begin(), gCapPos.end(), mesh.vertices);
+                std::copy(gCapUV.begin(),  gCapUV.end(),  mesh.texcoords);
+                std::copy(gCapNrm.begin(), gCapNrm.end(), mesh.normals);
+                std::copy(gCapCol.begin(), gCapCol.end(), mesh.colors);
+                UploadMesh(&mesh, true);           // dynamic = streamable VBO
+                mesh.vertexCount   = vcount;       // ...but only draw the live verts
+                mesh.triangleCount = vcount / 3;
+                live = true;
+            }
+        }
+        keyCx = pendCx; keyCz = pendCz; keyU = pendU;
+        building = false;
+    }
+};
+static TerrainMesh gTerrainMesh;
+static Material gTerrainMat{};   // atlas-textured material for the cached terrain VBO
+
 // textured axis-aligned cube; same vertex layout raylib's DrawCube uses, but
 // with atlas UVs so every block face gets a pixel-art texture.
 //
@@ -545,6 +647,11 @@ static inline void aoColor(Color c, float k) {     // k in [0,1]; 1 = full brigh
     rlColor4ub((unsigned char)(c.r * k), (unsigned char)(c.g * k),
                (unsigned char)(c.b * k), c.a);
 }
+// capture darkened colour (matches aoColor): k in [0,1] vertical AO term.
+static inline Color capCol(Color c, float k) {
+    return Color{ (unsigned char)(c.r * k), (unsigned char)(c.g * k),
+                  (unsigned char)(c.b * k), c.a };
+}
 static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c) {
     float x = p.x, y = p.y, z = p.z;
     float u0 = (tile * 16 + 0.5f) / (float)(TILE_N * 16);
@@ -552,6 +659,24 @@ static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c)
     float v0 = 0.5f / 16.0f, v1 = 15.5f / 16.0f;
     // top vertices stay bright; bottom vertices/underside darken toward gAOBot.
     float kT = gAOTop / 255.0f, kB = gAOBot / 255.0f;
+    if (gCapture) {
+        // append the same 6 faces as triangulated quads (4 verts -> 6) to the
+        // retained terrain mesh buffers. winding/normals/UVs/AO match below.
+        Color cB = capCol(c, kB), cT = capCol(c, kT);
+        float xm = x - w/2, xp = x + w/2, ym = y - h/2, yp = y + h/2, zm = z - l/2, zp = z + l/2;
+        // helper: push a quad (v0..v3) as two triangles 0-1-2, 0-2-3
+        #define CAPQ(nx,ny,nz, ax,ay,az,au,av,ac, bx,by,bz,bu,bv,bc, ccx,ccy,ccz,cu,cv,cc, dx,dy,dz,du,dv,dc) \
+            capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(bx,by,bz,bu,bv,nx,ny,nz,bc); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); \
+            capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); capVert(dx,dy,dz,du,dv,nx,ny,nz,dc)
+        CAPQ(0,0,1,  xm,ym,zp,u0,v1,cB,  xp,ym,zp,u1,v1,cB,  xp,yp,zp,u1,v0,cT,  xm,yp,zp,u0,v0,cT);   // front
+        CAPQ(0,0,-1, xm,ym,zm,u1,v1,cB,  xm,yp,zm,u1,v0,cT,  xp,yp,zm,u0,v0,cT,  xp,ym,zm,u0,v1,cB);   // back
+        CAPQ(0,1,0,  xm,yp,zm,u0,v0,cT,  xm,yp,zp,u0,v1,cT,  xp,yp,zp,u1,v1,cT,  xp,yp,zm,u1,v0,cT);   // top
+        CAPQ(0,-1,0, xm,ym,zm,u1,v0,cB,  xp,ym,zm,u0,v0,cB,  xp,ym,zp,u0,v1,cB,  xm,ym,zp,u1,v1,cB);   // bottom
+        CAPQ(1,0,0,  xp,ym,zm,u1,v1,cB,  xp,yp,zm,u1,v0,cT,  xp,yp,zp,u0,v0,cT,  xp,ym,zp,u0,v1,cB);   // right
+        CAPQ(-1,0,0, xm,ym,zm,u0,v1,cB,  xm,ym,zp,u1,v1,cB,  xm,yp,zp,u1,v0,cT,  xm,yp,zm,u0,v0,cT);   // left
+        #undef CAPQ
+        return;
+    }
     // per-face normals feed the lighting shader (real directional light + cast
     // shadows on the GPU); per-vertex colour carries the baked AO term.
     rlNormal3f(0, 0, 1);                                               // front
@@ -589,7 +714,7 @@ static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c)
 static void drawCubeTexAO(int tile, Vector3 p, float w, float h, float l, Color c,
                           unsigned char aoTop, unsigned char aoBot) {
     gAOTop = aoTop; gAOBot = aoBot;
-    if (gVoxelBatchOpen) {
+    if (gCapture || gVoxelBatchOpen) {
         emitCubeTex(tile, p, w, h, l, c);
     } else {
         rlSetTexture(gAtlas.id);
@@ -1141,6 +1266,8 @@ int main(int argc, char **argv) {
     InitAudioDevice();
     SetMasterVolume(0.55f);
     gAtlas = makeAtlas();
+    gTerrainMat = LoadMaterialDefault();                 // material for the cached terrain mesh
+    gTerrainMat.maps[MATERIAL_MAP_DIFFUSE].texture = gAtlas;
     g_sunDir = Vector3Normalize(g_sunDir);               // GLSL light direction
     gShadow.init();                                      // shaders + shadow-map FBO
     gSky.init();                                         // atmospheric scattering sky
@@ -1189,6 +1316,10 @@ int main(int argc, char **argv) {
     // column must extend near the track so deep tunnels are bored through solid rock
     // (not floating in void where the surface sits far above the track).
     std::vector<float> carveLo(carveW * carveW), carveHi(carveW * carveW), carveDeep(carveW * carveW);
+    // forceTop: a hard ceiling on the rendered surface height for a few footprints
+    // (helix coil interior, station platforms) so big hills can't poke up between the
+    // open lattice / under the deck. 1e9 = no clamp. Cleared & restamped each rebuild.
+    std::vector<float> forceTop(carveW * carveW);
     std::vector<Vector3> waterCells;
     waterCells.reserve((2 * TERRA_R + 1) * (2 * TERRA_R + 1) / 3);
 
@@ -1268,6 +1399,10 @@ int main(int argc, char **argv) {
         else if (WindowShouldClose()) break;
 
         double tFrame0 = GetTime();
+        // join+upload the previous frame's async terrain build BEFORE any terrain
+        // data (track, height cache, carve maps) is mutated this frame — the worker
+        // has been reading exactly that data, lock-free, since it was dispatched.
+        gTerrainMesh.finish();
         float rawDt = (shotMode || benchMode || rttestMode) ? (1.0f / 60.0f) : GetFrameTime();
         float dt = fminf(rawDt, 0.05f);                  // cap the physics step so a hitch can't explode the sim
         // when the real frame time exceeds the cap the world runs in slow-motion, so
@@ -1609,7 +1744,6 @@ int main(int argc, char **argv) {
 
         // ------------------------------------------------------- render ----
         // terrain + trees
-        waterCells.clear();
         int ccx = (int)floorf(P.x / CELL), ccz = (int)floorf(P.z / CELL);
         float fogEnd = TERRA_R * CELL;
         // prefill the visible terrain heights across worker threads, so the carve
@@ -1622,6 +1756,76 @@ int main(int argc, char **argv) {
         std::fill(carveLo.begin(), carveLo.end(),  1e9f);
         std::fill(carveHi.begin(), carveHi.end(), -1e9f);
         std::fill(carveDeep.begin(), carveDeep.end(), 1e9f);
+        std::fill(forceTop.begin(), forceTop.end(), 1e9f);
+
+        // ---- TASK 2a: flatten the terrain inside the HELIX coil so a hill can't
+        // poke up through the open lattice tower. Compute the coil axis + radius
+        // from the contiguous M_HELIX control-point run (same seed-and-expand the
+        // tower drawing uses), then clamp the surface inside that cylinder to just
+        // below the lowest coil. forceTop later lowers the rendered column height.
+        {
+            int hk0 = (int)fmaxf(1.0f, u - 14.0f), hk1 = (int)(u + 46);
+            int hxSeed = -1;
+            for (int i = hk0; i <= hk1 && i + 1 < (int)trk.cp.size(); i++)
+                if (trk.kind[i] == M_HELIX) { hxSeed = i; break; }
+            if (hxSeed >= 0) {
+                int a = hxSeed, b = hxSeed;
+                while (a > 1 && trk.kind[a - 1] == M_HELIX) a--;
+                while (b + 2 < (int)trk.cp.size() && trk.kind[b + 1] == M_HELIX) b++;
+                Vector3 ax = { 0, 0, 0 }; int n = 0; float loY = 1e9f, radMax = 0.0f;
+                for (int i = a; i <= b; i++) { ax.x += trk.cp[i].x; ax.z += trk.cp[i].z; n++;
+                    if (trk.cp[i].y < loY) loY = trk.cp[i].y; }
+                if (n >= 4) {
+                    ax.x /= n; ax.z /= n;
+                    for (int i = a; i <= b; i++) {
+                        float rx = trk.cp[i].x - ax.x, rz = trk.cp[i].z - ax.z;
+                        float r = sqrtf(rx*rx + rz*rz); if (r > radMax) radMax = r;
+                    }
+                    // clear the full coil disc (+ a small margin), down to under the
+                    // lowest coil so no terrain intrudes between the open struts.
+                    float clampY = loY - 3.0f;
+                    float coilR = radMax + 2.0f;
+                    int acx = (int)floorf(ax.x / CELL), acz = (int)floorf(ax.z / CELL);
+                    int rc = (int)ceilf(coilR / CELL) + 1;
+                    for (int oz = -rc; oz <= rc; oz++)
+                        for (int ox = -rc; ox <= rc; ox++) {
+                            int dx = (acx + ox) - ccx, dz = (acz + oz) - ccz;
+                            if (dx < -TERRA_R || dx > TERRA_R || dz < -TERRA_R || dz > TERRA_R) continue;
+                            float cwx = (acx + ox) * CELL + CELL * 0.5f - ax.x;
+                            float cwz = (acz + oz) * CELL + CELL * 0.5f - ax.z;
+                            if (cwx*cwx + cwz*cwz > coilR*coilR) continue;
+                            int ci = (dz + TERRA_R) * carveW + (dx + TERRA_R);
+                            if (clampY < forceTop[ci]) forceTop[ci] = clampY;
+                        }
+                }
+            }
+        }
+
+        // ---- TASK 2b: flatten the terrain under each station platform footprint
+        // so hills don't poke up between the support pillars / under the deck. ----
+        {
+            auto stampStation = [&](Vector3 sp, float yaw) {
+                float dpx = sp.x - P.x, dpz = sp.z - P.z;
+                if (dpx*dpx + dpz*dpz > (fogEnd + 140.0f) * (fogEnd + 140.0f)) return;
+                const float CZ = 22.0f, halfLen = 52.0f, halfWid = 9.0f;   // a touch past the deck footprint
+                float clampY = sp.y - 2.6f;                                // below the deck slab underside
+                float cs = cosf(yaw), sn = sinf(yaw);
+                // iterate the local footprint rectangle and stamp each covered cell
+                for (float lz = -halfLen; lz <= CZ + halfLen; lz += CELL)
+                    for (float lx = -halfWid; lx <= halfWid; lx += CELL) {
+                        float wx = sp.x + sn * lz + cs * lx;
+                        float wz = sp.z + cs * lz - sn * lx;
+                        int scx = (int)floorf(wx / CELL), scz = (int)floorf(wz / CELL);
+                        int dx = scx - ccx, dz = scz - ccz;
+                        if (dx < -TERRA_R || dx > TERRA_R || dz < -TERRA_R || dz > TERRA_R) continue;
+                        int ci = (dz + TERRA_R) * carveW + (dx + TERRA_R);
+                        if (clampY < forceTop[ci]) forceTop[ci] = clampY;
+                    }
+            };
+            stampStation(trk.startPos, trk.startYaw);
+            if (trk.stationActive) stampStation(trk.stationPos, trk.stationYaw);
+        }
+
         for (float su = fmaxf(u - 14.0f, 0.0f); su <= u + 28.0f; su += 0.17f) {
             Vector3 ps = trk.pos(su);
             float lo = ps.y - 4.0f, hi = ps.y + 4.5f;
@@ -1653,34 +1857,27 @@ int main(int argc, char **argv) {
         // track beams/rails/ties, train) and skip terrain/trees/water/stations.
         // Used to re-composite the crisp rasterised coaster on top of the
         // path-traced world (the voxel trace only has coarse track voxels).
-        auto drawWorld = [&](bool depthPass, bool coasterOnly = false) {
-        if (!coasterOnly) {
-        // horizontal camera forward, for frustum-culling the lit pass: the cameras only
-        // ever look forward, so cells well BEHIND the view never need drawing. ~40% fewer
-        // terrain cells per lit frame, zero visible change. (shadow pass keeps everything.)
-        Vector3 camF = Vector3Subtract(cam.target, cam.position);
-        float cfl = sqrtf(camF.x * camF.x + camF.z * camF.z);
-        float camFx = cfl > 1e-3f ? camF.x / cfl : 0.0f, camFz = cfl > 1e-3f ? camF.z / cfl : 1.0f;
-        beginVoxelBatch();
+        // ---- the cached terrain mesh is built ONCE (gCapture) in buildTerrainMesh
+        // below and just DrawMesh'd here every frame; fog now lives in the lit shader
+        // so the baked vertex colours stay reusable. depthPass uses the same mesh, so
+        // distant terrain casts real shadows (the light frustum bounds the range).
+        auto buildTerrainMesh = [&]() {
+        {
+        const bool depthPass = false;        // mesh is the full lit disc; fog=0 colours
+        waterCells.clear();                  // water list is rebuilt alongside the mesh
         for (int dz = -TERRA_R; dz <= TERRA_R; dz++) {
             for (int dx = -TERRA_R; dx <= TERRA_R; dx++) {
-                if (depthPass && (dx < -SHADOW_TERRAIN_R || dx > SHADOW_TERRAIN_R ||
-                                  dz < -SHADOW_TERRAIN_R || dz > SHADOW_TERRAIN_R)) continue;
                 int cx = ccx + dx, cz = ccz + dz;
                 float wx = cx * CELL + CELL * 0.5f, wz = cz * CELL + CELL * 0.5f;
                 float ddx = wx - P.x, ddz = wz - P.z;
                 float dist2 = ddx * ddx + ddz * ddz;
                 if (dist2 > fogEnd * fogEnd) continue;     // circular draw radius around the player
-                if (!depthPass && dist2 > 30.0f * 30.0f) { // cull cells behind the camera (keep a wide front arc)
-                    float cdx = wx - cam.position.x, cdz = wz - cam.position.z;
-                    if (cdx * camFx + cdz * camFz < -0.28f * sqrtf(cdx * cdx + cdz * cdz)) continue;
-                }
-                float fog = 0.0f;
-                if (!depthPass) {
-                    float dist = sqrtf(dist2);
-                    fog = Clamp((dist - fogEnd * 0.70f) / (fogEnd * 0.27f), 0.0f, 1.0f);   // fully fades to sky BEFORE the cull radius (no hard circular edge)
-                    if (fog > 0.97f) continue;
-                }
+                // gateFog: distance term used ONLY to thin distant cosmetic detail
+                // (trees/flowers/rocks). Colours are baked fog-FREE (fog=0); the shader
+                // applies distance fog so the mesh is reusable across frames.
+                float gateFog = Clamp((sqrtf(dist2) - fogEnd * 0.70f) / (fogEnd * 0.27f), 0.0f, 1.0f);
+                if (gateFog > 0.97f) continue;
+                const float fog = 0.0f;
 
                 // UNIFORM cells (no stride LOD): a stride change always reads as a hard
                 // ring out on the ground, so the whole horizon is one cell size. The
@@ -1688,6 +1885,12 @@ int main(int argc, char **argv) {
                 // the edge instead. Distance is bounded by TERRA_R, kept fast.
                 float cellSz = CELL;
                 int h = gHCache.get(cx, cz);
+                // TASK 2: force the rendered surface DOWN inside the helix coil /
+                // under station decks so terrain can't poke up where it shouldn't.
+                {
+                    float ft = forceTop[(dz + TERRA_R) * carveW + (dx + TERRA_R)];
+                    if (ft < 1e8f && (float)h > ft) h = (int)floorf(ft);
+                }
                 float top = h + 1.0f;
 
                 // biome pick: cap color, tree type and density (thresholds scaled to taller terrain)
@@ -1782,7 +1985,7 @@ int main(int argc, char **argv) {
                 if (top < WATER_Y && !depthPass) waterCells.push_back(Vector3{ wx, cellSz, wz });  // y carries the LOD block size
 
 	                float th = hashf(cx * 9 + 7, cz * 9 + 3);
-	                if (treeType >= 0 && fog < 0.85f && th < treeDen) {
+	                if (treeType >= 0 && gateFog < 0.85f && th < treeDen) {
 	                    if (treeType == 1 && th > treeDen * 0.5f) treeType = 0;     // forest mixes birch+oak
 	                    auto treeHitsTrackClearance = [&](int tt) -> bool {
 	                        if ((int)trk.cp.size() < 4) return false;
@@ -1859,7 +2062,7 @@ int main(int argc, char **argv) {
                         }
                         #undef LEAF_AT
                     }
-                } else if (!depthPass && treeType >= 0 && bio < 0.62f && h < 110 && fog < 0.65f && th > 0.955f && !beach) {
+                } else if (!depthPass && treeType >= 0 && bio < 0.62f && h < 110 && gateFog < 0.65f && th > 0.955f && !beach) {
                     // tycoon-style flower clusters: a few coloured dabs together
                     float pick = hashf(cx * 13 + 5, cz * 13 + 9);
                     Color fc = pick < 0.33f ? Color{226, 86, 96, 255}
@@ -1873,7 +2076,7 @@ int main(int argc, char **argv) {
                                     mixc(Color{ 96, 168, 92, 255 }, SKY, fog));               // stem
                         drawCubeTex(T_WHITE, Vector3{ wx + ox, top + 0.42f, wz + oz }, 0.26f, 0.22f, 0.26f, fc); // bloom
                     }
-                } else if (!depthPass && treeType >= 0 && fog < 0.6f && h < 150 &&
+                } else if (!depthPass && treeType >= 0 && gateFog < 0.6f && h < 150 &&
                            hashf(cx * 17 + 3, cz * 11 + 7) > 0.982f) {
                     // scattered mossy boulders / rocks
                     Color rk = mixc(shade(Color{ 138, 140, 148, 255 }, sh), SKY, fog);
@@ -1884,9 +2087,29 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        endVoxelBatch();
+        }
+        };  // end buildTerrainMesh lambda
 
-        }  // end !coasterOnly
+        auto drawWorld = [&](bool depthPass, bool coasterOnly = false) {
+        if (!coasterOnly && gTerrainMesh.live) {
+            // one retained VBO for the whole visible terrain (+ its trees). The
+            // shadow (depth) pass and the lit pass both draw it; fog is applied in
+            // the lit shader (fogEnd>0) and disabled for everything else (fogEnd<=0).
+            Material mat = gTerrainMat;
+            mat.shader = depthPass ? gShadow.depth : gShadow.lit;
+            if (!depthPass) {
+                float fe = fogEnd;
+                float fc[3] = { SKY.r / 255.0f, SKY.g / 255.0f, SKY.b / 255.0f };
+                SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
+            }
+            DrawMesh(gTerrainMesh.mesh, mat, MatrixIdentity());
+            if (!depthPass) {                          // disable fog again so the
+                float off = 0.0f;                      // immediate-mode coaster/supports
+                SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);  // keep their own baked fog
+                rlActiveTextureSlot(0);                // DrawMesh left its texture bound
+            }
+        }
 
         // the launch hall; the upcoming station while approaching it; and the berth
         // we're parked at (so it doesn't vanish when you step off). Drawn in BOTH
@@ -2108,6 +2331,21 @@ int main(int argc, char **argv) {
             }
         }
         };  // end drawWorld lambda
+
+        // (re)build the retained terrain mesh only when the camera crosses a small
+        // cell block or the carve/track window advances — i.e. when the baked
+        // geometry would actually differ. The emit runs on a BACKGROUND THREAD
+        // (dispatched one frame, joined+uploaded the next), so the ~2M-vert rebuild
+        // never stalls the frame. Between rebuilds drawWorld just DrawMesh'es the
+        // cached VBO, so terrain is never re-batched on the CPU.
+        //
+        // Safe without locks: the worker reads gHCache + the carve/forceTop maps +
+        // the track, and the main thread doesn't touch ANY of those between dispatch
+        // (now) and finish() (top of the NEXT frame, before physics/prefill/carve).
+        if (gTerrainMesh.needsRebuild(ccx, ccz, (int)u)) {
+            gTerrainMesh.dispatch(buildTerrainMesh, ccx, ccz, (int)u);
+            if (!gTerrainMesh.live) gTerrainMesh.finish();      // cold start: build the first mesh synchronously
+        }
 
         Matrix lightVP = gShadow.computeLightVP(P);
         BeginDrawing();
@@ -2824,6 +3062,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
         }
     }
+    gTerrainMesh.finish();             // join any in-flight async terrain build before exit
 
     if (benchMode) {                   // per-element g-force profile
         static const char *EN[M_COUNT] = {

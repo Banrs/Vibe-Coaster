@@ -124,8 +124,12 @@ void Renderer::init() {
     float halfExtent = fmaxf(maxx - minx, maxz - minz) * 0.5f + MARGIN;
     int N = (int)ceilf(2.0f * halfExtent / CELL);
 
-    // Build terrain mesh under the coaster, then append coaster geometry.
-    Terrain t = buildTerrain(cx, cz, N, CELL);
+    // Track point positions, for keeping trees clear of the coaster.
+    std::vector<float3> trackPts(nRender);
+    for (int i = 0; i < nRender; i++) trackPts[i] = co.cps[i].p;
+
+    // Build terrain mesh (with trees) under the coaster, then append coaster geometry.
+    Terrain t = buildTerrain(cx, cz, N, CELL, trackPts.data(), nRender);
     uint32_t terrainTris = (uint32_t)(t.verts.size() / 3);
     buildCoaster(co, t.verts, nRender);
     triCount = (uint32_t)(t.verts.size() / 3);

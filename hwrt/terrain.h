@@ -109,9 +109,49 @@ static void pushQuad(std::vector<MeshVertex>& out, float3 a, float3 b, float3 c,
     }
 }
 
+// Axis-aligned box centred at (cx,cy,cz) with full extents (w,h,l). Six flat
+// quads with explicit outward normals (used for tree trunks/canopies).
+static void pushVoxBox(std::vector<MeshVertex>& out, float cx, float cy, float cz,
+                       float w, float h, float l, float3 a) {
+    float x0=cx-w*0.5f, x1=cx+w*0.5f, y0=cy-h*0.5f, y1=cy+h*0.5f, z0=cz-l*0.5f, z1=cz+l*0.5f;
+    pushQuad(out, vec3(x0,y0,z1),vec3(x1,y0,z1),vec3(x1,y1,z1),vec3(x0,y1,z1), vec3(0,0,1),  a); // +z
+    pushQuad(out, vec3(x1,y0,z0),vec3(x0,y0,z0),vec3(x0,y1,z0),vec3(x1,y1,z0), vec3(0,0,-1), a); // -z
+    pushQuad(out, vec3(x1,y0,z1),vec3(x1,y0,z0),vec3(x1,y1,z0),vec3(x1,y1,z1), vec3(1,0,0),  a); // +x
+    pushQuad(out, vec3(x0,y0,z0),vec3(x0,y0,z1),vec3(x0,y1,z1),vec3(x0,y1,z0), vec3(-1,0,0), a); // -x
+    pushQuad(out, vec3(x0,y1,z1),vec3(x1,y1,z1),vec3(x1,y1,z0),vec3(x0,y1,z0), vec3(0,1,0),  a); // +y
+    pushQuad(out, vec3(x0,y0,z0),vec3(x1,y0,z0),vec3(x1,y0,z1),vec3(x0,y0,z1), vec3(0,-1,0), a); // -y
+}
+
+// A simple low-poly voxel tree (trunk + a couple of canopy boxes) sitting on the
+// ground top (cx, topY, cz). Type 0 oak, 1 birch, 2 spruce. Deliberately
+// tree-ONLY (no flowers/rocks/mushrooms) and only 3-4 boxes each so the RT
+// triangle load stays modest.
+static void pushTree(std::vector<MeshVertex>& out, float cx, float topY, float cz, int type, float s) {
+    if (type == 2) {                                   // spruce: stacked conical canopy
+        float3 bark = vec3(0.30f,0.22f,0.14f), lf = vec3(0.20f,0.37f,0.24f);
+        pushVoxBox(out, cx, topY+1.6f*s, cz, 0.7f*s, 3.4f*s, 0.7f*s, bark);
+        pushVoxBox(out, cx, topY+2.4f*s, cz, 3.0f*s, 1.1f*s, 3.0f*s, lf);
+        pushVoxBox(out, cx, topY+3.4f*s, cz, 2.1f*s, 1.0f*s, 2.1f*s, lf*1.06f);
+        pushVoxBox(out, cx, topY+4.3f*s, cz, 1.2f*s, 1.0f*s, 1.2f*s, lf*1.12f);
+    } else if (type == 1) {                            // birch: tall, pale trunk
+        float3 bark = vec3(0.80f,0.78f,0.72f), lf = vec3(0.42f,0.60f,0.30f);
+        pushVoxBox(out, cx, topY+1.9f*s, cz, 0.55f*s, 3.8f*s, 0.55f*s, bark);
+        pushVoxBox(out, cx, topY+4.2f*s, cz, 2.5f*s, 1.6f*s, 2.5f*s, lf);
+        pushVoxBox(out, cx, topY+5.3f*s, cz, 1.5f*s, 1.0f*s, 1.5f*s, lf*1.07f);
+    } else {                                           // oak: round bushy canopy
+        float3 bark = vec3(0.40f,0.27f,0.15f), lf = vec3(0.28f,0.50f,0.20f);
+        pushVoxBox(out, cx, topY+1.5f*s, cz, 0.75f*s, 3.0f*s, 0.75f*s, bark);
+        pushVoxBox(out, cx, topY+3.6f*s, cz, 3.3f*s, 1.7f*s, 3.3f*s, lf);
+        pushVoxBox(out, cx, topY+4.8f*s, cz, 2.0f*s, 1.2f*s, 2.0f*s, lf*1.08f);
+    }
+}
+
 // Mesh an N x N cell region. centerX/centerZ are the world center; `cell` is the
 // voxel size in world units (height snapped to that grid for the blocky look).
-static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cell = 6.0f) {
+// cps/ncps (optional) are the track control points used to keep trees clear of
+// the coaster.
+static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cell = 6.0f,
+                            const float3* cps = nullptr, int ncps = 0) {
     Terrain t;
     t.gridN = N;
     t.cell = cell;
@@ -162,6 +202,25 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
             else if (h >= snowLvl)      topAlb = snow;
             else if (h >= rockLvl || slope >= 6) topAlb = rock;
             else                        topAlb = ((x ^ z) & 1) ? grass : grassHi;
+
+            // --- trees on flat-ish grass cells (deterministic, track-cleared) ---
+            bool isGrass = (topAlb.x == grass.x || topAlb.x == grassHi.x);
+            if (cps && isGrass && h < snowLvl && slope < 4) {
+                float wcx = wx + cell * 0.5f, wcz = wz + cell * 0.5f;
+                if (hashf(x * 7 + 1, z * 7 + 3) < 0.07f) {        // forest density
+                    bool clear = true;                            // keep a corridor clear of track
+                    for (int k = 0; k < ncps; k++) {
+                        float dx = cps[k].x - wcx, dz = cps[k].z - wcz;
+                        if (dx*dx + dz*dz < 49.0f) { clear = false; break; }
+                    }
+                    if (clear) {
+                        float r2 = hashf(x * 3 + 5, z * 9 + 2);
+                        int type = (h > rockLvl - 6) ? 2 : (r2 < 0.30f ? 1 : 0);   // spruce up high
+                        float s  = 0.85f + hashf(x * 5 + 7, z * 5 + 1) * 0.5f;     // size variety
+                        pushTree(t.verts, wcx, topY, wcz, type, s);
+                    }
+                }
+            }
 
             // top face
             pushQuad(t.verts,

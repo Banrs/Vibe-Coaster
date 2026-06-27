@@ -37,8 +37,8 @@
 
 // ---------------------------------------------------------------- tunables --
 static const float SEG_LEN   = 14.0f;   // distance between track control points
-static const float CELL      = 2.0f;    // terrain block size
-static const int   TERRA_R   = 96;      // terrain radius in cells (192m view ≈ Minecraft 12-chunk) — threaded height cache keeps it cheap
+static const float CELL      = 1.0f;    // terrain block size — true 1m Minecraft cubes (heights are already integer metres, so columns are now 1x1x1)
+static const int   TERRA_R   = 192;     // terrain radius in cells (192m view ≈ Minecraft 12-chunk) — doubled with the 1m cell so the world view distance is unchanged; threaded height cache keeps it cheap
 // (the cached terrain mesh is drawn whole in the shadow depth pass too, so terrain
 //  casts shadows across the entire light frustum — no separate depth-pass radius.)
 static const float WATER_Y   = 30.0f;   // sea level (Minecraft-ish)
@@ -570,7 +570,7 @@ struct TerrainMesh {
     // the camera has crossed a small CELL BLOCK (or the carve window has advanced
     // a couple control points) keeps the cache useful at full ride speed, where
     // the camera otherwise crosses one cell almost every frame.
-    static const int REBUILD_CELLS = 6;   // rebuild after the camera moves this many cells
+    static const int REBUILD_CELLS = 12;  // rebuild after the camera moves this many cells (12 at the 1m cell = same ~12m world cadence as before)
     static const int REBUILD_U     = 3;   // ...or the track carve window advances this far
     bool needsRebuild(int cx, int cz, int uIdx) const {
         if (building) return false;       // a build is already in flight for this move
@@ -2011,12 +2011,12 @@ int main(int argc, char **argv) {
 	                    if (treeType == 1 && th > treeDen * 0.5f) treeType = 0;     // forest mixes birch+oak
 	                    auto treeHitsTrackClearance = [&](int tt) -> bool {
 	                        if ((int)trk.cp.size() < 4) return false;
-	                        float treeR = 1.8f, treeHi = top + 5.2f;
+	                        float treeR = 2.4f, treeHi = top + 11.0f;
 	                        switch (tt) {
-	                            case 0: treeR = 1.6f; treeHi = top + 5.1f; break;
-	                            case 1: treeR = 1.25f; treeHi = top + 5.5f; break;
-	                            case 2: treeR = 1.5f; treeHi = top + 5.2f; break;
-	                            case 3: treeR = 1.8f; treeHi = top + 3.1f; break;
+	                            case 0: treeR = 2.2f; treeHi = top + 10.5f; break;   // oak  ~10m
+	                            case 1: treeR = 1.8f; treeHi = top + 12.5f; break;   // birch ~12m
+	                            case 2: treeR = 2.0f; treeHi = top + 14.0f; break;   // spruce ~14m
+	                            case 3: treeR = 2.6f; treeHi = top + 8.0f;  break;   // acacia ~8m
 	                        }
 	                        float treeLo = top - 0.05f;
 	                        float hitR = BORE_R + treeR + 1.25f;
@@ -2052,34 +2052,35 @@ int main(int argc, char **argv) {
                         #define LEAF_AT(LX, LY, LZ, W, HH, LL, C) do { Vector3 _s = sway(LY); \
                             drawCubeTex(T_LEAF, Vector3{ (LX) + _s.x, (LY), (LZ) + _s.z }, W, HH, LL, C); } while (0)
                         switch (treeType) {
-                            case 0:                                                  // oak
+                            case 0:                                                  // oak  (~10m: 5m trunk, round crown)
                                 tr = mixc(shade(WOOD, sh), SKY, fog);
                                 lf = mixc(shade(LEAF, sh), SKY, fog);
-                                drawCubeTex(T_LOG,  Vector3{ wx, top + 1.4f, wz }, 0.7f, 2.8f, 0.7f, tr);
-                                LEAF_AT(wx, top + 3.4f, wz, 3.2f, 1.6f, 3.2f, lf);
-                                LEAF_AT(wx, top + 4.5f, wz, 2.0f, 1.2f, 2.0f, shade(lf, 1.08f));
+                                drawCubeTex(T_LOG,  Vector3{ wx, top + 2.6f, wz }, 0.8f, 5.2f, 0.8f, tr);
+                                LEAF_AT(wx, top + 6.6f, wz, 4.6f, 2.6f, 4.6f, lf);
+                                LEAF_AT(wx, top + 8.8f, wz, 3.0f, 1.9f, 3.0f, shade(lf, 1.08f));
                                 break;
-                            case 1:                                                  // birch
+                            case 1:                                                  // birch (~12m: tall slim trunk)
                                 tr = mixc(shade(Color{214,209,194,255}, sh), SKY, fog);
                                 lf = mixc(shade(Color{112,162, 81,255}, sh), SKY, fog);
-                                drawCubeTex(T_LOG,  Vector3{ wx, top + 1.7f, wz }, 0.6f, 3.4f, 0.6f, tr);
-                                LEAF_AT(wx, top + 4.0f, wz, 2.5f, 1.5f, 2.5f, lf);
-                                LEAF_AT(wx, top + 5.0f, wz, 1.6f, 1.0f, 1.6f, shade(lf, 1.07f));
+                                drawCubeTex(T_LOG,  Vector3{ wx, top + 3.3f, wz }, 0.7f, 6.6f, 0.7f, tr);
+                                LEAF_AT(wx, top + 7.8f, wz, 3.6f, 2.4f, 3.6f, lf);
+                                LEAF_AT(wx, top + 10.2f, wz, 2.3f, 1.6f, 2.3f, shade(lf, 1.07f));
                                 break;
-                            case 2:                                                  // spruce
+                            case 2:                                                  // spruce (~14m: tall conifer, tiered)
                                 tr = mixc(shade(Color{ 82, 60, 40,255}, sh), SKY, fog);
                                 lf = mixc(shade(Color{ 65,101, 65,255}, sh), SKY, fog);
-                                drawCubeTex(T_LOG,  Vector3{ wx, top + 1.6f, wz }, 0.6f, 3.2f, 0.6f, tr);
-                                LEAF_AT(wx, top + 2.1f, wz, 3.0f, 1.0f, 3.0f, lf);
-                                LEAF_AT(wx, top + 3.1f, wz, 2.2f, 1.0f, 2.2f, shade(lf, 1.05f));
-                                LEAF_AT(wx, top + 4.0f, wz, 1.4f, 0.9f, 1.4f, shade(lf, 1.10f));
-                                LEAF_AT(wx, top + 4.8f, wz, 0.7f, 0.8f, 0.7f, shade(lf, 1.15f));
+                                drawCubeTex(T_LOG,  Vector3{ wx, top + 3.2f, wz }, 0.7f, 6.4f, 0.7f, tr);
+                                LEAF_AT(wx, top + 4.4f, wz, 4.4f, 1.8f, 4.4f, lf);
+                                LEAF_AT(wx, top + 6.6f, wz, 3.4f, 1.8f, 3.4f, shade(lf, 1.05f));
+                                LEAF_AT(wx, top + 8.8f, wz, 2.4f, 1.7f, 2.4f, shade(lf, 1.10f));
+                                LEAF_AT(wx, top + 10.8f, wz, 1.3f, 1.6f, 1.3f, shade(lf, 1.15f));
                                 break;
-                            case 3:                                                  // acacia
+                            case 3:                                                  // acacia (~8m: short trunk, broad flat crown)
                                 tr = mixc(shade(Color{106, 82, 53,255}, sh), SKY, fog);
                                 lf = mixc(shade(Color{131,144, 65,255}, sh), SKY, fog);
-                                drawCubeTex(T_LOG,  Vector3{ wx, top + 1.1f, wz }, 0.55f, 2.2f, 0.55f, tr);
-                                LEAF_AT(wx, top + 2.7f, wz, 3.6f, 0.8f, 3.6f, lf);
+                                drawCubeTex(T_LOG,  Vector3{ wx, top + 1.9f, wz }, 0.65f, 3.8f, 0.65f, tr);
+                                LEAF_AT(wx, top + 4.6f, wz, 5.2f, 2.0f, 5.2f, lf);
+                                LEAF_AT(wx, top + 6.0f, wz, 3.4f, 1.4f, 3.4f, shade(lf, 1.07f));
                                 break;
                         }
                         #undef LEAF_AT

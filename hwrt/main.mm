@@ -104,16 +104,16 @@ struct Renderer {
     void rideAdvance(float dt);              // step the ride camera one frame
     void buildAccelerationStructure();       // synchronous build of the FRONT AS (init only)
     void uploadVerts(const std::vector<MeshVertex>& verts);  // refresh FRONT vertexBuffer + triCount
-    // Async chunk rebuild: upload `verts` into the BACK pair and kick a non-blocking
-    // GPU AS build; the front pair keeps rendering. Swaps in pollAsyncBuild().
-    void rebuildAsync(const std::vector<MeshVertex>& verts);
 #ifdef RT_STREAM
     // Full async rebuild: the heavy CPU meshing of `snap` ALSO runs on a worker
     // thread (not just the GPU AS build), so the ~100ms terrain build never stalls
     // the frame loop. Renderer keeps rendering the front pair until the swap.
     void rebuildAsyncSnapshot(TrackSnapshot snap);
-    std::vector<MeshVertex> bgVerts;         // worker-thread mesh target (back CPU buffer)
 #endif
+    std::vector<MeshVertex> bgVerts;         // worker-thread mesh target (back CPU buffer)
+    // Upload a worker-meshed vertex list into the BACK pair + submit a non-blocking
+    // AS build (called FROM the worker thread; Metal resource ops are thread-safe).
+    void uploadAndBuildBack();
     void pollAsyncBuild();                   // swap front<->back once the back build is done
     void forceSyncRebuild();                 // rebuild current geometry into FRONT, blocking (--shot)
     void updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h);
@@ -287,22 +287,6 @@ void Renderer::buildAccelerationStructure() {
     }
 }
 
-// Kick a non-blocking rebuild into the BACK pair. If a build is already in flight
-// we skip (the next rebuild call will catch up) so we never stomp an in-use buffer.
-void Renderer::rebuildAsync(const std::vector<MeshVertex>& verts) {
-    if (buildInFlight) return;                         // back pair still busy
-    triCountBack = (uint32_t)(verts.size() / 3);
-    size_t bytes = verts.size() * sizeof(MeshVertex);
-    vertexBufferBack = growVertexBuffer(device, vertexBufferBack, bytes);
-    memcpy([vertexBufferBack contents], verts.data(), bytes);
-    buildDone.store(false);
-    buildInFlight = true;
-    id<MTLBuffer> scratch = asScratch;
-    accelBack = buildAS(device, queue, vertexBufferBack, triCountBack,
-                        &scratch, false, &buildDone);
-    asScratch = scratch;
-}
-
 #ifdef RT_STREAM
 // Full async rebuild: mesh the snapshot on a WORKER thread, then upload + submit
 // the GPU AS build from that same worker (Metal resource creation/encoding is
@@ -317,17 +301,25 @@ void Renderer::rebuildAsyncSnapshot(TrackSnapshot snap) {
     // (only this path writes it, and only one runs at a time).
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         meshSnapshot(snap, bgVerts);               // ~100ms terrain+track build (off the frame thread)
-        uint32_t tris = (uint32_t)(bgVerts.size() / 3);
-        size_t bytes = bgVerts.size() * sizeof(MeshVertex);
-        vertexBufferBack = growVertexBuffer(device, vertexBufferBack, bytes);
-        memcpy([vertexBufferBack contents], bgVerts.data(), bytes);
-        triCountBack = tris;
-        id<MTLBuffer> scratch = asScratch;
-        accelBack = buildAS(device, queue, vertexBufferBack, tris, &scratch, false, &buildDone);
-        asScratch = scratch;
+        uploadAndBuildBack();
     });
 }
 #endif
+
+// Upload the worker-meshed bgVerts into the BACK pair and submit a non-blocking AS
+// build. Runs on the worker thread; Metal resource creation + command encoding are
+// thread-safe. buildDone is flipped by the GPU completion handler; the main thread
+// swaps in pollAsyncBuild().
+void Renderer::uploadAndBuildBack() {
+    uint32_t tris = (uint32_t)(bgVerts.size() / 3);
+    size_t bytes = bgVerts.size() * sizeof(MeshVertex);
+    vertexBufferBack = growVertexBuffer(device, vertexBufferBack, bytes);
+    memcpy([vertexBufferBack contents], bgVerts.data(), bytes);
+    triCountBack = tris;
+    id<MTLBuffer> scratch = asScratch;
+    accelBack = buildAS(device, queue, vertexBufferBack, tris, &scratch, false, &buildDone);
+    asScratch = scratch;
+}
 
 // If the back build has finished on the GPU, swap it to the front so the next
 // frame renders the new geometry. Cheap pointer swap on the main thread.
@@ -366,14 +358,24 @@ void Renderer::buildBenchScene(bool async) {
     float cz = floorf(c.z / BENCH_CELL) * BENCH_CELL;
     lastRingCx = cx; lastRingCz = cz;
     int N = (int)(2.0f * BENCH_RING / BENCH_CELL);
-    scratchVerts.clear();
-    Terrain t = buildTerrain(cx, cz, N, BENCH_CELL, trackPts.data(), (int)trackPts.size());
-    scratchVerts.swap(t.verts);
-    buildCoaster(coaster, scratchVerts, nRender,
-                 vec3(cx, 0, cz), BENCH_RING - 6.0f, rideU);
+    float ru = rideU;
     if (async) {
-        rebuildAsync(scratchVerts);            // non-blocking
+        // The coaster spline + trackPts are immutable during the ride, so mesh the
+        // whole ring on a worker thread (rideU/cx/cz snapshotted as scalars). The
+        // frame loop never pays the ~100ms terrain build.
+        buildDone.store(false);
+        buildInFlight = true;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            Terrain t = buildTerrain(cx, cz, N, BENCH_CELL, trackPts.data(), (int)trackPts.size());
+            bgVerts.swap(t.verts);
+            buildCoaster(coaster, bgVerts, nRender, vec3(cx, 0, cz), BENCH_RING - 6.0f, ru);
+            uploadAndBuildBack();
+        });
     } else {
+        scratchVerts.clear();
+        Terrain t = buildTerrain(cx, cz, N, BENCH_CELL, trackPts.data(), (int)trackPts.size());
+        scratchVerts.swap(t.verts);
+        buildCoaster(coaster, scratchVerts, nRender, vec3(cx, 0, cz), BENCH_RING - 6.0f, ru);
         uploadVerts(scratchVerts);
         buildAccelerationStructure();
     }

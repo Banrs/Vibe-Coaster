@@ -29,6 +29,11 @@ static const char *SHADOW_FS =
     "uniform vec3 lightDir; uniform vec3 viewPos;\n"
     "uniform vec3 sunCol; uniform vec3 skyCol; uniform vec3 groundCol;\n"
     "uniform float uTime;\n"   // animates water ripples; harmless 0 if main never sets it
+    // distance fog for the cached terrain mesh (fog baked OUT of its vertex colours
+    // so the mesh can be reused across frames). fogEnd<=0 disables it, so the
+    // immediate-mode coaster/supports/stations — which still bake their own fog —
+    // are left untouched. fogCol is the SKY tint the terrain fades into.
+    "uniform float fogEnd; uniform vec3 fogCol;\n"
     "out vec4 finalColor;\n"
     // Shadow lookup (returns 1 = fully lit, 0 = shadowed). A 12-tap rotated Poisson
     // disk over a SMALL kernel (~1.4 texel): just wide enough to antialias the
@@ -147,6 +152,13 @@ static const char *SHADOW_FS =
     // looking neon, matched to the path tracer's resolve so raster<->RT views agree.
     "  float lum = dot(col, vec3(0.299,0.587,0.114));\n"
     "  col = mix(vec3(lum), col, 1.10);\n"
+    // distance fog (terrain mesh only): fade to the sky tint with the same curve
+    // the CPU used to bake per column. fogCol is already display-space sRGB.
+    "  if(fogEnd > 0.0){\n"
+    "    float d = length(viewPos.xz - fragWorld.xz);\n"
+    "    float fog = clamp((d - fogEnd*0.70)/(fogEnd*0.27), 0.0, 1.0);\n"
+    "    col = mix(col, fogCol, fog);\n"
+    "  }\n"
     "  finalColor = vec4(col, tex.a*fragColor.a*colDiffuse.a);\n"
     "}\n";
 
@@ -164,6 +176,7 @@ struct ShadowSys {
     int SM = 2048;   // resolves thin rails / pillars while staying cheap; soft PCF hides the steps
     int locLightVP=-1, locShadowMap=-1, locShadowTexel=-1, locLightDir=-1, locViewPos=-1;
     int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1, locTime=-1;
+    int locFogEnd=-1, locFogCol=-1;
     Matrix lightVP{};
 
     void init() {
@@ -178,6 +191,8 @@ struct ShadowSys {
         locSky         = GetShaderLocation(lit, "skyCol");
         locGround      = GetShaderLocation(lit, "groundCol");
         locTime        = GetShaderLocation(lit, "uTime");
+        locFogEnd      = GetShaderLocation(lit, "fogEnd");
+        locFogCol      = GetShaderLocation(lit, "fogCol");
         fbo = rlLoadFramebuffer();
         rlEnableFramebuffer(fbo);
         depthTex = rlLoadTextureDepth(SM, SM, false);
@@ -187,7 +202,9 @@ struct ShadowSys {
     }
 
     Matrix computeLightVP(Vector3 focus) {
-        float R = 82.0f;
+        // wider half-extent so distant terrain (now drawn whole in the depth pass via
+        // the cached mesh) casts shadows further out; SM=2048 keeps it crisp enough.
+        float R = 110.0f;
         Vector3 ctr = focus;
         Vector3 eye = Vector3Add(ctr, Vector3Scale(g_sunDir, 240.0f));
         Matrix view = MatrixLookAt(eye, ctr, Vector3{ 0, 1, 0 });

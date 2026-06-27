@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <ctime>
 
 // Directory the executable lives in, resolved from argv[0] in main(). Asset
 // files (track.txt) are loaded relative to this so the app works no matter what
@@ -28,6 +29,10 @@ static std::string g_baseDir;
 #include "terrain.h"
 #include "coaster.h"
 #include "shaders.h"
+#ifdef RT_STREAM
+#include "track_gen.h"     // infinite streaming generator (struct StreamTrack)
+#endif
+#include "audio.h"         // simple procedural ride audio (wind/rumble/launch whoosh)
 
 // ---------------------------------------------------------------------------
 // Renderer: owns Metal objects, terrain, acceleration structure, pipelines.
@@ -59,10 +64,22 @@ struct Renderer {
     float rideSpeed = 65.0f;  // m/s
     float rideAlt   = 0.0f;   // height above ground at the train
     int   rideKind  = 0;      // current SegMode tag
+    float rideBoost = 1.0f;   // 0..1 boost meter
+    float rideG     = 1.0f;   // total felt g (HUD)
+    bool  boostHeld = false;  // SPACE: fire boost / re-launch in powered sections
+    long  rideScore = 0;      // simple score (distance + airtime), HUD top-left
+    struct RideAudio* audio = nullptr;  // procedural ride audio (nullptr in headless)
+
+#ifdef RT_STREAM
+    StreamTrack stream;       // infinite generator; geometry rebuilt as it slides
+    int   sinceRebuildPts = 0;// local-u points travelled since the last AS rebuild
+    std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
+#endif
 
     void init();
     void rideAdvance(float dt);              // step the ride camera one frame
-    void buildAccelerationStructure(const Terrain& t);
+    void buildAccelerationStructure();       // (re)build the AS from current vertexBuffer/triCount
+    void uploadVerts(const std::vector<MeshVertex>& verts);  // refresh vertexBuffer + triCount
     void updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h);
     void render(id<MTLTexture> target, uint32_t w, uint32_t h);
 };
@@ -100,10 +117,31 @@ void Renderer::init() {
     queue = [device newCommandQueue];
 
     tracePSO = makePSO(device, "traceKernel");
+    camBuffer = [device newBufferWithLength:sizeof(CameraUniforms)
+                                    options:MTLResourceStorageModeShared];
+    // Raking sun so hardware ray-traced shadows of the track stretch across terrain.
+    sunDir = normalize(vec3(0.55f, 0.62f, 0.35f));
 
-    // Load the exported coaster spline into the member (kept for ride camera).
-    // The exec sits in mythostest/ but the asset lives in mythostest/hwrt/; try a
-    // few candidate locations so it loads however the app is launched.
+#ifdef RT_STREAM
+    // --- INFINITE mode: stream the software generator + terrain around the train.
+    stream.init((uint32_t)time(nullptr));
+    std::vector<MeshVertex> verts;
+    stream.buildGeometry(verts);
+    uploadVerts(verts);
+    buildAccelerationStructure();
+    fprintf(stderr, "[stream] initial scene: %u tris (infinite generator)\n", triCount);
+
+    // start the ride camera on the train
+    rideU = stream.trainU;
+    rideSpeed = stream.speed;
+    {
+        float3 p = stream.pos(stream.trainU);
+        float3 fwd = stream.tangent(stream.trainU);
+        camPos = p; exFwd = fwd; exUp = vec3(0,1,0);
+        yaw = std::atan2(fwd.x, fwd.z); pitch = 0;
+    }
+#else
+    // --- BENCHMARK mode: the pre-generated demo map from hwrt/track.txt.
     Coaster& co = coaster;
     if (!co.load((g_baseDir + "hwrt/track.txt").c_str()) &&
         !co.load((g_baseDir + "track.txt").c_str()) &&
@@ -136,18 +174,10 @@ void Renderer::init() {
     Terrain t = buildTerrain(cx, cz, N, CELL, trackPts.data(), nRender);
     uint32_t terrainTris = (uint32_t)(t.verts.size() / 3);
     buildCoaster(co, t.verts, nRender);
-    triCount = (uint32_t)(t.verts.size() / 3);
     fprintf(stderr, "terrain: %u tris, +coaster -> %u tris total\n",
-            terrainTris, triCount);
-
-    vertexBuffer = [device newBufferWithBytes:t.verts.data()
-                                       length:t.verts.size() * sizeof(MeshVertex)
-                                      options:MTLResourceStorageModeShared];
-
-    buildAccelerationStructure(t);
-
-    camBuffer = [device newBufferWithLength:sizeof(CameraUniforms)
-                                    options:MTLResourceStorageModeShared];
+            terrainTris, (uint32_t)(t.verts.size() / 3));
+    uploadVerts(t.verts);
+    buildAccelerationStructure();
 
     // Hero shot: stand off to the side of the launch run and look up at the
     // signature opening top-hat tower so the rails/spine/ties and train read.
@@ -158,11 +188,23 @@ void Renderer::init() {
     float3 toLook = normalize(look - camPos);
     yaw   = std::atan2(toLook.x, toLook.z);
     pitch = std::asin(toLook.y);
-    // Raking sun so hardware ray-traced shadows of the track stretch across terrain.
-    sunDir = normalize(vec3(0.55f, 0.62f, 0.35f));
+#endif
 }
 
-void Renderer::buildAccelerationStructure(const Terrain& t) {
+// Refresh the vertex buffer + triangle count from a CPU vertex list. Reallocates
+// the buffer only when the list grows past the current capacity (streaming reuses it).
+void Renderer::uploadVerts(const std::vector<MeshVertex>& verts) {
+    triCount = (uint32_t)(verts.size() / 3);
+    size_t bytes = verts.size() * sizeof(MeshVertex);
+    if (!vertexBuffer || (size_t)[vertexBuffer length] < bytes) {
+        // grow with headroom so we don't reallocate every rebuild
+        size_t cap = (size_t)(bytes * 1.4) + 1024;
+        vertexBuffer = [device newBufferWithLength:cap options:MTLResourceStorageModeShared];
+    }
+    memcpy([vertexBuffer contents], verts.data(), bytes);
+}
+
+void Renderer::buildAccelerationStructure() {
     MTLAccelerationStructureTriangleGeometryDescriptor* geo =
         [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
     geo.vertexBuffer = vertexBuffer;
@@ -193,17 +235,57 @@ void Renderer::buildAccelerationStructure(const Terrain& t) {
     [enc endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
-    fprintf(stdout,
-            "[RT] HARDWARE RAY TRACING ACTIVE: primitive acceleration structure "
-            "built from %u triangles (%u primitives). Shaders trace via "
-            "raytracing::intersector against this AS (no raster/DDA fallback).\n",
-            triCount, triCount);
+    static bool announced = false;
+    if (!announced) {
+        announced = true;
+        fprintf(stdout,
+                "[RT] HARDWARE RAY TRACING ACTIVE: primitive acceleration structure "
+                "built from %u triangles (%u primitives). Shaders trace via "
+                "raytracing::intersector against this AS (no raster/DDA fallback).\n",
+                triCount, triCount);
+    }
 }
 
 // Advance the ride camera one frame: move a u parameter along the spline at a
 // steady pace, place the eye just above the track, look down the tangent with
 // the rider-up (so banking/inversions roll the view). Loops at the circuit end.
 void Renderer::rideAdvance(float dt) {
+#ifdef RT_STREAM
+    // --- INFINITE mode: physics + streaming live in StreamTrack ---
+    int prevPt = (int)stream.trainU;
+    bool shifted = stream.advance(dt);
+
+    // SPACE: fire a boost on powered sections (spends the meter, surges speed)
+    if (boostHeld && stream.boost > 0.05f &&
+        (stream.kind == M_LAUNCH || stream.kind == M_BOOST)) {
+        stream.speed = fminf(stream.speed + 60.0f * dt, 120.0f);
+        stream.boost = fmaxf(stream.boost - dt * 0.8f, 0.0f);
+    }
+
+    rideSpeed = stream.speed; rideAlt = stream.alt; rideKind = stream.kind;
+    rideBoost = stream.boost; rideG = stream.gLoad;
+    rideScore += (long)(stream.speed * dt * 0.6f) +
+                 (fabsf(stream.vertG) < 0.35f ? 2 : 0);   // distance + airtime bonus
+
+    float3 p   = stream.pos(stream.trainU);
+    float3 fwd = stream.tangent(stream.trainU);
+    float3 up  = orthoUp(fwd, stream.upAt(stream.trainU));
+    camPos = p + up * 2.0f;
+    exFwd = fwd; exUp = up; useExplicitFrame = true;
+
+    // Rebuild the scene geometry + AS as the train travels. Rebuild on a window
+    // shift OR every REBUILD_PTS control points of travel (a chunk boundary), so
+    // the AS refresh is amortised instead of happening every frame.
+    const int REBUILD_PTS = 4;
+    sinceRebuildPts += (int)stream.trainU - prevPt;
+    if (shifted || sinceRebuildPts >= REBUILD_PTS) {
+        sinceRebuildPts = 0;
+        stream.buildGeometry(scratchVerts);
+        uploadVerts(scratchVerts);
+        buildAccelerationStructure();
+    }
+    return;
+#else
     // Real ride physics on the loaded map (mirrors the software game's constants):
     // gravity along the slope, quadratic air drag, low rolling friction, and active
     // launch/boost/lift acceleration on powered sections -> the boosts actually work
@@ -211,6 +293,13 @@ void Renderer::rideAdvance(float dt) {
     const float GRAV=22.0f, DRAG=0.0016f, FRICTION=0.016f;
     const float LAUNCH_V=108.0f, BOOST_V=74.0f, CLIMB_V=40.0f;
     const int   M_CLIMB=1, M_LAUNCH=9, M_BOOST=11;
+
+    // SPACE boost on powered sections (benchmark map): surge toward the cap.
+    float boostAccel = 0.0f;
+    if (boostHeld && (coaster.cps[(int)(rideU+0.5f) % coaster.nFull].kind == M_LAUNCH ||
+                      coaster.cps[(int)(rideU+0.5f) % coaster.nFull].kind == M_BOOST)) {
+        if (rideBoost > 0.05f) { boostAccel = 40.0f; rideBoost = fmaxf(rideBoost - dt*0.8f, 0.0f); }
+    }
 
     float3 a = coaster.pos(rideU), b = coaster.pos(rideU + 0.1f);
     float mpu = length(b - a) / 0.1f;                       // metres per u-unit
@@ -222,11 +311,13 @@ void Renderer::rideAdvance(float dt) {
     if (ki < 0) ki = 0; if (ki >= coaster.nFull) ki = coaster.nFull - 1;
     rideKind = coaster.cps[ki].kind;
 
-    rideSpeed += (-GRAV * slope - DRAG * rideSpeed * rideSpeed - FRICTION) * dt;
+    rideSpeed += (-GRAV * slope - DRAG * rideSpeed * rideSpeed - FRICTION + boostAccel) * dt;
     if      (rideKind == M_LAUNCH && rideSpeed < LAUNCH_V) rideSpeed = fminf(rideSpeed + 85.0f * dt, LAUNCH_V);
     else if (rideKind == M_BOOST  && rideSpeed < BOOST_V ) rideSpeed = fminf(rideSpeed + 55.0f * dt, BOOST_V);
     else if (rideKind == M_CLIMB  && rideSpeed < CLIMB_V ) rideSpeed = fminf(rideSpeed + 22.0f * dt, CLIMB_V);
     if (rideSpeed < 8.0f) rideSpeed = 8.0f;                 // never stall to a stop
+    // boost meter recharges on powered sections
+    if (rideKind == M_LAUNCH || rideKind == M_BOOST) rideBoost = fminf(rideBoost + dt*0.6f, 1.0f);
 
     rideU += (rideSpeed / mpu) * dt;
     float uMax = (float)(nRender - 1);
@@ -238,7 +329,16 @@ void Renderer::rideAdvance(float dt) {
     camPos = p + up * 2.0f;                   // eye ~2m above the track
     exFwd = fwd; exUp = up;
     rideAlt = p.y - groundTopAt(p.x, p.z);
+    rideScore += (long)(rideSpeed * dt * 0.6f);
+    // crude felt-g for the HUD: vertical centripetal from slope change + gravity
+    {
+        float3 t0 = coaster.tangent(rideU - 0.3f), t1 = coaster.tangent(rideU + 0.3f);
+        float seg = mpu * 0.6f;
+        float curv = length(t1 - t0) / fmaxf(seg, 1e-3f);
+        rideG = length(vec3(0,1,0) + (t1 - t0) * (rideSpeed*rideSpeed*curv/GRAV));
+    }
     useExplicitFrame = true;
+#endif
 }
 
 void Renderer::updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h) {
@@ -300,6 +400,27 @@ static int runShot(Renderer& r) {
     td.storageMode = MTLStorageModeShared;
     id<MTLTexture> tex = [r.device newTextureWithDescriptor:td];
 
+#ifdef RT_STREAM
+    // Advance the ride a few seconds so the shot lands on interesting geometry
+    // (off the launch straight, into a climb/element) and the scene has streamed.
+    r.rideMode = true;
+    for (int i = 0; i < 60 * 9; i++) r.rideAdvance(1.0f / 60.0f);
+    // Side-on hero framing: stand well back and ABOVE the train, look down at it so
+    // the tall track, supports, train, trees and voxel terrain all read to scale.
+    {
+        float3 look = r.stream.pos(r.stream.trainU);          // aim at the train
+        float3 fwd  = normalize(r.stream.tangent(r.stream.trainU));
+        float3 side = normalize(cross(fwd, vec3(0,1,0)));
+        r.camPos = look - fwd * 120.0f + side * 95.0f + vec3(0, 70.0f, 0);
+        // keep the eye safely above terrain so we never sit inside a voxel wall
+        float gtop = groundTopAt(r.camPos.x, r.camPos.z) + 20.0f;
+        if (r.camPos.y < gtop) r.camPos.y = gtop;
+        float3 toLook = normalize(look - r.camPos);
+        r.exFwd = toLook; r.exUp = vec3(0,1,0);
+        r.useExplicitFrame = true;
+    }
+#endif
+
     r.render(tex, W, H);
 
     std::vector<uint8_t> pixels(W * H * 4);
@@ -330,7 +451,15 @@ static int runBench(Renderer& r) {
     const int N = 120;
     r.render(tex, W, H); // warm-up
     double t0 = CACurrentMediaTime();
-    for (int i = 0; i < N; i++) r.render(tex, W, H);
+    for (int i = 0; i < N; i++) {
+#ifdef RT_STREAM
+        // include the live streaming cost (physics + tessellation + AS rebuild on
+        // chunk boundaries) so the reported fps reflects the real interactive ride.
+        r.rideMode = true;
+        r.rideAdvance(1.0f / 60.0f);
+#endif
+        r.render(tex, W, H);
+    }
     double dt = CACurrentMediaTime() - t0;
     fprintf(stderr, "bench: %d frames in %.3fs -> %.1f fps (%.2f ms/frame) at %ux%u\n",
             N, dt, N / dt, dt / N * 1000.0, W, H);
@@ -361,10 +490,16 @@ static int runBench(Renderer& r) {
         r->rideMode = !r->rideMode;
         r->useExplicitFrame = false;     // free-fly resumes from current pos/orientation
     }
+    if (c == ' ') {                      // SPACE: boost / launch
+        Renderer* r = self.renderer;
+        if (!r->boostHeld && r->audio) r->audio->triggerWhoosh();
+        r->boostHeld = true;
+    }
 }
 - (void)keyUp:(NSEvent*)e {
     unichar c = [[e charactersIgnoringModifiers] characterAtIndex:0];
     if (c < 128) _keys[c] = false;
+    if (c == ' ') self.renderer->boostHeld = false;
 }
 - (void)mouseDragged:(NSEvent*)e {
     self.renderer->yaw   += e.deltaX * 0.005f;
@@ -414,7 +549,9 @@ static const char* kindName(int k) {
 @property (nonatomic) double lastTime;
 @property (nonatomic) int frameCount;
 @property (nonatomic) double fpsClock;
-@property (nonatomic) NSTextField* hud;
+@property (nonatomic) NSTextField* hud;       // speed / alt / element (top-left)
+@property (nonatomic) NSTextField* hud2;      // score / g-load / boost (bottom-left)
+@property (nonatomic) RideAudio*   audio;     // procedural ride audio
 @end
 
 @implementation AppDelegate
@@ -441,7 +578,7 @@ static const char* kindName(int k) {
     [self.window setContentView:self.view];
 
     // HUD overlay: speed / altitude / current element, top-left over the Metal view.
-    self.hud = [[NSTextField alloc] initWithFrame:NSMakeRect(16, frame.size.height - 78, 360, 64)];
+    self.hud = [[NSTextField alloc] initWithFrame:NSMakeRect(16, frame.size.height - 78, 420, 64)];
     [self.hud setBezeled:NO];
     [self.hud setDrawsBackground:NO];
     [self.hud setEditable:NO];
@@ -452,9 +589,26 @@ static const char* kindName(int k) {
     self.hud.maximumNumberOfLines = 3;
     [self.view addSubview:self.hud];
 
+    // Second HUD panel (bottom-left): score, felt-g, boost bar (mirrors the SW game).
+    self.hud2 = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 16, 460, 70)];
+    [self.hud2 setBezeled:NO];
+    [self.hud2 setDrawsBackground:NO];
+    [self.hud2 setEditable:NO];
+    [self.hud2 setSelectable:NO];
+    [self.hud2 setTextColor:[NSColor whiteColor]];
+    [self.hud2 setFont:[NSFont monospacedSystemFontOfSize:16 weight:NSFontWeightBold]];
+    [self.hud2 setAutoresizingMask:NSViewMaxYMargin];
+    self.hud2.maximumNumberOfLines = 3;
+    [self.view addSubview:self.hud2];
+
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.view];
     [NSApp activateIgnoringOtherApps:YES];
+
+    // Start procedural ride audio (wind/rumble that scales with speed, launch whoosh).
+    self.audio = new RideAudio();
+    self.audio->start();
+    self.renderer->audio = self.audio;
 
     self.lastTime = CACurrentMediaTime();
     self.fpsClock = self.lastTime;
@@ -465,15 +619,35 @@ static const char* kindName(int k) {
 }
 
 - (void)frame:(NSTimer*)t {
+    double now0 = CACurrentMediaTime();
+    float dt = (float)(now0 - self.lastTime);
+    if (dt <= 0 || dt > 0.1f) dt = 1.0f/60.0f;
+    self.lastTime = now0;
+
     [self.view tick];
 
-    // HUD: speed (km/h) + altitude above ground + current element (ride mode only).
     Renderer* r = self.renderer;
+
+    // procedural audio: wind/rumble follows speed; whoosh decays after a boost.
+    if (self.audio) {
+        self.audio->setSpeed(r->rideMode ? r->rideSpeed : 0.0f);
+        self.audio->tick(dt);
+    }
+
+    // HUD (ride mode): speed km/h + altitude + element (top-left); score / felt-g /
+    // boost bar (bottom-left) to mirror the software game's HUD content.
     if (r->rideMode) {
         [self.hud setStringValue:[NSString stringWithFormat:@"%.0f KM/H\nALT %.0f m\n%s",
                                   r->rideSpeed * 3.6f, r->rideAlt, kindName(r->rideKind)]];
+        // boost bar drawn as a run of block glyphs (no extra views)
+        int filled = (int)(r->rideBoost * 20.0f + 0.5f);
+        char bar[48]; for (int i = 0; i < 20; i++) bar[i] = (i < filled) ? '|' : '.'; bar[20] = 0;
+        [self.hud2 setStringValue:[NSString stringWithFormat:
+            @"SCORE %06ld\n%+.1f g\nBOOST [%s]  SPACE",
+            r->rideScore, r->rideG - 0.0f, bar]];
     } else {
         [self.hud setStringValue:@"FREE-FLY\nWASD+QE / mouse\nF: ride"];
+        [self.hud2 setStringValue:@""];
     }
 
     CAMetalLayer* layer = self.view.metalLayer;

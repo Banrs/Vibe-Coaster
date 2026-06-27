@@ -227,7 +227,7 @@ static float softSunShadow(float3 pos, float3 n, float3 L, thread float& rng,
                           primitive_acceleration_structure accel) {
     float3 t, b; basis(L, t, b);
     float occ = 0.0;
-    const int S = 5;
+    const int S = 8;                             // more shadow samples -> softer, lower-noise penumbra (balanced for fps)
     for (int i = 0; i < S; i++) {
         rng = fract(rng * 1.61803 + 0.31831);
         float a = rng * 6.2831853;
@@ -324,7 +324,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
-        const int AO_SAMPLES = 16;
+        const int AO_SAMPLES = 24;                  // more AO/GI samples -> less salt-and-pepper noise (balanced for fps)
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
         float3 surfAlb = voxelGrain(hit.albedo, hit.pos, n, hit.mat);

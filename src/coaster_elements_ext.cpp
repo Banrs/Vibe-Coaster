@@ -37,7 +37,7 @@
         pzBase = gpos;
         // REAL teardrop-loop bottom radius (~18-22m); the managed entry speed sets the g
         // (g_bottom ~ v^2/(pzR*GRAV)), not an inflated radius.
-        pzR    = frnd(18.0f, 22.0f);
+        pzR    = frnd(19.0f, 23.0f);
         pzDrift = pzR * 1.5f;                        // forward creep so the descending leg doesn't sit on the ascending one
         pzLat   = pzR * frnd(1.4f, 1.9f);            // LATERAL sweep so the loop veers off the entry line (was planar -> sat 1:1 on the existing track)
         pzSteps = 26;
@@ -87,7 +87,7 @@
         // dive depth: a real plunge, but clamped to the height available above the
         // terrain at entry (keep ~14m clearance at the exit) so it can't clip ground.
         float avail = sdBase.y - groundTopAt(sdBase.x, sdBase.z) - 14.0f;
-        sdDrop    = Clamp(0.60f * 0.68f * L, 24.0f, 64.0f);     // ~64m over the dive run
+        sdDrop    = Clamp(0.60f * 0.68f * L, 28.0f, 80.0f);     // ~80m over the dive run
         sdDrop    = fminf(sdDrop, fmaxf(avail, 0.0f));
         sdSpan    = L * 0.16f;                       // gentle lateral traverse
         remain    = sdSteps;
@@ -141,7 +141,7 @@
         // Keep it LOW and gentle (reads as a long arch, not a hill): a modest hump.
         // It still gives sustained hangtime because the slow roll keeps the rider near
         // weightless through the inverted middle; we don't need a full freefall arch.
-        brH    = Clamp(0.30f * v, 14.0f, 26.0f);     // low crest (~14-26m)
+        brH    = Clamp(0.35f * v, 22.0f, 28.0f);     // low crest (~22-28m)
         brSpan = Clamp(1.9f * v, 90.0f, 170.0f);     // significant lateral traverse
         remain = brSteps;
     }

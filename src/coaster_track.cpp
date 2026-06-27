@@ -153,7 +153,7 @@ struct Track {
     }
 
     void initLoop() {
-        lR     = frnd(13.0f, 16.0f);                         // REAL vertical-loop radius (~13-16m, B&M/Intamin); the felt g comes from a MANAGED entry speed, not an inflated radius
+        lR     = frnd(17.0f, 21.0f);                         // REAL vertical-loop radius (~17-21m -> ~34-42m tall, B&M/Intamin); the felt g comes from a MANAGED entry speed, not an inflated radius
         lf     = headingVec();
         lside  = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -167,7 +167,7 @@ struct Track {
     // direction change). reuses the loop frame; lsteps drives a 180° arc.
     void initImmel() {
         mode    = M_IMMEL;
-        lR      = frnd(13.0f, 16.0f);                   // REAL Immelmann loop-up radius (managed entry speed sets the g, not the radius)
+        lR      = frnd(16.0f, 20.0f);                   // REAL Immelmann loop-up radius (~16-20m -> ~32-40m tall; managed entry speed sets the g, not the radius)
         lf      = headingVec();
         lside   = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -178,7 +178,7 @@ struct Track {
     void initRoll() {
         rf     = headingVec();
         rside  = Vector3Normalize(Vector3CrossProduct(WUP, rf));
-        rR     = frnd(6.0f, 9.0f);                      // a corkscrew is SMALL — fixed realistic radius
+        rR     = frnd(8.0f, 11.0f);                     // a corkscrew is SMALL — fixed realistic radius (~8-11m -> ~16-22m tall)
         int turns = (rnd01() < 0.14f) ? 3 : irnd(1, 2);
         remain   = 16 * turns;                          // 16 pts/rotation (was 8 -> octagonal); half the fwd step keeps the same length
         rtheta   = 0; rfwd = 0; rfwdStep = SEG_LEN * frnd(0.65f, 0.95f) * 0.5f; // stretch the corkscrew forward
@@ -197,7 +197,7 @@ struct Track {
         // the whole stall (a cosine peak only touches 0g for an instant -> residual +g). size
         // so v^2 * (8H/L^2) = g  ->  H = g L^2 / (8 v^2) at the entry speed.
         { float L = stallLen * SEG_LEN;
-          stallH  = Clamp(GRAV * L * L / (8.0f * genV * genV), 8.0f, 34.0f); }
+          stallH  = Clamp(GRAV * L * L / (8.0f * genV * genV), 18.0f, 34.0f); }
         stallEntryY = gpos.y;
         stallF      = headingVec();
         stallSide   = Vector3Normalize(Vector3CrossProduct(WUP, stallF));
@@ -209,7 +209,7 @@ struct Track {
     void initDiveLoop() {
         mode = M_DIVELOOP;
         setClearance(18.0f, 40.0f);
-        dlR      = frnd(14.0f, 18.0f);                       // REAL dive-loop radius; managed entry speed sets the g
+        dlR      = frnd(16.0f, 21.0f);                       // REAL dive-loop radius (~16-21m -> ~32-42m tall); managed entry speed sets the g
         dlf      = headingVec();
         dlside   = Vector3Normalize(Vector3CrossProduct(WUP, dlf));
         dlcenter = { gpos.x, gpos.y + dlR, gpos.z };
@@ -278,7 +278,7 @@ struct Track {
         turnMag   = turnMagFor(5.5f, 0.12f, 0.34f);      // speed-aware overbank -> ~5.5G
         bankT     = frnd(1.12f, 1.42f);                  // overbanked, past vertical
         hillBumps = 1;
-        hillH     = frnd(16.0f, 30.0f);
+        hillH     = frnd(26.0f, 38.0f);
         hillLen   = irnd(7, 10);                         // length of the up-and-over
         remain    = hillLen;
     }

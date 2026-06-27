@@ -242,7 +242,7 @@ struct Track {
     void initCobra() {
         mode = M_COBRA;
         setClearance(24.0f, 58.0f);
-        cbR     = frnd(11.0f, 14.0f);         // REAL cobra-roll hood radius; the managed entry speed keeps g sane (not a giant radius)
+        cbR     = frnd(13.5f, 18.0f);         // REAL cobra-roll size: hood height ~2*R = 27-36m (real cobras are 25-37m tall). bigger radius -> gentler hoods, not so tight. managed entry speed keeps g sane.
         cbF     = headingVec();
         float side = (rnd01() < 0.5f) ? 1.0f : -1.0f;
         cbSide  = Vector3Scale(Vector3Normalize(Vector3CrossProduct(WUP, cbF)), side);

@@ -138,7 +138,7 @@ struct Track {
         // signature opening top-hat — launched (no chain), tall enough to thrill
         // but sized so the hydraulic launch always crests it with speed to spare
         mode = M_CLIMB; mega = false; chainMode = false; remain = irnd(10, 13);
-        climbTop = frnd(118.0f, 178.0f);
+        climbTop = frnd(150.0f, 195.0f);                   // tall signature opening top-hat
         ensureAhead(24);
     }
 
@@ -676,14 +676,14 @@ struct Track {
                 else if (launchElem == M_BANKAIR) { rememberElement(M_BANKAIR); initBankAir(); }
                 else {
                     mode = M_CLIMB; chainMode = false;
-                    mega = (rnd01() < 0.35f);             // often a giant Kingda-Ka top-hat
+                    mega = (rnd01() < 0.50f);             // half the launches throw a giant Kingda-Ka/Falcon's-Flight top-hat (175-200m)
                     // size the top-hat to the LAUNCH ENERGY so the train always crests with
                     // speed to spare (never decays to the MIN_V crawl): reachable height
                     // h=(v^2-vCrest^2)/2g minus a drag margin. taller mega -> slightly slower crest.
                     {
                         float vCrest = mega ? 30.0f : 38.0f;
                         float reach  = (genV * genV - vCrest * vCrest) / (2.0f * GRAV) - 10.0f;
-                        float want   = mega ? frnd(150.0f, 195.0f) : frnd(80.0f, 130.0f);
+                        float want   = mega ? frnd(175.0f, 200.0f) : frnd(100.0f, 155.0f);  // push the signature towers tall (Falcon's-Flight scale): megas 175-200m, normals 100-155m
                         climbTop = Clamp(fminf(want, reach), 60.0f, 200.0f);   // top-hats are a SIGNATURE tall element: 60-200m (Falcon's-Flight scale), never a stubby hill
                     }
                     remain = mega ? irnd(7, 9) : irnd(6, 8);

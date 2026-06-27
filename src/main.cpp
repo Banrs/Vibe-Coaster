@@ -1889,8 +1889,11 @@ int main(int argc, char **argv) {
             Vector3 ps = trk.pos(su);
             float lo = ps.y - 4.0f, hi = ps.y + 4.5f;
             int scx = (int)floorf(ps.x / CELL), scz = (int)floorf(ps.z / CELL);
-            for (int oz = -6; oz <= 6; oz++)
-                for (int ox = -6; ox <= 6; ox++) {
+            // reach the full DEEP_R radius in CELL units (at the 1m cell, ±6 cells only
+            // spanned 6m and clipped the bore short of its intended 10.5m DEEP_R).
+            int cr = (int)ceilf(DEEP_R / CELL) + 1;
+            for (int oz = -cr; oz <= cr; oz++)
+                for (int ox = -cr; ox <= cr; ox++) {
                     int dx = (scx + ox) - ccx, dz = (scz + oz) - ccz;
                     if (dx < -TERRA_R || dx > TERRA_R || dz < -TERRA_R || dz > TERRA_R) continue;
                     float cwx = (scx + ox) * CELL + CELL * 0.5f;

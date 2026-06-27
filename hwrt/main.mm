@@ -138,6 +138,7 @@ struct Renderer {
     std::vector<float3> trackPts;          // all track control points (for trees)
     std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
     float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
+    bool  ringOverride = false; float ringCx = 0, ringCz = 0; // SHOT_WATER: ring elsewhere
     void buildBenchScene(bool async);      // (re)mesh the 1m ring around rideU
 #endif
 
@@ -582,7 +583,7 @@ void Renderer::forceSyncRebuild() {
 void Renderer::buildBenchScene(bool async) {
     // Don't recentre the ring while a previous chunk rebuild is still in flight.
     if (async && buildInFlight) return;
-    float3 c = coaster.pos(rideU);
+    float3 c = ringOverride ? vec3(ringCx, 0, ringCz) : coaster.pos(rideU);
     float cx = floorf(c.x / BENCH_CELL) * BENCH_CELL;
     float cz = floorf(c.z / BENCH_CELL) * BENCH_CELL;
     lastRingCx = cx; lastRingCz = cz;
@@ -836,6 +837,31 @@ static int runShot(Renderer& r) {
         float3 toLook = normalize(look - r.camPos);
         r.exFwd = toLook; r.exUp = vec3(0,1,0);
         r.useExplicitFrame = true;
+    }
+    // SHOT_WATER=1: verification vantage that frames a real lake. Find the largest
+    // nearby water body by scanning a wide grid, recentre the terrain ring on it, and
+    // shoot low across the surface toward the sun. Verification-only: does not change
+    // the default hero shot and the track may be off-frame.
+    if (getenv("SHOT_WATER")) {
+        float3 best = vec3(0,WATER_Y,0); float bestScore = -1.0f;
+        for (float px = -3000; px <= 3000; px += 30)
+          for (float pz = -3000; pz <= 3000; pz += 30) {
+            if (terrainH(px, pz) + 1.0f >= WATER_Y) continue;   // not submerged
+            int wn = 0;                                         // local water extent
+            for (float a2 = 0; a2 < 6.28f; a2 += 0.78f)
+                if (terrainH(px + cosf(a2)*40, pz + sinf(a2)*40) + 1.0f < WATER_Y) wn++;
+            float score = (float)wn;
+            if (score > bestScore) { bestScore = score; best = vec3(px, WATER_Y, pz); }
+        }
+        float3 toSun = normalize(vec3(0.55f, 0.62f, 0.35f));
+        // stand back on the shore, low, looking across the water toward the sun glints
+        r.camPos = best - vec3(toSun.x, 0, toSun.z) * 85.0f + vec3(0, 12.0f, 0);
+        float3 look = best + vec3(toSun.x, 0, toSun.z) * 40.0f + vec3(0, -3.0f, 0);
+        r.exFwd = normalize(look - r.camPos); r.exUp = vec3(0,1,0);
+        r.useExplicitFrame = true;
+        // recentre the 1m ring on the lake (forceSyncRebuild below honours this).
+        r.ringOverride = true; r.ringCx = best.x; r.ringCz = best.z;
+        fprintf(stderr, "water vantage: lake@%.0f,%.0f\n", best.x, best.z);
     }
 #endif
 

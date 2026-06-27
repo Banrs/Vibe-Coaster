@@ -61,20 +61,48 @@ static float fbm3(float3 p) {
     return a;
 }
 
+// Animated water ripple normal: two layers of low-amplitude value-noise gradient
+// crossing at different angles/speeds, giving a gentle wind-ripple perturbation of
+// the flat water normal. `t` is the frame counter (water animates; clouds don't).
+static float3 waterNormal(float2 xz, float t) {
+    float ti = t * 0.018;
+    // sample value noise around the point to build a finite-difference gradient
+    float2 p1 = xz * 0.20  + float2( ti,  ti * 0.6);
+    float2 p2 = xz * 0.085 + float2(-ti * 0.7, ti * 0.4);
+    const float e = 0.6;
+    float h1x = vnoise3(float3(p1 + float2(e,0), 0.0)) - vnoise3(float3(p1 - float2(e,0), 0.0));
+    float h1z = vnoise3(float3(p1 + float2(0,e), 0.0)) - vnoise3(float3(p1 - float2(0,e), 0.0));
+    float h2x = vnoise3(float3(p2 + float2(e,0), 0.0)) - vnoise3(float3(p2 - float2(e,0), 0.0));
+    float h2z = vnoise3(float3(p2 + float2(0,e), 0.0)) - vnoise3(float3(p2 - float2(0,e), 0.0));
+    float2 grad = (float2(h1x, h1z) * 0.9 + float2(h2x, h2z) * 0.6);
+    // modest tilt: enough to wobble reflections without flinging the reflection ray
+    // into the floor (which brought back dark muddy blotches).
+    return normalize(float3(-grad.x * 0.22, 1.0, -grad.y * 0.22));
+}
+
 // ===========================================================================
 // Sky + volumetric clouds
 // ===========================================================================
-// Physically-flavoured clear-sky gradient (deeper blue at zenith, pale horizon).
-static float3 skyGradient(float3 dir) {
+// Physically-flavoured clear-sky gradient (deeper blue at zenith, pale horizon)
+// with a sun-direction-aware warm haze so the sky reads atmospheric, not flat.
+static float3 skyGradient(float3 dir, float3 sunDir) {
     float t = clamp(dir.y, 0.0, 1.0);
-    float3 zenith  = float3(0.18, 0.40, 0.78);
-    float3 horizon = float3(0.66, 0.78, 0.92);
-    float3 col = mix(horizon, zenith, pow(t, 0.55));
-    // warm band just above the horizon (atmosphere scatter)
-    float band = exp(-max(dir.y, 0.0) * 9.0);
-    col = mix(col, float3(0.92, 0.86, 0.74), band * 0.35);
+    float3 zenith  = float3(0.12, 0.34, 0.74);   // deeper, richer blue overhead
+    float3 horizon = float3(0.74, 0.82, 0.90);   // pale, slightly cool horizon
+    float3 col = mix(horizon, zenith, pow(t, 0.42));
+    // low-altitude haze band (thicker atmosphere near the horizon)
+    float band = exp(-max(dir.y, 0.0) * 8.0);
+    col = mix(col, float3(0.84, 0.84, 0.82), band * 0.45);
+    // warm scatter glow concentrated around the sun's azimuth near the horizon,
+    // so the haze "lights up" toward the sun instead of being a uniform grey ring.
+    float toSun = max(dot(normalize(float3(dir.x, 0.0, dir.z)),
+                          normalize(float3(sunDir.x, 0.0, sunDir.z))), 0.0);
+    float warm = band * pow(toSun, 2.0);
+    col = mix(col, float3(1.00, 0.80, 0.56), warm * 0.40);
     return col;
 }
+// Overload kept for callers that don't need the warm directional haze.
+static float3 skyGradient(float3 dir) { return skyGradient(dir, float3(0.0, 1.0, 0.0)); }
 
 // 2D cloud COVERAGE field (cheap, no vertical structure): a single low-freq FBM
 // lookup keyed to world xz. Reused both by the volumetric march (as the base
@@ -82,18 +110,26 @@ static float3 skyGradient(float3 dir) {
 static float cloudCoverage(float2 xz) {
     float2 uv = xz * 0.00036;                                  // big fair-weather puffs
     float base = fbm3(float3(uv, 0.0));
-    // broader coverage than before so the sky reads as partly-cloudy, not bald.
-    return smoothstep(0.42, 0.70, base);
+    // tighter, higher threshold -> clear blue between distinct fair-weather puffs
+    // instead of an overcast grey wash that flattens the whole upper sky.
+    return smoothstep(0.50, 0.72, base);
 }
 
 // Full cloud density at a point in the slab: coverage eroded by higher-freq detail
-// so the puffs get billowed edges. Returns density in [0,1].
-static float cloudDensity(float3 wp, float t) {
+// so the puffs get billowed edges. A vertical falloff toward the slab top/bottom
+// rounds the puffs into 3D billows instead of a flat sheet. Returns density [0,1].
+static float cloudDensity(float3 wp, float t, float slabLo, float slabHi) {
     (void)t;                                                     // clouds are static (no drift)
     float coverage = cloudCoverage(wp.xz);
     if (coverage <= 0.0) return 0.0;
-    float detail = fbm3(float3(wp.xz * 0.0019, 0.0) + 11.0);    // billow erosion
-    float d = coverage - detail * 0.30;
+    // two octaves of erosion at different scales -> richer billowed silhouettes
+    float detail = fbm3(float3(wp.xz * 0.0019, 0.0) + 11.0);
+    float fine   = fbm3(float3(wp.xz * 0.0061, wp.y * 0.004) + 27.0);
+    float d = coverage - detail * 0.28 - fine * 0.16;
+    // soft vertical envelope: thin at the slab edges, full in the middle.
+    float hN = (wp.y - slabLo) / max(slabHi - slabLo, 1.0);      // 0..1 across slab
+    float vert = smoothstep(0.0, 0.32, hN) * smoothstep(1.0, 0.62, hN);
+    d *= mix(0.55, 1.0, vert);
     return clamp(d, 0.0, 1.0);
 }
 
@@ -111,18 +147,27 @@ static float4 clouds(float3 ro, float3 dir, float3 sunDir, float t) {
     float dt = seg / float(STEPS);
     float transmittance = 1.0;
     float3 scattered = float3(0.0);
-    float3 sunCol = float3(1.0, 0.96, 0.88);
+    float3 sunCol = float3(1.0, 0.95, 0.86);
+    // forward-scatter phase: clouds glow where you look toward the sun (silver lining).
+    float vdl = max(dot(dir, sunDir), 0.0);
+    float silver = pow(vdl, 8.0);                            // tight rim toward the sun
     for (int i = 0; i < STEPS; i++) {
         float dist = d0 + (float(i) + 0.5) * dt;
         float3 p = ro + dir * dist;
-        float dens = cloudDensity(p, t);
+        float dens = cloudDensity(p, t, slabLo, slabHi);
         if (dens > 0.01) {
-            // cheap sun self-shadowing: sample coverage a step toward the sun.
-            float toward = cloudCoverage(p.xz + sunDir.xz * 260.0);
-            float light = exp(-toward * 2.6);
-            // darker shadowed base -> brighter than-white lit tops: more relief so
-            // the puffs read as 3D billows against the blue instead of flat haze.
-            float3 c = mix(float3(0.50, 0.54, 0.62), sunCol * 1.08, light); // shadow->lit
+            // sun self-shadowing: sample coverage at TWO steps toward the sun so the
+            // lit/shadowed transition has more gradient (rounder-looking billows).
+            float t1 = cloudCoverage(p.xz + sunDir.xz * 180.0);
+            float t2 = cloudCoverage(p.xz + sunDir.xz * 420.0);
+            float light = exp(-(t1 * 1.7 + t2 * 1.1));
+            // cool shadowed underside -> bright warm sunlit tops. Brighter lit value
+            // so distinct puffs read as crisp white billows, not flat grey overcast.
+            float3 shadowCol = float3(0.52, 0.58, 0.70);
+            float3 litCol    = sunCol * 1.30;
+            float3 c = mix(shadowCol, litCol, light);
+            // silver lining: thin bright rim where the view grazes a backlit edge.
+            c += sunCol * silver * (1.0 - dens) * 0.9;
             float a = dens * 0.95;
             scattered += transmittance * c * a;
             transmittance *= (1.0 - a);
@@ -151,19 +196,20 @@ static float cloudSunLight(float3 wp, float3 sunDir) {
 
 // Full sky for a primary/miss ray: gradient + sun disc + glow + clouds.
 static float3 sampleSky(float3 ro, float3 dir, float3 sunDir, float t) {
-    float3 col = skyGradient(dir);
+    float3 col = skyGradient(dir, sunDir);
     float s = max(dot(dir, sunDir), 0.0);
-    col += float3(1.0, 0.85, 0.6) * pow(s, 8.0) * 0.18;     // broad glow
-    col += float3(1.0, 0.97, 0.9) * pow(s, 2000.0) * 6.0;   // tight disc
+    col += float3(1.0, 0.78, 0.50) * pow(s, 5.0) * 0.22;    // broad warm glow
+    col += float3(1.0, 0.90, 0.66) * pow(s, 220.0) * 0.7;   // inner halo
+    col += float3(1.0, 0.98, 0.92) * pow(s, 2200.0) * 8.0;  // tight disc
     float4 cl = clouds(ro, dir, sunDir, t);
     col = mix(col, cl.rgb, cl.a);
     return col;
 }
 // Cheaper sky for indirect/reflection rays (no cloud march).
 static float3 sampleSkyLite(float3 dir, float3 sunDir) {
-    float3 col = skyGradient(dir);
+    float3 col = skyGradient(dir, sunDir);
     float s = max(dot(dir, sunDir), 0.0);
-    col += float3(1.0, 0.85, 0.6) * pow(s, 8.0) * 0.18;
+    col += float3(1.0, 0.78, 0.50) * pow(s, 5.0) * 0.22;
     return col;
 }
 
@@ -404,32 +450,67 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
         color = color * ao + surfAlb * gi * 0.45;
 
         // --- Reflections on water and metal ---
-        if (hit.mat == MAT_WATER || hit.mat == MAT_METAL) {
+        if (hit.mat == MAT_METAL) {
             float3 refl = reflect(dir, n);
-            // metal stays sharp; water gets a tiny ripple jitter
-            if (hit.mat == MAT_WATER) {
-                float3 jit = (float3(hash13(hit.pos*1.7), hash13(hit.pos*2.3+5.0),
-                                     hash13(hit.pos*3.1+9.0)) - 0.5) * 0.04;
-                refl = normalize(refl + jit);
-            }
             ray rr;
-            rr.origin = hit.pos + n * 0.03;
-            rr.direction = refl;
-            rr.min_distance = 0.002;
-            rr.max_distance = 10000.0;
+            rr.origin = hit.pos + n * 0.03; rr.direction = refl;
+            rr.min_distance = 0.002; rr.max_distance = 10000.0;
             Hit rh = traceRay(rr, accel, vertsT, vertsK, vertOff, trackInst);
             float3 reflCol = rh.valid
                 ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, L, -refl, rng, accel, 1)
                 : sampleSky(rr.origin, refl, L, t);
+            color = mix(color, reflCol * surfAlb, 0.55);
+        } else if (hit.mat == MAT_WATER) {
+            // ---- Rich lake water ----------------------------------------------
+            // Animated ripple normal (gentle wind chop) replaces the flat plane n.
+            float3 wn = waterNormal(hit.pos.xz, t);
 
-            if (hit.mat == MAT_WATER) {
-                float f0 = 0.02;
-                float fres = f0 + (1.0 - f0) * pow(1.0 - max(dot(-dir, n), 0.0), 5.0);
-                fres = clamp(fres + 0.06, 0.0, 1.0);
-                color = mix(color, reflCol, fres);
-            } else { // metal: glossy mirror, energy-conserving tint
-                color = mix(color, reflCol * surfAlb, 0.55);
-            }
+            // Depth: trace straight down to the lake floor (one ray). Distance =
+            // water column; drives the shallow->deep colour gradient and foam.
+            ray dr; dr.origin = hit.pos + float3(0,-0.02,0); dr.direction = float3(0,-1,0);
+            dr.min_distance = 0.002; dr.max_distance = 80.0;
+            Hit dh = traceRay(dr, accel, vertsT, vertsK, vertOff, trackInst);
+            float depth = dh.valid ? dh.dist : 80.0;
+
+            // Depth-tinted body colour: bright turquoise shallows -> deep teal-blue.
+            float3 shallowCol = float3(0.30, 0.62, 0.66);
+            float3 deepCol    = float3(0.04, 0.16, 0.30);
+            float3 bodyCol = mix(shallowCol, deepCol, smoothstep(0.4, 14.0, depth));
+
+            // Sun-lit body: keep a touch of diffuse + cloud dimming so it isn't flat.
+            float sunLit = cloudSunLight(hit.pos, L);
+            color = bodyCol * (0.55 + 0.45 * max(L.y, 0.0)) * sunLit;
+            color = mix(color, color * ao, 0.4);          // mild ambient occlusion
+
+            // Reflection ray off the RIPPLED normal -> sky/cloud/terrain mirrored
+            // with a wavy edge.
+            float3 refl = reflect(dir, wn);
+            refl.y = max(refl.y, 0.02);                   // never reflect into the floor
+            ray rr; rr.origin = hit.pos + wn * 0.03; rr.direction = normalize(refl);
+            rr.min_distance = 0.002; rr.max_distance = 10000.0;
+            Hit rh = traceRay(rr, accel, vertsT, vertsK, vertOff, trackInst);
+            float3 reflCol = rh.valid
+                ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, L, -refl, rng, accel, 1)
+                : sampleSky(rr.origin, rr.direction, L, t);
+
+            // Crisp Schlick Fresnel on the rippled normal: grazing angles mirror the
+            // sky, steep angles show the body colour.
+            float ndv = max(dot(-dir, wn), 0.0);
+            float fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+            fres = clamp(fres, 0.03, 1.0);
+            color = mix(color, reflCol, fres);
+
+            // Sun glint: sharp specular off the rippled normal toward the sun.
+            float shadow = softSunShadow(hit.pos, wn, L, rng, accel);
+            float3 glint = sunSpec(wn, V, L, 0.06, float3(1.0)) * sunLit * shadow;
+            color += float3(1.0, 0.96, 0.86) * glint * 2.2 * max(L.y, 0.0);
+
+            // Shoreline foam: brighten where the water is shallow (floor near surface),
+            // broken up by noise so it reads as foam, not a hard contour.
+            float foamN = fbm3(float3(hit.pos.xz * 0.7 + t * 0.01, 0.0));
+            float foam = (1.0 - smoothstep(0.0, 1.6, depth)) * (0.55 + 0.6 * foamN);
+            foam = clamp(foam, 0.0, 1.0);
+            color = mix(color, float3(0.92, 0.96, 0.97), foam * 0.85);
         }
     }
 

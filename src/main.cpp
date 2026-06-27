@@ -50,14 +50,14 @@ static const float GRAV      = 22.0f;
 // quadratic AIR drag that bites hardest on the fastest moments. Tall top-hats and
 // their strong hydraulic launches are kept; the v^2 drag pulls the heady 350 km/h
 // peaks back so the AVERAGE ride speed lands ~250 km/h (Formula Rossa territory).
-static const float DRAG      = 0.0016f;  // quadratic air drag — caps the fast peaks (keeps flow, no crawling)
+static const float DRAG      = 0.0013f;  // quadratic air drag — lowered (sleeker train) so the average lands ~250 km/h (was pulling it down to ~238); still bounds the fast peaks
 static const float FRICTION  = 0.016f;   // very low rolling friction (light steel-on-steel)
 static const float CHAIN_V   = 22.0f;    // lift hills
 static const float MIN_V     = 42.0f;    // brisk cruising floor (~150 km/h) so the ride sustains a high average — sits below the tightest inversion entry speed (47) so trim brakes can still bleed down to a sane entry g
 static const float MAX_V     = 82.0f;    // top speed reachable on the biggest drops (~295 km/h)
 static const float LAUNCH_V  = 108.0f;   // hydraulic-launch CEILING (~390 km/h, ABOVE the real top-speed record ~250 km/h); the short hard launch keeps accelerating the whole way (rarely binds -> no "stuck at peak")
 static const float CLIMB_V   = 40.0f;    // hydraulic top-hat sustain: hold a brisk speed up the climb so the train never crawls over a crest (the v^2 drag + the trims still bring the average into the 65-75 band)
-static const float BOOST_V   = 77.0f;    // mid-course LSM re-launch target (~277 km/h) — boosts slow arrivals back up to cruise, never brakes; sized so the avg ride speed lands ~250 km/h
+static const float BOOST_V   = 79.0f;    // mid-course LSM re-launch target (~284 km/h) — boosts slow arrivals back up to cruise, never brakes; sized so the avg ride speed lands ~250 km/h
 
 static const Vector3 WUP = { 0, 1, 0 };
 

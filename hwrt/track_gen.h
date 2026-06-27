@@ -128,6 +128,11 @@ struct StreamTrack {
         const float CELL = 4.0f;
         const float RING = 520.0f;                 // half-extent meshed around the train
         int N = (int)(2.0f * RING / CELL);
+        // Snap the ring centre to the voxel grid so the cell boundaries (and the
+        // world-keyed trees) land on the SAME absolute grid every rebuild -> the
+        // streamed terrain is rock-stable as the window slides (no wobble/flicker).
+        tp.x = floorf(tp.x / CELL) * CELL;
+        tp.z = floorf(tp.z / CELL) * CELL;
         // collect nearby track points so trees stay clear of the coaster
         std::vector<float3> trackPts;
         int lastU = (int)trainU + buildAhead;

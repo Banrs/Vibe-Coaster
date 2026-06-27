@@ -207,19 +207,25 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
             bool isGrass = (topAlb.x == grass.x || topAlb.x == grassHi.x);
             if (cps && isGrass && h < snowLvl && slope < 4) {
                 float wcx = wx + cell * 0.5f, wcz = wz + cell * 0.5f;
+                // Key the tree RNG on the ABSOLUTE world cell index (not the local
+                // grid index) so a streaming window that re-centres on the train
+                // places the SAME tree at the same world spot every rebuild — no
+                // flicker/jitter as chunks slide. (The benchmark builds once, so
+                // this only changes which cells grow trees, nothing breaks.)
+                int ax = (int)floorf(wcx / cell), az = (int)floorf(wcz / cell);
                 // per-AREA density (independent of cell size, so finer terrain
                 // doesn't multiply the tree count and blow up the triangle budget)
                 float dens = 0.07f * (cell / 6.0f) * (cell / 6.0f);
-                if (hashf(x * 7 + 1, z * 7 + 3) < dens) {
+                if (hashf(ax * 7 + 1, az * 7 + 3) < dens) {
                     bool clear = true;                            // keep a corridor clear of track
                     for (int k = 0; k < ncps; k++) {
                         float dx = cps[k].x - wcx, dz = cps[k].z - wcz;
                         if (dx*dx + dz*dz < 49.0f) { clear = false; break; }
                     }
                     if (clear) {
-                        float r2 = hashf(x * 3 + 5, z * 9 + 2);
+                        float r2 = hashf(ax * 3 + 5, az * 9 + 2);
                         int type = (h > rockLvl - 6) ? 2 : (r2 < 0.30f ? 1 : 0);   // spruce up high
-                        float s  = 1.3f + hashf(x * 5 + 7, z * 5 + 1) * 0.9f;      // realistic tree height (~8-13m)
+                        float s  = 1.3f + hashf(ax * 5 + 7, az * 5 + 1) * 0.9f;    // realistic tree height (~8-13m)
                         pushTree(t.verts, wcx, topY, wcz, type, s);
                     }
                 }

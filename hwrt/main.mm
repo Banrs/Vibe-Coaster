@@ -66,6 +66,7 @@ struct Renderer {
     int   rideKind  = 0;      // current SegMode tag
     float rideBoost = 1.0f;   // 0..1 boost meter
     float rideG     = 1.0f;   // total felt g (HUD)
+    float rideVertG = 1.0f;   // signed vertical felt g (HUD, e.g. -1.7g airtime)
     bool  boostHeld = false;  // SPACE: fire boost / re-launch in powered sections
     long  rideScore = 0;      // simple score (distance + airtime), HUD top-left
     struct RideAudio* audio = nullptr;  // procedural ride audio (nullptr in headless)
@@ -263,7 +264,7 @@ void Renderer::rideAdvance(float dt) {
     }
 
     rideSpeed = stream.speed; rideAlt = stream.alt; rideKind = stream.kind;
-    rideBoost = stream.boost; rideG = stream.gLoad;
+    rideBoost = stream.boost; rideG = stream.gLoad; rideVertG = stream.vertG;
     rideScore += (long)(stream.speed * dt * 0.6f) +
                  (fabsf(stream.vertG) < 0.35f ? 2 : 0);   // distance + airtime bonus
 
@@ -330,12 +331,16 @@ void Renderer::rideAdvance(float dt) {
     exFwd = fwd; exUp = up;
     rideAlt = p.y - groundTopAt(p.x, p.z);
     rideScore += (long)(rideSpeed * dt * 0.6f);
-    // crude felt-g for the HUD: vertical centripetal from slope change + gravity
+    // felt-g for the HUD: |centripetal accel + gravity| / GRAV (total felt g).
     {
         float3 t0 = coaster.tangent(rideU - 0.3f), t1 = coaster.tangent(rideU + 0.3f);
         float seg = mpu * 0.6f;
-        float curv = length(t1 - t0) / fmaxf(seg, 1e-3f);
-        rideG = length(vec3(0,1,0) + (t1 - t0) * (rideSpeed*rideSpeed*curv/GRAV));
+        float3 dT = t1 - t0;
+        float curv = length(dT) / fmaxf(seg, 1e-3f);
+        float3 aCent = normalize(dT) * (rideSpeed * rideSpeed * curv);
+        float3 felt = aCent + vec3(0, GRAV, 0);
+        rideG = length(felt) / GRAV;
+        rideVertG = dot(felt, up) / GRAV;       // signed vertical felt g (airtime = negative)
     }
     useExplicitFrame = true;
 #endif
@@ -644,7 +649,7 @@ static const char* kindName(int k) {
         char bar[48]; for (int i = 0; i < 20; i++) bar[i] = (i < filled) ? '|' : '.'; bar[20] = 0;
         [self.hud2 setStringValue:[NSString stringWithFormat:
             @"SCORE %06ld\n%+.1f g\nBOOST [%s]  SPACE",
-            r->rideScore, r->rideG - 0.0f, bar]];
+            r->rideScore, r->rideVertG, bar]];
     } else {
         [self.hud setStringValue:@"FREE-FLY\nWASD+QE / mouse\nF: ride"];
         [self.hud2 setStringValue:@""];

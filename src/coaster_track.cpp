@@ -676,6 +676,12 @@ struct Track {
                 break;
             default:                                      // HILLS / TURN / HELIX / DIP / FLAT
                 if (elems >= elemLimit || h < 14.0f) startLaunch();   // re-energize with a launch, not a chain hill
+                // SPEED-AWARE re-energize: if the forward-sim speed has bled down near
+                // the floor, insert a booster straight BEFORE chaining another slowing
+                // element, instead of letting a run of slow elements decay to MIN_V.
+                // (since inversions now exit level rather than dropping out, the old
+                // logic had nothing to claw the speed back between chained elements.)
+                else if (genV < MIN_V + 12.0f) startBoost();
                 // real coasters never butt two g-elements together — insert a LEVEL transition
                 // (trim/brake-run). DILATED to several points so banking eases fully to level and
                 // the felt g recovers GENTLY between pulls (low curvature gradient, no sharp dip)

@@ -37,7 +37,7 @@
         pzBase = gpos;
         // SPEED-DICTATES-SIZE teardrop-loop bottom radius (up to 1.30x record at speed); the
         // bigger-at-speed bottom keeps g near target while the crest stays fast.
-        { float bt; pzR = invRFor(M_PRETZEL, bt); }
+        { float bt; pzR = invRFor(M_PRETZEL, bt); pzR *= frnd(0.85f, 1.0f); }   // SPEED-SIZE + per-element size variety
         pzDrift = pzR * 1.5f;                        // forward creep so the descending leg doesn't sit on the ascending one
         pzLat   = pzR * frnd(1.4f, 1.9f);            // LATERAL sweep so the loop veers off the entry line (was planar -> sat 1:1 on the existing track)
         pzSteps = 26;

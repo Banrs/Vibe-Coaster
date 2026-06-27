@@ -153,7 +153,7 @@ struct Track {
     }
 
     void initLoop() {
-        { float bt; lR = invRFor(M_LOOP, bt); }              // SPEED-DICTATES-SIZE: ~17m (34m tall) -> up to 31m (62m, 1.30x record) as the entry speed rises; bigger-at-speed keeps the crest fast
+        { float bt; lR = invRFor(M_LOOP, bt); lR *= frnd(0.85f, 1.0f); }  // SPEED-DICTATES-SIZE + per-loop size VARIETY (54-64m, not always the max), bigger-at-speed keeps the crest fast
         lf     = headingVec();
         lside  = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -167,7 +167,7 @@ struct Track {
     // direction change). reuses the loop frame; lsteps drives a 180° arc.
     void initImmel() {
         mode    = M_IMMEL;
-        { float bt; lR = invRFor(M_IMMEL, bt); }       // SPEED-DICTATES-SIZE Immelmann radius (up to 1.30x record at speed)
+        { float bt; lR = invRFor(M_IMMEL, bt); lR *= frnd(0.85f, 1.0f); }   // SPEED-SIZE + per-element size variety
         lf      = headingVec();
         lside   = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -218,7 +218,7 @@ struct Track {
     void initDiveLoop() {
         mode = M_DIVELOOP;
         setClearance(18.0f, 40.0f);
-        { float bt; dlR = invRFor(M_DIVELOOP, bt); }         // SPEED-DICTATES-SIZE dive-loop radius (up to 1.30x record at speed)
+        { float bt; dlR = invRFor(M_DIVELOOP, bt); dlR *= frnd(0.85f, 1.0f); }   // SPEED-SIZE + per-element size variety
         dlf      = headingVec();
         dlside   = Vector3Normalize(Vector3CrossProduct(WUP, dlf));
         dlcenter = { gpos.x, gpos.y + dlR, gpos.z };
@@ -251,7 +251,7 @@ struct Track {
     void initCobra() {
         mode = M_COBRA;
         setClearance(24.0f, 58.0f);
-        { float bt; cbR = invRFor(M_COBRA, bt); }  // SPEED-DICTATES-SIZE cobra: hood ~2R, 27m -> up to ~48m (1.30x record) as speed rises
+        { float bt; cbR = invRFor(M_COBRA, bt); cbR *= frnd(0.68f, 1.0f); }  // SPEED-SIZE + VARIETY: hood 33-51m (under the 50-55m cap). Smaller cobras pull punchier g; bigger ones are gentler -> a mix instead of every cobra at the cap
         cbF     = headingVec();
         float side = (rnd01() < 0.5f) ? 1.0f : -1.0f;
         cbSide  = Vector3Scale(Vector3Normalize(Vector3CrossProduct(WUP, cbF)), side);

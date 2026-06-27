@@ -40,7 +40,9 @@ static std::string g_baseDir;
 // ---------------------------------------------------------------------------
 struct Renderer {
     id<MTLDevice> device;
-    id<MTLCommandQueue> queue;
+    id<MTLCommandQueue> queue;        // render command queue
+    id<MTLCommandQueue> asQueue;      // dedicated AS-build queue (so big async AS builds
+                                      // don't serialise ahead of render frames on the GPU)
     id<MTLComputePipelineState> tracePSO;
     id<MTLBuffer> camBuffer;
 
@@ -93,7 +95,7 @@ struct Renderer {
     // benchmark: a 1m terrain ring + clipped track that FOLLOWS the ride camera
     // (so blocks stay 1m everywhere without meshing the whole 2km circuit at once).
     static constexpr float BENCH_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-    static constexpr float BENCH_RING = 600.0f;   // ring half-extent around the camera
+    static constexpr float BENCH_RING = 1100.0f;   // ring half-extent around the camera
     std::vector<float3> trackPts;          // all track control points (for trees)
     std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
     float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
@@ -151,6 +153,7 @@ void Renderer::init() {
             (int)device.supportsRaytracing,
             (int)device.supportsRaytracingFromRender);
     queue = [device newCommandQueue];
+    asQueue = [device newCommandQueue];
 
     tracePSO = makePSO(device, "traceKernel");
     camBuffer = [device newBufferWithLength:sizeof(CameraUniforms)
@@ -317,7 +320,7 @@ void Renderer::uploadAndBuildBack() {
     memcpy([vertexBufferBack contents], bgVerts.data(), bytes);
     triCountBack = tris;
     id<MTLBuffer> scratch = asScratch;
-    accelBack = buildAS(device, queue, vertexBufferBack, tris, &scratch, false, &buildDone);
+    accelBack = buildAS(device, asQueue, vertexBufferBack, tris, &scratch, false, &buildDone);
     asScratch = scratch;
 }
 

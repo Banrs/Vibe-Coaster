@@ -4,3 +4,5 @@ minecoaster
 *.o
 track.txt
 out.png
+minecoaster-rt
+minecoaster_orbit

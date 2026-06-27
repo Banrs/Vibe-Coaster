@@ -89,12 +89,18 @@ static const char *SHADOW_FS =
     "  vec3 body = toLinear(baseCol);\n"
     "  float ndlW = max(dot(N, lightDir), 0.0);\n"
     "  vec3 deep = body * (0.30 + 0.55*ndlW*mix(0.4,1.0,rawSh)) + groundCol*0.05;\n"
-    // reflection: no scene reflection in the raster pass, so reflect the sky tint —
-    // brighter toward the horizon (grazing) and warmed slightly toward the sun
+    // reflection: no scene reflection in the raster pass, so reflect a BRIGHT sky
+    // gradient (a deep zenith blue fading to a pale luminous horizon) along the
+    // reflected ray — NOT the dark ambient skyCol uniform, which made grazing water
+    // read near-black and blotch over the clouds at the horizon. Warmed toward the sun.
     "  vec3 R = reflect(-V, N);\n"
-    "  float horiz = pow(1.0 - clamp(R.y,0.0,1.0), 2.0);\n"
-    "  vec3 sky = skyCol*(0.7 + 0.6*horiz);\n"
-    "  vec3 refl = mix(sky, sunCol*0.9, 0.12*horiz);\n"
+    "  float ry = clamp(R.y, 0.0, 1.0);\n"
+    "  float horiz = pow(1.0 - ry, 2.0);\n"
+    "  vec3 skyZen  = vec3(0.30, 0.52, 0.92);\n"      // bright zenith blue (linear-ish)
+    "  vec3 skyHorz = vec3(0.72, 0.84, 0.98);\n"      // pale luminous horizon
+    "  vec3 sky = mix(skyHorz, skyZen, pow(ry, 0.55));\n"
+    "  float sunGlow = pow(max(dot(R, lightDir), 0.0), 8.0);\n"  // warm reflected-sun smear
+    "  vec3 refl = mix(sky, sunCol*0.55, 0.30*sunGlow);\n"
     "  vec3 col = mix(deep, refl, fres);\n"
     // tight sun specular glint on the rippled surface (only where lit)
     "  vec3 H = normalize(lightDir + V);\n"
@@ -113,7 +119,17 @@ static const char *SHADOW_FS =
     "    vec3 wcol = waterShade(base, rawShW);\n"
     "    wcol = aces(wcol*0.94);\n"
     "    wcol = pow(wcol, vec3(1.0/2.2));\n"
-    "    finalColor = vec4(wcol, 0.88);\n"
+    "    float wa = 0.90;\n"
+    // same distance fog the terrain uses: the continuous water sheet fades to the
+    // sky tint (and its alpha drops) toward the cull radius, so there's no hard
+    // circular edge where the water disc ends — it dissolves into the horizon.
+    "    if(fogEnd > 0.0){\n"
+    "      float d = length(viewPos.xz - fragWorld.xz);\n"
+    "      float fog = clamp((d - fogEnd*0.70)/(fogEnd*0.27), 0.0, 1.0);\n"
+    "      wcol = mix(wcol, fogCol, fog);\n"
+    "      wa = mix(wa, 0.0, fog);\n"
+    "    }\n"
+    "    finalColor = vec4(wcol, wa);\n"
     "    return;\n"
     "  }\n"
     "  vec3 albedo = toLinear(base);\n"
@@ -254,11 +270,20 @@ static const char *SKY_FS =
     "  return smoothstep(0.62,0.95, base) * hf;\n"                          // high threshold -> sparse, wispy
     "}\n"
     "vec4 cloudVolume(vec3 ro, vec3 rd, vec3 sun, float lift){\n"
-    "  if(rd.y < 0.03) return vec4(0.0);\n"
+    // The cloud slab (y=300..470) is entered farther and farther away as the view
+    // ray flattens toward the horizon. Past a few km the noise hash sample coords
+    // (thousands of metres) overflow float precision in floor()/fract() and the
+    // volume breaks into a tiled black/white blotch band. So we hard-cap the march
+    // entry distance: beyond DMAX the clouds are sub-pixel horizon haze anyway, so
+    // we fade them out (smoothly, no hard line) rather than sampling the garbage.
     "  float cb=300.0, ct=470.0;\n"
     "  float t0=(cb-ro.y)/rd.y, t1=(ct-ro.y)/rd.y;\n"
     "  float tn=max(min(t0,t1),0.0), tf=max(t0,t1);\n"
-    "  if(tf<=tn) return vec4(0.0); tf=min(tf,tn+1500.0);\n"
+    "  if(tf<=tn) return vec4(0.0);\n"
+    "  const float DMAX=4200.0;\n"                                            // last distance the hash stays stable
+    "  float distFade = 1.0 - smoothstep(DMAX*0.72, DMAX, tn);\n"            // fade clouds out before the band
+    "  if(distFade <= 0.0) return vec4(0.0);\n"
+    "  tf=min(tf,tn+1500.0);\n"
     "  const int N=14; float dt=(tf-tn)/float(N);\n"                         // more steps -> smoother volume
     "  float t=tn+dt*h13(vec3(gl_FragCoord.xy,1.0));\n"                       // jitter -> no banding
     "  float trans=1.0; vec3 acc=vec3(0.0);\n"
@@ -276,7 +301,7 @@ static const char *SKY_FS =
     "    }\n"
     "    t+=dt;\n"
     "  }\n"
-    "  return vec4(acc, 1.0-trans);\n"
+    "  return vec4(acc, (1.0-trans)*distFade);\n"
     "}\n"
     "void main(){\n"
     "  vec2 ndc = uv*2.0-1.0;\n"

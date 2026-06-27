@@ -1088,7 +1088,8 @@ int main(int argc, char **argv) {
     bool framesMode = (argc > 1 && TextIsEqual(argv[1], "--frames"));
     bool rasterShot = (argc > 1 && TextIsEqual(argv[1], "--rastershot"));   // capture the RASTER game view (not the path tracer)
     bool orbitShot  = (argc > 1 && TextIsEqual(argv[1], "--orbitshot"));    // DEBUG: aerial 3/4 view to inspect platform/helix/support structures
-    bool shotMode = framesMode || rasterShot || orbitShot || (argc > 1 && TextIsEqual(argv[1], "--shot"));
+    bool waterShot  = (argc > 1 && TextIsEqual(argv[1], "--watershot"));    // DEBUG: grazing view over the lake to inspect the fresnel water
+    bool shotMode = framesMode || rasterShot || orbitShot || waterShot || (argc > 1 && TextIsEqual(argv[1], "--shot"));
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));   // TEMP: verify live RT
 
     // headless simulation stress test — no window, no GL. verifies generation
@@ -1742,6 +1743,25 @@ int main(int argc, char **argv) {
             cam.target   = P;
             cam.up       = Vector3{ 0, 1, 0 };
             cam.fovy     = 60;
+        }
+        if (waterShot) {                                         // DEBUG: grazing view over the lake to inspect the water
+            // spiral out from the camera column to find the nearest water, then sit
+            // just above the waterline and look across it at a shallow grazing angle
+            // (where the fresnel sky reflection is strongest).
+            Vector3 wctr = P; bool found = false;
+            for (int r = 2; r <= 160 && !found; r += 2)
+                for (int a = 0; a < 24 && !found; a++) {
+                    float ang = a * (2.0f * PI / 24.0f);
+                    float wx = P.x + cosf(ang) * r, wz = P.z + sinf(ang) * r;
+                    if ((float)terrainH(wx, wz) + 1.0f < WATER_Y) { wctr = Vector3{ wx, WATER_Y, wz }; found = true; }
+                }
+            Vector3 dir = Vector3Subtract(wctr, P); dir.y = 0;
+            float dl = Vector3Length(dir);
+            dir = (dl < 1e-3f) ? Vector3{ 0, 0, 1 } : Vector3Scale(dir, 1.0f / dl);
+            cam.position = Vector3Add(wctr, Vector3Add(Vector3Scale(dir, -34.0f), Vector3{ 0, 5.5f, 0 }));
+            cam.target   = Vector3Add(wctr, Vector3Scale(dir, 34.0f));
+            cam.up       = Vector3{ 0, 1, 0 };
+            cam.fovy     = 64;
         }
 
         // ------------------------------------------------------- render ----
@@ -2576,21 +2596,51 @@ int main(int argc, char **argv) {
             }
         }
 
-        // water last (translucent). NOTE: needs a proper smooth-surface redo — drawn as
-        // per-cell blocks it reads as a grid; routing it through the lit shader tanked FPS.
-        beginVoxelBatch();
-        for (auto &wc : waterCells) {
-            float ddx = wc.x - P.x, ddz = wc.z - P.z;
-            float fog = Clamp((sqrtf(ddx * ddx + ddz * ddz) - fogEnd * 0.70f) / (fogEnd * 0.27f), 0.0f, 1.0f);   // fully fades to sky BEFORE the cull radius (no hard circular edge)
-            Color w = mixc(WATER, SKY, fog);
-            w.a = 150;
-            // a SOLID block from just below the surface up to exactly WATER_Y (top face
-            // is the waterline). Thicker than the old 0.10 wafer so it doesn't vanish
-            // edge-on when the ride skims the surface, and only lightly oversized (1.04)
-            // so neighbouring translucent cells don't heavily double-blend and shimmer.
-            drawCubeTex(T_WHITE, Vector3{ wc.x, WATER_Y - 0.40f, wc.z }, wc.y * 1.04f, 0.80f, wc.y * 1.04f, w);
+        // ---- CONTINUOUS FRESNEL WATER SURFACE -------------------------------
+        // One seamless sheet at exactly y=WATER_Y instead of per-cell blocks: each
+        // water cell contributes a single TOP-FACING quad on the shared waterline
+        // plane, so neighbours tile into one flat surface (no side faces, no z-fight,
+        // no per-cell fog banding -> no "grid"). It's drawn through the lit shader,
+        // whose waterShade() gives it Schlick fresnel (sky reflection rises at grazing
+        // angles), an animated ripple normal (uTime), depth tint and a sun glint. The
+        // shader fades it to the sky tint at the cull radius so the disc has no hard
+        // edge. The water colour stays blue-dominant + translucent so the shader's
+        // water test fires (and the white splash spray above stays on the land path).
+        {
+            float wt = simTime;
+            SetShaderValue(gShadow.lit, gShadow.locTime, &wt, SHADER_UNIFORM_FLOAT);
+            float fe = fogEnd;
+            float fc[3] = { SKY.r / 255.0f, SKY.g / 255.0f, SKY.b / 255.0f };
+            SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
+
+            const int SHADOW_UNIT_W = 10;
+            BeginShaderMode(gShadow.lit);
+            SetShaderValue(gShadow.lit, gShadow.locShadowMap, &SHADOW_UNIT_W, SHADER_UNIFORM_INT);
+            rlActiveTextureSlot(SHADOW_UNIT_W); rlEnableTexture(gShadow.depthTex); rlActiveTextureSlot(0);
+            // a flat-white atlas tile so the vertex colour drives the surface tint;
+            // T_WHITE's UV centre is sampled for every water vert.
+            rlSetTexture(gAtlas.id);
+            float wu = (T_WHITE * 16 + 8.0f) / (float)(TILE_N * 16);
+            float wv = 8.0f / 16.0f;
+            rlBegin(RL_QUADS);
+            rlColor4ub(WATER.r, WATER.g, WATER.b, 150);
+            rlNormal3f(0, 1, 0);
+            for (auto &wc : waterCells) {
+                float hs = wc.y * 0.5f;                 // wc.y carries the LOD cell size
+                float x0 = wc.x - hs, x1 = wc.x + hs;
+                float z0 = wc.z - hs, z1 = wc.z + hs;
+                rlTexCoord2f(wu, wv); rlVertex3f(x0, WATER_Y, z0);
+                rlTexCoord2f(wu, wv); rlVertex3f(x0, WATER_Y, z1);
+                rlTexCoord2f(wu, wv); rlVertex3f(x1, WATER_Y, z1);
+                rlTexCoord2f(wu, wv); rlVertex3f(x1, WATER_Y, z0);
+            }
+            rlEnd();
+            EndShaderMode();
+            rlActiveTextureSlot(SHADOW_UNIT_W); rlDisableTexture(); rlActiveTextureSlot(0);
+            float off = 0.0f;
+            SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);
         }
-        endVoxelBatch();
 
         EndMode3D();
         } else {
@@ -2724,7 +2774,7 @@ int main(int argc, char **argv) {
         // Accumulates many samples per pixel into an HDR buffer, then tonemaps.
         // Only run the expensive trace on the screenshot frames themselves (we grab
         // the capture later this same frame) — otherwise the loop would crawl.
-        if (shotFrame && !rasterShot && !orbitShot) {
+        if (shotFrame && !rasterShot && !orbitShot && !waterShot) {
             int rw = GetRenderWidth(), rh = GetRenderHeight();
             if (gPT.W != rw || gPT.H != rh) { gPT.initBuffers(rw, rh); }
 
@@ -3074,8 +3124,11 @@ int main(int argc, char **argv) {
         bool lastShot = false;
         if (shotFrame) {
             rlDrawRenderBatchActive();
-            const char *name = (frame == 200) ? "shot1.png" : (frame == 600) ? "shot2.png"
-                             : (frame == 900) ? "shot3.png" : "shot4.png";
+            const char *name = waterShot
+                ? ((frame == 200) ? "watershot1.png" : (frame == 600) ? "watershot2.png"
+                  : (frame == 900) ? "watershot3.png" : "watershot4.png")
+                : ((frame == 200) ? "shot1.png" : (frame == 600) ? "shot2.png"
+                  : (frame == 900) ? "shot3.png" : "shot4.png");
             TakeScreenshot(name);
             printf("fps %d  -> %s\n", GetFPS(), name);
             fflush(stdout);

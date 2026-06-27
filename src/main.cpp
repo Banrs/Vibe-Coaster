@@ -2221,13 +2221,19 @@ int main(int argc, char **argv) {
                             fabsf(hxAxis.x - p.x) + 0.4f, 0.30f, fabsf(hxAxis.z - p.z) + 0.4f, sc);
                 continue;
             }
-            // Every elevated support is a track-aligned A-frame V bent. Space them out
-            // (every other control point) so a long airtime hill isn't a comb of bents;
-            // tall towers always draw so big drops/launches stay braced.
+            // Every elevated support is a track-aligned A-frame V bent. Space them by
+            // WORLD ARC LENGTH (not deque index): the rolling cp buffer pops from the
+            // front as the train rides, so an index-parity rule made supports flip on/off
+            // and shift; and points are unevenly spaced, so it gave erratic gaps. arc[] is
+            // popFront-stable and metric, so a bent lands every SUP_SP metres, fixed in the
+            // world and evenly spaced regardless of element point density.
             float topY = p.y - 0.5f;                              // apex flush to the spine underside
             float gC   = groundTopAt(p.x, p.z);
             float hgt  = topY - gC;
-            if (hgt > 0.5f && ((i & 1) == 0 || hgt > 24.0f))
+            const float SUP_SP = 9.0f;                            // metres between A-frame bents
+            bool placeHere = i > 0 &&
+                floorf(trk.arc[i] / SUP_SP) != floorf(trk.arc[i - 1] / SUP_SP);
+            if (hgt > 0.5f && placeHere)
                 drawVBent(p, topY, gC, lat, t, trk.up[i], sc);
 
             // maintenance catwalk + handrails + access stairs alongside launch /

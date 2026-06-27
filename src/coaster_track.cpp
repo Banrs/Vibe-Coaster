@@ -3,6 +3,7 @@ struct Track {
     std::deque<Vector3>       up;     // rider-up per control point (banking + inversions)
     std::deque<unsigned char> kind;   // SegMode tag per control point
     std::deque<unsigned char> chainf;  // 1 = chain-lift here (not a launched climb)
+    std::deque<float>         arc;    // cumulative world arc length per control point (popFront-stable)
     std::deque<Coin>          coins;
     long base = 0;                    // absolute index of cp[0]
 
@@ -94,14 +95,15 @@ struct Track {
     float   stationDeckY = 0;         // target deck height of the pending station
 
     void pushCP(Vector3 p, Vector3 upv, unsigned char tag, unsigned char ch = 0) {
-        cp.push_back(p); up.push_back(upv); kind.push_back(tag); chainf.push_back(ch);
+        float a = arc.empty() ? 0.0f : arc.back() + Vector3Length(Vector3Subtract(p, cp.back()));
+        cp.push_back(p); up.push_back(upv); kind.push_back(tag); chainf.push_back(ch); arc.push_back(a);
     }
     void popFront() {
-        cp.pop_front(); up.pop_front(); kind.pop_front(); chainf.pop_front(); base++;
+        cp.pop_front(); up.pop_front(); kind.pop_front(); chainf.pop_front(); arc.pop_front(); base++;
     }
 
     void reset() {
-        cp.clear(); up.clear(); kind.clear(); chainf.clear(); coins.clear(); base = 0;
+        cp.clear(); up.clear(); kind.clear(); chainf.clear(); arc.clear(); coins.clear(); base = 0;
         chainMode = false; stationPending = false; stationActive = false; stationRamping = false;
         // vibrant coaster livery: colored spine + steel rails, soft modern look
         Theme th    = THEMES[irnd(0, THEME_N - 1)];

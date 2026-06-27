@@ -266,13 +266,20 @@ static float3 sunSpec(float3 n, float3 V, float3 L, float rough, float3 specCol)
 
 // Direct lighting (soft-shadowed sun + hemisphere ambient) + grain.
 // Used for primary surfaces and as the gathered radiance for indirect bounces.
+// shadowMode: 0 = no shadow, 1 = single HARD shadow ray (cheap, used for GI
+// bounce surfaces), 2 = soft multi-sample sun shadow (primary surfaces only).
 static float3 shadeSurface(float3 pos, float3 n, float3 albedo, int mat,
                            float3 L, float3 V, thread float& rng,
-                           primitive_acceleration_structure accel, bool doShadow) {
+                           primitive_acceleration_structure accel, int shadowMode) {
     albedo = voxelGrain(albedo, pos, n, mat);
     float ndl = max(dot(n, L), 0.0);
     float shadow = 1.0;
-    if (doShadow && ndl > 0.0) shadow = softSunShadow(pos, n, L, rng, accel);
+    if (shadowMode > 0 && ndl > 0.0) {
+        if (shadowMode == 1)                       // cheap hard shadow (GI bounce)
+            shadow = occluded(pos + n * 0.03, L, 8000.0, accel) ? 0.0 : 1.0;
+        else                                       // soft penumbra (primary)
+            shadow = softSunShadow(pos, n, L, rng, accel);
+    }
     float3 sunColor = float3(1.05, 0.92, 0.70);
     float3 diff = albedo * sunColor * (ndl * shadow);
     // specular: tight for metal, broad/dim for diffuse surfaces.
@@ -320,7 +327,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
         color = sampleSky(cam.origin, dir, L, t);
     } else {
         float3 n = hit.n;
-        color = shadeSurface(hit.pos, n, hit.albedo, hit.mat, L, V, rng, accel, true);
+        color = shadeSurface(hit.pos, n, hit.albedo, hit.mat, L, V, rng, accel, 2);
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
@@ -346,9 +353,10 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             if (gh.valid) {
                 // near hits occlude strongly, distant ones fade out (range AO)
                 aoSum += 1.0 - smoothstep(2.0, 28.0, gh.dist);
-                // gather that surface's direct light (no recursion of shadows -> cheap)
+                // gather that surface's direct light with a single HARD shadow ray
+                // (mode 1) instead of an 8-tap soft penumbra -> ~8x fewer GI rays.
                 float3 gv = -sdir;
-                giSum += shadeSurface(gh.pos, gh.n, gh.albedo, gh.mat, L, gv, rng, accel, true);
+                giSum += shadeSurface(gh.pos, gh.n, gh.albedo, gh.mat, L, gv, rng, accel, 1);
             } else {
                 giSum += sampleSkyLite(sdir, L);   // open sky contributes its colour
             }
@@ -374,7 +382,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             rr.max_distance = 10000.0;
             Hit rh = traceRay(rr, accel, verts);
             float3 reflCol = rh.valid
-                ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, L, -refl, rng, accel, true)
+                ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, L, -refl, rng, accel, 1)
                 : sampleSky(rr.origin, refl, L, t);
 
             if (hit.mat == MAT_WATER) {

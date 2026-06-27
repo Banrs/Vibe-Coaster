@@ -515,9 +515,11 @@ struct Track {
         return m == M_LOOP || m == M_ROLL || m == M_IMMEL || m == M_DIVELOOP || m == M_COBRA || m == M_PRETZEL;
     }
     bool eligibleElem(SegMode m) const {
-        // Tight inversions are no longer gated OUT at speed (that left half of them
-        // un-spawnable). They are SPEED-SIZED (invRAt) and entered at the carried speed,
-        // trimming only when even the 1.30x-record element would exceed +10g.
+        // DESIGN DICTATES SPEED (no brakes): a big inversion is only offered while the train is
+        // slow enough to take it under the +10g ceiling WITHOUT a trim. When the train is going
+        // too fast, the pool instead serves an airtime hill / overbank, which bleeds the excess
+        // speed NATURALLY by climbing (KE->PE) — so the layout itself manages speed, not a brake.
+        if (invSpec(m).gT > 0.0f && genV > 79.0f) return false;
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
     }
     // pick from the pool weighted toward the LEAST-recently-used eligible type, so
@@ -716,7 +718,7 @@ struct Track {
                 // EARLY (keep the cruise speed up) so the train carries margin into the next big
                 // element instead of bleeding to the MIN_V floor. Upward elements (loops, hills)
                 // regain their own height, so there's no need to launch just because we're low.
-                bool slow = genV < MIN_V + 22.0f;         // ~64 m/s — re-energize EARLY with a cheap booster so the cruise stays fast (fewer MIN_V-floor touches) without resorting to a launch+top-hat
+                bool slow = genV < MIN_V + 22.0f;         // ~64 m/s — re-energize with a cheap booster so the cruise stays fast without spamming launches (keeps the high-speed launch peaks that lift the avg ~250 km/h)
                 if (elems >= elemLimit)        startLaunch();   // periodic signature launch + top-hat (every elemLimit elements)
                 else if (slow && h < 22.0f)    startLaunch();   // slow AND low -> full re-launch+top-hat (also recovers height)
                 else if (slow)                 startBoost();    // slow but has height -> quick LSM booster (filler, no top-hat); keeps elements flowing

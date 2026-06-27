@@ -1926,6 +1926,18 @@ int main(int argc, char **argv) {
                     drawCubeTex(T_IRON, Vector3{ hxAxis.x, ry, hxAxis.z }, 2.0f*tw + 0.4f, 0.32f, 2.0f*tw + 0.4f, scA);
             }
         }
+        // draws a slim slanted tube (apex->foot) as a short stack of stepped cubes so
+        // axis-aligned voxels read as a clean diagonal A-frame leg.
+        auto drawStrut = [&](Vector3 a, Vector3 b, float r, Color c) {
+            float len = Vector3Length(Vector3Subtract(b, a));
+            int n = (int)fmaxf(len / 1.4f, 2.0f);                 // ~1.4u per segment
+            for (int s = 0; s <= n; s++) {
+                float u = (float)s / (float)n;
+                drawCubeTex(T_IRON, Vector3{ a.x + (b.x - a.x) * u,
+                                             a.y + (b.y - a.y) * u,
+                                             a.z + (b.z - a.z) * u }, r, r, r, c);
+            }
+        };
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
@@ -1947,42 +1959,40 @@ int main(int argc, char **argv) {
                             fabsf(hxAxis.x - p.x) + 0.4f, 0.30f, fabsf(hxAxis.z - p.z) + 0.4f, sc);
                 continue;
             }
-            // when the track is banked the rails swing out & down along the tilted
-            // up-vector, so straight, spread legs punch through the deck. for banked
-            // track drop a single centred column up to just under the rail envelope;
-            // on level track keep the wide twin-leg bent (which reads better).
+            // steep/banked track gets an A-frame BENT centred under the rail (apex up,
+            // feet splayed along the track); level track keeps the wide twin-leg bent.
             float bankTilt = 1.0f - Clamp(trk.up[i].y, 0.0f, 1.0f);   // 0 level .. ->1 steeply banked
             float pitch    = fabsf(t.y);                              // 0 level .. ->1 vertical climb/drop
             if (bankTilt > 0.12f || pitch > 0.45f) {
-                // Steep or banked track: a straight leg dropped from the point would run
-                // through the inclined track itself. Offset a single tower to the side so
-                // it clears the rail envelope, then tie it back with a short cap strut.
-                float ox = lat.x * 1.15f, oz = lat.z * 1.15f;
-                float topY = p.y - 0.9f;                              // stop just under the rails
-                float bx = p.x + ox, bz = p.z + oz;
-                float gg  = groundTopAt(bx, bz);
-                float hgt = topY - gg;
+                // Steep/banked track: a clean Falcon's-Flight A-frame BENT centred under
+                // the rail — two straight tubular legs splaying out along the track to two
+                // feet on the ground (apex up at the rail, feet spread). Deterministic per
+                // control point (anchored to groundTopAt of each foot) so it never jitters.
+                Vector3 along = Vector3Normalize(Vector3{ t.x, 0, t.z });   // fore/aft of the track
+                float topY = p.y - 0.9f;                              // apex just under the rails
+                float gC   = groundTopAt(p.x, p.z);
+                float hgt  = topY - gC;
                 // space supports out (every other point) so a long airtime hill isn't a thin
                 // comb of poles; tall towers always draw.
                 if (hgt > 0.5f && ((i & 1) == 0 || hgt > 50.0f)) {
-                    if (hgt > 50.0f) {                              // tall structure -> braced 4-leg lattice, not a lone pole
-                        for (float sx : { -1.0f, 1.0f }) for (float sz : { -1.0f, 1.0f })
-                            drawCubeTex(T_IRON, Vector3{ bx + sx*1.7f, gg + hgt*0.5f, bz + sz*1.7f }, 0.28f, hgt, 0.28f, sc);
-                        for (float ry = gg + 13.0f; ry < topY - 4.0f; ry += 16.0f)   // cross braces
-                            drawCubeTex(T_IRON, Vector3{ bx, ry, bz }, 3.9f, 0.5f, 3.9f, sc);
-                    } else {
-                        drawCubeTex(T_IRON, Vector3{ bx, gg + hgt * 0.5f, bz }, 0.48f, hgt, 0.48f, sc); // main post (slim, proportional to the rail)
-                        // two splayed A-frame legs (fore/aft along the track) + mid tie -> a real trestle BENT
-                        Vector3 along = Vector3Normalize(Vector3{ t.x, 0, t.z });
-                        float foot = Clamp(hgt * 0.18f, 1.5f, 7.0f);
-                        for (float s2 : { -1.0f, 1.0f })
-                            drawCubeTex(T_IRON, Vector3{ bx + along.x*s2*foot, gg + hgt*0.32f, bz + along.z*s2*foot },
-                                        0.30f, hgt*0.62f, 0.30f, sc);
-                        drawCubeTex(T_IRON, Vector3{ bx, gg + hgt*0.55f, bz },
-                                    fabsf(along.x*foot)*2.0f + 0.6f, 0.42f, fabsf(along.z*foot)*2.0f + 0.6f, sc);   // mid tie beam
+                    if (hgt > 50.0f) {                              // tall launch tower -> slim braced lattice
+                        float tw = 1.1f;                            // narrow half-width, does NOT grow with height
+                        for (float sx : { -1.0f, 1.0f }) for (float sz : { -1.0f, 1.0f })  // 4 slim corner posts
+                            drawCubeTex(T_IRON, Vector3{ p.x + sx*tw, gC + hgt*0.5f, p.z + sz*tw }, 0.28f, hgt, 0.28f, sc);
+                        for (float ry = gC + 12.0f; ry < topY - 4.0f; ry += 13.0f)         // ring braces up the spire
+                            drawCubeTex(T_IRON, Vector3{ p.x, ry, p.z }, 2.0f*tw + 0.4f, 0.32f, 2.0f*tw + 0.4f, sc);
+                    } else {                                        // A-frame bent: two splayed legs to spread feet
+                        Vector3 apex = Vector3{ p.x, topY, p.z };
+                        float spread = Clamp(hgt * 0.22f, 1.2f, 4.5f);   // foot spread, CAPPED so tall ones stay slim
+                        for (float s2 : { -1.0f, 1.0f }) {
+                            float fx = p.x + along.x*s2*spread, fz = p.z + along.z*s2*spread;
+                            Vector3 foot = Vector3{ fx, groundTopAt(fx, fz), fz };
+                            drawStrut(apex, foot, 0.28f, sc);
+                        }
+                        if (hgt > 8.0f)                             // cross-tie partway up between the legs
+                            drawCubeTex(T_IRON, Vector3{ p.x, gC + hgt*0.45f, p.z },
+                                        fabsf(along.x*spread)*1.1f + 0.4f, 0.30f, fabsf(along.z*spread)*1.1f + 0.4f, sc);
                     }
-                    drawCubeTex(T_IRON, Vector3{ p.x + ox * 0.5f, topY, p.z + oz * 0.5f },          // cap strut to spine
-                                0.30f + fabsf(ox), 0.22f, 0.30f + fabsf(oz), sc);
                 }
             } else {
                 for (float s : { -0.8f, 0.8f }) {

@@ -1,0 +1,303 @@
+#ifndef MINECOASTER_RENDER_FX_CPP
+#define MINECOASTER_RENDER_FX_CPP
+
+// ============================================================================
+//  GLSL lighting + shadow mapping (real cast shadows, SEUS/Bedrock-RTX feel)
+//  Pass 1: render the world's depth from the sun's POV into a shadow map.
+//  Pass 2: render from the camera; the fragment shader does directional light
+//  (Lambert), soft PCF shadow lookup, sky/ground ambient, and a specular sheen.
+// ============================================================================
+static const char *SHADOW_VS =
+    "#version 330\n"
+    "in vec3 vertexPosition; in vec2 vertexTexCoord; in vec3 vertexNormal; in vec4 vertexColor;\n"
+    "uniform mat4 mvp;\n"
+    "uniform mat4 lightVP;\n"
+    "out vec2 fragTexCoord; out vec4 fragColor; out vec3 fragNormal; out vec3 fragWorld; out vec4 fragLightPos;\n"
+    "void main(){\n"
+    "  vec4 wp = vec4(vertexPosition,1.0);\n"
+    "  fragWorld = wp.xyz;\n"
+    "  fragTexCoord = vertexTexCoord; fragColor = vertexColor;\n"
+    "  fragNormal = normalize(vertexNormal);\n"
+    "  fragLightPos = lightVP*wp;\n"
+    "  gl_Position = mvp*vec4(vertexPosition,1.0);\n"
+    "}\n";
+static const char *SHADOW_FS =
+    "#version 330\n"
+    "in vec2 fragTexCoord; in vec4 fragColor; in vec3 fragNormal; in vec3 fragWorld; in vec4 fragLightPos;\n"
+    "uniform sampler2D texture0; uniform vec4 colDiffuse;\n"
+    "uniform sampler2D shadowMap; uniform vec2 shadowTexel;\n"
+    "uniform vec3 lightDir; uniform vec3 viewPos;\n"
+    "uniform vec3 sunCol; uniform vec3 skyCol; uniform vec3 groundCol;\n"
+    "uniform float uTime;\n"   // animates water ripples; harmless 0 if main never sets it
+    "out vec4 finalColor;\n"
+    // Shadow lookup (returns 1 = fully lit, 0 = shadowed). A 12-tap rotated Poisson
+    // disk over a SMALL kernel (~1.4 texel): just wide enough to antialias the
+    // shadow-map texel jaggies into a thin clean edge, but tight enough that the
+    // shadow still hugs the voxel BLOCK shapes (not a wide soft penumbra).
+    "const vec2 PD12[12] = vec2[12](\n"
+    "  vec2(-0.326,-0.406),vec2(-0.840,-0.074),vec2(-0.696, 0.457),vec2(-0.203, 0.621),\n"
+    "  vec2( 0.962,-0.195),vec2( 0.473,-0.480),vec2( 0.519, 0.767),vec2( 0.185,-0.893),\n"
+    "  vec2( 0.507, 0.064),vec2( 0.896, 0.412),vec2(-0.322,-0.933),vec2(-0.792,-0.598));\n"
+    "float shadow(vec3 N){\n"
+    "  vec3 p = fragLightPos.xyz/fragLightPos.w; p = p*0.5+0.5;\n"
+    "  if(p.z<=0.0||p.z>1.0) return 1.0;\n"
+    "  if(p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
+    "  float NoL = max(dot(N,lightDir),0.0);\n"
+    // slope-scaled bias: more depth slack on grazing faces to kill acne.
+    "  float bias = clamp(0.00026 + 0.00120*(1.0-NoL),0.00026,0.00140);\n"
+    "  float ang = fract(sin(dot(fragWorld.xz, vec2(12.9898,78.233)))*43758.5453)*6.2831853;\n"
+    "  float ca=cos(ang), sa=sin(ang); mat2 rot=mat2(ca,-sa,sa,ca);\n"
+    "  vec2 o = shadowTexel*1.4;\n"                  // small kernel -> crisp but anti-aliased edge
+    "  float s=0.0;\n"
+    "  for(int i=0; i<12; i++){\n"
+    "    vec2 tap = p.xy + rot*PD12[i]*o;\n"
+    "    if(tap.x<0.0||tap.x>1.0||tap.y<0.0||tap.y>1.0) s += 1.0;\n"
+    "    else s += (p.z-bias > texture(shadowMap, tap).r) ? 0.0 : 1.0;\n"
+    "  }\n"
+    "  return s*(1.0/12.0);\n"
+    "}\n"
+    // ACES filmic tonemap (Narkowicz fit)
+    "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
+    "vec3 toLinear(vec3 c){ return pow(c, vec3(2.2)); }\n"
+    // ---- WATER: fresnel sky reflection + sun glint + depth tint + ripple normal --
+    // The raster water slab arrives here as an up-facing TRANSLUCENT quad (alpha<0.72
+    // from the vertex colour). We replace the flat-slab look with a proper liquid:
+    // a small animated ripple normal, a Schlick fresnel that fades the body toward a
+    // bright sky-tinted reflection at grazing angles, depth-darkening from the body
+    // tint, and a tight specular sun highlight. Returns the linear-HDR water colour.
+    "vec3 waterShade(vec3 baseCol, float rawSh){\n"
+    "  vec3 V = normalize(viewPos - fragWorld);\n"
+    "  vec2 w = fragWorld.xz;\n"
+    // two crossing low-freq sine ripples (animated by uTime; static if unwired)
+    "  float t = uTime;\n"
+    "  float nx = 0.05*sin(w.x*0.55 + w.y*0.31 + t*1.3)\n"
+    "           + 0.035*sin(w.y*1.07 - t*0.9)\n"
+    "           + 0.025*sin((w.x+w.y)*0.83 + t*1.7);\n"
+    "  float nz = 0.05*sin(w.y*0.55 + w.x*0.31 - t*1.1)\n"
+    "           + 0.035*sin(w.x*1.07 + t*0.8)\n"
+    "           + 0.025*sin((w.x-w.y)*0.83 - t*1.5);\n"
+    "  vec3 N = normalize(vec3(nx, 1.0, nz));\n"
+    "  float NoV = max(dot(N, V), 0.0);\n"
+    "  float fres = clamp(0.04 + 0.96*pow(1.0 - NoV, 5.0), 0.04, 0.95);\n"
+    // body: depth/shadow-darkened tint of the incoming water colour, lifted slightly
+    // where the sun lights the surface so shallows read warmer than deep water
+    "  vec3 body = toLinear(baseCol);\n"
+    "  float ndlW = max(dot(N, lightDir), 0.0);\n"
+    "  vec3 deep = body * (0.30 + 0.55*ndlW*mix(0.4,1.0,rawSh)) + groundCol*0.05;\n"
+    // reflection: no scene reflection in the raster pass, so reflect the sky tint —
+    // brighter toward the horizon (grazing) and warmed slightly toward the sun
+    "  vec3 R = reflect(-V, N);\n"
+    "  float horiz = pow(1.0 - clamp(R.y,0.0,1.0), 2.0);\n"
+    "  vec3 sky = skyCol*(0.7 + 0.6*horiz);\n"
+    "  vec3 refl = mix(sky, sunCol*0.9, 0.12*horiz);\n"
+    "  vec3 col = mix(deep, refl, fres);\n"
+    // tight sun specular glint on the rippled surface (only where lit)
+    "  vec3 H = normalize(lightDir + V);\n"
+    "  float glint = pow(max(dot(N,H),0.0), 200.0)*rawSh;\n"
+    "  col += sunCol*glint*1.6;\n"
+    "  return col;\n"
+    "}\n"
+    "void main(){\n"
+    "  vec4 tex = texture(texture0, fragTexCoord);\n"
+    "  vec3 base = tex.rgb*fragColor.rgb*colDiffuse.rgb;\n"
+    // water = up-facing translucent BLUE slab (vertex alpha < 0.72, cyan-dominant).
+    // The blue test keeps the bright-white splash spray on the land path. Shade it
+    // as a real liquid surface and skip the diffuse land path entirely.
+    "  if(fragColor.a < 0.72 && normalize(fragNormal).y > 0.80 && base.b > base.r*1.15){\n"
+    "    float rawShW = shadow(vec3(0.0,1.0,0.0));\n"
+    "    vec3 wcol = waterShade(base, rawShW);\n"
+    "    wcol = aces(wcol*0.94);\n"
+    "    wcol = pow(wcol, vec3(1.0/2.2));\n"
+    "    finalColor = vec4(wcol, 0.88);\n"
+    "    return;\n"
+    "  }\n"
+    "  vec3 albedo = toLinear(base);\n"
+    "  float maxB = max(max(base.r, base.g), base.b);\n"
+    "  float minB = min(min(base.r, base.g), base.b);\n"
+    "  float maxA = max(max(albedo.r, albedo.g), albedo.b);\n"
+    "  float minA = min(min(albedo.r, albedo.g), albedo.b);\n"
+    "  float pale = smoothstep(0.50, 0.86, maxA) * (1.0-smoothstep(0.08, 0.26, maxA-minA));\n"
+    "  float sheen = smoothstep(0.40, 0.82, maxB) * (1.0-smoothstep(0.10, 0.34, maxB-minB));\n"
+    "  albedo = mix(albedo, albedo*vec3(0.76,0.83,0.91), pale*0.42);\n"
+    "  vec3 N = normalize(fragNormal);\n"
+    "  float ndl = max(dot(N,lightDir),0.0);\n"
+    "  float rawSh = shadow(N);\n"
+    "  float sh = mix(0.18, 1.0, rawSh);\n"
+    "  vec3 direct = sunCol*1.02*ndl*sh;\n"
+    // ---- richer hemisphere ambient so shadowed faces aren't flat/dead. -------
+    // Cool sky fill pours from ABOVE (up-facing faces read in shaded sky blue),
+    // a warmer bounce comes from BELOW (down-facing faces pick up a warm ground
+    // glow), and a small fill term keeps deep-shadow faces alive. The whole
+    // ambient is gently lifted in light and dropped in shadow so cast shadows
+    // still bite without crushing to black.
+    "  float up   = clamp( N.y*0.5+0.5, 0.0, 1.0);\n"
+    "  float down = clamp(-N.y, 0.0, 1.0);\n"
+    "  vec3 skyFill   = skyCol   * (0.62 + 0.55*up);\n"        // sky pours from above
+    "  vec3 bounce    = groundCol* (0.50 + 1.40*down);\n"      // warm bounce from below
+    "  vec3 ambient   = (skyFill + bounce) * (0.52 + 0.22*rawSh);\n"
+    "  vec3 V = normalize(viewPos-fragWorld);\n"
+    "  vec3 H = normalize(lightDir+V);\n"
+    "  float NoH = max(dot(N,H),0.0);\n"
+    "  float spec = (pow(NoH, 56.0)*(0.18 + 0.36*sheen) + pow(NoH, 18.0)*0.045*sheen)*rawSh*ndl;\n"
+    "  float rim = pow(1.0-clamp(dot(N,V),0.0,1.0),3.6)*sheen*0.055*mix(0.35,1.0,rawSh);\n"
+    "  vec3 col = albedo*(ambient + direct) + sunCol*spec + skyCol*rim;\n"
+    "  col = aces(col*0.94);\n"
+    "  col = pow(col, vec3(1.0/2.2));\n"
+    // gentle color grade: small saturation lift for richer voxel colours without
+    // looking neon, matched to the path tracer's resolve so raster<->RT views agree.
+    "  float lum = dot(col, vec3(0.299,0.587,0.114));\n"
+    "  col = mix(vec3(lum), col, 1.10);\n"
+    "  finalColor = vec4(col, tex.a*fragColor.a*colDiffuse.a);\n"
+    "}\n";
+
+static const char *DEPTH_VS =
+    "#version 330\n"
+    "in vec3 vertexPosition; uniform mat4 mvp;\n"
+    "void main(){ gl_Position = mvp*vec4(vertexPosition,1.0); }\n";
+static const char *DEPTH_FS =
+    "#version 330\n"
+    "void main(){}\n";
+
+struct ShadowSys {
+    Shader lit{}, depth{};
+    unsigned int fbo = 0, depthTex = 0;
+    int SM = 2048;   // resolves thin rails / pillars while staying cheap; soft PCF hides the steps
+    int locLightVP=-1, locShadowMap=-1, locShadowTexel=-1, locLightDir=-1, locViewPos=-1;
+    int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1, locTime=-1;
+    Matrix lightVP{};
+
+    void init() {
+        lit   = LoadShaderFromMemory(SHADOW_VS, SHADOW_FS);
+        depth = LoadShaderFromMemory(DEPTH_VS, DEPTH_FS);
+        locLightVP     = GetShaderLocation(lit, "lightVP");
+        locShadowMap   = GetShaderLocation(lit, "shadowMap");
+        locShadowTexel = GetShaderLocation(lit, "shadowTexel");
+        locLightDir    = GetShaderLocation(lit, "lightDir");
+        locViewPos     = GetShaderLocation(lit, "viewPos");
+        locSun         = GetShaderLocation(lit, "sunCol");
+        locSky         = GetShaderLocation(lit, "skyCol");
+        locGround      = GetShaderLocation(lit, "groundCol");
+        locTime        = GetShaderLocation(lit, "uTime");
+        fbo = rlLoadFramebuffer();
+        rlEnableFramebuffer(fbo);
+        depthTex = rlLoadTextureDepth(SM, SM, false);
+        rlFramebufferAttach(fbo, depthTex, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+        if (!rlFramebufferComplete(fbo)) TraceLog(LOG_WARNING, "SHADOW: framebuffer is incomplete, shadows may be disabled");
+        rlDisableFramebuffer();
+    }
+
+    Matrix computeLightVP(Vector3 focus) {
+        float R = 82.0f;
+        Vector3 ctr = focus;
+        Vector3 eye = Vector3Add(ctr, Vector3Scale(g_sunDir, 240.0f));
+        Matrix view = MatrixLookAt(eye, ctr, Vector3{ 0, 1, 0 });
+        Matrix proj = MatrixOrtho(-R, R, -R, R, 8.0f, 500.0f);
+        lightVP = MatrixMultiply(view, proj);
+        return lightVP;
+    }
+};
+static ShadowSys gShadow;
+
+// ============================================================================
+//  World-space atmospheric fullscreen sky background.
+// ============================================================================
+static const char *SKY_VS =
+    "#version 330\n"
+    "in vec3 vertexPosition; in vec2 vertexTexCoord;\n"
+    "uniform mat4 mvp;\n"
+    "uniform vec2 resolution;\n"
+    "out vec2 uv;\n"
+    "void main(){ uv = vertexPosition.xy/resolution; gl_Position = mvp*vec4(vertexPosition,1.0); }\n";
+static const char *SKY_FS =
+    "#version 330\n"
+    "in vec2 uv; out vec4 finalColor;\n"
+    "uniform vec3 camDir; uniform vec3 camRight; uniform vec3 camUp;\n"
+    "uniform float tanHalfFovY; uniform float aspect;\n"
+    "uniform vec3 sunDir;\n"
+    "const vec3 ZENITH  = vec3(0.045, 0.26, 0.74);\n"
+    "const vec3 MIDSKY  = vec3(0.16, 0.50, 0.95);\n"
+    "const vec3 HORIZON = vec3(0.40, 0.70, 1.02);\n"   // vibrant saturated horizon (was pale near-white)
+    "const vec3 HAZE    = vec3(1.00, 0.74, 0.42);\n"
+    "const vec3 GROUND  = vec3(0.30, 0.38, 0.47);\n"
+    "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
+    "void main(){\n"
+    "  vec2 ndc = uv*2.0-1.0;\n"
+    "  vec3 dir = normalize(camDir + camRight*ndc.x*tanHalfFovY*aspect + camUp*(-ndc.y)*tanHalfFovY);\n"
+    "  vec3 sun = normalize(sunDir);\n"
+    "  float sunLift = smoothstep(-0.12, 0.55, sun.y);\n"
+    // ---- base sky: zenith->mid->horizon gradient with a Rayleigh-ish optical
+    // depth: looking toward the horizon means a longer air column, so it washes
+    // pale; the zenith stays deep blue. ---------------------------------------
+    "  float h = clamp(dir.y*0.5+0.5, 0.0, 1.0);\n"
+    "  float skyT = smoothstep(0.03, 0.92, h);\n"
+    "  vec3 col = mix(HORIZON, MIDSKY, smoothstep(0.0, 0.55, skyT));\n"
+    "  col = mix(col, ZENITH, smoothstep(0.34, 1.0, skyT));\n"
+    // optical-depth horizon wash (long air path scatters blue out -> pale band)
+    "  float airMass = exp(-max(dir.y,0.0)*2.6);\n"
+    "  col = mix(col, HORIZON, airMass*0.22);\n"   // lighter wash -> horizon stays vibrant, not pale
+    "  float horizon = exp(-abs(dir.y)*4.2);\n"
+    "  col += HORIZON*horizon*0.20;\n"
+    "  col += HAZE*horizon*(0.08 + 0.18*(1.0-sunLift));\n"
+    "  col = mix(GROUND, col, smoothstep(-0.10, 0.04, dir.y));\n"
+    // ---- in-scattering toward the sun ---------------------------------------
+    "  float mu = clamp(dot(dir, sun), -1.0, 1.0);\n"
+    "  float forward = max(mu, 0.0);\n"
+    // Rayleigh phase (1+cos^2) modulates overall brightness; warmer near the sun.
+    "  float rayleigh = 0.55 + 0.45*mu*mu;\n"
+    "  col *= rayleigh;\n"
+    "  vec3 sunTint = mix(vec3(1.0,0.62,0.32), vec3(1.0,0.90,0.70), sunLift);\n"
+    // two-lobe Mie: a tight forward glow + a broad warm halo that sells the
+    // 'sun direction' even far from the disc (stronger when sun is low/hazy).
+    "  float mieSharp = pow(forward, 22.0);\n"
+    "  float mieBroad = pow(forward, 5.0);\n"
+    "  col += sunTint*mieSharp*(0.42 + 0.36*horizon);\n"
+    "  col += sunTint*mieBroad*(0.10 + 0.16*(1.0-sunLift));\n"
+    // ---- VIEW-DEPENDENT lens flare / god-rays -------------------------------
+    // viewSun = how directly the CAMERA AXIS (not just this pixel) points at the
+    // sun. Flare/rays scale with this, so they bloom in only when you actually
+    // look toward the sun and fade to nothing as it leaves the centre of view.
+    "  float viewSun = max(dot(camDir, sun), 0.0);\n"
+    "  float lookGate = smoothstep(0.55, 0.96, viewSun);\n"
+    // radial streaks around the sun, falling off with angular distance r
+    "  vec3 ref = (abs(sun.y) > 0.94) ? vec3(1.0,0.0,0.0) : vec3(0.0,1.0,0.0);\n"
+    "  vec3 sr = normalize(cross(ref, sun));\n"
+    "  vec3 su = cross(sun, sr);\n"
+    "  vec2 sunPlane = vec2(dot(dir, sr), dot(dir, su));\n"
+    "  float a = atan(sunPlane.y, sunPlane.x);\n"
+    "  float r = length(sunPlane);\n"
+    "  float streaks = pow(0.5+0.5*sin(a*13.0 + sin(a*5.0)*1.7), 4.0);\n"
+    "  float shafts = streaks*smoothstep(0.72, 0.995, forward)*smoothstep(0.68, 0.08, r);\n"
+    "  col += sunTint*shafts*(0.26 + 0.30*horizon)*sunLift*lookGate;\n"
+    // anamorphic-ish horizontal flare bar + a couple of ghost spots along the
+    // sun->screen-centre axis, all gated by lookGate so they vanish off-axis.
+    "  float bar = exp(-pow(sunPlane.y*9.0,2.0)) * smoothstep(0.5,0.0,r);\n"
+    "  col += sunTint*bar*0.22*lookGate;\n"
+    "  float ghost = exp(-pow((r-0.16)*10.0,2.0)) + 0.6*exp(-pow((r-0.34)*7.0,2.0));\n"
+    "  col += sunTint*ghost*0.05*lookGate;\n"
+    // ---- sun disc + corona (also view-gated so it doesn't bleed when off-axis)
+    "  float disc = smoothstep(0.99950, 0.99986, mu);\n"
+    "  float corona = pow(forward, 96.0);\n"
+    "  col += vec3(1.0,0.93,0.74)*corona*0.58*sunLift*mix(0.4,1.0,lookGate);\n"
+    "  col = mix(col, vec3(1.0,0.94,0.78), disc*0.78*sunLift);\n"
+    "  col += vec3(1.0,0.97,0.84)*disc*1.15*sunLift;\n"
+    "  col = aces(col*1.08);\n"
+    "  finalColor = vec4(pow(clamp(col, 0.0, 1.0), vec3(1.0/2.2)), 1.0);\n"
+    "}\n";
+
+struct SkySys {
+    Shader sh{};
+    int locCamDir=-1, locCamRight=-1, locCamUp=-1, locTan=-1, locAspect=-1, locSun=-1, locRes=-1;
+    void init() {
+        sh = LoadShaderFromMemory(SKY_VS, SKY_FS);
+        locCamDir   = GetShaderLocation(sh, "camDir");
+        locCamRight = GetShaderLocation(sh, "camRight");
+        locCamUp    = GetShaderLocation(sh, "camUp");
+        locTan      = GetShaderLocation(sh, "tanHalfFovY");
+        locAspect   = GetShaderLocation(sh, "aspect");
+        locSun      = GetShaderLocation(sh, "sunDir");
+        locRes      = GetShaderLocation(sh, "resolution");
+    }
+};
+static SkySys gSky;
+
+#endif

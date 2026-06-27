@@ -1,0 +1,6 @@
+src/vendor/
+minecoaster
+*.png
+*.o
+track.txt
+out.png

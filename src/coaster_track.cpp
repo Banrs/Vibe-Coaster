@@ -352,15 +352,19 @@ struct Track {
     // [rMin .. rMaxRec*1.30]. Sizing UP with speed keeps the CREST fast (a bigger loop entered
     // fast crests far above the old MIN_V crawl) and the geometry record-class. Only when the
     // train is so fast that even the 1.30x element busts the +10g ceiling do we trim.
-    struct InvSpec { float gT, rMin, rMaxRec; };
+    // gMul = (g-governing radius)/R and hMul = (vertical height)/R for the element's shape,
+    // so sizing/g/height all stay realistic. A LOOP is a clothoid (wide 1.6R bottom that sets
+    // the g, ~2.6R total height); the others are near-circular. rMaxRec is the world-record
+    // RADIUS; the cap is 1.30x that, and the resulting HEIGHT (hMul*rMax) is checked realistic.
+    struct InvSpec { float gT, rMin, rMaxRec, gMul, hMul; };
     static InvSpec invSpec(SegMode m) {
-        switch (m) {
-            case M_LOOP:     return {5.5f, 17.0f, 24.0f}; // vertical loop, record ~49m tall -> rMaxRec 24m; 1.30x -> ~62m
-            case M_IMMEL:    return {5.5f, 16.0f, 22.0f}; // Immelmann half-loop
-            case M_DIVELOOP: return {5.0f, 16.0f, 22.0f}; // dive loop
-            case M_COBRA:    return {4.6f, 13.5f, 18.5f}; // cobra hood ~2R; record ~37m tall -> 1.30x -> ~48m
-            case M_PRETZEL:  return {5.5f, 19.0f, 23.0f}; // teardrop loop, wide bottom
-            default:         return {0.0f,  0.0f,  0.0f};
+        switch (m) {                                       //  gT   rMin  rMaxRec gMul  hMul   -> height cap (hMul*1.3*rMaxRec)
+            case M_LOOP:     return {5.5f, 14.0f, 19.0f, 1.6f, 2.6f}; // clothoid loop: 36-64m (<=1.30x the ~49m record), wide bottom keeps g sane
+            case M_IMMEL:    return {5.5f, 16.0f, 22.0f, 1.0f, 2.0f}; // Immelmann half-loop -> up to ~57m
+            case M_DIVELOOP: return {5.0f, 16.0f, 22.0f, 1.0f, 2.0f}; // dive loop -> up to ~57m
+            case M_COBRA:    return {4.6f, 13.5f, 16.5f, 1.0f, 2.2f}; // cobra hood ~2.2R -> up to ~47m (real 25-37m)
+            case M_PRETZEL:  return {5.5f, 19.0f, 23.0f, 1.0f, 2.0f}; // teardrop loop
+            default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};
         }
     }
     // radius for entry speed v; sets brakeTo (0 = none). STATIC so the live-ride trim brakes to
@@ -371,9 +375,10 @@ struct Track {
         const float gCeil = 10.0f;                                 // arcadey ceiling (+10g; real loops ~5-6g) — braking is rare, so crests stay fast
         float rMax = s.rMaxRec * 1.30f;
         float vv   = Clamp(v, 28.0f, 135.0f);
-        float R    = Clamp(vv * vv / ((s.gT - 1.0f) * GRAV), s.rMin, rMax);
-        float g    = 1.0f + vv * vv / (R * GRAV);
-        brakeTo    = (g > gCeil) ? sqrtf((gCeil - 1.0f) * GRAV * rMax) : 0.0f;
+        // g is governed by the g-radius (gMul*R, e.g. a loop's wide clothoid bottom)
+        float R    = Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
+        float g    = 1.0f + vv * vv / (s.gMul * R * GRAV);
+        brakeTo    = (g > gCeil) ? sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax) : 0.0f;
         return R;
     }
     float invRFor(SegMode m, float &brakeTo) const { return invRAt(m, genV, brakeTo); }
@@ -679,7 +684,7 @@ struct Track {
                         float vCrest = mega ? 30.0f : 38.0f;
                         float reach  = (genV * genV - vCrest * vCrest) / (2.0f * GRAV) - 10.0f;
                         float want   = mega ? frnd(150.0f, 195.0f) : frnd(80.0f, 130.0f);
-                        climbTop = Clamp(fminf(want, reach), 38.0f, 200.0f);
+                        climbTop = Clamp(fminf(want, reach), 60.0f, 200.0f);   // top-hats are a SIGNATURE tall element: 60-200m (Falcon's-Flight scale), never a stubby hill
                     }
                     remain = mega ? irnd(7, 9) : irnd(6, 8);
                 }

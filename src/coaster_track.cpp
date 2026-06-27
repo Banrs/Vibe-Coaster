@@ -224,7 +224,7 @@ struct Track {
         float R   = cbR;
         float Hcr = 2.0f * R / 0.707f;          // hood crest height ~2R
         float rho = 1.15f * R;                  // wider splay + bigger forward bulge -> central section extruded more
-        float adv = 1.55f * R;                  // steady forward travel
+        float adv = 2.45f * R;                  // longer forward travel -> the two half-twists are spread over more track, so the roll rate (banking per metre) is gentler (was 1.55 -> rolled too fast)
         float theta = PI * t;
         float hF = rho * sinf(theta) + adv * t;
         float hS = rho * (1.0f - cosf(theta));

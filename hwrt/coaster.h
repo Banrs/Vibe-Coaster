@@ -106,7 +106,16 @@ static void pushBox(std::vector<MeshVertex>& out, float3 c,
 
 // Build all coaster geometry into `out`. Renders points [4, nRender] of the
 // spline (skip the first few so catmull has neighbors).
-static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nRender) {
+// clipC / clipR (optional): if clipR > 0, only emit track within a square of
+// half-extent clipR centred at clipC.xz (so track never floats past the terrain
+// edge in the benchmark's camera-following 1m terrain ring).
+static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nRender,
+                         float3 clipC = vec3(0,0,0), float clipR = 0.0f,
+                         float trainU = 6.0f) {
+    auto inClip = [&](float3 p) {
+        return clipR <= 0.0f ||
+               (fabsf(p.x - clipC.x) <= clipR && fabsf(p.z - clipC.z) <= clipR);
+    };
     int last = nRender;
     if (last > co.nFull - 3) last = co.nFull - 3;
 
@@ -131,6 +140,7 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
 
     for (float u = 4.0f; u <= uMax; u += STEP, segCount++) {
         float3 c   = co.pos(u);
+        if (!inClip(c)) { havePrev = false; continue; }   // clip track to terrain ring
         float3 fwd = co.tangent(u);
         float3 up  = orthoUp(fwd, co.upAt(u));
         float3 lat = normalize(cross(up, fwd)); // lateral (right of travel)
@@ -185,6 +195,7 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         float3 up  = orthoUp(fwd, cp.up);
         if (up.y < 0.30f) continue;                          // inverted span -> no ground support
         float3 p  = cp.p;
+        if (!inClip(p)) continue;                            // clip supports to terrain ring
         float3 node = p - up * NODE_DROP;
         float gC = groundTopAt(p.x, p.z);
         float hgt = node.y - gC;
@@ -215,9 +226,9 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
     float3 accentCol = vec3(0.95f, 0.85f, 0.20f);
     const float CAR_HALF_LEN = 2.0f;        // half length of a car body (m)
     const float CAR_PITCH    = 4.6f;        // centre-to-centre spacing (m)
-    float u = 6.0f;
+    float u = trainU;                       // train rides at the camera parameter
     for (int car = 0; car < 5; car++) {
-        if (u >= uMax - 1.0f) break;
+        if (u >= uMax - 1.0f || u < 4.0f) break;
         float3 c   = co.pos(u);
         float3 fwd = co.tangent(u);
         float3 up  = orthoUp(fwd, co.upAt(u));
@@ -226,8 +237,8 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         pushBox(out, carC, lat, up, fwd, 1.1f, 0.7f, CAR_HALF_LEN, car == 0 ? accentCol : bodyCol);
         // a small accent stripe / roof block
         pushBox(out, carC + up * 0.8f, lat, up, fwd, 0.8f, 0.25f, CAR_HALF_LEN * 0.82f, accentCol);
-        // advance u by ~CAR_PITCH metres of arc length (local metres-per-u-unit).
+        // advance u by ~CAR_PITCH metres of arc length; cars trail BEHIND the lead.
         float mpu = length(co.pos(u + 0.1f) - co.pos(u - 0.1f)) / 0.2f;
-        u += CAR_PITCH / fmaxf(mpu, 1e-3f);
+        u -= CAR_PITCH / fmaxf(mpu, 1e-3f);
     }
 }

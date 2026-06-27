@@ -4,6 +4,8 @@
 #include "math.h"
 #include <vector>
 #include <cmath>
+#include <algorithm>
+#include <dispatch/dispatch.h>   // GCD: parallel terrain height sampling
 
 struct MeshVertex {
     float pos[3];
@@ -150,6 +152,12 @@ static void pushTree(std::vector<MeshVertex>& out, float cx, float topY, float c
 // voxel size in world units (height snapped to that grid for the blocky look).
 // cps/ncps (optional) are the track control points used to keep trees clear of
 // the coaster.
+//
+// GREEDY MESHED: at 1m blocks the per-cell quad approach explodes the triangle
+// count, so coplanar same-albedo top faces (and same-height side-wall runs) are
+// merged into the largest possible rectangles. Only EXPOSED faces are emitted
+// (a side wall only where the neighbour is lower), and shared interior faces
+// between two solid voxels are never generated at all.
 static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cell = 6.0f,
                             const float3* cps = nullptr, int ncps = 0) {
     Terrain t;
@@ -162,13 +170,21 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
     auto worldX = [&](int x) { return t.originX + x * cell; };
     auto worldZ = [&](int z) { return t.originZ + z * cell; };
 
-    // Sample heights (in voxel units) once per cell.
+    // Sample heights (in voxel units) once per cell. terrainH is heavy multi-octave
+    // noise and at 1m blocks there are N*N (~0.5M) cells, so sample the rows in
+    // parallel across cores (GCD) — this is the dominant rebuild cost.
     std::vector<int> H(N * N);
-    for (int z = 0; z < N; z++)
-        for (int x = 0; x < N; x++) {
-            float wx = worldX(x) + cell * 0.5f, wz = worldZ(z) + cell * 0.5f;
-            H[z * N + x] = (int)floorf((float)terrainH(wx, wz) / cell + 0.5f);
-        }
+    {
+        int* Hp = H.data();
+        float ox = t.originX, oz = t.originZ, cl = cell;
+        dispatch_apply((size_t)N, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                       ^(size_t z) {
+            for (int x = 0; x < N; x++) {
+                float wx = ox + x * cl + cl * 0.5f, wz = oz + (int)z * cl + cl * 0.5f;
+                Hp[z * N + x] = (int)floorf((float)terrainH(wx, wz) / cl + 0.5f);
+            }
+        });
+    }
     auto h_at = [&](int x, int z) -> int {
         if (x < 0 || z < 0 || x >= N || z >= N) return 0;
         return H[z * N + x];
@@ -187,31 +203,37 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
     int snowLvl = (int)(200.0f / cell);
     int rockLvl = (int)(150.0f / cell);
 
+    // albedo class id per cell (so the greedy pass merges only matching faces).
+    // 0 sand, 1 snow, 2 rock, 3 grass, 4 grassHi. Precomputed ONCE into AC[] so the
+    // greedy extension loops are O(1) lookups, not 5 h_at calls each (rebuild speed).
+    std::vector<unsigned char> AC(N * N);
+    for (int z = 0; z < N; z++)
+        for (int x = 0; x < N; x++) {
+            int h = H[z * N + x];
+            int slope = std::abs(h - h_at(x-1,z)) + std::abs(h - h_at(x+1,z)) +
+                        std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
+            unsigned char c;
+            if      (h <= waterLvl + 1)         c = 0;
+            else if (h >= snowLvl)              c = 1;
+            else if (h >= rockLvl || slope >= 6) c = 2;
+            else                                c = ((x ^ z) & 1) ? 3 : 4;
+            AC[z * N + x] = c;
+        }
+    auto albClass = [&](int x, int z) -> int { return AC[z * N + x]; };
+    float3 classAlb[5] = { sand, snow, rock, grass, grassHi };
+
+    // --- trees on flat-ish grass cells (deterministic, track-cleared) ---
+    // (unchanged: still per-cell; trees are sparse so they don't blow the budget)
     for (int z = 0; z < N; z++) {
         for (int x = 0; x < N; x++) {
             int h = h_at(x, z);
-            float wx = worldX(x), wz = worldZ(z);
-            float topY = h * cell;
-
-            // biome albedo by height / slope
-            int hxm = h_at(x - 1, z), hxp = h_at(x + 1, z);
-            int hzm = h_at(x, z - 1), hzp = h_at(x, z + 1);
-            int slope = std::abs(h - hxm) + std::abs(h - hxp) + std::abs(h - hzm) + std::abs(h - hzp);
-            float3 topAlb;
-            if (h <= waterLvl + 1)      topAlb = sand;
-            else if (h >= snowLvl)      topAlb = snow;
-            else if (h >= rockLvl || slope >= 6) topAlb = rock;
-            else                        topAlb = ((x ^ z) & 1) ? grass : grassHi;
-
-            // --- trees on flat-ish grass cells (deterministic, track-cleared) ---
-            bool isGrass = (topAlb.x == grass.x || topAlb.x == grassHi.x);
+            int slope = std::abs(h - h_at(x-1,z)) + std::abs(h - h_at(x+1,z)) +
+                        std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
+            int ac = albClass(x, z);
+            bool isGrass = (ac == 3 || ac == 4);
             if (cps && isGrass && h < snowLvl && slope < 4) {
-                float wcx = wx + cell * 0.5f, wcz = wz + cell * 0.5f;
-                // Key the tree RNG on the ABSOLUTE world cell index (not the local
-                // grid index) so a streaming window that re-centres on the train
-                // places the SAME tree at the same world spot every rebuild — no
-                // flicker/jitter as chunks slide. (The benchmark builds once, so
-                // this only changes which cells grow trees, nothing breaks.)
+                float wcx = worldX(x) + cell * 0.5f, wcz = worldZ(z) + cell * 0.5f;
+                float topY = h * cell;
                 int ax = (int)floorf(wcx / cell), az = (int)floorf(wcz / cell);
                 // per-AREA density (independent of cell size, so finer terrain
                 // doesn't multiply the tree count and blow up the triangle budget)
@@ -230,47 +252,103 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
                     }
                 }
             }
+        }
+    }
 
-            // top face
-            pushQuad(t.verts,
-                     vec3(wx,        topY, wz),
-                     vec3(wx + cell, topY, wz),
-                     vec3(wx + cell, topY, wz + cell),
-                     vec3(wx,        topY, wz + cell),
-                     vec3(0, 1, 0), topAlb);
+    // --- GREEDY top faces: merge runs of cells sharing (height, albedo class) ---
+    std::vector<char> done(N * N, 0);
+    for (int z = 0; z < N; z++) {
+        for (int x = 0; x < N; x++) {
+            if (done[z * N + x]) continue;
+            int h = h_at(x, z), ac = albClass(x, z);
+            // extend in +x while same height + albedo
+            int w = 1;
+            while (x + w < N && !done[z * N + x + w] &&
+                   h_at(x + w, z) == h && albClass(x + w, z) == ac) w++;
+            // extend in +z while the whole [x, x+w) row matches
+            int d = 1;
+            for (; z + d < N; d++) {
+                bool ok = true;
+                for (int k = 0; k < w; k++)
+                    if (done[(z + d) * N + x + k] || h_at(x + k, z + d) != h ||
+                        albClass(x + k, z + d) != ac) { ok = false; break; }
+                if (!ok) break;
+            }
+            for (int dz = 0; dz < d; dz++)
+                for (int dx = 0; dx < w; dx++) done[(z + dz) * N + x + dx] = 1;
 
-            // exposed side walls (neighbor lower)
-            if (hxm < h) {
-                float y0 = hxm * cell, y1 = topY;
-                pushQuad(t.verts, vec3(wx,y0,wz), vec3(wx,y0,wz+cell), vec3(wx,y1,wz+cell), vec3(wx,y1,wz),
-                         vec3(-1,0,0), dirt);
-            }
-            if (hxp < h) {
-                float y0 = hxp * cell, y1 = topY;
-                pushQuad(t.verts, vec3(wx+cell,y0,wz+cell), vec3(wx+cell,y0,wz), vec3(wx+cell,y1,wz), vec3(wx+cell,y1,wz+cell),
-                         vec3(1,0,0), dirt);
-            }
-            if (hzm < h) {
-                float y0 = hzm * cell, y1 = topY;
-                pushQuad(t.verts, vec3(wx+cell,y0,wz), vec3(wx,y0,wz), vec3(wx,y1,wz), vec3(wx+cell,y1,wz),
-                         vec3(0,0,-1), dirt);
-            }
-            if (hzp < h) {
-                float y0 = hzp * cell, y1 = topY;
-                pushQuad(t.verts, vec3(wx,y0,wz+cell), vec3(wx+cell,y0,wz+cell), vec3(wx+cell,y1,wz+cell), vec3(wx,y1,wz+cell),
-                         vec3(0,0,1), dirt);
-            }
+            float topY = h * cell;
+            float x0 = worldX(x), x1 = worldX(x + w);
+            float z0 = worldZ(z), z1 = worldZ(z + d);
+            pushQuad(t.verts, vec3(x0, topY, z0), vec3(x1, topY, z0),
+                     vec3(x1, topY, z1), vec3(x0, topY, z1), vec3(0, 1, 0), classAlb[ac]);
+        }
+    }
 
-            // water surface where ground is below sea level
-            if (h < waterLvl) {
-                float wy = WATER_Y;
-                pushQuad(t.verts,
-                         vec3(wx,        wy, wz),
-                         vec3(wx + cell, wy, wz),
-                         vec3(wx + cell, wy, wz + cell),
-                         vec3(wx,        wy, wz + cell),
-                         vec3(0, 1, 0), water);
+    // --- GREEDY side walls: one direction at a time, merge equal (top,bottom) runs ---
+    // -x / +x walls run along z; -z / +z walls run along x.
+    auto wallX = [&](int sign) {              // sign = -1 (face -x) or +1 (face +x)
+        for (int x = 0; x < N; x++) {
+            for (int z = 0; z < N; ) {
+                int h = h_at(x, z), nb = h_at(x + sign, z);
+                if (nb >= h) { z++; continue; }
+                int run = 1;
+                while (z + run < N && h_at(x, z + run) == h && h_at(x + sign, z + run) == nb) run++;
+                float y0 = nb * cell, y1 = h * cell;
+                float zz0 = worldZ(z), zz1 = worldZ(z + run);
+                float wx = (sign < 0) ? worldX(x) : worldX(x + 1);
+                if (sign < 0)
+                    pushQuad(t.verts, vec3(wx,y0,zz0), vec3(wx,y0,zz1), vec3(wx,y1,zz1), vec3(wx,y1,zz0),
+                             vec3(-1,0,0), dirt);
+                else
+                    pushQuad(t.verts, vec3(wx,y0,zz1), vec3(wx,y0,zz0), vec3(wx,y1,zz0), vec3(wx,y1,zz1),
+                             vec3(1,0,0), dirt);
+                z += run;
             }
+        }
+    };
+    auto wallZ = [&](int sign) {              // sign = -1 (face -z) or +1 (face +z)
+        for (int z = 0; z < N; z++) {
+            for (int x = 0; x < N; ) {
+                int h = h_at(x, z), nb = h_at(x, z + sign);
+                if (nb >= h) { x++; continue; }
+                int run = 1;
+                while (x + run < N && h_at(x + run, z) == h && h_at(x + run, z + sign) == nb) run++;
+                float y0 = nb * cell, y1 = h * cell;
+                float xx0 = worldX(x), xx1 = worldX(x + run);
+                float wz = (sign < 0) ? worldZ(z) : worldZ(z + 1);
+                if (sign < 0)
+                    pushQuad(t.verts, vec3(xx1,y0,wz), vec3(xx0,y0,wz), vec3(xx0,y1,wz), vec3(xx1,y1,wz),
+                             vec3(0,0,-1), dirt);
+                else
+                    pushQuad(t.verts, vec3(xx0,y0,wz), vec3(xx1,y0,wz), vec3(xx1,y1,wz), vec3(xx0,y1,wz),
+                             vec3(0,0,1), dirt);
+                x += run;
+            }
+        }
+    };
+    wallX(-1); wallX(+1); wallZ(-1); wallZ(+1);
+
+    // --- GREEDY water surface: merge runs of submerged cells (h < waterLvl) ---
+    std::fill(done.begin(), done.end(), 0);
+    for (int z = 0; z < N; z++) {
+        for (int x = 0; x < N; x++) {
+            if (done[z * N + x] || h_at(x, z) >= waterLvl) continue;
+            int w = 1;
+            while (x + w < N && !done[z * N + x + w] && h_at(x + w, z) < waterLvl) w++;
+            int d = 1;
+            for (; z + d < N; d++) {
+                bool ok = true;
+                for (int k = 0; k < w; k++)
+                    if (done[(z + d) * N + x + k] || h_at(x + k, z + d) >= waterLvl) { ok = false; break; }
+                if (!ok) break;
+            }
+            for (int dz = 0; dz < d; dz++)
+                for (int dx = 0; dx < w; dx++) done[(z + dz) * N + x + dx] = 1;
+            float wy = WATER_Y;
+            float x0 = worldX(x), x1 = worldX(x + w), z0 = worldZ(z), z1 = worldZ(z + d);
+            pushQuad(t.verts, vec3(x0, wy, z0), vec3(x1, wy, z0), vec3(x1, wy, z1), vec3(x0, wy, z1),
+                     vec3(0, 1, 0), water);
         }
     }
     return t;

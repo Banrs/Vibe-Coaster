@@ -75,6 +75,15 @@ struct Renderer {
     StreamTrack stream;       // infinite generator; geometry rebuilt as it slides
     int   sinceRebuildPts = 0;// local-u points travelled since the last AS rebuild
     std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
+#else
+    // benchmark: a 1m terrain ring + clipped track that FOLLOWS the ride camera
+    // (so blocks stay 1m everywhere without meshing the whole 2km circuit at once).
+    static constexpr float BENCH_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
+    static constexpr float BENCH_RING = 360.0f;   // ring half-extent around the camera
+    std::vector<float3> trackPts;          // all track control points (for trees)
+    std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
+    float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
+    void buildBenchScene();                // (re)mesh the 1m ring around rideU
 #endif
 
     void init();
@@ -153,32 +162,17 @@ void Renderer::init() {
     // Render the FULL circuit so the real-time ride covers the whole coaster.
     nRender = co.nFull - 3;
 
-    // Fit the terrain patch to the track's bounding box (+ margin): the full
-    // circuit sprawls ~2000m, well past the old fixed 1440m patch, so size the
-    // grid to the span and centre it on the bbox centre (not just the start).
-    float minx = co.cps[0].p.x, maxx = minx, minz = co.cps[0].p.z, maxz = minz;
-    for (int i = 0; i < nRender; i++) {
-        float3 q = co.cps[i].p;
-        minx = fminf(minx, q.x); maxx = fmaxf(maxx, q.x);
-        minz = fminf(minz, q.z); maxz = fmaxf(maxz, q.z);
-    }
-    float cx = (minx + maxx) * 0.5f, cz = (minz + maxz) * 0.5f;
-    const float CELL = 4.0f, MARGIN = 120.0f;   // finer voxels so trees/track read to scale
-    float halfExtent = fmaxf(maxx - minx, maxz - minz) * 0.5f + MARGIN;
-    int N = (int)ceilf(2.0f * halfExtent / CELL);
-
-    // Track point positions, for keeping trees clear of the coaster.
-    std::vector<float3> trackPts(nRender);
+    // Cache all track control points (used to keep trees clear of the coaster).
+    trackPts.resize(nRender);
     for (int i = 0; i < nRender; i++) trackPts[i] = co.cps[i].p;
 
-    // Build terrain mesh (with trees) under the coaster, then append coaster geometry.
-    Terrain t = buildTerrain(cx, cz, N, CELL, trackPts.data(), nRender);
-    uint32_t terrainTris = (uint32_t)(t.verts.size() / 3);
-    buildCoaster(co, t.verts, nRender);
-    fprintf(stderr, "terrain: %u tris, +coaster -> %u tris total\n",
-            terrainTris, (uint32_t)(t.verts.size() / 3));
-    uploadVerts(t.verts);
-    buildAccelerationStructure();
+    // Build the first 1m terrain ring + clipped track around the ride start. The
+    // ring follows the camera (rebuilt as it rides) so blocks stay 1m everywhere
+    // without meshing the whole ~2km circuit at once (see buildBenchScene).
+    rideU = 6.0f;
+    buildBenchScene();
+    fprintf(stderr, "benchmark: 1m terrain ring (R=%.0f) -> %u tris total\n",
+            BENCH_RING, triCount);
 
     // Hero shot: stand off to the side of the launch run and look up at the
     // signature opening top-hat tower so the rails/spine/ties and train read.
@@ -246,6 +240,27 @@ void Renderer::buildAccelerationStructure() {
                 triCount, triCount);
     }
 }
+
+#ifndef RT_STREAM
+// Benchmark: (re)mesh a 1m terrain ring + ring-clipped track around the ride
+// camera (rideU), then rebuild the AS. The ring centre is snapped to the voxel
+// grid so the terrain is stable between rebuilds; the track is clipped to the
+// ring so no track floats past the terrain edge.
+void Renderer::buildBenchScene() {
+    float3 c = coaster.pos(rideU);
+    float cx = floorf(c.x / BENCH_CELL) * BENCH_CELL;
+    float cz = floorf(c.z / BENCH_CELL) * BENCH_CELL;
+    lastRingCx = cx; lastRingCz = cz;
+    int N = (int)(2.0f * BENCH_RING / BENCH_CELL);
+    scratchVerts.clear();
+    Terrain t = buildTerrain(cx, cz, N, BENCH_CELL, trackPts.data(), (int)trackPts.size());
+    scratchVerts.swap(t.verts);
+    buildCoaster(coaster, scratchVerts, nRender,
+                 vec3(cx, 0, cz), BENCH_RING - 6.0f, rideU);
+    uploadVerts(scratchVerts);
+    buildAccelerationStructure();
+}
+#endif
 
 // Advance the ride camera one frame: move a u parameter along the spline at a
 // steady pace, place the eye just above the track, look down the tangent with
@@ -315,14 +330,28 @@ void Renderer::rideAdvance(float dt) {
     rideSpeed += (-GRAV * slope - DRAG * rideSpeed * rideSpeed - FRICTION + boostAccel) * dt;
     if      (rideKind == M_LAUNCH && rideSpeed < LAUNCH_V) rideSpeed = fminf(rideSpeed + 85.0f * dt, LAUNCH_V);
     else if (rideKind == M_BOOST  && rideSpeed < BOOST_V ) rideSpeed = fminf(rideSpeed + 55.0f * dt, BOOST_V);
-    else if (rideKind == M_CLIMB  && rideSpeed < CLIMB_V ) rideSpeed = fminf(rideSpeed + 22.0f * dt, CLIMB_V);
-    if (rideSpeed < 8.0f) rideSpeed = 8.0f;                 // never stall to a stop
+    else if (rideKind == M_CLIMB  && rideSpeed < CLIMB_V ) rideSpeed = fminf(rideSpeed + 44.0f * dt, CLIMB_V);
+    // Stall-only safety net at 20 (parity with src/main.cpp: physics dictates speed,
+    // the train is NEVER pinned at a cruise floor — the old MIN_V=42 pin is gone);
+    // 135 = runaway guard. No inversion trim brake: the static map's elements are
+    // speed-sized, so (matching the SW loop where invRAt->brakeTo is usually 0) the
+    // trim essentially never fires anyway.
+    rideSpeed = fmaxf(rideSpeed, 20.0f); rideSpeed = fminf(rideSpeed, 135.0f);
     // boost meter recharges on powered sections
     if (rideKind == M_LAUNCH || rideKind == M_BOOST) rideBoost = fminf(rideBoost + dt*0.6f, 1.0f);
 
     rideU += (rideSpeed / mpu) * dt;
     float uMax = (float)(nRender - 1);
     if (rideU > uMax) { rideU = 6.0f; rideSpeed = LAUNCH_V * 0.6f; }   // loop the lap
+
+    // Rebuild the 1m terrain ring + clipped track when the camera has moved a
+    // good fraction of the ring from the last build (amortised, like the stream).
+    {
+        float3 cc = coaster.pos(rideU);
+        if (fabsf(cc.x - lastRingCx) > BENCH_RING * 0.15f ||
+            fabsf(cc.z - lastRingCz) > BENCH_RING * 0.15f)
+            buildBenchScene();
+    }
 
     float3 p   = coaster.pos(rideU);
     float3 fwd = coaster.tangent(rideU);
@@ -424,6 +453,23 @@ static int runShot(Renderer& r) {
         r.exFwd = toLook; r.exUp = vec3(0,1,0);
         r.useExplicitFrame = true;
     }
+#else
+    // Benchmark: advance the ride a few seconds (rebuilds the 1m terrain ring as it
+    // goes), then frame the train from behind/above so the 1m blocks, track, supports
+    // and terrain all read to scale.
+    r.rideMode = true;
+    for (int i = 0; i < 60 * 9; i++) r.rideAdvance(1.0f / 60.0f);
+    {
+        float3 look = r.coaster.pos(r.rideU);
+        float3 fwd  = normalize(r.coaster.tangent(r.rideU));
+        float3 side = normalize(cross(fwd, vec3(0,1,0)));
+        r.camPos = look - fwd * 120.0f + side * 95.0f + vec3(0, 70.0f, 0);
+        float gtop = groundTopAt(r.camPos.x, r.camPos.z) + 20.0f;
+        if (r.camPos.y < gtop) r.camPos.y = gtop;
+        float3 toLook = normalize(look - r.camPos);
+        r.exFwd = toLook; r.exUp = vec3(0,1,0);
+        r.useExplicitFrame = true;
+    }
 #endif
 
     r.render(tex, W, H);
@@ -457,12 +503,11 @@ static int runBench(Renderer& r) {
     r.render(tex, W, H); // warm-up
     double t0 = CACurrentMediaTime();
     for (int i = 0; i < N; i++) {
-#ifdef RT_STREAM
-        // include the live streaming cost (physics + tessellation + AS rebuild on
-        // chunk boundaries) so the reported fps reflects the real interactive ride.
+        // include the live ride cost (physics + tessellation + AS rebuild on chunk
+        // boundaries) so the reported fps reflects the real interactive ride. Both
+        // execs now follow the camera with a 1m terrain ring, so both rebuild.
         r.rideMode = true;
         r.rideAdvance(1.0f / 60.0f);
-#endif
         r.render(tex, W, H);
     }
     double dt = CACurrentMediaTime() - t0;

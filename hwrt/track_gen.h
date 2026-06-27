@@ -73,7 +73,20 @@ struct StreamTrack {
         else if (kind == M_CLIMB  && !chain && speed < CLIMB_V)   speed = fminf(speed + 44.0f * dt, CLIMB_V);
         else if (kind == M_BOOST  && speed < BOOST_V )            speed = fminf(speed + 55.0f * dt, BOOST_V);
         else if (chain && slope > 0.05f && speed < CHAIN_V)       speed = fminf(speed + 20.0f * dt, CHAIN_V);
-        if (speed < 8.0f) speed = 8.0f;
+
+        // TRIM brake (parity with src/main.cpp ride loop): only ahead of a HARD
+        // inversion, and only down to the SAME target the generator sized the
+        // geometry for (Track::invRAt -> brakeTo, usually 0 = no brake). Elements
+        // are speed-sized to ~1.30x world record, so this essentially never fires.
+        for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
+            SegMode ahead = (SegMode)tagAt(trainU + la);
+            if (!Track::isHardInversion(ahead)) continue;
+            float bt; Track::invRAt(ahead, speed, bt);
+            if (bt > 0.0f && speed > bt) speed = fmaxf(speed - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
+            break;
+        }
+
+        speed = fmaxf(speed, 20.0f); speed = fminf(speed, 135.0f);  // 20 = stall-only safety net (NOT a cruise floor); 135 = runaway guard
 
         // boost meter: recharges on powered sections, otherwise idle
         bool powered = (kind == M_LAUNCH || kind == M_BOOST);
@@ -123,10 +136,13 @@ struct StreamTrack {
     }
 
     // --- terrain: a square ring of voxel cells centred on the train ---
+    // The terrain ring must reach at least the track far-edge (TERRAIN_RING below);
+    // the track build is clipped to this same radius so no track ever floats beyond
+    // the terrain edge (see buildTrack). 1m blocks (CELL=1) keep true Minecraft scale.
+    static constexpr float CELL = 1.0f;            // 1m voxel blocks (true MC scale, all sides)
+    static constexpr float RING = 360.0f;          // half-extent meshed around the train (1m blocks)
     void buildTerrainRing(std::vector<MeshVertex>& out) const {
         Vector3 tp = gen.pos(trainU);
-        const float CELL = 4.0f;
-        const float RING = 520.0f;                 // half-extent meshed around the train
         int N = (int)(2.0f * RING / CELL);
         // Snap the ring centre to the voxel grid so the cell boundaries (and the
         // world-keyed trees) land on the SAME absolute grid every rebuild -> the
@@ -152,6 +168,16 @@ struct StreamTrack {
         float uLo = (float)winLo;
         float uHi = (float)last;
 
+        // Clip the meshed track to the terrain ring (snapped centre, same as the
+        // terrain): never emit track beyond the terrain edge so distant track can't
+        // float in empty space. RING - a small margin so supports still land on dirt.
+        Vector3 tc = gen.pos(trainU);
+        float ringCx = floorf(tc.x / CELL) * CELL, ringCz = floorf(tc.z / CELL) * CELL;
+        const float ringClip = RING - 6.0f;
+        auto inRing = [&](float3 p) {
+            return fabsf(p.x - ringCx) <= ringClip && fabsf(p.z - ringCz) <= ringClip;
+        };
+
         const float RAIL_GAUGE = 1.3f, RAIL_R = 0.18f;
         const float SPINE_DROP = 1.0f, SPINE_HALF = 0.55f;
         float3 railCol   = vec3(0.82f, 0.83f, 0.86f);
@@ -166,6 +192,7 @@ struct StreamTrack {
 
         for (float u = uLo; u <= uHi; u += STEP, segCount++) {
             float3 c   = pos(u);
+            if (!inRing(c)) { havePrev = false; continue; }   // clip track to terrain ring
             float3 fwd = tangent(u);
             float3 up  = orthoUp(fwd, upAt(u));
             float3 lat = normalize(cross(up, fwd));
@@ -206,6 +233,7 @@ struct StreamTrack {
             float3 up  = orthoUp(fwd, vec3(cpU.x, cpU.y, cpU.z));
             if (up.y < 0.30f) continue;                  // inverted span -> no ground support
             float3 p = vec3(cpP.x, cpP.y, cpP.z);
+            if (!inRing(p)) continue;                     // clip supports to terrain ring
             float3 node = p - up * NODE_DROP;
             float gC = groundTopAt(p.x, p.z);
             float hgt = node.y - gC;

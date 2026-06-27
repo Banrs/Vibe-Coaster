@@ -1936,21 +1936,38 @@ int main(int argc, char **argv) {
             if (hgt < 1.0f) return;
             float baseHalf = Clamp(hgt * 0.20f, 1.5f, 4.5f);   // base splay (grows with height, capped)
             float topHalf  = 0.55f;                            // half-gap between leg tops at the apex
+            // The bent caps in a single node block tucked flush under the spine,
+            // tilted to the rail frame (carries pitch+bank). Intamin-style: the raked
+            // legs weld into that node, not into thin air. The block's lower face is
+            // the joint plane the legs terminate on, so its centre sits half its
+            // height below the apex, measured down the rail-up so it stays put when banked.
+            float blkH = 0.7f;                                  // node block thickness (along rail-up)
+            Vector3 apex = { p.x + railUp.x * (topY - p.y), topY, p.z + railUp.z * (topY - p.y) };
+            Vector3 node = { apex.x - railUp.x * blkH * 0.5f, apex.y - railUp.y * blkH * 0.5f,
+                             apex.z - railUp.z * blkH * 0.5f };   // centre of the node block
             for (float s : { -1.0f, 1.0f }) {                  // two raked legs, each a single solid beam
                 Vector3 top  = { p.x + lat.x * s * topHalf, topY, p.z + lat.z * s * topHalf };
                 float bx = p.x + lat.x * s * baseHalf, bz = p.z + lat.z * s * baseHalf;
                 Vector3 foot = { bx, groundTopAt(bx, bz), bz };
                 Vector3 dir  = Vector3Subtract(foot, top);
                 float len = Vector3Length(dir);
-                Vector3 mid = { (top.x + foot.x) * 0.5f, (top.y + foot.y) * 0.5f, (top.z + foot.z) * 0.5f };
-                pushFrame(mid, Vector3Normalize(dir), WUP);    // local +z runs down the leg
-                drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.52f, 0.52f, len + 0.3f, sc);
+                Vector3 axis = Vector3Normalize(dir);          // local +z runs down the leg
+                // Trim the leg top back to the node's lower face so no corner pokes
+                // above the joint: pull the top down along the leg axis by however far
+                // it sits above the node underside, then the node block caps the seam.
+                float trim = (apex.y - blkH - top.y) / axis.y;   // axis.y is negative (leg points down)
+                if (trim < 0.0f) trim = 0.0f;
+                Vector3 ttop = { top.x + axis.x * trim, top.y + axis.y * trim, top.z + axis.z * trim };
+                float tlen = Vector3Length(Vector3Subtract(foot, ttop));
+                Vector3 mid = { (ttop.x + foot.x) * 0.5f, (ttop.y + foot.y) * 0.5f, (ttop.z + foot.z) * 0.5f };
+                pushFrame(mid, axis, WUP);
+                drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.52f, 0.52f, tlen + 0.2f, sc);
                 popFrame();
             }
-            // single merge block bridging the leg tops, angled to the rail frame so it
-            // sits flush under the (pitched/banked) rails instead of clipping them.
-            pushFrame(Vector3{ p.x, topY - 0.2f, p.z }, tang, railUp);
-            drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 2.0f * topHalf + 0.5f, 0.7f, 1.3f, sc);
+            // single node block bridging the leg tops, flush under the (pitched/banked)
+            // rails — it caps the leg seams and joins the bent to the track underside.
+            pushFrame(node, tang, railUp);
+            drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 2.0f * topHalf + 0.5f, blkH, 1.3f, sc);
             popFrame();
         };
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {
@@ -1977,7 +1994,7 @@ int main(int argc, char **argv) {
             // Every elevated support is a track-aligned A-frame V bent. Space them out
             // (every other control point) so a long airtime hill isn't a comb of bents;
             // tall towers always draw so big drops/launches stay braced.
-            float topY = p.y - 0.9f;                              // apex just under the rails
+            float topY = p.y - 0.5f;                              // apex flush to the spine underside
             float gC   = groundTopAt(p.x, p.z);
             float hgt  = topY - gC;
             if (hgt > 0.5f && ((i & 1) == 0 || hgt > 24.0f))

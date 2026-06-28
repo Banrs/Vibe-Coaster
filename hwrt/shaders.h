@@ -213,13 +213,16 @@ static float3 sampleSkyLite(float3 dir, float3 sunDir) {
     return col;
 }
 
-// Sky-hemisphere ambient (cool from above, warm bounce from below). Kept
-// modest so direct sun stays the dominant light and shadows have depth.
+// Sky-hemisphere ambient (cool from above, warm bounce from below). Dialled DOWN
+// (~25%) vs before so the soft ray-traced sun shadows read clearly darker — the user
+// wants shadows to be a visible step up over the software raster. Direct sun stays
+// the dominant light; shadowed faces sink to a believable cool blue rather than a
+// flat washed grey.
 static float3 ambientFill(float3 n) {
     float up = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    float3 skyTint    = float3(0.26, 0.34, 0.46);
-    float3 groundTint = float3(0.20, 0.17, 0.13);
-    return mix(groundTint, skyTint, up) + float3(0.03, 0.03, 0.04);
+    float3 skyTint    = float3(0.19, 0.25, 0.35);
+    float3 groundTint = float3(0.14, 0.12, 0.10);
+    return mix(groundTint, skyTint, up) + float3(0.02, 0.02, 0.03);
 }
 
 // ===========================================================================

@@ -12,11 +12,12 @@
 #include <cstdlib>
 #include <ctime>
 #include <thread>
+#include <atomic>
 #include <climits>
 
 static const float SEG_LEN   = 14.0f;
 static const float CELL      = 1.0f;
-static const int   TERRA_R   = 120;
+static const int   TERRA_R   = 200;
 
 static const float WATER_Y   = 30.0f;
 static const float BUILD_MAX  = 430.0f;
@@ -485,9 +486,10 @@ struct TerrainMesh {
     int keyCx = INT_MIN, keyCz = INT_MIN, keyU = INT_MIN;
     std::thread worker;
     bool building = false;
+    std::atomic<bool> done{false};
     int  pendCx = 0, pendCz = 0, pendU = 0;
 
-    static const int REBUILD_CELLS = 12;
+    static const int REBUILD_CELLS = 48;
     static const int REBUILD_U     = 3;
     bool needsRebuild(int cx, int cz, int uIdx) const {
         if (building) return false;
@@ -497,15 +499,19 @@ struct TerrainMesh {
 
     template <class EmitFn>
     void dispatch(EmitFn &&emit, int cx, int cz, int uIdx) {
-        pendCx = cx; pendCz = cz; pendU = uIdx; building = true;
+        pendCx = cx; pendCz = cz; pendU = uIdx; building = true; done.store(false, std::memory_order_relaxed);
         gCapPos.clear(); gCapUV.clear(); gCapNrm.clear(); gCapCol.clear();
 
-        worker = std::thread([emit]() { gCapture = true; emit(); gCapture = false; });
+        worker = std::thread([this, emit]() { gCapture = true; emit(); gCapture = false; done.store(true, std::memory_order_release); });
     }
 
     int capVerts = 0;
     void finish() {
         if (!building) return;
+        // NON-BLOCKING for async rebuilds: if the worker isn't done, keep drawing the old
+        // mesh and try again next frame (the join only returns instantly once done is set).
+        // The first build (!live) still blocks so there's terrain to draw immediately.
+        if (live && !done.load(std::memory_order_acquire)) return;
         if (worker.joinable()) worker.join();
         int vcount = (int)(gCapPos.size() / 3);
         if (vcount > 0) {
@@ -1835,6 +1841,12 @@ int main(int argc, char **argv) {
         int ccx = (int)floorf(P.x / CELL), ccz = (int)floorf(P.z / CELL);
         float fogEnd = TERRA_R * CELL;
 
+        // Only do the O(TERRA_R^2) per-cell prep (height prefill + track carve) on frames
+        // where the cached mesh actually needs rebuilding; every other frame just redraws
+        // the cached VBO. This is what makes a large TERRA_R affordable. needsRebuild is
+        // false while a build is in flight, so this also keeps the worker race-free.
+        bool wantRebuild = gTerrainMesh.needsRebuild(ccx, ccz, (int)u);
+        if (wantRebuild) {
         prefillTerrain(ccx, ccz, TERRA_R);
 
         std::fill(carveLo.begin(), carveLo.end(),  1e9f);
@@ -1927,6 +1939,7 @@ int main(int argc, char **argv) {
                     if (hi > carveHi[ci]) carveHi[ci] = hi;
                 }
         }
+        }  // end if (wantRebuild) — per-frame prep only on rebuild frames
 
         auto buildTerrainMesh = [&]() {
         {
@@ -2375,7 +2388,7 @@ int main(int argc, char **argv) {
         }
         };
 
-        if (gTerrainMesh.needsRebuild(ccx, ccz, (int)u)) {
+        if (wantRebuild) {
             gTerrainMesh.dispatch(buildTerrainMesh, ccx, ccz, (int)u);
             if (!gTerrainMesh.live) gTerrainMesh.finish();
         }

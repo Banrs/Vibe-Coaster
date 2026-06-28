@@ -239,9 +239,9 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
                 int ax = (int)floorf(wcx / cell), az = (int)floorf(wcz / cell);
                 // per-AREA density (independent of cell size, so finer terrain
                 // doesn't multiply the tree count and blow up the triangle budget).
-                // Thinned (0.07->0.028) so trees are a much smaller RT triangle cost
-                // while still scattering naturally across the grass.
-                float dens = 0.028f * (cell / 6.0f) * (cell / 6.0f);
+                // Thinned (0.07->0.028->0.013) so trees scatter sparsely (open grassland
+                // with stands of trees, not a wall-to-wall forest) and stay a small RT cost.
+                float dens = 0.013f * (cell / 6.0f) * (cell / 6.0f);
                 if (hashf(ax * 7 + 1, az * 7 + 3) < dens) {
                     bool clear = true;                            // keep a corridor clear of track
                     for (int k = 0; k < ncps; k++) {
@@ -536,8 +536,8 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                 float wcx = worldX(x) + cell * 0.5f, wcz = worldZ(z) + cell * 0.5f;
                 float topY = h * cell;
                 int ax = cellX0 + x, az = cellZ0 + z;
-                // Thinned (0.07->0.028): fewer trees per area -> lower RT triangle cost.
-                float dens = 0.028f * (cell / 6.0f) * (cell / 6.0f);
+                // Thinned (0.07->0.028->0.013): sparse stands, not wall-to-wall forest -> lower RT cost.
+                float dens = 0.013f * (cell / 6.0f) * (cell / 6.0f);
                 if (hashf(ax * 7 + 1, az * 7 + 3) < dens) {
                     bool clear = true;
                     for (int k = 0; k < ncps; k++) {

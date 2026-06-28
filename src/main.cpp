@@ -2151,11 +2151,11 @@ int main(int argc, char **argv) {
                     else if (h >= 158) { capC = Color{128,138,146,255}; colC = Color{108,116,126,255}; capTile = T_GRAIN; } // exposed high stone
                     else if (beach)    { capC = SAND; capTile = T_GRAIN; }
                     else if (humid < 0.23f && temp > 0.42f) { capC = Color{214,196,108,255}; colC = Color{162,126,72,255}; capTile = T_GRAIN; treeType = 3; treeDen = 0.003f; } // dry scrub
-                    else if (humid > 0.72f && bio < 0.72f) { capC = Color{ 76,176, 92,255}; colC = Color{118, 96, 72,255}; treeType = 0; treeDen = 0.065f; } // lush woodland
-                    else if (bio < 0.34f) { treeType = 0; treeDen = 0.012f; }                                  // plains
-                    else if (bio < 0.58f) { capC = Color{118,206,108,255}; treeType = 1; treeDen = 0.045f; }   // forest
-                    else if (bio < 0.78f) { capC = Color{210,202,132,255}; treeType = 3; treeDen = 0.006f; }   // savanna
-                    else { capC = Color{112,150,112,255}; colC = Color{118,104,86,255}; treeType = 2; treeDen = 0.018f; } // cool spruce/tundra, not snow
+                    else if (humid > 0.72f && bio < 0.72f) { capC = Color{ 76,176, 92,255}; colC = Color{118, 96, 72,255}; treeType = 0; treeDen = 0.032f; } // lush woodland (thinned 0.065->0.032)
+                    else if (bio < 0.34f) { treeType = 0; treeDen = 0.007f; }                                  // plains (thinned 0.012->0.007)
+                    else if (bio < 0.58f) { capC = Color{118,206,108,255}; treeType = 1; treeDen = 0.022f; }   // forest (thinned 0.045->0.022)
+                    else if (bio < 0.78f) { capC = Color{210,202,132,255}; treeType = 3; treeDen = 0.004f; }   // savanna
+                    else { capC = Color{112,150,112,255}; colC = Color{118,104,86,255}; treeType = 2; treeDen = 0.010f; } // cool spruce/tundra (thinned 0.018->0.010)
 
                     // tycoon-style soft ground patches: a low-frequency tint nudges the
                     // grass between lush and sun-bleached so the land never reads flat
@@ -2221,8 +2221,16 @@ int main(int argc, char **argv) {
                 if (top < WATER_Y && !depthPass) waterCells.push_back(Vector3{ wx, cellSz, wz });  // y carries the LOD block size
 
 	                float th = hashf(cx * 9 + 7, cz * 9 + 3);
-	                if (treeType >= 0 && gateFog < 0.85f && th < treeDen) {
-	                    if (treeType == 1 && th > treeDen * 0.5f) treeType = 0;     // forest mixes birch+oak
+	                // Trees on a coarse JITTERED grid so canopies can't overlap. Per-1m-cell placement
+	                // let adjacent trees land ~1m apart (canopy radius ~2.3m -> they overlapped). One
+	                // tree per TGxTG node, jittered within it, keeps the min spacing canopy-safe (~5m).
+	                const int   TG = 8;
+	                float nodeDen = fminf(treeDen * (float)(TG * TG), 0.90f);   // per-node prob from the per-area density
+	                float jx = (hashf(cx * 3 + 1, cz * 7 + 5) - 0.5f) * (float)(TG - 5);   // +-1.5m jitter
+	                float jz = (hashf(cx * 5 + 9, cz * 3 + 2) - 0.5f) * (float)(TG - 5);
+	                float jwx = wx + jx, jwz = wz + jz;                         // jittered tree centre
+	                if (treeType >= 0 && gateFog < 0.85f && (cx % TG == 0) && (cz % TG == 0) && th < nodeDen) {
+	                    if (treeType == 1 && th > nodeDen * 0.5f) treeType = 0;     // forest mixes birch+oak
 	                    auto treeHitsTrackClearance = [&](int tt) -> bool {
 	                        if ((int)trk.cp.size() < 4) return false;
 	                        float treeR = 2.4f, treeHi = top + 11.0f;
@@ -2253,6 +2261,7 @@ int main(int argc, char **argv) {
 	                        return false;
 	                    };
 	                    if (!treeHitsTrackClearance(treeType)) {
+	                        float wx = jwx, wz = jwz;   // jittered tree centre (shadows the cell centre for the canopy draw)
 	                        Color tr, lf;
                         // gentle wind: canopy sways, more the higher the leaf cube.
                         // phase varies per tree so the forest ripples, not in lockstep.

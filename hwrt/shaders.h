@@ -100,9 +100,9 @@ static float3 waterNormal(float2 xz, float t) {
 // with a sun-direction-aware warm haze so the sky reads atmospheric, not flat.
 static float3 skyGradient(float3 dir, float3 sunDir) {
     float t = clamp(dir.y, 0.0, 1.0);
-    float3 zenith  = float3(0.12, 0.34, 0.76);   // saturated blue overhead (matches SW ZENITH)
-    float3 horizon = float3(0.78, 0.87, 0.98);   // bright airy horizon (matches SW HORIZON)
-    float3 col = mix(horizon, zenith, pow(t, 0.42));
+    float3 zenith  = float3(0.10, 0.32, 0.82);   // deep saturated blue overhead
+    float3 horizon = float3(0.72, 0.84, 0.98);   // bright airy horizon
+    float3 col = mix(horizon, zenith, pow(t, 0.34));   // lower exponent -> the saturated blue holds further DOWN toward the horizon (was pale too soon)
     // low-altitude haze band (thicker atmosphere near the horizon) — a LUMINOUS BLUE
     // haze, not a grey wash (the grey wall was what flattened the upper sky / made it
     // read washed-out vs the vibrant software sky).
@@ -404,7 +404,11 @@ static float3 blockTexture(float3 albedo, float3 wp, float3 n, int mat, int tile
                                    : (abs(n.y) > abs(n.z) ? 1 : 2);
     float2 uv = (an == 0) ? wp.zy : (an == 1) ? wp.xz : wp.xy;
     float2 f  = uv - floor(uv);
-    constexpr sampler smp(filter::linear, mip_filter::linear, address::repeat);
+    // POINT (nearest) filtering — matches the software renderer's TEXTURE_FILTER_POINT crisp
+    // pixel-art look. Linear filtering blurred the grass tile's blade-top/soil-bottom gradient
+    // into a soft per-block "dual-colour" split; nearest shows the actual 16x16 texels. Mip
+    // chain still anti-aliases distance (nearest level pick = no soft cross-level 2-tone blend).
+    constexpr sampler smp(filter::nearest, mip_filter::nearest, address::repeat);
     float m = atlas.sample(smp, f, uint(tile), level(lod)).r * 2.0;   // mean-1 multiplier (encoded /2)
     return albedo * m;
 }

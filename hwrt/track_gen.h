@@ -191,10 +191,13 @@ struct StreamTrack {
 
         float prevSpeed = speed;
         speed += (-GRAV * slope - DRAG * speed * speed - FRICTION) * dt;
-        if      (kind == M_LAUNCH && speed < LAUNCH_V)            speed = fminf(speed + 85.0f * dt, LAUNCH_V);
-        else if (kind == M_CLIMB  && !chain && speed < CLIMB_V)   speed = fminf(speed + 44.0f * dt, CLIMB_V);
-        else if (kind == M_BOOST  && speed < BOOST_V )            speed = fminf(speed + 55.0f * dt, BOOST_V);
-        else if (chain && slope > 0.05f && speed < CHAIN_V)       speed = fminf(speed + 20.0f * dt, CHAIN_V);
+        // Booster accelerations (longitudinal). LAUNCH + BOOST target 5g (user-set):
+        // accel = 5 * GRAV (the game's g-unit, GRAV=22). A punchy ~5g surge. CLIMB stays a
+        // realistic lift (tyre/chain) — it's a lift hill, not a booster.
+        if      (kind == M_LAUNCH && speed < LAUNCH_V)            speed = fminf(speed + 5.0f * GRAV * dt, LAUNCH_V); // 5g launch
+        else if (kind == M_CLIMB  && !chain && speed < CLIMB_V)   speed = fminf(speed + 16.0f * dt, CLIMB_V);        // ~0.7g tyre drive
+        else if (kind == M_BOOST  && speed < BOOST_V )            speed = fminf(speed + 5.0f * GRAV * dt, BOOST_V);  // 5g boost (same as launch)
+        else if (chain && slope > 0.05f && speed < CHAIN_V)       speed = fminf(speed + 12.0f * dt, CHAIN_V);        // chain lift (slow, steady)
 
         // NO g-force trim brake. g is managed by TRACK GEOMETRY (elements are speed-sized
         // to ~1.30x world record so felt g stays in the +12/-9 envelope), NEVER by capping
@@ -567,7 +570,7 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         // deterministic per-location variation so the run of bents isn't uniform
         float vary = hashf((int)floorf(p.x * 0.5f), (int)floorf(p.z * 0.5f));
         float baseHalf = t_Clamp(hgt * (0.17f + vary * 0.07f), 1.5f, 5.5f);  // ground splay grows w/ height
-        float legR     = t_Clamp(0.30f + hgt * 0.0045f, 0.30f, 0.55f);       // taller -> thicker legs
+        float legR     = t_Clamp(0.24f + hgt * 0.0090f, 0.27f, 0.58f);       // leg ~0.55m thin short -> ~1.15m thick tall (realistic taper)
         float topHalf  = 0.22f;                            // leg tops attach just inside the node
         // tops + feet must splay along the SAME lateral sense (rRight) or the legs cross
         // into an X; node recessed UP into the spine underside along railUp.

@@ -572,7 +572,7 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
 
         float vary = hashf((int)floorf(p.x * 0.5f), (int)floorf(p.z * 0.5f));
         float baseHalf = t_Clamp(hgt * (0.17f + vary * 0.07f), 1.5f, 5.5f);
-        float legR     = t_Clamp(0.30f + hgt * 0.0045f, 0.30f, 0.55f);
+        float legR     = t_Clamp(0.24f + hgt * 0.0090f, 0.27f, 0.58f);  // leg ~0.55m thin short -> ~1.15m thick tall (realistic taper)
         float topHalf  = 0.22f;
         float3 rRight = normalize(cross(up, fwd));
         float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));

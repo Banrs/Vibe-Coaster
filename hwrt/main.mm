@@ -765,7 +765,7 @@ void Renderer::rideAdvance(float dt) {
     // SPACE: fire a boost on powered sections (spends the meter, surges speed)
     if (boostHeld && stream.boost > 0.05f &&
         (stream.kind == M_LAUNCH || stream.kind == M_BOOST)) {
-        stream.speed = fminf(stream.speed + 60.0f * dt, 120.0f);
+        stream.speed = fminf(stream.speed + 110.0f * dt, 120.0f);   // 5g surge (5 * GRAV=22), same as the launch
         stream.boost = fmaxf(stream.boost - dt * 0.8f, 0.0f);
     }
     // S: trim-brake (parity with the SW game's brake key) — bleeds speed to the stall floor

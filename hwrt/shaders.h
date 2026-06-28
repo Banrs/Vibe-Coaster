@@ -232,7 +232,20 @@ struct Vertex {
     packed_float3 pos;
     packed_float3 normal;
     packed_float3 albedo;
+    float         tile;     // TileClass id -> selects the 16x16 procedural texture (terrain.h)
 };
+
+// Texture tile classes (mirror terrain.h TileClass). Each reproduces one luminance
+// pattern from the software game's 16x16 atlas (src/main.cpp makeAtlas) as albedo
+// MODULATION (multiply the demodulated cap/column colour) — never baked lighting.
+constant int TILE_GRASS = 0;
+constant int TILE_DIRT  = 1;
+constant int TILE_SAND  = 2;
+constant int TILE_ROCK  = 3;
+constant int TILE_SNOW  = 4;
+constant int TILE_LEAF  = 5;
+constant int TILE_WOOD  = 6;
+constant int TILE_WATER = 7;
 
 // Material classes inferred from the flat per-face albedo the mesh carries.
 constant int MAT_DIFFUSE = 0;
@@ -252,6 +265,7 @@ struct Hit {
     float3 albedo;
     float  dist;
     int    mat;
+    int    tile;       // texture tile class for the in-shader 16x16 procedural pattern
 };
 
 // Multi-instance AS: instances [0, trackInst) are terrain CHUNKS (one prim-AS each,
@@ -277,6 +291,9 @@ static Hit traceRay(ray r, instance_acceleration_structure accel,
         out.dist   = h.distance;
         out.pos    = r.origin + r.direction * h.distance;
         out.mat    = classify(out.albedo);
+        out.tile   = int(v0.tile + 0.5);
+    } else {
+        out.tile   = TILE_DIRT;
     }
     return out;
 }
@@ -320,17 +337,107 @@ static float softSunShadow(float3 pos, float3 n, float3 L, thread float& rng,
     return 1.0 - occ / float(S);
 }
 
-// Per-voxel surface grain: subtle brightness variation keyed to world position
-// quantised to the voxel grid, so flat faces gain crisp material texture without
-// looking smeared.
+// Integer hash + wrapped value noise ported from src/main.cpp (hashf / makeAtlas's
+// tnoise) so the in-shader texture matches the software atlas pixel-for-pixel in
+// CHARACTER. Keyed to INTEGER texel/cell coords -> crisp pixel-art, not smeared.
+static float ihashf(int x, int z) {
+    uint h = uint(x) * 374761393u + uint(z) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return float(h & 0xffffffu) / 16777215.0;
+}
+// smooth value noise over an integer lattice (period unbounded; the per-block cell id
+// is folded in so abutting blocks vary instead of tiling identically).
+static float tnoise2(int seed, float gx, float gy) {
+    int x0 = int(floor(gx)), y0 = int(floor(gy));
+    float sx = gx - float(x0), sy = gy - float(y0);
+    sx = sx*sx*(3.0-2.0*sx); sy = sy*sy*(3.0-2.0*sy);
+    float a = ihashf(seed*97 + x0,     y0    );
+    float b = ihashf(seed*97 + x0 + 1, y0    );
+    float c = ihashf(seed*97 + x0,     y0 + 1);
+    float d = ihashf(seed*97 + x0 + 1, y0 + 1);
+    return a + (b-a)*sx + (c-a)*sy + (a-b-c+d)*sx*sy;
+}
+
+// ---------------------------------------------------------------------------
+// PROCEDURAL BLOCK TEXTURE — reproduces the software game's 16x16 atlas
+// (src/main.cpp makeAtlas) directly in the trace shading path. Returns a per-texel
+// brightness MULTIPLIER (mean ~1.0) applied to the demodulated cap/column albedo, so
+// it's pure detail modulation: lighting/AO/GI/shadows stay in the kernel (the HARD
+// invariant for the denoiser). UVs come from the world hit position: each 1m block
+// face = one 16x16 tile, quantised to texels for the crisp pixel-art look. The block
+// CELL id (integer floor of the face UV + grid coord) seeds the per-block variation so
+// the pattern never tiles obviously across the terrain.
+// ---------------------------------------------------------------------------
+static float3 blockTexture(float3 albedo, float3 wp, float3 n, int mat, int tile) {
+    if (mat == MAT_WATER || tile == TILE_WATER) return albedo;
+
+    // Metal (track/rails) keeps the cheap legacy brushed-grain look (not a block tile).
+    if (mat == MAT_METAL) {
+        float3 q = floor(wp * 1.6);
+        float g = hash13(q + n * 7.0);
+        float fine = fbm3(wp * 0.7) - 0.5;
+        float v = 1.0 + (g - 0.5) * 0.12 + fine * 0.06;
+        return albedo * clamp(v, 0.85, 1.15);
+    }
+
+    // --- per-face UV in WORLD METRES, then split into block cell + 16x16 texel ---
+    float an = abs(n.x) > abs(n.y) ? (abs(n.x) > abs(n.z) ? 0 : 2)
+                                   : (abs(n.y) > abs(n.z) ? 1 : 2);
+    float2 uv = (an == 0) ? wp.zy : (an == 1) ? wp.xz : wp.xy;
+    int  cellX = int(floor(uv.x)), cellY = int(floor(uv.y));   // which block, on this axis pair
+    float fx = uv.x - float(cellX), fy = uv.y - float(cellY);  // 0..1 within the block face
+    int  tx = int(fx * 16.0), ty = int(fy * 16.0);             // 0..15 texel (crisp pixel-art)
+    int seed = cellX * 131 + cellY * 911 + an * 17;            // per-block, per-axis variation
+
+    // per-pixel + 2x2-clump randoms (mirror makeAtlas r1 / r2)
+    float r1 = ihashf(seed + tx,         ty * 3 + 1);
+    float r2 = ihashf(seed + (tx/2)*2,   ((ty/2)*2) * 3 + 1);
+
+    float v = 1.0;                                             // brightness MULTIPLIER (mean ~1)
+    if (tile == TILE_GRASS) {                                  // turf TOP: clumps + blades + tips
+        float clump = tnoise2(seed, fx * 4.0, fy * 4.0);
+        v = 0.94 + 0.16 * clump;
+        float blade = ihashf(tx*7 + 13, (ty/3)*5 + seed);
+        if (blade > 0.82)      v += 0.10 + 0.08 * r1;          // sunlit upright blade tip
+        else if (r1 < 0.22)    v -= 0.14;                      // shaded base between blades
+        if (ty < 4 && r1 < 0.40) v -= 0.06;                   // darker soil at the lower edge
+    } else if (tile == TILE_LEAF) {                            // clumpy foliage with dark gaps
+        float clump = tnoise2(seed, fx * 4.0, fy * 4.0);
+        float fine  = tnoise2(seed + 11, fx * 16.0, fy * 16.0);
+        v = 0.90 + 0.26 * clump + 0.09 * fine;
+        if (clump < 0.30)      v -= 0.18;                      // shadowed gaps between clusters
+        else if (clump > 0.82) v += 0.07;                     // sunlit leaf tops
+    } else if (tile == TILE_WOOD) {                            // bark: vertical fibre + knot
+        float bark = tnoise2(seed, fx * 8.0, fy * 8.0 * 0.4); // stretched vertical fibre
+        v = 0.90 + 0.26 * bark + 0.06 * r1;
+        float kx = fx - 0.62, ky = fy - 0.34;                 // a small knot
+        if (kx*kx + ky*ky < 0.010) v -= 0.20;
+    } else {                                                   // GRAIN family: dirt / sand / rock / snow
+        float con  = (tile == TILE_ROCK) ? 1.35                // stone: harder contrast
+                   : (tile == TILE_SAND) ? 0.55                // sand: smooth, low contrast
+                   : (tile == TILE_SNOW) ? 0.35 : 1.0;         // snow: faint sparkle
+        float grain = tnoise2(seed, fx * 8.0, fy * 8.0);       // coarse mottle
+        float fine  = tnoise2(seed + 50, fx * 16.0, fy * 16.0);// fine speckle
+        v = 1.0 + ((grain - 0.5) * 0.19 + (fine - 0.5) * 0.07) * con;
+        if (tile != TILE_SNOW) {
+            if (r2 < 0.16)      v -= 0.16 * con;               // scattered darker pebbles
+            else if (r1 > 0.93) v += 0.07 * con;              // a few bright flecks
+            // faint hairline crack wandering down the block (skip on smooth sand)
+            if (tile != TILE_SAND) {
+                float crack = abs((fx + 0.18 * sin(fy * 9.0)) - 0.5);
+                if (crack < 0.045 && fine > 0.35) v -= 0.12 * con;
+            }
+        } else if (r1 > 0.92) {
+            v += 0.05;                                         // sparse snow sparkle
+        }
+    }
+    return albedo * clamp(v, 0.70, 1.30);
+}
+
+// Back-compat wrapper kept for the metal/water grain callers that don't carry a tile.
 static float3 voxelGrain(float3 albedo, float3 wp, float3 n, int mat) {
-    if (mat == MAT_WATER) return albedo;
-    float3 q = floor(wp * (mat == MAT_METAL ? 1.6 : 0.5));
-    float g = hash13(q + n * 7.0);
-    float fine = fbm3(wp * (mat == MAT_METAL ? 0.7 : 0.18)) - 0.5;
-    float amt = (mat == MAT_METAL) ? 0.06 : 0.14;
-    float v = 1.0 + (g - 0.5) * amt * 2.0 + fine * amt;
-    return albedo * clamp(v, 0.75, 1.22);
+    return blockTexture(albedo, wp, n, mat, TILE_DIRT);
 }
 
 // GGX-lite specular highlight for the sun.
@@ -349,10 +456,10 @@ static float3 sunSpec(float3 n, float3 V, float3 L, float rough, float3 specCol)
 // Used for primary surfaces and as the gathered radiance for indirect bounces.
 // shadowMode: 0 = no shadow, 1 = single HARD shadow ray (cheap, used for GI
 // bounce surfaces), 2 = soft multi-sample sun shadow (primary surfaces only).
-static float3 shadeSurface(float3 pos, float3 n, float3 albedo, int mat,
+static float3 shadeSurface(float3 pos, float3 n, float3 albedo, int mat, int tile,
                            float3 L, float3 V, thread float& rng,
                            instance_acceleration_structure accel, int shadowMode) {
-    albedo = voxelGrain(albedo, pos, n, mat);
+    albedo = blockTexture(albedo, pos, n, mat, tile);
     float ndl = max(dot(n, L), 0.0);
     float shadow = 1.0;
     if (shadowMode > 0 && ndl > 0.0) {
@@ -413,14 +520,14 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
         color = sampleSky(cam.origin, dir, L, t);
     } else {
         float3 n = hit.n;
-        color = shadeSurface(hit.pos, n, hit.albedo, hit.mat, L, V, rng, accel, 2);
+        color = shadeSurface(hit.pos, n, hit.albedo, hit.mat, hit.tile, L, V, rng, accel, 2);
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
         const int AO_SAMPLES = 30;                  // 30: cleaner AO/GI while staying well above 90fps (each sample also casts a GI shade ray, so this is the fps-dominant loop)
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
-        float3 surfAlb = voxelGrain(hit.albedo, hit.pos, n, hit.mat);
+        float3 surfAlb = blockTexture(hit.albedo, hit.pos, n, hit.mat, hit.tile);
         for (int i = 0; i < AO_SAMPLES; i++) {
             rng = fract(rng * 1.61803 + 0.31831);
             float h1 = rng;
@@ -442,7 +549,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
                 // gather that surface's direct light with a single HARD shadow ray
                 // (mode 1) instead of an 8-tap soft penumbra -> ~8x fewer GI rays.
                 float3 gv = -sdir;
-                giSum += shadeSurface(gh.pos, gh.n, gh.albedo, gh.mat, L, gv, rng, accel, 1);
+                giSum += shadeSurface(gh.pos, gh.n, gh.albedo, gh.mat, gh.tile, L, gv, rng, accel, 1);
             } else {
                 giSum += sampleSkyLite(sdir, L);   // open sky contributes its colour
             }
@@ -460,7 +567,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             rr.min_distance = 0.002; rr.max_distance = 10000.0;
             Hit rh = traceRay(rr, accel, vertsT, vertsK, vertOff, trackInst);
             float3 reflCol = rh.valid
-                ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, L, -refl, rng, accel, 1)
+                ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, rh.tile, L, -refl, rng, accel, 1)
                 : sampleSky(rr.origin, refl, L, t);
             color = mix(color, reflCol * surfAlb, 0.55);
         } else if (hit.mat == MAT_WATER) {
@@ -501,7 +608,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             rr.min_distance = 0.002; rr.max_distance = 10000.0;
             Hit rh = traceRay(rr, accel, vertsT, vertsK, vertOff, trackInst);
             float3 reflCol = rh.valid
-                ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, L, -refl, rng, accel, 1)
+                ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, rh.tile, L, -refl, rng, accel, 1)
                 : sampleSky(rr.origin, rr.direction, L, t);
 
             // Crisp Schlick Fresnel on the rippled normal: grazing angles mirror the

@@ -11,6 +11,21 @@ struct MeshVertex {
     float pos[3];
     float normal[3];
     float albedo[3];
+    float tile;        // TILE CLASS for the in-shader 16x16 procedural texture (see TileClass)
+};
+
+// Texture tile class carried per face -> the RT shader reproduces the software game's
+// 16x16 procedural atlas (src/main.cpp makeAtlas) as albedo-detail modulation. One id
+// per material look; grass TOP vs dirt SIDE is a per-face split (real Minecraft block).
+enum TileClass {
+    TILE_GRASS = 0,   // turf TOP: clumps + upright blades + bright sunlit tips (T_GRASS)
+    TILE_DIRT  = 1,   // dirt SIDE / body: granular + pebbles + faint cracks (T_GRAIN)
+    TILE_SAND  = 2,   // beach sand: finer granular, low contrast (T_GRAIN)
+    TILE_ROCK  = 3,   // stone: granular + pebbles + cracks, harder contrast (T_GRAIN)
+    TILE_SNOW  = 4,   // snow cap: faint sparkle speckle, very low contrast
+    TILE_LEAF  = 5,   // foliage: clumpy with darker gaps (T_LEAF)
+    TILE_WOOD  = 6,   // bark: vertical fibre streaks + knot (T_LOG)
+    TILE_WATER = 7,   // water: untextured (shader skips)
 };
 
 // --- sim constants (ported from main.cpp) ---
@@ -147,30 +162,33 @@ struct Terrain {
     float worldSize;
 };
 
-// pushQuad as two CCW triangles into a vertex vector.
+// pushQuad as two CCW triangles into a vertex vector. `tile` selects the in-shader
+// 16x16 procedural texture for this face (defaults to dirt for legacy call sites).
 static void pushQuad(std::vector<MeshVertex>& out, float3 a, float3 b, float3 c, float3 d,
-                     float3 n, float3 albedo) {
+                     float3 n, float3 albedo, float tile = (float)TILE_DIRT) {
     float3 ps[6] = {a, b, c, a, c, d};
     for (int i = 0; i < 6; i++) {
         MeshVertex v;
         v.pos[0]=ps[i].x; v.pos[1]=ps[i].y; v.pos[2]=ps[i].z;
         v.normal[0]=n.x; v.normal[1]=n.y; v.normal[2]=n.z;
         v.albedo[0]=albedo.x; v.albedo[1]=albedo.y; v.albedo[2]=albedo.z;
+        v.tile = tile;
         out.push_back(v);
     }
 }
 
 // Axis-aligned box centred at (cx,cy,cz) with full extents (w,h,l). Six flat
-// quads with explicit outward normals (used for tree trunks/canopies).
+// quads with explicit outward normals (used for tree trunks/canopies). `tile`
+// applies to all six faces (trunk = WOOD, canopy = LEAF).
 static void pushVoxBox(std::vector<MeshVertex>& out, float cx, float cy, float cz,
-                       float w, float h, float l, float3 a) {
+                       float w, float h, float l, float3 a, float tile = (float)TILE_DIRT) {
     float x0=cx-w*0.5f, x1=cx+w*0.5f, y0=cy-h*0.5f, y1=cy+h*0.5f, z0=cz-l*0.5f, z1=cz+l*0.5f;
-    pushQuad(out, vec3(x0,y0,z1),vec3(x1,y0,z1),vec3(x1,y1,z1),vec3(x0,y1,z1), vec3(0,0,1),  a); // +z
-    pushQuad(out, vec3(x1,y0,z0),vec3(x0,y0,z0),vec3(x0,y1,z0),vec3(x1,y1,z0), vec3(0,0,-1), a); // -z
-    pushQuad(out, vec3(x1,y0,z1),vec3(x1,y0,z0),vec3(x1,y1,z0),vec3(x1,y1,z1), vec3(1,0,0),  a); // +x
-    pushQuad(out, vec3(x0,y0,z0),vec3(x0,y0,z1),vec3(x0,y1,z1),vec3(x0,y1,z0), vec3(-1,0,0), a); // -x
-    pushQuad(out, vec3(x0,y1,z1),vec3(x1,y1,z1),vec3(x1,y1,z0),vec3(x0,y1,z0), vec3(0,1,0),  a); // +y
-    pushQuad(out, vec3(x0,y0,z0),vec3(x1,y0,z0),vec3(x1,y0,z1),vec3(x0,y0,z1), vec3(0,-1,0), a); // -y
+    pushQuad(out, vec3(x0,y0,z1),vec3(x1,y0,z1),vec3(x1,y1,z1),vec3(x0,y1,z1), vec3(0,0,1),  a, tile); // +z
+    pushQuad(out, vec3(x1,y0,z0),vec3(x0,y0,z0),vec3(x0,y1,z0),vec3(x1,y1,z0), vec3(0,0,-1), a, tile); // -z
+    pushQuad(out, vec3(x1,y0,z1),vec3(x1,y0,z0),vec3(x1,y1,z0),vec3(x1,y1,z1), vec3(1,0,0),  a, tile); // +x
+    pushQuad(out, vec3(x0,y0,z0),vec3(x0,y0,z1),vec3(x0,y1,z1),vec3(x0,y1,z0), vec3(-1,0,0), a, tile); // -x
+    pushQuad(out, vec3(x0,y1,z1),vec3(x1,y1,z1),vec3(x1,y1,z0),vec3(x0,y1,z0), vec3(0,1,0),  a, tile); // +y
+    pushQuad(out, vec3(x0,y0,z0),vec3(x1,y0,z0),vec3(x1,y0,z1),vec3(x0,y0,z1), vec3(0,-1,0), a, tile); // -y
 }
 
 // A simple low-poly voxel tree (trunk + a couple of canopy boxes) sitting on the
@@ -183,38 +201,38 @@ static void pushTree(std::vector<MeshVertex>& out, float cx, float topY, float c
     // centred at (cx+dx, topY+0.5+dy, cz+dz) for INTEGER dx,dy,dz -> it snaps to the
     // 1m grid, sits FLUSH on the ground (no half-block float), and never overlaps a
     // neighbour (the trunk column is skipped wherever a leaf would sit on it).
-    auto blk = [&](int dx, int dy, int dz, float3 c) {
-        pushVoxBox(out, cx + (float)dx, topY + 0.5f + (float)dy, cz + (float)dz, 1.0f, 1.0f, 1.0f, c);
+    auto blk = [&](int dx, int dy, int dz, float3 c, float tile) {
+        pushVoxBox(out, cx + (float)dx, topY + 0.5f + (float)dy, cz + (float)dz, 1.0f, 1.0f, 1.0f, c, tile);
     };
     int hv = (vr > 0.5f) ? 1 : 0;                          // +1 block height variation
     if (type == 2) {                                       // spruce: narrow conifer
         float3 bark = vec3(0.30f,0.22f,0.14f), lf = vec3(0.20f,0.37f,0.24f);
         int H = 6 + hv;
-        for (int i = 0; i < H; i++) blk(0, i, 0, bark);
+        for (int i = 0; i < H; i++) blk(0, i, 0, bark, (float)TILE_WOOD);
         int t = H - 1;
-        for (int d = -1; d <= 1; d += 2) { blk(d,t-3,0,lf); blk(0,t-3,d,lf);       // skirt (plus)
-                                           blk(d,t-2,0,lf); blk(0,t-2,d,lf); }      // mid  (plus)
-        for (int d = -1; d <= 1; d += 2) { blk(d,t-1,0,lf); blk(0,t-1,d,lf); }      // upper (plus)
-        blk(0, t,   0, lf);                                                          // tip above trunk
-        blk(0, t+1, 0, lf);
+        for (int d = -1; d <= 1; d += 2) { blk(d,t-3,0,lf,(float)TILE_LEAF); blk(0,t-3,d,lf,(float)TILE_LEAF);   // skirt (plus)
+                                           blk(d,t-2,0,lf,(float)TILE_LEAF); blk(0,t-2,d,lf,(float)TILE_LEAF); }  // mid  (plus)
+        for (int d = -1; d <= 1; d += 2) { blk(d,t-1,0,lf,(float)TILE_LEAF); blk(0,t-1,d,lf,(float)TILE_LEAF); }  // upper (plus)
+        blk(0, t,   0, lf, (float)TILE_LEAF);                                        // tip above trunk
+        blk(0, t+1, 0, lf, (float)TILE_LEAF);
     } else {                                               // oak / birch: column + bushy crown
         bool birch = (type == 1);
         float3 bark = birch ? vec3(0.80f,0.78f,0.72f) : vec3(0.40f,0.27f,0.15f);
         float3 lf   = birch ? vec3(0.42f,0.60f,0.30f) : vec3(0.28f,0.50f,0.20f);
         int H = (birch ? 5 : 4) + hv;
-        for (int i = 0; i < H; i++) blk(0, i, 0, bark);
+        for (int i = 0; i < H; i++) blk(0, i, 0, bark, (float)TILE_WOOD);
         int t = H - 1;
         // 3x3 ring straddling the top trunk block (trunk holds the centre), then a
         // 3x3-minus-corners layer, then a single cap -> compact crown, zero overlap.
         for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++) {
             if (dx == 0 && dz == 0) continue;              // trunk occupies the centre here
-            blk(dx, t, dz, lf);
+            blk(dx, t, dz, lf, (float)TILE_LEAF);
         }
         for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++) {
             if (abs(dx) == 1 && abs(dz) == 1) continue;    // clip corners -> round crown
-            blk(dx, t + 1, dz, lf);
+            blk(dx, t + 1, dz, lf, (float)TILE_LEAF);
         }
-        blk(0, t + 2, 0, lf);                              // cap
+        blk(0, t + 2, 0, lf, (float)TILE_LEAF);            // cap
     }
 }
 
@@ -599,7 +617,23 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
     std::vector<uint32_t> capKey(MM);
     std::vector<char>     capTree(MM);     // tree type (-1..3)
     std::vector<float>    capDen(MM);
+    std::vector<unsigned char> capTile(MM), colTile(MM);  // per-cell TOP / SIDE texture class
     float3 rockC = vec3(0.40f, 0.39f, 0.40f), snowC = vec3(0.90f, 0.92f, 0.96f);
+    // Classify a surface colour into a texture TileClass. Grass = green-dominant; snow =
+    // bright + cool; rock = de-saturated grey; sand/dry-earth = warm. Used for both the
+    // cap (TOP) and the column (SIDE) so a grass block shows a green grassy top and a
+    // dirt-grain side, like real Minecraft. (Reads off the biomeAt output, no new noise.)
+    auto classifyTile = [](float3 c, bool sideFace) -> unsigned char {
+        float lum = (c.x + c.y + c.z) * (1.0f/3.0f);
+        float mx = fmaxf(c.x, fmaxf(c.y, c.z));
+        float mn = fminf(c.x, fminf(c.y, c.z));
+        float sat = (mx > 1e-4f) ? (mx - mn) / mx : 0.0f;
+        if (sat < 0.10f && lum > 0.78f) return TILE_SNOW;            // bright + grey -> snow
+        if (sat < 0.14f)               return TILE_ROCK;            // de-saturated grey -> stone
+        if (c.y > c.x && c.y > c.z)    return sideFace ? TILE_DIRT : TILE_GRASS; // green cap = grass top, dirt side
+        if (c.z < c.y && lum > 0.70f && c.y > 0.62f) return TILE_SAND;          // bright warm pale -> sand
+        return TILE_DIRT;                                           // dry earth / dirt body
+    };
     for (int z = 0; z < M; z++)
         for (int x = 0; x < M; x++) {
             int h = h_at(x, z);
@@ -618,6 +652,10 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
             int idx = z * M + x;
             capCol[idx] = bm.cap; colCol[idx] = bm.col;
             capTree[idx] = (char)bm.treeType; capDen[idx] = bm.treeDen;
+            // beach cells get a SAND top regardless of the warm-cap classifier; the cap
+            // classifier handles everything else (grass / rock / snow / dry dirt).
+            capTile[idx] = beach ? (unsigned char)TILE_SAND : classifyTile(bm.cap, false);
+            colTile[idx] = beach ? (unsigned char)TILE_SAND : classifyTile(bm.col, true);
             uint32_t qr = (uint32_t)(t_Clamp(bm.cap.x,0,1) * 15.0f + 0.5f);
             uint32_t qg = (uint32_t)(t_Clamp(bm.cap.y,0,1) * 15.0f + 0.5f);
             uint32_t qb = (uint32_t)(t_Clamp(bm.cap.z,0,1) * 15.0f + 0.5f);
@@ -688,7 +726,8 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
             float topY = (float)(h + 1) * cell;   // surface = cell TOP (matches groundTopAt + SW)
             float x0 = worldX(x), x1 = worldX(x + w), z0 = worldZ(z), z1 = worldZ(z + d);
             pushQuad(out, vec3(x0, topY, z0), vec3(x1, topY, z0),
-                     vec3(x1, topY, z1), vec3(x0, topY, z1), vec3(0, 1, 0), capCol[z * M + x]);
+                     vec3(x1, topY, z1), vec3(x0, topY, z1), vec3(0, 1, 0),
+                     capCol[z * M + x], (float)capTile[z * M + x]);
         }
 
     // --- GREEDY side walls (neighbours may be in the padding -> seam walls correct) ---
@@ -702,11 +741,11 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                 float y0 = (float)(nb + 1) * cell, y1 = (float)(h + 1) * cell;
                 float zz0 = worldZ(z), zz1 = worldZ(z + run);
                 float wx = (sign < 0) ? worldX(x) : worldX(x + 1);
-                float3 bc = colCol[z * M + x];
+                float3 bc = colCol[z * M + x]; float bt = (float)colTile[z * M + x];
                 if (sign < 0)
-                    pushQuad(out, vec3(wx,y0,zz0), vec3(wx,y0,zz1), vec3(wx,y1,zz1), vec3(wx,y1,zz0), vec3(-1,0,0), bc);
+                    pushQuad(out, vec3(wx,y0,zz0), vec3(wx,y0,zz1), vec3(wx,y1,zz1), vec3(wx,y1,zz0), vec3(-1,0,0), bc, bt);
                 else
-                    pushQuad(out, vec3(wx,y0,zz1), vec3(wx,y0,zz0), vec3(wx,y1,zz0), vec3(wx,y1,zz1), vec3(1,0,0), bc);
+                    pushQuad(out, vec3(wx,y0,zz1), vec3(wx,y0,zz0), vec3(wx,y1,zz0), vec3(wx,y1,zz1), vec3(1,0,0), bc, bt);
                 z += run;
             }
     };
@@ -720,11 +759,11 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                 float y0 = (float)(nb + 1) * cell, y1 = (float)(h + 1) * cell;
                 float xx0 = worldX(x), xx1 = worldX(x + run);
                 float wz = (sign < 0) ? worldZ(z) : worldZ(z + 1);
-                float3 bc = colCol[z * M + x];
+                float3 bc = colCol[z * M + x]; float bt = (float)colTile[z * M + x];
                 if (sign < 0)
-                    pushQuad(out, vec3(xx1,y0,wz), vec3(xx0,y0,wz), vec3(xx0,y1,wz), vec3(xx1,y1,wz), vec3(0,0,-1), bc);
+                    pushQuad(out, vec3(xx1,y0,wz), vec3(xx0,y0,wz), vec3(xx0,y1,wz), vec3(xx1,y1,wz), vec3(0,0,-1), bc, bt);
                 else
-                    pushQuad(out, vec3(xx0,y0,wz), vec3(xx1,y0,wz), vec3(xx1,y1,wz), vec3(xx0,y1,wz), vec3(0,0,1), bc);
+                    pushQuad(out, vec3(xx0,y0,wz), vec3(xx1,y0,wz), vec3(xx1,y1,wz), vec3(xx0,y1,wz), vec3(0,0,1), bc, bt);
                 x += run;
             }
     };
@@ -748,6 +787,6 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                 for (int dx = 0; dx < w; dx++) done[(z + dz) * M + x + dx] = 1;
             float x0 = worldX(x), x1 = worldX(x + w), z0 = worldZ(z), z1 = worldZ(z + d);
             pushQuad(out, vec3(x0, WATER_Y, z0), vec3(x1, WATER_Y, z0),
-                     vec3(x1, WATER_Y, z1), vec3(x0, WATER_Y, z1), vec3(0, 1, 0), water);
+                     vec3(x1, WATER_Y, z1), vec3(x0, WATER_Y, z1), vec3(0, 1, 0), water, (float)TILE_WATER);
         }
 }

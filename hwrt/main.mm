@@ -148,7 +148,7 @@ struct Renderer {
     // BENCHMARK: a 1m terrain ring + clipped track that FOLLOWS the ride camera
     // (so blocks stay 1m everywhere without meshing the whole 2km circuit at once).
     static constexpr float BENCH_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-    static constexpr float BENCH_RING = 750.0f;   // ring half-extent (matches TG_RING)
+    static constexpr float BENCH_RING = TG_RING;  // ring half-extent — match the streaming Play render distance so --bench reflects the real game
     std::vector<float3> trackPts;          // all track control points (for trees/carve)
     std::vector<unsigned char> trackKinds; // per-point SegMode tag (for the helix carve)
     float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
@@ -385,9 +385,16 @@ void Renderer::recentreChunks(float cx, float cz, float ring, const std::vector<
     int reach = (int)ceilf(ring / (M * RING_CELL));      // chunks each side of centre
 
     // desired live set; figure out adds (in range & not present) and removes (present & out of range)
+    // CIRCULAR render radius (not a square box): keep chunks whose centre is within `reach`
+    // chunk-units of the ring centre. Culls the ~21% corner chunks of the old square -> fewer
+    // tris (faster rays) AND a round horizon instead of a square map edge. A small +0.6 margin
+    // on the remove test gives hysteresis so edge chunks don't thrash add/remove.
+    const float addR2 = (float)reach * (float)reach;
+    const float remR2 = ((float)reach + 0.6f) * ((float)reach + 0.6f);
     std::vector<std::pair<int,int>> toAdd;
     for (int dz = -reach; dz <= reach; dz++)
         for (int dx = -reach; dx <= reach; dx++) {
+            if ((float)(dx*dx + dz*dz) > addR2) continue;       // outside the circle
             int ax = icx + dx, az = icz + dz;
             if (chunks.find(packChunk(ax, az)) == chunks.end())
                 toAdd.push_back({ax, az});
@@ -395,7 +402,8 @@ void Renderer::recentreChunks(float cx, float cz, float ring, const std::vector<
     pendingRemove.clear();
     for (auto& kv : chunks) {
         int ax = (int)(int32_t)(kv.first >> 32), az = (int)(int32_t)(kv.first & 0xffffffff);
-        if (std::abs(ax - icx) > reach || std::abs(az - icz) > reach)
+        float ddx = (float)(ax - icx), ddz = (float)(az - icz);
+        if (ddx*ddx + ddz*ddz > remR2)
             pendingRemove.push_back(kv.first);
     }
     if (toAdd.empty() && pendingRemove.empty()) return;
@@ -872,11 +880,12 @@ struct FXUpscaler {
     bool make(Renderer& r, uint32_t W, uint32_t H, MTLStorageMode outStorage) {
         outW = W; outH = H;
         // MetalFX spatial upscaling: trace at a lower internal res, upscale to the window.
-        // 0.66 internal -> 720p. Spending the fps headroom on AO/GI SAMPLES (which directly cut
-        // the Monte-Carlo grain the user saw) is more efficient than raising the internal res
-        // (pixel-count cost). S=22/AO=64 at 0.66 is the cleanest that holds >=60fps on the heavy
-        // 3M-tri streaming map. RT_SCALE env overrides for higher/lower-end GPUs.
-        float sc = 0.66f;
+        // FULL-RES by default (sc=1.0): the user found MetalFX UPSCALING turned the fine path-
+        // trace grain into blocky noise ("screw upscaling"). Render native and claw fps back the
+        // OTHER way -- a CLOSER render horizon (TG_RING 500->380: fewer tris => faster rays AND
+        // smaller/faster chunk rebuilds => fewer hitches) + a moderate sample count. RT_SCALE env
+        // still forces upscaling for lower-end GPUs if ever needed.
+        float sc = 1.0f;
         if (const char* s = getenv("RT_SCALE")) { float v = atof(s); if (v > 0) sc = v; }
         if (sc < 0.4f) sc = 0.4f; if (sc > 1.0f) sc = 1.0f;
         inW = (uint32_t)(W * sc + 0.5f); if (inW < 16) inW = 16;

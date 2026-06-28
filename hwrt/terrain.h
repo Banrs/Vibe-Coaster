@@ -121,12 +121,13 @@ static inline float3 rgb8(int r, int g, int b) {
 static Biome biomeAt(float wx, float wz, int h, bool beach) {
     Biome bm;
     bm.treeType = -1; bm.treeDen = 0.0f;
-    // Biome-selection noise frequencies MATCHED 1:1 to the software renderer
-    // (src/main.cpp ~line 2280): broad, coherent biome REGIONS (a lush forest next to a
-    // dry savanna field) instead of a high-frequency patchwork that fragments the variety.
-    float bio   = vnoise(wx * 0.0045f + 91.3f, wz * 0.0045f + 23.1f);
-    float humid = fbm(wx * 0.0028f + 44.0f,  wz * 0.0028f + 108.0f, 2);
-    float temp  = fbm(wx * 0.0019f + 12.0f,  wz * 0.0019f + 204.0f, 2);
+    // Biome-selection noise: ~150m biome regions so SEVERAL distinct biomes are visible at
+    // once within the (closer, 380m) render horizon -- the software's very-low freq made one
+    // biome fill the whole view ("only green plains"); too-high freq fragments it. This is the
+    // middle ground: coherent regions, but multiple per view.
+    float bio   = vnoise(wx * 0.0070f + 91.3f, wz * 0.0070f + 23.1f);
+    float humid = fbm(wx * 0.0045f + 44.0f,  wz * 0.0045f + 108.0f, 2);
+    float temp  = fbm(wx * 0.0030f + 12.0f,  wz * 0.0030f + 204.0f, 2);
     float3 capC = rgb8(130, 206, 102);   // GRASS
     float3 colC = rgb8(158, 116,  82);   // DIRT
     bool grassCap = true;

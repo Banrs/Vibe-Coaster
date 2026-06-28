@@ -17,7 +17,7 @@
 // this same radius so no track ever floats beyond the terrain edge. 1m blocks
 // (CELL=1) keep true Minecraft scale on all sides.
 static constexpr float TG_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-static constexpr float TG_RING = 500.0f;   // half-extent meshed around the train (reduced 750->500: closer horizon + big fps headroom).
+static constexpr float TG_RING = 380.0f;   // half-extent meshed around the train (750->500->380: closer horizon recovers fps for FULL-RES no-upscale rendering + fewer/faster chunk rebuilds).
                                            // Lowered 1200->750: a smaller ring means
                                            // far fewer terrain tris and much cheaper
                                            // incremental edge-strip rebuilds, so the

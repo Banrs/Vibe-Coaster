@@ -530,11 +530,18 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
         color = sampleSky(cam.origin, dir, L, t);
     } else {
         float3 n = hit.n;
+        // FREEZE the stochastic shadow/AO/GI noise to the WORLD SURFACE: seed the RNG from the
+        // world hit position (not the screen pixel). The same surface point then draws the same
+        // sample directions every frame, so as the camera RIDES past, the grain sticks to the
+        // ground like a texture instead of shimmering/crawling across the screen -- this is the
+        // bulk of the perceived "so much grain" in motion (a still screenshot hides it). The
+        // *4.0 scale decorrelates neighbouring points so it still reads as fine grain.
+        rng = hash13(hit.pos * 4.0) + 0.0001;
         color = shadeSurface(hit.pos, n, hit.albedo, hit.mat, hit.tile, L, V, rng, accel, 2);
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
-        const int AO_SAMPLES = 64;                  // 64 (up from 36): the AO/GI Monte-Carlo loop is the dominant NOISE source ('1-pass' grain) AND the fps-dominant loop (each sample casts a GI ray). 64 at 0.66 internal is the cleanest that still holds >=60fps; fully-clean would need a temporal/demodulated denoiser.
+        const int AO_SAMPLES = 48;                  // 48: AO/GI Monte-Carlo loop is the dominant noise source AND the fps-dominant loop. At FULL-RES (no upscale) the grain is per-pixel/finer, so fewer samples read cleaner than 64-at-0.66-upscaled; 48 + the closer horizon holds >=60fps native.
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
         // GI/reflection bleed tint: linearized to match the linear-space radiance the

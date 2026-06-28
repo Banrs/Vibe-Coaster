@@ -834,7 +834,7 @@ void Renderer::rideAdvance(float dt) {
     // launch/boost/lift acceleration on powered sections -> the boosts actually work
     // (the orange spine sections noticeably surge), instead of a constant crawl.
     const float GRAV=9.81f, DRAG=0.0013f, FRICTION=0.016f;   // Earth-real gravity (sync w/ src/main.cpp)
-    const float LAUNCH_V=108.0f, BOOST_V=79.0f, CLIMB_V=40.0f;
+    const float LAUNCH_V=100.0f, BOOST_V=79.0f, CLIMB_V=40.0f;
     const int   M_CLIMB=1, M_LAUNCH=9, M_BOOST=11;
 
     // SPACE boost on powered sections (benchmark map): surge toward the cap.
@@ -868,7 +868,7 @@ void Renderer::rideAdvance(float dt) {
     // floor — gentle assist holds a brisk speed ONLY while climbing (not a global cruise pin).
     if (!brakeHeld && slope > 0.06f && rideKind != M_LAUNCH && rideKind != M_BOOST && rideKind != M_CLIMB && rideSpeed < 36.0f)
         rideSpeed = fminf(rideSpeed + 28.0f * dt, 36.0f);
-    rideSpeed = fmaxf(rideSpeed, 20.0f); rideSpeed = fminf(rideSpeed, 135.0f);
+    rideSpeed = fmaxf(rideSpeed, 20.0f); rideSpeed = fminf(rideSpeed, 100.0f);
     // boost meter recharges on powered sections
     if (rideKind == M_LAUNCH || rideKind == M_BOOST) rideBoost = fminf(rideBoost + dt*0.6f, 1.0f);
 
@@ -1840,7 +1840,7 @@ static void drawHUD(CGContextRef c, Renderer* r, CGFloat W, CGFloat H) {
     // by RT_MAXW (default 2560 — high enough that the window is normally native; the real
     // perf lever below is MetalFX, not this cap). The path tracer does NOT run at this
     // size: MetalFX upscales a low-res (RT_SCALE x) internal render to it.
-    CGFloat maxW = 2560.0;
+    CGFloat maxW = 1920.0;   // run the whole RT+MetalFX pipeline at <=1080p (the compositor scales the 1080p drawable to the Retina window); 1440p+ native was ~30fps
     if (const char* mw = getenv("RT_MAXW")) { int v = atoi(mw); if (v > 0) maxW = (CGFloat)v; }
     CGFloat scale = self.window.backingScaleFactor; if (scale < 1) scale = 1;
     CGFloat pxW = self.view.bounds.size.width  * scale;

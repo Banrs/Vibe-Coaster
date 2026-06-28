@@ -55,7 +55,7 @@ static const float FRICTION  = 0.016f;   // very low rolling friction (light ste
 static const float CHAIN_V   = 22.0f;    // lift hills
 static const float MIN_V     = 42.0f;    // brisk cruising floor (~150 km/h) so the ride sustains a high average — sits below the tightest inversion entry speed (47) so trim brakes can still bleed down to a sane entry g
 static const float MAX_V     = 82.0f;    // top speed reachable on the biggest drops (~295 km/h)
-static const float LAUNCH_V  = 108.0f;   // hydraulic-launch CEILING (~390 km/h, ABOVE the real top-speed record ~250 km/h); the short hard launch keeps accelerating the whole way (rarely binds -> no "stuck at peak")
+static const float LAUNCH_V  = 100.0f;   // hydraulic-launch CEILING (~390 km/h, ABOVE the real top-speed record ~250 km/h); the short hard launch keeps accelerating the whole way (rarely binds -> no "stuck at peak")
 static const float CLIMB_V   = 40.0f;    // hydraulic top-hat sustain: hold a brisk speed up the climb so the train never crawls over a crest (the v^2 drag + the trims still bring the average into the 65-75 band)
 static float       BOOST_V   = 79.0f;    // mid-course LSM re-launch target — boosts slow arrivals back up to cruise, never brakes. Mutable so --simtest can sweep the coupled generator+ride (the generator forward-sims with this too).
 static float       BOOST_TRIG = 78.0f;   // generator fires an LSM booster straight when the forward-sim cruise drops below this. Raised 64->78 (aggressive multi-launch profile) so the cruise HOLDS just under the inversion gate (79) — this is the main lever lifting the avg to ~252 km/h with realistic drag, no top-hat spam, no heavy trims. Mutable for --simtest sweeps.
@@ -1182,7 +1182,7 @@ int main(int argc, char **argv) {
                 // (NOT a global cruise pin — flats still coast down via drag, physics-driven).
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
-                v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);   // 20 = stall-only safety net (physics dictates speed; the train is never PINNED at a cruise floor). 135 = runaway guard, not a cap.
+                v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);   // 20 = stall-only safety net (physics dictates speed; the train is never PINNED at a cruise floor). 135 = runaway guard, not a cap.
                 if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
                     if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
                     if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;  // count inversion entries
@@ -1297,7 +1297,7 @@ int main(int argc, char **argv) {
                 }
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
-                v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);
+                v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);
                 int ki = (int)u;
                 if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
@@ -1393,7 +1393,7 @@ int main(int argc, char **argv) {
                 v += acc * dt;
                 if (t.tagAt(u) == M_LAUNCH && v < LAUNCH_V) v = fminf(v + 40 * dt, LAUNCH_V);
                 if (t.tagAt(u) == M_BOOST) v += Clamp(BOOST_V - v, -55.0f * dt, 30.0f * dt);
-                v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);   // 20 = stall-only safety net (physics dictates speed; the train is never PINNED at a cruise floor). 135 = runaway guard, not a cap.
+                v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);   // 20 = stall-only safety net (physics dictates speed; the train is never PINNED at a cruise floor). 135 = runaway guard, not a cap.
 
                 sinceStation += dt;
                 if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
@@ -1825,7 +1825,7 @@ int main(int argc, char **argv) {
             // train at ~72 km/h for seconds" without grade-cutting the track underground.
             if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !onLift && v < 36.0f)
                 v = fminf(v + 28.0f * dt, 36.0f);
-            v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);   // 20 = stall-only safety net (physics dictates speed; never PINNED at a cruise floor). 135 = runaway guard, not a cap.
+            v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);   // 20 = stall-only safety net (physics dictates speed; never PINNED at a cruise floor). 135 = runaway guard, not a cap.
             if (gForceSpeed > 0.0f) v = gForceSpeed;      // --gtest: pin ride speed to isolate element geometry g
 
             // arm an exit station after ~95s of riding (interactive only)

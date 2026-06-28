@@ -210,7 +210,7 @@ struct StreamTrack {
         // global cruise pin; flats still coast down via drag). Kills the rises-stall-the-train bug.
         if (slope > 0.06f && kind != M_LAUNCH && kind != M_BOOST && kind != M_CLIMB && !chain && speed < 36.0f)
             speed = fminf(speed + 28.0f * dt, 36.0f);
-        speed = fmaxf(speed, 20.0f); speed = fminf(speed, 135.0f);  // 20 = stall-only safety net (NOT a cruise floor); 135 = runaway guard
+        speed = fmaxf(speed, 20.0f); speed = fminf(speed, 100.0f);  // 20 = stall-only safety net (NOT a cruise floor); 135 = runaway guard
 
         // boost meter: recharges on powered sections, otherwise idle
         bool powered = (kind == M_LAUNCH || kind == M_BOOST);

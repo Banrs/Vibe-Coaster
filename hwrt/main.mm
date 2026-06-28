@@ -663,7 +663,11 @@ void Renderer::rideAdvance(float dt) {
     // (~one car length) the train still tracks the camera but the TLAS rebuilds
     // ~3x less often -> far fewer frames miss 120fps. ---
     static float lastTrackU = -1e9f;
-    if (fabsf(stream.trainU - lastTrackU) > 0.30f) {
+    // Rebuild cadence: 0.30u was ~one CAR LENGTH (4.2m), so the train+track geometry visibly
+    // SNAPPED a car length every rebuild while the camera moved smoothly ("track teleporting").
+    // The GPU has huge headroom (450+fps, 0 spikes) so rebuild far more often -> the train stays
+    // glued to the camera. 0.04u ≈ 0.5m, below perceptible.
+    if (fabsf(stream.trainU - lastTrackU) > 0.04f) {
         lastTrackU = stream.trainU;
         meshTrackOnly(stream.snapshot(), scratchVerts);
         buildTrackAS(scratchVerts);                // sync, cheap; refreshes the instance AS
@@ -736,7 +740,7 @@ void Renderer::rideAdvance(float dt) {
     // train stays under it (not every frame; re-meshing the clipped circuit is not
     // free). buildCoaster is clipped to the ring so only nearby track is emitted.
     static float lastTrackU = -1e9f;
-    if (fabsf(rideU - lastTrackU) > 0.30f) {       // ~one car length; rebuilds the TLAS ~3x less often
+    if (fabsf(rideU - lastTrackU) > 0.04f) {       // 0.04u ≈ 0.5m: train stays glued to the camera (0.30u snapped a full car length); GPU headroom is large
         lastTrackU = rideU;
         scratchVerts.clear();
         buildCoaster(coaster, scratchVerts, nRender,

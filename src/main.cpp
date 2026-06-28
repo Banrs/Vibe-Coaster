@@ -1268,6 +1268,7 @@ int main(int argc, char **argv) {
         struct Off { float g; int seed,k,kind,pk,nk; float v,y,lat; };
         std::vector<Off> offenders;        // points outside envelope
         int totalPts = 0;
+        float gMinClear = 1e9f; long gMinClearK = 0; int gMinClearSeed = 0, gMinClearLocalK = 0;   // worst track-height-above-terrain (negative = under the map)
         for (int sd = 1; sd <= seeds; sd++) {
             g_rng = (uint32_t)sd * 2654435761u | 1u;
             Track t; t.reset();
@@ -1322,6 +1323,8 @@ int main(int argc, char **argv) {
                 float gV = Vector3DotProduct(WUP3, up) + vv * Vector3DotProduct(kap, up) / GRAV;
                 float gL = vv * Vector3DotProduct(kap, lat) / GRAV;
                 int kd = t.kind[k]; if (kd < 0 || kd >= M_COUNT) kd = 0;
+                float clr = p1.y - groundTopAt(p1.x, p1.z);     // track height above terrain (negative = UNDER the map)
+                if (clr < gMinClear) { gMinClear = clr; gMinClearK = (int)t.base + k; gMinClearSeed = sd; gMinClearLocalK = k; }
                 totalPts++;
                 if (gV > kMaxV[kd]) kMaxV[kd] = gV;
                 if (gV < kMinV[kd]) kMinV[kd] = gV;
@@ -1333,7 +1336,9 @@ int main(int argc, char **argv) {
             printf("seed %2d  worst vert g = %+6.1f at cp %d (%s)\n", sd, seedMaxV, seedMaxK,
                    (seedMaxK>=0 && t.kind[seedMaxK]<M_COUNT) ? NM[t.kind[seedMaxK]] : "-");
         }
-        printf("\n  PER-ELEMENT FELT-G (across %d seeds, %d cps):\n", seeds, totalPts);
+        printf("\n  MIN TRACK CLEARANCE above terrain = %+.1f m (at abs cp %ld) %s\n",
+               gMinClear, gMinClearK, gMinClear < -2.0f ? " <-- UNDER THE MAP" : "");
+        printf("  PER-ELEMENT FELT-G (across %d seeds, %d cps):\n", seeds, totalPts);
         printf("  %-9s %8s %8s %8s\n", "element", "maxVert", "minVert", "maxLat");
         for (int i = 0; i < M_COUNT; i++) {
             if (kMaxV[i] < -1e8f) continue;
@@ -1349,20 +1354,21 @@ int main(int argc, char **argv) {
                    o.seed, o.k, o.g, o.lat, o.v, o.v*3.6f, o.y, NM[o.kind],
                    NM[o.pk], NM[o.kind], NM[o.nk]);
         }
-        // dump the y-profile around the single worst offender so the geometry is visible
-        if (!offenders.empty()) {
-            Off& o = offenders[0];
-            g_rng = (uint32_t)o.seed * 2654435761u | 1u;
+        // dump the y-profile + terrain around the MIN-CLEARANCE point (the under-the-map dive)
+        if (gMinClearSeed > 0) {
+            g_rng = (uint32_t)gMinClearSeed * 2654435761u | 1u;
             Track t; t.reset();
             while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
-            printf("\n  WORST OFFENDER y-profile (seed%d cp%d):\n", o.seed, o.k);
-            for (int k = o.k - 4; k <= o.k + 4; k++) {
+            int kc = gMinClearLocalK;
+            printf("\n  MIN-CLEARANCE y-profile (seed%d cp%d, clear=%.1f):\n", gMinClearSeed, kc, gMinClear);
+            for (int k = kc - 24; k <= kc + 4; k++) {
                 if (k < 1 || k >= (int)t.cp.size()) continue;
                 float dyP = t.cp[k].y - t.cp[k-1].y;
-                printf("   cp%-3d %-9s y=%7.2f  dy=%+7.2f  span=%5.1f  genV=%4.0f  up.y=%+.2f%s\n", k, NM[t.kind[k]],
-                       t.cp[k].y, dyP, Vector3Length(Vector3Subtract(t.cp[k], t.cp[k-1])),
-                       k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f, t.up[k].y,
-                       k == o.k ? "  <== spike" : "");
+                float gtt = groundTopAt(t.cp[k].x, t.cp[k].z);
+                printf("   cp%-3d %-9s y=%7.1f  terr=%7.1f  clr=%+6.1f  dy=%+7.2f  genV=%4.0f%s\n", k, NM[t.kind[k]],
+                       t.cp[k].y, gtt, t.cp[k].y - gtt, dyP,
+                       k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f,
+                       k == kc ? "  <== under" : "");
             }
         }
         return 0;

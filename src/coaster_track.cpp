@@ -459,7 +459,7 @@ struct Track {
         switch (m) {                                       //  gT   rMin  rMaxRec gMul  hMul   -> height cap (hMul*1.3*rMaxRec)
             case M_LOOP:     return {4.6f, 14.0f, 19.0f, 1.6f, 2.6f}; // clothoid loop: wide bottom keeps g sane (gT lowered so the EMITTED arc holds <=10g, not just the ideal circle)
             case M_IMMEL:    return {4.0f, 16.0f, 23.0f, 1.0f, 2.0f}; // Immelmann half-loop -> sizes wider so the discrete arc holds <=10g
-            case M_DIVELOOP: return {2.9f, 16.0f, 29.0f, 1.0f, 2.0f}; // dive loop -> wider ring (bigger rMax) holds <=12g
+            case M_DIVELOOP: return {3.5f, 16.0f, 24.0f, 1.0f, 2.0f}; // dive loop (rMaxRec back to record scale; trim holds it <=12g)
             case M_COBRA:    return {3.7f, 13.5f, 18.0f, 1.0f, 2.2f}; // cobra hood (its own emitted-curvature sizing governs; this gT sets the trim target)
             case M_PRETZEL:  return {4.3f, 19.0f, 23.0f, 1.0f, 2.0f}; // teardrop loop -> wider (was +11.5)
             default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};
@@ -963,37 +963,31 @@ struct Track {
             // drop's pull-out (or a launch->top-hat pitch-up) eases in over several
             // points instead of spiking 30-38G in a single frame at the join.
             float dlim = Clamp(6.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 1.5f, 18.0f);
-            // ANTICIPATORY clothoid pull-out: a descent must level off to MEET the height where
-            // the next element connects — never plunge UNDER it and snap back up (that V-valley
-            // between a descent and the following uphill is the +g spike the user reported). Two
-            // changes vs a naive "ease to the local floor": (1) LOOK AHEAD along the heading and
-            // take the MAX terrain over the next several segments, so a drop into RISING terrain
-            // levels off EARLY instead of diving into a spot it must climb steeply out of; (2)
-            // target the CONNECT height (~gt+9, where contour elements ride), not the gt+4.5
-            // clearance floor, so the drop bottom lines up with the next element with no V.
-            if (dy < 0.0f && mode != M_DIP && mode != M_HELIX) {
-                // Look a LONG way ahead (16 segments ~ 220m) and take the MAX terrain: a descent
-                // into a dip that RECOVERS ahead must level off above the recovery height and
-                // BRIDGE the dip (on supports), not dive to the canyon floor and climb back out
-                // (the under-the-map V). Real coasters (e.g. Falcon's Flight) span terrain dips
-                // on tall supports rather than following every depression.
-                float gtLook = gt;
-                for (int la = 1; la <= 16; la++)
-                    gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
-                                                       gpos.z + cosf(gyaw) * SEG_LEN * la));
-                float gap      = gpos.y - (gtLook + 9.0f);                   // room above the CONNECT/recovery height
-                float maxSteep = sqrtf(2.0f * dlim * fmaxf(gap, 0.0f));      // v=sqrt(2*a*d): clothoid descent budget
-                if (dy < -maxSteep) dy = -maxSteep;
-            }
-            // restore real sustained g: the curvature CEILING (dlim) sets the felt g the
-            // hardest pull-outs build to (~6g); the JERK limiter (jlim) caps how fast that
-            // curvature changes, so g ramps in/out SMOOTHLY (no jolt) instead of stepping —
-            // a punchy sustained 5-7g, not a tame low-g noodle, and no sharp gradient snap.
+            // (1) JERK + curvature smoothing on the DESIRED slope: ramp g on/off smoothly.
             float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, dlim);
             float curv = dy - genPrevDy;                                 // desired slope change (curvature ~ felt g)
             curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);  // jerk cap: smooth g onset/exit
-            curv = Clamp(curv, -dlim, dlim);                            // sustained-g ceiling
+            curv = Clamp(curv, -dlim, dlim);                             // sustained-g ceiling
             dy = genPrevDy + curv;
+            // (2) ANTICIPATORY clothoid pull-out — applied LAST so it OVERRIDES the jerk limiter.
+            // This is THE fix for the 200m-under plunge: a fast drop reaches the bottom at dy~-38,
+            // and the jerk limiter (which only lets the slope change ~2/point) cannot reverse that
+            // in time, so FLAT inherited the -38 and kept diving ~300m down before levelling. The
+            // pull-out must "start during the fall": cap the descent each point to the steepest it
+            // can still ease to level by the time it reaches the ground-clearance floor
+            // (maxSteep = sqrt(2*dlim*gap)). gap shrinks smoothly as the drop nears the floor, so
+            // dy eases smoothly to 0 AT the floor — dramatic drop up top, clean pull-out, no dive
+            // under the map. Terrain-relative (short look-ahead, MAX) so it never decouples from
+            // the ground. The residual descent->uphill V is then rounded by the felt-g relaxation.
+            if (dy < 0.0f && mode != M_DIP && mode != M_HELIX) {
+                float gtLook = gt;
+                for (int la = 1; la <= 4; la++)
+                    gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                                       gpos.z + cosf(gyaw) * SEG_LEN * la));
+                float gap      = gpos.y - (gtLook + 4.5f);                   // room above the local clearance floor
+                float maxSteep = sqrtf(2.0f * dlim * fmaxf(gap, 0.0f));      // clothoid descent budget
+                if (dy < -maxSteep) dy = -maxSteep;
+            }
         }
         gpos.y += dy;
         if (levelHold > 0 && mode == M_FLAT) levelHold--;   // consume the pre-element altitude hold
@@ -1034,7 +1028,12 @@ struct Track {
             float span = fmaxf(0.5f * (dxz0 + dxz1), 1.0f);
             float k   = span * span * GRAV / fmaxf(genV * genV, 100.0f);  // sd per 1g at this speed
             float sd  = gpos.y - 2.0f * p1.y + p0.y;                      // curvature at p1 (>0 valley, <0 crest)
-            float clamped = Clamp(sd, -7.5f * k, 8.5f * k);              // hold p1 within ~ -6.5g .. +9.5g
+            // HARD +12/-9 catch only (the user's relaxed ceiling). Kept ABOVE the dlim pull-out
+            // budget (~+10g) so it does NOT shave a normal drop pull-out -- shaving a pull-out
+            // here eases the new point toward the STEEP continuation, i.e. descends MORE, which
+            // is exactly what made the drop overshoot under the terrain. It now only fires on a
+            // genuine >+12g / <-9g seam (e.g. the launch->climb base the slope limiter misses).
+            float clamped = Clamp(sd, -8.5f * k, 9.5f * k);             // hold p1 within ~ -7.5g .. +10.5g
             gpos.y += (clamped - sd);                                     // ease the new point toward the g-safe continuation
         }
 

@@ -522,9 +522,9 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
     // that hugs the spline, not a flat trench. Runs over the PADDED grid so seam walls
     // stay consistent; pure function of (cell, track pts) so adjacent chunks agree.
     // `carved[]` marks inner cells so no tree/decoration sits on a bored column.
-    const float CARVE_R   = 4.0f;     // horizontal half-width of the bored channel (m)
+    const float CARVE_R   = 6.5f;     // horizontal half-width of the bored channel (m): widened 4->6.5 so the train + its swing on banked sections clears the channel walls where the track passes through terrain (the carve looked "broken" = train clipping the too-tight 4m channel)
     const float CARVE_R2  = CARVE_R * CARVE_R;
-    const float HEAD_CLR  = 2.5f;     // keep the carved floor this far below the track (m)
+    const float HEAD_CLR  = 4.0f;     // carved floor this far below the track (m): 2.5->4 so the train body/wheels never clip the channel floor
     std::vector<char> carved(M * M, 0);
     if (cps && ncps > 0) {
         // prune to track SEGMENTS (k -> k+1) whose capsule can touch this padded chunk.

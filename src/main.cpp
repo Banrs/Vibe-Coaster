@@ -1156,6 +1156,8 @@ int main(int argc, char **argv) {
             float maxAlt = 0, maxY = 0;
             double sumV = 0; long nV = 0; float maxV = 0;  // per-seed avg + peak ride speed
             unsigned char prevTag = 255;                   // count inversion entries (tag transitions)
+            float minV = 9999; int run = 0, maxRun = 0;    // stall detector: longest crawl near the 20 m/s floor
+            unsigned char stallTag = 255, stallPrev = 255, prevTag2 = 255; // element (and the one before) at the worst stall
             for (int f = 0; f < 30000; f++) {
                 float dt = 1.0f / 60.0f;
                 t.ensureAhead(u + 16);
@@ -1179,7 +1181,10 @@ int main(int argc, char **argv) {
                 if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
                     if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
                     if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;  // count inversion entries
-                    prevTag = tg; }   // skip launch transient; track powered-straight duty cycle + inversion density
+                    if (v < minV) minV = v;
+                    if (v < 26.0f) { if (++run > maxRun) { maxRun = run; stallTag = tg; stallPrev = prevTag2; } } else run = 0;
+                    prevTag2 = (tg != prevTag) ? prevTag : prevTag2;   // remember the element BEFORE the current one
+                    prevTag = tg; }   // skip launch transient; track powered duty + inversion density + stalls
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
                 if (!(du == du)) du = 0;
                 u += fminf(du, 1.5f);
@@ -1208,8 +1213,10 @@ int main(int argc, char **argv) {
                 maxCoins = maxCoins > t.coins.size() ? maxCoins : t.coins.size();
             }
             double avg = nV ? sumV / nV : 0;
-            printf("seed %u  maxCP=%zu  maxCoins=%zu  NaN=%d  maxAlt=%.0fm  maxWorldY=%.0f  finalU=%.2f v=%.1f  avgV=%.1f m/s (%.0f km/h)  peakV=%.1f m/s (%.0f km/h)\n",
-                   seed, maxCP, maxCoins, bad, maxAlt, maxY, u, v, avg, avg * 3.6, maxV, maxV * 3.6);
+            const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+            printf("seed %u  avgV=%.1f (%.0f km/h)  minV=%.1f (%.0f km/h)  worst stall=%d frames (%.1fs) on %s (after %s)\n",
+                   seed, avg, avg * 3.6, minV, minV * 3.6, maxRun, maxRun / 60.0f,
+                   stallTag < 25 ? NM[stallTag] : "-", stallPrev < 25 ? NM[stallPrev] : "-");
         }
         printf("SIMTEST DONE (no hang)  -> OVERALL AVG RIDE SPEED = %.1f m/s (%.0f km/h)  | powered duty: boost %.1f%% launch %.1f%% | inversions: %ld over 8 seeds (~%.1f/ride)\n",
                gNV ? gSumV / gNV : 0.0, gNV ? gSumV / gNV * 3.6 : 0.0,

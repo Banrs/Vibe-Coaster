@@ -597,10 +597,18 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                 float wcx = worldX(x) + cell * 0.5f, wcz = worldZ(z) + cell * 0.5f;
                 float topY = h * cell;
                 int ax = cellX0 + x, az = cellZ0 + z;
-                if (hashf(ax * 7 + 1, az * 7 + 3) < den) {
+                // Coarse JITTERED grid (parity w/ src/main.cpp): one tree per TGxTG node, jittered
+                // within it, so canopies can't overlap (per-cell placement let adjacent trees touch)
+                // and the land reads as open grass with STANDS of trees, not wall-to-wall forest.
+                const int TG = 8;
+                float nodeDen = fminf(den * (float)(TG * TG), 0.90f);   // per-node prob from per-area biome density
+                if (ax % TG == 0 && az % TG == 0 && hashf(ax * 7 + 1, az * 7 + 3) < nodeDen) {
+                    float jx = (hashf(ax*3+1, az*7+5) - 0.5f) * (float)(TG - 5);   // +-1.5m jitter, keeps spacing canopy-safe
+                    float jz = (hashf(ax*5+9, az*3+2) - 0.5f) * (float)(TG - 5);
+                    float twx = wcx + jx, twz = wcz + jz;
                     bool clear = true;
                     for (int k = 0; k < ncps; k++) {
-                        float dx = cps[k].x - wcx, dz = cps[k].z - wcz;
+                        float dx = cps[k].x - twx, dz = cps[k].z - twz;
                         if (dx*dx + dz*dz < 49.0f) { clear = false; break; }
                     }
                     if (clear) {
@@ -609,7 +617,7 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                         if (type == 3) type = 0;
                         if (type == 1 && hashf(ax*3+5, az*9+2) > 0.5f) type = 0;
                         float s  = 1.3f + hashf(ax * 5 + 7, az * 5 + 1) * 0.9f;
-                        pushTree(out, wcx, topY, wcz, type, s);
+                        pushTree(out, twx, topY, twz, type, s);
                     }
                 }
             }

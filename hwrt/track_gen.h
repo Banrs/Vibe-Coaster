@@ -349,14 +349,17 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         return fabsf(p.x - ringCx) <= ringClip && fabsf(p.z - ringCz) <= ringClip;
     };
 
-    // --- SCALE: matched 1:1 to the software renderer (src/main.cpp ~2578-2601) so
-    // the steel reads at TRUE 1m-block scale. Software draws (in the rail frame):
-    //   running rails  at ±0.55 lateral, 0.18×0.18 cross-section
-    //   box-beam spine at y=-0.30, 0.30×0.46 (un-powered) / 0.38×0.54 (powered)
-    //   cross-tie      at y=-0.17, 1.35 wide × 0.14 tall × 0.45 long, every other seg
+    // --- SCALE: TRUE 1m-block steel. Modern-steel cross-section (B&M / Intamin read):
+    // two running RAILS standing PROUD above a continuous box-beam SPINE, joined by a
+    // ladder of cross-ties + a central web (so the spine reads as a separate element and
+    // the whole track visibly ROLLS with the per-point up-vector through banks/inversions).
+    //   rails  at ±0.55 lateral, lifted +RAIL_RISE so they float clear of the spine top
+    //   spine  dropped SPINE_DROP below the rail plane (a clear gap, not flush)
+    //   tie    a rung spanning the gauge at the rail underside + a web down to the spine
     const float RAIL_GAUGE = 0.55f;   // lateral half-spacing of running rails (~1.1m gauge)
-    const float RAIL_R     = 0.09f;   // rail beam half-thickness (0.18 full)
-    const float SPINE_DROP = 0.30f;   // spine centre below the rail plane
+    const float RAIL_R     = 0.085f;  // rail beam half-thickness (0.17 full) — slimmer tube
+    const float RAIL_RISE  = 0.105f;  // rails lifted above the spline plane (bottom ≈ plane)
+    const float SPINE_DROP = 0.44f;   // spine centre below the rail plane (top sits clear under rails)
     // Themed livery straight from the generator (1:1 with src/main.cpp: railC / spineC /
     // trainAccent). The colored spine + LSM fins read with the SAME palette as the game.
     float3 railCol   = s.railColT;                 // light steel rails (RAIL)
@@ -377,8 +380,10 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         float3 fwd = s.tangent(u);
         float3 up  = orthoUp(fwd, s.upAt(u));
         float3 lat = normalize(cross(up, fwd));
-        float3 railL = c + lat * RAIL_GAUGE;
-        float3 railR = c - lat * RAIL_GAUGE;
+        // rails stand PROUD of the spline plane (lifted along the rolling up-vector) so
+        // the spine reads as a separate beam below and the bank is visible on the rails.
+        float3 railL = c + lat * RAIL_GAUGE + up * RAIL_RISE;
+        float3 railR = c - lat * RAIL_GAUGE + up * RAIL_RISE;
         if (havePrev) {
             auto railSeg = [&](float3 a, float3 b) {
                 float3 d = b - a; float L = length(d);
@@ -407,14 +412,14 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
                 powered ? spineHot : spineSteel);
         // every-other-step phase, popFront-stable (keyed to absolute u like the ties).
         bool finPhase = (((long)floorf((u + (float)s.base) / STEP)) & 1) == 0;
-        // LSM stator fins on powered spine (src/main.cpp:2601-2603): {0,-0.18,0},
-        // 0.62 x 0.22 x rl*0.6, themed accent.
+        // LSM stator fins flanking the powered spine top (themed accent) — sit on the
+        // upper spine so they read as the launch motor, just below the running rails.
         if (powered && finPhase)
-            pushBox(out, c - up * 0.18f, lat, up, fwd, 0.31f, 0.11f, spineHalfF * 0.6f, finCol);
-        // lift chain centred between the rails on chain segments (src/main.cpp:2618-2619):
-        // {0,-0.05,0}, 0.14 x 0.14 x rl, CHAINC.
+            pushBox(out, c - up * (SPINE_DROP - spH - 0.05f), lat, up, fwd,
+                    spW + 0.10f, 0.09f, spineHalfF * 0.6f, finCol);
+        // lift chain centred on the spine top on chain segments (where the lift dog rides).
         if (chain)
-            pushBox(out, c - up * 0.05f, lat, up, fwd, 0.07f, 0.07f, spineHalfF, chainCol);
+            pushBox(out, c - up * (SPINE_DROP - spH), lat, up, fwd, 0.07f, 0.07f, spineHalfF, chainCol);
 
         // cross-tie spanning the two rails ~every 0.6u. Keyed to the ABSOLUTE spline
         // parameter (u + base), NOT a local segment counter: the deque pops its front as
@@ -424,8 +429,14 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         long tieBin = (long)floorf((u + (float)s.base) / 0.6f);
         if (tieBin != lastTieBin) {
             lastTieBin = tieBin;
-            float3 tieC = c - up * 0.17f;
-            pushBox(out, tieC, lat, up, fwd, 0.675f, 0.07f, 0.225f, tieCol);
+            // rung: spans the gauge just under the rails (ties the two rails together).
+            float3 rungC = c + up * (RAIL_RISE - 0.06f);
+            pushBox(out, rungC, lat, up, fwd, RAIL_GAUGE + RAIL_R, 0.06f, 0.20f, tieCol);
+            // web: a short vertical post from the rung down onto the spine top -> the
+            // spine-rails-tie assembly reads as one I-beam that rolls with the bank.
+            float webTopY = RAIL_RISE - 0.10f, webBotY = -(SPINE_DROP - spH);
+            float3 webC = c + up * ((webTopY + webBotY) * 0.5f);
+            pushBox(out, webC, lat, up, fwd, 0.10f, (webTopY - webBotY) * 0.5f, 0.18f, tieCol);
         }
     }
 
@@ -476,6 +487,28 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
                               kn == M_HEARTLINE || kn == M_WINGOVER ||
                               kn == M_PRETZEL || kn == M_BANANA);
         return inversionElem && upy < 0.35f;
+    };
+    // --- ADAPTIVE SUPPORTS: a bent must never punch through (or block the train on) a
+    // LOWER span of the same coaster that passes beneath it. lowerTrackUnder() returns the
+    // highest other-span centreline that sits under (footX,footZ) within RIDE_CLR_H, but
+    // ONLY spans at least V_GAP below `apexY` (so the bent's own track + its near neighbours
+    // don't count). A foot is then floored to clear that span (CLR_V above it); if a span
+    // runs right under the apex the whole bent is skipped (clipping there would gore the
+    // train passing below). Uses the same control-point window the rails are built from.
+    const float RIDE_CLR_H = 2.6f;     // horizontal half-width of the train+leg swept volume
+    const float RIDE_CLR_H2 = RIDE_CLR_H * RIDE_CLR_H;
+    const float CLR_V      = 3.0f;     // keep legs/feet this far above any track beneath them
+    const float V_GAP      = 4.0f;     // a span must be this far below the apex to count as "lower"
+    auto lowerTrackUnder = [&](float fx, float fz, float apexY, int self) -> float {
+        float hi = -1e9f;
+        for (int j = s.winLo; j <= last; j++) {
+            if (j > self - 7 && j < self + 7) continue;       // skip the bent's OWN span (near indices)
+            Vector3 q = s.cp[j];
+            if (q.y > apexY - V_GAP) continue;               // not a genuinely lower span
+            float dx = q.x - fx, dz = q.z - fz;
+            if (dx*dx + dz*dz <= RIDE_CLR_H2 && q.y > hi) hi = q.y;
+        }
+        return hi;
     };
     for (int i = s.winLo + 1; i < last; i++) {
         Vector3 cpP = s.cp[i], cpU = s.up[i];
@@ -533,6 +566,10 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         float hgt  = topY - gC;
         if (hgt < 1.0f) continue;
 
+        // adaptive: a lower span passing directly under the apex would be struck by this
+        // bent (and the train on it would hit the node) -> skip the bent entirely here.
+        if (lowerTrackUnder(p.x, p.z, topY, i) > -1e8f) continue;
+
         // deterministic per-location variation so the run of bents isn't uniform
         float vary = hashf((int)floorf(p.x * 0.5f), (int)floorf(p.z * 0.5f));
         float baseHalf = t_Clamp(hgt * (0.17f + vary * 0.07f), 1.5f, 5.5f);  // ground splay grows w/ height
@@ -544,20 +581,28 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));  // ground projection
         float nodeDrop = 0.58f;
         float3 node = vec3(p.x, topY, p.z) - up * nodeDrop;
-        float3 tops[2], feet[2];
+        float3 tops[2], feet[2]; bool legOK[2] = {false, false};
         int si = 0;
         for (float sgn = -1.0f; sgn <= 1.0f; sgn += 2.0f) {
             float3 top  = node + rRight * (sgn * topHalf);
             float bx = p.x + latH.x * sgn * baseHalf, bz = p.z + latH.z * sgn * baseHalf;
-            float3 foot = vec3(bx, groundTopAt(bx, bz), bz);
-            tops[si] = top; feet[si] = foot; si++;
+            // adaptive foot: stop the leg on the GROUND, or CLR_V above any lower track span
+            // that runs under the leg's foot (so the leg never spears through it).
+            float footY = groundTopAt(bx, bz);
+            float under = lowerTrackUnder(bx, bz, topY, i);
+            if (under > -1e8f && under + CLR_V > footY) footY = under + CLR_V;
+            float3 foot = vec3(bx, footY, bz);
+            tops[si] = top; feet[si] = foot;
             float3 d = foot - top; float L = length(d);
-            if (L < 0.3f) continue;
+            si++;
+            if (L < 1.2f) continue;                          // too stubby after clipping -> drop this leg
+            legOK[si - 1] = true;
             float3 f  = d * (1.0f / L);
             float3 u2 = orthoUp(f, vec3(0,1,0));
             float3 r2 = normalize(cross(u2, f));
             pushBox(out, (top + foot) * 0.5f, r2, u2, f, legR, legR, L * 0.5f, supCol);
         }
+        if (!legOK[0] && !legOK[1]) continue;                // both legs clipped away -> no bent
         // a steel strut between two world points (cross-ties / diagonal bracing)
         auto strut = [&](float3 a, float3 b, float r) {
             float3 d = b - a; float L = length(d);
@@ -568,7 +613,7 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
             pushBox(out, (a + b) * 0.5f, r2, u2, f, r, r, L * 0.5f, supCol);
         };
         // tall bents get trussed: horizontal ties + X-bracing on the big towers
-        if (hgt > 14.0f) {
+        if (hgt > 14.0f && legOK[0] && legOK[1]) {
             int levels = (int)t_Clamp(hgt / 16.0f, 1.0f, 4.0f);
             float3 prevL{}, prevR{}; bool have = false;
             for (int k = 1; k <= levels; k++) {

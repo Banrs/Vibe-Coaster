@@ -479,49 +479,63 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
     auto h_at = [&](int x, int z) -> int { return H[(z + 1) * P + (x + 1)]; };
 
     // --- TRACK CARVE -------------------------------------------------------------
-    // Clear the terrain columns the coaster threads through so hills can't poke up
-    // through the track (no "massive stone in the middle of helixes") and so a
-    // half-cleared column never leaves a floating 1-block remnant. For each cell we
-    // find the LOWEST nearby track control point; if the terrain top sits above that
-    // point (minus head clearance) the WHOLE column is lowered to just under the
-    // track -> a clean bore, never a partial slab. Tight helix coils carve cleanly
-    // because every coil control point stamps its own disc and they overlap to clear
-    // the full coil interior. The carve runs over the PADDED grid so seam walls
-    // between chunks stay consistent, and it is a pure function of (cell, track pts)
-    // so adjacent chunks agree on shared cells. `carved[]` marks inner cells so no
-    // tree/decoration is planted on a bored column (no floating decorations).
-    const float CARVE_R   = 9.0f;     // horizontal clear radius around the track (m)
+    // Bore a clean, NARROW channel under the coaster so hills can't poke up through
+    // the track, WITHOUT trenching the whole landscape. Control points are ~14m apart
+    // (SEG_LEN), so a per-POINT disc either leaves gaps between points (terrain pokes
+    // through) or, if widened to bridge the gap, gouges a huge swath. Instead we carve
+    // along each track SEGMENT (a swept disc / capsule): for every cell we find the
+    // nearest segment, take the track height INTERPOLATED at the closest point, and if
+    // the terrain sits above that height minus head clearance we lower the column to it.
+    // The floor FOLLOWS the track height along the run -> a believable continuous channel
+    // that hugs the spline, not a flat trench. Runs over the PADDED grid so seam walls
+    // stay consistent; pure function of (cell, track pts) so adjacent chunks agree.
+    // `carved[]` marks inner cells so no tree/decoration sits on a bored column.
+    const float CARVE_R   = 4.0f;     // horizontal half-width of the bored channel (m)
     const float CARVE_R2  = CARVE_R * CARVE_R;
-    const float HEAD_CLR  = 5.0f;     // keep the carved floor this far below the track (m)
+    const float HEAD_CLR  = 2.5f;     // keep the carved floor this far below the track (m)
     std::vector<char> carved(M * M, 0);
     if (cps && ncps > 0) {
-        // prune to track points whose disc can touch this padded chunk
+        // prune to track SEGMENTS (k -> k+1) whose capsule can touch this padded chunk.
         float minWX = ox - cell, maxWX = ox + (M + 1) * cell;
         float minWZ = oz - cell, maxWZ = oz + (M + 1) * cell;
-        std::vector<float3> near;
-        near.reserve(64);
-        for (int k = 0; k < ncps; k++) {
-            if (cps[k].x < minWX - CARVE_R || cps[k].x > maxWX + CARVE_R ||
-                cps[k].z < minWZ - CARVE_R || cps[k].z > maxWZ + CARVE_R) continue;
-            near.push_back(cps[k]);
+        std::vector<float3> segA, segB;     // endpoints of nearby segments
+        segA.reserve(64); segB.reserve(64);
+        for (int k = 0; k + 1 < ncps; k++) {
+            float3 a = cps[k], b = cps[k + 1];
+            // skip the long teleport between disjoint exported runs (segment far longer
+            // than a normal SEG_LEN step would carve a giant false channel).
+            float sdx = b.x - a.x, sdz = b.z - a.z;
+            if (sdx*sdx + sdz*sdz > 30.0f * 30.0f) continue;
+            float loX = fminf(a.x, b.x), hiX = fmaxf(a.x, b.x);
+            float loZ = fminf(a.z, b.z), hiZ = fmaxf(a.z, b.z);
+            if (hiX < minWX - CARVE_R || loX > maxWX + CARVE_R ||
+                hiZ < minWZ - CARVE_R || loZ > maxWZ + CARVE_R) continue;
+            segA.push_back(a); segB.push_back(b);
         }
-        if (!near.empty()) {
+        if (!segA.empty()) {
             int* Hp = H.data();
-            const float3* np = near.data();
-            int nn = (int)near.size();
+            const float3* pa = segA.data();
+            const float3* pb = segB.data();
+            int ns = (int)segA.size();
             for (int pz = 0; pz < P; pz++) {
                 float wz = oz + (pz - 1) * cell + cell * 0.5f;
                 for (int px = 0; px < P; px++) {
                     float wx = ox + (px - 1) * cell + cell * 0.5f;
-                    float minY = 1e9f;
-                    for (int k = 0; k < nn; k++) {
-                        float dx = np[k].x - wx, dz = np[k].z - wz;
-                        if (dx*dx + dz*dz <= CARVE_R2 && np[k].y < minY) minY = np[k].y;
+                    float bestD2 = CARVE_R2, floorY = 1e9f;
+                    for (int k = 0; k < ns; k++) {
+                        // closest point on segment a->b to (wx,wz), in the XZ plane
+                        float ex = pb[k].x - pa[k].x, ez = pb[k].z - pa[k].z;
+                        float ee = ex*ex + ez*ez;
+                        float t = ee > 1e-6f ? ((wx - pa[k].x)*ex + (wz - pa[k].z)*ez) / ee : 0.0f;
+                        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                        float cx = pa[k].x + ex*t, cz = pa[k].z + ez*t;
+                        float dx = cx - wx, dz = cz - wz, d2 = dx*dx + dz*dz;
+                        if (d2 < bestD2) { bestD2 = d2; floorY = pa[k].y + (pb[k].y - pa[k].y)*t; }
                     }
-                    if (minY > 1e8f) continue;                  // no track over this cell
-                    int floorLvl = (int)floorf((minY - HEAD_CLR) / cell);
+                    if (floorY > 1e8f) continue;                // no track segment over this cell
+                    int floorLvl = (int)floorf((floorY - HEAD_CLR) / cell);
                     if (Hp[pz * P + px] > floorLvl) {
-                        Hp[pz * P + px] = floorLvl;             // lower the WHOLE column
+                        Hp[pz * P + px] = floorLvl;             // lower the column to the channel floor
                         int ix = px - 1, iz = pz - 1;           // mark inner cells as carved
                         if (ix >= 0 && ix < M && iz >= 0 && iz < M) carved[iz * M + ix] = 1;
                     }
@@ -548,8 +562,8 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                         float rx = cps[i].x - axX, rz = cps[i].z - axZ;
                         float r = sqrtf(rx*rx + rz*rz); if (r > radMax) radMax = r;
                     }
-                    float coilR = radMax + 2.0f, coilR2 = coilR * coilR;
-                    int   clampLvl = (int)floorf((loY - 3.0f) / cell);
+                    float coilR = radMax + 1.0f, coilR2 = coilR * coilR;
+                    int   clampLvl = (int)floorf((loY - HEAD_CLR) / cell);
                     int* Hp = H.data();
                     for (int pz = 0; pz < P; pz++) {
                         float wz = oz + (pz - 1) * cell + cell * 0.5f;

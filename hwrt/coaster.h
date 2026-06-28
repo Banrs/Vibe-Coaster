@@ -311,10 +311,14 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
     int last = nRender;
     if (last > co.nFull - 3) last = co.nFull - 3;
 
-    // SCALE matched 1:1 to the software renderer (src/main.cpp ~2578-2601): true 1m-block scale.
+    // SCALE: TRUE 1m-block steel. Modern-steel cross-section (B&M / Intamin read): two
+    // running RAILS standing PROUD above a continuous box-beam SPINE, joined by a ladder
+    // of cross-ties + a central web, so the track visibly ROLLS through banks/inversions.
+    // (1:1 with the streaming meshing in track_gen.h buildTrackT.)
     const float RAIL_GAUGE = 0.55f;  // lateral half-spacing of running rails (~1.1m gauge)
-    const float RAIL_R     = 0.09f;  // rail beam half-thickness (0.18 full)
-    const float SPINE_DROP = 0.30f;  // spine centre below the rail plane
+    const float RAIL_R     = 0.085f; // rail beam half-thickness (0.17 full) — slimmer tube
+    const float RAIL_RISE  = 0.105f; // rails lifted above the spline plane (bottom ≈ plane)
+    const float SPINE_DROP = 0.44f;  // spine centre below the rail plane (top sits clear under rails)
 
     // Themed livery (1:1 with src/main.cpp): the benchmark track.txt is exported with the
     // generator's DEFAULT global g_rng=1, so it gets THEMES[irnd(0,6)] for raw rng=1 (aqua).
@@ -341,8 +345,9 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         float3 up  = orthoUp(fwd, co.upAt(u));
         float3 lat = normalize(cross(up, fwd)); // lateral (right of travel)
 
-        float3 railL = c + lat * RAIL_GAUGE;
-        float3 railR = c - lat * RAIL_GAUGE;
+        // rails stand PROUD of the spline plane (lifted along the rolling up-vector).
+        float3 railL = c + lat * RAIL_GAUGE + up * RAIL_RISE;
+        float3 railR = c - lat * RAIL_GAUGE + up * RAIL_RISE;
 
         // Rail box segments connecting prev->cur (a short box per step).
         if (havePrev) {
@@ -376,15 +381,18 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         float3 spineC = c - up * SPINE_DROP;
         float spineHalfF = length(co.pos(u + STEP) - c) * 0.6f;
         pushBox(out, spineC, lat, up, fwd, spW, spH, spineHalfF, spineCol);
-        // LSM stator fins on powered spine, every other sample (src/main.cpp:2601-2603):
-        // {0,-0.18,0}, 0.62 x 0.22 x rl*0.6, themed accent.
+        // LSM stator fins flanking the powered spine top (themed accent).
         if (powered && (segCount & 1) == 0)
-            pushBox(out, c - up * 0.18f, lat, up, fwd, 0.31f, 0.11f, spineHalfF * 0.6f, finCol);
+            pushBox(out, c - up * (SPINE_DROP - spH - 0.05f), lat, up, fwd,
+                    spW + 0.10f, 0.09f, spineHalfF * 0.6f, finCol);
 
-        // Cross ties spanning the two rails every few steps.
+        // Cross ties: a rung under the rails + a central web onto the spine top (I-beam).
         if (segCount % tieEvery == 0) {
-            float3 tieC = c - up * 0.17f;
-            pushBox(out, tieC, lat, up, fwd, 0.675f, 0.07f, 0.225f, tieCol);
+            float3 rungC = c + up * (RAIL_RISE - 0.06f);
+            pushBox(out, rungC, lat, up, fwd, RAIL_GAUGE + RAIL_R, 0.06f, 0.20f, tieCol);
+            float webTopY = RAIL_RISE - 0.10f, webBotY = -(SPINE_DROP - spH);
+            float3 webC = c + up * ((webTopY + webBotY) * 0.5f);
+            pushBox(out, webC, lat, up, fwd, 0.10f, (webTopY - webBotY) * 0.5f, 0.18f, tieCol);
         }
     }
 
@@ -424,6 +432,24 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
     // regardless of control-point density. Each leg is one solid beam raking from a node
     // under the spine out to a foot on the terrain; tall bents get trussed.
     const float SUP_SP = 9.0f;
+    // ADAPTIVE SUPPORTS: a bent must never punch through (or block the train on) a LOWER
+    // span of the coaster passing beneath it. lowerTrackUnder returns the highest other-span
+    // centreline under (fx,fz) within RIDE_CLR_H, ONLY spans >= V_GAP below the apex (so the
+    // bent's own track + near neighbours don't count). Feet are floored to clear it (CLR_V
+    // above); a span under the apex skips the whole bent. (1:1 with track_gen.h buildTrackT.)
+    const float RIDE_CLR_H = 2.6f, RIDE_CLR_H2 = RIDE_CLR_H * RIDE_CLR_H;
+    const float CLR_V = 3.0f, V_GAP = 4.0f;
+    auto lowerTrackUnder = [&](float fx, float fz, float apexY, int self) -> float {
+        float hi = -1e9f;
+        for (int j = 4; j < last; j++) {
+            if (j > self - 7 && j < self + 7) continue;       // skip the bent's OWN span
+            float3 q = co.cps[j].p;
+            if (q.y > apexY - V_GAP) continue;
+            float dx = q.x - fx, dz = q.z - fz;
+            if (dx*dx + dz*dz <= RIDE_CLR_H2 && q.y > hi) hi = q.y;
+        }
+        return hi;
+    };
     float arcPrev = 0.0f, arcCur = 0.0f;
     float3 lastP = co.cps[4].p;
     for (int i = 4; i < last; i++) {
@@ -487,6 +513,9 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         float hgt  = topY - gC;
         if (hgt < 1.0f) continue;
 
+        // adaptive: a lower span under the apex would gore this bent (and the train on it) -> skip.
+        if (lowerTrackUnder(p.x, p.z, topY, i) > -1e8f) continue;
+
         float vary = hashf((int)floorf(p.x * 0.5f), (int)floorf(p.z * 0.5f));
         float baseHalf = t_Clamp(hgt * (0.17f + vary * 0.07f), 1.5f, 5.5f);
         float legR     = t_Clamp(0.30f + hgt * 0.0045f, 0.30f, 0.55f);
@@ -494,19 +523,26 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         float3 rRight = normalize(cross(up, fwd));
         float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));
         float3 node = vec3(p.x, topY, p.z) - up * 0.58f;
-        float3 tops[2], feet[2]; int si = 0;
+        float3 tops[2], feet[2]; bool legOK[2] = {false, false}; int si = 0;
         for (float sgn = -1.0f; sgn <= 1.0f; sgn += 2.0f) {
             float3 top  = node + rRight * (sgn * topHalf);
             float bx = p.x + latH.x * sgn * baseHalf, bz = p.z + latH.z * sgn * baseHalf;
-            float3 foot = vec3(bx, groundTopAt(bx, bz), bz);
-            tops[si] = top; feet[si] = foot; si++;
+            // adaptive foot: stop on the GROUND, or CLR_V above any lower track span under it.
+            float footY = groundTopAt(bx, bz);
+            float under = lowerTrackUnder(bx, bz, topY, i);
+            if (under > -1e8f && under + CLR_V > footY) footY = under + CLR_V;
+            float3 foot = vec3(bx, footY, bz);
+            tops[si] = top; feet[si] = foot;
             float3 d = foot - top; float L = length(d);
-            if (L < 0.3f) continue;
+            si++;
+            if (L < 1.2f) continue;                          // too stubby after clipping -> drop
+            legOK[si - 1] = true;
             float3 f  = d * (1.0f / L);
             float3 u2 = orthoUp(f, vec3(0,1,0));
             float3 r2 = normalize(cross(u2, f));
             pushBox(out, (top + foot) * 0.5f, r2, u2, f, legR, legR, L * 0.5f, supCol);
         }
+        if (!legOK[0] && !legOK[1]) continue;                // both legs clipped -> no bent
         auto strut = [&](float3 a, float3 b, float r) {
             float3 d = b - a; float L = length(d);
             if (L < 0.3f) return;
@@ -515,7 +551,7 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
             float3 r2 = normalize(cross(u2, f));
             pushBox(out, (a + b) * 0.5f, r2, u2, f, r, r, L * 0.5f, supCol);
         };
-        if (hgt > 14.0f) {
+        if (hgt > 14.0f && legOK[0] && legOK[1]) {
             int levels = (int)t_Clamp(hgt / 16.0f, 1.0f, 4.0f);
             float3 prevL{}, prevR{}; bool have = false;
             for (int k = 1; k <= levels; k++) {

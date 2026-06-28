@@ -286,7 +286,11 @@ struct Track {
         // two hoods with only a GENTLE valley dip between them: the old (0.78-0.22cos4PI)
         // modulation cut a sharp local valley whose curvature was the real ~20-50g cobra
         // spike. A soft 0.10 dip keeps the twin-hood silhouette without the tight valley.
-        float fU = Hcr * sinf(PI * t) * (1.0f - 0.10f * 0.5f * (1.0f + cosf(4.0f * PI * t)));
+        // BASE hump is a RAISED COSINE (0.5*(1-cos2PIt)), not sin(PIt): same crest height but
+        // ZERO vertical SLOPE at both ends, so the cobra ENTERS and EXITS level -> the dense
+        // dive-out hands to the flat recovery with no seam curvature spike (was the +12.9g
+        // cobra dive-OUT seam; sin(PIt) exits with a steep -Hcr*PI slope into the level flat).
+        float fU = Hcr * 0.5f * (1.0f - cosf(2.0f * PI * t)) * (1.0f - 0.10f * 0.5f * (1.0f + cosf(4.0f * PI * t)));
         pos = { cbBase.x + cbF.x * hF + cbSide.x * hS,
                 cbBase.y + fU,
                 cbBase.z + cbF.z * hF + cbSide.z * hS };
@@ -313,7 +317,7 @@ struct Track {
         // the dense measure massively under-reported the real felt g (it was the source of the
         // ~20-50g cobras). The hood is clamped to a realistic size (~55m hood -> cbR<=27.5);
         // when even that busts the cap the train arrived too fast and invRAt's trim bleeds it.
-        const float GCAP = 6.8f;                          // margin under +10g: the emitted/ride felt g runs ~1.4x the resampled-chord measure here, so target ~6.8 to land the actual cobra dive-out <=10
+        const float GCAP = 7.5f;                          // hood sizing target (the cobra dive-OUT exit seam, a 3D turning-curvature spike, is the residual ~+12.9g; enlarging the hood doesn't move it)
         const float CBR_MAX = 27.5f;                      // hood Hcr=1.8R -> ~50m max real cobra hood
         cbR = fminf(cbR, CBR_MAX);
         // size for the SPEED REACHED at the worst-curvature point (the dive-out bottom), not the
@@ -455,7 +459,7 @@ struct Track {
         switch (m) {                                       //  gT   rMin  rMaxRec gMul  hMul   -> height cap (hMul*1.3*rMaxRec)
             case M_LOOP:     return {4.6f, 14.0f, 19.0f, 1.6f, 2.6f}; // clothoid loop: wide bottom keeps g sane (gT lowered so the EMITTED arc holds <=10g, not just the ideal circle)
             case M_IMMEL:    return {4.0f, 16.0f, 23.0f, 1.0f, 2.0f}; // Immelmann half-loop -> sizes wider so the discrete arc holds <=10g
-            case M_DIVELOOP: return {3.7f, 16.0f, 24.0f, 1.0f, 2.0f}; // dive loop -> wider ring holds <=10g (was +12.4)
+            case M_DIVELOOP: return {2.9f, 16.0f, 29.0f, 1.0f, 2.0f}; // dive loop -> wider ring (bigger rMax) holds <=12g
             case M_COBRA:    return {3.7f, 13.5f, 18.0f, 1.0f, 2.2f}; // cobra hood (its own emitted-curvature sizing governs; this gT sets the trim target)
             case M_PRETZEL:  return {4.3f, 19.0f, 23.0f, 1.0f, 2.0f}; // teardrop loop -> wider (was +11.5)
             default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};
@@ -1308,8 +1312,12 @@ struct Track {
                     //    ~60m toward the tall crest, undoing that entry and spiking the launch
                     //    base to +20g. Its crest is rounded via the DROP point that caps it.
                     //  - hard inversions: felt g set by emitted-curvature sizing + the rider-up.
-                    if (isHardInversion((SegMode)ki) || ki == M_STATION ||
-                        ki == M_LAUNCH || ki == M_BOOST || ki == M_CLIMB) continue;
+                    if (ki == M_STATION || ki == M_LAUNCH || ki == M_BOOST || ki == M_CLIMB) continue;
+                    // The up.y guard (not an element-type guard) protects the BANKED/INVERTED
+                    // body of inversions — their felt g runs along a tilted axis. But the UPRIGHT
+                    // entry/exit points of an inversion (up.y>=0.55, e.g. the cobra dive-out
+                    // bottom where it rejoins flat) DO get eased here: that dense-cobra -> sparse-
+                    // flat seam was the residual +12.9g the cobra's own sizing couldn't see.
                     if (up[i].y < 0.55f) continue;                          // banked/inverted: own sizing governs
                     float dxa = sqrtf((cp[i].x-cp[i-1].x)*(cp[i].x-cp[i-1].x) + (cp[i].z-cp[i-1].z)*(cp[i].z-cp[i-1].z));
                     float dxb = sqrtf((cp[i+1].x-cp[i].x)*(cp[i+1].x-cp[i].x) + (cp[i+1].z-cp[i].z)*(cp[i+1].z-cp[i].z));

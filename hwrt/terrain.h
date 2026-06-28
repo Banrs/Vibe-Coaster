@@ -106,14 +106,17 @@ static inline float3 rgb8(int r, int g, int b) {
 static Biome biomeAt(float wx, float wz, int h, bool beach) {
     Biome bm;
     bm.treeType = -1; bm.treeDen = 0.0f;
-    float bio   = vnoise(wx * 0.0045f + 91.3f, wz * 0.0045f + 23.1f);
-    float humid = fbm(wx * 0.0028f + 44.0f,  wz * 0.0028f + 108.0f, 2);
-    float temp  = fbm(wx * 0.0019f + 12.0f,  wz * 0.0019f + 204.0f, 2);
+    float bio   = vnoise(wx * 0.0082f + 91.3f, wz * 0.0082f + 23.1f);   // higher freq -> several biomes visible at once (was one big biome to the horizon)
+    float humid = fbm(wx * 0.0052f + 44.0f,  wz * 0.0052f + 108.0f, 2);
+    float temp  = fbm(wx * 0.0036f + 12.0f,  wz * 0.0036f + 204.0f, 2);
     float3 capC = rgb8(130, 206, 102);   // GRASS
     float3 colC = rgb8(158, 116,  82);   // DIRT
     bool grassCap = true;
-    if (h >= 260)      { capC = rgb8(204,214,224); colC = rgb8(132,140,154); grassCap = false; } // snowcap
-    else if (h >= 158) { capC = rgb8(128,138,146); colC = rgb8(108,116,126); grassCap = false; } // high stone
+    // wobble the altitude bands so grass->stone->snow is an IRREGULAR coastline, not a
+    // dead-flat contour line. ±~22m of noisy threshold offset breaks the hard band edge.
+    int hb = h + (int)((fbm(wx*0.030f + 7.3f, wz*0.030f + 5.1f, 2) - 0.5f) * 44.0f);
+    if (hb >= 252)      { capC = rgb8(204,214,224); colC = rgb8(132,140,154); grassCap = false; } // snowcap
+    else if (hb >= 152) { capC = rgb8(128,138,146); colC = rgb8(108,116,126); grassCap = false; } // high stone
     else if (beach)    { capC = rgb8(242,228,184); grassCap = false; }                            // sand
     else if (humid < 0.23f && temp > 0.42f) { capC = rgb8(214,196,108); colC = rgb8(162,126,72); grassCap = false; bm.treeType = 3; bm.treeDen = 0.003f; } // dry scrub
     else if (humid > 0.72f && bio < 0.72f)  { capC = rgb8( 76,176, 92); colC = rgb8(118, 96,72);                  bm.treeType = 0; bm.treeDen = 0.032f; } // lush woodland
@@ -591,8 +594,11 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
             bool beach = (h <= waterLvl + 1);
             float wx = worldX(x) + cell * 0.5f, wz = worldZ(z) + cell * 0.5f;
             Biome bm = biomeAt(wx, wz, h, beach);
-            // exposed high stone / steep slopes read as rock (overrides the biome cap)
-            if (h < snowLvl && h < 260 && (h >= rockLvl || slope >= 6) && !beach) {
+            // exposed high stone / steep slopes read as rock (overrides the biome cap).
+            // The rock LINE wobbles with the same noise as biomeAt's bands so grass->stone
+            // is an irregular edge, not a dead-flat contour. Steep slopes still always rock.
+            int rockWob = rockLvl + (int)((fbm(wx*0.030f + 7.3f, wz*0.030f + 5.1f, 2) - 0.5f) * 44.0f);
+            if (h < snowLvl && h < 260 && (h >= rockWob || slope >= 6) && !beach) {
                 bm.cap = rockC; bm.col = vec3(0.36f,0.25f,0.15f); bm.treeType = -1;
             }
             int idx = z * M + x;
@@ -617,11 +623,10 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
             if (cps && tt >= 0 && den > 0.0f && h < snowLvl && slope < 4 && !carved[z * M + x]) {
                 int ax = cellX0 + x, az = cellZ0 + z;
                 // ONE tree per TGxTG node so canopies never touch (open grass + stands of trees).
-                const int TG = 11;
-                // per-node prob from per-area biome density, thinned HARD (dense biomes were
-                // carpeting wall-to-wall): 0.45 cap + 0.5 scale keeps biome variation but reads
-                // as open grassland dotted with stands, matching the SW reference.
-                float nodeDen = fminf(den * (float)(TG * TG), 0.45f) * 0.5f;
+                const int TG = 8;   // denser node grid (was 11) -> more trees, fuller stands
+                // per-node prob from per-area biome density (raised from 0.45 cap/0.5 scale ->
+                // 0.9/0.85: noticeably denser forests/woodland while keeping biome variation).
+                float nodeDen = fminf(den * (float)(TG * TG), 0.9f) * 0.85f;
                 if (ax % TG == 0 && az % TG == 0 && hashf(ax * 7 + 1, az * 7 + 3) < nodeDen) {
                     // scatter by an INTEGER cell offset (0..3), plant on the TARGET cell and read
                     // ITS height -> the trunk lands on a whole 1m block, FLUSH, no fractional float.

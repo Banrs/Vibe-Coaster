@@ -220,9 +220,9 @@ static float3 sampleSkyLite(float3 dir, float3 sunDir) {
 // flat washed grey.
 static float3 ambientFill(float3 n) {
     float up = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    float3 skyTint    = float3(0.19, 0.25, 0.35);
-    float3 groundTint = float3(0.14, 0.12, 0.10);
-    return mix(groundTint, skyTint, up) + float3(0.02, 0.02, 0.03);
+    float3 skyTint    = float3(0.13, 0.17, 0.25);   // dimmer/cooler so the warm sun dominates -> shadows read clearly, terrain stops looking teal-washed
+    float3 groundTint = float3(0.10, 0.085, 0.07);
+    return mix(groundTint, skyTint, up) + float3(0.015, 0.015, 0.02);
 }
 
 // ===========================================================================
@@ -308,8 +308,7 @@ static float softSunShadow(float3 pos, float3 n, float3 L, thread float& rng,
                           instance_acceleration_structure accel) {
     float3 t, b; basis(L, t, b);
     float occ = 0.0;
-    const int S = 20;                            // shadow samples: raised 6->20 for a clean, soft RT penumbra
-                                                 // (the moving ride has large fps headroom: ~450fps median at 1280x720)
+    const int S = 10;                            // shadow samples: 10 = soft penumbra w/ low noise (budget freed by shorter render distance)
     for (int i = 0; i < S; i++) {
         rng = fract(rng * 1.61803 + 0.31831);
         float a = rng * 6.2831853;
@@ -418,7 +417,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
-        const int AO_SAMPLES = 32;                  // raised 24->32: cleaner ray-traced AO/GI (more rays, ample fps headroom)
+        const int AO_SAMPLES = 26;                  // 26: low-noise AO/GI (budget freed by shorter render distance)
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
         float3 surfAlb = voxelGrain(hit.albedo, hit.pos, n, hit.mat);
@@ -484,9 +483,11 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             float3 bodyCol = mix(shallowCol, deepCol, smoothstep(0.6, 20.0, depth));
 
             // Sun-lit body: keep a touch of diffuse + cloud dimming so it isn't flat.
-            // Higher ambient floor (0.70) keeps even the deep centre from going dim.
+            // Apply the SUN SHADOW so coaster/terrain shadows are visible ON the water
+            // (the body used to ignore shadows entirely -> the lake never darkened).
+            float wShadow = softSunShadow(hit.pos, wn, L, rng, accel);
             float sunLit = cloudSunLight(hit.pos, L);
-            color = bodyCol * (0.70 + 0.35 * max(L.y, 0.0)) * sunLit;
+            color = bodyCol * (0.55 + 0.45 * max(L.y, 0.0) * wShadow) * sunLit;
             color = mix(color, color * ao, 0.25);         // gentler ambient occlusion
 
             // Reflection ray off the RIPPLED normal -> sky/cloud/terrain mirrored
@@ -508,8 +509,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             color = mix(color, reflCol, fres);
 
             // Sun glint: sharp specular off the rippled normal toward the sun.
-            float shadow = softSunShadow(hit.pos, wn, L, rng, accel);
-            float3 glint = sunSpec(wn, V, L, 0.06, float3(1.0)) * sunLit * shadow;
+            float3 glint = sunSpec(wn, V, L, 0.06, float3(1.0)) * sunLit * wShadow;
             color += float3(1.0, 0.96, 0.86) * glint * 2.2 * max(L.y, 0.0);
 
             // Shoreline foam: brighten where the water is shallow (floor near surface),

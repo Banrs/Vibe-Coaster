@@ -130,6 +130,8 @@ struct Renderer {
     bool  boostHeld = false;  // SPACE: fire boost / re-launch in powered sections
     bool  brakeHeld = false;  // S: trim-brake the train (parity with the SW game's brake)
     int   camMode   = 0;      // C cycles: 0 first-person, 1 chase, 2 side (parity w/ SW)
+    float camFovDeg = 78.0f;  // ride FOV, speed-dynamic (parity w/ SW: ~78 base, widens to ~90 at speed)
+    bool  rideDispatched = false; // false = sitting at the station ("PRESS SPACE TO LAUNCH"); true = launched
     long  rideScore = 0;      // simple score (distance + airtime), HUD top-left
     struct RideAudio* audio = nullptr;  // procedural ride audio (nullptr in headless)
 
@@ -208,7 +210,7 @@ void Renderer::init() {
     // Lower, raking afternoon sun: long hardware ray-traced shadows of the track,
     // supports and trees stretch dramatically across the terrain (leaning into the RT
     // advantage the user asked for — clearly stronger shadows than the software raster).
-    sunDir = normalize(vec3(0.62f, 0.46f, 0.38f));
+    sunDir = normalize(vec3(0.62f, 0.27f, 0.40f));   // lower sun (~20deg): long raking shadows reveal terrain relief + warm tone (was 0.46 = flat/washed)
     // Scene geometry is built later by startGame(), once the player picks a mode in
     // the START MENU (or, headless, from --shot/--bench).
 }
@@ -624,6 +626,10 @@ void Renderer::buildBenchScene(bool async) {
 void Renderer::rideAdvance(float dt) {
     if (isStreaming()) {
     // --- INFINITE mode: physics + streaming live in StreamTrack ---
+    // SPACE at the station releases the hydraulic launch (boarding -> dispatched);
+    // afterwards SPACE boosts on powered sections (below) — the SW game's one-key flow.
+    if (!stream.dispatched && boostHeld) stream.dispatch();
+    rideDispatched = stream.dispatched;
     int prevPt = (int)stream.trainU;
     bool shifted = stream.advance(dt);
 
@@ -650,10 +656,14 @@ void Renderer::rideAdvance(float dt) {
     float3 lat = normalize(cross(up, fwd));
     if      (camMode == 1) { camPos = p - fwd * 11.0f + up * 4.5f; }       // chase
     else if (camMode == 2) { camPos = p + lat * 14.0f + up * 3.0f; }       // side
-    else                   { camPos = p + up * 2.0f; }                     // first-person
-    if (camMode == 0) { exFwd = fwd; exUp = up; }
+    else                   { camPos = p + up * 1.55f + fwd * 2.2f; }       // first-person: front-seat, OVER the nose (ahead of the rider heads, not between them)
+    if (camMode == 0) { exFwd = normalize(fwd * 10.0f - up * 1.0f); exUp = up; }  // look forward, slightly down; rolls with the track
     else { exFwd = normalize((p + up * 1.5f) - camPos); exUp = vec3(0,1,0); }  // look at the train
     useExplicitFrame = true;
+    // speed-dynamic FOV (parity w/ SW main.cpp:1857): widens with speed (+8 while boosting)
+    // so the ride reads FAST — a fixed narrow FOV was the main "perceived speed is wrong" cause.
+    float targetFov = 80.0f + fminf(fmaxf((rideSpeed - 24.0f) * 0.5f, 0.0f), 9.0f) + (boostHeld ? 8.0f : 0.0f);
+    camFovDeg += (targetFov - camFovDeg) * fminf(1.0f, 8.0f * dt);
 
     (void)prevPt; (void)shifted;
     // --- track + train: rebuild when the train has moved ~a car length, so the
@@ -689,6 +699,7 @@ void Renderer::rideAdvance(float dt) {
     return;
     }  // end streaming branch
     {
+    rideDispatched = true;   // benchmark demo map auto-runs (no station boarding state)
     // Real ride physics on the loaded map (mirrors the software game's constants):
     // gravity along the slope, quadratic air drag, low rolling friction, and active
     // launch/boost/lift acceleration on powered sections -> the boosts actually work
@@ -763,9 +774,11 @@ void Renderer::rideAdvance(float dt) {
     float3 lat = normalize(cross(up, fwd));
     if      (camMode == 1) { camPos = p - fwd * 11.0f + up * 4.5f; }
     else if (camMode == 2) { camPos = p + lat * 14.0f + up * 3.0f; }
-    else                   { camPos = p + up * 2.0f; }
-    if (camMode == 0) { exFwd = fwd; exUp = up; }
+    else                   { camPos = p + up * 1.55f + fwd * 2.2f; }      // first-person: front-seat, over the nose
+    if (camMode == 0) { exFwd = normalize(fwd * 10.0f - up * 1.0f); exUp = up; }  // look forward, slightly down
     else { exFwd = normalize((p + up * 1.5f) - camPos); exUp = vec3(0,1,0); }
+    float targetFov = 80.0f + fminf(fmaxf((rideSpeed - 24.0f) * 0.5f, 0.0f), 9.0f) + (boostHeld ? 8.0f : 0.0f);
+    camFovDeg += (targetFov - camFovDeg) * fminf(1.0f, 8.0f * dt);
     rideAlt = p.y - groundTopAt(p.x, p.z);
     rideScore += (long)(rideSpeed * dt * 0.6f);
     // felt-g for the HUD: |centripetal accel + gravity| / GRAV (total felt g).
@@ -803,7 +816,7 @@ void Renderer::updateCamera(CameraUniforms& cam, uint32_t w, uint32_t h) {
     cam.right[0]=right.x; cam.right[1]=right.y; cam.right[2]=right.z;
     cam.up[0]=up.x; cam.up[1]=up.y; cam.up[2]=up.z;
     cam.sunDir[0]=sunDir.x; cam.sunDir[1]=sunDir.y; cam.sunDir[2]=sunDir.z;
-    cam.tanHalfFov = std::tan(60.0f * 0.5f * 3.14159265f / 180.0f);
+    cam.tanHalfFov = std::tan(camFovDeg * 0.5f * 3.14159265f / 180.0f);
     cam.aspect = (float)w / (float)h;
     cam.width = w;
     cam.height = h;
@@ -856,6 +869,7 @@ static int runShot(Renderer& r) {
     // Works in EITHER runtime mode (streaming or benchmark): the train accessors
     // resolve through whichever generator is live.
     r.rideMode = true;
+    r.stream.dispatch();   // headless: auto-launch (no station boarding wait) so the shot shows the ride
     int shotSec = 9; if (const char* s = getenv("SHOT_SEC")) { int v = atoi(s); if (v > 0) shotSec = v; }
     for (int i = 0; i < 60 * shotSec; i++) r.rideAdvance(1.0f / 60.0f);
     auto trainPos = [&]() -> float3 {
@@ -949,6 +963,7 @@ static int runBench(Renderer& r) {
     // the timed window starts before that, the first frames read 12-18ms purely from
     // the cold clock and pollute over120/p95. 72 warm-up frames let the clock fully
     // settle so the bench reports the HONEST steady-state moving-ride cost.
+    r.stream.dispatch();   // headless bench: auto-launch so the moving-ride cost is measured
     for (int i = 0; i < 72; i++) { r.rideAdvance(1.0f/120.0f); r.render(tex, W, H); }
     double worst = 0.0; int over = 0;          // worst frame ms + frames slower than 1/120
     std::vector<double> fmsAll; fmsAll.reserve(N);
@@ -1025,12 +1040,12 @@ static int runBench(Renderer& r) {
     if (self.renderer->pitch < -lim) self.renderer->pitch = -lim;
 }
 
-- (void)tick {
+- (void)tickDt:(float)dt {
     Renderer* r = self.renderer;
     if (r->rideMode) {
-        r->rideAdvance(1.0f / 60.0f);    // follow the train along the spline
-        return;
-    }
+        r->rideAdvance(dt);              // follow the train along the spline at REAL wall-clock dt
+        return;                          // (fixed 1/60 ran the ride in slow-motion below 60fps and
+    }                                    //  too fast above it -> perceived speed never matched the HUD)
     // free-fly (WASDQE): standard mouse-look + move.
     r->useExplicitFrame = false;
     float3 forward = normalize(vec3(std::cos(r->pitch) * std::sin(r->yaw),
@@ -1208,8 +1223,17 @@ static void hudText(const char* s, CGFloat x, CGFloat y, CGFloat sz,
         CGContextSetRGBFillColor(c, br,bg,bb, 1.0f);
         CGContextFillEllipseInRect(c, CGRectMake(bxp-6.5, byp-6.5, 13, 13));
         // signed vertical-g readout above the dial
-        char gt[16]; snprintf(gt, sizeof gt, "%+.1f G", gv);
+        char gt[16]; snprintf(gt, sizeof gt, "%+.1f G", r->rideVertG);  // TRUE felt g (the ball clamps to the rim, the readout does not)
         hudText(gt, gx - 40, gy - R - 30, 22, 1,1,1, NSTextAlignmentCenter);
+    }
+
+    // --- station boarding prompt (parity w/ SW "PRESS SPACE TO LAUNCH") ---
+    if (!r->rideDispatched) {
+        const char* pr = "PRESS  SPACE  TO  LAUNCH";
+        if (((int)(CACurrentMediaTime() * 2)) & 1)        // blink, like the SW prompt
+            hudText(pr, W*0.5 - 220, H*0.5 - 60, 34, 1.0f, 0.92f, 0.47f, NSTextAlignmentCenter);
+        const char* sub = "the train is waiting at the station";
+        hudText(sub, W*0.5 - 220, H*0.5 - 16, 20, 0.88f, 0.90f, 0.96f, NSTextAlignmentCenter);
     }
 }
 @end
@@ -1337,11 +1361,34 @@ static void hudText(const char* s, CGFloat x, CGFloat y, CGFloat sz,
     double now0 = CACurrentMediaTime();
     float dt = (float)(now0 - self.lastTime);
     if (dt <= 0 || dt > 0.1f) dt = 1.0f/60.0f;
-    self.lastTime = now0;
 
     if (!self.started) return;       // sit on the START MENU until a mode is chosen
 
-    [self.view tick];
+    // Secure the drawable FIRST. If the pool is momentarily empty, skip the whole
+    // frame WITHOUT advancing the ride or consuming the clock — otherwise the ride
+    // stepped forward on frames that never rendered, so the world lurched ahead and
+    // then snapped ("teleporting every ~N frames"). lastTime is committed only on a
+    // frame we actually render, so skipped time is carried into the next real dt.
+    CAMetalLayer* layer = self.view.metalLayer;
+    // Cap the INTERNAL render resolution. Path-traced cost scales with pixel count, and a
+    // Retina window backs at 2x (a 1280x720 window = 2560x1440 = 4x the pixels -> ~1/4 fps).
+    // Render at a capped size and let the CAMetalLayer upscale to the window, so high-DPI /
+    // large windows stay fast. RT_MAXW overrides the cap (default 1280, the bench's fast res).
+    CGFloat maxW = 1440.0;
+    if (const char* mw = getenv("RT_MAXW")) { int v = atoi(mw); if (v > 0) maxW = (CGFloat)v; }
+    CGFloat scale = self.window.backingScaleFactor; if (scale < 1) scale = 1;
+    CGFloat pxW = self.view.bounds.size.width  * scale;
+    CGFloat pxH = self.view.bounds.size.height * scale;
+    if (pxW < 1) { pxW = 1280; pxH = 720; }
+    if (pxW > maxW) { CGFloat k = maxW / pxW; pxW = maxW; pxH = floorf(pxH * k); }
+    if (fabs(layer.drawableSize.width - pxW) > 1.0 || fabs(layer.drawableSize.height - pxH) > 1.0)
+        layer.drawableSize = CGSizeMake(pxW, pxH);
+    uint32_t w = (uint32_t)pxW, h = (uint32_t)pxH;
+    id<CAMetalDrawable> drawable = [layer nextDrawable];
+    if (!drawable) return;           // no advance, no clock commit -> no lurch
+    self.lastTime = now0;
+
+    [self.view tickDt:dt];
 
     Renderer* r = self.renderer;
 
@@ -1354,15 +1401,6 @@ static void hudText(const char* s, CGFloat x, CGFloat y, CGFloat sz,
     // HUD overlay redraws from the live ride state each frame (drawRect reads r).
     [self.hud setNeedsDisplay:YES];
 
-    CAMetalLayer* layer = self.view.metalLayer;
-    CGSize ds = layer.drawableSize;
-    if (ds.width < 1) {
-        ds = CGSizeMake(self.view.bounds.size.width, self.view.bounds.size.height);
-        layer.drawableSize = ds;
-    }
-    uint32_t w = (uint32_t)ds.width, h = (uint32_t)ds.height;
-    id<CAMetalDrawable> drawable = [layer nextDrawable];
-    if (!drawable) return;
     // render() commits + waits, then a tiny command buffer presents the drawable.
     self.renderer->render(drawable.texture, w, h);
     id<MTLCommandBuffer> present = [self.renderer->queue commandBuffer];
@@ -1374,7 +1412,7 @@ static void hudText(const char* s, CGFloat x, CGFloat y, CGFloat sz,
     double now = CACurrentMediaTime();
     if (now - self.fpsClock >= 0.5) {
         double fps = self.frameCount / (now - self.fpsClock);
-        [self.window setTitle:[NSString stringWithFormat:@"metal-rt  %.0f fps", fps]];
+        [self.window setTitle:[NSString stringWithFormat:@"metal-rt  %.0f fps  (render %ux%u)", fps, w, h]];
         self.frameCount = 0;
         self.fpsClock = now;
     }

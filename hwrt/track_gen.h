@@ -17,7 +17,7 @@
 // this same radius so no track ever floats beyond the terrain edge. 1m blocks
 // (CELL=1) keep true Minecraft scale on all sides.
 static constexpr float TG_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-static constexpr float TG_RING = 750.0f;   // half-extent meshed around the train.
+static constexpr float TG_RING = 500.0f;   // half-extent meshed around the train (reduced 750->500: closer horizon + big fps headroom).
                                            // Lowered 1200->750: a smaller ring means
                                            // far fewer terrain tris and much cheaper
                                            // incremental edge-strip rebuilds, so the
@@ -141,15 +141,19 @@ struct StreamTrack {
     float boost = 1.0f;        // 0..1 boost meter (recharges on powered sections)
     float vertG = 1.0f;
     float latG  = 0.0f;        // signed lateral felt g (HUD g-meter)
+    bool  dispatched = false;  // station-boarding: the train SITS at the platform until SPACE launches it (parity w/ SW)
 
     void init(uint32_t seed) {
         g_rng = seed * 2654435761u | 1u;
         gen.reset();
         // make sure there are enough points to mesh the first window
+        winLo = 1;             // mesh from cp[1] so the launch straight UNDER the station platform renders
         gen.ensureAhead((float)(winLo + buildAhead + 16));
-        trainU = 6.0f; winLo = 4;
-        speed = LAUNCH_V * 0.6f;
+        trainU = 1.0f;         // board AT the station (cp[0] anchor), not 84m down the launch straight
+        speed = 0.0f;          // sit stationary at the launch platform until dispatched (SPACE)
+        dispatched = false;
     }
+    void dispatch() { dispatched = true; }   // SPACE at the station: release the hydraulic launch
 
     // --- spline sampling in LOCAL u (delegates to the deque generator) ---
     Vector3 pos(float u) const     { return gen.pos(u); }
@@ -170,6 +174,14 @@ struct StreamTrack {
     // Advance the train + slide the window; generate ahead, drop behind.
     // Returns true if the window shifted enough that geometry should rebuild.
     bool advance(float dt) {
+        // station hold: before dispatch the train rests at the platform (0 g, 0 speed),
+        // waiting for SPACE — the SW game's "PRESS SPACE TO LAUNCH" boarding state.
+        if (!dispatched) {
+            speed = 0.0f; kind = tagAt(trainU); chain = chainAt(trainU);
+            gLoad = 1.0f; vertG = 1.0f; latG = 0.0f;
+            alt = gen.pos(trainU).y - groundTopAt(gen.pos(trainU).x, gen.pos(trainU).z);
+            return false;
+        }
         // --- real ride physics (mirrors src/main.cpp + main.mm rideAdvance) ---
         Vector3 d3 = Vector3Subtract(gen.pos(trainU + 0.05f), gen.pos(trainU - 0.05f));
         float ds = Vector3Length(d3);

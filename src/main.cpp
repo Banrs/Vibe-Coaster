@@ -2029,8 +2029,8 @@ int main(int argc, char **argv) {
 
 	                float th = hashf(cx * 9 + 7, cz * 9 + 3);
 
-	                const int   TG = 8;
-	                float nodeDen = fminf(treeDen * (float)(TG * TG), 0.90f);
+	                const int   TG = 12;
+	                float nodeDen = fminf(treeDen * (float)(TG * TG), 0.50f);
 	                float jx = (hashf(cx * 3 + 1, cz * 7 + 5) - 0.5f) * (float)(TG - 5);
 	                float jz = (hashf(cx * 5 + 9, cz * 3 + 2) - 0.5f) * (float)(TG - 5);
 	                float jwx = wx + jx, jwz = wz + jz;

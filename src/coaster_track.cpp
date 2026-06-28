@@ -1113,6 +1113,31 @@ struct Track {
             up[m] = Vector3Normalize(Vector3Lerp(up[m],
                         Vector3Scale(Vector3Add(up[m - 1], up[m + 1]), 0.5f), 0.16f));
         }
+        // VERTICAL valley/crest g-cap: a sharp contour-follow V-valley (track dives a
+        // terrain dip and snaps back up) leaves the interior control point sagging well
+        // off its neighbours' midpoint; the Catmull-Rom spline then overshoots that dip
+        // into a tight bottom whose felt vertical g (~1 + v^2*kappa/GRAV, kappa=2*sag/span^2)
+        // spikes past the design envelope. Pull the point's HEIGHT toward the midpoint just
+        // enough to hold the implied bottom/crest g inside +10g / -7.5g, widening only sharp
+        // contour bends (gentle contours barely exceed the cap so barely move). The hard
+        // inversions and the dramatic vertical elements (drops/climbs/dips/helix/powered) are
+        // EXEMPT so their designed shapes + big airtime drops stay intact. Speed-aware via
+        // genV. Lifting a valley raises the track (never buries it under the map).
+        if ((int)cp.size() >= 3) {
+            int m = (int)cp.size() - 2;
+            unsigned char km = kind[m];
+            bool exempt = isHardInversion((SegMode)km) || km == M_DROP || km == M_CLIMB ||
+                          km == M_DIP   || km == M_HELIX || km == M_LAUNCH ||
+                          km == M_BOOST || km == M_STATION;
+            if (!exempt) {
+                float sag  = 0.5f * (cp[m - 1].y + cp[m + 1].y) - cp[m].y;   // >0 valley, <0 crest
+                float span = 0.5f * (Vector3Length(Vector3Subtract(cp[m], cp[m - 1])) +
+                                     Vector3Length(Vector3Subtract(cp[m + 1], cp[m])));
+                float kc   = GRAV * span * span / (2.0f * fmaxf(genV * genV, 100.0f)); // sag per 1g (g = 1 + sag/kc)
+                float clamped = Clamp(sag, -8.5f * kc, 9.0f * kc);          // -7.5g crest .. +10g valley
+                cp[m].y += (sag - clamped);                                 // hold the bottom/crest at the envelope
+            }
+        }
 
         // forward-simulate ride speed alongside generation (mirrors the live
         // physics in the render loop) so elements can be sized to the speed

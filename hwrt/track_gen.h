@@ -196,17 +196,11 @@ struct StreamTrack {
         else if (kind == M_BOOST  && speed < BOOST_V )            speed = fminf(speed + 55.0f * dt, BOOST_V);
         else if (chain && slope > 0.05f && speed < CHAIN_V)       speed = fminf(speed + 20.0f * dt, CHAIN_V);
 
-        // TRIM brake (parity with src/main.cpp ride loop): only ahead of a HARD
-        // inversion, and only down to the SAME target the generator sized the
-        // geometry for (Track::invRAt -> brakeTo, usually 0 = no brake). Elements
-        // are speed-sized to ~1.30x world record, so this essentially never fires.
-        for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
-            SegMode ahead = (SegMode)tagAt(trainU + la);
-            if (!Track::isHardInversion(ahead)) continue;
-            float bt; Track::invRAt(ahead, speed, bt);
-            if (bt > 0.0f && speed > bt) speed = fmaxf(speed - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
-            break;
-        }
+        // NO g-force trim brake. g is managed by TRACK GEOMETRY (elements are speed-sized
+        // to ~1.30x world record so felt g stays in the +12/-9 envelope), NEVER by capping
+        // speed — a speed cap is what made the car visibly throttle through inversions while
+        // the readout/fps looked fine. If an inversion still spikes g, the fix is geometry,
+        // not a brake (see the cobra/immel residual on the backlog).
 
         // CLIMB MOMENTUM ASSIST (parity w/ src/main.cpp): an unpowered climb never crawls to
         // the floor — a gentle assist holds a brisk speed ONLY while genuinely climbing (NOT a
@@ -581,6 +575,18 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));  // ground projection
         float nodeDrop = 0.58f;
         float3 node = vec3(p.x, topY, p.z) - up * nodeDrop;
+        // Tall supports use a 4-leg lattice TOWER (real coasters don't A-frame the big
+        // lift/drop structures). Medium/short bents keep the A-frame below.
+        if (hgt >= 20.0f) {
+            buildSupportTower(out, node, rRight, fwd, baseHalf, legR, hgt, supCol,
+                [&](float bx, float bz) -> float {
+                    float fY = groundTopAt(bx, bz);
+                    float under = lowerTrackUnder(bx, bz, topY, i);
+                    if (under > -1e8f && under + CLR_V > fY) fY = under + CLR_V;
+                    return fY;
+                });
+            continue;
+        }
         float3 tops[2], feet[2]; bool legOK[2] = {false, false};
         int si = 0;
         for (float sgn = -1.0f; sgn <= 1.0f; sgn += 2.0f) {
@@ -612,17 +618,14 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
             float3 r2 = normalize(cross(u2, f));
             pushBox(out, (a + b) * 0.5f, r2, u2, f, r, r, L * 0.5f, supCol);
         };
-        // tall bents get trussed: horizontal ties + X-bracing on the big towers
+        // medium bents get a trussed A-frame: horizontal ties (tall ones are towers above)
         if (hgt > 14.0f && legOK[0] && legOK[1]) {
             int levels = (int)t_Clamp(hgt / 16.0f, 1.0f, 4.0f);
-            float3 prevL{}, prevR{}; bool have = false;
             for (int k = 1; k <= levels; k++) {
                 float fr = (float)k / (float)(levels + 1);   // node(0) -> foot(1)
                 float3 L = tops[0] + (feet[0] - tops[0]) * fr;
                 float3 R = tops[1] + (feet[1] - tops[1]) * fr;
                 strut(L, R, legR * 0.7f);                    // horizontal tie
-                if (have && hgt > 22.0f) { strut(prevL, R, legR * 0.5f); strut(prevR, L, legR * 0.5f); }
-                prevL = L; prevR = R; have = true;
             }
         }
         // node block where the legs converge, oriented to the rail frame

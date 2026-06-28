@@ -104,6 +104,60 @@ static void pushBox(std::vector<MeshVertex>& out, float3 c,
     quad(1,2,6,5, normalize(right));       // +R
 }
 
+// Tall lattice support TOWER — a distinct design for tall bents (real coasters don't use
+// the same 2-leg A-frame at every height: the big lift/drop structures are 4-legged braced
+// box towers). Four corner posts on a rectangular footprint, horizontal ring beams + full
+// X-bracing on every face at each level. `apex` is the node just under the spine; `rRight`
+// is the track lateral, `fwd` the tangent; `footY(bx,bz)` resolves each post's ground/clear
+// height (so it respects the adaptive lower-track clearance the A-frame uses). Shared by the
+// streaming (track_gen.h) and benchmark (coaster.h) meshers.
+template <typename FootFn>
+static void buildSupportTower(std::vector<MeshVertex>& out, float3 apex,
+                              float3 rRight, float3 fwd, float baseHalf, float legR,
+                              float hgt, float3 col, FootFn footY) {
+    float3 latH = normalize(vec3(rRight.x, 0.0f, rRight.z));   // ground-projected lateral
+    float3 fwdH = normalize(vec3(fwd.x,    0.0f, fwd.z));      // ground-projected tangent
+    float depthHalf = baseHalf * 0.62f;        // longitudinal half-depth (rectangular base)
+    float topHalf   = 0.34f;                    // posts converge near the spine node
+    const float sgnL[4] = { -1, +1, +1, -1 };
+    const float sgnF[4] = { -1, -1, +1, +1 };
+    float3 top[4], foot[4];
+    for (int c = 0; c < 4; c++) {
+        top[c] = apex + rRight * (sgnL[c]*topHalf) + fwdH * (sgnF[c]*topHalf);
+        float bx = apex.x + latH.x*sgnL[c]*baseHalf + fwdH.x*sgnF[c]*depthHalf;
+        float bz = apex.z + latH.z*sgnL[c]*baseHalf + fwdH.z*sgnF[c]*depthHalf;
+        foot[c] = vec3(bx, footY(bx, bz), bz);
+    }
+    auto beam = [&](float3 a, float3 b, float r) {
+        float3 d = b - a; float L = length(d);
+        if (L < 0.25f) return;
+        float3 f = d * (1.0f / L);
+        float3 u2 = orthoUp(f, vec3(0,1,0));
+        float3 r2 = normalize(cross(u2, f));
+        pushBox(out, (a + b) * 0.5f, r2, u2, f, r, r, L * 0.5f, col);
+    };
+    for (int c = 0; c < 4; c++) beam(top[c], foot[c], legR);   // corner posts
+    // Lean lattice: ring beams + X-bracing on the two LATERAL faces (the wide faces seen
+    // riding past). 2-3 levels by height. Kept light (~25-33 boxes) so a cluster of tall
+    // drop towers doesn't tank fps — the per-frame track rebuild meshes all of these.
+    int levels = (int)t_Clamp(hgt / 13.0f, 2.0f, 3.0f);
+    float3 prev[4]; bool have = false;
+    for (int k = 1; k <= levels; k++) {
+        float fr = (float)k / (float)(levels + 1);
+        float3 lev[4];
+        for (int c = 0; c < 4; c++) lev[c] = top[c] + (foot[c] - top[c]) * fr;
+        for (int c = 0; c < 4; c++) beam(lev[c], lev[(c+1)&3], legR * 0.50f);   // horizontal ring
+        for (int c = 0; c < 4; c += 2) {                                         // X-brace 2 opposite faces
+            int n = (c+1) & 3; float3 a = have ? prev[c] : top[c], b = have ? prev[n] : top[n];
+            beam(a, lev[n], legR * 0.40f); beam(b, lev[c], legR * 0.40f);
+        }
+        for (int c = 0; c < 4; c++) prev[c] = lev[c];
+        have = true;
+    }
+    for (int c = 0; c < 4; c++) beam(foot[c], foot[(c+1)&3], legR * 0.50f);      // base ring
+    pushBox(out, apex, rRight, normalize(cross(fwd, rRight)), fwd, 0.30f, 0.30f, 0.55f, col);
+}
+
 // ----------------------------------------------------------- theme + shade --
 // Curated coaster themes, ported VERBATIM from src/main.cpp THEMES[] (0-255 RGB
 // converted to 0-1 float3). The generator picks THEMES[irnd(0,6)] at reset; the
@@ -523,6 +577,18 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         float3 rRight = normalize(cross(up, fwd));
         float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));
         float3 node = vec3(p.x, topY, p.z) - up * 0.58f;
+        // Tall supports use a 4-leg lattice TOWER (real coasters don't A-frame the big
+        // lift/drop structures). Medium/short bents keep the A-frame below.
+        if (hgt >= 20.0f) {
+            buildSupportTower(out, node, rRight, fwd, baseHalf, legR, hgt, supCol,
+                [&](float bx, float bz) -> float {
+                    float fY = groundTopAt(bx, bz);
+                    float under = lowerTrackUnder(bx, bz, topY, i);
+                    if (under > -1e8f && under + CLR_V > fY) fY = under + CLR_V;
+                    return fY;
+                });
+            continue;
+        }
         float3 tops[2], feet[2]; bool legOK[2] = {false, false}; int si = 0;
         for (float sgn = -1.0f; sgn <= 1.0f; sgn += 2.0f) {
             float3 top  = node + rRight * (sgn * topHalf);
@@ -551,16 +617,13 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
             float3 r2 = normalize(cross(u2, f));
             pushBox(out, (a + b) * 0.5f, r2, u2, f, r, r, L * 0.5f, supCol);
         };
-        if (hgt > 14.0f && legOK[0] && legOK[1]) {
+        if (hgt > 14.0f && legOK[0] && legOK[1]) {           // trussed A-frame (medium bents)
             int levels = (int)t_Clamp(hgt / 16.0f, 1.0f, 4.0f);
-            float3 prevL{}, prevR{}; bool have = false;
             for (int k = 1; k <= levels; k++) {
                 float fr = (float)k / (float)(levels + 1);
                 float3 L = tops[0] + (feet[0] - tops[0]) * fr;
                 float3 R = tops[1] + (feet[1] - tops[1]) * fr;
-                strut(L, R, legR * 0.7f);
-                if (have && hgt > 22.0f) { strut(prevL, R, legR * 0.5f); strut(prevR, L, legR * 0.5f); }
-                prevL = L; prevR = R; have = true;
+                strut(L, R, legR * 0.7f);                     // horizontal tie
             }
         }
         pushBox(out, node, rRight, up, fwd, 0.28f, 0.28f, 0.50f, supCol);

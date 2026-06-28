@@ -100,12 +100,14 @@ static float3 waterNormal(float2 xz, float t) {
 // with a sun-direction-aware warm haze so the sky reads atmospheric, not flat.
 static float3 skyGradient(float3 dir, float3 sunDir) {
     float t = clamp(dir.y, 0.0, 1.0);
-    float3 zenith  = float3(0.12, 0.34, 0.74);   // deeper, richer blue overhead
-    float3 horizon = float3(0.74, 0.82, 0.90);   // pale, slightly cool horizon
+    float3 zenith  = float3(0.12, 0.34, 0.76);   // saturated blue overhead (matches SW ZENITH)
+    float3 horizon = float3(0.78, 0.87, 0.98);   // bright airy horizon (matches SW HORIZON)
     float3 col = mix(horizon, zenith, pow(t, 0.42));
-    // low-altitude haze band (thicker atmosphere near the horizon)
+    // low-altitude haze band (thicker atmosphere near the horizon) — a LUMINOUS BLUE
+    // haze, not a grey wash (the grey wall was what flattened the upper sky / made it
+    // read washed-out vs the vibrant software sky).
     float band = exp(-max(dir.y, 0.0) * 8.0);
-    col = mix(col, float3(0.84, 0.84, 0.82), band * 0.45);
+    col = mix(col, float3(0.74, 0.82, 0.93), band * 0.26);   // lighter haze -> the horizon stays blue, not a pale wash
     // warm scatter glow concentrated around the sun's azimuth near the horizon,
     // so the haze "lights up" toward the sun instead of being a uniform grey ring.
     float toSun = max(dot(normalize(float3(dir.x, 0.0, dir.z)),
@@ -123,9 +125,9 @@ static float3 skyGradient(float3 dir) { return skyGradient(dir, float3(0.0, 1.0,
 static float cloudCoverage(float2 xz) {
     float2 uv = xz * 0.00036;                                  // big fair-weather puffs
     float base = fbm3(float3(uv, 0.0));
-    // tighter, higher threshold -> clear blue between distinct fair-weather puffs
-    // instead of an overcast grey wash that flattens the whole upper sky.
-    return smoothstep(0.50, 0.72, base);
+    // higher threshold -> SPARSE, distinct fair-weather puffs over lots of clear blue sky
+    // (the lower threshold spread a pale overcast across the whole upper sky = washed look).
+    return smoothstep(0.60, 0.82, base);
 }
 
 // Full cloud density at a point in the slab: coverage eroded by higher-freq detail
@@ -535,7 +537,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
-        const int AO_SAMPLES = 32;                  // 32: the MTLFXTemporalScaler ACCUMULATES per-frame-varying samples across frames, so the image converges cleaner over time AND each frame is cheap. 32 (vs the old 48 single-pass) keeps per-frame noise low enough that FAST motion converges quickly while leaving fps headroom; the surplus over the 60-120 target buys cleaner motion, not idle fps.
+        const int AO_SAMPLES = 16;                  // 16: AO+GI are the heaviest per-pixel cost (each sample = a traced ray). The MTLFXTemporalScaler ACCUMULATES per-frame-varying samples ACROSS frames, so 16/frame converges to the same quality as 32 in steady state while ~halving the ray budget -> lifts the worst-case (heavy-view / drop) frames into the 60-120 target. Quality-neutral once converged; only very fast motion is briefly grainier (the denoiser catches up in a few frames).
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
         // GI/reflection bleed tint: linearized to match the linear-space radiance the
@@ -664,9 +666,11 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
     float3 x = color;
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     color = clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-    // gentle saturation lift to taste (linear lighting already restores most of it).
+    // saturation lift — the linear+ACES path desaturates noticeably vs the SW raster's
+    // punchy look, so push colour harder to match the vibrant software image (sky blue,
+    // grass green) the user is comparing against.
     float lum = dot(color, float3(0.2126, 0.7152, 0.0722));
-    color = clamp(mix(float3(lum), color, 1.12), 0.0, 1.0);
+    color = clamp(mix(float3(lum), color, 1.28), 0.0, 1.0);
     // subtle S-curve contrast around mid-grey: deepens shadows, keeps highlights from
     // clipping to flat white -> punchier, more dimensional image.
     color = clamp(mix(color, color * color * (3.0 - 2.0 * color), 0.12), 0.0, 1.0);

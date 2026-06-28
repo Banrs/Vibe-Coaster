@@ -121,35 +121,39 @@ static inline float3 rgb8(int r, int g, int b) {
 static Biome biomeAt(float wx, float wz, int h, bool beach) {
     Biome bm;
     bm.treeType = -1; bm.treeDen = 0.0f;
-    // Biome-selection noise: ~150m biome regions so SEVERAL distinct biomes are visible at
-    // once within the (closer, 380m) render horizon -- the software's very-low freq made one
-    // biome fill the whole view ("only green plains"); too-high freq fragments it. This is the
-    // middle ground: coherent regions, but multiple per view.
-    float bio   = vnoise(wx * 0.0070f + 91.3f, wz * 0.0070f + 23.1f);
-    float humid = fbm(wx * 0.0045f + 44.0f,  wz * 0.0045f + 108.0f, 2);
-    float temp  = fbm(wx * 0.0030f + 12.0f,  wz * 0.0030f + 204.0f, 2);
-    float3 capC = rgb8(130, 206, 102);   // GRASS
-    float3 colC = rgb8(158, 116,  82);   // DIRT
+    // Biome regions ~140m so SEVERAL DISTINCT biomes are visible across the 380m horizon.
+    float bio   = vnoise(wx * 0.0067f + 91.3f, wz * 0.0067f + 23.1f);
+    float humid = fbm(wx * 0.0041f + 44.0f,  wz * 0.0041f + 108.0f, 2);
+    float temp  = fbm(wx * 0.0029f + 12.0f,  wz * 0.0029f + 204.0f, 2);
+    float3 capC = rgb8(140, 200, 92);    // plains default (bright yellow-green)
+    float3 colC = rgb8(158, 116, 82);    // dirt
     bool grassCap = true;
     // wobble the altitude bands so grass->stone->snow is an IRREGULAR coastline, not a
     // dead-flat contour line. ±~22m of noisy threshold offset breaks the hard band edge.
     int hb = h + (int)((fbm(wx*0.030f + 7.3f, wz*0.030f + 5.1f, 2) - 0.5f) * 44.0f);
-    if (hb >= 252)      { capC = rgb8(204,214,224); colC = rgb8(132,140,154); grassCap = false; } // snowcap
+    if (hb >= 252)      { capC = rgb8(210,220,230); colC = rgb8(132,140,154); grassCap = false; } // snowcap
     else if (hb >= 152) { capC = rgb8(128,138,146); colC = rgb8(108,116,126); grassCap = false; } // high stone
-    else if (beach)    { capC = rgb8(242,228,184); grassCap = false; }                            // sand
-    else if (humid < 0.23f && temp > 0.42f) { capC = rgb8(214,196,108); colC = rgb8(162,126,72); grassCap = false; bm.treeType = 3; bm.treeDen = 0.003f; } // dry scrub
-    else if (humid > 0.72f && bio < 0.72f)  { capC = rgb8( 76,176, 92); colC = rgb8(118, 96,72);                  bm.treeType = 0; bm.treeDen = 0.032f; } // lush woodland
-    else if (bio < 0.34f) {                                                                        bm.treeType = 0; bm.treeDen = 0.007f; } // plains
-    else if (bio < 0.58f) { capC = rgb8(118,206,108);                                              bm.treeType = 1; bm.treeDen = 0.022f; } // forest
-    else if (bio < 0.78f) { capC = rgb8(210,202,132);                                              bm.treeType = 3; bm.treeDen = 0.004f; } // savanna
-    else                  { capC = rgb8(112,150,112); colC = rgb8(118,104,86);                     bm.treeType = 2; bm.treeDen = 0.010f; } // cool spruce/tundra
-    // tycoon-style soft ground patches: a low-freq tint nudges grass between lush and
-    // sun-bleached so the land never reads flat (only on grass-capped biomes).
+    else if (beach)     { capC = rgb8(238,224,168); grassCap = false; }                            // sand beach
+    // --- low-altitude biomes on a temperature x humidity grid: DISTINCT colours (not all
+    // shades of the same green) so biome changes read clearly — the user's "always the same
+    // green stuff" was near-identical plains/forest greens + a cross-biome homogeniser. ---
+    else if (temp < 0.32f) {                                                                                  // COLD
+        if (humid > 0.50f) { capC = rgb8( 92,152,116); colC = rgb8( 92,104, 86); bm.treeType = 2; bm.treeDen = 0.030f; } // taiga (blue-green spruce)
+        else               { capC = rgb8(160,176,150); colC = rgb8(120,122,116); bm.treeType = 2; bm.treeDen = 0.006f; } // tundra (grey-green)
+    } else if (temp > 0.68f) {                                                                                // HOT
+        if (humid < 0.34f) { capC = rgb8(226,206,128); colC = rgb8(176,138, 78); grassCap = false; bm.treeType = 3; bm.treeDen = 0.0025f; } // desert (pale sand)
+        else if (humid < 0.62f){capC = rgb8(202,194,112); colC = rgb8(166,142, 84);                bm.treeType = 3; bm.treeDen = 0.006f; }   // savanna (tan-yellow)
+        else               { capC = rgb8( 58,156, 72); colC = rgb8( 94, 82, 62); bm.treeType = 0; bm.treeDen = 0.040f; } // jungle (rich deep green)
+    } else {                                                                                                  // TEMPERATE
+        if (humid < 0.30f) { capC = rgb8(190,196,104); colC = rgb8(154,138, 82); bm.treeType = 3; bm.treeDen = 0.004f; } // dry grassland (yellow-green)
+        else if (bio < 0.48f){capC = rgb8(140,200, 92);                          bm.treeType = 0; bm.treeDen = 0.008f; }  // plains (bright green)
+        else               { capC = rgb8( 66,142, 70); colC = rgb8(108, 90, 66); bm.treeType = 1; bm.treeDen = 0.026f; } // forest (deep green)
+    }
+    // subtle per-area BRIGHTNESS wobble so a single biome doesn't read dead-flat — NO hue
+    // shift (the old cross-biome colour blend pulled every green biome toward one tint).
     if (grassCap) {
-        float patch = vnoise(wx * 0.03f + 7.7f, wz * 0.03f + 4.2f);
-        float3 lush = rgb8(96,188,96), dry = rgb8(196,206,120);
-        float3 mix  = lush + (dry - lush) * patch;
-        capC = capC + (mix - capC) * 0.35f;
+        float patch = vnoise(wx * 0.03f + 7.7f, wz * 0.03f + 4.2f) - 0.5f;
+        capC = capC * (1.0f + patch * 0.12f);
     }
     bm.cap = capC; bm.col = colC;
     return bm;

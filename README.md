@@ -28,6 +28,17 @@ cmake --build build -j
 This produces `./minecoaster`. On macOS you can also just run `./build.sh`, or
 double-click `MINECOASTER.command`.
 
+## Windows RTX renderer (DXR + DLSS 4.5)
+
+An alternative **hardware ray-tracing** renderer for Windows + NVIDIA RTX lives in
+[`win-rtx/`](win-rtx/). It bakes the same voxel world, builds a DXR acceleration
+structure from the 8³ macro-bricks, path-traces it on RT cores, and denoises +
+upscales with **DLSS 4.5** (Super Resolution + Ray Reconstruction) via NVIDIA
+Streamline — mirroring the look of the software tracer in `src/pathtrace.cpp`.
+See [`win-rtx/README.md`](win-rtx/README.md) and
+[`win-rtx/ARCHITECTURE.md`](win-rtx/ARCHITECTURE.md). (Windows + RTX only; the
+cross-platform build above is unchanged.)
+
 ## Run
 
 ```sh

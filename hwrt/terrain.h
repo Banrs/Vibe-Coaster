@@ -87,6 +87,52 @@ static float groundTopAt(float x, float z) {
     return fmaxf((float)terrainH(x, z) + 1.0f, WATER_Y);
 }
 
+// ---------------------------------------------------------------------------
+// BIOME SYSTEM — ported 1:1 from src/main.cpp's per-column biome pick (~line 2132).
+// Humidity/temperature/bio noise + height select a biome, which sets the surface
+// CAP colour, the COLUMN (dirt body) colour, and the tree TYPE + per-area DENSITY.
+// Renderer-agnostic (pure function of world x,z + column height) so it ports cleanly
+// to DXR/Vulkan. treeType: -1 none, 0 oak, 1 birch, 2 spruce, 3 acacia.
+// ---------------------------------------------------------------------------
+struct Biome {
+    float3 cap;        // surface cap colour
+    float3 col;        // dirt/body column colour
+    int    treeType;   // -1 none, 0 oak, 1 birch, 2 spruce, 3 acacia
+    float  treeDen;    // per-area tree density (probability per m^2-ish)
+};
+static inline float3 rgb8(int r, int g, int b) {
+    return vec3(r / 255.0f, g / 255.0f, b / 255.0f);
+}
+static Biome biomeAt(float wx, float wz, int h, bool beach) {
+    Biome bm;
+    bm.treeType = -1; bm.treeDen = 0.0f;
+    float bio   = vnoise(wx * 0.0045f + 91.3f, wz * 0.0045f + 23.1f);
+    float humid = fbm(wx * 0.0028f + 44.0f,  wz * 0.0028f + 108.0f, 2);
+    float temp  = fbm(wx * 0.0019f + 12.0f,  wz * 0.0019f + 204.0f, 2);
+    float3 capC = rgb8(130, 206, 102);   // GRASS
+    float3 colC = rgb8(158, 116,  82);   // DIRT
+    bool grassCap = true;
+    if (h >= 260)      { capC = rgb8(204,214,224); colC = rgb8(132,140,154); grassCap = false; } // snowcap
+    else if (h >= 158) { capC = rgb8(128,138,146); colC = rgb8(108,116,126); grassCap = false; } // high stone
+    else if (beach)    { capC = rgb8(242,228,184); grassCap = false; }                            // sand
+    else if (humid < 0.23f && temp > 0.42f) { capC = rgb8(214,196,108); colC = rgb8(162,126,72); grassCap = false; bm.treeType = 3; bm.treeDen = 0.003f; } // dry scrub
+    else if (humid > 0.72f && bio < 0.72f)  { capC = rgb8( 76,176, 92); colC = rgb8(118, 96,72);                  bm.treeType = 0; bm.treeDen = 0.032f; } // lush woodland
+    else if (bio < 0.34f) {                                                                        bm.treeType = 0; bm.treeDen = 0.007f; } // plains
+    else if (bio < 0.58f) { capC = rgb8(118,206,108);                                              bm.treeType = 1; bm.treeDen = 0.022f; } // forest
+    else if (bio < 0.78f) { capC = rgb8(210,202,132);                                              bm.treeType = 3; bm.treeDen = 0.004f; } // savanna
+    else                  { capC = rgb8(112,150,112); colC = rgb8(118,104,86);                     bm.treeType = 2; bm.treeDen = 0.010f; } // cool spruce/tundra
+    // tycoon-style soft ground patches: a low-freq tint nudges grass between lush and
+    // sun-bleached so the land never reads flat (only on grass-capped biomes).
+    if (grassCap) {
+        float patch = vnoise(wx * 0.03f + 7.7f, wz * 0.03f + 4.2f);
+        float3 lush = rgb8(96,188,96), dry = rgb8(196,206,120);
+        float3 mix  = lush + (dry - lush) * patch;
+        capC = capC + (mix - capC) * 0.35f;
+    }
+    bm.cap = capC; bm.col = colC;
+    return bm;
+}
+
 // Visible-face voxel mesh over a rectangular world region centred on the
 // coaster. Heights come from the real terrainH(); a flat water plane fills
 // any cell whose ground sits below WATER_Y.
@@ -501,52 +547,67 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
     }
 
     int waterLvl = (int)floorf(WATER_Y / cell + 0.5f);
-    float3 grass = vec3(0.22f, 0.42f, 0.15f);
-    float3 grassHi = vec3(0.24f, 0.44f, 0.16f);
-    float3 dirt  = vec3(0.36f, 0.25f, 0.15f);
-    float3 rock  = vec3(0.40f, 0.39f, 0.40f);
-    float3 snow  = vec3(0.90f, 0.92f, 0.96f);
-    float3 sand  = vec3(0.76f, 0.69f, 0.46f);
-    float3 water = vec3(0.16f, 0.34f, 0.46f);
     int snowLvl = (int)(200.0f / cell);
     int rockLvl = (int)(150.0f / cell);
 
-    // albedo class per inner cell (matches buildTerrain). x^z grass dither is keyed to
-    // ABSOLUTE cell coords so it doesn't flip across chunk seams.
-    auto albClassAt = [&](int x, int z) -> int {
-        int h = h_at(x, z);
-        int slope = std::abs(h - h_at(x-1,z)) + std::abs(h - h_at(x+1,z)) +
-                    std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
-        if      (h <= waterLvl + 1)          return 0;
-        else if (h >= snowLvl)               return 1;
-        else if (h >= rockLvl || slope >= 6) return 2;
-        else return (((cellX0 + x) ^ (cellZ0 + z)) & 1) ? 3 : 4;
-    };
-    float3 classAlb[5] = { sand, snow, rock, grass, grassHi };
-
-    // --- trees (deterministic, world-cell-keyed, track-cleared) — same rule as buildTerrain
+    // --- per-cell BIOME (cap colour + column colour + tree type/density). Ported from
+    // src/main.cpp's per-column biome pick. The cap colour varies continuously (patch
+    // tint), so a QUANTIZED 16-level packed key is computed for greedy-merge equality —
+    // same-biome neighbours still merge into big runs, distinct biomes split. Stone/snow
+    // and high-slope cells override to the rock/snow look. Keyed to world coords so the
+    // biome is identical no matter which chunk meshes a cell (no seam mismatch).
+    int MM = M * M;
+    std::vector<float3>   capCol(MM), colCol(MM);
+    std::vector<uint32_t> capKey(MM);
+    std::vector<char>     capTree(MM);     // tree type (-1..3)
+    std::vector<float>    capDen(MM);
+    float3 rockC = vec3(0.40f, 0.39f, 0.40f), snowC = vec3(0.90f, 0.92f, 0.96f);
     for (int z = 0; z < M; z++)
         for (int x = 0; x < M; x++) {
             int h = h_at(x, z);
             int slope = std::abs(h - h_at(x-1,z)) + std::abs(h - h_at(x+1,z)) +
                         std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
-            int ac = albClassAt(x, z);
-            bool isGrass = (ac == 3 || ac == 4);
-            if (cps && isGrass && h < snowLvl && slope < 4 && !carved[z * M + x]) {
+            bool beach = (h <= waterLvl + 1);
+            float wx = worldX(x) + cell * 0.5f, wz = worldZ(z) + cell * 0.5f;
+            Biome bm = biomeAt(wx, wz, h, beach);
+            // exposed high stone / steep slopes read as rock (overrides the biome cap)
+            if (h < snowLvl && h < 260 && (h >= rockLvl || slope >= 6) && !beach) {
+                bm.cap = rockC; bm.col = vec3(0.36f,0.25f,0.15f); bm.treeType = -1;
+            }
+            int idx = z * M + x;
+            capCol[idx] = bm.cap; colCol[idx] = bm.col;
+            capTree[idx] = (char)bm.treeType; capDen[idx] = bm.treeDen;
+            uint32_t qr = (uint32_t)(t_Clamp(bm.cap.x,0,1) * 15.0f + 0.5f);
+            uint32_t qg = (uint32_t)(t_Clamp(bm.cap.y,0,1) * 15.0f + 0.5f);
+            uint32_t qb = (uint32_t)(t_Clamp(bm.cap.z,0,1) * 15.0f + 0.5f);
+            capKey[idx] = (qr << 8) | (qg << 4) | qb;
+        }
+    auto keyAt = [&](int x, int z) -> uint32_t { return capKey[z * M + x]; };
+    float3 water = vec3(0.16f, 0.34f, 0.46f);
+
+    // --- trees (deterministic, world-cell-keyed, track-cleared) — biome drives TYPE + DENSITY
+    for (int z = 0; z < M; z++)
+        for (int x = 0; x < M; x++) {
+            int h = h_at(x, z);
+            int slope = std::abs(h - h_at(x-1,z)) + std::abs(h - h_at(x+1,z)) +
+                        std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
+            int tt = capTree[z * M + x];
+            float den = capDen[z * M + x];
+            if (cps && tt >= 0 && den > 0.0f && h < snowLvl && slope < 4 && !carved[z * M + x]) {
                 float wcx = worldX(x) + cell * 0.5f, wcz = worldZ(z) + cell * 0.5f;
                 float topY = h * cell;
                 int ax = cellX0 + x, az = cellZ0 + z;
-                // Thinned (0.07->0.028->0.013): sparse stands, not wall-to-wall forest -> lower RT cost.
-                float dens = 0.013f * (cell / 6.0f) * (cell / 6.0f);
-                if (hashf(ax * 7 + 1, az * 7 + 3) < dens) {
+                if (hashf(ax * 7 + 1, az * 7 + 3) < den) {
                     bool clear = true;
                     for (int k = 0; k < ncps; k++) {
                         float dx = cps[k].x - wcx, dz = cps[k].z - wcz;
                         if (dx*dx + dz*dz < 49.0f) { clear = false; break; }
                     }
                     if (clear) {
-                        float r2 = hashf(ax * 3 + 5, az * 9 + 2);
-                        int type = (h > rockLvl - 6) ? 2 : (r2 < 0.30f ? 1 : 0);
+                        // forest (birch) mixes in some oak; map acacia(3) -> oak look (no acacia mesh)
+                        int type = tt;
+                        if (type == 3) type = 0;
+                        if (type == 1 && hashf(ax*3+5, az*9+2) > 0.5f) type = 0;
                         float s  = 1.3f + hashf(ax * 5 + 7, az * 5 + 1) * 0.9f;
                         pushTree(out, wcx, topY, wcz, type, s);
                     }
@@ -554,21 +615,21 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
             }
         }
 
-    // --- GREEDY top faces over the inner MxM cells ---
+    // --- GREEDY top faces over the inner MxM cells (merge on height + quantized cap key) ---
     std::vector<char> done(M * M, 0);
     for (int z = 0; z < M; z++)
         for (int x = 0; x < M; x++) {
             if (done[z * M + x]) continue;
-            int h = h_at(x, z), ac = albClassAt(x, z);
+            int h = h_at(x, z); uint32_t ac = keyAt(x, z);
             int w = 1;
             while (x + w < M && !done[z * M + x + w] &&
-                   h_at(x + w, z) == h && albClassAt(x + w, z) == ac) w++;
+                   h_at(x + w, z) == h && keyAt(x + w, z) == ac) w++;
             int d = 1;
             for (; z + d < M; d++) {
                 bool ok = true;
                 for (int k = 0; k < w; k++)
                     if (done[(z + d) * M + x + k] || h_at(x + k, z + d) != h ||
-                        albClassAt(x + k, z + d) != ac) { ok = false; break; }
+                        keyAt(x + k, z + d) != ac) { ok = false; break; }
                 if (!ok) break;
             }
             for (int dz = 0; dz < d; dz++)
@@ -576,7 +637,7 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
             float topY = h * cell;
             float x0 = worldX(x), x1 = worldX(x + w), z0 = worldZ(z), z1 = worldZ(z + d);
             pushQuad(out, vec3(x0, topY, z0), vec3(x1, topY, z0),
-                     vec3(x1, topY, z1), vec3(x0, topY, z1), vec3(0, 1, 0), classAlb[ac]);
+                     vec3(x1, topY, z1), vec3(x0, topY, z1), vec3(0, 1, 0), capCol[z * M + x]);
         }
 
     // --- GREEDY side walls (neighbours may be in the padding -> seam walls correct) ---
@@ -590,10 +651,11 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                 float y0 = nb * cell, y1 = h * cell;
                 float zz0 = worldZ(z), zz1 = worldZ(z + run);
                 float wx = (sign < 0) ? worldX(x) : worldX(x + 1);
+                float3 bc = colCol[z * M + x];
                 if (sign < 0)
-                    pushQuad(out, vec3(wx,y0,zz0), vec3(wx,y0,zz1), vec3(wx,y1,zz1), vec3(wx,y1,zz0), vec3(-1,0,0), dirt);
+                    pushQuad(out, vec3(wx,y0,zz0), vec3(wx,y0,zz1), vec3(wx,y1,zz1), vec3(wx,y1,zz0), vec3(-1,0,0), bc);
                 else
-                    pushQuad(out, vec3(wx,y0,zz1), vec3(wx,y0,zz0), vec3(wx,y1,zz0), vec3(wx,y1,zz1), vec3(1,0,0), dirt);
+                    pushQuad(out, vec3(wx,y0,zz1), vec3(wx,y0,zz0), vec3(wx,y1,zz0), vec3(wx,y1,zz1), vec3(1,0,0), bc);
                 z += run;
             }
     };
@@ -607,10 +669,11 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                 float y0 = nb * cell, y1 = h * cell;
                 float xx0 = worldX(x), xx1 = worldX(x + run);
                 float wz = (sign < 0) ? worldZ(z) : worldZ(z + 1);
+                float3 bc = colCol[z * M + x];
                 if (sign < 0)
-                    pushQuad(out, vec3(xx1,y0,wz), vec3(xx0,y0,wz), vec3(xx0,y1,wz), vec3(xx1,y1,wz), vec3(0,0,-1), dirt);
+                    pushQuad(out, vec3(xx1,y0,wz), vec3(xx0,y0,wz), vec3(xx0,y1,wz), vec3(xx1,y1,wz), vec3(0,0,-1), bc);
                 else
-                    pushQuad(out, vec3(xx0,y0,wz), vec3(xx1,y0,wz), vec3(xx1,y1,wz), vec3(xx0,y1,wz), vec3(0,0,1), dirt);
+                    pushQuad(out, vec3(xx0,y0,wz), vec3(xx1,y0,wz), vec3(xx1,y1,wz), vec3(xx0,y1,wz), vec3(0,0,1), bc);
                 x += run;
             }
     };

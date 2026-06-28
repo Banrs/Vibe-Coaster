@@ -1419,7 +1419,8 @@ int main(int argc, char **argv) {
     SetExitKey(KEY_NULL);
     SetTargetFPS(120);
     InitAudioDevice();
-    SetMasterVolume(0.55f);
+    bool muteAudio = getenv("MC_MUTE") != nullptr;
+    SetMasterVolume(muteAudio ? 0.0f : 0.55f);
     gAtlas = makeAtlas();
     gTerrainMat = LoadMaterialDefault();
     gTerrainMat.maps[MATERIAL_MAP_DIFFUSE].texture = gAtlas;
@@ -2178,13 +2179,21 @@ int main(int argc, char **argv) {
                         drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
                     }
                 } else {
-                    int hpx = gHCache.get(cx + 1, cz), hmx = gHCache.get(cx - 1, cz);
-                    int hpz = gHCache.get(cx, cz + 1), hmz = gHCache.get(cx, cz - 1);
-                    unsigned sm = 0;
-                    if (hpx < h) sm |= FACE_PX; if (hmx < h) sm |= FACE_NX;
-                    if (hpz < h) sm |= FACE_PZ; if (hmz < h) sm |= FACE_NZ;
-                    capCubeMasked(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col, sm);
-                    capCubeMasked(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap, sm | FACE_PY);
+                    // Heightfield surface: grass cap on top + each exposed cliff face clipped to
+                    // the NEIGHBOUR's surface (only h..hN is visible). No deep buried column is
+                    // generated, so terrain is a thin skin, not 42-unit strips plunging underground.
+                    int hN[4] = { gHCache.get(cx + 1, cz), gHCache.get(cx - 1, cz),
+                                  gHCache.get(cx, cz + 1), gHCache.get(cx, cz - 1) };
+                    unsigned fc[4] = { FACE_PX, FACE_NX, FACE_PZ, FACE_NZ };
+                    unsigned capSides = FACE_PY;
+                    for (int n = 0; n < 4; n++) if (hN[n] < h) capSides |= fc[n];
+                    capCubeMasked(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap, capSides);
+                    for (int n = 0; n < 4; n++) {
+                        if (hN[n] >= h) continue;
+                        float dh = (float)(h - 1 - hN[n]);
+                        if (dh > 0.01f)
+                            capCubeMasked(T_GRAIN, Vector3{ wx, h - dh * 0.5f, wz }, cellSz, dh, cellSz, col, fc[n]);
+                    }
                 }
 
                 if (top < WATER_Y && !depthPass) gCapCur->water.push_back(Vector3{ wx, cellSz, wz });

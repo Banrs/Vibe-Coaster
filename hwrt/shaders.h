@@ -236,7 +236,12 @@ static float3 ambientFill(float3 n) {
     float up = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
     float3 skyCol = float3(0.15, 0.21, 0.33);  // cool sky fill (SW skyCol)
     float3 gndCol = float3(0.13, 0.10, 0.075); // warm ground bounce (SW gndCol)
-    return mix(gndCol, skyCol, up);
+    // Halved: this analytic hemisphere term is now only a small FLOOR (keeps deeply-occluded
+    // crevices from going black + noisy). The bulk of the indirect/ambient is the RAY-TRACED
+    // GI gather (1 bounce + per-ray sky-visibility via sampleSkyLite), so the ambient is
+    // genuinely ray-traced rather than a faked constant fill. (User: ray-trace everything that
+    // can be.) The temporal denoiser makes the stronger RT-GI reliance clean.
+    return mix(gndCol, skyCol, up) * 0.5;
 }
 
 // ===========================================================================
@@ -610,7 +615,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
         float ao = 1.0 - aoSum / float(AO_SAMPLES);
         ao = mix(0.26, 1.0, ao);                   // deeper darkest AO -> crevices/contact grounds the voxel steps (was 0.35, looked floaty)
         float3 gi = giSum / float(AO_SAMPLES);
-        color = color * ao + surfAlb * gi * 0.45;
+        color = color * ao + surfAlb * gi * 0.80;   // RT GI carries more of the indirect now the analytic ambient floor is halved
 
         // --- Reflections on water and metal ---
         if (hit.mat == MAT_METAL) {

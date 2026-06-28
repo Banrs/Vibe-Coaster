@@ -70,35 +70,47 @@ static const char *SHADOW_FS =
     // a small animated ripple normal, a Schlick fresnel that fades the body toward a
     // bright sky-tinted reflection at grazing angles, depth-darkening from the body
     // tint, and a tight specular sun highlight. Returns the linear-HDR water colour.
-    "vec3 waterShade(vec3 baseCol, float rawSh){\n"
+    // small hash + value noise for fine ripple detail / foam fizz (cheap 2D)
+    "float wh2(vec2 p){ return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453); }\n"
+    "float wvn(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);\n"
+    "  return mix(mix(wh2(i),wh2(i+vec2(1,0)),f.x), mix(wh2(i+vec2(0,1)),wh2(i+vec2(1,1)),f.x), f.y); }\n"
+    // foam>0 marks the shoreline ring (passed from the vertex alpha tag).
+    "vec3 waterShade(vec3 baseCol, float rawSh, float foam){\n"
     "  vec3 V = normalize(viewPos - fragWorld);\n"
     "  vec2 w = fragWorld.xz;\n"
-    // two crossing low-freq sine ripples (animated by uTime; static if unwired)
+    // crossing low-freq sine ripples + a finer noise-driven wrinkle for sparkle.
+    // Amplitude is kept SMALL: large ripple normals make the fresnel term oscillate
+    // across the foreground and tear into concentric bullseye rings. We also fade the
+    // ripple toward the horizon (where the surface should read as a calm mirror) using
+    // 1/(1+dist) so the far water stays smooth and doesn't shimmer/alias.
     "  float t = uTime;\n"
-    "  float nx = 0.05*sin(w.x*0.55 + w.y*0.31 + t*1.3)\n"
-    "           + 0.035*sin(w.y*1.07 - t*0.9)\n"
-    "           + 0.025*sin((w.x+w.y)*0.83 + t*1.7);\n"
-    "  float nz = 0.05*sin(w.y*0.55 + w.x*0.31 - t*1.1)\n"
-    "           + 0.035*sin(w.x*1.07 + t*0.8)\n"
-    "           + 0.025*sin((w.x-w.y)*0.83 - t*1.5);\n"
-    "  vec3 N = normalize(vec3(nx, 1.0, nz));\n"
+    "  float wdist = length(viewPos.xz - w);\n"
+    "  float amp = 1.0 / (1.0 + wdist*0.018);\n"  // ~1 up close -> calmer far away
+    "  float nx = 0.032*sin(w.x*0.55 + w.y*0.31 + t*1.3)\n"
+    "           + 0.022*sin(w.y*1.07 - t*0.9)\n"
+    "           + 0.014*sin((w.x+w.y)*0.83 + t*1.7);\n"
+    "  float nz = 0.032*sin(w.y*0.55 + w.x*0.31 - t*1.1)\n"
+    "           + 0.022*sin(w.x*1.07 + t*0.8)\n"
+    "           + 0.014*sin((w.x-w.y)*0.83 - t*1.5);\n"
+    "  nx += (wvn(w*1.6 + t*0.25)-0.5)*0.028;\n"             // fine high-freq wrinkle
+    "  nz += (wvn(w*1.6 - t*0.21)-0.5)*0.028;\n"
+    "  vec3 N = normalize(vec3(nx*amp, 1.0, nz*amp));\n"
     "  float NoV = max(dot(N, V), 0.0);\n"
-    "  float fres = clamp(0.04 + 0.96*pow(1.0 - NoV, 5.0), 0.04, 0.95);\n"
-    // body: depth/shadow-darkened tint of the incoming water colour, lifted slightly
-    // where the sun lights the surface so shallows read warmer than deep water
+    // crisper Schlick fresnel; shoreline foam suppresses the mirror so shallows stay matte
+    "  float fres = clamp(0.02 + 0.98*pow(1.0 - NoV, 5.0), 0.02, 0.62);\n"
+    "  fres *= (1.0 - foam*0.65);\n"
+    // body: depth/shadow-darkened tint of the incoming (shallow->deep) water colour,
+    // lifted where the sun lights it so shallows read warmer/brighter than the deep.
     "  vec3 body = toLinear(baseCol);\n"
     "  float ndlW = max(dot(N, lightDir), 0.0);\n"
-    "  vec3 deep = body * (0.30 + 0.55*ndlW*mix(0.4,1.0,rawSh)) + groundCol*0.05;\n"
-    // reflection: no scene reflection in the raster pass, so reflect a BRIGHT sky
-    // gradient (a deep zenith blue fading to a pale luminous horizon) along the
-    // reflected ray — NOT the dark ambient skyCol uniform, which made grazing water
-    // read near-black and blotch over the clouds at the horizon. Warmed toward the sun.
+    "  vec3 deep = body * (0.62 + 0.46*ndlW*mix(0.4,1.0,rawSh)) + groundCol*0.04;\n"
+    // reflection: reflect a BRIGHT sky gradient (deep zenith blue -> pale luminous
+    // horizon) along the reflected ray, warmed toward the sun.
     "  vec3 R = reflect(-V, N);\n"
     "  float ry = clamp(R.y, 0.0, 1.0);\n"
-    "  float horiz = pow(1.0 - ry, 2.0);\n"
-    "  vec3 skyZen  = vec3(0.30, 0.52, 0.92);\n"      // bright zenith blue (linear-ish)
-    "  vec3 skyHorz = vec3(0.72, 0.84, 0.98);\n"      // pale luminous horizon
-    "  vec3 sky = mix(skyHorz, skyZen, pow(ry, 0.55));\n"
+    "  vec3 skyZen  = vec3(0.24, 0.46, 0.86);\n"      // deep zenith blue (linear-ish)
+    "  vec3 skyHorz = vec3(0.52, 0.70, 0.92);\n"      // luminous but still blue horizon
+    "  vec3 sky = mix(skyHorz, skyZen, pow(ry, 0.45));\n"
     "  float sunGlow = pow(max(dot(R, lightDir), 0.0), 8.0);\n"  // warm reflected-sun smear
     "  vec3 refl = mix(sky, sunCol*0.55, 0.30*sunGlow);\n"
     "  vec3 col = mix(deep, refl, fres);\n"
@@ -106,6 +118,14 @@ static const char *SHADOW_FS =
     "  vec3 H = normalize(lightDir + V);\n"
     "  float glint = pow(max(dot(N,H),0.0), 200.0)*rawSh;\n"
     "  col += sunCol*glint*1.6;\n"
+    // ---- shoreline foam: a soft animated white band on the shallowest ring. A
+    // noise lace (two octaves, drifting) breaks the band into lacy froth, fading
+    // out as the water deepens. Kept subtle so it reads as foam, not snow.
+    "  if(foam > 0.001){\n"
+    "    float lace = wvn(w*2.3 + t*0.6)*0.6 + wvn(w*5.1 - t*0.4)*0.4;\n"
+    "    float froth = smoothstep(0.45, 0.95, lace) * foam;\n"
+    "    col = mix(col, vec3(0.92,0.96,0.98), clamp(froth*0.85, 0.0, 0.8));\n"
+    "  }\n"
     "  return col;\n"
     "}\n"
     "void main(){\n"
@@ -116,10 +136,12 @@ static const char *SHADOW_FS =
     // as a real liquid surface and skip the diffuse land path entirely.
     "  if(fragColor.a < 0.72 && normalize(fragNormal).y > 0.80 && base.b > base.r*1.15){\n"
     "    float rawShW = shadow(vec3(0.0,1.0,0.0));\n"
-    "    vec3 wcol = waterShade(base, rawShW);\n"
+    // shoreline cells are tagged with a raised alpha (~0.70 vs ~0.59) -> foam factor.
+    "    float foam = smoothstep(0.62, 0.70, fragColor.a);\n"
+    "    vec3 wcol = waterShade(base, rawShW, foam);\n"
     "    wcol = aces(wcol*0.94);\n"
     "    wcol = pow(wcol, vec3(1.0/2.2));\n"
-    "    float wa = 0.90;\n"
+    "    float wa = mix(0.90, 0.96, foam);\n"
     // same distance fog the terrain uses: the continuous water sheet fades to the
     // sky tint (and its alpha drops) toward the cull radius, so there's no hard
     // circular edge where the water disc ends — it dissolves into the horizon.

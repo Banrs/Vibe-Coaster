@@ -67,7 +67,7 @@ static const Color SKY    = {186, 205, 232, 255};   // depth-clear fallback (the
 // near-horizon band (HORIZON vec3(0.74,0.84,0.98) lifted toward the bright hazy
 // band) so the far terrain melts into atmosphere instead of reading as a flat grey
 // wall at the cull radius. Slightly brighter + bluer than the old SKY tint.
-static const Color FOG    = {191, 211, 238, 255};
+static const Color FOG    = {198, 214, 232, 255};
 static const Color GRASS  = {130, 206, 102, 255};
 static const Color SAND   = {242, 228, 184, 255};
 static const Color DIRT   = {158, 116,  82, 255};
@@ -2806,12 +2806,27 @@ int main(int argc, char **argv) {
             float wu = (T_WHITE * 16 + 8.0f) / (float)(TILE_N * 16);
             float wv = 8.0f / 16.0f;
             rlBegin(RL_QUADS);
-            rlColor4ub(WATER.r, WATER.g, WATER.b, 150);
             rlNormal3f(0, 1, 0);
+            // Per-cell depth-tint + shoreline foam baked into the vertex COLOUR so the
+            // water reads as a real lake (shallow turquoise near shore -> deep blue out
+            // in the basin), while staying blue-dominant + alpha<0.72 so the shader's
+            // water test still fires. depth = how far the lakebed sits below the surface.
+            // SHALLOW: lighter, greener; DEEP: darker, bluer. Cells one block deep (the
+            // shoreline ring) get an alpha lift -> the shader paints soft foam there.
             for (auto &wc : waterCells) {
                 float hs = wc.y * 0.5f;                 // wc.y carries the LOD cell size
                 float x0 = wc.x - hs, x1 = wc.x + hs;
                 float z0 = wc.z - hs, z1 = wc.z + hs;
+                float bed   = (float)terrainH((int)floorf(wc.x), (int)floorf(wc.z)) + 1.0f;
+                float depth = WATER_Y - bed;            // metres of water over the bed
+                float dN    = 1.0f - expf(-depth * 0.32f);   // 0 at shore -> ~1 in the deep
+                Color shallow = { 96, 196, 198, 150 };  // turquoise shallows
+                Color deep    = { 54, 132, 196, 150 };  // deep basin blue (brighter, not gloomy)
+                Color wcol = mixc(shallow, deep, dN);
+                // shoreline ring: very shallow water -> tag with a higher alpha (still
+                // <0.72) so the shader knows to foam + de-reflect the edge.
+                unsigned char wa = (depth < 1.6f) ? 178 : 150;
+                rlColor4ub(wcol.r, wcol.g, wcol.b, wa);
                 rlTexCoord2f(wu, wv); rlVertex3f(x0, WATER_Y, z0);
                 rlTexCoord2f(wu, wv); rlVertex3f(x0, WATER_Y, z1);
                 rlTexCoord2f(wu, wv); rlVertex3f(x1, WATER_Y, z1);

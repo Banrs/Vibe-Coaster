@@ -213,16 +213,17 @@ static float3 sampleSkyLite(float3 dir, float3 sunDir) {
     return col;
 }
 
-// Sky-hemisphere ambient (cool from above, warm bounce from below). Dialled DOWN
-// HARD vs before so the soft ray-traced sun shadows read with real depth — shadowed
-// faces should sink to a believable cool value, NOT near-white. The sky tint is both
-// dimmer and less saturated-blue so it no longer washes the whole terrain teal; the
-// warm sun stays the dominant, contrast-defining light.
+// Sky-hemisphere ambient (cool from above, warm bounce from below). Matched 1:1 to
+// the software renderer's lit shader (src/main.cpp ~line 2727): skyCol cool blue from
+// above, gndCol warm earth bounce from below, mixed by the up-facing factor. Because
+// lighting now runs in LINEAR space (albedo is linearized before this is applied),
+// these values are the linear-space radiances the SW game feeds its hemisphere term —
+// so shadowed faces sink to the same believable cool value and grass keeps its green.
 static float3 ambientFill(float3 n) {
     float up = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    float3 skyTint    = float3(0.090, 0.108, 0.135); // dim + only slightly cool (was strongly blue -> flat ground read teal); shadows still sink, grass keeps its green
-    float3 groundTint = float3(0.062, 0.054, 0.045); // dimmer warm up-bounce from the ground
-    return mix(groundTint, skyTint, up) + float3(0.010, 0.010, 0.013);
+    float3 skyCol = float3(0.15, 0.21, 0.33);  // cool sky fill (SW skyCol)
+    float3 gndCol = float3(0.13, 0.10, 0.075); // warm ground bounce (SW gndCol)
+    return mix(gndCol, skyCol, up);
 }
 
 // ===========================================================================
@@ -325,7 +326,7 @@ static float softSunShadow(float3 pos, float3 n, float3 L, thread float& rng,
                           instance_acceleration_structure accel) {
     float3 t, b; basis(L, t, b);
     float occ = 0.0;
-    const int S = 12;                            // shadow samples: 12 = cleaner soft penumbra while staying well above 90fps
+    const int S = 18;                            // shadow samples: 18 (up from 12) = cleaner soft penumbra; balanced against MetalFX-upscaled fps (60-120)
     for (int i = 0; i < S; i++) {
         rng = fract(rng * 1.61803 + 0.31831);
         float a = rng * 6.2831853;
@@ -459,7 +460,13 @@ static float3 sunSpec(float3 n, float3 V, float3 L, float rough, float3 specCol)
 static float3 shadeSurface(float3 pos, float3 n, float3 albedo, int mat, int tile,
                            float3 L, float3 V, thread float& rng,
                            instance_acceleration_structure accel, int shadowMode) {
+    // Detail-texture modulation, then LINEARIZE the albedo (pow 2.2) so all lighting is
+    // done in linear space exactly like the software renderer's lit shader (toLinear).
+    // Lighting sRGB albedo directly was the cause of the washed-out / desaturated look:
+    // sRGB-space lighting lifts midtones and flattens colour. The texture multiply is a
+    // mean-1 detail term so applying it before linearization keeps the same character.
     albedo = blockTexture(albedo, pos, n, mat, tile);
+    albedo = pow(albedo, float3(2.2));
     float ndl = max(dot(n, L), 0.0);
     float shadow = 1.0;
     if (shadowMode > 0 && ndl > 0.0) {
@@ -470,7 +477,10 @@ static float3 shadeSurface(float3 pos, float3 n, float3 albedo, int mat, int til
             shadow *= cloudSunLight(pos, L);       // dim direct sun under cloud cover
         }
     }
-    float3 sunColor = float3(1.05, 0.92, 0.70);
+    // Warm, bright low-angle key light — linear-space radiance matched to the SW game's
+    // sunCol (1.58,1.38,1.05). Bright (>1) sun is what gives the terrain its sunny punch;
+    // the ACES curve downstream tames the highlights.
+    float3 sunColor = float3(1.58, 1.38, 1.05);
     float3 diff = albedo * sunColor * (ndl * shadow);
     // specular: tight for metal, broad/dim for diffuse surfaces.
     float rough = (mat == MAT_METAL) ? 0.18 : 0.55;
@@ -524,10 +534,12 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
-        const int AO_SAMPLES = 30;                  // 30: cleaner AO/GI while staying well above 90fps (each sample also casts a GI shade ray, so this is the fps-dominant loop)
+        const int AO_SAMPLES = 36;                  // 36 (up from 30): cleaner AO/GI (the user perceives grain here); each sample casts a GI shade ray, so this is the fps-dominant loop -> balanced against the 60-120 fps target with MetalFX upscaling.
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
-        float3 surfAlb = blockTexture(hit.albedo, hit.pos, n, hit.mat, hit.tile);
+        // GI/reflection bleed tint: linearized to match the linear-space radiance the
+        // GI/reflection rays return (lighting runs in linear space, like the SW game).
+        float3 surfAlb = pow(blockTexture(hit.albedo, hit.pos, n, hit.mat, hit.tile), float3(2.2));
         for (int i = 0; i < AO_SAMPLES; i++) {
             rng = fract(rng * 1.61803 + 0.31831);
             float h1 = rng;
@@ -551,7 +563,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
                 float3 gv = -sdir;
                 giSum += shadeSurface(gh.pos, gh.n, gh.albedo, gh.mat, gh.tile, L, gv, rng, accel, 1);
             } else {
-                giSum += sampleSkyLite(sdir, L);   // open sky contributes its colour
+                giSum += pow(sampleSkyLite(sdir, L), float3(2.2));   // open sky (linear) contributes its colour
             }
         }
         float ao = 1.0 - aoSum / float(AO_SAMPLES);
@@ -568,7 +580,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             Hit rh = traceRay(rr, accel, vertsT, vertsK, vertOff, trackInst);
             float3 reflCol = rh.valid
                 ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, rh.tile, L, -refl, rng, accel, 1)
-                : sampleSky(rr.origin, refl, L, t);
+                : pow(sampleSky(rr.origin, refl, L, t), float3(2.2));   // sky -> linear (color is linear)
             color = mix(color, reflCol * surfAlb, 0.55);
         } else if (hit.mat == MAT_WATER) {
             // ---- Rich lake water ----------------------------------------------
@@ -585,8 +597,9 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             // Depth-tinted body colour: bright turquoise shallows -> clear teal-blue.
             // Lifted brighter (deep no longer near-black) so the lake reads inviting,
             // not gloomy, and the deep gradient only sets in over a longer column.
-            float3 shallowCol = float3(0.34, 0.66, 0.70);
-            float3 deepCol    = float3(0.09, 0.30, 0.48);
+            // authored display-space tints, linearized (lighting/compositing is linear)
+            float3 shallowCol = pow(float3(0.34, 0.66, 0.70), float3(2.2));
+            float3 deepCol    = pow(float3(0.09, 0.30, 0.48), float3(2.2));
             float3 bodyCol = mix(shallowCol, deepCol, smoothstep(0.6, 20.0, depth));
 
             // Sun-lit body: keep a touch of diffuse + cloud dimming so it isn't flat.
@@ -609,7 +622,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             Hit rh = traceRay(rr, accel, vertsT, vertsK, vertOff, trackInst);
             float3 reflCol = rh.valid
                 ? shadeSurface(rh.pos, rh.n, rh.albedo, rh.mat, rh.tile, L, -refl, rng, accel, 1)
-                : sampleSky(rr.origin, rr.direction, L, t);
+                : pow(sampleSky(rr.origin, rr.direction, L, t), float3(2.2));   // sky -> linear
 
             // Crisp Schlick Fresnel on the rippled normal: grazing angles mirror the
             // sky, steep angles show the body colour.
@@ -627,29 +640,35 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             float foamN = fbm3(float3(hit.pos.xz * 0.7 + t * 0.01, 0.0));
             float foam = (1.0 - smoothstep(0.0, 1.6, depth)) * (0.55 + 0.6 * foamN);
             foam = clamp(foam, 0.0, 1.0);
-            color = mix(color, float3(0.92, 0.96, 0.97), foam * 0.85);
+            color = mix(color, pow(float3(0.92, 0.96, 0.97), float3(2.2)), foam * 0.85);
         }
     }
 
     // --- Distance fog toward the sky (atmospheric depth, gentle) ---
+    // `color` is LINEAR radiance here, so the fog colour is linearized before the mix
+    // (the sky gradient is authored in display space) — otherwise fog reads as a pale
+    // wash that flattens the distant terrain.
     if (hit.valid) {
         float fog = 1.0 - exp(-hit.dist * 0.00018);
-        float3 fogCol = skyGradient(dir);
+        float3 fogCol = pow(skyGradient(dir), float3(2.2));
         color = mix(color, fogCol, clamp(fog, 0.0, 0.55));
     }
 
     // --- Exposure + ACES filmic tonemap + saturation + contrast + gamma ---
-    color *= 1.02;                                  // exposure: lifted so terrain reads bright/sunny, not pale-flat
+    // Lighting is now done in LINEAR space (albedo linearized in shadeSurface) exactly
+    // like the software renderer, so the ACES curve receives proper linear HDR and the
+    // output is naturally vibrant — the heavy artificial saturation push is no longer
+    // needed (matched to the SW game's aces(col*1.04) then sRGB encode).
+    color *= 1.04;                                  // exposure (matches SW aces(col*1.04))
     float3 x = color;
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     color = clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-    // restore the saturation the filmic curve flattens (a bit stronger now that the
-    // ambient is cooler/dimmer -> greens & earth tones come back without the teal wash)
+    // gentle saturation lift to taste (linear lighting already restores most of it).
     float lum = dot(color, float3(0.2126, 0.7152, 0.0722));
-    color = clamp(mix(float3(lum), color, 1.28), 0.0, 1.0);
+    color = clamp(mix(float3(lum), color, 1.12), 0.0, 1.0);
     // subtle S-curve contrast around mid-grey: deepens shadows, keeps highlights from
     // clipping to flat white -> punchier, more dimensional image.
-    color = clamp(mix(color, color * color * (3.0 - 2.0 * color), 0.18), 0.0, 1.0);
+    color = clamp(mix(color, color * color * (3.0 - 2.0 * color), 0.12), 0.0, 1.0);
     color = pow(color, float3(1.0/2.2));
     out.write(float4(color, 1.0), gid);
 }

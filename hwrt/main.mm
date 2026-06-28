@@ -871,7 +871,11 @@ struct FXUpscaler {
     // can use Private. MetalFX is fine writing either.
     bool make(Renderer& r, uint32_t W, uint32_t H, MTLStorageMode outStorage) {
         outW = W; outH = H;
-        float sc = 0.6f;
+        // MetalFX spatial upscaling: trace at a lower internal res, upscale to the window.
+        // 0.65 (internal ~832x468 -> 720p) keeps the steady median in the 60-120 target with
+        // the richer S=18/AO=36 sampling on the heavy 3M-tri streaming map; full-res (1.0)
+        // tanked it to ~35fps. RT_SCALE env overrides for higher-end GPUs / lower windows.
+        float sc = 0.65f;
         if (const char* s = getenv("RT_SCALE")) { float v = atof(s); if (v > 0) sc = v; }
         if (sc < 0.4f) sc = 0.4f; if (sc > 1.0f) sc = 1.0f;
         inW = (uint32_t)(W * sc + 0.5f); if (inW < 16) inW = 16;

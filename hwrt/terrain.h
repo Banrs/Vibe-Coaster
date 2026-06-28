@@ -121,9 +121,12 @@ static inline float3 rgb8(int r, int g, int b) {
 static Biome biomeAt(float wx, float wz, int h, bool beach) {
     Biome bm;
     bm.treeType = -1; bm.treeDen = 0.0f;
-    float bio   = vnoise(wx * 0.0082f + 91.3f, wz * 0.0082f + 23.1f);   // higher freq -> several biomes visible at once (was one big biome to the horizon)
-    float humid = fbm(wx * 0.0052f + 44.0f,  wz * 0.0052f + 108.0f, 2);
-    float temp  = fbm(wx * 0.0036f + 12.0f,  wz * 0.0036f + 204.0f, 2);
+    // Biome-selection noise frequencies MATCHED 1:1 to the software renderer
+    // (src/main.cpp ~line 2280): broad, coherent biome REGIONS (a lush forest next to a
+    // dry savanna field) instead of a high-frequency patchwork that fragments the variety.
+    float bio   = vnoise(wx * 0.0045f + 91.3f, wz * 0.0045f + 23.1f);
+    float humid = fbm(wx * 0.0028f + 44.0f,  wz * 0.0028f + 108.0f, 2);
+    float temp  = fbm(wx * 0.0019f + 12.0f,  wz * 0.0019f + 204.0f, 2);
     float3 capC = rgb8(130, 206, 102);   // GRASS
     float3 colC = rgb8(158, 116,  82);   // DIRT
     bool grassCap = true;
@@ -205,7 +208,17 @@ static void pushTree(std::vector<MeshVertex>& out, float cx, float topY, float c
         pushVoxBox(out, cx + (float)dx, topY + 0.5f + (float)dy, cz + (float)dz, 1.0f, 1.0f, 1.0f, c, tile);
     };
     int hv = (vr > 0.5f) ? 1 : 0;                          // +1 block height variation
-    if (type == 2) {                                       // spruce: narrow conifer
+    if (type == 3) {                                       // acacia: tall trunk + flat umbrella canopy (savanna/scrub)
+        float3 bark = vec3(0.42f,0.30f,0.18f), lf = vec3(0.50f,0.56f,0.24f);  // warm bark, dry yellow-green canopy
+        int H = 5 + hv;
+        for (int i = 0; i < H; i++) blk(0, i, 0, bark, (float)TILE_WOOD);
+        int t = H;                                         // flat canopy sits on top of the trunk
+        for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++)   // 3x3 flat core
+            blk(dx, t, dz, lf, (float)TILE_LEAF);
+        blk( 2,t,0,lf,(float)TILE_LEAF); blk(-2,t,0,lf,(float)TILE_LEAF);   // + arms -> broad flat umbrella
+        blk( 0,t,2,lf,(float)TILE_LEAF); blk( 0,t,-2,lf,(float)TILE_LEAF);
+        blk( 0,t+1,0,lf,(float)TILE_LEAF);                                  // small crown bump
+    } else if (type == 2) {                                // spruce: narrow conifer
         float3 bark = vec3(0.30f,0.22f,0.14f), lf = vec3(0.20f,0.37f,0.24f);
         int H = 6 + hv;
         for (int i = 0; i < H; i++) blk(0, i, 0, bark, (float)TILE_WOOD);
@@ -694,10 +707,10 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                             if (dx*dx + dz*dz < 49.0f) { clear = false; break; }
                         }
                         if (clear) {
-                            int type = tt;                         // acacia(3) -> oak; some birch -> oak
-                            if (type == 3) type = 0;
-                            if (type == 1 && hashf(ax*3+5, az*9+2) > 0.5f) type = 0;
-                            pushTree(out, twx, tTopY, twz, type, hashf(ax*5+7, az*5+1));
+                            // biome drives the tree TYPE directly now (no collapse): oak in
+                            // plains/woodland, birch in forest, spruce in tundra, acacia in
+                            // savanna/scrub — Minecraft-style per-biome variety.
+                            pushTree(out, twx, tTopY, twz, tt, hashf(ax*5+7, az*5+1));
                         }
                     }
                 }

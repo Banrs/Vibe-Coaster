@@ -28,6 +28,14 @@ struct Track {
     unsigned char lastGenMode = (unsigned char)M_FLAT; // previous generated point's mode (detect element exits)
     Vector3 genPrevUp = WUP;          // previous point's up-vector (banking-exit easing)
     int     upEaseSteps = 0;          // points remaining to ease banking back to level after an element
+    // SEAM CLOTHOID easing: an inversion lays its own absolute geometry, so its first/last
+    // points step the heading/slope abruptly off the generic lead-in/out -> a curvature
+    // (felt-g) SPIKE right at the join (the ~20g cobra/immelmann entries the user measured).
+    // seamEaseN counts points around an inversion start/end over which we relax the control
+    // points HARD toward the local clothoid (neighbour midpoint), ramping curvature in/out.
+    int     seamEaseN = 0;            // points still to seam-ease (entry ramp set on inversion start)
+    int     seamEaseTot = 0;          // total length of the current seam ramp (for the 1->0 weight)
+    int     levelHold = 0;            // points to HOLD altitude (true level, no contour-plunge) before an element -> inversions start off level track, not mid-dive
     int     queuedInv = 0;            // 0 none, 1 loop, 2 roll — run after a booster straight
     SegMode trimNext = M_FLAT;        // element waiting behind a speed-trim run (M_FLAT = none)
     float   trimV    = 0;             // entry-speed target the current trim run is bleeding genV down to (0 = no active trim)
@@ -70,7 +78,7 @@ struct Track {
     int     cbIdx = 0;
     // new elements (pretzel teardrop loop / stengel over-tipped airtime / banana 0g winder)
     Vector3 pzF{}, pzSide{}, pzBase{};  float pzR = 30, pzDrift = 0, pzLat = 0; int pzSteps = 26;
-    Vector3 sdF{}, sdSide{}, sdBase{};  float sdH = 12, sdSpan = 0, sdDrop = 0;  int sdSteps = 13;
+    Vector3 sdF{}, sdSide{}, sdBase{};  float sdH = 12, sdSpan = 0, sdDrop = 0, sdCrestT = 0.3f;  int sdSteps = 13;
     Vector3 brF{}, brSide{}, brBase{};  float brH = 18, brSpan = 0, brDir = 1; int brSteps = 26;
     // heartline-roll state (straight, level inline twist — hangtime, low g)
     Vector3 hlF{}, hlSide{};
@@ -192,6 +200,38 @@ struct Track {
         }
         remain   = 16 * turns;                          // 16 pts/rotation -> reads round, not octagonal
         rtheta   = 0; rfwd = 0; rfwdStep = SEG_LEN * stretch * 0.5f;
+        // SPEED-DICTATES-SIZE g-envelope (geometry, NOT a speed cap): a corkscrew is a helix
+        // whose DISCRETE control-point path curvature sets the felt g (~1 + v^2*kappa/GRAV).
+        // The base rR (7-12m) is fine at slow roll speeds but at cruise (~78 m/s) the tight
+        // coil pulls ~15-30g (the spikes the user measured). Measure the worst chord curvature
+        // of the actual helix points and GROW rR (and stretch the pitch with it) until g<=GCAP
+        // at the entry speed — same turns, just wide/long enough to hold the envelope. Clamped
+        // to a realistic corkscrew size (2.0x the styled base) so a fast arrival can't balloon it.
+        {
+            const float GCAP = 8.8f;                      // small margin under +10g for the catmull/seam overshoot
+            float v = fmaxf(genV, 30.0f);
+            float rBase = rR, stepBase = rfwdStep;
+            for (int it = 0; it < 10; it++) {
+                // sample three consecutive helix points and take the chord-direction change
+                float th0 = 0.0f, th1 = 2.0f*PI/16.0f, th2 = 4.0f*PI/16.0f;
+                Vector3 r0 = { rside.x*sinf(th0), -cosf(th0), rside.z*sinf(th0) };
+                Vector3 r1 = { rside.x*sinf(th1), -cosf(th1), rside.z*sinf(th1) };
+                Vector3 r2 = { rside.x*sinf(th2), -cosf(th2), rside.z*sinf(th2) };
+                Vector3 P0 = { rf.x*0.0f       + r0.x*rR, r0.y*rR, rf.z*0.0f       + r0.z*rR };
+                Vector3 P1 = { rf.x*rfwdStep   + r1.x*rR, r1.y*rR, rf.z*rfwdStep   + r1.z*rR };
+                Vector3 P2 = { rf.x*2.0f*rfwdStep + r2.x*rR, r2.y*rR, rf.z*2.0f*rfwdStep + r2.z*rR };
+                Vector3 a = Vector3Subtract(P1, P0), b = Vector3Subtract(P2, P1);
+                float la = Vector3Length(a), lb = Vector3Length(b);
+                float kappa = (la>1e-4f && lb>1e-4f)
+                    ? Vector3Length(Vector3Subtract(Vector3Scale(b,1.0f/lb), Vector3Scale(a,1.0f/la))) / (0.5f*(la+lb))
+                    : 0.0f;
+                float g = 1.0f + v * v * kappa / GRAV;
+                if (g <= GCAP) break;
+                if (rR >= rBase * 2.4f - 0.01f) break;            // realistic-size clamp reached (corkscrew up to 2.4x the styled base)
+                rR = fminf(rR * 1.16f, rBase * 2.4f);
+                rfwdStep = stepBase * (rR / rBase);               // stretch the pitch with the radius -> shape preserved
+            }
+        }
         raxis    = { gpos.x, gpos.y + rR, gpos.z };
     }
     // zero-g stall: float over an airtime hill while barrel-rolling fully inverted at
@@ -233,13 +273,16 @@ struct Track {
     // sample the cobra centerline (absolute world pos) + banking up-vector at t in [0,1].
     void cobraSample(float t, Vector3 &pos, Vector3 &up) const {
         float R   = cbR;
-        float Hcr = 2.0f * R / 0.707f;          // hood crest height ~2R
-        float rho = 1.15f * R;                  // wider splay + bigger forward bulge -> central section extruded more
-        float adv = 2.45f * R;                  // longer forward travel -> the two half-twists are spread over more track, so the roll rate (banking per metre) is gentler (was 1.55 -> rolled too fast)
+        float Hcr = 1.8f * R;                   // hood crest ~1.8R -> ~49m at the max R (realistic cobra; was 2.83R -> too tall & too tight, pulled 40g+)
+        float rho = 1.9f * R;                   // WIDE splay so the over-the-top hood radius is large (low crest curvature)
+        float adv = 3.6f * R;                   // long forward travel -> half-twists spread out; opens the hood radii so peak g sits in-envelope (~6g at the gate speed)
         float theta = PI * t;
         float hF = rho * sinf(theta) + adv * t;
         float hS = rho * (1.0f - cosf(theta));
-        float fU = Hcr * sinf(PI * t) * (0.78f - 0.22f * cosf(4.0f * PI * t));   // two hoods, raised valley
+        // two hoods with only a GENTLE valley dip between them: the old (0.78-0.22cos4PI)
+        // modulation cut a sharp local valley whose curvature was the real ~20-50g cobra
+        // spike. A soft 0.10 dip keeps the twin-hood silhouette without the tight valley.
+        float fU = Hcr * sinf(PI * t) * (1.0f - 0.10f * 0.5f * (1.0f + cosf(4.0f * PI * t)));
         pos = { cbBase.x + cbF.x * hF + cbSide.x * hS,
                 cbBase.y + fU,
                 cbBase.z + cbF.z * hF + cbSide.z * hS };
@@ -253,63 +296,63 @@ struct Track {
     void initCobra() {
         mode = M_COBRA;
         setClearance(24.0f, 58.0f);
-        float cbBaseR; { float bt; cbR = invRFor(M_COBRA, bt); cbBaseR = cbR; cbR *= frnd(0.92f, 1.12f); }  // SPEED-SIZE + mild VARIETY: never shrink hard (the old 0.68x made tight cobras pull ~15-20g). invRFor already sizes for ~10g at the gate speed.
+        { float bt; cbR = invRFor(M_COBRA, bt); cbR *= frnd(0.92f, 1.12f); }  // SPEED-SIZE seed + mild VARIETY; the emitted-curvature widen loop below sizes it to the g envelope (clamped to a realistic ~50m hood)
         cbF     = headingVec();
         float side = (rnd01() < 0.5f) ? 1.0f : -1.0f;
         cbSide  = Vector3Scale(Vector3Normalize(Vector3CrossProduct(WUP, cbF)), side);
         cbBase  = gpos;
-        // precompute the curve densely, then RESAMPLE to UNIFORM arc length. uneven point
-        // spacing makes the live finite-difference g-meter blow up at the steep dive-out
-        // (that artifact was the lethal 30G). uniform spacing -> honest, sane g.
+        // G-ENVELOPE SIZING (geometry, NOT a speed cap): build the cobra, RESAMPLE to uniform
+        // ~4m arc spacing (the spacing the ride actually sees), measure the worst chord
+        // curvature kappa of the EMITTED points (felt g ~ 1 + v^2*kappa/GRAV), and GROW cbR
+        // until peak g <= GCAP at the entry speed — same shape, just wide enough to hold the
+        // envelope. NB: we size against the EMITTED points, not the dense pre-resample curve;
+        // the dense measure massively under-reported the real felt g (it was the source of the
+        // ~20-50g cobras). The hood is clamped to a realistic size (~55m hood -> cbR<=27.5);
+        // when even that busts the cap the train arrived too fast and invRAt's trim bleeds it.
+        const float GCAP = 8.8f;                          // small margin under +10g for the catmull/seam overshoot
+        const float CBR_MAX = 27.5f;                      // hood Hcr=1.8R -> ~50m max real cobra hood
+        cbR = fminf(cbR, CBR_MAX);
+        // size for the SPEED REACHED at the worst-curvature point (the dive-out bottom), not the
+        // entry: the cobra descends through its second hood and the train gains ~12% there, so
+        // sizing at genV alone leaves the dive-out a touch over the cap. (1.12x ~ the measured gain.)
+        float v = fmaxf(genV, 30.0f) * 1.12f;
         Vector3 dp[201], du[201]; float dl[201];
         const int DENSE = 200;
-        for (int k = 0; k <= DENSE; k++) cobraSample((float)k / DENSE, dp[k], du[k]);
-        // G-ENVELOPE SIZING (geometry, NOT a speed cap): measure the cobra's worst
-        // path curvature kappa_max; felt g ~ 1 + v^2*kappa/GRAV. The whole curve scales
-        // 1/cbR, so if the peak g would blow past +10g at the entry speed, GROW cbR by
-        // exactly the over-factor and rebuild — the shape is identical, just wide enough
-        // to hold <=+10g. Fixes the 0.68x-shrink cobras that pulled ~15-20g on entry.
-        {
-            const float GCAP = 9.8f;                      // target ceiling (<10g, small margin for the catmull)
-            float v = fmaxf(genV, 30.0f);
-            for (int pass = 0; pass < 4; pass++) {
-                float kmax = 0.0f;
-                for (int k = 1; k < DENSE; k++) {
-                    Vector3 a = Vector3Subtract(dp[k], dp[k-1]);
-                    Vector3 b = Vector3Subtract(dp[k+1], dp[k]);
-                    float la = Vector3Length(a), lb = Vector3Length(b);
-                    if (la < 1e-4f || lb < 1e-4f) continue;
-                    float kk = Vector3Length(Vector3Subtract(Vector3Scale(b, 1.0f/lb),
-                                                             Vector3Scale(a, 1.0f/la))) / (0.5f*(la+lb));
-                    if (kk > kmax) kmax = kk;
-                }
-                float gMax = 1.0f + v*v*kmax/GRAV;
-                if (gMax <= GCAP) break;
-                // widen so peak g == GCAP, but NEVER beyond a realistic cobra size (1.4x the
-                // gate-sized radius). If it's still over at that cap, the train simply arrived
-                // too fast — the generator's INV_GATE/placement keeps cobra entry near the gate
-                // speed, so this clamp rarely binds; it just refuses to build a giant cobra.
-                float want = cbR * (gMax - 1.0f) / (GCAP - 1.0f);
-                float capped = fminf(want, cbBaseR * 1.4f);
-                if (capped <= cbR + 0.01f) break;          // already at the realistic cap
-                cbR = capped;
-                for (int k = 0; k <= DENSE; k++) cobraSample((float)k / DENSE, dp[k], du[k]);
+        float total = 0.0f;
+        for (int pass = 0; pass < 6; pass++) {
+            for (int k = 0; k <= DENSE; k++) cobraSample((float)k / DENSE, dp[k], du[k]);
+            dl[0] = 0.0f;
+            for (int k = 1; k <= DENSE; k++) dl[k] = dl[k-1] + Vector3Distance(dp[k], dp[k-1]);
+            total = dl[DENSE];
+            cbSteps = Clamp((int)(total / 4.0f), 28, 80); // ~4m control-point spacing -> hoods read round, not faceted
+            cbPts.clear(); cbUps.clear();
+            int j = 0;
+            for (int i = 0; i < cbSteps; i++) {
+                float target = total * (float)(i + 1) / (float)cbSteps;
+                while (j < DENSE && dl[j+1] < target) j++;
+                float seg = dl[j+1] - dl[j];
+                float f   = seg > 1e-5f ? (target - dl[j]) / seg : 0.0f;
+                cbPts.push_back(Vector3Lerp(dp[j], dp[j+1], f));
+                cbUps.push_back(Vector3Normalize(Vector3Lerp(du[j], du[j+1], f)));
             }
+            // worst EMITTED chord curvature
+            float kmax = 0.0f;
+            for (int k = 1; k < (int)cbPts.size() - 1; k++) {
+                Vector3 a = Vector3Subtract(cbPts[k], cbPts[k-1]);
+                Vector3 b = Vector3Subtract(cbPts[k+1], cbPts[k]);
+                float la = Vector3Length(a), lb = Vector3Length(b);
+                if (la < 1e-4f || lb < 1e-4f) continue;
+                float kk = Vector3Length(Vector3Subtract(Vector3Scale(b, 1.0f/lb),
+                                                         Vector3Scale(a, 1.0f/la))) / (0.5f*(la+lb));
+                if (kk > kmax) kmax = kk;
+            }
+            float gMax = 1.0f + v*v*kmax/GRAV;
+            if (gMax <= GCAP || cbR >= CBR_MAX - 0.01f) break;
+            float want = cbR * sqrtf((gMax - 1.0f) / (GCAP - 1.0f)); // g over R^? -> grow by the over-factor
+            cbR = fminf(want, CBR_MAX);
         }
-        dl[0] = 0.0f;
-        for (int k = 1; k <= DENSE; k++) dl[k] = dl[k-1] + Vector3Distance(dp[k], dp[k-1]);
-        float total = dl[DENSE];
-        cbSteps = Clamp((int)(total / 4.0f), 28, 80);   // ~4m control-point spacing -> the tight hoods read round, not faceted
-        cbPts.clear(); cbUps.clear(); cbIdx = 0;
-        int j = 0;
-        for (int i = 0; i < cbSteps; i++) {
-            float target = total * (float)(i + 1) / (float)cbSteps;   // first step advances off the base point
-            while (j < DENSE && dl[j+1] < target) j++;
-            float seg = dl[j+1] - dl[j];
-            float f   = seg > 1e-5f ? (target - dl[j]) / seg : 0.0f;
-            cbPts.push_back(Vector3Lerp(dp[j], dp[j+1], f));
-            cbUps.push_back(Vector3Normalize(Vector3Lerp(du[j], du[j+1], f)));
-        }
+        cbIdx = 0;
+        (void)total;
         remain = cbSteps;
     }
     // wing-over: a tall, sweeping overbanked turn that rises up and over then back
@@ -388,6 +431,11 @@ struct Track {
     float maxClearH(float crestMin = 28.0f) const {
         return fmaxf((genV * genV - crestMin * crestMin) / (2.0f * GRAV) - 5.0f, 6.0f);
     }
+    // AIRTIME-HILL height cap that keeps the CREST above the live climb-momentum-assist (~36 m/s):
+    // sized so the crest carries >=42 m/s, the train glides over under PURE PHYSICS and the assist
+    // never engages (no "pinned at min speed for a long stretch"). At cruise (~70) this still allows
+    // a tall ~70m hill; only a slow-entry hill shrinks (a slow train SHOULD get a shorter hill).
+    float maxAirH() const { return maxClearH(42.0f); }
     // SPEED-DICTATES-SIZE (user model): make the inversion as BIG as the entry speed warrants
     // — up to 1.30x the world-record radius — while aiming for ~gT felt g. Real loop physics:
     // g_bottom = 1 + v^2/(R*GRAV), so R = v^2/((gT-1)*GRAV); clamp to the real envelope
@@ -402,8 +450,8 @@ struct Track {
     static InvSpec invSpec(SegMode m) {
         switch (m) {                                       //  gT   rMin  rMaxRec gMul  hMul   -> height cap (hMul*1.3*rMaxRec)
             case M_LOOP:     return {5.5f, 14.0f, 19.0f, 1.6f, 2.6f}; // clothoid loop: 36-64m (<=1.30x the ~49m record), wide bottom keeps g sane
-            case M_IMMEL:    return {5.5f, 16.0f, 22.0f, 1.0f, 2.0f}; // Immelmann half-loop -> up to ~57m
-            case M_DIVELOOP: return {5.0f, 16.0f, 22.0f, 1.0f, 2.0f}; // dive loop -> up to ~57m
+            case M_IMMEL:    return {5.0f, 16.0f, 23.0f, 1.0f, 2.0f}; // Immelmann half-loop -> up to ~60m (lower gT + bigger rMax -> sizes wider so the discrete arc holds <=10g, was ~11g)
+            case M_DIVELOOP: return {4.6f, 16.0f, 24.0f, 1.0f, 2.0f}; // dive loop -> up to ~62m (lower gT + bigger rMax -> the discrete ring holds <=10g, was ~11g)
             case M_COBRA:    return {4.6f, 13.5f, 18.0f, 1.0f, 2.2f}; // cobra hood ~2.2R -> ~39-51m (user cap: max 50-55m)
             case M_PRETZEL:  return {5.5f, 19.0f, 23.0f, 1.0f, 2.0f}; // teardrop loop
             default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};
@@ -429,13 +477,13 @@ struct Track {
         setClearance(7.0f, 38.0f);
         hillBumps = irnd(1, 3);                    // varied camelback count
         hillH     = frnd(14.0f, 28.0f) + (clearanceBase > 32.0f ? frnd(4.0f, 12.0f) : 0.0f);
-        hillH     = fminf(hillH, maxClearH());     // never demand more height than the speed can clear (no stall, no MIN_V pin)
+        hillH     = fminf(hillH, maxAirH());        // crest stays above the climb-assist -> physics crests it, never PINNED at the ~36 floor
         // size the camelback LENGTH to hold a target airtime g at the ENTRY SPEED. valley g
         // = 1 + v^2*kappa/GRAV, crest g = 1 - v^2*kappa/GRAV, kappa = 0.5*H*(2*pi*bumps/L)^2.
         // solve L for v^2*kappa/GRAV = gT -> valley ~ +4.5g / crest ~ -2.5g, not the old +14/-7.
         { float gT = 3.3f;
           float L  = 2.0f * PI * hillBumps * genV * sqrtf(0.5f * hillH / (gT * GRAV));
-          hillLen  = Clamp((int)(L / SEG_LEN), hillBumps * 3, 64); }
+          hillLen  = Clamp((int)(L / SEG_LEN), hillBumps * 3, 40); }   // cap length: a SHORT airtime burst, not a 64-pt run that chases rising terrain up a whole mountain and pins the train at the climb-assist
         hillTurn  = frnd(-0.08f, 0.08f);           // gentler twist (less sustained tilt)
         bankT     = fabsf(hillTurn) * 1.2f;        // gentle lean into the curve
         turnDir   = (hillTurn < 0) ? -1.0f : 1.0f;
@@ -496,10 +544,10 @@ struct Track {
     void initBankAir() {                                 // fast, gently-banked airtime sweeper
         mode = M_BANKAIR;
         setClearance(12.0f, 52.0f);
-        hillBumps = irnd(2, 3);
+        hillBumps = irnd(1, 2);                     // FEWER bumps -> a short airtime burst, not a long multi-bump run whose rising valleys (floor-clamped over a slope) net-climb a mountain and pin the train at the climb-assist
         hillH     = frnd(14.0f, 32.0f) + (clearanceBase > 38.0f ? frnd(6.0f, 18.0f) : 0.0f);
-        hillH     = fminf(hillH, maxClearH());     // energy-budget cap -> the airtime crest stays in motion
-        { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 64); }  // speed-aware -> sane airtime g
+        hillH     = fminf(hillH, maxAirH());        // crest stays above the climb-assist -> physics crests every bump, never PINNED at the ~36 floor (BANKAIR was the worst "held at min speed" offender)
+        { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 36); }  // speed-aware + length-capped -> short airtime burst
         hillTurn  = frnd(-0.09f, 0.09f);
         bankT     = frnd(0.18f, 0.42f);
         turnDir   = (hillTurn < 0) ? -1.0f : 1.0f;
@@ -510,8 +558,8 @@ struct Track {
         setClearance(7.0f, 38.0f);
         hillBumps = irnd(1, 2);
         hillH     = frnd(13.0f, 28.0f) + (clearanceBase > 30.0f ? frnd(5.0f, 14.0f) : 0.0f);
-        hillH     = fminf(hillH, maxClearH());     // energy-budget cap -> the wave crest stays in motion
-        { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 64); }  // speed-aware -> sane airtime g
+        hillH     = fminf(hillH, maxAirH());        // crest stays above the climb-assist -> physics crests it, never PINNED at the ~36 floor
+        { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 36); }  // speed-aware + length-capped -> short airtime burst
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
         hillTurn  = turnDir * frnd(0.08f, 0.16f);
         bankT     = frnd(0.20f, 0.48f);
@@ -614,10 +662,17 @@ struct Track {
         float a  = 0.8f * GRAV;
         float d  = (genV * genV - trimV * trimV) / (2.0f * a);
         remain   = Clamp((int)(d / SEG_LEN) + 2, 3, 9);   // a few extra points to settle level
+        levelHold = remain;                                // a real trim brake sits on LEVEL track -> hold altitude so the inversion behind it starts level (no plunge-into-element seam spike)
     }
 
     void chooseElement(float h) {
         (void)h;
+        // LEVEL-IN before any element: never dispatch onto a still-plunging lead-in. A steep
+        // descent into an element both reverses the slope at the join (a vertical-g spike —
+        // the ~70g cobra/immel entries) AND speeds the train past the size the element was
+        // gated/sized for. HOLD altitude until the slope flattens, then pick — so every element
+        // joins onto near-level track at its design speed. (Covers all dispatch paths.)
+        if (fabsf(genPrevDy) > 0.18f * SEG_LEN) { mode = M_FLAT; remain = 3; levelHold = 3; return; }
         SegMode pick = rollElementPick();
         // SPEED-DICTATES-SIZE: the inversion is sized to the entry speed (invRFor), so it only
         // needs a trim when the train is so fast that even the 1.30x-record element would bust
@@ -662,6 +717,11 @@ struct Track {
 
     // dispatch the inversion that was waiting behind a finished speed-trim run
     void startTrimmedElem() {
+        // LEVEL-IN (same rule as chooseElement): the trim run can still be descending when it
+        // ends; never start the inversion onto a plunging lead-in (the slope reversal at the
+        // join was the cobra/immel ~70g entry spike). Hold altitude until the slope flattens,
+        // keeping the element queued behind the hold so it dispatches onto level track.
+        if (fabsf(genPrevDy) > 0.18f * SEG_LEN) { mode = M_FLAT; remain = 3; levelHold = 3; return; }
         SegMode elem = trimNext; trimNext = M_FLAT; trimV = 0;
         // element was already remembered when its trim was scheduled (chooseElement)
         switch (elem) {
@@ -773,7 +833,7 @@ struct Track {
                 // (trim/brake-run). DILATED to several points so banking eases fully to level and
                 // the felt g recovers GENTLY between pulls (low curvature gradient, no sharp dip)
                 else if (mode != M_FLAT)       { mode = M_FLAT; remain = irnd(4, 6); }
-                else                           chooseElement(h);
+                else                           chooseElement(h);   // chooseElement level-gates a steep lead-in itself
                 break;
             }
         }
@@ -824,6 +884,7 @@ struct Track {
         float dy = 0;
         switch (mode) {
             case M_FLAT:  dy = stationRamping ? (stationDeckY - gpos.y) * 0.45f      // ease up to the deck
+                          : levelHold > 0     ? 0.0f                                 // HOLD altitude before an element (flatten the slope so an inversion joins level, no plunge-into-element seam spike)
                                               : ((gt + 9.0f) - gpos.y) * 0.50f; break;   // consistent (was random per-point)
             case M_TURN:  dy = ((gt + 13.0f) - gpos.y) * 0.40f; break;   // consistent contour target (was random -> jitter)
             case M_HILLS: {                              // smooth raised-cosine camelbacks
@@ -831,7 +892,10 @@ struct Track {
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
-                dy = (y1 - y0) + ((gt + 14.0f) - gpos.y) * 0.12f;  // bump + gentle contour drift
+                // bump + contour drift, but the drift may only ease DOWN (toward terrain): never
+                // let an airtime hill CHASE rising terrain up a slope (that net climb bled the
+                // train to the climb-assist and pinned it at min speed for long stretches).
+                dy = (y1 - y0) + fminf(((gt + 14.0f) - gpos.y) * 0.12f, 0.0f);
                 break;
             }
             case M_CLIMB: dy = mega ? 19.0f : 11.0f; break;          // consistent climb rate (was random per-point -> jitter)
@@ -848,7 +912,7 @@ struct Track {
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
-                dy = (y1 - y0) + ((gt + 16.0f) - gpos.y) * 0.10f;
+                dy = (y1 - y0) + fminf(((gt + 16.0f) - gpos.y) * 0.10f, 0.0f);  // drift DOWN-only -> no terrain-chasing climb (was the worst min-speed pin)
                 break;
             }
             case M_WAVE: {                                             // outerbanked speed hill
@@ -856,7 +920,7 @@ struct Track {
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
-                dy = (y1 - y0) + ((gt + 13.0f) - gpos.y) * 0.13f;
+                dy = (y1 - y0) + fminf(((gt + 13.0f) - gpos.y) * 0.13f, 0.0f);  // drift DOWN-only -> no terrain-chasing climb
                 break;
             }
             case M_WINGOVER: {                                         // up-and-over while overbanked
@@ -912,6 +976,7 @@ struct Track {
             dy = genPrevDy + curv;
         }
         gpos.y += dy;
+        if (levelHold > 0 && mode == M_FLAT) levelHold--;   // consume the pre-element altitude hold
 
         // top-hats sized so the launch always crests them with speed to spare:
         // a mega is Kingda-Ka tall (~130m of climb), a standard one ~85m
@@ -1085,7 +1150,22 @@ struct Track {
                 float dx = b.x - a.x, dz = b.z - a.z;
                 if (dx * dx + dz * dz > 1e-4f) gyaw = atan2f(dx, dz);   // continue in the real exit direction
                 upEaseSteps = 6;                                        // roll banking back to level over 6 points
+                // EXIT SEAM: the last inversion point -> first flat/drop point steps the
+                // heading/slope abruptly (the inversion's exit tangent vs the realigned
+                // flat line) — Laplacian-relax the points straddling that join so curvature
+                // ramps OUT instead of spiking. The cobra's dense hood must NOT be Laplacian'd
+                // (it distorts into a new kink); instead HOLD altitude over the recovery so the
+                // cobra's steep dive-out eases to level (no exit-seam vertical-g spike).
+                if (lastGenMode == (unsigned char)M_COBRA)      { levelHold = 4; }
+                else if (isHardInversion((SegMode)lastGenMode)) { seamEaseN = 4; seamEaseTot = 4; }
             }
+        }
+        // ENTRY SEAM: arm the Laplacian relax on an inversion's FIRST point (mode is the
+        // inversion now but the previous point wasn't) so its curvature ramps IN from the
+        // generic lead-in instead of snapping to the element's full radius in one segment.
+        // Cobra excluded (see the exit-seam note: its dense hood must not be Laplacian'd).
+        if (isHardInversion(mode) && mode != M_COBRA && lastGenMode != (unsigned char)mode) {
+            seamEaseN = 5; seamEaseTot = 5;
         }
         Vector3 upv;
         float yBefore = gpos.y;
@@ -1139,11 +1219,21 @@ struct Track {
         // toward the midpoint of its neighbours — rounds the Catmull-Rom OVERSHOOT kink at
         // element joins, which is the real curvature/g spike + felt jerk at speed. Light
         // enough to leave the element shapes intact (dense inversion points barely move).
+        // STRONGER at an inversion SEAM (seamEaseN>0): pull the boundary points harder toward
+        // the clothoid so the heading/slope change per segment RAMPS in/out (clothoid easing)
+        // instead of stepping — this is what tames the ~20g cobra/immelmann entry spikes. The
+        // pull weight tapers from the seam (clothoid: max at the join, fading into the element).
         if ((int)cp.size() >= 3) {
             int m = (int)cp.size() - 2;
-            cp[m] = Vector3Lerp(cp[m], Vector3Scale(Vector3Add(cp[m - 1], cp[m + 1]), 0.5f), 0.16f);
+            float w = 0.16f;
+            if (seamEaseN > 0) {
+                float f = (float)seamEaseN / (float)seamEaseTot;       // 1 at the seam -> ~0 fading in
+                w = 0.16f + 0.30f * f;                                 // up to ~0.46 right at the join
+                seamEaseN--;
+            }
+            cp[m] = Vector3Lerp(cp[m], Vector3Scale(Vector3Add(cp[m - 1], cp[m + 1]), 0.5f), w);
             up[m] = Vector3Normalize(Vector3Lerp(up[m],
-                        Vector3Scale(Vector3Add(up[m - 1], up[m + 1]), 0.5f), 0.16f));
+                        Vector3Scale(Vector3Add(up[m - 1], up[m + 1]), 0.5f), w));
         }
         // VERTICAL valley/crest g-cap: a sharp contour-follow V-valley (track dives a
         // terrain dip and snaps back up) leaves the interior control point sagging well

@@ -67,56 +67,71 @@
     }
 
     // ---------------------------------------------------------------- STENGEL DIVE
-    //  A true dive drop: rise to an early airtime crest, snap the bank PAST vertical
-    //  (>90deg) as the train tips over, then DIVE down to an exit LOWER than the entry
-    //  (net descent) while turning gently to the side. Ejector airtime at the crest,
-    //  0 inversions. The dive depth is sized to the height available above terrain so
-    //  it never plunges into the ground.
+    //  A true Stengel dive drop (Werner Stengel's signature element): the train noses
+    //  over a short crest, OVER-BANKS PAST VERTICAL (rolls ~100-130deg) and DIVES down a
+    //  steep plunge while TWISTING continuously through the descent, then rolls back upright
+    //  and eases level at a LOWER exit. The defining feel is the twisting over-banked plunge
+    //  (you fall sideways/diving), not an airtime camelback. 0 inversions (the bank passes
+    //  vertical but the path doesn't loop). Sized so peak g stays inside +10/-7.5 at the
+    //  entry speed: the bottom pull-out is the +g lever (lengthen the dive as v rises), the
+    //  crest tip-over the -g lever; both are eased (raised cosines, zero slope at the seams).
     void initStengel() {
         mode = M_STENGEL;
         sdF    = headingVec();
-        sdSide = Vector3Normalize(Vector3CrossProduct(WUP, sdF)) ;
-        if (rnd01() < 0.5f) sdSide = Vector3Scale(sdSide, -1.0f); // dive either way
+        sdSide = Vector3Normalize(Vector3CrossProduct(WUP, sdF));
+        if (rnd01() < 0.5f) sdSide = Vector3Scale(sdSide, -1.0f); // dive/twist either way
         sdBase = gpos;
         float v   = Clamp(genV, 40.0f, 95.0f);
-        sdSteps   = 13;
-        float L   = sdSteps * SEG_LEN;              // forward run length
-        // crest hop sized for ejector airtime (-0.35g) over the rise portion, kept
-        // modest so the DIVE, not the hump, is the dominant feature.
-        sdH       = Clamp(1.35f * GRAV * L * L / (v * v * 2.0f * PI * PI), 6.0f, 20.0f);
-        // dive depth: a real plunge, but clamped to the height available above the
-        // terrain at entry (keep ~14m clearance at the exit) so it can't clip ground.
+        // dive depth: a real, steep plunge, clamped to the height available above terrain
+        // (keep ~14m exit clearance) so it never clips the ground. Realistic dive-drop scale.
         float avail = sdBase.y - groundTopAt(sdBase.x, sdBase.z) - 14.0f;
-        sdDrop    = Clamp(0.60f * 0.68f * L, 28.0f, 80.0f);     // ~80m over the dive run
-        sdDrop    = fminf(sdDrop, fmaxf(avail, 0.0f));
-        sdSpan    = L * 0.16f;                       // gentle lateral traverse
+        sdDrop    = Clamp(0.55f * v, 30.0f, 55.0f);            // ~30-55m steep plunge (realistic dive-drop)
+        sdDrop    = fminf(sdDrop, fmaxf(avail, 10.0f));
+        // SIZE THE DIVE LENGTH for the bottom-pull-out g at the ENTRY SPEED (geometry, not a
+        // speed cap): the dive plunges -sdDrop then eases level over the second half via a
+        // raised cosine, whose bottom curvature kappa ~ sdDrop*(PI/Ld)^2 (Ld = dive run). Felt
+        // +g = 1 + v^2*kappa/GRAV. Solve Ld so the bottom holds ~gBot, then total length = Ld
+        // plus a short crest. Faster entry -> longer dive (stays in-envelope), never a brake.
+        const float gBot = 6.5f;                               // target bottom pull-out g (well under +10)
+        float Ld  = PI * v * sqrtf(sdDrop / ((gBot - 1.0f) * GRAV));
+        int   diveSteps = Clamp((int)(Ld / SEG_LEN), 8, 22);
+        int   crestSteps = 4;                                  // short nose-over crest, dive dominates
+        sdSteps   = crestSteps + diveSteps;
+        sdCrestT  = (float)crestSteps / (float)sdSteps;        // crest fraction (rest is the diving twist)
+        float L   = sdSteps * SEG_LEN;
+        // crest hop: small, sized for a gentle ejector tip-over (~-1.5g, inside -7.5) over the
+        // short crest. kappa_crest ~ sdH*(PI/Lc)^2; keep it modest so the DIVE is the feature.
+        float Lc  = crestSteps * SEG_LEN;
+        sdH       = Clamp(2.0f * GRAV * Lc * Lc / (v * v * PI * PI), 5.0f, 14.0f);
+        sdSpan    = L * 0.22f;                                 // moderate lateral traverse (the dive veers off-line)
         remain    = sdSteps;
     }
     Vector3 stepStengel() {
         int   i = sdSteps - remain;
         float t = (float)(i + 1) / (float)sdSteps;  // (0..1]
-        const float tc = 0.32f;                     // crest fraction, then dive
+        float tc  = sdCrestT;                        // crest fraction, then the diving twist
         float L   = sdSteps * SEG_LEN;
         float ff  = L * t;                           // forward advances uniformly
-        // vertical: rise to +sdH at the crest (airtime), then DIVE to -sdDrop at the
-        // exit. Both halves are raised-cosines with zero slope at the crest and exit,
-        // so the tip-over is smooth and the pull-out eases level (mild exit g).
+        // vertical: rise to +sdH at the crest (gentle ejector tip-over), then DIVE to -sdDrop
+        // at the exit. Both halves are raised cosines with zero slope at the crest AND exit,
+        // so the nose-over and the bottom pull-out are eased (no g-spike at either seam).
         float fU;
-        if (t < tc) fU = sdH * 0.5f * (1.0f - cosf(PI * (t / tc)));                          // 0 -> +sdH
-        else        fU = sdH - (sdH + sdDrop) * 0.5f * (1.0f - cosf(PI * ((t - tc) / (1.0f - tc))));  // +sdH -> -sdDrop
-        float fS  = sdSpan * 0.5f * (1.0f - cosf(PI * t));       // gentle turn 0 -> sdSpan
+        if (t < tc) fU = sdH * 0.5f * (1.0f - cosf(PI * (t / tc)));                              // 0 -> +sdH
+        else        fU = sdH - (sdH + sdDrop) * 0.5f * (1.0f - cosf(PI * ((t - tc) / (1.0f - tc)))); // +sdH -> -sdDrop
+        float fS  = sdSpan * 0.5f * (1.0f - cosf(PI * t));       // eased lateral traverse 0 -> sdSpan
         gpos = { sdBase.x + sdF.x * ff + sdSide.x * fS,
                  sdBase.y + fU,
                  sdBase.z + sdF.z * ff + sdSide.z * fS };
-        // heading swings gently toward sdSide; build the banking axis from it
+        // heading swings toward sdSide (the dive veers off the entry line); banking axis from it
         Vector3 H = Vector3Normalize(Vector3{
             sdF.x + sdSide.x * (sdSpan / L) * PI * 0.5f * sinf(PI * t),
             0,
             sdF.z + sdSide.z * (sdSpan / L) * PI * 0.5f * sinf(PI * t) });
-        // bank overshoots vertical at the tip-over: gaussian beta peaks ~1.95rad
-        // (~112deg overbank) centred on the crest (t = tc) as it noses into the dive.
-        float bx   = (t - tc) / 0.20f;
-        float beta = 1.95f * expf(-bx * bx);
+        // OVER-BANKED TWIST: the bank rolls PAST vertical and TWISTS continuously through the
+        // whole dive (a raised-cosine bank that ramps from upright at entry, overshoots ~125deg
+        // through the plunge, and rolls back upright by the exit) — the defining Stengel feel of
+        // diving sideways. Eased at both ends so the entry/exit seams carry no roll-rate jolt.
+        float beta = 2.18f * 0.5f * (1.0f - cosf(2.0f * PI * t));   // 0 -> ~125deg over-bank at mid-dive -> 0
         Vector3 latAx = Vector3Normalize(Vector3CrossProduct(H, WUP));
         float sgn = (Vector3CrossProduct(H, WUP).x * sdSide.x +
                      Vector3CrossProduct(H, WUP).z * sdSide.z) >= 0 ? 1.0f : -1.0f;

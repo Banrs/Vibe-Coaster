@@ -23,6 +23,7 @@ struct Track {
     int     elemLimit = 3;            // how many elements before the next re-launch
     float   genPrevDy = 0;           // last point's applied vertical step (slope rate-limiter)
     float   genPrevCurv = 0;         // last point's applied curvature (slope change) — feeds the jerk limiter
+    float   genPrevDyaw = 0;         // last point's applied heading change (lateral jerk limiter — clothoid turn easing)
     float   genV      = LAUNCH_V;     // forward-simulated ride speed at the generation head (sizes speed-aware elements)
     unsigned char lastGenMode = (unsigned char)M_FLAT; // previous generated point's mode (detect element exits)
     Vector3 genPrevUp = WUP;          // previous point's up-vector (banking-exit easing)
@@ -125,6 +126,7 @@ struct Track {
         mode = M_FLAT; remain = 3; turnDir = 1; turnMag = 0.4f; mega = false; elems = 0;
         elemLimit = irnd(7, 11); queuedInv = 0; launchElem = M_CLIMB;
         lastElem = M_FLAT; prevElem = M_FLAT; helixDrop = -3.4f; genV = LAUNCH_V;
+        genPrevDy = 0; genPrevCurv = 0; genPrevDyaw = 0;   // fresh ride: no carried-over slope/heading rate
         setClearance(10.0f, 24.0f);
 
         // straight, level launch track under the platform — the hydraulic launch
@@ -767,6 +769,19 @@ struct Track {
             case M_DIP:   dyaw = 0.0f; break;                        // straight splashdown (no random kinks)
             default: break;
         }
+        // LATERAL jerk limiter (clothoid heading easing): the per-point heading change
+        // dyaw IS the lateral curvature; a turn entering/leaving steps dyaw 0 -> turnMag
+        // (and back) in one point, which is a lateral-g SPIKE at the element seam. Cap how
+        // fast dyaw can change per point so lateral g ramps in/out smoothly instead of
+        // snapping — the held turnMag (sustained lateral g) is untouched. SPEED-AWARE:
+        // lateral felt-g ~ v^2*dyaw/(SEG_LEN*GRAV), so a heading-rate change of Ddyaw is
+        // ~v^2*Ddyaw/(SEG_LEN*GRAV) g; cap that at ~2g/point. Powered/flat sections are
+        // exempt (dead-straight anyway), matching the vertical limiter's exemption.
+        if (mode != M_LAUNCH && mode != M_BOOST && mode != M_STATION && !stationRamping) {
+            float jlimYaw = Clamp(2.0f * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.0015f, 0.20f);
+            dyaw = Clamp(dyaw, genPrevDyaw - jlimYaw, genPrevDyaw + jlimYaw);
+            genPrevDyaw = dyaw;
+        }
         gyaw += dyaw;
         gpos.x += sinf(gyaw) * SEG_LEN;
         gpos.z += cosf(gyaw) * SEG_LEN;
@@ -1070,6 +1085,21 @@ struct Track {
         float appliedDy = gpos.y - yBefore;
         genPrevCurv = appliedDy - genPrevDy;         // actual applied curvature (feeds the jerk limiter)
         genPrevDy   = appliedDy;                      // actual applied slope (feeds the rate-limiter)
+        // track the ACTUAL world heading-rate just travelled (prev-segment -> new-segment
+        // turn angle) so the lateral jerk limiter in stepGeneric eases the seam where
+        // generic steps resume after an inversion / flat-exit realignment, instead of
+        // snapping from a stale dyaw. (Mirrors how genPrevDy is recomputed from the
+        // actual applied slope above.) Inversions/powered straights set genPrevDyaw here
+        // too, so the next generic turn ramps in from the real heading-rate.
+        if (cp.size() >= 2) {
+            Vector3 a = cp[cp.size() - 2], b = cp.back();
+            float yPrev = atan2f(b.x - a.x, b.z - a.z);          // heading of the previous segment
+            float yNew  = atan2f(gpos.x - b.x, gpos.z - b.z);    // heading of the segment just laid
+            float dh = yNew - yPrev;
+            while (dh >  PI) dh -= 2.0f * PI;                     // wrap to [-PI, PI]
+            while (dh < -PI) dh += 2.0f * PI;
+            genPrevDyaw = dh;
+        }
         genPrevUp = upv;
         lastGenMode = tag;
         pushCP(gpos, upv, tag, ch);

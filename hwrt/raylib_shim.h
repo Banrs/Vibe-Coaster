@@ -26,7 +26,7 @@ struct Color { unsigned char r, g, b, a; };
 // ----- world constants (authoritative; mirror src/main.cpp) -----
 static const float SEG_LEN   = 14.0f;
 static const float GRAV      = 22.0f;
-static const float DRAG      = 0.0013f;   // sync w/ src/main.cpp (was 0.0016 — sped-down train)
+static const float DRAG      = 0.00085f;  // sync w/ src/main.cpp — tuned for ~255 km/h average ride speed
 static const float FRICTION  = 0.016f;
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;     // generator forward-sim cruise floor (still used by track-gen)

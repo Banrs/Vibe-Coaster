@@ -124,6 +124,8 @@ struct Renderer {
     float rideG     = 1.0f;   // total felt g (HUD)
     float rideVertG = 1.0f;   // signed vertical felt g (HUD, e.g. -1.7g airtime)
     bool  boostHeld = false;  // SPACE: fire boost / re-launch in powered sections
+    bool  brakeHeld = false;  // S: trim-brake the train (parity with the SW game's brake)
+    int   camMode   = 0;      // C cycles: 0 first-person, 1 chase, 2 side (parity w/ SW)
     long  rideScore = 0;      // simple score (distance + airtime), HUD top-left
     struct RideAudio* audio = nullptr;  // procedural ride audio (nullptr in headless)
 
@@ -625,6 +627,8 @@ void Renderer::rideAdvance(float dt) {
         stream.speed = fminf(stream.speed + 60.0f * dt, 120.0f);
         stream.boost = fmaxf(stream.boost - dt * 0.8f, 0.0f);
     }
+    // S: trim-brake (parity with the SW game's brake key) — bleeds speed to the stall floor
+    if (brakeHeld) stream.speed = fmaxf(stream.speed - 45.0f * dt, 20.0f);
 
     rideSpeed = stream.speed; rideAlt = stream.alt; rideKind = stream.kind;
     rideBoost = stream.boost; rideG = stream.gLoad; rideVertG = stream.vertG;
@@ -634,8 +638,15 @@ void Renderer::rideAdvance(float dt) {
     float3 p   = stream.pos(stream.trainU);
     float3 fwd = stream.tangent(stream.trainU);
     float3 up  = orthoUp(fwd, stream.upAt(stream.trainU));
-    camPos = p + up * 2.0f;
-    exFwd = fwd; exUp = up; useExplicitFrame = true;
+    // camera modes (C cycles): 0 first-person (on the lead car), 1 chase (behind+above),
+    // 2 side (off to the side, 2.5D), mirroring the SW game's three camera modes.
+    float3 lat = normalize(cross(up, fwd));
+    if      (camMode == 1) { camPos = p - fwd * 11.0f + up * 4.5f; }       // chase
+    else if (camMode == 2) { camPos = p + lat * 14.0f + up * 3.0f; }       // side
+    else                   { camPos = p + up * 2.0f; }                     // first-person
+    if (camMode == 0) { exFwd = fwd; exUp = up; }
+    else { exFwd = normalize((p + up * 1.5f) - camPos); exUp = vec3(0,1,0); }  // look at the train
+    useExplicitFrame = true;
 
     (void)prevPt; (void)shifted;
     // --- track + train: rebuild when the train has moved ~a car length, so the
@@ -700,6 +711,7 @@ void Renderer::rideAdvance(float dt) {
     // 135 = runaway guard. No inversion trim brake: the static map's elements are
     // speed-sized, so (matching the SW loop where invRAt->brakeTo is usually 0) the
     // trim essentially never fires anyway.
+    if (brakeHeld) rideSpeed = fmaxf(rideSpeed - 45.0f * dt, 20.0f);   // S: trim-brake (parity w/ SW)
     rideSpeed = fmaxf(rideSpeed, 20.0f); rideSpeed = fminf(rideSpeed, 135.0f);
     // boost meter recharges on powered sections
     if (rideKind == M_LAUNCH || rideKind == M_BOOST) rideBoost = fminf(rideBoost + dt*0.6f, 1.0f);
@@ -731,8 +743,13 @@ void Renderer::rideAdvance(float dt) {
     float3 p   = coaster.pos(rideU);
     float3 fwd = coaster.tangent(rideU);
     float3 up  = orthoUp(fwd, coaster.upAt(rideU));
-    camPos = p + up * 2.0f;                   // eye ~2m above the track
-    exFwd = fwd; exUp = up;
+    // camera modes (C cycles): 0 first-person, 1 chase, 2 side (parity w/ SW game).
+    float3 lat = normalize(cross(up, fwd));
+    if      (camMode == 1) { camPos = p - fwd * 11.0f + up * 4.5f; }
+    else if (camMode == 2) { camPos = p + lat * 14.0f + up * 3.0f; }
+    else                   { camPos = p + up * 2.0f; }
+    if (camMode == 0) { exFwd = fwd; exUp = up; }
+    else { exFwd = normalize((p + up * 1.5f) - camPos); exUp = vec3(0,1,0); }
     rideAlt = p.y - groundTopAt(p.x, p.z);
     rideScore += (long)(rideSpeed * dt * 0.6f);
     // felt-g for the HUD: |centripetal accel + gravity| / GRAV (total felt g).
@@ -821,16 +838,19 @@ static int runShot(Renderer& r) {
     // Advance the ride a few seconds so the shot lands on interesting geometry
     // (off the launch straight, into a climb/element) and the scene has streamed.
     r.rideMode = true;
-    for (int i = 0; i < 60 * 9; i++) r.rideAdvance(1.0f / 60.0f);
+    int shotSec = 9; if (const char* s = getenv("SHOT_SEC")) { int v = atoi(s); if (v > 0) shotSec = v; }
+    for (int i = 0; i < 60 * shotSec; i++) r.rideAdvance(1.0f / 60.0f);
     // Side-on hero framing: stand well back and ABOVE the train, look down at it so
     // the tall track, supports, train, trees and voxel terrain all read to scale.
     {
         float3 look = r.stream.pos(r.stream.trainU);          // aim at the train
         float3 fwd  = normalize(r.stream.tangent(r.stream.trainU));
         float3 side = normalize(cross(fwd, vec3(0,1,0)));
-        r.camPos = look - fwd * 120.0f + side * 95.0f + vec3(0, 70.0f, 0);
+        bool ground = getenv("SHOT_GROUND") != nullptr;       // low grazing view to inspect the carve
+        r.camPos = ground ? look - fwd * 55.0f + side * 40.0f + vec3(0, 12.0f, 0)
+                          : look - fwd * 120.0f + side * 95.0f + vec3(0, 70.0f, 0);
         // keep the eye safely above terrain so we never sit inside a voxel wall
-        float gtop = groundTopAt(r.camPos.x, r.camPos.z) + 20.0f;
+        float gtop = groundTopAt(r.camPos.x, r.camPos.z) + (ground ? 3.0f : 20.0f);
         if (r.camPos.y < gtop) r.camPos.y = gtop;
         float3 toLook = normalize(look - r.camPos);
         r.exFwd = toLook; r.exUp = vec3(0,1,0);
@@ -980,11 +1000,15 @@ static int runBench(Renderer& r) {
         if (!r->boostHeld && r->audio) r->audio->triggerWhoosh();
         r->boostHeld = true;
     }
+    if (c == 's' && self.renderer->rideMode) self.renderer->brakeHeld = true;  // S: brake (held)
+    if (c == 'c' && self.renderer->rideMode)                                   // C: cycle camera
+        self.renderer->camMode = (self.renderer->camMode + 1) % 3;
 }
 - (void)keyUp:(NSEvent*)e {
     unichar c = [[e charactersIgnoringModifiers] characterAtIndex:0];
     if (c < 128) _keys[c] = false;
     if (c == ' ') self.renderer->boostHeld = false;
+    if (c == 's') self.renderer->brakeHeld = false;
 }
 - (void)mouseDragged:(NSEvent*)e {
     self.renderer->yaw   += e.deltaX * 0.005f;
@@ -1016,13 +1040,30 @@ static int runBench(Renderer& r) {
 }
 @end
 
-// SegMode tag -> short HUD label (matches src/main.cpp enum order).
+// SegMode tag -> HUD element name. EXACT strings from the software game's HUD
+// (src/main.cpp element-name switch) so the -rt readout matches it word-for-word.
+// Enum order: M_FLAT, M_CLIMB, M_DROP, M_HILLS, M_TURN, M_LOOP, M_ROLL, M_STATION,
+// M_DIP, M_LAUNCH, M_HELIX, M_BOOST, M_IMMEL, M_SCURVE, M_DIVE, M_BANKAIR, M_WAVE,
+// M_STALL, M_DIVELOOP, M_COBRA, M_WINGOVER, M_HEARTLINE, M_PRETZEL, M_STENGEL, M_BANANA.
 static const char* kindName(int k) {
-    static const char* N[] = {"CRUISE","LIFT","DROP","AIRTIME","TURN","LOOP","CORKSCREW",
-        "STATION","DIP","LAUNCH","HELIX","BOOST","IMMELMANN","S-CURVE","DIVE","BANKED AIR",
-        "WAVE TURN","ZERO-G STALL","DIVE LOOP","COBRA ROLL","WINGOVER","HEARTLINE",
-        "PRETZEL","STENGEL DIVE","BANANA ROLL"};
+    static const char* N[] = {
+        "CRUISE","TOP HAT","DROP","AIRTIME HILL","OVERBANKED TURN","VERTICAL LOOP",
+        "CORKSCREW","STATION","SPLASHDOWN","LAUNCH","HELIX","BOOSTER","IMMELMANN",
+        "S-CURVE","DIVE TURN","BANKED AIRTIME","WAVE TURN","ZERO-G STALL","DIVE LOOP",
+        "COBRA ROLL","WING-OVER","HEARTLINE ROLL","PRETZEL LOOP","STENGEL DIVE","BANANA ROLL"};
     return (k >= 0 && k < (int)(sizeof(N)/sizeof(N[0]))) ? N[k] : "TRACK";
+}
+// Inversions / direction-change elements get the highlighted accent (matches the SW
+// game, which pinks/ambers these in the element chip). Numeric SegMode values (the
+// enum isn't visible in the benchmark build, which doesn't include raylib_shim.h):
+// 5 LOOP, 6 ROLL, 12 IMMEL, 17 STALL, 18 DIVELOOP, 19 COBRA, 20 WINGOVER,
+// 21 HEARTLINE, 22 PRETZEL, 23 STENGEL, 24 BANANA.
+static bool kindSpecial(int k) {
+    switch (k) {
+        case 5: case 6: case 12: case 17: case 18:
+        case 19: case 20: case 21: case 22: case 23: case 24: return true;
+        default: return false;
+    }
 }
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
@@ -1034,8 +1075,9 @@ static const char* kindName(int k) {
 @property (nonatomic) double lastTime;
 @property (nonatomic) int frameCount;
 @property (nonatomic) double fpsClock;
-@property (nonatomic) NSTextField* hud;       // speed / alt / element (top-left)
-@property (nonatomic) NSTextField* hud2;      // score / g-load / boost (bottom-left)
+@property (nonatomic) NSTextField* hud;       // speed km/h + alt + element (top-RIGHT, like the SW game)
+@property (nonatomic) NSTextField* hud2;      // score (top-left) + boost bar (bottom-left)
+@property (nonatomic) NSTextField* hud3;      // felt-g readout (bottom-right, like the SW g-gauge)
 @property (nonatomic) RideAudio*   audio;     // procedural ride audio
 @end
 
@@ -1062,29 +1104,28 @@ static const char* kindName(int k) {
 
     [self.window setContentView:self.view];
 
-    // HUD overlay: speed / altitude / current element, top-left over the Metal view.
-    self.hud = [[NSTextField alloc] initWithFrame:NSMakeRect(16, frame.size.height - 78, 420, 64)];
-    [self.hud setBezeled:NO];
-    [self.hud setDrawsBackground:NO];
-    [self.hud setEditable:NO];
-    [self.hud setSelectable:NO];
-    [self.hud setTextColor:[NSColor whiteColor]];
-    [self.hud setFont:[NSFont monospacedSystemFontOfSize:18 weight:NSFontWeightBold]];
-    [self.hud setAutoresizingMask:NSViewMinYMargin];
-    self.hud.maximumNumberOfLines = 3;
-    [self.view addSubview:self.hud];
-
-    // Second HUD panel (bottom-left): score, felt-g, boost bar (mirrors the SW game).
-    self.hud2 = [[NSTextField alloc] initWithFrame:NSMakeRect(16, 16, 460, 70)];
-    [self.hud2 setBezeled:NO];
-    [self.hud2 setDrawsBackground:NO];
-    [self.hud2 setEditable:NO];
-    [self.hud2 setSelectable:NO];
-    [self.hud2 setTextColor:[NSColor whiteColor]];
-    [self.hud2 setFont:[NSFont monospacedSystemFontOfSize:16 weight:NSFontWeightBold]];
-    [self.hud2 setAutoresizingMask:NSViewMaxYMargin];
-    self.hud2.maximumNumberOfLines = 3;
-    [self.view addSubview:self.hud2];
+    // HUD layout mirrors the software game:
+    //   hud  (top-RIGHT, right-aligned): SPEED km/h + ALT + current element name
+    //   hud2 (top-LEFT):                 SCORE
+    //   hud3 (bottom-LEFT):              felt-g + BOOST bar
+    auto mkField = [&](NSRect r, CGFloat size, NSTextAlignment al, NSUInteger mask) {
+        NSTextField* f = [[NSTextField alloc] initWithFrame:r];
+        [f setBezeled:NO]; [f setDrawsBackground:NO];
+        [f setEditable:NO]; [f setSelectable:NO];
+        [f setTextColor:[NSColor whiteColor]];
+        [f setFont:[NSFont monospacedSystemFontOfSize:size weight:NSFontWeightBold]];
+        [f setAlignment:al];
+        [f setAutoresizingMask:mask];
+        f.maximumNumberOfLines = 3;
+        [self.view addSubview:f];
+        return f;
+    };
+    self.hud  = mkField(NSMakeRect(frame.size.width - 416, frame.size.height - 96, 400, 82),
+                        20, NSTextAlignmentRight, NSViewMinYMargin | NSViewMinXMargin);
+    self.hud2 = mkField(NSMakeRect(16, frame.size.height - 44, 320, 28),
+                        18, NSTextAlignmentLeft, NSViewMinYMargin);
+    self.hud3 = mkField(NSMakeRect(16, 16, 460, 56),
+                        16, NSTextAlignmentLeft, NSViewMaxYMargin);
 
     [self.window makeKeyAndOrderFront:nil];
     [self.window makeFirstResponder:self.view];
@@ -1119,20 +1160,28 @@ static const char* kindName(int k) {
         self.audio->tick(dt);
     }
 
-    // HUD (ride mode): speed km/h + altitude + element (top-left); score / felt-g /
-    // boost bar (bottom-left) to mirror the software game's HUD content.
+    // HUD (ride mode), matching the software game's content + layout:
+    //   top-right: big SPEED km/h, ALT, current element NAME
+    //   top-left:  SCORE (6 digits)
+    //   bottom-left: felt-g (signed vertical g) + BOOST bar
     if (r->rideMode) {
         [self.hud setStringValue:[NSString stringWithFormat:@"%.0f KM/H\nALT %.0f m\n%s",
                                   r->rideSpeed * 3.6f, r->rideAlt, kindName(r->rideKind)]];
+        // colour the element name like the SW chip (pink/amber for inversions)
+        [self.hud setTextColor:kindSpecial(r->rideKind)
+                                 ? [NSColor colorWithRed:1.0 green:0.78 blue:0.55 alpha:1.0]
+                                 : [NSColor whiteColor]];
+        [self.hud2 setStringValue:[NSString stringWithFormat:@"SCORE %06ld", r->rideScore]];
         // boost bar drawn as a run of block glyphs (no extra views)
         int filled = (int)(r->rideBoost * 20.0f + 0.5f);
         char bar[48]; for (int i = 0; i < 20; i++) bar[i] = (i < filled) ? '|' : '.'; bar[20] = 0;
-        [self.hud2 setStringValue:[NSString stringWithFormat:
-            @"SCORE %06ld\n%+.1f g\nBOOST [%s]  SPACE",
-            r->rideScore, r->rideVertG, bar]];
+        [self.hud3 setStringValue:[NSString stringWithFormat:
+            @"%+.1f g\nBOOST [%s]  SPACE", r->rideVertG, bar]];
     } else {
         [self.hud setStringValue:@"FREE-FLY\nWASD+QE / mouse\nF: ride"];
+        [self.hud setTextColor:[NSColor whiteColor]];
         [self.hud2 setStringValue:@""];
+        [self.hud3 setStringValue:@""];
     }
 
     CAMetalLayer* layer = self.view.metalLayer;

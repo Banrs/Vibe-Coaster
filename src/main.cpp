@@ -14,10 +14,13 @@
 #include <thread>
 #include <atomic>
 #include <climits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 static const float SEG_LEN   = 14.0f;
 static const float CELL      = 1.0f;
-static const int   TERRA_R   = 200;
+static const int   TERRA_R   = 320;
 
 static const float WATER_Y   = 30.0f;
 static const float BUILD_MAX  = 430.0f;
@@ -470,84 +473,168 @@ static void endVoxelBatch() {
 }
 
 static thread_local bool gCapture = false;
-static std::vector<float>         gCapPos, gCapUV, gCapNrm;
-static std::vector<unsigned char> gCapCol;
+
+static const int CHUNK = 32;
+
+struct CapBucket {
+    int gx = 0, gz = 0;
+    std::vector<float>         pos, uv, nrm;
+    std::vector<unsigned char> col;
+    std::vector<Vector3>       water;
+    float minY = 1e9f, maxY = -1e9f;
+    bool  carveActive = false;
+};
+static std::vector<CapBucket> gCapBuckets;
+static int                    gCapCount = 0;
+static CapBucket             *gCapCur   = nullptr;
+
 static inline void capVert(float x, float y, float z, float u, float v,
                            float nx, float ny, float nz, Color c) {
-    gCapPos.push_back(x); gCapPos.push_back(y); gCapPos.push_back(z);
-    gCapUV.push_back(u);  gCapUV.push_back(v);
-    gCapNrm.push_back(nx); gCapNrm.push_back(ny); gCapNrm.push_back(nz);
-    gCapCol.push_back(c.r); gCapCol.push_back(c.g); gCapCol.push_back(c.b); gCapCol.push_back(c.a);
+    CapBucket &b = *gCapCur;
+    b.pos.push_back(x); b.pos.push_back(y); b.pos.push_back(z);
+    b.uv.push_back(u);  b.uv.push_back(v);
+    b.nrm.push_back(nx); b.nrm.push_back(ny); b.nrm.push_back(nz);
+    b.col.push_back(c.r); b.col.push_back(c.g); b.col.push_back(c.b); b.col.push_back(c.a);
+    if (y < b.minY) b.minY = y;
+    if (y > b.maxY) b.maxY = y;
 }
 
-struct TerrainMesh {
+static inline long long chunkKey(int gx, int gz) {
+    return ((long long)(unsigned int)gx << 32) | (unsigned int)gz;
+}
+static inline int floorDiv(int a, int b) {
+    int q = a / b; if ((a % b) && ((a < 0) != (b < 0))) q--; return q;
+}
+
+struct Frustum {
+    float p[6][4];
+    void fromVP(Matrix m) {
+        float r0[4] = { m.m0, m.m1, m.m2, m.m3 };
+        float r1[4] = { m.m4, m.m5, m.m6, m.m7 };
+        float r2[4] = { m.m8, m.m9, m.m10, m.m11 };
+        float r3[4] = { m.m12, m.m13, m.m14, m.m15 };
+        for (int i = 0; i < 4; i++) {
+            p[0][i] = r3[i] + r0[i]; p[1][i] = r3[i] - r0[i];
+            p[2][i] = r3[i] + r1[i]; p[3][i] = r3[i] - r1[i];
+            p[4][i] = r3[i] + r2[i]; p[5][i] = r3[i] - r2[i];
+        }
+    }
+    bool aabb(float x0, float y0, float z0, float x1, float y1, float z1) const {
+        for (int i = 0; i < 6; i++) {
+            float a = p[i][0], b = p[i][1], c = p[i][2], d = p[i][3];
+            float px = (a >= 0) ? x1 : x0, py = (b >= 0) ? y1 : y0, pz = (c >= 0) ? z1 : z0;
+            if (a * px + b * py + c * pz + d < 0.0f) return false;
+        }
+        return true;
+    }
+};
+
+struct Chunk {
+    int gx = 0, gz = 0;
     Mesh mesh{};
     bool live = false;
-    int keyCx = INT_MIN, keyCz = INT_MIN, keyU = INT_MIN;
+    int  capVerts = 0;
+    int  builtU = INT_MIN;
+    bool carveActive = false;
+    std::vector<Vector3> water;
+    float minX = 0, maxX = 0, minZ = 0, maxZ = 0, minY = 0, maxY = 0;
+};
+
+struct TerrainField {
+    std::unordered_map<long long, Chunk> chunks;
     std::thread worker;
     bool building = false;
     std::atomic<bool> done{false};
-    int  pendCx = 0, pendCz = 0, pendU = 0;
+    bool live = false;
+    int  pendU = 0, pendCount = 0;
 
-    static const int REBUILD_CELLS = 48;
-    static const int REBUILD_U     = 3;
-    bool needsRebuild(int cx, int cz, int uIdx) const {
-        if (building) return false;
-        return !live || abs(cx - keyCx) >= REBUILD_CELLS || abs(cz - keyCz) >= REBUILD_CELLS
-                     || abs(uIdx - keyU) >= REBUILD_U;
-    }
+    static const int REBUILD_U = 3;
 
     template <class EmitFn>
-    void dispatch(EmitFn &&emit, int cx, int cz, int uIdx) {
-        pendCx = cx; pendCz = cz; pendU = uIdx; building = true; done.store(false, std::memory_order_relaxed);
-        gCapPos.clear(); gCapUV.clear(); gCapNrm.clear(); gCapCol.clear();
-
-        worker = std::thread([this, emit]() { gCapture = true; emit(); gCapture = false; done.store(true, std::memory_order_release); });
+    void dispatch(EmitFn &&emit, int uIdx) {
+        pendU = uIdx; pendCount = gCapCount; building = true;
+        done.store(false, std::memory_order_relaxed);
+        worker = std::thread([this, emit]() {
+            gCapture = true; emit(); gCapture = false;
+            done.store(true, std::memory_order_release);
+        });
     }
 
-    int capVerts = 0;
+    void uploadBucket(CapBucket &b) {
+        int vcount = (int)(b.pos.size() / 3);
+        Chunk &c = chunks[chunkKey(b.gx, b.gz)];
+        c.gx = b.gx; c.gz = b.gz;
+        c.builtU = pendU; c.carveActive = b.carveActive;
+        c.water.swap(b.water);
+        c.minX = b.gx * CHUNK * CELL - 6.0f;
+        c.maxX = (b.gx + 1) * CHUNK * CELL + 6.0f;
+        c.minZ = b.gz * CHUNK * CELL - 6.0f;
+        c.maxZ = (b.gz + 1) * CHUNK * CELL + 6.0f;
+        c.minY = (vcount > 0) ? b.minY - 1.0f : 0.0f;
+        c.maxY = (vcount > 0) ? b.maxY + 1.0f : 0.0f;
+        if (vcount == 0) { c.mesh.vertexCount = c.mesh.triangleCount = 0; c.live = (c.capVerts > 0); return; }
+        Mesh &mesh = c.mesh;
+        if (c.live && vcount <= c.capVerts) {
+            mesh.vertexCount   = vcount;
+            mesh.triangleCount = vcount / 3;
+            UpdateMeshBuffer(mesh, 0, b.pos.data(), (int)(b.pos.size() * sizeof(float)), 0);
+            UpdateMeshBuffer(mesh, 1, b.uv.data(),  (int)(b.uv.size()  * sizeof(float)), 0);
+            UpdateMeshBuffer(mesh, 2, b.nrm.data(), (int)(b.nrm.size() * sizeof(float)), 0);
+            UpdateMeshBuffer(mesh, 3, b.col.data(), (int)(b.col.size() * sizeof(unsigned char)), 0);
+        } else {
+            if (c.live) { UnloadMesh(mesh); mesh = Mesh{}; }
+            c.capVerts = (vcount * 5) / 4;
+            mesh.vertexCount   = c.capVerts;
+            mesh.triangleCount = c.capVerts / 3;
+            mesh.vertices  = (float *)RL_CALLOC(c.capVerts * 3, sizeof(float));
+            mesh.texcoords = (float *)RL_CALLOC(c.capVerts * 2, sizeof(float));
+            mesh.normals   = (float *)RL_CALLOC(c.capVerts * 3, sizeof(float));
+            mesh.colors    = (unsigned char *)RL_CALLOC(c.capVerts * 4, sizeof(unsigned char));
+            std::copy(b.pos.begin(), b.pos.end(), mesh.vertices);
+            std::copy(b.uv.begin(),  b.uv.end(),  mesh.texcoords);
+            std::copy(b.nrm.begin(), b.nrm.end(), mesh.normals);
+            std::copy(b.col.begin(), b.col.end(), mesh.colors);
+            UploadMesh(&mesh, true);
+            mesh.vertexCount   = vcount;
+            mesh.triangleCount = vcount / 3;
+        }
+        c.live = true;
+    }
+
     void finish() {
         if (!building) return;
-        // NON-BLOCKING for async rebuilds: if the worker isn't done, keep drawing the old
-        // mesh and try again next frame (the join only returns instantly once done is set).
-        // The first build (!live) still blocks so there's terrain to draw immediately.
         if (live && !done.load(std::memory_order_acquire)) return;
         if (worker.joinable()) worker.join();
-        int vcount = (int)(gCapPos.size() / 3);
-        if (vcount > 0) {
-            if (live && vcount <= capVerts) {
-
-                mesh.vertexCount   = vcount;
-                mesh.triangleCount = vcount / 3;
-                UpdateMeshBuffer(mesh, 0, gCapPos.data(), (int)(gCapPos.size() * sizeof(float)), 0);
-                UpdateMeshBuffer(mesh, 1, gCapUV.data(),  (int)(gCapUV.size()  * sizeof(float)), 0);
-                UpdateMeshBuffer(mesh, 2, gCapNrm.data(), (int)(gCapNrm.size() * sizeof(float)), 0);
-                UpdateMeshBuffer(mesh, 3, gCapCol.data(), (int)(gCapCol.size() * sizeof(unsigned char)), 0);
-            } else {
-
-                if (live) { UnloadMesh(mesh); mesh = Mesh{}; live = false; }
-                capVerts = (vcount * 5) / 4;
-                mesh.vertexCount   = capVerts;
-                mesh.triangleCount = capVerts / 3;
-                mesh.vertices  = (float *)RL_CALLOC(capVerts * 3, sizeof(float));
-                mesh.texcoords = (float *)RL_CALLOC(capVerts * 2, sizeof(float));
-                mesh.normals   = (float *)RL_CALLOC(capVerts * 3, sizeof(float));
-                mesh.colors    = (unsigned char *)RL_CALLOC(capVerts * 4, sizeof(unsigned char));
-                std::copy(gCapPos.begin(), gCapPos.end(), mesh.vertices);
-                std::copy(gCapUV.begin(),  gCapUV.end(),  mesh.texcoords);
-                std::copy(gCapNrm.begin(), gCapNrm.end(), mesh.normals);
-                std::copy(gCapCol.begin(), gCapCol.end(), mesh.colors);
-                UploadMesh(&mesh, true);
-                mesh.vertexCount   = vcount;
-                mesh.triangleCount = vcount / 3;
-                live = true;
-            }
-        }
-        keyCx = pendCx; keyCz = pendCz; keyU = pendU;
+        for (int i = 0; i < pendCount; i++) uploadBucket(gCapBuckets[i]);
+        live = true;
         building = false;
     }
+
+    void evict(int ccx, int ccz, int R) {
+        if (building) return;
+        int keepX0 = ccx - R - CHUNK, keepX1 = ccx + R + CHUNK;
+        int keepZ0 = ccz - R - CHUNK, keepZ1 = ccz + R + CHUNK;
+        for (auto it = chunks.begin(); it != chunks.end(); ) {
+            Chunk &c = it->second;
+            int cx0 = c.gx * CHUNK, cx1 = (c.gx + 1) * CHUNK;
+            int cz0 = c.gz * CHUNK, cz1 = (c.gz + 1) * CHUNK;
+            if (cx1 < keepX0 || cx0 > keepX1 || cz1 < keepZ0 || cz0 > keepZ1) {
+                if (c.live && c.mesh.vboId) UnloadMesh(c.mesh);
+                it = chunks.erase(it);
+            } else ++it;
+        }
+    }
+
+    void draw(const Frustum &fr, Material mat) {
+        for (auto &kv : chunks) {
+            Chunk &c = kv.second;
+            if (!c.live || c.mesh.vertexCount == 0) continue;
+            if (!fr.aabb(c.minX, c.minY, c.minZ, c.maxX, c.maxY, c.maxZ)) continue;
+            DrawMesh(c.mesh, mat, MatrixIdentity());
+        }
+    }
 };
-static TerrainMesh gTerrainMesh;
+static TerrainField gTerrain;
 static Material gTerrainMat{};
 
 static unsigned char gAOTop = 255, gAOBot = 255;
@@ -559,6 +646,31 @@ static inline void aoColor(Color c, float k) {
 static inline Color capCol(Color c, float k) {
     return Color{ (unsigned char)(c.r * k), (unsigned char)(c.g * k),
                   (unsigned char)(c.b * k), c.a };
+}
+// Heightfield face culling: emit only the requested faces of a box into the capture
+// buffer. mask bits: 1=+Z 2=-Z 4=+Y(top) 8=-Y(bottom) 16=+X 32=-X. Used for terrain
+// columns so buried faces between equal-height cells are never generated (huge vert/
+// overdraw win at native resolution). Vertex data is identical to emitCubeTex's faces.
+static const unsigned FACE_PZ=1, FACE_NZ=2, FACE_PY=4, FACE_NY=8, FACE_PX=16, FACE_NX=32;
+static void capCubeMasked(int tile, Vector3 p, float w, float h, float l, Color c, unsigned mask) {
+    if (!mask) return;
+    float x = p.x, y = p.y, z = p.z;
+    float u0 = (tile * 16 + 0.5f) / (float)(TILE_N * 16);
+    float u1 = (tile * 16 + 15.5f) / (float)(TILE_N * 16);
+    float v0 = 0.5f / 16.0f, v1 = 15.5f / 16.0f;
+    float kT = gAOTop / 255.0f, kB = gAOBot / 255.0f;
+    Color cB = capCol(c, kB), cT = capCol(c, kT);
+    float xm = x - w/2, xp = x + w/2, ym = y - h/2, yp = y + h/2, zm = z - l/2, zp = z + l/2;
+    #define CAPQ(nx,ny,nz, ax,ay,az,au,av,ac, bx,by,bz,bu,bv,bc, ccx,ccy,ccz,cu,cv,cc, dx,dy,dz,du,dv,dc) \
+        capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(bx,by,bz,bu,bv,nx,ny,nz,bc); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); \
+        capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); capVert(dx,dy,dz,du,dv,nx,ny,nz,dc)
+    if (mask & FACE_PZ) { CAPQ(0,0,1,  xm,ym,zp,u0,v1,cB,  xp,ym,zp,u1,v1,cB,  xp,yp,zp,u1,v0,cT,  xm,yp,zp,u0,v0,cT); }
+    if (mask & FACE_NZ) { CAPQ(0,0,-1, xm,ym,zm,u1,v1,cB,  xm,yp,zm,u1,v0,cT,  xp,yp,zm,u0,v0,cT,  xp,ym,zm,u0,v1,cB); }
+    if (mask & FACE_PY) { CAPQ(0,1,0,  xm,yp,zm,u0,v0,cT,  xm,yp,zp,u0,v1,cT,  xp,yp,zp,u1,v1,cT,  xp,yp,zm,u1,v0,cT); }
+    if (mask & FACE_NY) { CAPQ(0,-1,0, xm,ym,zm,u1,v0,cB,  xp,ym,zm,u0,v0,cB,  xp,ym,zp,u0,v1,cB,  xm,ym,zp,u1,v1,cB); }
+    if (mask & FACE_PX) { CAPQ(1,0,0,  xp,ym,zm,u1,v1,cB,  xp,yp,zm,u1,v0,cT,  xp,yp,zp,u0,v0,cT,  xp,ym,zp,u0,v1,cB); }
+    if (mask & FACE_NX) { CAPQ(-1,0,0, xm,ym,zm,u0,v1,cB,  xm,ym,zp,u1,v1,cB,  xm,yp,zp,u1,v0,cT,  xm,yp,zm,u0,v0,cT); }
+    #undef CAPQ
 }
 static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c) {
     float x = p.x, y = p.y, z = p.z;
@@ -1303,7 +1415,7 @@ int main(int argc, char **argv) {
     SetConfigFlags(benchMode ? FLAG_WINDOW_HIDDEN
                  : rttestMode ? (FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT)
                              : (FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT));
-    InitWindow(1280, 720, "VOXELCOASTER");
+    InitWindow(benchMode ? 2560 : 1280, benchMode ? 1440 : 720, "VOXELCOASTER");
     SetExitKey(KEY_NULL);
     SetTargetFPS(120);
     InitAudioDevice();
@@ -1351,8 +1463,6 @@ int main(int argc, char **argv) {
     std::vector<float> carveLo(carveW * carveW), carveHi(carveW * carveW), carveDeep(carveW * carveW);
 
     std::vector<float> forceTop(carveW * carveW);
-    std::vector<Vector3> waterCells;
-    waterCells.reserve((2 * TERRA_R + 1) * (2 * TERRA_R + 1) / 3);
 
     float u = 0.5f, v = 7.0f;
     float boost = 40.0f, score = 0;
@@ -1432,7 +1542,7 @@ int main(int argc, char **argv) {
 
         double tFrame0 = GetTime();
 
-        gTerrainMesh.finish();
+        gTerrain.finish();
         float rawDt = (shotMode || benchMode || rttestMode || cobraShot || elemShot) ? (1.0f / 60.0f) : GetFrameTime();
         float dt = fminf(rawDt, 0.05f);
 
@@ -1841,11 +1951,43 @@ int main(int argc, char **argv) {
         int ccx = (int)floorf(P.x / CELL), ccz = (int)floorf(P.z / CELL);
         float fogEnd = TERRA_R * CELL;
 
-        // Only do the O(TERRA_R^2) per-cell prep (height prefill + track carve) on frames
-        // where the cached mesh actually needs rebuilding; every other frame just redraws
-        // the cached VBO. This is what makes a large TERRA_R affordable. needsRebuild is
-        // false while a build is in flight, so this also keeps the worker race-free.
-        bool wantRebuild = gTerrainMesh.needsRebuild(ccx, ccz, (int)u);
+        gTerrain.evict(ccx, ccz, TERRA_R);
+
+        std::unordered_set<long long> carveNow;
+        {
+            auto markR = [&](Vector3 c, float r) {
+                int gx0 = floorDiv((int)floorf(c.x - r), CHUNK), gx1 = floorDiv((int)floorf(c.x + r), CHUNK);
+                int gz0 = floorDiv((int)floorf(c.z - r), CHUNK), gz1 = floorDiv((int)floorf(c.z + r), CHUNK);
+                for (int gz = gz0; gz <= gz1; gz++) for (int gx = gx0; gx <= gx1; gx++)
+                    carveNow.insert(chunkKey(gx, gz));
+            };
+            for (float su = fmaxf(u - 14.0f, 0.0f); su <= u + 28.0f; su += 1.0f) markR(trk.pos(su), DEEP_R + 5.0f);
+            markR(trk.startPos, 64.0f);
+            if (trk.stationActive) markR(trk.stationPos, 64.0f);
+        }
+
+        std::vector<std::pair<int,int>> dirty;
+        if (!gTerrain.building) {
+            int gx0 = floorDiv(ccx - TERRA_R, CHUNK), gx1 = floorDiv(ccx + TERRA_R, CHUNK);
+            int gz0 = floorDiv(ccz - TERRA_R, CHUNK), gz1 = floorDiv(ccz + TERRA_R, CHUNK);
+            float cullR = fogEnd + CHUNK * 0.72f;
+            for (int gz = gz0; gz <= gz1; gz++) for (int gx = gx0; gx <= gx1; gx++) {
+                float cx = (gx + 0.5f) * CHUNK - ccx, cz = (gz + 0.5f) * CHUNK - ccz;
+                if (cx * cx + cz * cz > cullR * cullR) continue;
+                long long k = chunkKey(gx, gz);
+                bool nowActive = carveNow.count(k) > 0;
+                auto it = gTerrain.chunks.find(k);
+                if (it == gTerrain.chunks.end() || !it->second.live) { dirty.push_back({gx, gz}); continue; }
+                Chunk &c = it->second;
+                if ((nowActive || c.carveActive) && abs((int)u - c.builtU) >= TerrainField::REBUILD_U)
+                    dirty.push_back({gx, gz});
+            }
+        }
+
+        // Only do the O(TERRA_R^2) per-cell prep (height prefill + track carve) when chunks
+        // actually need (re)building; otherwise every frame just frustum-draws cached chunk
+        // VBOs. dirty is empty while a build is in flight, keeping the worker race-free.
+        bool wantRebuild = !dirty.empty();
         if (wantRebuild) {
         prefillTerrain(ccx, ccz, TERRA_R);
 
@@ -1939,22 +2081,39 @@ int main(int argc, char **argv) {
                     if (hi > carveHi[ci]) carveHi[ci] = hi;
                 }
         }
+
+        if ((int)gCapBuckets.size() < (int)dirty.size()) gCapBuckets.resize(dirty.size());
+        gCapCount = (int)dirty.size();
+        for (int i = 0; i < gCapCount; i++) {
+            CapBucket &b = gCapBuckets[i];
+            b.gx = dirty[i].first; b.gz = dirty[i].second;
+            b.pos.clear(); b.uv.clear(); b.nrm.clear(); b.col.clear(); b.water.clear();
+            b.minY = 1e9f; b.maxY = -1e9f;
+            b.carveActive = carveNow.count(chunkKey(b.gx, b.gz)) > 0;
+        }
         }  // end if (wantRebuild) — per-frame prep only on rebuild frames
 
-        auto buildTerrainMesh = [&]() {
+        float ringCx = ccx * CELL + CELL * 0.5f, ringCz = ccz * CELL + CELL * 0.5f;
+        auto buildTerrainMesh = [&, ccx, ccz, ringCx, ringCz, fogEnd, u]() {
         {
         const bool depthPass = false;
-        waterCells.clear();
-        for (int dz = -TERRA_R; dz <= TERRA_R; dz++) {
-            for (int dx = -TERRA_R; dx <= TERRA_R; dx++) {
-                int cx = ccx + dx, cz = ccz + dz;
+        for (int bi = 0; bi < gCapCount; bi++) {
+            CapBucket &bk = gCapBuckets[bi];
+            gCapCur = &bk;
+            int cx0 = bk.gx * CHUNK, cz0 = bk.gz * CHUNK;
+            for (int lz = 0; lz < CHUNK; lz++)
+            for (int lx = 0; lx < CHUNK; lx++) {
+                int cx = cx0 + lx, cz = cz0 + lz;
+                int dx = cx - ccx, dz = cz - ccz;
+                if (dx < -TERRA_R || dx > TERRA_R || dz < -TERRA_R || dz > TERRA_R) continue;
                 float wx = cx * CELL + CELL * 0.5f, wz = cz * CELL + CELL * 0.5f;
-                float ddx = wx - P.x, ddz = wz - P.z;
+                float ddx = wx - ringCx, ddz = wz - ringCz;
                 float dist2 = ddx * ddx + ddz * ddz;
-                if (dist2 > fogEnd * fogEnd) continue;
-
-                float gateFog = Clamp((sqrtf(dist2) - fogEnd * 0.70f) / (fogEnd * 0.27f), 0.0f, 1.0f);
-                if (gateFog > 0.97f) continue;
+                // Persistent chunks build their FULL geometry regardless of camera distance:
+                // a chunk is built once when it enters the ring (at the far edge) and kept,
+                // so distance-LOD here would bake "far = empty" and never refill on approach.
+                // Per-frame frustum culling + in-shader fog handle visibility instead.
+                const float gateFog = 0.0f;
                 const float fog = 0.0f;
 
                 float cellSz = CELL;
@@ -2019,26 +2178,16 @@ int main(int argc, char **argv) {
                         drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
                     }
                 } else {
-                    drawCubeTex(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col);
-                    drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
-
-                    if (!depthPass && dist2 < 56.0f * 56.0f && cHi <= cLo) {
-                        const float HC = cellSz * 0.5f;
-                        struct { int ox, oz; float dx, dz; } nb[4] = {
-                            { 1, 0,  HC*0.5f, 0 }, { -1, 0, -HC*0.5f, 0 },
-                            { 0, 1,  0,  HC*0.5f }, { 0,-1, 0, -HC*0.5f } };
-                        for (int n = 0; n < 4; n++) {
-                            int hN = gHCache.get(cx + nb[n].ox, cz + nb[n].oz);
-                            if (h - hN != 1) continue;
-                            float ew = (nb[n].ox != 0) ? HC : cellSz;
-                            float el = (nb[n].oz != 0) ? HC : cellSz;
-                            drawCubeTex(capTile, Vector3{ wx + nb[n].dx, h - 0.5f, wz + nb[n].dz },
-                                        ew, 1.0f, el, cap);
-                        }
-                    }
+                    int hpx = gHCache.get(cx + 1, cz), hmx = gHCache.get(cx - 1, cz);
+                    int hpz = gHCache.get(cx, cz + 1), hmz = gHCache.get(cx, cz - 1);
+                    unsigned sm = 0;
+                    if (hpx < h) sm |= FACE_PX; if (hmx < h) sm |= FACE_NX;
+                    if (hpz < h) sm |= FACE_PZ; if (hmz < h) sm |= FACE_NZ;
+                    capCubeMasked(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col, sm);
+                    capCubeMasked(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap, sm | FACE_PY);
                 }
 
-                if (top < WATER_Y && !depthPass) waterCells.push_back(Vector3{ wx, cellSz, wz });
+                if (top < WATER_Y && !depthPass) gCapCur->water.push_back(Vector3{ wx, cellSz, wz });
 
 	                float th = hashf(cx * 9 + 7, cz * 9 + 3);
 
@@ -2154,7 +2303,7 @@ int main(int argc, char **argv) {
         };
 
         auto drawWorld = [&](bool depthPass, bool coasterOnly = false) {
-        if (!coasterOnly && gTerrainMesh.live) {
+        if (!coasterOnly && gTerrain.live) {
 
             Material mat = gTerrainMat;
             mat.shader = depthPass ? gShadow.depth : gShadow.lit;
@@ -2164,7 +2313,8 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
             }
-            DrawMesh(gTerrainMesh.mesh, mat, MatrixIdentity());
+            Frustum fr; fr.fromVP(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            gTerrain.draw(fr, mat);
             if (!depthPass) {
                 float off = 0.0f;
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);
@@ -2389,8 +2539,8 @@ int main(int argc, char **argv) {
         };
 
         if (wantRebuild) {
-            gTerrainMesh.dispatch(buildTerrainMesh, ccx, ccz, (int)u);
-            if (!gTerrainMesh.live) gTerrainMesh.finish();
+            gTerrain.dispatch(buildTerrainMesh, (int)u);
+            if (!gTerrain.live) gTerrain.finish();
         }
 
         Matrix lightVP = gShadow.computeLightVP(P);
@@ -2583,7 +2733,12 @@ int main(int argc, char **argv) {
             rlBegin(RL_QUADS);
             rlNormal3f(0, 1, 0);
 
-            for (auto &wc : waterCells) {
+            Frustum wfr; wfr.fromVP(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            for (auto &kv : gTerrain.chunks) {
+              Chunk &ch = kv.second;
+              if (!ch.live || ch.water.empty()) continue;
+              if (!wfr.aabb(ch.minX, WATER_Y - 2.0f, ch.minZ, ch.maxX, WATER_Y + 2.0f, ch.maxZ)) continue;
+              for (auto &wc : ch.water) {
                 float hs = wc.y * 0.5f;
                 float x0 = wc.x - hs, x1 = wc.x + hs;
                 float z0 = wc.z - hs, z1 = wc.z + hs;
@@ -2600,6 +2755,7 @@ int main(int argc, char **argv) {
                 rlTexCoord2f(wu, wv); rlVertex3f(x0, WATER_Y, z1);
                 rlTexCoord2f(wu, wv); rlVertex3f(x1, WATER_Y, z1);
                 rlTexCoord2f(wu, wv); rlVertex3f(x1, WATER_Y, z0);
+              }
             }
             rlEnd();
             EndShaderMode();
@@ -3085,7 +3241,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
         }
     }
-    gTerrainMesh.finish();
+    gTerrain.finish();
 
     if (benchMode) {
         static const char *EN[M_COUNT] = {

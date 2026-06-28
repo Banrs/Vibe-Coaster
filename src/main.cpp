@@ -16,7 +16,7 @@
 
 static const float SEG_LEN   = 14.0f;
 static const float CELL      = 1.0f;
-static const int   TERRA_R   = 192;
+static const int   TERRA_R   = 120;
 
 static const float WATER_Y   = 30.0f;
 static const float BUILD_MAX  = 430.0f;
@@ -28,7 +28,7 @@ static const float FRICTION  = 0.016f;
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 78.0f;
+static const float LAUNCH_V  = 83.0f;
 static const float CLIMB_V   = 40.0f;
 static float       BOOST_V   = 62.0f;
 static float       BOOST_TRIG = 58.0f;

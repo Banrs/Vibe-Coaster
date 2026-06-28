@@ -214,15 +214,15 @@ static float3 sampleSkyLite(float3 dir, float3 sunDir) {
 }
 
 // Sky-hemisphere ambient (cool from above, warm bounce from below). Dialled DOWN
-// (~25%) vs before so the soft ray-traced sun shadows read clearly darker — the user
-// wants shadows to be a visible step up over the software raster. Direct sun stays
-// the dominant light; shadowed faces sink to a believable cool blue rather than a
-// flat washed grey.
+// HARD vs before so the soft ray-traced sun shadows read with real depth — shadowed
+// faces should sink to a believable cool value, NOT near-white. The sky tint is both
+// dimmer and less saturated-blue so it no longer washes the whole terrain teal; the
+// warm sun stays the dominant, contrast-defining light.
 static float3 ambientFill(float3 n) {
     float up = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
-    float3 skyTint    = float3(0.13, 0.17, 0.25);   // dimmer/cooler so the warm sun dominates -> shadows read clearly, terrain stops looking teal-washed
-    float3 groundTint = float3(0.10, 0.085, 0.07);
-    return mix(groundTint, skyTint, up) + float3(0.015, 0.015, 0.02);
+    float3 skyTint    = float3(0.090, 0.108, 0.135); // dim + only slightly cool (was strongly blue -> flat ground read teal); shadows still sink, grass keeps its green
+    float3 groundTint = float3(0.062, 0.054, 0.045); // dimmer warm up-bounce from the ground
+    return mix(groundTint, skyTint, up) + float3(0.010, 0.010, 0.013);
 }
 
 // ===========================================================================
@@ -308,7 +308,7 @@ static float softSunShadow(float3 pos, float3 n, float3 L, thread float& rng,
                           instance_acceleration_structure accel) {
     float3 t, b; basis(L, t, b);
     float occ = 0.0;
-    const int S = 10;                            // shadow samples: 10 = soft penumbra w/ low noise (budget freed by shorter render distance)
+    const int S = 12;                            // shadow samples: 12 = cleaner soft penumbra while staying well above 90fps
     for (int i = 0; i < S; i++) {
         rng = fract(rng * 1.61803 + 0.31831);
         float a = rng * 6.2831853;
@@ -417,7 +417,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
-        const int AO_SAMPLES = 26;                  // 26: low-noise AO/GI (budget freed by shorter render distance)
+        const int AO_SAMPLES = 30;                  // 30: cleaner AO/GI while staying well above 90fps (each sample also casts a GI shade ray, so this is the fps-dominant loop)
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
         float3 surfAlb = voxelGrain(hit.albedo, hit.pos, n, hit.mat);
@@ -448,7 +448,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             }
         }
         float ao = 1.0 - aoSum / float(AO_SAMPLES);
-        ao = mix(0.35, 1.0, ao);                   // clamp darkest AO so it's grounded
+        ao = mix(0.26, 1.0, ao);                   // deeper darkest AO -> crevices/contact grounds the voxel steps (was 0.35, looked floaty)
         float3 gi = giSum / float(AO_SAMPLES);
         color = color * ao + surfAlb * gi * 0.45;
 
@@ -483,11 +483,14 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             float3 bodyCol = mix(shallowCol, deepCol, smoothstep(0.6, 20.0, depth));
 
             // Sun-lit body: keep a touch of diffuse + cloud dimming so it isn't flat.
-            // Apply the SUN SHADOW so coaster/terrain shadows are visible ON the water
-            // (the body used to ignore shadows entirely -> the lake never darkened).
+            // Apply the SUN SHADOW so coaster/terrain shadows are visible ON the water.
+            // The shadow now modulates a LARGER share of the body brightness (and a
+            // bigger fixed drop in shadow) so a coaster/terrain shadow reads as a clear
+            // dark patch on the lake, not a faint dimming.
             float wShadow = softSunShadow(hit.pos, wn, L, rng, accel);
             float sunLit = cloudSunLight(hit.pos, L);
-            color = bodyCol * (0.55 + 0.45 * max(L.y, 0.0) * wShadow) * sunLit;
+            float wLit = 0.42 + 0.58 * max(L.y, 0.0) * wShadow;  // shadowed water sinks toward 0.42x, sunlit reads full
+            color = bodyCol * wLit * sunLit;
             color = mix(color, color * ao, 0.25);         // gentler ambient occlusion
 
             // Reflection ray off the RIPPLED normal -> sky/cloud/terrain mirrored
@@ -528,14 +531,18 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
         color = mix(color, fogCol, clamp(fog, 0.0, 0.55));
     }
 
-    // --- Exposure + ACES filmic tonemap + saturation + gamma ---
-    color *= 0.85;                                  // exposure
+    // --- Exposure + ACES filmic tonemap + saturation + contrast + gamma ---
+    color *= 1.02;                                  // exposure: lifted so terrain reads bright/sunny, not pale-flat
     float3 x = color;
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
     color = clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-    // restore a little saturation that the filmic curve washed out
+    // restore the saturation the filmic curve flattens (a bit stronger now that the
+    // ambient is cooler/dimmer -> greens & earth tones come back without the teal wash)
     float lum = dot(color, float3(0.2126, 0.7152, 0.0722));
-    color = clamp(mix(float3(lum), color, 1.18), 0.0, 1.0);
+    color = clamp(mix(float3(lum), color, 1.28), 0.0, 1.0);
+    // subtle S-curve contrast around mid-grey: deepens shadows, keeps highlights from
+    // clipping to flat white -> punchier, more dimensional image.
+    color = clamp(mix(color, color * color * (3.0 - 2.0 * color), 0.18), 0.0, 1.0);
     color = pow(color, float3(1.0/2.2));
     out.write(float4(color, 1.0), gid);
 }

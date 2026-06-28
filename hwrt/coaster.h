@@ -119,15 +119,15 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
     int last = nRender;
     if (last > co.nFull - 3) last = co.nFull - 3;
 
-    const float RAIL_GAUGE = 1.3f;   // lateral half-spacing of running rails
-    const float RAIL_R     = 0.18f;  // rail beam half-thickness
-    const float SPINE_DROP = 1.0f;   // spine sits this far below the rail plane
-    const float SPINE_HALF = 0.55f;  // spine box half-size
+    // SCALE matched 1:1 to the software renderer (src/main.cpp ~2578-2601): true 1m-block scale.
+    const float RAIL_GAUGE = 0.55f;  // lateral half-spacing of running rails (~1.1m gauge)
+    const float RAIL_R     = 0.09f;  // rail beam half-thickness (0.18 full)
+    const float SPINE_DROP = 0.30f;  // spine centre below the rail plane
 
     float3 railCol   = vec3(0.82f, 0.83f, 0.86f);  // light steel rails
-    float3 spineSteel= vec3(0.46f, 0.48f, 0.52f);  // iron box-beam spine (un-powered)
+    float3 spineSteel= vec3(0.17f, 0.18f, 0.22f);  // dark structural box-beam tube (un-powered)
     float3 spineHot  = vec3(1.00f, 0.45f, 0.10f);  // orange boost cue (LAUNCH/BOOST only)
-    float3 tieCol    = vec3(0.30f, 0.31f, 0.34f);  // dark cross ties
+    float3 tieCol    = vec3(0.38f, 0.39f, 0.42f);  // steel cross ties
     float3 supCol    = vec3(0.46f, 0.48f, 0.52f);  // steel support bents
 
     // Fine stepping along u for smooth rails/spine.
@@ -164,59 +164,138 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         }
         prevL = railL; prevR = railR; havePrev = true;
 
-        // Box-beam spine under the rail plane, following the spline. Iron grey,
-        // turning orange ONLY on powered sections (LAUNCH/BOOST) as a boost cue.
-        // Half-length along fwd covers the gap to the next step (rails are ~14m
-        // apart per segment, STEP=0.2 -> ~2.8m between spine boxes).
+        // Box-beam spine under the rail plane, following the spline. Dark structural
+        // tube, turning orange ONLY on powered sections (LAUNCH/BOOST) as a boost cue.
         int   ki   = (int)(u + 0.5f);
         if (ki < 0) ki = 0; if (ki >= co.nFull) ki = co.nFull - 1;
         int   kind = co.cps[ki].kind;
         bool  powered = (kind == 9 || kind == 11);   // M_LAUNCH, M_BOOST
         float3 spineCol = powered ? spineHot : spineSteel;
+        float spW = powered ? 0.19f : 0.15f;   // half-width  (0.38 / 0.30 full)
+        float spH = powered ? 0.27f : 0.23f;   // half-height (0.54 / 0.46 full)
         float3 spineC = c - up * SPINE_DROP;
         float spineHalfF = length(co.pos(u + STEP) - c) * 0.6f;
-        pushBox(out, spineC, lat, up, fwd, SPINE_HALF, SPINE_HALF, spineHalfF, spineCol);
+        pushBox(out, spineC, lat, up, fwd, spW, spH, spineHalfF, spineCol);
 
         // Cross ties spanning the two rails every few steps.
         if (segCount % tieEvery == 0) {
-            float3 tieC = c - up * (SPINE_DROP * 0.4f);
-            pushBox(out, tieC, lat, up, fwd, RAIL_GAUGE + 0.25f, 0.15f, 0.30f, tieCol);
+            float3 tieC = c - up * 0.17f;
+            pushBox(out, tieC, lat, up, fwd, 0.675f, 0.07f, 0.225f, tieCol);
         }
     }
 
-    // Support bents (A-frame V), ported from the sim's drawVBent: two raked legs
-    // splay from a node tucked under the spine out to feet on the terrain. Tops
-    // and feet share one lateral sense (rRight) so the legs never cross into an X;
-    // the node sits just inside the spine underside. Skip inverted spans.
-    const float NODE_DROP = 1.5f;     // node centre below the rail plane (under the spine box)
-    for (int i = 5; i < last; i += 2) {
+    // --- HELIX central tower (port of src/main.cpp): one open 4-post lattice tower per
+    // contiguous helix run, coils tie in via radial struts so legs never punch down
+    // through the stacked coils. axis = centroid of the whole run.
+    float3 hxAxis = vec3(0,0,0); int hxN = 0; float hxTopY = -1e9f; int hxSeed = -1;
+    for (int i = 4; i < last; i++)
+        if (co.cps[i].kind == 10) { hxSeed = i; break; }     // M_HELIX
+    if (hxSeed >= 0) {
+        int a = hxSeed, b = hxSeed;
+        while (a > 1 && co.cps[a - 1].kind == 10) a--;
+        while (b + 2 < co.nFull && co.cps[b + 1].kind == 10) b++;
+        for (int i = a; i <= b; i++) {
+            hxAxis.x += co.cps[i].p.x; hxAxis.z += co.cps[i].p.z; hxN++;
+            if (co.cps[i].p.y > hxTopY) hxTopY = co.cps[i].p.y;
+        }
+    }
+    bool haveHx = hxN >= 4;
+    if (haveHx) {
+        hxAxis.x /= hxN; hxAxis.z /= hxN;
+        float gAxis = groundTopAt(hxAxis.x, hxAxis.z), th = hxTopY - gAxis;
+        if (th > 3.0f && inClip(hxAxis)) {
+            const float tw = 1.4f;
+            for (float sx = -1.0f; sx <= 1.0f; sx += 2.0f)
+                for (float sz = -1.0f; sz <= 1.0f; sz += 2.0f)
+                    pushBox(out, vec3(hxAxis.x + sx*tw, gAxis + th*0.5f, hxAxis.z + sz*tw),
+                            vec3(1,0,0), vec3(0,1,0), vec3(0,0,1), 0.17f, th*0.5f, 0.17f, supCol);
+            for (float ry = gAxis + 8.0f; ry < hxTopY - 2.0f; ry += 9.0f)
+                pushBox(out, vec3(hxAxis.x, ry, hxAxis.z), vec3(1,0,0), vec3(0,1,0), vec3(0,0,1),
+                        tw + 0.2f, 0.16f, tw + 0.2f, supCol);
+        }
+    }
+
+    // --- Support bents (track-aligned A-frame V), ported 1:1 from src/main.cpp drawVBent.
+    // Spaced by WORLD ARC LENGTH (SUP_SP metres) so bents land evenly and never overlap
+    // regardless of control-point density. Each leg is one solid beam raking from a node
+    // under the spine out to a foot on the terrain; tall bents get trussed.
+    const float SUP_SP = 9.0f;
+    float arcPrev = 0.0f, arcCur = 0.0f;
+    float3 lastP = co.cps[4].p;
+    for (int i = 4; i < last; i++) {
         const CP& cp = co.cps[i];
+        float3 p  = cp.p;
+        arcPrev = arcCur;
+        arcCur += length(p - lastP);
+        lastP = p;
+        int kn = cp.kind;
         float3 fwd = co.tangent((float)i);
         float3 up  = orthoUp(fwd, cp.up);
-        if (up.y < 0.30f) continue;                          // inverted span -> no ground support
-        float3 p  = cp.p;
+        // skip the inverted half of loops/rolls/etc (overhead spans get no ground leg)
+        bool inversionElem = (kn == 5 || kn == 6 || kn == 12 || kn == 17 || kn == 18 ||
+                              kn == 19 || kn == 21 || kn == 20 || kn == 22 || kn == 24);
+        if (inversionElem && cp.up.y < 0.35f) continue;
         if (!inClip(p)) continue;                            // clip supports to terrain ring
-        float3 node = p - up * NODE_DROP;
         float gC = groundTopAt(p.x, p.z);
-        float hgt = node.y - gC;
-        if (hgt < 3.0f) continue;                            // already near ground
-        float3 rRight = normalize(cross(up, fwd));           // rail lateral (banks with the track)
-        float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));  // ground projection: feet splay here
-        float baseHalf = t_Clamp(hgt * 0.20f, 1.8f, 5.5f);   // ground splay grows with height
-        float topHalf  = 0.34f;                              // leg tops just inside the node
-        for (float s = -1.0f; s <= 1.0f; s += 2.0f) {
-            float3 top  = node + rRight * (s * topHalf);
-            float3 foot = vec3(p.x + latH.x * s * baseHalf, 0.0f, p.z + latH.z * s * baseHalf);
-            foot.y = groundTopAt(foot.x, foot.z);
+        if (p.y - gC < 1.5f) continue;
+
+        // HELIX coils tie radially into the central tower (no individual legs).
+        if (kn == 10 && haveHx) {
+            pushBox(out, vec3((p.x + hxAxis.x)*0.5f, p.y - 0.6f, (p.z + hxAxis.z)*0.5f),
+                    vec3(1,0,0), vec3(0,1,0), vec3(0,0,1),
+                    (fabsf(hxAxis.x - p.x) + 0.4f)*0.5f, 0.15f,
+                    (fabsf(hxAxis.z - p.z) + 0.4f)*0.5f, supCol);
+            continue;
+        }
+
+        // arc-length spacing: a bent only where this cp crosses a SUP_SP boundary
+        if (floorf(arcCur / SUP_SP) == floorf(arcPrev / SUP_SP)) continue;
+
+        float topY = p.y - 0.5f;                             // apex flush to the spine underside
+        float hgt  = topY - gC;
+        if (hgt < 1.0f) continue;
+
+        float vary = hashf((int)floorf(p.x * 0.5f), (int)floorf(p.z * 0.5f));
+        float baseHalf = t_Clamp(hgt * (0.17f + vary * 0.07f), 1.5f, 5.5f);
+        float legR     = t_Clamp(0.30f + hgt * 0.0045f, 0.30f, 0.55f);
+        float topHalf  = 0.22f;
+        float3 rRight = normalize(cross(up, fwd));
+        float3 latH   = normalize(vec3(rRight.x, 0.0f, rRight.z));
+        float3 node = vec3(p.x, topY, p.z) - up * 0.58f;
+        float3 tops[2], feet[2]; int si = 0;
+        for (float sgn = -1.0f; sgn <= 1.0f; sgn += 2.0f) {
+            float3 top  = node + rRight * (sgn * topHalf);
+            float bx = p.x + latH.x * sgn * baseHalf, bz = p.z + latH.z * sgn * baseHalf;
+            float3 foot = vec3(bx, groundTopAt(bx, bz), bz);
+            tops[si] = top; feet[si] = foot; si++;
             float3 d = foot - top; float L = length(d);
-            if (L < 0.5f) continue;
+            if (L < 0.3f) continue;
             float3 f  = d * (1.0f / L);
             float3 u2 = orthoUp(f, vec3(0,1,0));
             float3 r2 = normalize(cross(u2, f));
-            pushBox(out, (top + foot) * 0.5f, r2, u2, f, 0.40f, 0.40f, L * 0.5f, supCol);
+            pushBox(out, (top + foot) * 0.5f, r2, u2, f, legR, legR, L * 0.5f, supCol);
         }
-        // square node block where the legs converge, oriented to the rail frame.
-        pushBox(out, node, rRight, up, fwd, 0.55f, 0.55f, 0.55f, supCol);
+        auto strut = [&](float3 a, float3 b, float r) {
+            float3 d = b - a; float L = length(d);
+            if (L < 0.3f) return;
+            float3 f = d * (1.0f / L);
+            float3 u2 = orthoUp(f, vec3(0,1,0));
+            float3 r2 = normalize(cross(u2, f));
+            pushBox(out, (a + b) * 0.5f, r2, u2, f, r, r, L * 0.5f, supCol);
+        };
+        if (hgt > 14.0f) {
+            int levels = (int)t_Clamp(hgt / 16.0f, 1.0f, 4.0f);
+            float3 prevL{}, prevR{}; bool have = false;
+            for (int k = 1; k <= levels; k++) {
+                float fr = (float)k / (float)(levels + 1);
+                float3 L = tops[0] + (feet[0] - tops[0]) * fr;
+                float3 R = tops[1] + (feet[1] - tops[1]) * fr;
+                strut(L, R, legR * 0.7f);
+                if (have && hgt > 22.0f) { strut(prevL, R, legR * 0.5f); strut(prevR, L, legR * 0.5f); }
+                prevL = L; prevR = R; have = true;
+            }
+        }
+        pushBox(out, node, rRight, up, fwd, 0.28f, 0.28f, 0.50f, supCol);
     }
 
     // Train: a coupled consist of cars near the start of the circuit. Cars are
@@ -224,8 +303,8 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
     // instead of being scattered along the spline.
     float3 bodyCol   = vec3(0.10f, 0.45f, 0.85f);
     float3 accentCol = vec3(0.95f, 0.85f, 0.20f);
-    const float CAR_HALF_LEN = 2.0f;        // half length of a car body (m)
-    const float CAR_PITCH    = 4.6f;        // centre-to-centre spacing (m)
+    const float CAR_HALF_LEN = 1.55f;       // half length of a car body (m)
+    const float CAR_PITCH    = 4.2f;        // centre-to-centre spacing (m)
     float u = trainU;                       // train rides at the camera parameter
     for (int car = 0; car < 5; car++) {
         if (u >= uMax - 1.0f || u < 4.0f) break;
@@ -233,10 +312,10 @@ static void buildCoaster(const Coaster& co, std::vector<MeshVertex>& out, int nR
         float3 fwd = co.tangent(u);
         float3 up  = orthoUp(fwd, co.upAt(u));
         float3 lat = normalize(cross(up, fwd));
-        float3 carC = c + up * 0.7f;        // sit on top of the rails
-        pushBox(out, carC, lat, up, fwd, 1.1f, 0.7f, CAR_HALF_LEN, car == 0 ? accentCol : bodyCol);
+        float3 carC = c + up * 0.46f;       // sit just above the rail plane
+        pushBox(out, carC, lat, up, fwd, 0.70f, 0.40f, CAR_HALF_LEN, car == 0 ? accentCol : bodyCol);
         // a small accent stripe / roof block
-        pushBox(out, carC + up * 0.8f, lat, up, fwd, 0.8f, 0.25f, CAR_HALF_LEN * 0.82f, accentCol);
+        pushBox(out, carC + up * 0.40f, lat, up, fwd, 0.52f, 0.16f, CAR_HALF_LEN * 0.82f, accentCol);
         // advance u by ~CAR_PITCH metres of arc length; cars trail BEHIND the lead.
         float mpu = length(co.pos(u + 0.1f) - co.pos(u - 0.1f)) / 0.2f;
         u -= CAR_PITCH / fmaxf(mpu, 1e-3f);

@@ -140,7 +140,7 @@ struct Track {
         }
 
         mode = M_CLIMB; mega = false; chainMode = false; remain = irnd(10, 13);
-        climbTop = frnd(150.0f, 195.0f);
+        climbTop = frnd(110.0f, 160.0f);
         ensureAhead(24);
     }
 
@@ -388,7 +388,7 @@ struct Track {
     struct InvSpec { float gT, rMin, rMaxRec, gMul, hMul; };
     static InvSpec invSpec(SegMode m) {
         switch (m) {
-            case M_LOOP:     return {4.0f, 15.0f, 22.0f, 1.6f, 2.6f};
+            case M_LOOP:     return {3.7f, 15.0f, 22.0f, 1.6f, 2.6f};
             case M_IMMEL:    return {3.2f, 17.0f, 26.0f, 1.0f, 2.0f};
             case M_DIVELOOP: return {2.6f, 18.0f, 28.0f, 1.0f, 2.0f};
             case M_COBRA:    return {3.0f, 15.0f, 24.0f, 1.0f, 2.2f};
@@ -542,8 +542,16 @@ struct Track {
         return m == M_LOOP || m == M_ROLL || m == M_IMMEL || m == M_DIVELOOP || m == M_COBRA || m == M_PRETZEL;
     }
     bool eligibleElem(SegMode m) const {
-
-        if (invSpec(m).gT > 0.0f && genV > INV_GATE) return false;
+        // Per-element speed gate: tight inversions are only OFFERED once the forward-sim
+        // speed has bled into the range where a realistic-size element holds the g envelope
+        // (real coasters place cobras/dive-loops after a hill, not at top speed). Loops/rolls
+        // hold the envelope at cruise so they use the high INV_GATE.
+        if (invSpec(m).gT > 0.0f) {
+            float gate = INV_GATE;
+            if      (m == M_COBRA)                                  gate = 42.0f;  // ~150 km/h entry
+            else if (m == M_DIVELOOP || m == M_IMMEL || m == M_PRETZEL) gate = 50.0f;  // ~180 km/h entry
+            if (genV > gate) return false;
+        }
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
     }
 

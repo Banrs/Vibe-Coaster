@@ -28,11 +28,11 @@ static const float FRICTION  = 0.016f;
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 100.0f;
+static const float LAUNCH_V  = 78.0f;
 static const float CLIMB_V   = 40.0f;
-static float       BOOST_V   = 79.0f;
-static float       BOOST_TRIG = 78.0f;
-static float       INV_GATE  = 79.0f;
+static float       BOOST_V   = 62.0f;
+static float       BOOST_TRIG = 58.0f;
+static float       INV_GATE  = 64.0f;
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -1017,7 +1017,7 @@ int main(int argc, char **argv) {
 
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
-                v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);
+                v = fmaxf(v, 20.0f); v = fminf(v, 83.0f);
                 if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
                     if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
                     if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;
@@ -1123,7 +1123,7 @@ int main(int argc, char **argv) {
                 }
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
-                v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);
+                v = fmaxf(v, 20.0f); v = fminf(v, 83.0f);
                 int ki = (int)u;
                 if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
@@ -1216,7 +1216,7 @@ int main(int argc, char **argv) {
                 v += acc * dt;
                 if (t.tagAt(u) == M_LAUNCH && v < LAUNCH_V) v = fminf(v + 40 * dt, LAUNCH_V);
                 if (t.tagAt(u) == M_BOOST) v += Clamp(BOOST_V - v, -55.0f * dt, 30.0f * dt);
-                v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);
+                v = fmaxf(v, 20.0f); v = fminf(v, 83.0f);
 
                 sinceStation += dt;
                 if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
@@ -1581,7 +1581,7 @@ int main(int argc, char **argv) {
 
             if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !onLift && v < 36.0f)
                 v = fminf(v + 28.0f * dt, 36.0f);
-            v = fmaxf(v, 20.0f); v = fminf(v, 100.0f);
+            v = fmaxf(v, 20.0f); v = fminf(v, 83.0f);
             if (gForceSpeed > 0.0f) v = gForceSpeed;
 
             sinceStation += dt;

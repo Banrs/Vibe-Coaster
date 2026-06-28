@@ -238,8 +238,10 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
                 float topY = h * cell;
                 int ax = (int)floorf(wcx / cell), az = (int)floorf(wcz / cell);
                 // per-AREA density (independent of cell size, so finer terrain
-                // doesn't multiply the tree count and blow up the triangle budget)
-                float dens = 0.07f * (cell / 6.0f) * (cell / 6.0f);
+                // doesn't multiply the tree count and blow up the triangle budget).
+                // Thinned (0.07->0.028) so trees are a much smaller RT triangle cost
+                // while still scattering naturally across the grass.
+                float dens = 0.028f * (cell / 6.0f) * (cell / 6.0f);
                 if (hashf(ax * 7 + 1, az * 7 + 3) < dens) {
                     bool clear = true;                            // keep a corridor clear of track
                     for (int k = 0; k < ncps; k++) {
@@ -373,9 +375,16 @@ static Terrain buildTerrain(float centerX, float centerZ, int N = 220, float cel
 // wall appears exactly once, no holes, no double walls. Because heights come from
 // the deterministic terrainH() and trees are world-cell-keyed, a chunk meshes
 // identically no matter which ring re-centre brought it into view -> no popping.
+// `serial`: sample heights on the CALLING thread instead of fanning out across all
+// cores via dispatch_apply. The live ring re-centre meshes its new chunks on a
+// background worker; if that worker grabs every core (dispatch_apply) it briefly
+// starves the render thread -> a frame-time spike right after each re-centre. Serial
+// sampling keeps the worker to one core so the render keeps its cores and stays smooth.
+// The sync init/--shot path passes serial=false for the fastest one-off build.
 static void buildTerrainChunk(std::vector<MeshVertex>& out,
                               int cellX0, int cellZ0, int M, float cell,
-                              const float3* cps, int ncps) {
+                              const float3* cps, int ncps,
+                              const unsigned char* cpsKind = nullptr, bool serial = false) {
     const int P = M + 2;                       // padded grid (1-cell border each side)
     float ox = cellX0 * cell, oz = cellZ0 * cell;
     auto worldX = [&](int x) { return ox + x * cell; };   // x in [0,M] indexes inner-cell world
@@ -385,16 +394,111 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
     std::vector<int> H(P * P);
     {
         int* Hp = H.data();
-        dispatch_apply((size_t)P, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(size_t pz) {
+        auto sampleRow = [&](int pz) {
             for (int px = 0; px < P; px++) {
                 float wx = ox + (px - 1) * cell + cell * 0.5f;
-                float wz = oz + ((int)pz - 1) * cell + cell * 0.5f;
-                Hp[(int)pz * P + px] = (int)floorf((float)terrainH(wx, wz) / cell + 0.5f);
+                float wz = oz + (pz - 1) * cell + cell * 0.5f;
+                Hp[pz * P + px] = (int)floorf((float)terrainH(wx, wz) / cell + 0.5f);
             }
-        });
+        };
+        if (serial) { for (int pz = 0; pz < P; pz++) sampleRow(pz); }
+        else dispatch_apply((size_t)P, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0),
+                            ^(size_t pz) { sampleRow((int)pz); });
     }
     // h_at takes INNER cell coords (0..M-1 valid; -1 and M reach into the padding).
     auto h_at = [&](int x, int z) -> int { return H[(z + 1) * P + (x + 1)]; };
+
+    // --- TRACK CARVE -------------------------------------------------------------
+    // Clear the terrain columns the coaster threads through so hills can't poke up
+    // through the track (no "massive stone in the middle of helixes") and so a
+    // half-cleared column never leaves a floating 1-block remnant. For each cell we
+    // find the LOWEST nearby track control point; if the terrain top sits above that
+    // point (minus head clearance) the WHOLE column is lowered to just under the
+    // track -> a clean bore, never a partial slab. Tight helix coils carve cleanly
+    // because every coil control point stamps its own disc and they overlap to clear
+    // the full coil interior. The carve runs over the PADDED grid so seam walls
+    // between chunks stay consistent, and it is a pure function of (cell, track pts)
+    // so adjacent chunks agree on shared cells. `carved[]` marks inner cells so no
+    // tree/decoration is planted on a bored column (no floating decorations).
+    const float CARVE_R   = 9.0f;     // horizontal clear radius around the track (m)
+    const float CARVE_R2  = CARVE_R * CARVE_R;
+    const float HEAD_CLR  = 5.0f;     // keep the carved floor this far below the track (m)
+    std::vector<char> carved(M * M, 0);
+    if (cps && ncps > 0) {
+        // prune to track points whose disc can touch this padded chunk
+        float minWX = ox - cell, maxWX = ox + (M + 1) * cell;
+        float minWZ = oz - cell, maxWZ = oz + (M + 1) * cell;
+        std::vector<float3> near;
+        near.reserve(64);
+        for (int k = 0; k < ncps; k++) {
+            if (cps[k].x < minWX - CARVE_R || cps[k].x > maxWX + CARVE_R ||
+                cps[k].z < minWZ - CARVE_R || cps[k].z > maxWZ + CARVE_R) continue;
+            near.push_back(cps[k]);
+        }
+        if (!near.empty()) {
+            int* Hp = H.data();
+            const float3* np = near.data();
+            int nn = (int)near.size();
+            for (int pz = 0; pz < P; pz++) {
+                float wz = oz + (pz - 1) * cell + cell * 0.5f;
+                for (int px = 0; px < P; px++) {
+                    float wx = ox + (px - 1) * cell + cell * 0.5f;
+                    float minY = 1e9f;
+                    for (int k = 0; k < nn; k++) {
+                        float dx = np[k].x - wx, dz = np[k].z - wz;
+                        if (dx*dx + dz*dz <= CARVE_R2 && np[k].y < minY) minY = np[k].y;
+                    }
+                    if (minY > 1e8f) continue;                  // no track over this cell
+                    int floorLvl = (int)floorf((minY - HEAD_CLR) / cell);
+                    if (Hp[pz * P + px] > floorLvl) {
+                        Hp[pz * P + px] = floorLvl;             // lower the WHOLE column
+                        int ix = px - 1, iz = pz - 1;           // mark inner cells as carved
+                        if (ix >= 0 && ix < M && iz >= 0 && iz < M) carved[iz * M + ix] = 1;
+                    }
+                }
+            }
+        }
+
+        // --- HELIX coil interiors: a tight coil encloses a wide disc the per-point
+        // carve above can't reach (its centre is > CARVE_R from any coil rail), so a
+        // hill pokes up through the open lattice ("massive stone in the middle of
+        // helixes"). Port of the software TASK-2a: for each contiguous M_HELIX run,
+        // flatten the WHOLE coil disc down to just under the lowest coil. ---
+        if (cpsKind) {
+            for (int a = 0; a < ncps; ) {
+                if (cpsKind[a] != /*M_HELIX*/10) { a++; continue; }
+                int b = a; while (b + 1 < ncps && cpsKind[b + 1] == 10) b++;
+                if (b - a >= 3) {
+                    float axX = 0, axZ = 0, loY = 1e9f; int n = 0;
+                    for (int i = a; i <= b; i++) { axX += cps[i].x; axZ += cps[i].z; n++;
+                        if (cps[i].y < loY) loY = cps[i].y; }
+                    axX /= n; axZ /= n;
+                    float radMax = 0;
+                    for (int i = a; i <= b; i++) {
+                        float rx = cps[i].x - axX, rz = cps[i].z - axZ;
+                        float r = sqrtf(rx*rx + rz*rz); if (r > radMax) radMax = r;
+                    }
+                    float coilR = radMax + 2.0f, coilR2 = coilR * coilR;
+                    int   clampLvl = (int)floorf((loY - 3.0f) / cell);
+                    int* Hp = H.data();
+                    for (int pz = 0; pz < P; pz++) {
+                        float wz = oz + (pz - 1) * cell + cell * 0.5f;
+                        for (int px = 0; px < P; px++) {
+                            float wx = ox + (px - 1) * cell + cell * 0.5f;
+                            float dx = wx - axX, dz = wz - axZ;
+                            if (dx*dx + dz*dz > coilR2) continue;
+                            if (Hp[pz * P + px] > clampLvl) {
+                                Hp[pz * P + px] = clampLvl;
+                                int ix = px - 1, iz = pz - 1;
+                                if (ix >= 0 && ix < M && iz >= 0 && iz < M) carved[iz * M + ix] = 1;
+                            }
+                        }
+                    }
+                }
+                a = b + 1;
+            }
+        }
+    }
 
     int waterLvl = (int)floorf(WATER_Y / cell + 0.5f);
     float3 grass = vec3(0.22f, 0.42f, 0.15f);
@@ -428,11 +532,12 @@ static void buildTerrainChunk(std::vector<MeshVertex>& out,
                         std::abs(h - h_at(x,z-1)) + std::abs(h - h_at(x,z+1));
             int ac = albClassAt(x, z);
             bool isGrass = (ac == 3 || ac == 4);
-            if (cps && isGrass && h < snowLvl && slope < 4) {
+            if (cps && isGrass && h < snowLvl && slope < 4 && !carved[z * M + x]) {
                 float wcx = worldX(x) + cell * 0.5f, wcz = worldZ(z) + cell * 0.5f;
                 float topY = h * cell;
                 int ax = cellX0 + x, az = cellZ0 + z;
-                float dens = 0.07f * (cell / 6.0f) * (cell / 6.0f);
+                // Thinned (0.07->0.028): fewer trees per area -> lower RT triangle cost.
+                float dens = 0.028f * (cell / 6.0f) * (cell / 6.0f);
                 if (hashf(ax * 7 + 1, az * 7 + 3) < dens) {
                     bool clear = true;
                     for (int k = 0; k < ncps; k++) {

@@ -99,7 +99,8 @@ struct Renderer {
     }
     // Mesh + build prim-AS for every chunk newly inside the `ring` at (cx,cz); free the
     // ones that left. Heavy work (mesh + GPU build) batched into ONE command buffer.
-    void recentreChunks(float cx, float cz, float ring, const std::vector<float3>& cps, bool sync);
+    void recentreChunks(float cx, float cz, float ring, const std::vector<float3>& cps,
+                        const std::vector<unsigned char>& cpsKind, bool sync);
     void commitChunks();                     // apply pendingAdd/Remove, rebuild instance-AS
 
     // camera
@@ -134,8 +135,11 @@ struct Renderer {
     // benchmark: a 1m terrain ring + clipped track that FOLLOWS the ride camera
     // (so blocks stay 1m everywhere without meshing the whole 2km circuit at once).
     static constexpr float BENCH_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-    static constexpr float BENCH_RING = 1200.0f;  // ring half-extent around the camera
-    std::vector<float3> trackPts;          // all track control points (for trees)
+    static constexpr float BENCH_RING = 750.0f;   // ring half-extent around the camera
+                                                  // (lowered 1200->750 to match TG_RING;
+                                                  //  smaller ring -> smooth moving-ride fps)
+    std::vector<float3> trackPts;          // all track control points (for trees/carve)
+    std::vector<unsigned char> trackKinds; // per-point SegMode tag (for the helix carve)
     std::vector<MeshVertex> scratchVerts;  // reused tessellation buffer
     float lastRingCx = 1e30f, lastRingCz = 1e30f; // ring centre at last rebuild
     bool  ringOverride = false; float ringCx = 0, ringCz = 0; // SHOT_WATER: ring elsewhere
@@ -229,7 +233,9 @@ void Renderer::init() {
 
     // Cache all track control points (used to keep trees clear of the coaster).
     trackPts.resize(nRender);
-    for (int i = 0; i < nRender; i++) trackPts[i] = co.cps[i].p;
+    trackKinds.resize(nRender);
+    for (int i = 0; i < nRender; i++) { trackPts[i] = co.cps[i].p;
+                                        trackKinds[i] = (unsigned char)co.cps[i].kind; }
 
     // Build the first 1m terrain ring + clipped track around the ride start. The
     // ring follows the camera (rebuilt as it rides) so blocks stay 1m everywhere
@@ -350,7 +356,8 @@ buildChunkPrimAS(id<MTLDevice> dev, id<MTLAccelerationStructureCommandEncoder> e
 // + GPU build run on a worker (sync=false) batched into ONE command buffer; results
 // land in pendingAdd/pendingRemove for commitChunks() to apply on the main thread.
 // sync=true does it inline (init / --shot).
-void Renderer::recentreChunks(float cx, float cz, float ring, const std::vector<float3>& cps, bool sync) {
+void Renderer::recentreChunks(float cx, float cz, float ring, const std::vector<float3>& cps,
+                              const std::vector<unsigned char>& cpsKind, bool sync) {
     if (buildInFlight) {
         if (!sync) return;                               // async: skip; a build is already running
         // sync (init / --shot): an async build may be mid-flight (e.g. fired by the --shot
@@ -413,15 +420,18 @@ void Renderer::recentreChunks(float cx, float cz, float ring, const std::vector<
     }
 
     std::vector<float3> cpsCopy = cps;
+    std::vector<unsigned char> kindCopy = cpsKind;
     buildInFlight = true;
     buildDone.store(false);
-    auto doBuild = [this, plan, cpsCopy, M](bool wait) {
+    auto doBuild = [this, plan, cpsCopy, kindCopy, M](bool wait) {
         pendingAdd.clear();
         // mesh each new chunk into its slot (CPU)
         std::vector<std::vector<MeshVertex>> meshes(plan.size());
         for (size_t i = 0; i < plan.size(); i++) {
             buildTerrainChunk(meshes[i], plan[i].ax * M, plan[i].az * M, M, RING_CELL,
-                              cpsCopy.empty() ? nullptr : cpsCopy.data(), (int)cpsCopy.size());
+                              cpsCopy.empty() ? nullptr : cpsCopy.data(), (int)cpsCopy.size(),
+                              kindCopy.empty() ? nullptr : kindCopy.data(),
+                              /*serial=*/!wait);   // worker (async) meshes serially so it doesn't starve render
             size_t off = (size_t)plan[i].slot * SLOT_VERTS;
             size_t n = meshes[i].size();
             if (n > (size_t)SLOT_VERTS) n = SLOT_VERTS;  // clamp (slot capacity guard)
@@ -567,8 +577,9 @@ void Renderer::forceSyncRebuild() {
     meshTrackOnly(snap, kv);
     // chunks first (sync), then the track AS + instance AS
     float3 tc = stream.pos(stream.trainU);
-    std::vector<float3> cps = snapshotTrackPts(snap);
-    recentreChunks(tc.x, tc.z, TG_RING, cps, true);
+    std::vector<unsigned char> cpsKind;
+    std::vector<float3> cps = snapshotTrackPts(snap, &cpsKind);
+    recentreChunks(tc.x, tc.z, TG_RING, cps, cpsKind, true);
     buildTrackAS(kv);              // builds track AS + instance AS
 #else
     buildBenchScene(false);
@@ -589,7 +600,7 @@ void Renderer::buildBenchScene(bool async) {
     lastRingCx = cx; lastRingCz = cz;
     float ru = rideU;
     // INCREMENTAL: only the chunks that newly entered the ring are meshed + built.
-    recentreChunks(cx, cz, BENCH_RING, trackPts, !async);
+    recentreChunks(cx, cz, BENCH_RING, trackPts, trackKinds, !async);
     if (!async) {
         // init: also build the track AS + instance AS once chunks are in.
         scratchVerts.clear();
@@ -629,9 +640,12 @@ void Renderer::rideAdvance(float dt) {
     (void)prevPt; (void)shifted;
     // --- track + train: rebuild when the train has moved ~a car length, so the
     // train stays glued to the camera without re-meshing the whole window every
-    // frame (which itself starves the frame loop). ~3m at 65 m/s = ~22 Hz. ---
+    // frame. Each rebuild also rebuilds the TLAS over all live chunks (a blocking
+    // GPU build) -> doing it 30+ Hz was a recurring sub-frame spike. At 0.30u
+    // (~one car length) the train still tracks the camera but the TLAS rebuilds
+    // ~3x less often -> far fewer frames miss 120fps. ---
     static float lastTrackU = -1e9f;
-    if (fabsf(stream.trainU - lastTrackU) > 0.12f) {
+    if (fabsf(stream.trainU - lastTrackU) > 0.30f) {
         lastTrackU = stream.trainU;
         meshTrackOnly(stream.snapshot(), scratchVerts);
         buildTrackAS(scratchVerts);                // sync, cheap; refreshes the instance AS
@@ -646,8 +660,9 @@ void Renderer::rideAdvance(float dt) {
         (fabsf(ccx - lastStreamCx) > (float)CHUNK_M ||
          fabsf(ccz - lastStreamCz) > (float)CHUNK_M)) {
         lastStreamCx = ccx; lastStreamCz = ccz;
-        std::vector<float3> cps = snapshotTrackPts(stream.snapshot());
-        recentreChunks(ccx, ccz, TG_RING, cps, false);
+        std::vector<unsigned char> cpsKind;
+        std::vector<float3> cps = snapshotTrackPts(stream.snapshot(), &cpsKind);
+        recentreChunks(ccx, ccz, TG_RING, cps, cpsKind, false);
     }
     return;
 #else
@@ -697,7 +712,7 @@ void Renderer::rideAdvance(float dt) {
     // train stays under it (not every frame; re-meshing the clipped circuit is not
     // free). buildCoaster is clipped to the ring so only nearby track is emitted.
     static float lastTrackU = -1e9f;
-    if (fabsf(rideU - lastTrackU) > 0.12f) {
+    if (fabsf(rideU - lastTrackU) > 0.30f) {       // ~one car length; rebuilds the TLAS ~3x less often
         lastTrackU = rideU;
         scratchVerts.clear();
         buildCoaster(coaster, scratchVerts, nRender,
@@ -903,7 +918,11 @@ static int runBench(Renderer& r) {
     // wildly overstating the steady-state rebuild load. Realtime models the actual
     // ride pace -> honest steady-state fps. Set BENCH_REALTIME=1 to enable.
     bool realtime = getenv("BENCH_REALTIME") != nullptr;
-    for (int i = 0; i < 8; i++) r.render(tex, W, H); // warm-up (let the GPU clock ramp)
+    // Warm-up: the GPU's clock (DVFS) takes ~60 frames to ramp from idle to full; if
+    // the timed window starts before that, the first frames read 12-18ms purely from
+    // the cold clock and pollute over120/p95. 72 warm-up frames let the clock fully
+    // settle so the bench reports the HONEST steady-state moving-ride cost.
+    for (int i = 0; i < 72; i++) { r.rideAdvance(1.0f/120.0f); r.render(tex, W, H); }
     double worst = 0.0; int over = 0;          // worst frame ms + frames slower than 1/120
     std::vector<double> fmsAll; fmsAll.reserve(N);
     double t0 = CACurrentMediaTime(), prev = t0;

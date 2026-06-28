@@ -65,7 +65,7 @@ static float fbm3(float3 p) {
 // crossing at different angles/speeds, giving a gentle wind-ripple perturbation of
 // the flat water normal. `t` is the frame counter (water animates; clouds don't).
 static float3 waterNormal(float2 xz, float t) {
-    float ti = t * 0.018;
+    float ti = t * 0.045;            // faster drift so the wind-chop is clearly ANIMATED
     // sample value noise around the point to build a finite-difference gradient
     float2 p1 = xz * 0.20  + float2( ti,  ti * 0.6);
     float2 p2 = xz * 0.085 + float2(-ti * 0.7, ti * 0.4);
@@ -75,9 +75,9 @@ static float3 waterNormal(float2 xz, float t) {
     float h2x = vnoise3(float3(p2 + float2(e,0), 0.0)) - vnoise3(float3(p2 - float2(e,0), 0.0));
     float h2z = vnoise3(float3(p2 + float2(0,e), 0.0)) - vnoise3(float3(p2 - float2(0,e), 0.0));
     float2 grad = (float2(h1x, h1z) * 0.9 + float2(h2x, h2z) * 0.6);
-    // modest tilt: enough to wobble reflections without flinging the reflection ray
-    // into the floor (which brought back dark muddy blotches).
-    return normalize(float3(-grad.x * 0.22, 1.0, -grad.y * 0.22));
+    // a touch more tilt: livelier chop (clearer moving ripples) while still keeping the
+    // reflection ray off the floor (which brought back dark muddy blotches).
+    return normalize(float3(-grad.x * 0.30, 1.0, -grad.y * 0.30));
 }
 
 // ===========================================================================
@@ -305,7 +305,8 @@ static float softSunShadow(float3 pos, float3 n, float3 L, thread float& rng,
                           instance_acceleration_structure accel) {
     float3 t, b; basis(L, t, b);
     float occ = 0.0;
-    const int S = 8;                             // more shadow samples -> softer, lower-noise penumbra (balanced for fps)
+    const int S = 6;                             // shadow samples: 6 keeps a soft penumbra at a touch less
+                                                 // primary-shadow ray cost than 8 (the moving-ride priority is fps)
     for (int i = 0; i < S; i++) {
         rng = fract(rng * 1.61803 + 0.31831);
         float a = rng * 6.2831853;
@@ -472,15 +473,18 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
             Hit dh = traceRay(dr, accel, vertsT, vertsK, vertOff, trackInst);
             float depth = dh.valid ? dh.dist : 80.0;
 
-            // Depth-tinted body colour: bright turquoise shallows -> deep teal-blue.
-            float3 shallowCol = float3(0.30, 0.62, 0.66);
-            float3 deepCol    = float3(0.04, 0.16, 0.30);
-            float3 bodyCol = mix(shallowCol, deepCol, smoothstep(0.4, 14.0, depth));
+            // Depth-tinted body colour: bright turquoise shallows -> clear teal-blue.
+            // Lifted brighter (deep no longer near-black) so the lake reads inviting,
+            // not gloomy, and the deep gradient only sets in over a longer column.
+            float3 shallowCol = float3(0.34, 0.66, 0.70);
+            float3 deepCol    = float3(0.09, 0.30, 0.48);
+            float3 bodyCol = mix(shallowCol, deepCol, smoothstep(0.6, 20.0, depth));
 
             // Sun-lit body: keep a touch of diffuse + cloud dimming so it isn't flat.
+            // Higher ambient floor (0.70) keeps even the deep centre from going dim.
             float sunLit = cloudSunLight(hit.pos, L);
-            color = bodyCol * (0.55 + 0.45 * max(L.y, 0.0)) * sunLit;
-            color = mix(color, color * ao, 0.4);          // mild ambient occlusion
+            color = bodyCol * (0.70 + 0.35 * max(L.y, 0.0)) * sunLit;
+            color = mix(color, color * ao, 0.25);         // gentler ambient occlusion
 
             // Reflection ray off the RIPPLED normal -> sky/cloud/terrain mirrored
             // with a wavy edge.

@@ -17,8 +17,12 @@
 // this same radius so no track ever floats beyond the terrain edge. 1m blocks
 // (CELL=1) keep true Minecraft scale on all sides.
 static constexpr float TG_CELL = 1.0f;     // 1m voxel blocks (true MC scale)
-static constexpr float TG_RING = 1200.0f;  // half-extent meshed around the train
-                                           // (incremental chunked meshing keeps re-centring cheap)
+static constexpr float TG_RING = 750.0f;   // half-extent meshed around the train.
+                                           // Lowered 1200->750: a smaller ring means
+                                           // far fewer terrain tris and much cheaper
+                                           // incremental edge-strip rebuilds, so the
+                                           // moving ride holds a smooth 120fps (the
+                                           // re-centre AS builds no longer spike).
 
 // ---------------------------------------------------------------------------
 // A self-contained, copyable snapshot of the spline window the meshing reads:
@@ -35,6 +39,7 @@ struct TrackSnapshot {
     float trainU = 6.0f;
     int   winLo = 4, buildAhead = 130;
     int   nptsv = 0;
+    long  base  = 0;                    // absolute index of cp[0] (popFront-stable keying)
 
     int npts() const { return nptsv; }
     // cp/up indexers (named to match StreamTrack's gen.cp[i]/gen.up[i] usage). They
@@ -55,6 +60,7 @@ struct TrackSnapshot {
     TrackSnapshot& operator=(const TrackSnapshot& o) {
         cpv=o.cpv; upv=o.upv; kindv=o.kindv; chainv=o.chainv;
         trainU=o.trainU; winLo=o.winLo; buildAhead=o.buildAhead; nptsv=o.nptsv;
+        base=o.base;
         cp = {&TrackSnapshot::cpv, this}; up = {&TrackSnapshot::upv, this};
         return *this;
     }
@@ -221,6 +227,7 @@ struct StreamTrack {
         TrackSnapshot s;
         s.trainU = trainU; s.winLo = winLo; s.buildAhead = buildAhead;
         s.nptsv = npts();
+        s.base  = gen.base;          // absolute index of cp[0] (for popFront-stable support keying)
         int n = npts();
         s.cpv.resize(n); s.upv.resize(n); s.kindv.resize(n); s.chainv.resize(n);
         for (int i = 0; i < n; i++) {
@@ -344,9 +351,16 @@ static void buildTrackT(const Src& s, std::vector<MeshVertex>& out) {
         }
     }
 
-    // support bents (A-frame V to the terrain), ported from drawVBent / coaster.h
+    // support bents (A-frame V to the terrain), ported from drawVBent / coaster.h.
+    // Keyed to the ABSOLUTE control-point index (s.base + i), NOT the local deque index:
+    // the deque pops its front as the train advances, which shifts every local index by 1
+    // and used to flip the "every other index" parity -> supports jumped between control
+    // points each pop ("towers teleporting"). Selecting on (base + i) makes each world
+    // control point own its support permanently, so the bents mesh in the SAME place
+    // every rebuild and never move.
     const float NODE_DROP = 1.5f;
-    for (int i = s.winLo + 1; i < last; i += 2) {
+    for (int i = s.winLo + 1; i < last; i++) {
+        if (((s.base + i) & 1) != 0) continue;       // stable "every other absolute cp" placement
         Vector3 cpP = s.cp[i], cpU = s.up[i];
         float3 fwd = s.tangent((float)i);
         float3 up  = orthoUp(fwd, vec3(cpU.x, cpU.y, cpU.z));
@@ -407,15 +421,20 @@ static void meshTerrainOnly(const TrackSnapshot& s, std::vector<MeshVertex>& out
     buildTerrainRingT(s, out);
 }
 
-// The track control points used to keep trees clear of the coaster, for the chunked
-// terrain mesher (same window the ring mesher uses).
-static std::vector<float3> snapshotTrackPts(const TrackSnapshot& s) {
+// The track control points used to keep trees clear of the coaster + carve the
+// terrain columns it threads, for the chunked terrain mesher (same window the ring
+// mesher uses). If `kindsOut` is non-null it is filled with the matching per-point
+// SegMode tag (so the carve can flatten helix coil interiors).
+static std::vector<float3> snapshotTrackPts(const TrackSnapshot& s,
+                                            std::vector<unsigned char>* kindsOut = nullptr) {
     std::vector<float3> pts;
+    if (kindsOut) kindsOut->clear();
     int lastU = (int)s.trainU + s.buildAhead;
     if (lastU > s.npts() - 1) lastU = s.npts() - 1;
     for (int i = s.winLo; i <= lastU; i++) {
         Vector3 p = s.cp[i];
         pts.push_back(vec3(p.x, p.y, p.z));
+        if (kindsOut) kindsOut->push_back(i < (int)s.kindv.size() ? s.kindv[i] : 0);
     }
     return pts;
 }

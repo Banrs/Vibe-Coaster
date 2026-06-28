@@ -1,22 +1,20 @@
 #!/bin/zsh
-# Double-click to play. Launches the hardware ray-traced renderer (default);
-# if that binary is missing or the GPU has no hardware RT, falls back to the
-# software (OpenGL) renderer.
+# Double-click to play. This is an RT-ONLY build: it requires a GPU with hardware
+# ray tracing (Apple M3/M4+ today; portable to a DXR/Vulkan RT path-tracing backend
+# in future). There is NO software fallback at runtime — if the GPU lacks hardware
+# RT the app reports itself incompatible and exits. (The OpenGL software renderer
+# remains in the repo only as a feature/shader reference, not a runtime.)
 cd "$(dirname "$0")"
 
-RT="./minecoaster-rt"   # hardware ray tracing (default)
-SW="./minecoaster"      # software OpenGL renderer (fallback / backup)
-
-if [[ -x "$RT" ]]; then
-  "$RT"
-  code=$?
-  # exit 3 == GPU lacks hardware raytracing -> fall back to the software build
-  if [[ $code -eq 3 ]]; then
-    echo "hardware RT unavailable; falling back to software renderer"
-    exec "$SW"
-  fi
-  exit $code
+if [[ ! -x "./minecoaster-rt" ]]; then
+  echo "minecoaster-rt not built. Build it with:  ./hwrt/build.sh"
+  exit 1
 fi
 
-echo "minecoaster-rt not built; launching software renderer"
-exec "$SW"
+"./minecoaster-rt"
+code=$?
+# exit 3 == the GPU has no hardware ray tracing -> incompatible (no fallback).
+if [[ $code -eq 3 ]]; then
+  echo "INCOMPATIBLE GPU: this build requires hardware ray tracing. There is no software fallback."
+fi
+exit $code

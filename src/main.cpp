@@ -50,14 +50,16 @@ static const float GRAV      = 22.0f;
 // quadratic AIR drag that bites hardest on the fastest moments. Tall top-hats and
 // their strong hydraulic launches are kept; the v^2 drag pulls the heady 350 km/h
 // peaks back so the AVERAGE ride speed lands ~250 km/h (Formula Rossa territory).
-static const float DRAG      = 0.0013f;  // quadratic air drag — lowered (sleeker train) so the average lands ~250 km/h (was pulling it down to ~238); still bounds the fast peaks
+static float       DRAG      = 0.0011f;  // quadratic air drag — still REALISTIC (a real coaster bites hard aerodynamically at 250+ km/h; only ~15% under the prior 0.0013, a sleeker/lighter train, NOT cheated down). Most of the ~252 km/h average comes from an aggressive but modest LSM multi-launch profile (BOOST_TRIG), not drag. Mutable so --simtest sweeps the COUPLED generator+ride (the generator forward-sims genV with this same DRAG, so lowering it also enlarges elements — the two effects partly cancel).
 static const float FRICTION  = 0.016f;   // very low rolling friction (light steel-on-steel)
 static const float CHAIN_V   = 22.0f;    // lift hills
 static const float MIN_V     = 42.0f;    // brisk cruising floor (~150 km/h) so the ride sustains a high average — sits below the tightest inversion entry speed (47) so trim brakes can still bleed down to a sane entry g
 static const float MAX_V     = 82.0f;    // top speed reachable on the biggest drops (~295 km/h)
 static const float LAUNCH_V  = 108.0f;   // hydraulic-launch CEILING (~390 km/h, ABOVE the real top-speed record ~250 km/h); the short hard launch keeps accelerating the whole way (rarely binds -> no "stuck at peak")
 static const float CLIMB_V   = 40.0f;    // hydraulic top-hat sustain: hold a brisk speed up the climb so the train never crawls over a crest (the v^2 drag + the trims still bring the average into the 65-75 band)
-static const float BOOST_V   = 79.0f;    // mid-course LSM re-launch target (~284 km/h) — boosts slow arrivals back up to cruise, never brakes; sized so the avg ride speed lands ~250 km/h
+static float       BOOST_V   = 79.0f;    // mid-course LSM re-launch target — boosts slow arrivals back up to cruise, never brakes. Mutable so --simtest can sweep the coupled generator+ride (the generator forward-sims with this too).
+static float       BOOST_TRIG = 78.0f;   // generator fires an LSM booster straight when the forward-sim cruise drops below this. Raised 64->78 (aggressive multi-launch profile) so the cruise HOLDS just under the inversion gate (79) — this is the main lever lifting the avg to ~252 km/h with realistic drag, no top-hat spam, no heavy trims. Mutable for --simtest sweeps.
+static float       INV_GATE  = 79.0f;    // inversions are only OFFERED while cruise <= this; above it the existing trim brake bleeds the entry to the +10g-safe speed (a max-size loop hits 10g at ~79 m/s, so faster cruises need a small trim before an inversion — realistic). Mutable for --simtest sweeps.
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -1134,22 +1136,50 @@ int main(int argc, char **argv) {
             for (int i = 0; i < BIN_N; i++) printf(" %.1f%%", 100.0 * bins[i] / n);
             printf("\n");
         }
+        // optional tuning sweep: --simtest <drag> <boostV>  (defaults to the baked constants).
+        // Sets the GLOBAL constants so the generator forward-sim (which sizes elements) AND the
+        // ride sim both use them — measuring the true COUPLED average, not just the ride on a
+        // fixed track. (The earlier local-override version missed the generator coupling.)
+        if (argc > 2) DRAG       = (float)atof(argv[2]);
+        if (argc > 3) BOOST_V    = (float)atof(argv[3]);
+        if (argc > 4) BOOST_TRIG = (float)atof(argv[4]);
+        if (argc > 5) INV_GATE   = (float)atof(argv[5]);
+        printf("(using DRAG=%.5f BOOST_V=%.1f BOOST_TRIG=%.1f INV_GATE=%.1f)\n", DRAG, BOOST_V, BOOST_TRIG, INV_GATE);
+        double gSumV = 0; long gNV = 0;           // overall avg ride speed across all seeds
+        long gBoostF = 0, gLaunchF = 0;           // powered-straight duty cycle (realism check: should stay a small %)
+        long gInv = 0;                            // total inversions entered across all seeds (must stay healthy)
         for (uint32_t seed = 1; seed <= 8; seed++) {
             g_rng = seed * 2654435761u | 1u;
             Track t; t.reset();
             float u = 0.5f, v = LAUNCH_V;         // launched off the platform
             size_t maxCP = 0, maxCoins = 0; int bad = 0;
             float maxAlt = 0, maxY = 0;
+            double sumV = 0; long nV = 0; float maxV = 0;  // per-seed avg + peak ride speed
+            unsigned char prevTag = 255;                   // count inversion entries (tag transitions)
             for (int f = 0; f < 30000; f++) {
                 float dt = 1.0f / 60.0f;
                 t.ensureAhead(u + 16);
                 float slope = t.tangent(u).y;
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
                 v += acc * dt;
-                if (t.tagAt(u) == M_LAUNCH && v < LAUNCH_V) v = fminf(v + 40 * dt, LAUNCH_V);
-                if (t.tagAt(u) == M_BOOST) v += Clamp(BOOST_V - v, -55.0f * dt, 30.0f * dt);
+                unsigned char tg = t.tagAt(u);
+                if (tg == M_LAUNCH && v < LAUNCH_V) v = fminf(v + 85.0f * dt, LAUNCH_V);   // match live launch accel (85)
+                else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V); // hydraulic top-hat sustain
+                if (tg == M_BOOST && v < BOOST_V) v = fminf(v + 55.0f * dt, BOOST_V);      // mid-course LSM re-launch
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
+                // TRIM brake before a hard inversion (same as live ride) so the average reflects the real bled speed
+                for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
+                    SegMode ahead = (SegMode)t.tagAt(u + la);
+                    if (!Track::isHardInversion(ahead)) continue;
+                    float bt; Track::invRAt(ahead, v, bt);
+                    if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
+                    break;
+                }
                 v = fmaxf(v, 20.0f); v = fminf(v, 135.0f);   // 20 = stall-only safety net (physics dictates speed; the train is never PINNED at a cruise floor). 135 = runaway guard, not a cap.
+                if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
+                    if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
+                    if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;  // count inversion entries
+                    prevTag = tg; }   // skip launch transient; track powered-straight duty cycle + inversion density
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
                 if (!(du == du)) du = 0;
                 u += fminf(du, 1.5f);
@@ -1177,10 +1207,14 @@ int main(int argc, char **argv) {
                 maxCP = maxCP > t.cp.size() ? maxCP : t.cp.size();
                 maxCoins = maxCoins > t.coins.size() ? maxCoins : t.coins.size();
             }
-            printf("seed %u  maxCP=%zu  maxCoins=%zu  NaN=%d  maxAlt=%.0fm  maxWorldY=%.0f  finalU=%.2f v=%.1f\n",
-                   seed, maxCP, maxCoins, bad, maxAlt, maxY, u, v);
+            double avg = nV ? sumV / nV : 0;
+            printf("seed %u  maxCP=%zu  maxCoins=%zu  NaN=%d  maxAlt=%.0fm  maxWorldY=%.0f  finalU=%.2f v=%.1f  avgV=%.1f m/s (%.0f km/h)  peakV=%.1f m/s (%.0f km/h)\n",
+                   seed, maxCP, maxCoins, bad, maxAlt, maxY, u, v, avg, avg * 3.6, maxV, maxV * 3.6);
         }
-        printf("SIMTEST DONE (no hang)\n");
+        printf("SIMTEST DONE (no hang)  -> OVERALL AVG RIDE SPEED = %.1f m/s (%.0f km/h)  | powered duty: boost %.1f%% launch %.1f%% | inversions: %ld over 8 seeds (~%.1f/ride)\n",
+               gNV ? gSumV / gNV : 0.0, gNV ? gSumV / gNV * 3.6 : 0.0,
+               gNV ? 100.0 * gBoostF / gNV : 0.0, gNV ? 100.0 * gLaunchF / gNV : 0.0,
+               gInv, gInv / 8.0);
         return 0;
     }
 
@@ -1188,6 +1222,8 @@ int main(int argc, char **argv) {
     // standalone Metal ray-tracer to load: one line per CP "x y z upx upy upz kind".
     if (argc > 2 && TextIsEqual(argv[1], "--exporttrack")) {
         if (argc > 3) g_rng = (uint32_t)atoi(argv[3]) * 2654435761u | 1u;   // optional seed for sweeping many circuits
+        if (argc > 4) DRAG       = (float)atof(argv[4]);   // optional: compare element sizing across tuning configs
+        if (argc > 5) BOOST_TRIG = (float)atof(argv[5]);
         Track trk; trk.reset();
         while ((int)trk.cp.size() < 480) trk.ensureAhead((float)trk.cp.size() + 8.0f);
         FILE* fp = fopen(argv[2], "w");

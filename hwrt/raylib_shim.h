@@ -26,7 +26,7 @@ struct Color { unsigned char r, g, b, a; };
 // ----- world constants (authoritative; mirror src/main.cpp) -----
 static const float SEG_LEN   = 14.0f;
 static const float GRAV      = 22.0f;
-static const float DRAG      = 0.00085f;  // sync w/ src/main.cpp — tuned for ~255 km/h average ride speed
+static const float DRAG      = 0.0011f;   // sync w/ src/main.cpp — realistic air drag; the ~252 km/h average comes mostly from the aggressive LSM multi-launch profile (BOOST_TRIG), not drag
 static const float FRICTION  = 0.016f;
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;     // generator forward-sim cruise floor (still used by track-gen)
@@ -34,9 +34,10 @@ static const float MAX_V     = 82.0f;
 static const float LAUNCH_V  = 108.0f;
 static const float CLIMB_V   = 40.0f;
 static const float BOOST_V   = 79.0f;     // sync w/ src/main.cpp (was 74)
-static float       BOOST_TRIG = 64.0f;    // sync w/ src/main.cpp: the generator (coaster_track.cpp)
+static float       BOOST_TRIG = 78.0f;    // sync w/ src/main.cpp: the generator (coaster_track.cpp)
                                           // fires an LSM booster straight when the forward-sim cruise
-                                          // drops below this. Non-const to match src (--simtest mutates it).
+                                          // drops below this (aggressive multi-launch holds cruise near the
+                                          // inversion gate -> ~252 km/h avg). Non-const to match src (--simtest mutates it).
 static float       INV_GATE  = 79.0f;     // sync w/ src/main.cpp: inversions only OFFERED while the
                                           // forward-sim cruise <= this; above it the trim brake bleeds
                                           // the entry to the +10g-safe speed. Referenced by coaster_track.cpp.

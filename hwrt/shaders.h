@@ -350,7 +350,7 @@ static float softSunShadow(float3 pos, float3 n, float3 L, thread float& rng,
                           instance_acceleration_structure accel) {
     float3 t, b; basis(L, t, b);
     float occ = 0.0;
-    const int S = 22;                            // shadow samples: 22 = cleaner soft penumbra (the user saw '1-pass' grain); paired with a higher MetalFX internal res
+    const int S = 8;                             // shadow samples: 8 (was 22). The temporal denoiser ACCUMULATES the soft penumbra across frames, so 8/frame converges clean while freeing a big ray-budget chunk -> spend it on a higher MetalFX internal res (1280 not 1024 = less upscale blur)
     for (int i = 0; i < S; i++) {
         rng = fract(rng * 1.61803 + 0.31831);
         float a = rng * 6.2831853;
@@ -541,7 +541,7 @@ kernel void traceKernel(texture2d<float, access::write> out [[texture(0)]],
 
         // --- Ray-traced AO + one GI bounce (shared cosine-hemisphere samples) ---
         float3 tt, bb; basis(n, tt, bb);
-        const int AO_SAMPLES = 16;                  // 16: AO+GI are the heaviest per-pixel cost (each sample = a traced ray). The MTLFXTemporalScaler ACCUMULATES per-frame-varying samples ACROSS frames, so 16/frame converges to the same quality as 32 in steady state while ~halving the ray budget -> lifts the worst-case (heavy-view / drop) frames into the 60-120 target. Quality-neutral once converged; only very fast motion is briefly grainier (the denoiser catches up in a few frames).
+        const int AO_SAMPLES = 12;                  // 12 (was 16): AO+GI rays are heavy. Temporal accumulation converges 12/frame to the same steady quality; the freed budget pays for the higher (1280) internal res so the upscale is less blurry.
         float aoSum = 0.0;
         float3 giSum = float3(0.0);
         // GI/reflection bleed tint: linearized to match the linear-space radiance the

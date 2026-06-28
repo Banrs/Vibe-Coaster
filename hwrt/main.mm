@@ -765,7 +765,7 @@ void Renderer::rideAdvance(float dt) {
     // SPACE: fire a boost on powered sections (spends the meter, surges speed)
     if (boostHeld && stream.boost > 0.05f &&
         (stream.kind == M_LAUNCH || stream.kind == M_BOOST)) {
-        stream.speed = fminf(stream.speed + 110.0f * dt, 120.0f);   // 5g surge (5 * GRAV=22), same as the launch
+        stream.speed = fminf(stream.speed + 49.0f * dt, 120.0f);   // 5g surge (5 * GRAV=9.81), same as the launch
         stream.boost = fmaxf(stream.boost - dt * 0.8f, 0.0f);
     }
     // S: trim-brake (parity with the SW game's brake key) — bleeds speed to the stall floor
@@ -833,7 +833,7 @@ void Renderer::rideAdvance(float dt) {
     // gravity along the slope, quadratic air drag, low rolling friction, and active
     // launch/boost/lift acceleration on powered sections -> the boosts actually work
     // (the orange spine sections noticeably surge), instead of a constant crawl.
-    const float GRAV=22.0f, DRAG=0.0013f, FRICTION=0.016f;   // sync w/ src/main.cpp
+    const float GRAV=9.81f, DRAG=0.0013f, FRICTION=0.016f;   // Earth-real gravity (sync w/ src/main.cpp)
     const float LAUNCH_V=108.0f, BOOST_V=79.0f, CLIMB_V=40.0f;
     const int   M_CLIMB=1, M_LAUNCH=9, M_BOOST=11;
 
@@ -1044,6 +1044,9 @@ struct FXUpscaler {
         if (sc < 0.4f) sc = 0.4f; if (sc > 1.0f) sc = 1.0f;
         inW = (uint32_t)(W * sc + 0.5f); if (inW < 16) inW = 16;
         inH = (uint32_t)(H * sc + 0.5f); if (inH < 16) inH = 16;
+        uint32_t maxInW = 1280;   // match the live cap (ensureFXForOutputW) so the bench is honest
+        if (const char* mi = getenv("RT_MAXINW")) { int v = atoi(mi); if (v > 0) maxInW = (uint32_t)v; }
+        if (inW > maxInW) { inH = (uint32_t)((float)inH * (float)maxInW / (float)inW + 0.5f); inW = maxInW; }
 
         const MTLPixelFormat fmt = MTLPixelFormatRGBA8Unorm;
         const MTLPixelFormat dfmt = MTLPixelFormatR16Float;     // monotonic recon depth
@@ -1250,7 +1253,9 @@ static int runShot(Renderer& r) {
 // --bench: time N offscreen renders at window resolution, report fps. Headless.
 // ---------------------------------------------------------------------------
 static int runBench(Renderer& r) {
-    const uint32_t W = 1280, H = 720;
+    uint32_t W = 1280, H = 720;   // BENCH_W/BENCH_H override to model the live window (e.g. 2560x1440 Retina)
+    if (const char* bw = getenv("BENCH_W")) { int v = atoi(bw); if (v > 0) W = (uint32_t)v; }
+    if (const char* bh = getenv("BENCH_H")) { int v = atoi(bh); if (v > 0) H = (uint32_t)v; }
     MTLTextureDescriptor* td =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                            width:W height:H mipmapped:NO];
@@ -1725,6 +1730,14 @@ static void drawHUD(CGContextRef c, Renderer* r, CGFloat W, CGFloat H) {
     if (sc < 0.4f) sc = 0.4f; if (sc > 1.0f) sc = 1.0f;
     uint32_t inW = (uint32_t)(outW * sc + 0.5f); if (inW < 16) inW = 16;
     uint32_t inH = (uint32_t)(outH * sc + 0.5f); if (inH < 16) inH = 16;
+    // HARD internal-resolution CAP — the path tracer cost is per traced pixel, so a big
+    // Retina/4K window (output 2560x1440+) traced at RT_SCALE would be ~1920x1080 internal
+    // = ~30fps on an M4 Pro. Capping the internal render to ~1024px wide bounds the ray
+    // budget (MetalFX still upscales to the full window): 1080p internal 31fps -> ~960x540
+    // internal ~110fps. The headless 720p bench HID this (it never traced above 960x540).
+    uint32_t maxInW = 1280;
+    if (const char* mi = getenv("RT_MAXINW")) { int v = atoi(mi); if (v > 0) maxInW = (uint32_t)v; }
+    if (inW > maxInW) { inH = (uint32_t)((float)inH * (float)maxInW / (float)inW + 0.5f); inW = maxInW; }
 
     const MTLPixelFormat fmt  = MTLPixelFormatRGBA8Unorm;   // matches the drawable + trace kernel
     const MTLPixelFormat dfmt = MTLPixelFormatR16Float;     // monotonic recon depth

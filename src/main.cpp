@@ -44,7 +44,7 @@ static const int   TERRA_R   = 192;     // terrain radius in cells (192m view â‰
 static const float WATER_Y   = 30.0f;   // sea level (Minecraft-ish)
 static const float BUILD_MAX  = 430.0f; // max coaster build height: record-scale hyper/top-hat moments
 static const float TERRA_MAX  = 320.0f; // modern Minecraft-ish vertical terrain budget
-static const float GRAV      = 22.0f;
+static const float GRAV      = 9.81f;   // Earth-real gravity (was an arcadey 22). g now reads in true Earth g; the generator's size/g formulas are GRAV-parameterised so elements re-derive automatically.
 // Formula-Rossa-inspired: a light steel train with very low ROLLING friction (it
 // free-rolls and carries momentum through the flowing sections), but a strong
 // quadratic AIR drag that bites hardest on the fastest moments. Tall top-hats and
@@ -1330,7 +1330,7 @@ int main(int argc, char **argv) {
                 if (gV < kMinV[kd]) kMinV[kd] = gV;
                 if (fabsf(gL) > kMaxL[kd]) kMaxL[kd] = fabsf(gL);
                 if (gV > seedMaxV) { seedMaxV = gV; seedMaxK = k; }
-                if (gV > 12.0f || gV < -9.0f || fabsf(gL) > 6.0f)
+                if (gV > 10.0f || gV < -6.0f || fabsf(gL) > 6.0f)
                     offenders.push_back({gV, sd, k, kd, (int)t.kind[k-1], (int)t.kind[k+1], vAt[k], p1.y, gL});
             }
             printf("seed %2d  worst vert g = %+6.1f at cp %d (%s)\n", sd, seedMaxV, seedMaxK,
@@ -1342,12 +1342,12 @@ int main(int argc, char **argv) {
         printf("  %-9s %8s %8s %8s\n", "element", "maxVert", "minVert", "maxLat");
         for (int i = 0; i < M_COUNT; i++) {
             if (kMaxV[i] < -1e8f) continue;
-            const char* flag = (kMaxV[i] > 12.0f || kMinV[i] < -9.0f) ? "  <-- OVER" : "";
+            const char* flag = (kMaxV[i] > 10.0f || kMinV[i] < -6.0f) ? "  <-- OVER" : "";
             printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], kMaxV[i], kMinV[i], kMaxL[i], flag);
         }
         std::sort(offenders.begin(), offenders.end(), [](const Off&a,const Off&b){
             return fabsf(a.g-1.0f) > fabsf(b.g-1.0f); });
-        printf("\n  OFFENDERS outside +12/-9 vert (or |lat|>6): %d total. Worst 25:\n", (int)offenders.size());
+        printf("\n  OFFENDERS outside +10/-6 vert (or |lat|>6): %d total. Worst 25:\n", (int)offenders.size());
         for (int i = 0; i < (int)offenders.size() && i < 25; i++) {
             Off& o = offenders[i];
             printf("  seed%-2d cp%-3d  vertG=%+6.1f latG=%+5.1f  v=%4.0f (%3.0fkm/h) y=%6.1f  %s [%s->%s->%s]\n",

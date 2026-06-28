@@ -25,7 +25,7 @@ struct Color { unsigned char r, g, b, a; };
 
 // ----- world constants (authoritative; mirror src/main.cpp) -----
 static const float SEG_LEN   = 14.0f;
-static const float GRAV      = 22.0f;
+static const float GRAV      = 9.81f;   // Earth-real gravity (sync w/ src/main.cpp)
 static const float DRAG      = 0.0011f;   // sync w/ src/main.cpp — realistic air drag; the ~252 km/h average comes mostly from the aggressive LSM multi-launch profile (BOOST_TRIG), not drag
 static const float FRICTION  = 0.016f;
 static const float CHAIN_V   = 22.0f;

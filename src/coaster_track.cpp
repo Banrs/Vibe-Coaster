@@ -1033,7 +1033,7 @@ struct Track {
             // here eases the new point toward the STEEP continuation, i.e. descends MORE, which
             // is exactly what made the drop overshoot under the terrain. It now only fires on a
             // genuine >+12g / <-9g seam (e.g. the launch->climb base the slope limiter misses).
-            float clamped = Clamp(sd, -8.5f * k, 9.5f * k);             // hold p1 within ~ -7.5g .. +10.5g
+            float clamped = Clamp(sd, -7.0f * k, 9.0f * k);             // hold p1 within ~ -6g .. +10g (k is GRAV-aware so these coefficients ARE the g values minus 1)
             gpos.y += (clamped - sd);                                     // ease the new point toward the g-safe continuation
         }
 
@@ -1295,7 +1295,7 @@ struct Track {
         // any strongly-banked/inverted point (up.y < 0.55) whose felt g runs along a tilted
         // axis and is governed by that element's own sizing instead.
         {
-            const float Gmax = 9.0f, Gmin = -6.5f;   // margin under +10/-7.5 for Catmull-Rom spline overshoot
+            const float Gmax = 8.0f, Gmin = -4.5f;   // margin under the +10/-6 envelope for Catmull-Rom spline overshoot (GRAV-aware: g model uses GRAV)
             int n = (int)cp.size();
             int lo = n - 14; if (lo < 1) lo = 1;
             for (int sweep = 0; sweep < 4; sweep++)

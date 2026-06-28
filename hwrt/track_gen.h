@@ -192,8 +192,8 @@ struct StreamTrack {
         float prevSpeed = speed;
         speed += (-GRAV * slope - DRAG * speed * speed - FRICTION) * dt;
         // Booster accelerations (longitudinal). LAUNCH + BOOST target 5g (user-set):
-        // accel = 5 * GRAV (the game's g-unit, GRAV=22). A punchy ~5g surge. CLIMB stays a
-        // realistic lift (tyre/chain) — it's a lift hill, not a booster.
+        // accel = 5 * GRAV (Earth-real, GRAV=9.81 -> ~49 m/s^2). A punchy 5g surge. CLIMB
+        // stays a realistic lift (tyre/chain) — it's a lift hill, not a booster.
         if      (kind == M_LAUNCH && speed < LAUNCH_V)            speed = fminf(speed + 5.0f * GRAV * dt, LAUNCH_V); // 5g launch
         else if (kind == M_CLIMB  && !chain && speed < CLIMB_V)   speed = fminf(speed + 16.0f * dt, CLIMB_V);        // ~0.7g tyre drive
         else if (kind == M_BOOST  && speed < BOOST_V )            speed = fminf(speed + 5.0f * GRAV * dt, BOOST_V);  // 5g boost (same as launch)

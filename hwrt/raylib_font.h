@@ -149,6 +149,7 @@ static void rlDrawText(CGContextRef c, const char* s, CGFloat x, CGFloat y,
                        CGFloat fontSize, CGFloat r, CGFloat g_, CGFloat b, CGFloat a) {
     if (fontSize < 10) fontSize = 10;
     CGFloat scale = fontSize / 10.0, spacing = floorf(fontSize / 10.0);
+    CGContextSetInterpolationQuality(c, kCGInterpolationNone);   // crisp pixel font (was bilinear-blurry)
     const RLGlyph* gl = rlGlyphs();
     CGFloat cx = x;
     for (const char* p = s; *p; p++) {

@@ -253,7 +253,7 @@ struct Track {
     void initCobra() {
         mode = M_COBRA;
         setClearance(24.0f, 58.0f);
-        { float bt; cbR = invRFor(M_COBRA, bt); cbR *= frnd(0.68f, 1.0f); }  // SPEED-SIZE + VARIETY: hood 33-51m (under the 50-55m cap). Smaller cobras pull punchier g; bigger ones are gentler -> a mix instead of every cobra at the cap
+        float cbBaseR; { float bt; cbR = invRFor(M_COBRA, bt); cbBaseR = cbR; cbR *= frnd(0.92f, 1.12f); }  // SPEED-SIZE + mild VARIETY: never shrink hard (the old 0.68x made tight cobras pull ~15-20g). invRFor already sizes for ~10g at the gate speed.
         cbF     = headingVec();
         float side = (rnd01() < 0.5f) ? 1.0f : -1.0f;
         cbSide  = Vector3Scale(Vector3Normalize(Vector3CrossProduct(WUP, cbF)), side);
@@ -264,6 +264,38 @@ struct Track {
         Vector3 dp[201], du[201]; float dl[201];
         const int DENSE = 200;
         for (int k = 0; k <= DENSE; k++) cobraSample((float)k / DENSE, dp[k], du[k]);
+        // G-ENVELOPE SIZING (geometry, NOT a speed cap): measure the cobra's worst
+        // path curvature kappa_max; felt g ~ 1 + v^2*kappa/GRAV. The whole curve scales
+        // 1/cbR, so if the peak g would blow past +10g at the entry speed, GROW cbR by
+        // exactly the over-factor and rebuild — the shape is identical, just wide enough
+        // to hold <=+10g. Fixes the 0.68x-shrink cobras that pulled ~15-20g on entry.
+        {
+            const float GCAP = 9.8f;                      // target ceiling (<10g, small margin for the catmull)
+            float v = fmaxf(genV, 30.0f);
+            for (int pass = 0; pass < 4; pass++) {
+                float kmax = 0.0f;
+                for (int k = 1; k < DENSE; k++) {
+                    Vector3 a = Vector3Subtract(dp[k], dp[k-1]);
+                    Vector3 b = Vector3Subtract(dp[k+1], dp[k]);
+                    float la = Vector3Length(a), lb = Vector3Length(b);
+                    if (la < 1e-4f || lb < 1e-4f) continue;
+                    float kk = Vector3Length(Vector3Subtract(Vector3Scale(b, 1.0f/lb),
+                                                             Vector3Scale(a, 1.0f/la))) / (0.5f*(la+lb));
+                    if (kk > kmax) kmax = kk;
+                }
+                float gMax = 1.0f + v*v*kmax/GRAV;
+                if (gMax <= GCAP) break;
+                // widen so peak g == GCAP, but NEVER beyond a realistic cobra size (1.4x the
+                // gate-sized radius). If it's still over at that cap, the train simply arrived
+                // too fast — the generator's INV_GATE/placement keeps cobra entry near the gate
+                // speed, so this clamp rarely binds; it just refuses to build a giant cobra.
+                float want = cbR * (gMax - 1.0f) / (GCAP - 1.0f);
+                float capped = fminf(want, cbBaseR * 1.4f);
+                if (capped <= cbR + 0.01f) break;          // already at the realistic cap
+                cbR = capped;
+                for (int k = 0; k <= DENSE; k++) cobraSample((float)k / DENSE, dp[k], du[k]);
+            }
+        }
         dl[0] = 0.0f;
         for (int k = 1; k <= DENSE; k++) dl[k] = dl[k-1] + Vector3Distance(dp[k], dp[k-1]);
         float total = dl[DENSE];

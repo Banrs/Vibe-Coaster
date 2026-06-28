@@ -838,6 +838,8 @@ static int runShot(Renderer& r) {
     // Advance the ride a few seconds so the shot lands on interesting geometry
     // (off the launch straight, into a climb/element) and the scene has streamed.
     r.rideMode = true;
+    // SHOT_SEC (default 9): seconds to advance the ride before framing the hero shot,
+    // so verification can land the camera on different elements (helix/water/etc).
     int shotSec = 9; if (const char* s = getenv("SHOT_SEC")) { int v = atoi(s); if (v > 0) shotSec = v; }
     for (int i = 0; i < 60 * shotSec; i++) r.rideAdvance(1.0f / 60.0f);
     // Side-on hero framing: stand well back and ABOVE the train, look down at it so
@@ -846,11 +848,9 @@ static int runShot(Renderer& r) {
         float3 look = r.stream.pos(r.stream.trainU);          // aim at the train
         float3 fwd  = normalize(r.stream.tangent(r.stream.trainU));
         float3 side = normalize(cross(fwd, vec3(0,1,0)));
-        bool ground = getenv("SHOT_GROUND") != nullptr;       // low grazing view to inspect the carve
-        r.camPos = ground ? look - fwd * 55.0f + side * 40.0f + vec3(0, 12.0f, 0)
-                          : look - fwd * 120.0f + side * 95.0f + vec3(0, 70.0f, 0);
+        r.camPos = look - fwd * 120.0f + side * 95.0f + vec3(0, 70.0f, 0);
         // keep the eye safely above terrain so we never sit inside a voxel wall
-        float gtop = groundTopAt(r.camPos.x, r.camPos.z) + (ground ? 3.0f : 20.0f);
+        float gtop = groundTopAt(r.camPos.x, r.camPos.z) + 20.0f;
         if (r.camPos.y < gtop) r.camPos.y = gtop;
         float3 toLook = normalize(look - r.camPos);
         r.exFwd = toLook; r.exUp = vec3(0,1,0);

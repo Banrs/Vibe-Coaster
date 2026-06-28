@@ -34,6 +34,12 @@ static const float MAX_V     = 82.0f;
 static const float LAUNCH_V  = 108.0f;
 static const float CLIMB_V   = 40.0f;
 static const float BOOST_V   = 79.0f;     // sync w/ src/main.cpp (was 74)
+static float       BOOST_TRIG = 64.0f;    // sync w/ src/main.cpp: the generator (coaster_track.cpp)
+                                          // fires an LSM booster straight when the forward-sim cruise
+                                          // drops below this. Non-const to match src (--simtest mutates it).
+static float       INV_GATE  = 79.0f;     // sync w/ src/main.cpp: inversions only OFFERED while the
+                                          // forward-sim cruise <= this; above it the trim brake bleeds
+                                          // the entry to the +10g-safe speed. Referenced by coaster_track.cpp.
 static const float BUILD_MAX = 430.0f;
 // WATER_Y / TERRA_MAX come from terrain.h.
 static const Vector3 WUP = { 0.0f, 1.0f, 0.0f };

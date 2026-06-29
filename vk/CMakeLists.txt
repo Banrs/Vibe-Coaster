@@ -9,21 +9,35 @@ endif()
 
 find_package(Vulkan REQUIRED)
 
-# SDL2: prefer a CMake config (vcpkg / SDL2 install — Windows, macOS); fall back to
-# pkg-config (Linux distros). Sets SDL2_LINK to whatever the target/lib is.
+# SDL2: prefer a CMake config (vcpkg / SDL2 install), then pkg-config (Linux),
+# then fetch+build it from source (so a fresh machine needs nothing pre-installed).
 find_package(SDL2 QUIET)
 if(SDL2_FOUND AND TARGET SDL2::SDL2)
   set(SDL2_LINK SDL2::SDL2)
 else()
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(SDL2 REQUIRED sdl2)
-  set(SDL2_LINK ${SDL2_LIBRARIES})
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(SDL2 QUIET sdl2)
+  endif()
+  if(SDL2_FOUND)
+    set(SDL2_LINK ${SDL2_LIBRARIES})
+  else()
+    message(STATUS "SDL2 not found — fetching and building it from source")
+    include(FetchContent)
+    set(SDL_TEST OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(SDL2
+      GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+      GIT_TAG release-2.30.9)
+    FetchContent_MakeAvailable(SDL2)
+    set(SDL2_LINK SDL2::SDL2)
+  endif()
 endif()
 
 # --- compile GLSL -> SPIR-V (glslangValidator ships with the Vulkan SDK / distro) ---
-find_program(GLSLANG glslangValidator)
+find_program(GLSLANG glslangValidator
+  HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" "$ENV{VULKAN_SDK}/Bin32")
 if(NOT GLSLANG)
-  message(FATAL_ERROR "glslangValidator not found (install glslang-tools)")
+  message(FATAL_ERROR "glslangValidator not found — install the Vulkan SDK (Windows/macOS) or glslang-tools (Linux)")
 endif()
 
 set(SHADER_OUT ${CMAKE_BINARY_DIR}/shaders)

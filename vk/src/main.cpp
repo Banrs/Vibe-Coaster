@@ -358,7 +358,7 @@ static VkPipeline makeHudPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout la
 }
 
 // ---- world ----
-struct World { Mesh mesh; Mesh water; Vec3 focus; ::Track trk; };
+struct World { Mesh mesh; Mesh water; Mesh train; Vec3 focus; ::Track trk; };
 static const float PATCH_HALF = 175.0f;   // terrain patch radius around the active centre
 // (Re)build the terrain/trees/track/water meshes around an arbitrary centre.
 // terrainH(x,z) is a pure function of world position, so re-centring just slides
@@ -376,6 +376,7 @@ static void buildWorldMeshes(World& w, Vec3 center){
 }
 static World buildWorld(){
     World w; world::genLongTrack(w.trk,2200);
+    world::buildTrainMesh(w.train);                 // local-space, animated each frame
     buildWorldMeshes(w, world::trackFocus(w.trk,260));
     printf("[vk] world mesh: %zu verts, %zu tris; water: %zu tris\n",
            w.mesh.verts.size(), w.mesh.idx.size()/3, w.water.idx.size()/3);
@@ -446,6 +447,10 @@ struct Renderer {
     VkDescriptorSetLayout hudDSL; VkDescriptorSet hudSet; Img fontImg;
     Buffer hudVB; void* hudVBmap=nullptr; uint32_t hudVtxCount=0, hudVtxCap=0;
     RideTelemetry hudTel; bool hudRide=false;
+    // animated train: local-space mesh transformed to the RideSim frame each frame
+    Buffer trainVB, trainIB; void* trainVBmap=nullptr; uint32_t trainIndexCount=0;
+    std::vector<Vertex> trainLocal;
+    Vec3 trainPos{}, trainR{1,0,0}, trainU{0,1,0}, trainF{0,0,1}; bool trainVisible=false;
     // shadows + scene UBO
     VkRenderPass shadowRP; VkPipelineLayout shadowLayout; VkPipeline shadowPipe; VkFramebuffer shadowFB;
     Img shadow; VkSampler shadowSamp;
@@ -602,6 +607,17 @@ struct Renderer {
             vkMapMemory(dev,wvb.mem,0,wvbS,0,&p); memcpy(p,w.water.verts.data(),wvbS); vkUnmapMemory(dev,wvb.mem);
             vkMapMemory(dev,wib.mem,0,wibS,0,&p); memcpy(p,w.water.idx.data(),wibS); vkUnmapMemory(dev,wib.mem);
         }
+        // animated train: index buffer is fixed; vertex buffer is host-mapped and
+        // rewritten each frame from the local mesh transformed to the train frame.
+        if(trainIndexCount==0 && !w.train.idx.empty()){
+            trainLocal = w.train.verts;
+            trainIndexCount=(uint32_t)w.train.idx.size();
+            VkDeviceSize tvbS=w.train.verts.size()*sizeof(Vertex), tibS=w.train.idx.size()*sizeof(uint32_t);
+            trainVB=makeBuffer(pd,dev,tvbS,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            trainIB=makeBuffer(pd,dev,tibS,VK_BUFFER_USAGE_INDEX_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            vkMapMemory(dev,trainVB.mem,0,tvbS,0,&trainVBmap);
+            vkMapMemory(dev,trainIB.mem,0,tibS,0,&p); memcpy(p,w.train.idx.data(),tibS); vkUnmapMemory(dev,trainIB.mem);
+        }
     }
     // Re-upload after the world re-bakes around a new centre (streaming).
     void reuploadMesh(const World& w){
@@ -689,7 +705,18 @@ struct Renderer {
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,gbufPipe);
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,gbufLayout,0,1,&sceneSet,0,nullptr);
         vkCmdBindVertexBuffers(cmd,0,1,&vb.buf,&off); vkCmdBindIndexBuffer(cmd,ib.buf,0,VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd,indexCount,1,0,0,0); vkCmdEndRenderPass(cmd);
+        vkCmdDrawIndexed(cmd,indexCount,1,0,0,0);
+        // animated train: transform the local mesh to the live RideSim frame and draw
+        if(trainVisible && trainIndexCount){
+            Vertex* tv=(Vertex*)trainVBmap;
+            for(size_t k=0;k<trainLocal.size();k++){ const Vertex& lv=trainLocal[k];
+                tv[k].pos = trainPos + trainR*lv.pos.x + trainU*lv.pos.y + trainF*lv.pos.z;
+                tv[k].nrm = normalize(trainR*lv.nrm.x + trainU*lv.nrm.y + trainF*lv.nrm.z);
+                tv[k].col = lv.col; }
+            vkCmdBindVertexBuffers(cmd,0,1,&trainVB.buf,&off); vkCmdBindIndexBuffer(cmd,trainIB.buf,0,VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd,trainIndexCount,1,0,0,0);
+        }
+        vkCmdEndRenderPass(cmd);
         // --- SSAO: hemisphere occlusion from gPosition + gNormal ---
         VkClearValue acl; acl.color={{1,1,1,1}};
         VkRenderPassBeginInfo ra{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; ra.renderPass=ssaoRP; ra.framebuffer=ssaoFB; ra.renderArea={{0,0},ext}; ra.clearValueCount=1; ra.pClearValues=&acl;
@@ -821,7 +848,7 @@ static void pickDevice(VkInstance inst, VkSurfaceKHR surf, VkPhysicalDevice& pd,
 }
 
 // =====================================================================
-static int runOffscreen(const World& world, const std::string& sd, const std::string& outPath){
+static int runOffscreen(World& world, const std::string& sd, const std::string& outPath){
     const uint32_t W=1280,H=720;
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion=VK_API_VERSION_1_1;
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; ici.pApplicationInfo=&app;
@@ -830,14 +857,21 @@ static int runOffscreen(const World& world, const std::string& sd, const std::st
     float pr=1; VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qci.queueFamilyIndex=R.gfx; qci.queueCount=1; qci.pQueuePriorities=&pr;
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; dci.queueCreateInfoCount=1; dci.pQueueCreateInfos=&qci;
     VK_CHECK(vkCreateDevice(R.pd,&dci,nullptr,&R.dev)); vkGetDeviceQueue(R.dev,R.gfx,0,&R.queue);
-    R.initPipelines(sd); R.uploadMesh(world); R.buildTargets({W,H}); R.setCenter(world.focus);
-
+    R.initPipelines(sd);
     FlyCam cam; cam.pos=world.focus+Vec3{135,98,165};
     if(g_camSet){ cam.pos=g_camPos; cam.yaw=g_camYaw; cam.pitch=g_camPitch; }
-    CamView view=cam.view(); R.hudRide=g_rideSet;
-    if(g_rideSet){ world::RideSim rs; rs.reset(world.trk); rs.advance(world.trk,g_rideSec);
-        RideTelemetry tel; view=rideCamView(world.trk,rs,tel); R.hudTel=tel;
-        printf("[ride] t=%.1fs  %.0f km/h  alt %.0fm  %.2fg  %s\n",g_rideSec,tel.speedKmh,tel.altitude,tel.gForce,tel.element); }
+    CamView view=cam.view(); R.hudRide=g_rideSet; Vec3 shadowCenter=world.focus;
+    { // place the train at the ride position (advanced by --ride, else the station)
+      world::RideSim rs; rs.reset(world.trk); rs.advance(world.trk,g_rideSec);
+      Vector3 P,fwd,up,right; rs.frame(world.trk,P,fwd,up,right);
+      R.trainPos=world::v3(P); R.trainF=normalize(world::v3(fwd)); R.trainU=normalize(world::v3(up)); R.trainR=normalize(world::v3(right)); R.trainVisible=true;
+      printf("[train] pos %.1f %.1f %.1f\n", P.x,P.y,P.z);
+      if(g_rideSet){ RideTelemetry tel; CamView rv=rideCamView(world.trk,rs,tel); R.hudTel=tel;
+        if(!g_camSet) view=rv;                                           // --cam gives an external train view
+        buildWorldMeshes(world, Vec3{P.x, world.focus.y, P.z});           // surround the train with terrain
+        shadowCenter=Vec3{P.x, groundTopAt(P.x,P.z), P.z};
+        printf("[ride] t=%.1fs  %.0f km/h  alt %.0fm  %.2fg  %s\n",g_rideSec,tel.speedKmh,tel.altitude,tel.gForce,tel.element); } }
+    R.uploadMesh(world); R.buildTargets({W,H}); R.setCenter(shadowCenter);
     Buffer rb=makeBuffer(R.pd,R.dev,(VkDeviceSize)W*H*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx;
     VkCommandPool pool; VK_CHECK(vkCreateCommandPool(R.dev,&cpi,nullptr,&pool));
@@ -920,9 +954,12 @@ static int runWindowed(World& world, const std::string& sd, int maxFrames){
                 if(cam.pitch>1.5f)cam.pitch=1.5f; if(cam.pitch<-1.5f)cam.pitch=-1.5f; }
             else if(e.type==SDL_WINDOWEVENT&&e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED) recreate();
         }
+        rs.advance(world.trk,dt);   // the train always runs along the track
+        { Vector3 P,fwd,up,right; rs.frame(world.trk,P,fwd,up,right);
+          R.trainPos=world::v3(P); R.trainF=normalize(world::v3(fwd)); R.trainU=normalize(world::v3(up)); R.trainR=normalize(world::v3(right)); R.trainVisible=true; }
         CamView view; R.hudRide=rideMode;
         if(rideMode){
-            rs.advance(world.trk,dt); view=rideCamView(world.trk,rs,tel); R.hudTel=tel;
+            view=rideCamView(world.trk,rs,tel); R.hudTel=tel;
             telAcc+=dt; if(telAcc>0.5f){ telAcc=0; printf("[ride] %.0f km/h  alt %.0fm  %.2fg  %s\n",tel.speedKmh,tel.altitude,tel.gForce,tel.element); }
         } else {
             const Uint8* ks=SDL_GetKeyboardState(nullptr); Vec3 f=cam.fwd(), r=normalize(cross(f,Vec3{0,1,0}));

@@ -95,8 +95,9 @@ void main(){
 
     float NoV = max(dot(N, V), 0.0);
 
-    // Fresnel-Schlick, F0 ~ 0.02 for water, clamped so deep body still reads.
-    float fres = clamp(0.02 + 0.98 * pow(1.0 - NoV, 5.0), 0.02, 0.72);
+    // Fresnel-Schlick, F0 ~ 0.02 for water, clamped lower so the deep blue body
+    // dominates (less pale sky reflection at grazing angles).
+    float fres = clamp(0.02 + 0.98 * pow(1.0 - NoV, 5.0), 0.02, 0.58);
 
     // Shadowing (flat up-facing surface uses N.y ~ 1).
     float ndl = max(dot(N, L), 0.0);
@@ -104,8 +105,8 @@ void main(){
 
     // Refracted body: deep teal-blue, lightening toward grazing angles. A simple
     // depth proxy (how head-on we look) darkens the centre, lightens the edges.
-    vec3 deepCol    = vec3(0.015, 0.10, 0.16);
-    vec3 shallowCol = vec3(0.10,  0.34, 0.42);
+    vec3 deepCol    = vec3(0.008, 0.05, 0.16);           // deep ocean blue
+    vec3 shallowCol = vec3(0.03,  0.20, 0.34);           // richer near-shore teal
     float depthProxy = clamp(NoV, 0.0, 1.0);             // 1 = looking straight down
     vec3 body = mix(shallowCol, deepCol, depthProxy);
     body *= (0.55 + 0.55 * ndl * mix(0.4, 1.0, rawSh));  // sun-lit body
@@ -114,6 +115,7 @@ void main(){
     // Sky reflection along the mirrored view direction.
     vec3 R = reflect(-V, N);
     vec3 refl = skyCol(R, L);
+    refl = mix(refl, deepCol*2.2, 0.30);                 // tint reflection toward the water colour
     float sunGlow = pow(max(dot(R, L), 0.0), 8.0);
     refl = mix(refl, vec3(1.0, 0.92, 0.78), 0.25 * sunGlow);
 
@@ -127,6 +129,6 @@ void main(){
     // Transparency: looking straight down (low fresnel) the water is clear and the
     // lit bed already in the HDR target shows through; at grazing angles it turns
     // reflective/opaque. Alpha blending composites over the terrain behind it.
-    float alpha = clamp(mix(0.50, 0.95, fres) + glint, 0.0, 1.0);
+    float alpha = clamp(mix(0.74, 0.97, fres) + glint, 0.0, 1.0);   // more opaque -> less pale bed bleed
     outColor = vec4(col, alpha);
 }

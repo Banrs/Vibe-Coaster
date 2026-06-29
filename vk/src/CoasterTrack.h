@@ -61,17 +61,20 @@ inline void buildTrackMesh(const ::Track& trk, Mesh& out, float cx, float cz, fl
         }
     }
 
-    // train: a few cars near the start
-    Vec3 carBody{0.92f,0.20f,0.28f}, carDark{0.12f,0.13f,0.16f};
-    for(int car=0; car<4 && 5+car*3 < N-1; car++){
-        int i=5+car*3;
-        Vector3 P=trk.cp[i]; if(!inPatch(P)) continue;
-        Vector3 T=Vector3Normalize(Vector3Subtract(trk.cp[i+1], trk.cp[i]));
-        Vector3 U=Vector3Normalize(trk.up[i]);
-        Vector3 R=Vector3Normalize(Vector3CrossProduct(T,U)); U=Vector3Normalize(Vector3CrossProduct(R,T));
-        Vec3 vT=v3(T),vU=v3(U),vR=v3(R), C=v3(P)+vU*0.55f;
-        addBox(out,C,vR,vU,vT, 1.0f,0.6f,1.7f, carBody);
-        addBox(out,C+vU*0.7f,vR,vU,vT, 0.75f,0.35f,1.0f, carDark);
+    // (the train is no longer baked here — it is a separate animated mesh, see
+    //  buildTrainMesh() below, transformed each frame to the RideSim position)
+}
+
+// Build the train in LOCAL space (forward +Z, up +Y, right +X, lead car at the
+// origin) so the renderer can transform it to the live RideSim frame each frame.
+inline void buildTrainMesh(Mesh& out){
+    Vec3 R{1,0,0}, U{0,1,0}, F{0,0,1};
+    Vec3 body{0.92f,0.20f,0.28f}, dark{0.12f,0.13f,0.16f};
+    for(int car=0; car<4; car++){
+        float z = -2.0f*(float)car;                 // lead car at 0, the rest trailing behind
+        Vec3 C{0.0f, 0.55f, z};
+        addBox(out, C,         R,U,F, 1.0f,0.6f,1.7f,   body);
+        addBox(out, C+U*0.7f,  R,U,F, 0.75f,0.35f,1.0f, dark);
     }
 }
 

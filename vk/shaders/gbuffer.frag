@@ -20,10 +20,10 @@ void main(){
     float mn = min(min(col.r,col.g),col.b);
     float sat = (mx > 1e-3) ? (mx-mn)/mx : 0.0;
     float metal = 0.0, rough = 0.85;
-    if(sat < 0.16 && mx > 0.58 && mx < 0.90){       // polished steel
-        metal = 1.0; rough = 0.26;
-    } else if(sat < 0.22 && mx >= 0.42 && mx <= 0.58){ // darker brushed metal (posts)
-        metal = 0.85; rough = 0.45;
+    // ONLY the coaster steel rail colour (~0.72,0.75,0.80) is metal — a tight band
+    // so terrain greys (rock/snow/dirt sides) are never misclassified as dark metal.
+    if(sat < 0.12 && mx > 0.72 && mx < 0.86){
+        metal = 1.0; rough = 0.30;
     }
     outAlbedo       = vec4(col, metal);
     outNormalRough  = vec4(normalize(vNormal), rough);

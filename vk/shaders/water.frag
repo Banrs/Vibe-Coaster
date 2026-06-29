@@ -32,11 +32,11 @@ float wvn(vec2 p){
 // --- compact sky for reflections (ported/simplified from pathtrace.cpp skyCol,
 // clouds dropped). Keeps the horizon gradient + sun tint. ---
 vec3 skyCol(vec3 d, vec3 sun){
-    const vec3 ZEN = vec3(0.035, 0.22, 0.62);
-    const vec3 MID = vec3(0.22, 0.50, 0.86);
-    const vec3 HOR = vec3(0.72, 0.86, 1.0);
-    const vec3 HAZE = vec3(1.0, 0.78, 0.48);
-    const vec3 GND = vec3(0.30, 0.38, 0.47);
+    const vec3 ZEN = vec3(0.020, 0.14, 0.55);
+    const vec3 MID = vec3(0.10, 0.34, 0.80);
+    const vec3 HOR = vec3(0.30, 0.54, 0.88);
+    const vec3 HAZE = vec3(1.0, 0.80, 0.52);
+    const vec3 GND = vec3(0.20, 0.40, 0.62);
     float h = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
     float t = smoothstep(0.03, 0.92, h);
     vec3 c = mix(HOR, MID, smoothstep(0.0, 0.55, t));

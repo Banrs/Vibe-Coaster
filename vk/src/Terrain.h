@@ -57,51 +57,35 @@ static inline int terrainH(float x,float z){
     return (int)h;
 }
 
-// Continuous Whittaker-style climate -> grass colour, à la Minecraft: temperature
-// and humidity (low-frequency noise) select a colour by smooth interpolation, with
-// elevation cooling (snow/rock up high) and beaches near water. No hard thresholds,
-// so a single sample already transitions smoothly; biomeColor() then averages a
-// neighbourhood (Minecraft's grass-colour blend) to erase any remaining seams.
-static inline Vec3 climateColor(float wx, float wz, int h){
-    float top = (float)h + 1.0f;
-    float temp  = clampf(fbm(wx*0.0019f+12.0f, wz*0.0019f+204.0f, 3), 0.0f, 1.0f);
-    float humid = clampf(fbm(wx*0.0028f+44.0f, wz*0.0028f+108.0f, 3), 0.0f, 1.0f);
-    float warmth = clampf(temp - smooth01(70.0f,210.0f,(float)h)*0.55f, 0.0f, 1.0f); // height cools
-
-    Vec3 plains ={130/255.f,206/255.f,102/255.f};
-    Vec3 forest ={ 76/255.f,176/255.f, 92/255.f};
-    Vec3 jungle ={ 96/255.f,188/255.f, 96/255.f};
-    Vec3 savanna={210/255.f,202/255.f,132/255.f};
-    Vec3 desert ={214/255.f,196/255.f,108/255.f};
-    Vec3 taiga  ={112/255.f,150/255.f,112/255.f};
-    Vec3 sand   ={242/255.f,228/255.f,184/255.f};
-    Vec3 rock   ={120/255.f,124/255.f,130/255.f};
-    Vec3 snow   ={224/255.f,232/255.f,240/255.f};
-
-    Vec3 wetCol = lerp(forest, jungle, humid);
-    Vec3 dryCol = lerp(savanna, desert, 1.0f - humid);
-    Vec3 warmCol= lerp(dryCol, lerp(plains, wetCol, smooth01(0.40f,0.85f,humid)),
-                       smooth01(0.25f,0.60f,humid));
-    Vec3 coldCol= lerp(taiga, snow, smooth01(0.35f,0.05f,warmth));   // colder -> snow
-    Vec3 c = lerp(coldCol, warmCol, smooth01(0.22f,0.50f,warmth));
-    c = lerp(c, rock, smooth01(150.0f,200.0f,(float)h));            // high -> rock
-    c = lerp(c, snow, smooth01(235.0f,290.0f,(float)h));            // higher -> snow
-    c = lerp(c, sand, smooth01(WATER_Y+2.5f, WATER_Y+0.4f, top));   // beaches
-    return c;
-}
-
-// Minecraft-style grass-colour blend: average the climate colour over a small
-// neighbourhood so biome borders fade instead of stepping. Per-cell hash adds
-// subtle grain like MC's noise.
-static inline Vec3 biomeColor(float wx, float wz){
-    Vec3 acc{0,0,0}; const float R=3.0f;
-    for(int oz=-1; oz<=1; oz++) for(int ox=-1; ox<=1; ox++){
-        float sx=wx+ox*R, sz=wz+oz*R;
-        acc = acc + climateColor(sx, sz, terrainH(sx,sz));
+// Biome classification — ported verbatim from the base game (../../src/main.cpp,
+// the per-cell block-colour + tree pass): bio/humid/temp noise + elevation pick a
+// cap (top) colour, a side colour, and a tree type + density. This is the single
+// source of truth so terrain colours and trees agree, the way Minecraft biomes do.
+struct Biome { Vec3 cap, side; int treeType; float treeDen; bool grassCap; };
+static inline Vec3 C8(int r,int g,int b){ return Vec3{r/255.f,g/255.f,b/255.f}; }
+static inline Biome biomeAt(float wx, float wz, int h){
+    Biome bm; bm.treeType=-1; bm.treeDen=0.0f; bm.grassCap=true;
+    bool beach = ((float)h+1.0f) <= WATER_Y+0.6f;
+    Vec3 GRASS=C8(130,206,102), SAND=C8(242,228,184), DIRT=C8(158,116,82);
+    Vec3 capC=GRASS, colC=DIRT;
+    float bio   = vnoise(wx*0.0045f+91.3f, wz*0.0045f+23.1f);
+    float humid = fbm(wx*0.0028f+44.0f, wz*0.0028f+108.0f, 2);
+    float temp  = fbm(wx*0.0019f+12.0f, wz*0.0019f+204.0f, 2);
+    if      (h>=260)                       { capC=C8(204,214,224); colC=C8(132,140,154); bm.grassCap=false; }
+    else if (h>=158)                       { capC=C8(128,138,146); colC=C8(108,116,126); bm.grassCap=false; }
+    else if (beach)                        { capC=SAND;                                   bm.grassCap=false; }
+    else if (humid<0.23f && temp>0.42f)    { capC=C8(214,196,108); colC=C8(162,126, 72); bm.grassCap=false; bm.treeType=3; bm.treeDen=0.003f; } // savanna
+    else if (humid>0.72f && bio<0.72f)     { capC=C8( 76,176, 92); colC=C8(118, 96, 72);                    bm.treeType=0; bm.treeDen=0.032f; } // dense forest
+    else if (bio<0.34f)                    {                                                                bm.treeType=0; bm.treeDen=0.007f; } // plains/oak
+    else if (bio<0.58f)                    { capC=C8(118,206,108);                                          bm.treeType=1; bm.treeDen=0.022f; } // birch
+    else if (bio<0.78f)                    { capC=C8(210,202,132);                                          bm.treeType=3; bm.treeDen=0.004f; } // dry/acacia
+    else                                   { capC=C8(112,150,112); colC=C8(118,104, 86);                    bm.treeType=2; bm.treeDen=0.010f; } // taiga/spruce
+    if (bm.grassCap){
+        float patch = vnoise(wx*0.03f+7.7f, wz*0.03f+4.2f);
+        capC = lerp(capC, lerp(C8(96,188,96), C8(196,206,120), patch), 0.35f);
     }
-    Vec3 c = acc * (1.0f/9.0f);
-    float s = 0.92f + 0.08f*hashf((int)floorf(wx)*5+1, (int)floorf(wz)*5+2);
-    return c*s;
+    bm.cap=capC; bm.side=colC;
+    return bm;
 }
 
 // One flat-shaded quad (a,b,c,d CCW) with an explicit face normal + color.
@@ -133,11 +117,21 @@ inline void buildTerrain(float cx, float cz, float half, float /*step*/, Mesh& o
     int R = (int)half;
     int ox = (int)floorf(cx), oz = (int)floorf(cz);
     for(int dz=-R; dz<=R; dz++) for(int dx=-R; dx<=R; dx++){
-        float wx=(float)(ox+dx), wz=(float)(oz+dz);
+        int iwx=ox+dx, iwz=oz+dz; float wx=(float)iwx, wz=(float)iwz;
         int h=terrainH(wx,wz);
         float top=(float)h+1.0f;
-        Vec3 cap=biomeColor(wx,wz);
-        Vec3 body=cap*0.6f;                       // darker sides read as cube faces
+        Biome bm=biomeAt(wx,wz,h);
+        float sh=0.89f + 0.13f*hashf(iwx*5+1, iwz*5+2);   // per-cell shade (base game)
+        // subtle Minecraft-style grass-colour blend: soften biome borders with a
+        // light center-weighted 5-tap over the cap colour (much less than before).
+        const float D=2.0f;
+        Vec3 capBlend = bm.cap*0.56f
+            + biomeAt(wx+D,wz,terrainH(wx+D,wz)).cap*0.11f
+            + biomeAt(wx-D,wz,terrainH(wx-D,wz)).cap*0.11f
+            + biomeAt(wx,wz+D,terrainH(wx,wz+D)).cap*0.11f
+            + biomeAt(wx,wz-D,terrainH(wx,wz-D)).cap*0.11f;
+        Vec3 cap=capBlend*sh;
+        Vec3 body=bm.side*(sh*0.95f);             // distinct dirt/rock side colour (unblended, like MC)
         float xm=wx-0.5f, xp=wx+0.5f, zm=wz-0.5f, zp=wz+0.5f;
 
         addQuad(out, {xm,top,zm},{xp,top,zm},{xp,top,zp},{xm,top,zp}, {0,1,0}, cap);
@@ -162,43 +156,62 @@ inline void appendWater(float cx, float cz, float half, Mesh& out){
     out.idx.insert(out.idx.end(), { base,base+2,base+1, base+1,base+2,base+3 });
 }
 
-// Voxel trees, placed by biome density (ported from the base game's tree pass in
-// main.cpp / pathtrace.cpp): a trunk of cubes + a leaf canopy blob.
-inline void buildTrees(float cx, float cz, float half, Mesh& out){
-    int R=(int)half; int ox=(int)floorf(cx), oz=(int)floorf(cz);
+// A single tree of `type` (0 oak, 1 birch, 2 spruce, 3 acacia) at (x,top,z) —
+// trunk + tiered leaf boxes, ported verbatim from the base game's switch(treeType)
+// (drawCubeTex dims are full extents; addBox takes half-extents).
+inline void addTree(Mesh& out, int type, float x, float top, float z, float sh){
     Vec3 I{1,0,0}, J{0,1,0}, K{0,0,1};
+    auto cl=[](Vec3 c){ return Vec3{ c.x>1?1:c.x, c.y>1?1:c.y, c.z>1?1:c.z }; };
+    auto box=[&](float cy,float w,float hh,float l,Vec3 col){
+        addBox(out, Vec3{x,top+cy,z}, I,J,K, w*0.5f, hh*0.5f, l*0.5f, cl(col*sh)); };
+    if(type==0){               // oak
+        Vec3 wood=C8(124,96,62), leaf=C8(108,192,98);
+        box(2.6f, 0.8f,5.2f,0.8f, wood);
+        box(6.6f, 4.6f,2.6f,4.6f, leaf);
+        box(8.8f, 3.0f,1.9f,3.0f, leaf*1.08f);
+    } else if(type==1){        // birch (pale bark)
+        Vec3 wood=C8(214,209,194), leaf=C8(112,162,81);
+        box(3.3f, 0.7f,6.6f,0.7f, wood);
+        box(7.8f, 3.6f,2.4f,3.6f, leaf);
+        box(10.2f, 2.3f,1.6f,2.3f, leaf*1.07f);
+    } else if(type==2){        // spruce / taiga conifer (tapered tiers)
+        Vec3 wood=C8(82,60,40), leaf=C8(65,101,65);
+        box(3.2f, 0.7f,6.4f,0.7f, wood);
+        box(4.4f, 4.4f,1.8f,4.4f, leaf);
+        box(6.6f, 3.4f,1.8f,3.4f, leaf*1.05f);
+        box(8.8f, 2.4f,1.7f,2.4f, leaf*1.10f);
+        box(10.8f, 1.3f,1.6f,1.3f, leaf*1.15f);
+    } else {                   // acacia (flat wide canopy)
+        Vec3 wood=C8(106,82,53), leaf=C8(131,144,65);
+        box(1.9f, 0.65f,3.8f,0.65f, wood);
+        box(4.6f, 5.2f,2.0f,5.2f, leaf);
+        box(6.0f, 3.4f,1.4f,3.4f, leaf*1.07f);
+    }
+}
+
+// Place trees by biome — ported from the base game's tree pass: an 8-cell grid,
+// per-node density = min(treeDen*64, 0.9), jittered, with the bio<0.58 birch
+// half-converted to oak. Tree type/density come from the same biomeAt() used for
+// the ground colours, so the forest matches its biome (Minecraft-style).
+inline void buildTrees(float cx, float cz, float half, Mesh& out){
+    const int TG=8;
+    int R=(int)half; int ox=(int)floorf(cx), oz=(int)floorf(cz);
     for(int dz=-R; dz<=R; dz++) for(int dx=-R; dx<=R; dx++){
-        float wx=(float)(ox+dx), wz=(float)(oz+dz);
+        int iwx=ox+dx, iwz=oz+dz;
+        if((iwx%TG)!=0 || (iwz%TG)!=0) continue;          // tree-node grid
+        float wx=(float)iwx, wz=(float)iwz;
         int h=terrainH(wx,wz); float top=(float)h+1.0f;
-        if(top<=WATER_Y+0.6f || h>=158) continue;          // no trees in water or high rock
-        float bio  = vnoise(wx*0.0045f+91.3f, wz*0.0045f+23.1f);
-        float humid= fbm(wx*0.0028f+44.0f, wz*0.0028f+108.0f, 2);
-        float temp = fbm(wx*0.0019f+12.0f, wz*0.0019f+204.0f, 2);
-        int type=-1; float den=0;
-        if(humid<0.23f && temp>0.42f){ type=3; den=0.003f; }       // sparse savanna
-        else if(humid>0.72f && bio<0.72f){ type=0; den=0.055f; }   // dense forest
-        else if(bio<0.34f){ type=0; den=0.010f; }
-        else if(bio<0.58f){ type=1; den=0.038f; }
-        else if(bio<0.78f){ type=3; den=0.006f; }
-        else { type=2; den=0.016f; }
-        if(type<0) continue;
-        if(hashf((int)floorf(wx)*9+7, (int)floorf(wz)*9+3) >= den) continue;
-        Vec3 trunk, leaf;
-        switch(type){
-            case 0: trunk={0.49f,0.38f,0.24f}; leaf={0.42f,0.75f,0.38f}; break;
-            case 1: trunk={0.84f,0.82f,0.76f}; leaf={0.44f,0.64f,0.32f}; break;  // birch
-            case 2: trunk={0.32f,0.24f,0.16f}; leaf={0.25f,0.40f,0.25f}; break;  // taiga
-            default:trunk={0.42f,0.32f,0.21f}; leaf={0.51f,0.56f,0.25f}; break;  // dry
-        }
-        float th = 3.0f + 2.0f*hashf((int)floorf(wx)*3+1, (int)floorf(wz)*5+2);  // trunk 3..5
-        for(float ty=0; ty<th; ty+=1.0f)
-            addBox(out, Vec3{wx, top+ty+0.5f, wz}, I,J,K, 0.34f,0.5f,0.34f, trunk);
-        float cy = top + th;                                    // canopy base
-        for(int ly=0; ly<=3; ly++) for(int lx=-2; lx<=2; lx++) for(int lz=-2; lz<=2; lz++){
-            float rad = 2.4f - ly*0.55f;
-            if(lx*lx + lz*lz > rad*rad) continue;
-            addBox(out, Vec3{wx+lx, cy+ly+0.5f, wz+lz}, I,J,K, 0.5f,0.5f,0.5f, leaf);
-        }
+        if(top<=WATER_Y+0.6f) continue;                   // no trees on beach/water
+        Biome bm=biomeAt(wx,wz,h);
+        int treeType=bm.treeType; if(treeType<0) continue;
+        float nodeDen=fminf(bm.treeDen*(float)(TG*TG), 0.90f);
+        float th=hashf(iwx*9+7, iwz*9+3);
+        if(th>=nodeDen) continue;
+        if(treeType==1 && th>nodeDen*0.5f) treeType=0;    // thin birch -> oak
+        float jx=(hashf(iwx*3+1, iwz*7+5)-0.5f)*(float)(TG-5);
+        float jz=(hashf(iwx*5+9, iwz*3+2)-0.5f)*(float)(TG-5);
+        float sh=0.89f + 0.13f*hashf(iwx*5+1, iwz*5+2);
+        addTree(out, treeType, wx+jx, top, wz+jz, sh);
     }
 }
 

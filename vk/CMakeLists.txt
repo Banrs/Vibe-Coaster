@@ -8,6 +8,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(Vulkan REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SDL2 REQUIRED sdl2)
 
 # --- compile GLSL -> SPIR-V (glslangValidator ships with the Vulkan SDK / distro) ---
 find_program(GLSLANG glslangValidator)
@@ -30,8 +32,9 @@ add_custom_target(vk_shaders ALL DEPENDS ${SPV_FILES})
 
 add_executable(minecoaster_vk src/main.cpp)
 add_dependencies(minecoaster_vk vk_shaders)
-target_link_libraries(minecoaster_vk PRIVATE Vulkan::Vulkan)
-target_include_directories(minecoaster_vk PRIVATE src)
+target_link_libraries(minecoaster_vk PRIVATE Vulkan::Vulkan ${SDL2_LIBRARIES})
+target_include_directories(minecoaster_vk PRIVATE src ${SDL2_INCLUDE_DIRS})
+target_compile_options(minecoaster_vk PRIVATE ${SDL2_CFLAGS_OTHER})
 
 # put the exe where it can find shaders/ at runtime
 set_target_properties(minecoaster_vk PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

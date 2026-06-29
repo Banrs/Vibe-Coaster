@@ -365,7 +365,7 @@ struct Track {
 
     void startBoost() {
         chainMode = false; mode = M_BOOST;
-        remain = irnd(9, 12);   // was 3-5 (~42-70m, only reached ~260); ~126-168m so boosts reach ~300
+        remain = irnd(6, 8);    // shorter + punchier boost (higher accel, same ~310 end speed)
     }
 
     int airtimeLen(int base) const { return (int)(base * Clamp(genV / 50.0f, 1.0f, 2.0f)); }
@@ -694,10 +694,10 @@ struct Track {
                     {
                         float vCrest = mega ? 30.0f : 38.0f;
                         float reach  = (genV * genV - vCrest * vCrest) / (2.0f * GRAV) - 10.0f;
-                        float want   = mega ? frnd(175.0f, 200.0f) : frnd(100.0f, 155.0f);
-                        climbTop = Clamp(fminf(want, reach), 60.0f, 200.0f);
+                        float want   = mega ? frnd(196.0f, 206.0f) : frnd(110.0f, 165.0f);
+                        climbTop = Clamp(fminf(want, reach), 60.0f, 206.0f);
                     }
-                    remain = mega ? irnd(7, 9) : irnd(6, 8);
+                    remain = mega ? irnd(11, 14) : irnd(6, 8);   // enough steps to actually reach ~200 m
                 }
                 launchElem = M_CLIMB;
                 break;
@@ -788,7 +788,7 @@ struct Track {
                 dy = (y1 - y0) + fminf(((gt + 14.0f) - gpos.y) * 0.12f, 0.0f);
                 break;
             }
-            case M_CLIMB: dy = mega ? 19.0f : 11.0f; break;
+            case M_CLIMB: dy = mega ? 20.0f : 11.0f; break;
             case M_DROP: {
                 float dh = gpos.y - gt;
                 dy = (dh > 70.0f) ? -44.0f : (dh > 34.0f) ? -19.0f : -fmaxf(dh - 9.0f, 0.0f) * 0.32f - 2.0f;
@@ -1147,7 +1147,7 @@ struct Track {
                 // ACTUAL post-launch/post-boost speed -- otherwise g blows up downstream.
                 if      (tag == M_LAUNCH)                              genV += 100.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
                 else if (tag == M_CLIMB && ch == 0 && genV < CLIMB_V)  genV = fminf(genV + 34.0f * gdt, CLIMB_V);
-                if      (tag == M_BOOST)                               genV += 95.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
+                if      (tag == M_BOOST)                               genV += 120.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
                 if (ch && slope > 0.05f) { float lv = (slope > 0.55f) ? 27.0f : CHAIN_V; if (genV < lv) genV = fminf(genV + 20.0f * gdt, lv); }
 
                 if (trimNext != M_FLAT && trimV > 0.0f && genV > trimV)

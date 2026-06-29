@@ -23,7 +23,7 @@ static const float BUILD_MAX  = 430.0f;
 static const float TERRA_MAX  = 320.0f;
 static const float GRAV      = 9.81f;
 
-static float       DRAG      = 0.0004f;   // realistic aero drag (~½·rho·Cd·A/m); was 0.0011 (~2.7x too high, ate drop energy)
+static float       DRAG      = 0.00047f;  // realistic aero drag; tuned so 200m-drop peaks land ~305-310, avg ~225
 static const float FRICTION  = 0.010f;    // steel-on-steel rolling resistance (low)
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
@@ -1004,7 +1004,7 @@ int main(int argc, char **argv) {
                 unsigned char tg = t.tagAt(u);
                 if (tg == M_LAUNCH) v += 100.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 95.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_BOOST) v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
 
                 for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
@@ -1112,7 +1112,7 @@ int main(int argc, char **argv) {
                 unsigned char tg = t.tagAt(u);
                 if (tg == M_LAUNCH) v += 100.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 95.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_BOOST) v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
                 for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
                     SegMode ahead = (SegMode)t.tagAt(u + la);
@@ -1215,7 +1215,7 @@ int main(int argc, char **argv) {
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
                 v += acc * dt;
                 if (t.tagAt(u) == M_LAUNCH) v += 100.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
-                if (t.tagAt(u) == M_BOOST)  v += 95.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades near ~320 (no clamp)
+                if (t.tagAt(u) == M_BOOST)  v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades near ~320 (no clamp)
                 v = fmaxf(v, 20.0f);   // no hard speed cap (speed self-limits via drag near LAUNCH_V)
 
                 sinceStation += dt;
@@ -1563,7 +1563,7 @@ int main(int argc, char **argv) {
             else if (tg == M_CLIMB && !trk.chainAt(u) && v < CLIMB_V)
                 v = fminf(v + 44.0f * dt, CLIMB_V);
 
-            if (tg == M_BOOST) v += 95.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades near ~320 (no clamp)
+            if (tg == M_BOOST) v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades near ~320 (no clamp)
 
             bool onLift = trk.chainAt(u);
             if (onLift && slope > 0.05f) {

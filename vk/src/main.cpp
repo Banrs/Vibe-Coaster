@@ -40,7 +40,7 @@ static const uint32_t SHADOW_DIM  = 2048;
 struct SceneUBO { Mat4 viewProj; Mat4 lightVP; float sunDir[4]; float camPos[4]; };
 struct ShadowPC { Mat4 lightVP; };
 struct BloomPC { float texel[2]; float threshold; float knee; };
-struct PostPC  { float exposure; float bloomStrength; float pad[2]; };
+struct PostPC  { float exposure; float bloomStrength; float sunUV[2]; float grStrength; float sunVis; float pad[2]; };
 struct LightPC { float camDir[4]; float camRight[4]; float camUp[4]; float params[4]; }; // params: tanHalfFovY, aspect, time, 0
 struct WaterPC { float misc[4]; }; // misc.x = time
 struct HudPC   { float screen[2]; float pad[2]; }; // framebuffer size in pixels
@@ -694,7 +694,15 @@ struct Renderer {
         vkCmdBeginRenderPass(cmd,&r3,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,postPipe);
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,postLayout,0,1,&postSet,0,nullptr);
-        PostPC ppc{}; ppc.exposure=1.0f; ppc.bloomStrength=0.55f;
+        PostPC ppc{}; ppc.exposure=1.0f; ppc.bloomStrength=0.55f; ppc.grStrength=0.55f;
+        { // project the sun direction to screen for radial god-ray shafts
+          Vec3 f=cam.fwd; Vec3 r=normalize(cross(f,cam.up)); Vec3 up=normalize(cross(r,f));
+          Vec3 s=normalize(Vec3{-0.48f,0.60f,0.64f});
+          float z=dot(s,f), sx=dot(s,r), sy=dot(s,up);
+          float th=tanf(cam.fovy*0.5f), asp=(float)ext.width/ext.height;
+          ppc.sunVis = (z>0.15f)?1.0f:0.0f;
+          if(z>0.15f){ float nx=(sx/z)/(th*asp), ny=-(sy/z)/th;
+            ppc.sunUV[0]=nx*0.5f+0.5f; ppc.sunUV[1]=ny*0.5f+0.5f; } }
         vkCmdPushConstants(cmd,postLayout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(ppc),&ppc);
         vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
         // --- HUD overlay: alpha-blend text on the final image (always runs to

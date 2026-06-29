@@ -77,7 +77,7 @@ On a real GPU, drop `VK_ICD_FILENAMES`.
 ## Layout
 
 ```
-vk/
+vulkan/
 ├─ CMakeLists.txt        Vulkan + glslang build
 ├─ src/
 │  ├─ Math.h             minimal column-major vec/mat (Vulkan clip space)

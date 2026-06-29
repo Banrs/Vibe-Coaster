@@ -1,7 +1,7 @@
 // VoxelScene.h — bakes the MINECOASTER world into the dense fine voxel grid the
 // RTX renderer ray-traces, plus the occupied-brick list used to build the BLAS.
-// Terrain / biome / water / tree generation is ported from ../../src/main.cpp and
-// ../../src/pathtrace.cpp so the grid contents match the software tracer.
+// Terrain / biome / water / tree generation is ported from ../../opengl/src/main.cpp and
+// ../../opengl/src/pathtrace.cpp so the grid contents match the software tracer.
 //
 // NOTE: the live game's exact track spline lives in coaster_track.cpp and is
 // tightly coupled to the game loop; here we stamp a representative parametric

@@ -1,7 +1,7 @@
 // SceneConstants.h — single source of truth for grid/material constants.
 // Included by BOTH the C++ host and the HLSL shaders so the bake and the
 // ray tracer can never drift. Mirrors the constants at the top of
-// ../../src/pathtrace.cpp and ../../src/main.cpp.
+// ../../opengl/src/pathtrace.cpp and ../../opengl/src/main.cpp.
 //
 // HLSL sees the bare #defines; C++ also gets typed constexpr mirrors.
 #ifndef MINECOASTER_SCENE_CONSTANTS_H

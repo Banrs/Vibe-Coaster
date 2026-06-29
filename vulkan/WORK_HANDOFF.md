@@ -1,14 +1,14 @@
 # MINECOASTER Vulkan port — work handoff
 
 Continuation brief for a new agent. The goal of this branch
-(`claude/windows-rtx-ray-tracing-pkif4h`) is a **Vulkan renderer in `vk/` that has
+(`claude/vulkan-port-alpha-pkif4h`) is a **Vulkan renderer in `vulkan/` that has
 feature parity with the raylib base game in `src/`** (terrain, biomes, trees,
 coaster, HUD, physics) plus a modern PBR effect stack — and that the base-game
 logic is **ported, not reinvented**.
 
 ## Build & verify (READ THIS FIRST — avoid the mistakes I made)
 ```
-cd /home/user/Claude-Coaster/vk
+cd /home/user/Claude-Coaster/vulkan
 cmake --build build -j                                # builds; EXIT 0 = ok
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json ./build/minecoaster_vk \
     --shot -o /tmp/x.ppm                              # headless render (lavapipe)
@@ -23,17 +23,17 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json ./build/minecoaster_vk \
   ```
   Keep thumbnails ≤ ~360 px. Even then some get rejected — prefer relying on the
   **headless stdout** (`[track] … [ride] … [vk] wrote …`) and small crops.
-- `cd` does NOT persist between Bash calls here — put `cd vk && …` in every command.
+- `cd` does NOT persist between Bash calls here — put `cd vulkan && …` in every command.
 - lavapipe is a software rasterizer: a `--shot` takes a few seconds; that's normal.
 
 ## Git
 - Commit author must be `Claude <noreply@anthropic.com>` (a stop-hook checks this).
   `git config user.email noreply@anthropic.com && git config user.name Claude` is set.
 - End commit messages with the Co-Authored-By + Claude-Session trailers (see history).
-- Develop ONLY on `claude/windows-rtx-ray-tracing-pkif4h`. `git push -u origin <branch>`.
+- Develop ONLY on `claude/vulkan-port-alpha-pkif4h`. `git push -u origin <branch>`.
 - Do NOT put the model id in commits/PRs.
 
-## Architecture (vk/)
+## Architecture (vulkan/)
 Deferred renderer in `src/main.cpp` (one big file). Per-frame passes in `Renderer::record`:
 1. **shadow** (sun depth, PCF) → 2. **G-buffer** MRT (albedo+metal / world-normal+rough /
 world-pos+flag, +depth); the **animated train** is CPU-transformed to the RideSim frame
@@ -42,7 +42,7 @@ volumetric clouds for background, contact shadows, foliage SSS, sky-probe IBL, g
 in-scatter, fog) → 5. **water** (forward, alpha-blended, depth-tested) → 6. **SSR**
 (hdr→hdr2 ping-pong) → 7. **bloom** → 8. **post** (radial god-rays, auto-exposure, ACES,
 gamma) → 9. **HUD** overlay → blit/copy.
-- Shaders in `vk/shaders/` (compiled by CMake via glslangValidator; list is in
+- Shaders in `vulkan/shaders/` (compiled by CMake via glslangValidator; list is in
   `CMakeLists.txt` — add new shaders there).
 - `Terrain.h`: ported `terrainH`/noise + `biomeAt` (base-game biome classification:
   bio/humid/temp+height → cap/side colours + treeType/treeDen) + `addTree`
@@ -153,7 +153,7 @@ Pending: 3 (CSM), 12 (on-foot/cam modes), 14 (render_fx port), 15 (pathtrace
 
 ## Ride / physics verification recipe
 ```
-cd /home/user/Claude-Coaster/vk && cmake --build build -j
+cd /home/user/Claude-Coaster/vulkan && cmake --build build -j
 for s in 5 12 20 30 45 70 100 140 180 240; do \
   VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json ./build/minecoaster_vk \
     --shot --ride $s -o /tmp/r.ppm 2>&1 | grep '^\[ride\]'; done

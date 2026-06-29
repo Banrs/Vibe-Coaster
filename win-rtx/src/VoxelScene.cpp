@@ -3,7 +3,7 @@
 #include <algorithm>
 
 // ---------------------------------------------------------------------------
-// Noise / terrain — ported verbatim from ../../src/main.cpp (lines 71..138)
+// Noise / terrain — ported verbatim from ../../opengl/src/main.cpp (lines 71..138)
 // ---------------------------------------------------------------------------
 static inline float clampf(float v, float a, float b){ return v<a?a:(v>b?b:v); }
 static inline float srgb2lin(float c){ return powf(c, 2.2f); }
@@ -63,7 +63,7 @@ static int terrainH(float x, float z){
 }
 
 // ---------------------------------------------------------------------------
-// Biome palette — ported from pt_biomeColor (../../src/pathtrace.cpp 708..732)
+// Biome palette — ported from pt_biomeColor (../../opengl/src/pathtrace.cpp 708..732)
 // colors are 0..255; we convert to linear on store.
 // ---------------------------------------------------------------------------
 struct C8 { float r,g,b; };

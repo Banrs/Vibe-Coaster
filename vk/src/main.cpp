@@ -10,6 +10,7 @@
 #include "Math.h"
 #include "Terrain.h"
 #include "Track.h"
+#include "CoasterTrack.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -208,9 +209,12 @@ int main(int argc, char** argv){
     VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gpi,nullptr,&pipe));
 
     // ---- world mesh ----
-    const float CX=0, CZ=0, HALF=140.0f, STEP=1.0f;
+    // real physics-driven coaster generator (../../src/coaster_track.cpp)
+    ::Track trk; world::genLongTrack(trk, 2200);
+    Vec3 focus = world::trackFocus(trk, 260);
+    const float CX=focus.x, CZ=focus.z, HALF=170.0f, STEP=1.0f;
     Mesh mesh; world::buildTerrain(CX,CZ,HALF,STEP,mesh); world::appendWater(CX,CZ,HALF,mesh);
-    world::buildTrack(mesh);
+    world::buildTrackMesh(trk, mesh, CX,CZ,HALF);
     printf("[vk] world mesh: %zu verts, %zu indices (%zu tris)\n",
            mesh.verts.size(), mesh.idx.size(), mesh.idx.size()/3);
 
@@ -227,8 +231,8 @@ int main(int argc, char** argv){
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     // ---- camera + push constants ----
-    Vec3 target{CX, (float)world::terrainH(CX,CZ)+34.0f, CZ};
-    Vec3 eye = target + Vec3{120.0f, 82.0f, 150.0f};
+    Vec3 target{CX, (float)world::terrainH(CX,CZ)+40.0f, CZ};
+    Vec3 eye = target + Vec3{135.0f, 98.0f, 165.0f};
     Mat4 view=lookAt(eye,target,Vec3{0,1,0});
     Mat4 proj=perspectiveVk(1.05f,(float)W/(float)H,0.5f,3000.0f);
     PushConstants pc{}; pc.viewProj=mul(proj,view);

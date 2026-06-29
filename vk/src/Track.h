@@ -11,23 +11,7 @@
 #include <vector>
 
 namespace world {
-
-// An oriented box: center C, orthonormal axes (R,U,F), half-extents (hr,hu,hf).
-inline void addBox(Mesh& out, Vec3 C, Vec3 R, Vec3 U, Vec3 F,
-                   float hr, float hu, float hf, Vec3 col){
-    Vec3 r=R*hr, u=U*hu, f=F*hf;
-    Vec3 c[8] = {
-        C - r - u - f, C + r - u - f, C + r + u - f, C - r + u - f, // -F face ring
-        C - r - u + f, C + r - u + f, C + r + u + f, C - r + u + f  // +F face ring
-    };
-    auto quad=[&](int a,int b,int d,int e,Vec3 n){ addQuad(out,c[a],c[b],c[d],c[e],n,col); };
-    quad(0,3,2,1, F*-1.0f);   // back  (-F)
-    quad(4,5,6,7, F);         // front (+F)
-    quad(0,1,5,4, U*-1.0f);   // bottom(-U)
-    quad(3,7,6,2, U);         // top   (+U)
-    quad(0,4,7,3, R*-1.0f);   // left  (-R)
-    quad(1,2,6,5, R);         // right (+R)
-}
+// addBox lives in Terrain.h (shared mesh helper).
 
 // Closed coaster centreline. t in [0,1). Smooth loop with hills, lateral weave
 // and one vertical loop, lifted to clear the terrain.

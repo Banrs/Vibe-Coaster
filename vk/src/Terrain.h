@@ -112,6 +112,17 @@ inline void addQuad(Mesh& out, Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 n, Vec3 col)
     out.idx.insert(out.idx.end(), { base,base+1,base+2, base,base+2,base+3 });
 }
 
+// An oriented box: center C, orthonormal axes (R,U,F), half-extents (hr,hu,hf).
+inline void addBox(Mesh& out, Vec3 C, Vec3 R, Vec3 U, Vec3 F,
+                   float hr, float hu, float hf, Vec3 col){
+    Vec3 r=R*hr, u=U*hu, f=F*hf;
+    Vec3 c[8] = { C-r-u-f, C+r-u-f, C+r+u-f, C-r+u-f, C-r-u+f, C+r-u+f, C+r+u+f, C-r+u+f };
+    auto quad=[&](int a,int b,int d,int e,Vec3 n){ addQuad(out,c[a],c[b],c[d],c[e],n,col); };
+    quad(0,3,2,1, F*-1.0f); quad(4,5,6,7, F);
+    quad(0,1,5,4, U*-1.0f); quad(3,7,6,2, U);
+    quad(0,4,7,3, R*-1.0f); quad(1,2,6,5, R);
+}
+
 // Build a *blocky* (voxel) terrain surface over a (2*half)^2 area of 1 m cells,
 // matching the base game's look: each cell is a flat-topped block (cap quad at
 // its integer height) plus vertical side faces dropping only to the lower
@@ -149,6 +160,46 @@ inline void appendWater(float cx, float cz, float half, Mesh& out){
     out.verts.push_back({ Vec3{cx-half,WATER_Y,cz+half}, wn, wc });
     out.verts.push_back({ Vec3{cx+half,WATER_Y,cz+half}, wn, wc });
     out.idx.insert(out.idx.end(), { base,base+2,base+1, base+1,base+2,base+3 });
+}
+
+// Voxel trees, placed by biome density (ported from the base game's tree pass in
+// main.cpp / pathtrace.cpp): a trunk of cubes + a leaf canopy blob.
+inline void buildTrees(float cx, float cz, float half, Mesh& out){
+    int R=(int)half; int ox=(int)floorf(cx), oz=(int)floorf(cz);
+    Vec3 I{1,0,0}, J{0,1,0}, K{0,0,1};
+    for(int dz=-R; dz<=R; dz++) for(int dx=-R; dx<=R; dx++){
+        float wx=(float)(ox+dx), wz=(float)(oz+dz);
+        int h=terrainH(wx,wz); float top=(float)h+1.0f;
+        if(top<=WATER_Y+0.6f || h>=158) continue;          // no trees in water or high rock
+        float bio  = vnoise(wx*0.0045f+91.3f, wz*0.0045f+23.1f);
+        float humid= fbm(wx*0.0028f+44.0f, wz*0.0028f+108.0f, 2);
+        float temp = fbm(wx*0.0019f+12.0f, wz*0.0019f+204.0f, 2);
+        int type=-1; float den=0;
+        if(humid<0.23f && temp>0.42f){ type=3; den=0.003f; }       // sparse savanna
+        else if(humid>0.72f && bio<0.72f){ type=0; den=0.055f; }   // dense forest
+        else if(bio<0.34f){ type=0; den=0.010f; }
+        else if(bio<0.58f){ type=1; den=0.038f; }
+        else if(bio<0.78f){ type=3; den=0.006f; }
+        else { type=2; den=0.016f; }
+        if(type<0) continue;
+        if(hashf((int)floorf(wx)*9+7, (int)floorf(wz)*9+3) >= den) continue;
+        Vec3 trunk, leaf;
+        switch(type){
+            case 0: trunk={0.49f,0.38f,0.24f}; leaf={0.42f,0.75f,0.38f}; break;
+            case 1: trunk={0.84f,0.82f,0.76f}; leaf={0.44f,0.64f,0.32f}; break;  // birch
+            case 2: trunk={0.32f,0.24f,0.16f}; leaf={0.25f,0.40f,0.25f}; break;  // taiga
+            default:trunk={0.42f,0.32f,0.21f}; leaf={0.51f,0.56f,0.25f}; break;  // dry
+        }
+        float th = 3.0f + 2.0f*hashf((int)floorf(wx)*3+1, (int)floorf(wz)*5+2);  // trunk 3..5
+        for(float ty=0; ty<th; ty+=1.0f)
+            addBox(out, Vec3{wx, top+ty+0.5f, wz}, I,J,K, 0.34f,0.5f,0.34f, trunk);
+        float cy = top + th;                                    // canopy base
+        for(int ly=0; ly<=3; ly++) for(int lx=-2; lx<=2; lx++) for(int lz=-2; lz<=2; lz++){
+            float rad = 2.4f - ly*0.55f;
+            if(lx*lx + lz*lz > rad*rad) continue;
+            addBox(out, Vec3{wx+lx, cy+ly+0.5f, wz+lz}, I,J,K, 0.5f,0.5f,0.5f, leaf);
+        }
+    }
 }
 
 } // namespace world

@@ -168,6 +168,7 @@ static World buildWorld(){
     w.focus=world::trackFocus(trk,260); float half=170.0f;
     world::buildTerrain(w.focus.x,w.focus.z,half,1.0f,w.mesh);
     world::appendWater(w.focus.x,w.focus.z,half,w.mesh);
+    world::buildTrees(w.focus.x,w.focus.z,half,w.mesh);
     world::buildTrackMesh(trk,w.mesh,w.focus.x,w.focus.z,half);
     printf("[vk] world mesh: %zu verts, %zu tris\n", w.mesh.verts.size(), w.mesh.idx.size()/3);
     return w;

@@ -281,4 +281,144 @@ inline void addText(std::vector<Vtx>& out, const std::string& text,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Game HUD — feature parity with the raylib base game (src/main.cpp ~2873-2960)
+// ---------------------------------------------------------------------------
+//
+// Self-contained replica of the base game's on-screen HUD. Emits panels/bars
+// (via addRect) and shadowed text (two passes via addText) into `out`, in
+// pixel coordinates with a top-left origin. Uses ONLY the existing primitives
+// (addRect, addText, textWidth) defined above.
+//
+// Colour mapping: base game colours are 0..255; divide by 255 here. Panel fill
+// uses the base default hudPanel fill {18,22,34,168} -> alpha 168/255 ~= 0.659.
+// Shadowed text mirrors textSh(): a dark pass {20,20,30} offset by +2,+2, then
+// the main-colour pass on top. The 8x8 cell `scale` is taken 1:1 from the base
+// raylib font `size` (16/26/44...), matching the spec.
+//
+struct GameHud {
+    float screenW, screenH;
+    bool  riding;          // ride camera vs free-fly
+    float speedKmh;
+    int   altitude;        // metres above ground
+    float gForce;
+    const char* element;   // friendly name, "" if none
+    bool  elementSpecial;  // inversion -> accent colour
+    int   score;
+    float boost;           // 0..100
+};
+
+namespace detail {
+
+// Draw a base-game-style panel: dark rounded fill (approximated as a sharp
+// rect, since no rounding primitive exists) plus a faint top highlight strip,
+// mirroring hudPanel(). Colours are 0..255 with explicit alpha.
+inline void gameHudPanel(std::vector<Vtx>& out, float x, float y, float w, float h,
+                         float fr = 18, float fg = 22, float fb = 34, float fa = 168) {
+    addRect(out, x, y, w, h, fr/255.f, fg/255.f, fb/255.f, fa/255.f);
+    // top highlight strip (hudPanel: Color{220,232,255,36} at x+5,y+3,w-10,h=2)
+    addRect(out, x + 5, y + 3, w - 10, 2, 220/255.f, 232/255.f, 255/255.f, 36/255.f);
+}
+
+// Shadowed text, mirroring textSh(): dark drop shadow then main colour.
+// Colours are 0..255; `a` is 0..255 alpha for the main pass.
+inline void gameHudTextSh(std::vector<Vtx>& out, const std::string& text,
+                          float x, float y, float size,
+                          float cr, float cg, float cb, float ca = 255) {
+    addText(out, text, x + 2, y + 2, size, 20/255.f, 20/255.f, 30/255.f, 200/255.f);
+    addText(out, text, x, y, size, cr/255.f, cg/255.f, cb/255.f, ca/255.f);
+}
+
+// Format an integer with leading zeros to `digits` width (mirrors "%06d").
+inline std::string zeroPad(int value, int digits) {
+    if (value < 0) value = 0;
+    std::string s = std::to_string(value);
+    if ((int)s.size() < digits) s = std::string(digits - s.size(), '0') + s;
+    return s;
+}
+
+} // namespace detail
+
+// Build the full game HUD into `out`. Replicates the base game's elements:
+//   * top-left SCORE panel (always)
+//   * top-right SPEED card (riding only; FREE-FLY hint when not riding)
+//   * element panel below the speed card (riding only, when an element is named)
+//   * boost meter bottom-left (riding only)
+inline void buildGameHud(std::vector<Vtx>& out, const GameHud& s) {
+    using namespace detail;
+    const float sw = s.screenW;
+    const float shh = s.screenH;
+
+    // --- Top-left SCORE panel (always shown) ---------------------------------
+    {
+        std::string sc = zeroPad(s.score, 6);
+        float vw = textWidth(sc, 26.0f);                  // MeasureText(sc, 26)
+        gameHudPanel(out, 18, 14, 78 + vw, 40);           // hudPanel(18,14,78+vw,40)
+        gameHudTextSh(out, "SCORE", 32, 22, 16, 150, 168, 200, 235);
+        gameHudTextSh(out, sc, 92, 19, 26, 255, 255, 255, 255); // RAYWHITE
+    }
+
+    if (s.riding) {
+        // --- Top-right SPEED card --------------------------------------------
+        {
+            int kmh = (int)s.speedKmh;
+            std::string num = std::to_string(kmh);
+            float nw = textWidth(num, 44.0f);             // MeasureText(num, 44)
+            float cardW = nw + 92.0f;
+            float cardX = sw - cardW - 18.0f;
+            gameHudPanel(out, cardX, 14, cardW, 62);
+            // speed colour: >250 red, >150 green, else white
+            float sr = 255, sg = 255, sb = 255;
+            if (kmh > 250)      { sr = 255; sg = 120; sb = 90;  }
+            else if (kmh > 150) { sr = 120; sg = 230; sb = 170; }
+            gameHudTextSh(out, num, cardX + 18, 18, 44, sr, sg, sb, 255);
+            gameHudTextSh(out, "KM/H", cardX + 26 + nw, 26, 18, 168, 184, 214, 235);
+            std::string alt = "ALT " + std::to_string(s.altitude) + "m";
+            float aw = textWidth(alt, 16.0f);             // MeasureText(alt, 16)
+            gameHudTextSh(out, alt, (cardX + cardW) - aw - 16, 53, 16, 150, 168, 200, 220);
+        }
+
+        // --- Element panel (below speed card, when an element is named) -------
+        if (s.element && s.element[0] != '\0') {
+            std::string en = s.element;
+            float fs = 18.0f;
+            float tw = textWidth(en, fs);                 // MeasureText(en, 18)
+            float pw = tw + 28.0f;
+            float px = sw - pw - 18.0f;
+            float py = 84.0f;
+            // accent: special -> {255,200,110}, else {150,184,230}
+            float ar, ag, ab;
+            if (s.elementSpecial) { ar = 255; ag = 200; ab = 110; }
+            else                  { ar = 150; ag = 184; ab = 230; }
+            gameHudPanel(out, px, py, pw, 30, 18, 22, 34, 168);
+            // small accent bar: DrawRectangleRounded({px+8,py+9,4,12}) -> sharp rect
+            addRect(out, px + 8, py + 9, 4, 12, ar/255.f, ag/255.f, ab/255.f, 1.0f);
+            // text colour: special -> accent, else {214,224,240}
+            if (s.elementSpecial)
+                gameHudTextSh(out, en, px + 18, py + 7, fs, ar, ag, ab, 255);
+            else
+                gameHudTextSh(out, en, px + 18, py + 7, fs, 214, 224, 240, 235);
+        }
+
+        // --- Boost meter (bottom-left) ---------------------------------------
+        {
+            float bx = 20, by = shh - 44, bw = 228, bh = 22;
+            gameHudTextSh(out, "BOOST", bx, by - 22, 16, 150, 168, 200, 235);
+            // bar background {14,18,28,190}
+            addRect(out, bx, by, bw, bh, 14/255.f, 18/255.f, 28/255.f, 190/255.f);
+            float fillW = (bw - 6) * s.boost / 100.0f;
+            if (fillW > 4) {
+                float fr, fg, fb;
+                if (s.boost > 60)      { fr = 120; fg = 230; fb = 170; }
+                else if (s.boost > 30) { fr = 255; fg = 180; fb = 70;  }
+                else                   { fr = 235; fg = 90;  fb = 70;  }
+                addRect(out, bx + 3, by + 3, fillW, bh - 6, fr/255.f, fg/255.f, fb/255.f, 1.0f);
+            }
+        }
+    } else {
+        // --- Free-fly mode: score panel above, plus a hint line --------------
+        gameHudTextSh(out, "FREE-FLY  PRESS C TO RIDE", 18, 64, 16, 235, 235, 235, 200);
+    }
+}
+
 } // namespace hud

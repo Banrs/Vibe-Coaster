@@ -441,12 +441,13 @@ struct Renderer {
     Buffer vb, ib; uint32_t indexCount;
     // forward water pass (separate mesh, depth-tested against the G-buffer depth)
     VkRenderPass waterRP; VkPipelineLayout waterLayout; VkPipeline waterPipe; VkFramebuffer waterFB;
+    VkDescriptorSetLayout waterDSL; VkDescriptorSet waterSet;   // UBO + shadow + gPosition (depth)
     Buffer wvb, wib; uint32_t waterIndexCount=0;
     // HUD overlay (alpha-blended text on the final image)
     VkRenderPass hudRP; VkPipelineLayout hudLayout; VkPipeline hudPipe; VkFramebuffer hudFB;
     VkDescriptorSetLayout hudDSL; VkDescriptorSet hudSet; Img fontImg;
     Buffer hudVB; void* hudVBmap=nullptr; uint32_t hudVtxCount=0, hudVtxCap=0;
-    RideTelemetry hudTel; bool hudRide=false;
+    RideTelemetry hudTel; bool hudRide=false; int hudScore=0; float hudBoost=0.0f;
     // animated train: local-space mesh transformed to the RideSim frame each frame
     Buffer trainVB, trainIB; void* trainVBmap=nullptr; uint32_t trainIndexCount=0;
     std::vector<Vertex> trainLocal;
@@ -493,7 +494,8 @@ struct Renderer {
             for(uint32_t i=0;i<nSamp;i++) b[i+1]={i+1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
             VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; ci.bindingCount=nSamp+1; ci.pBindings=b.data();
             VkDescriptorSetLayout l; VK_CHECK(vkCreateDescriptorSetLayout(dev,&ci,nullptr,&l)); return l; };
-        sceneDSL=mkUboDSL(1);   // UBO + shadow                 (G-buffer + water passes)
+        sceneDSL=mkUboDSL(1);   // UBO + shadow                 (G-buffer pass)
+        waterDSL=mkUboDSL(2);   // UBO + shadow + gPosition     (water depth)
         ssaoDSL =mkUboDSL(2);   // UBO + gPosition + gNormal    (SSAO pass)
         lightDSL=mkUboDSL(5);   // UBO + shadow + albedo+normal+position + ssao (lighting)
         ssrDSL  =mkUboDSL(4);   // UBO + litColor + position + normal + albedo  (SSR)
@@ -508,7 +510,7 @@ struct Renderer {
             VkPipelineLayout l; VK_CHECK(vkCreatePipelineLayout(dev,&pli,nullptr,&l)); return l; };
         gbufLayout  =mkPL(sceneDSL,0,0);
         ssaoLayout  =mkPL(ssaoDSL,0,0);
-        waterLayout =mkPL(sceneDSL,sizeof(WaterPC),VK_SHADER_STAGE_FRAGMENT_BIT);
+        waterLayout =mkPL(waterDSL,sizeof(WaterPC),VK_SHADER_STAGE_FRAGMENT_BIT);
         ssrLayout   =mkPL(ssrDSL,0,0);
         lightLayout =mkPL(lightDSL,sizeof(LightPC),VK_SHADER_STAGE_FRAGMENT_BIT);
         shadowLayout=mkPL(VK_NULL_HANDLE,sizeof(ShadowPC),VK_SHADER_STAGE_VERTEX_BIT);
@@ -539,7 +541,7 @@ struct Renderer {
         // descriptor sets
         auto alloc=[&](VkDescriptorSetLayout l){ VkDescriptorSet s; VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; a.descriptorPool=dpool; a.descriptorSetCount=1; a.pSetLayouts=&l; VK_CHECK(vkAllocateDescriptorSets(dev,&a,&s)); return s; };
         bloomSet=alloc(dsl1); postSet=alloc(dsl2);
-        sceneSet=alloc(sceneDSL); ssaoSet=alloc(ssaoDSL); lightSet=alloc(lightDSL); ssrSet=alloc(ssrDSL);
+        sceneSet=alloc(sceneDSL); ssaoSet=alloc(ssaoDSL); lightSet=alloc(lightDSL); ssrSet=alloc(ssrDSL); waterSet=alloc(waterDSL);
         // fixed bindings that never change on resize: the scene UBO (all three sets)
         // and the shadow map (scene + lighting sets). G-buffer/AO image bindings are
         // (re)written in buildTargets.
@@ -549,8 +551,8 @@ struct Renderer {
             w.dstSet=set; w.dstBinding=0; w.descriptorCount=1; w.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo=&ubi; return w; };
         auto img=[&](VkDescriptorSet set,uint32_t b,VkDescriptorImageInfo* ii){ VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             w.dstSet=set; w.dstBinding=b; w.descriptorCount=1; w.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo=ii; return w; };
-        VkWriteDescriptorSet sw[6]={ ubo(sceneSet), img(sceneSet,1,&smi), ubo(ssaoSet), ubo(lightSet), img(lightSet,1,&smi), ubo(ssrSet) };
-        vkUpdateDescriptorSets(dev,6,sw,0,nullptr);
+        VkWriteDescriptorSet sw[8]={ ubo(sceneSet), img(sceneSet,1,&smi), ubo(ssaoSet), ubo(lightSet), img(lightSet,1,&smi), ubo(ssrSet), ubo(waterSet), img(waterSet,1,&smi) };
+        vkUpdateDescriptorSets(dev,8,sw,0,nullptr);
         // ---- HUD: pipeline, font atlas texture, dynamic vertex buffer ----
         hudLayout=mkPL(dsl1,sizeof(HudPC),VK_SHADER_STAGE_VERTEX_BIT);
         { VkShaderModule hv=makeShader(dev,sd+"/hud.vert.spv"), hf=makeShader(dev,sd+"/hud.frag.spv");
@@ -667,6 +669,7 @@ struct Renderer {
             img(ssaoSet,1,&gPi), img(ssaoSet,2,&gNi),
             img(lightSet,2,&gAi), img(lightSet,3,&gNi), img(lightSet,4,&gPi), img(lightSet,5,&aoi),
             img(ssrSet,1,&hi), img(ssrSet,2,&gPi), img(ssrSet,3,&gNi), img(ssrSet,4,&gAi),
+            img(waterSet,2,&gPi),                                            // water reads bed position for depth
             img(bloomSet,0,&h2i), img(postSet,0,&h2i), img(postSet,1,&bi) };   // bloom/post read SSR output
         vkUpdateDescriptorSets(dev,(uint32_t)(sizeof(w)/sizeof(w[0])),w,0,nullptr);
     }
@@ -741,7 +744,7 @@ struct Renderer {
             VkRenderPassBeginInfo rw{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rw.renderPass=waterRP; rw.framebuffer=waterFB; rw.renderArea={{0,0},ext}; rw.clearValueCount=0;
             vkCmdBeginRenderPass(cmd,&rw,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
             vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,waterPipe);
-            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,waterLayout,0,1,&sceneSet,0,nullptr);
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,waterLayout,0,1,&waterSet,0,nullptr);
             WaterPC wpc{}; wpc.misc[0]=timeSec; vkCmdPushConstants(cmd,waterLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(wpc),&wpc);
             vkCmdBindVertexBuffers(cmd,0,1,&wvb.buf,&off); vkCmdBindIndexBuffer(cmd,wib.buf,0,VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(cmd,waterIndexCount,1,0,0,0); vkCmdEndRenderPass(cmd);
@@ -782,41 +785,12 @@ struct Renderer {
         // --- HUD overlay: alpha-blend text on the final image (always runs to
         //     transition `out` COLOR_ATTACHMENT -> TRANSFER_SRC for the blit/copy) ---
         {
-            std::vector<hud::Vtx> v; v.reserve(2048);
-            float W=(float)ext.width, Hh=(float)ext.height;
-            auto panel=[&](float x,float y,float w,float h,float a){ hud::addRect(v,x,y,w,h, 0.07f,0.085f,0.13f, a); };
-            auto txt=[&](const char* s,float x,float y,float sc,float r,float g,float b){
-                hud::addText(v,s,x+1.5f,y+1.5f,sc, 0.05f,0.06f,0.10f,0.85f);   // drop shadow
-                hud::addText(v,s,x,y,sc, r,g,b,1.0f); };
-            // brand panel (top-left)
-            panel(18,14,232,40,0.60f); txt("MINECOASTER",30,20,22, 1.0f,1.0f,1.0f);
-            if(hudRide){
-                // speed card (top-right): big colour-coded KM/H + altitude
-                char num[16]; snprintf(num,sizeof num,"%d",(int)hudTel.speedKmh);
-                float sc=40.0f, nw=hud::textWidth(num,sc);
-                float cardW=nw+152.0f, cardX=W-cardW-18.0f;
-                panel(cardX,14,cardW,64,0.60f);
-                float sr=1,sg=1,sb=1;
-                if(hudTel.speedKmh>250){ sr=1.0f;sg=0.47f;sb=0.35f; } else if(hudTel.speedKmh>150){ sr=0.47f;sg=0.90f;sb=0.66f; }
-                txt(num,cardX+18,20,sc, sr,sg,sb);
-                txt("KM/H",cardX+30+nw,34,18, 0.66f,0.72f,0.84f);
-                char alt[24]; snprintf(alt,sizeof alt,"ALT %dM",(int)hudTel.altitude);
-                float aw=hud::textWidth(alt,15.0f); txt(alt,cardX+cardW-aw-14,57,15, 0.59f,0.66f,0.78f);
-                // element name panel with accent bar (below the speed card)
-                if(hudTel.element && hudTel.element[0]){
-                    float esc=18.0f, ew=hud::textWidth(hudTel.element,esc), pw=ew+30.0f, px=W-pw-18.0f, py=88.0f;
-                    panel(px,py,pw,30,0.60f);
-                    float ar=0.59f,ag=0.72f,ab=0.90f; if(hudTel.special){ ar=1.0f;ag=0.78f;ab=0.43f; }
-                    hud::addRect(v,px+8,py+8,4,14, ar,ag,ab,1.0f);
-                    txt(hudTel.element,px+18,py+7,esc, hudTel.special?ar:0.84f, hudTel.special?ag:0.88f, hudTel.special?ab:0.94f);
-                }
-                // g-meter (bottom-left)
-                char gs[24]; snprintf(gs,sizeof gs,"%+.1f G",hudTel.gForce);
-                float gr=1.0f,gg=0.80f,gb=0.45f; if(hudTel.gForce>5.0f||hudTel.gForce<-1.5f){ gr=1.0f;gg=0.40f;gb=0.35f; }
-                panel(18,Hh-50,150,34,0.55f); txt(gs,30,Hh-44,20, gr,gg,gb);
-            } else {
-                txt("FREE-FLY   PRESS C TO RIDE",30,62,15, 0.80f,0.86f,0.95f);
-            }
+            hud::GameHud gh{};
+            gh.screenW=(float)ext.width; gh.screenH=(float)ext.height;
+            gh.riding=hudRide; gh.speedKmh=hudTel.speedKmh; gh.altitude=(int)hudTel.altitude;
+            gh.gForce=hudTel.gForce; gh.element=hudTel.element; gh.elementSpecial=hudTel.special;
+            gh.score=hudScore; gh.boost=hudBoost;
+            std::vector<hud::Vtx> v; hud::buildGameHud(v, gh);     // exact base-game HUD layout
             hudVtxCount=(uint32_t)v.size(); if(hudVtxCount>hudVtxCap) hudVtxCount=hudVtxCap;
             if(hudVtxCount) memcpy(hudVBmap,v.data(),(size_t)hudVtxCount*sizeof(hud::Vtx));
             VkRenderPassBeginInfo rh{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rh.renderPass=hudRP; rh.framebuffer=hudFB; rh.renderArea={{0,0},ext}; rh.clearValueCount=0;
@@ -862,7 +836,11 @@ static int runOffscreen(World& world, const std::string& sd, const std::string& 
     if(g_camSet){ cam.pos=g_camPos; cam.yaw=g_camYaw; cam.pitch=g_camPitch; }
     CamView view=cam.view(); R.hudRide=g_rideSet; Vec3 shadowCenter=world.focus;
     { // place the train at the ride position (advanced by --ride, else the station)
-      world::RideSim rs; rs.reset(world.trk); rs.advance(world.trk,g_rideSec);
+      world::RideSim rs; rs.reset(world.trk);
+      for(float rem=g_rideSec; rem>0.0f; ){ float hstep=rem>1.0f/60.0f?1.0f/60.0f:rem; rem-=hstep;
+          world::extendTrack(world.trk, rs.u);
+          int tr=world::trimBehind(world.trk, rs.u); if(tr>0){ rs.u-=(float)tr; world::extendTrack(world.trk, rs.u); }
+          rs.advance(world.trk, hstep); }
       Vector3 P,fwd,up,right; rs.frame(world.trk,P,fwd,up,right);
       R.trainPos=world::v3(P); R.trainF=normalize(world::v3(fwd)); R.trainU=normalize(world::v3(up)); R.trainR=normalize(world::v3(right)); R.trainVisible=true;
       printf("[train] pos %.1f %.1f %.1f\n", P.x,P.y,P.z);
@@ -954,6 +932,16 @@ static int runWindowed(World& world, const std::string& sd, int maxFrames){
                 if(cam.pitch>1.5f)cam.pitch=1.5f; if(cam.pitch<-1.5f)cam.pitch=-1.5f; }
             else if(e.type==SDL_WINDOWEVENT&&e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED) recreate();
         }
+        // --- endless coaster: grow track ahead of the train and drop the track
+        //     behind it (rolling window under ::Track's 512-cp cap), mirroring the
+        //     base game (ensureAhead(u+margin) + popFront/u-=1). Do it BEFORE advance
+        //     so RideSim's maxU clamp sees the freshly-extended track and never pins.
+        bool trackChanged=false;
+        { float before=world::trackMaxU(world.trk);
+          world::extendTrack(world.trk, rs.u);
+          int trimmed=world::trimBehind(world.trk, rs.u);
+          if(trimmed>0){ rs.u-=(float)trimmed; world::extendTrack(world.trk, rs.u); }
+          if(trimmed>0 || world::trackMaxU(world.trk)!=before) trackChanged=true; }
         rs.advance(world.trk,dt);   // the train always runs along the track
         { Vector3 P,fwd,up,right; rs.frame(world.trk,P,fwd,up,right);
           R.trainPos=world::v3(P); R.trainF=normalize(world::v3(fwd)); R.trainU=normalize(world::v3(up)); R.trainR=normalize(world::v3(right)); R.trainVisible=true; }
@@ -972,7 +960,8 @@ static int runWindowed(World& world, const std::string& sd, int maxFrames){
         // --- streaming: re-bake terrain/track/water around the viewer when they
         //     leave the current patch, so the world is effectively endless ---
         { Vec3 here=view.pos; float dx=here.x-streamCenter.x, dz=here.z-streamCenter.z;
-          if(dx*dx+dz*dz > (PATCH_HALF*0.6f)*(PATCH_HALF*0.6f)){
+          bool moved = dx*dx+dz*dz > (PATCH_HALF*0.6f)*(PATCH_HALF*0.6f);
+          if(moved || (rideMode && trackChanged)){       // keep terrain+track in sync as the window rolls
             buildWorldMeshes(world, Vec3{here.x, world.focus.y, here.z});
             R.reuploadMesh(world); R.setCenter(Vec3{here.x, groundTopAt(here.x,here.z), here.z});
             streamCenter=here; last=SDL_GetTicks();   // skip the rebuild stall in dt

@@ -14,6 +14,7 @@ layout(set = 0, binding = 0) uniform U {
     vec4 camPos;     // xyz, w = fog end
 } u;
 layout(set = 0, binding = 1) uniform sampler2D shadowMap;
+layout(set = 0, binding = 2) uniform sampler2D gPosition;   // world pos of the bed behind the water
 
 layout(push_constant) uniform PC {
     vec4 misc;       // x = time (seconds)
@@ -105,10 +106,16 @@ void main(){
 
     // Refracted body: deep teal-blue, lightening toward grazing angles. A simple
     // depth proxy (how head-on we look) darkens the centre, lightens the edges.
+    // REAL water depth: distance from the surface down to the lit bed already in
+    // the G-buffer behind this pixel. Drives colour AND opacity (Beer-Lambert-ish),
+    // so shallows are clear turquoise over the sand and deep water is opaque blue.
+    vec2 suv = gl_FragCoord.xy / vec2(textureSize(gPosition, 0));
+    vec4 bed = texture(gPosition, suv);
+    float wdepth = (bed.a > 0.5) ? max(0.0, vWorldPos.y - bed.y) : 40.0;  // no bed -> open ocean (deep)
+    float dN = 1.0 - exp(-wdepth * 0.14);                // 0 at the shore, ->1 in deep water
     vec3 deepCol    = vec3(0.008, 0.05, 0.16);           // deep ocean blue
-    vec3 shallowCol = vec3(0.03,  0.20, 0.34);           // richer near-shore teal
-    float depthProxy = clamp(NoV, 0.0, 1.0);             // 1 = looking straight down
-    vec3 body = mix(shallowCol, deepCol, depthProxy);
+    vec3 shallowCol = vec3(0.07,  0.34, 0.45);           // clear near-shore turquoise
+    vec3 body = mix(shallowCol, deepCol, dN);
     body *= (0.55 + 0.55 * ndl * mix(0.4, 1.0, rawSh));  // sun-lit body
     body += vec3(0.30, 0.38, 0.47) * 0.04;               // tiny ground/ambient bounce
 
@@ -129,6 +136,10 @@ void main(){
     // Transparency: looking straight down (low fresnel) the water is clear and the
     // lit bed already in the HDR target shows through; at grazing angles it turns
     // reflective/opaque. Alpha blending composites over the terrain behind it.
-    float alpha = clamp(mix(0.74, 0.97, fres) + glint, 0.0, 1.0);   // more opaque -> less pale bed bleed
+    // Opacity by depth: shallows are see-through (reveal the bed in the HDR target),
+    // deep water opaque; grazing reflection and glint always stay visible.
+    float alpha = mix(0.16, 0.97, dN);
+    alpha = max(alpha, fres*0.92);
+    alpha = clamp(alpha + glint, 0.0, 1.0);
     outColor = vec4(col, alpha);
 }

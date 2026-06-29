@@ -32,6 +32,59 @@ inline void genLongTrack(::Track& trk, int targetPoints){
     printf("\n");
 }
 
+// Highest catmull-safe track parameter for the *current* control points.
+// ::Track::pos(u) interpolates cp[k..k+3] (k=(int)u), so the last fully-defined
+// sample sits at u = cp.size()-3. Matches world::RideSim::maxU() exactly, so the
+// renderer, the ride sim, and the generator all agree on "the end of the track".
+inline float trackMaxU(const ::Track& trk){
+    int n = (int)trk.cp.size();
+    return (n >= 5) ? (float)(n - 3) : 1.0f;
+}
+
+// --- infinite coaster: extend the track ahead of the ride on demand ---------
+// Make sure control points exist up to (untilU + margin) so a train sitting at
+// parameter `untilU` always has track in front of it — the same trick the base
+// game uses every frame (src/main.cpp ~line 1534/1539: `trk.ensureAhead(u+22)`).
+//
+// The underlying generator (::Track::ensureAhead, src/coaster_track.cpp ~1120)
+// hard-caps the deque at 512 control points, so calling this alone saturates at
+// ~512 cp (~7.6 km / ~122 s). To ride forever the integrator must ALSO trim the
+// already-passed points behind the train with world::trimBehind() (below) and
+// rebase the ride parameter by the number trimmed — exactly the base game's
+// popFront + `u -= 1.0f` pattern (src/main.cpp line 1619). Cheap to call every
+// frame: it early-outs the instant enough track already exists.
+inline void extendTrack(::Track& trk, float untilU){
+    // keep a healthy buffer of forward control points (base game uses +22).
+    const float margin = 24.0f;
+    float want = untilU + margin;
+    if(want < 8.0f) want = 8.0f;
+    // already long enough? (trackMaxU is the last catmull-safe sample) -> bail.
+    if(trackMaxU(trk) >= want) return;
+    // ensureAhead grows the deque until cp.size() > want+8 (or it hits its 512
+    // cap). Looping mirrors genLongTrack: we re-ask until satisfied or stalled.
+    int guard = 0;
+    while(trackMaxU(trk) < want && guard++ < 4096){
+        size_t before = trk.cp.size();
+        trk.ensureAhead(want);
+        if(trk.cp.size() == before) break;   // hit the 512 cap (need a trimBehind first)
+    }
+}
+
+// Companion to extendTrack(): drop control points the train has already passed so
+// the deque stays under ::Track::ensureAhead's 512-point cap and new track can be
+// appended ahead forever. Trims while u stays comfortably ahead of the front,
+// matching the base game (src/main.cpp 1619: `while(u>13 && cp.size()>18){
+// popFront(); u-=1; }`). Returns the number of points removed so the caller can
+// rebase its ride parameter: `rs.u -= (float)world::trimBehind(trk, rs.u);`.
+inline int trimBehind(::Track& trk, float untilU, float keepAhead=13.0f, int minPoints=18){
+    int trimmed = 0;
+    while(untilU - (float)trimmed > keepAhead && (int)trk.cp.size() > minPoints){
+        trk.popFront();
+        trimmed++;
+    }
+    return trimmed;
+}
+
 // Build rail/spine/tie/support/train geometry for the portion of the track that
 // lies within the rendered terrain patch [cx±half, cz±half].
 inline void buildTrackMesh(const ::Track& trk, Mesh& out, float cx, float cz, float half){

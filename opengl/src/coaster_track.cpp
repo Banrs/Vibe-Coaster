@@ -365,7 +365,7 @@ struct Track {
 
     void startBoost() {
         chainMode = false; mode = M_BOOST;
-        remain = irnd(3, 5);
+        remain = irnd(9, 12);   // was 3-5 (~42-70m, only reached ~260); ~126-168m so boosts reach ~300
     }
 
     int airtimeLen(int base) const { return (int)(base * Clamp(genV / 50.0f, 1.0f, 2.0f)); }
@@ -1143,9 +1143,9 @@ struct Track {
                 // Match the RIDE's powered model (main.cpp): LSM thrust that fades toward
                 // LAUNCH_V (no clamp). Keeping this in sync is what sizes elements for the
                 // ACTUAL post-launch/post-boost speed -- otherwise g blows up downstream.
-                if      (tag == M_LAUNCH)                              genV += 85.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
+                if      (tag == M_LAUNCH)                              genV += 100.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
                 else if (tag == M_CLIMB && ch == 0 && genV < CLIMB_V)  genV = fminf(genV + 34.0f * gdt, CLIMB_V);
-                if      (tag == M_BOOST)                               genV += 70.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
+                if      (tag == M_BOOST)                               genV += 95.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
                 if (ch && slope > 0.05f) { float lv = (slope > 0.55f) ? 27.0f : CHAIN_V; if (genV < lv) genV = fminf(genV + 20.0f * gdt, lv); }
 
                 if (trimNext != M_FLAT && trimV > 0.0f && genV > trimV)

@@ -5,6 +5,8 @@ through a streaming Minecraft-style world — launches, drops, loops, cobras, he
 inversions, all sized by a physics-driven generator that holds the felt-g inside a
 realistic-but-arcadey envelope. Cross-platform, built on [raylib](https://www.raylib.com).
 
+Windows RT coming later
+
 ## Features
 
 - **Procedural endless track** — a rolling-deque generator builds the circuit ahead of

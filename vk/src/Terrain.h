@@ -57,23 +57,51 @@ static inline int terrainH(float x,float z){
     return (int)h;
 }
 
-static inline Vec3 biomeColor(float wx,float wz,int h){
-    bool beach=(h+1.0f)<=WATER_Y+0.6f;
-    float bio=vnoise(wx*0.0045f+91.3f,wz*0.0045f+23.1f);
-    float humid=fbm(wx*0.0028f+44.0f,wz*0.0028f+108.0f,2);
-    float temp=fbm(wx*0.0019f+12.0f,wz*0.0019f+204.0f,2);
-    Vec3 cap={130/255.0f,206/255.0f,102/255.0f};               // grass
-    if(h>=260)      cap={204/255.0f,214/255.0f,224/255.0f};
-    else if(h>=158) cap={128/255.0f,138/255.0f,146/255.0f};
-    else if(beach)  cap={242/255.0f,228/255.0f,184/255.0f};
-    else if(humid<0.23f&&temp>0.42f) cap={214/255.0f,196/255.0f,108/255.0f};
-    else if(humid>0.72f&&bio<0.72f)  cap={76/255.0f,176/255.0f,92/255.0f};
-    else if(bio<0.34f){}
-    else if(bio<0.58f) cap={118/255.0f,206/255.0f,108/255.0f};
-    else if(bio<0.78f) cap={210/255.0f,202/255.0f,132/255.0f};
-    else cap={112/255.0f,150/255.0f,112/255.0f};
-    float s=0.89f+0.13f*hashf((int)floorf(wx)*5+1,(int)floorf(wz)*5+2);
-    return cap*s;
+// Continuous Whittaker-style climate -> grass colour, à la Minecraft: temperature
+// and humidity (low-frequency noise) select a colour by smooth interpolation, with
+// elevation cooling (snow/rock up high) and beaches near water. No hard thresholds,
+// so a single sample already transitions smoothly; biomeColor() then averages a
+// neighbourhood (Minecraft's grass-colour blend) to erase any remaining seams.
+static inline Vec3 climateColor(float wx, float wz, int h){
+    float top = (float)h + 1.0f;
+    float temp  = clampf(fbm(wx*0.0019f+12.0f, wz*0.0019f+204.0f, 3), 0.0f, 1.0f);
+    float humid = clampf(fbm(wx*0.0028f+44.0f, wz*0.0028f+108.0f, 3), 0.0f, 1.0f);
+    float warmth = clampf(temp - smooth01(70.0f,210.0f,(float)h)*0.55f, 0.0f, 1.0f); // height cools
+
+    Vec3 plains ={130/255.f,206/255.f,102/255.f};
+    Vec3 forest ={ 76/255.f,176/255.f, 92/255.f};
+    Vec3 jungle ={ 96/255.f,188/255.f, 96/255.f};
+    Vec3 savanna={210/255.f,202/255.f,132/255.f};
+    Vec3 desert ={214/255.f,196/255.f,108/255.f};
+    Vec3 taiga  ={112/255.f,150/255.f,112/255.f};
+    Vec3 sand   ={242/255.f,228/255.f,184/255.f};
+    Vec3 rock   ={120/255.f,124/255.f,130/255.f};
+    Vec3 snow   ={224/255.f,232/255.f,240/255.f};
+
+    Vec3 wetCol = lerp(forest, jungle, humid);
+    Vec3 dryCol = lerp(savanna, desert, 1.0f - humid);
+    Vec3 warmCol= lerp(dryCol, lerp(plains, wetCol, smooth01(0.40f,0.85f,humid)),
+                       smooth01(0.25f,0.60f,humid));
+    Vec3 coldCol= lerp(taiga, snow, smooth01(0.35f,0.05f,warmth));   // colder -> snow
+    Vec3 c = lerp(coldCol, warmCol, smooth01(0.22f,0.50f,warmth));
+    c = lerp(c, rock, smooth01(150.0f,200.0f,(float)h));            // high -> rock
+    c = lerp(c, snow, smooth01(235.0f,290.0f,(float)h));            // higher -> snow
+    c = lerp(c, sand, smooth01(WATER_Y+2.5f, WATER_Y+0.4f, top));   // beaches
+    return c;
+}
+
+// Minecraft-style grass-colour blend: average the climate colour over a small
+// neighbourhood so biome borders fade instead of stepping. Per-cell hash adds
+// subtle grain like MC's noise.
+static inline Vec3 biomeColor(float wx, float wz){
+    Vec3 acc{0,0,0}; const float R=3.0f;
+    for(int oz=-1; oz<=1; oz++) for(int ox=-1; ox<=1; ox++){
+        float sx=wx+ox*R, sz=wz+oz*R;
+        acc = acc + climateColor(sx, sz, terrainH(sx,sz));
+    }
+    Vec3 c = acc * (1.0f/9.0f);
+    float s = 0.92f + 0.08f*hashf((int)floorf(wx)*5+1, (int)floorf(wz)*5+2);
+    return c*s;
 }
 
 // One flat-shaded quad (a,b,c,d CCW) with an explicit face normal + color.
@@ -97,7 +125,7 @@ inline void buildTerrain(float cx, float cz, float half, float /*step*/, Mesh& o
         float wx=(float)(ox+dx), wz=(float)(oz+dz);
         int h=terrainH(wx,wz);
         float top=(float)h+1.0f;
-        Vec3 cap=biomeColor(wx,wz,h);
+        Vec3 cap=biomeColor(wx,wz);
         Vec3 body=cap*0.6f;                       // darker sides read as cube faces
         float xm=wx-0.5f, xp=wx+0.5f, zm=wz-0.5f, zp=wz+0.5f;
 

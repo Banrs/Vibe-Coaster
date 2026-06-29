@@ -15,6 +15,7 @@ static inline float dot(Vec3 a, Vec3 b){ return a.x*b.x+a.y*b.y+a.z*b.z; }
 static inline Vec3 cross(Vec3 a, Vec3 b){ return {a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x}; }
 static inline float length(Vec3 a){ return sqrtf(dot(a,a)); }
 static inline Vec3 normalize(Vec3 a){ float l=length(a); return l>1e-8f ? a*(1.0f/l) : Vec3{0,1,0}; }
+static inline Vec3 lerp(Vec3 a, Vec3 b, float t){ return a + (b-a)*t; }
 
 // column-major 4x4 (m[col*4+row]), GLSL-compatible
 struct Mat4 {

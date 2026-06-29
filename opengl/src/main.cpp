@@ -23,12 +23,12 @@ static const float BUILD_MAX  = 430.0f;
 static const float TERRA_MAX  = 320.0f;
 static const float GRAV      = 9.81f;
 
-static float       DRAG      = 0.0011f;
-static const float FRICTION  = 0.016f;
+static float       DRAG      = 0.0004f;   // realistic aero drag (~½·rho·Cd·A/m); was 0.0011 (~2.7x too high, ate drop energy)
+static const float FRICTION  = 0.010f;    // steel-on-steel rolling resistance (low)
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 89.0f;   // ~320 km/h natural max (no hard cap; launch sets the peak)
+static const float LAUNCH_V  = 86.0f;   // ~310 km/h powered target (no hard cap; drops retain ~290 via low drag)
 static const float CLIMB_V   = 40.0f;
 static float       BOOST_V   = 62.0f;
 static float       BOOST_TRIG = 58.0f;
@@ -1053,8 +1053,8 @@ int main(int argc, char **argv) {
             }
             double avg = nV ? sumV / nV : 0;
             const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
-            printf("seed %u  avgV=%.1f (%.0f km/h)  minV=%.1f (%.0f km/h)  worst stall=%d frames (%.1fs) on %s (after %s)\n",
-                   seed, avg, avg * 3.6, minV, minV * 3.6, maxRun, maxRun / 60.0f,
+            printf("seed %u  avgV=%.1f (%.0f km/h)  maxV=%.1f (%.0f km/h)  minV=%.1f (%.0f km/h)  worst stall=%d frames (%.1fs) on %s (after %s)\n",
+                   seed, avg, avg * 3.6, maxV, maxV * 3.6, minV, minV * 3.6, maxRun, maxRun / 60.0f,
                    stallTag < 25 ? NM[stallTag] : "-", stallPrev < 25 ? NM[stallPrev] : "-");
         }
         printf("SIMTEST DONE (no hang)  -> OVERALL AVG RIDE SPEED = %.1f m/s (%.0f km/h)  | powered duty: boost %.1f%% launch %.1f%% | inversions: %ld over 8 seeds (~%.1f/ride)\n",

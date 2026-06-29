@@ -388,11 +388,12 @@ struct Track {
     struct InvSpec { float gT, rMin, rMaxRec, gMul, hMul; };
     static InvSpec invSpec(SegMode m) {
         switch (m) {
-            case M_LOOP:     return {3.7f, 15.0f, 22.0f, 1.6f, 2.6f};
-            case M_IMMEL:    return {3.2f, 17.0f, 26.0f, 1.0f, 2.0f};
-            case M_DIVELOOP: return {2.6f, 18.0f, 28.0f, 1.0f, 2.0f};
-            case M_COBRA:    return {3.0f, 15.0f, 24.0f, 1.0f, 2.2f};
-            case M_PRETZEL:  return {3.6f, 20.0f, 26.0f, 1.0f, 2.0f};
+            // Scaled up ~1.45x (record-sized): bigger radii hold g down at the higher ride speed.
+            case M_LOOP:     return {3.7f, 22.0f, 32.0f, 1.6f, 2.6f};
+            case M_IMMEL:    return {3.2f, 24.0f, 38.0f, 1.0f, 2.0f};
+            case M_DIVELOOP: return {2.6f, 26.0f, 40.0f, 1.0f, 2.0f};
+            case M_COBRA:    return {3.0f, 22.0f, 35.0f, 1.0f, 2.2f};
+            case M_PRETZEL:  return {3.6f, 28.0f, 38.0f, 1.0f, 2.0f};
             default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};
         }
     }
@@ -400,8 +401,8 @@ struct Track {
     static float invRAt(SegMode m, float v, float &brakeTo) {
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) { brakeTo = 0.0f; return 0.0f; }
-        const float gCeil = 10.0f;
-        float rMax = s.rMaxRec * 1.30f;
+        const float gCeil = 8.0f;            // brake inversion entry to hold +8 g (was 10)
+        float rMax = s.rMaxRec * 1.45f;      // allow larger-than-record radii for low-g at high speed
         float vv   = Clamp(v, 28.0f, 135.0f);
 
         float R    = Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
@@ -831,11 +832,15 @@ struct Track {
             }
             default: break;
         }
-        dy = Clamp(dy, -36.0f, 36.0f);
+        float dyMin = (mode == M_DROP || mode == M_DIVE) ? -46.0f : -36.0f;   // steeper drop faces (atan(46/14)=73 deg); gentler elsewhere
+        dy = Clamp(dy, dyMin, 36.0f);
 
         if (mode != M_LAUNCH && mode != M_BOOST && mode != M_STATION && !stationRamping) {
 
             float dlim = Clamp(6.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 1.5f, 18.0f);
+            // Top-hat / drop family may steepen faster (near-vertical faces); the g-relaxation
+            // pass still bounds crest/pull-out g. Inversions keep the conservative dlim above.
+            if (mode == M_DROP || mode == M_CLIMB || mode == M_DIVE) dlim = fmaxf(dlim, 4.0f);
 
             float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, dlim);
             float curv = dy - genPrevDy;
@@ -1135,9 +1140,12 @@ struct Track {
                 float slope = dyv / ds;
                 float gdt   = ds / fmaxf(genV, 8.0f);
                 genV += (-GRAV * slope - DRAG * genV * genV - FRICTION) * gdt;
-                if      (tag == M_LAUNCH && genV < LAUNCH_V)            genV = fminf(genV + 85.0f * gdt, LAUNCH_V);
+                // Match the RIDE's powered model (main.cpp): LSM thrust that fades toward
+                // LAUNCH_V (no clamp). Keeping this in sync is what sizes elements for the
+                // ACTUAL post-launch/post-boost speed -- otherwise g blows up downstream.
+                if      (tag == M_LAUNCH)                              genV += 85.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
                 else if (tag == M_CLIMB && ch == 0 && genV < CLIMB_V)  genV = fminf(genV + 34.0f * gdt, CLIMB_V);
-                if (tag == M_BOOST && genV < BOOST_V) genV = fminf(genV + 55.0f * gdt, BOOST_V);
+                if      (tag == M_BOOST)                               genV += 70.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
                 if (ch && slope > 0.05f) { float lv = (slope > 0.55f) ? 27.0f : CHAIN_V; if (genV < lv) genV = fminf(genV + 20.0f * gdt, lv); }
 
                 if (trimNext != M_FLAT && trimV > 0.0f && genV > trimV)

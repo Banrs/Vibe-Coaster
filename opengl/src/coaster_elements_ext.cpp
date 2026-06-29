@@ -93,12 +93,12 @@
         brSide = Vector3Normalize(Vector3CrossProduct(WUP, brF));
         brDir  = (rnd01() < 0.5f) ? 1.0f : -1.0f;
         brBase = gpos;
-        brSteps = 26;
+        brSteps = 16;   // was 26 (~364 m) -> ~224 m; banana rolls were too long
         float v = Clamp(genV, 40.0f, 95.0f);
 
         brH    = Clamp(0.35f * v, 22.0f, 28.0f);
         brH    = fminf(brH, maxClearH());
-        brSpan = Clamp(1.9f * v, 90.0f, 170.0f);
+        brSpan = Clamp(1.4f * v, 70.0f, 130.0f);
         remain = brSteps;
     }
     Vector3 stepBanana() {

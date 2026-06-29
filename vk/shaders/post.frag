@@ -15,6 +15,19 @@ layout(push_constant) uniform PC {
 vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }
 float luma(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
 
+// Auto-exposure / eye adaptation: geometric-mean scene luminance from a sparse
+// grid drives the exposure toward a mid-grey key. (Instant; a temporal history
+// would smooth the adaptation further.)
+float autoExposure(){
+    float logSum = 0.0; const int G = 6;
+    for(int y=0;y<G;y++) for(int x=0;x<G;x++){
+        vec2 guv = (vec2(x,y)+0.5)/float(G);
+        logSum += log(luma(texture(hdr, guv).rgb) + 1e-4);
+    }
+    float avg = exp(logSum / float(G*G));
+    return clamp(0.16 / max(avg, 1e-3), 0.35, 2.6);
+}
+
 void main(){
     vec3 c = texture(hdr, uv).rgb;
     c += texture(bloom, uv).rgb * pc.bloomStrength;
@@ -39,7 +52,7 @@ void main(){
         c += vec3(1.0,0.93,0.78) * illum * pc.grStrength * (0.4 + 0.6*aim);
     }
 
-    c = aces(c * pc.exposure);
+    c = aces(c * pc.exposure * autoExposure());
     c = pow(c, vec3(1.0/2.2));
     outColor = vec4(c, 1.0);
 }

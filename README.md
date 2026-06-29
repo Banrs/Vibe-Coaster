@@ -17,6 +17,8 @@ The same game world + ride physics drive three independent renderer backends:
 
 Docs at the root: this `README.md` and [`REALISM.md`](REALISM.md).
 
+Windows RT coming later
+
 ## Features
 
 - **Procedural endless track** — a rolling-deque generator builds the circuit ahead of

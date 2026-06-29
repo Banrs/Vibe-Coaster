@@ -13,9 +13,25 @@ convert PPM→PNG with PIL, Read the PNG to inspect. Windowed: `--frames N` unde
 - [x] Vulkan core (offscreen + SDL2 swapchain window, fly cam), self-contained build
 - [x] Voxel terrain + Minecraft-style blended biomes (continuous climate + neighbour avg)
 - [x] Real coaster generator (`coaster_track.cpp` + `coaster_elements_ext.cpp` via GameCompat shim)
-- [x] Trees by biome; water plane; track/train(static)/station/coins geometry
-- [x] Ride physics (`Physics.h`, RideSim) — ported, not yet driving anything
+- [x] Trees by biome; track/station/coins geometry
 - [x] PBR Cook-Torrance GGX + Fresnel; HDR fp16; bloom; ACES post; sun shadow map (PCF)
+- [x] **Deferred G-buffer** (albedo+metal / world-normal+rough / world-pos) + depth
+- [x] **SSAO** (world-space hemisphere) ; **contact shadows** (screen-space)
+- [x] **Per-material PBR**: metallic+smooth steel coaster reflects sky/sun; matte terrain
+- [x] **Analytic sky + volumetric clouds** (ported skyCol/cloudVolume); fog blends to sky
+- [x] **Volumetric in-scatter + radial god-ray shafts** (screen-space crepuscular rays)
+- [x] **Sky-probe IBL** ambient specular (Fresnel/roughness weighted)
+- [x] **SSR** (screen-space reflections on metal, ping-pong hdr→hdr2)
+- [x] **Foliage SSS** (back-translucency on green albedo)
+- [x] **Water**: Minecraft sea level (y=64) + ocean to horizon; fresnel/reflection/glint
+- [x] **Ride camera + live telemetry**; **HUD** in the base game's OpenGL panel style
+- [x] **Endless world streaming**: re-bake patch around the viewer (terrainH is pure)
+
+## STILL TODO (from the requested list — feasible)
+- [ ] CSM (cascade the sun shadow) ; eye adaptation (auto-exposure) ; TAA
+- [ ] Full split-sum IBL (prefiltered env mips + BRDF LUT) ; anisotropic ; clearcoat
+- [ ] SSGI ; refraction/caustics ; animated train (separate moving mesh) ; async streaming
+- [ ] Out of scope for voxels/effort: normal mapping/POM (no UVs), VCT, SDF-GI, DDGI, probes
 
 ## RENDERER EFFECTS (sequential — all touch the shared Renderer in main.cpp; do myself)
 - [ ] Deferred G-buffer (albedo, world-normal+roughness, sampleable depth) — enables SS effects

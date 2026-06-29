@@ -98,6 +98,32 @@ float sampleShadow(vec4 lp, float ndl){
     return vis / 9.0;
 }
 
+// single-tap shadow test at a world point (for the volumetric march). Only air
+// within the shadow frustum contributes in-scatter; elsewhere returns 0 so far
+// air doesn't wash the whole frame.
+float litAt(vec3 wp){
+    vec4 lp = u.lightVP * vec4(wp,1.0); vec3 p = lp.xyz/lp.w;
+    vec2 suv = p.xy*0.5+0.5;
+    if(suv.x<0.0||suv.x>1.0||suv.y<0.0||suv.y>1.0||p.z>1.0) return 0.0;   // outside coverage: no contribution
+    return (p.z - 0.0015 > texture(shadowMap, suv).r) ? 0.0 : 1.0;
+}
+float hash12(vec2 p){ return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453); }
+// Volumetric sun in-scatter: march the view ray, accumulate where air is sunlit.
+// Returns a scalar density already weighted by a Henyey-Greenstein phase toward
+// the sun, so it blooms when looking into the light.
+float godRays(vec3 ro, vec3 rd, float maxD, float mu){
+    const int N = 28;
+    float seg = maxD / float(N);
+    float j = hash12(gl_FragCoord.xy) * seg;
+    float acc = 0.0;
+    for(int i=0;i<N;i++) acc += litAt(ro + rd*(j + seg*float(i)));
+    acc /= float(N);
+    const float g = 0.66;
+    float denom = 1.0 + g*g - 2.0*g*max(mu,0.0);
+    float phase = (1.0 - g*g) / (4.0*PI*pow(denom, 1.5));
+    return acc * phase;
+}
+
 void main(){
     vec3 sun = normalize(u.sunDir.xyz);
     vec3 ro  = u.camPos.xyz;
@@ -105,8 +131,16 @@ void main(){
     vec2 ndc = uv*2.0 - 1.0;
     vec3 rd  = normalize(pc.camDir.xyz + pc.camRight.xyz*ndc.x*pc.params.x*pc.params.y + pc.camUp.xyz*(-ndc.y)*pc.params.x);
 
+    float mu = dot(rd, sun);
+    vec3 sunTintAir = vec3(1.0,0.92,0.78);
+    const float SHAFT = 1.1;   // overall god-ray strength
+
     vec4 pf = texture(gPosition, uv);
-    if(pf.a < 0.5){ outColor = vec4(skyCol(rd, sun, ro), 1.0); return; }   // background sky
+    if(pf.a < 0.5){
+        vec3 c = skyCol(rd, sun, ro);
+        c += sunTintAir * godRays(ro, rd, 900.0, mu) * SHAFT;            // shafts against the sky
+        outColor = vec4(c, 1.0); return;
+    }
 
     vec3 wp = pf.xyz;
     vec4 nr = texture(gNormalRough, uv);
@@ -144,6 +178,7 @@ void main(){
     float fog = clamp((dist - fogEnd*0.65)/(fogEnd*0.35), 0.0, 1.0); fog *= fog;
     vec3 fogCol = skyCol(normalize(wp - ro), sun, ro);
     c = mix(c, fogCol, fog*0.85);
+    c += sunTintAir * godRays(ro, rd, min(dist,900.0), mu) * SHAFT;       // sunlit air in front of geometry
 
     outColor = vec4(c, 1.0);
 }

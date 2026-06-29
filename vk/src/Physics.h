@@ -8,8 +8,10 @@
 namespace world {
 
 struct RideSim {
-    float u = 1.0f;   // track parameter (current position along control points)
-    float v = 0.0f;   // speed (m/s)
+    float u = 1.0f;       // track parameter (current position along control points)
+    float v = 0.0f;       // speed (m/s)
+    float gVert = 1.0f;   // smoothed felt vertical g (base-game low-pass, main.cpp ~1661)
+    float score = 0.0f;   // accumulated ride score (base: v*dt*(1+v/25), main.cpp ~1621)
 
     // Valid u range: catmull in ::Track::pos needs cp[k..k+3], so k in
     // [0, cp.size()-4]; we keep one unit of margin at both ends.
@@ -23,6 +25,8 @@ struct RideSim {
     void reset(const ::Track& trk) {
         u = 1.0f;
         v = LAUNCH_V;
+        gVert = 1.0f;
+        score = 0.0f;
         (void)trk;
     }
 
@@ -44,6 +48,12 @@ struct RideSim {
             step(trk, h, hi);
             if (u >= hi) { u = hi; break; }   // clamp at end of generated track
         }
+        // once per frame (full dt): low-pass the felt-g for a stable HUD readout and
+        // accumulate score, exactly like the base game's player loop (main.cpp ~1621/1661).
+        float ig = instG(trk);
+        float k = 1.0f - expf(-dt * 6.0f);
+        gVert += (ig - gVert) * k;
+        score += v * dt * (1.0f + v / 25.0f);
     }
 
     Vector3 pos(const ::Track& trk) const { return trk.pos(u); }
@@ -62,7 +72,12 @@ struct RideSim {
     //   gVert = dot(felt, up) / GRAV.
     // The "dot(WUP,up)" gravity term is implicit: at rest felt=(0,GRAV,0) and
     // dot(up, that)/GRAV = up.y, exactly the WUP.up component the task asks for.
-    float feltG(const ::Track& trk) const {
+    // Smoothed felt-g (updated each advance()); use this for the HUD. The raw
+    // instantaneous value is instG() below.
+    float feltG(const ::Track& trk) const { (void)trk; return gVert; }
+
+    // Instantaneous felt vertical-g in Earth-g (the value the low-pass tracks).
+    float instG(const ::Track& trk) const {
         Vector3 T  = trk.tangent(u);
         Vector3 N  = orthoUp(T, trk.upAt(u));
         float ss   = fmaxf(trk.speedScale(u), 1.0f);
@@ -102,6 +117,17 @@ private:
         if (onLift && slope > 0.05f) {
             float liftV = (slope > 0.55f) ? 27.0f : CHAIN_V;
             if (v < liftV) v = fminf(v + 20.0f * dt, liftV);
+        }
+
+        // pre-brake before an upcoming hard inversion (loop/cobra/dive-loop/etc.) to
+        // its radius-appropriate entry speed, so inversions aren't taken at pinned
+        // speed with absurd g-forces. Ported from the base game (main.cpp ~1579).
+        for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
+            SegMode ahead = (SegMode)trk.tagAt(u + la);
+            if (!::Track::isHardInversion(ahead)) continue;
+            float bt = 0.0f; ::Track::invRAt(ahead, v, bt);
+            if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
+            break;
         }
 
         // small uphill assist on plain track so the train never stalls

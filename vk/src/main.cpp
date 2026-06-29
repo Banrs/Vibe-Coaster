@@ -919,12 +919,13 @@ static int runOffscreen(World& world, const std::string& sd, const std::string& 
           rs.advance(world.trk, hstep); }
       Vector3 P,fwd,up,right; rs.frame(world.trk,P,fwd,up,right);
       R.trainPos=world::v3(P); R.trainF=normalize(world::v3(fwd)); R.trainU=normalize(world::v3(up)); R.trainR=normalize(world::v3(right)); R.trainVisible=true;
+      R.hudScore=(int)rs.score;
       printf("[train] pos %.1f %.1f %.1f\n", P.x,P.y,P.z);
       if(g_rideSet){ RideTelemetry tel; CamView rv=rideCamView(world.trk,rs,tel); R.hudTel=tel;
         if(!g_camSet) view=rv;                                           // --cam gives an external train view
         buildWorldMeshes(world, Vec3{P.x, world.focus.y, P.z});           // surround the train with terrain
         shadowCenter=Vec3{P.x, groundTopAt(P.x,P.z), P.z};
-        printf("[ride] t=%.1fs  %.0f km/h  alt %.0fm  %.2fg  %s\n",g_rideSec,tel.speedKmh,tel.altitude,tel.gForce,tel.element); } }
+        printf("[ride] t=%.1fs  %.0f km/h  alt %.0fm  %.2fg  score %d  %s\n",g_rideSec,tel.speedKmh,tel.altitude,tel.gForce,(int)rs.score,tel.element); } }
     R.uploadMesh(world); R.buildTargets({W,H}); R.setCenter(shadowCenter);
     Buffer rb=makeBuffer(R.pd,R.dev,(VkDeviceSize)W*H*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx; cpi.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1029,6 +1030,7 @@ static int runWindowed(World& world, const std::string& sd, int maxFrames){
           if(trimmed>0){ rs.u-=(float)trimmed; world::extendTrack(world.trk, rs.u); }
           if(trimmed>0 || world::trackMaxU(world.trk)!=before) trackChanged=true; }
         rs.advance(world.trk,dt);   // the train always runs along the track
+        R.hudScore=(int)rs.score;   // base-game score accrues as the train rides
         { Vector3 P,fwd,up,right; rs.frame(world.trk,P,fwd,up,right);
           R.trainPos=world::v3(P); R.trainF=normalize(world::v3(fwd)); R.trainU=normalize(world::v3(up)); R.trainR=normalize(world::v3(right)); R.trainVisible=true; }
         CamView view; R.hudRide=rideMode;

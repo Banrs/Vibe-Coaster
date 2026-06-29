@@ -45,7 +45,7 @@ file(MAKE_DIRECTORY ${SHADER_OUT})
 set(SPV_FILES)
 foreach(stage gbuffer.vert gbuffer.frag fullscreen.vert ssao.frag lighting.frag
               ssr.frag bloom.frag post.frag shadow.vert sky.vert sky.frag
-              water.vert water.frag hud.vert hud.frag)
+              water.vert water.frag hud.vert hud.frag taa.frag)
   add_custom_command(
     OUTPUT ${SHADER_OUT}/${stage}.spv
     COMMAND ${GLSLANG} -V ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${stage} -o ${SHADER_OUT}/${stage}.spv

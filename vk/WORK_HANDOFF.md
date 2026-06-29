@@ -62,19 +62,24 @@ only) · analytic sky + volumetric clouds · god rays (radial + volumetric) · s
 IBL · SSR · foliage SSS · HDR fp16 · bloom · ACES · auto-exposure (eye adaptation) ·
 PCF shadows · **ported biomes + biome-matched trees** · **Minecraft-style sea level +
 ocean** · **depth-based transparent water** (G-buffer bed depth) · ride camera +
-telemetry · **animated train** · **endless terrain + coaster streaming** · **exact HUD**.
+telemetry · **animated train** · **endless terrain + coaster streaming** · **exact HUD** ·
+**TAA** (reprojection-based: Halton sub-pixel jitter on the projection + reprojected
+history + 3x3 neighbourhood clamp; `shaders/taa.frag` + the TAA block in `record()`.
+Offscreen `--shot` accumulates 8 jittered frames -> supersampled stills. HUD is drawn
+AFTER the resolve so it stays crisp and never feeds back into history. This is exactly
+the jitter+motion+history plumbing a DLSS backend consumes — DLSS drops in for the
+taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up).
 
-## Current state / what may be "broken"
-- Build is **clean** and headless run does **not crash** (verified: `--ride 30` and
-  `--ride 240` both render; coaster generates past the old 122 s wall, ~6 km out).
-- The user said **"you broke it"** right after the water-depth change
-  (`water.frag` now samples `gPosition` for true depth + alpha blending). I could NOT
-  visually verify it because image previews kept being rejected. **First task: render a
-  small thumbnail of a shoreline (`--cam -300,140,500,-1.6,-0.8`) and a normal view, and
-  check for: water-depth gradient looking right, no new artifacts, water not too
-  dark/odd.** If the water regressed, the suspect edits are in `vk/shaders/water.frag`
-  (the `wdepth`/`dN`/`alpha` block) and the water descriptor wiring in `main.cpp`
-  (`waterDSL`/`waterSet` now = UBO+shadow+gPosition).
+## Current state
+- Build is **clean** and headless run does **not crash** (verified: `--ride 30`,
+  `--ride 240`, `--ride 12`, several `--cam` shots; coaster generates past the old
+  122 s wall, ~6 km out; no Vulkan validation errors).
+- The **"you broke it" water item is RESOLVED** — verified visually (the earlier failure
+  was only oversized previews; downscaling to ≤360 px thumbnails fixed it). Depth-based
+  water shows turquoise shallows → deep blue, clean shoreline, grazing-angle Fresnel +
+  ripples. No horizon/water colour-morph, no shoreline z-fight.
+- **TAA verified**: before/after edge crops show jaggies → clean AA; ride shot confirms
+  the HUD stays crisp (drawn post-resolve) and the train/telemetry are intact.
 
 ## Outstanding user feedback (chronological, newest last)
 1. Sky/clouds tuning — addressed (deeper blue, sparser clouds).
@@ -87,26 +92,31 @@ telemetry · **animated train** · **endless terrain + coaster streaming** · **
    addressed for terrain/biomes/trees/HUD/coaster (all now ported from `src/`).
 8. Keep a subtle MC-style biome blend (less than the old over-blend) — addressed
    (light 5-tap cap-colour blend in `buildTerrain`).
-9. "Water doesn't have a realistic depth feel — flat texture with fresnel" — the
-   depth-based water change targets this; **needs visual confirmation** (see above).
+9. "Water doesn't have a realistic depth feel — flat texture with fresnel" — addressed
+   by the depth-based water; **verified** (see Current state).
+10. "Whichever AA requires least work when porting to DLSS" — **TAA** (chosen + done):
+    DLSS reuses TAA's jitter + motion(reprojection) + history, so it's the least extra
+    work to reach DLSS; FXAA shares nothing with it.
 
 ## Suggested next steps (priority order)
-1. **Verify the water-depth change visually** (small thumbnail). Fix if regressed.
-2. **Anti-aliasing**: voxel edges shimmer/jag badly — this is probably the biggest
-   remaining "realism" gap the user feels. TAA (task #6) or even a cheap FXAA in the
-   post pass would help a lot. (No TAA yet.)
-3. Remaining requested effects not yet done: **CSM** (#3, crisper shadows), full
-   split-sum IBL (#8: prefiltered env + BRDF LUT; currently analytic sky probe),
-   anisotropic, clearcoat, SSGI, refraction/caustics. Out of scope for flat voxels:
-   normal mapping/POM (no UVs), VCT/SDF-GI/DDGI/probes.
-4. **Async streaming**: the patch re-bake is synchronous (~visible hitch). Base game
-   uses a tighter cell-budget trigger; consider threading the rebuild.
+1. **CSM** (#3): single 260 m ortho shadow map is coarse far out; cascades sharpen
+   near-field shadows — a visible realism win.
+2. Full **split-sum IBL** (#8): prefiltered env map + BRDF LUT (currently analytic sky
+   probe). Then anisotropic, clearcoat, SSGI, refraction/caustics. Out of scope for
+   flat voxels: normal mapping/POM (no UVs), VCT/SDF-GI/DDGI/probes.
+3. **DLSS backend** (#16): the TAA plumbing (Halton jitter, `prevVP` reprojection,
+   history) is in place — swap `taa.frag` for the DLSS SDK call and feed it the same
+   inputs (consider moving the resolve before tonemap and adding a true motion-vector
+   G-buffer target for per-object velocity / moving train, which TAA currently approximates
+   via static-world reprojection).
+4. **Async streaming**: the patch re-bake is synchronous (~visible hitch). Consider a
+   tighter cell-budget trigger + threading the rebuild.
 5. HUD `score`/`boost` are passed as 0 (RideSim doesn't model them) — wire real values
    if desired (e.g. coins for score).
 
 ## Task tracker
-TaskList has #1-16. Done: 1,2,4,5,7,9,10,11,13. In-progress/partial: 8 (IBL).
-Pending: 3 (CSM), 6 (TAA), 12 (on-foot/cam modes), 14 (render_fx port), 15 (pathtrace
+TaskList has #1-16. Done: 1,2,4,5,6,7,9,10,11,13. In-progress/partial: 8 (IBL).
+Pending: 3 (CSM), 12 (on-foot/cam modes), 14 (render_fx port), 15 (pathtrace
 → Vulkan path tracer), 16 (IRenderer seam for the win-rtx DXR/DLSS backend).
 
 ## Verification camera presets (framing for thumbnails)

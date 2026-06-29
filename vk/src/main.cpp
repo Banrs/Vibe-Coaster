@@ -44,6 +44,11 @@ struct PostPC  { float exposure; float bloomStrength; float sunUV[2]; float grSt
 struct LightPC { float camDir[4]; float camRight[4]; float camUp[4]; float params[4]; }; // params: tanHalfFovY, aspect, time, 0
 struct WaterPC { float misc[4]; }; // misc.x = time
 struct HudPC   { float screen[2]; float pad[2]; }; // framebuffer size in pixels
+// TAA resolve: prev-frame unjittered VP + camera basis (for sky reprojection).
+// camPos.w = feedback (0 => history invalid), camDir.w = tanHalfFovY, camRight.w = aspect.
+struct TaaPC   { Mat4 prevVP; float camPos[4]; float camDir[4]; float camRight[4]; float camUp[4]; };
+// Halton low-discrepancy sequence for the sub-pixel camera jitter (base 2 / base 3).
+static inline float halton(int i, int b){ float f=1.0f, r=0.0f; while(i>0){ f/=b; r+=f*(i%b); i/=b; } return r; }
 // optional --cam override for framing headless verification shots
 static bool g_camSet=false; static Vec3 g_camPos; static float g_camYaw=0, g_camPitch=0;
 
@@ -443,6 +448,10 @@ struct Renderer {
     VkRenderPass waterRP; VkPipelineLayout waterLayout; VkPipeline waterPipe; VkFramebuffer waterFB;
     VkDescriptorSetLayout waterDSL; VkDescriptorSet waterSet;   // UBO + shadow + gPosition (depth)
     Buffer wvb, wib; uint32_t waterIndexCount=0;
+    // TAA: jittered render -> reproject + blend with history (anti-aliasing, DLSS-ready)
+    VkRenderPass taaRP; VkPipelineLayout taaLayout; VkPipeline taaPipe; VkFramebuffer taaFB;
+    VkDescriptorSetLayout taaDSL; VkDescriptorSet taaSet; Img litLDR, history;
+    Mat4 prevVP{}; bool taaHistoryValid=false; uint32_t frameIndex=0;
     // HUD overlay (alpha-blended text on the final image)
     VkRenderPass hudRP; VkPipelineLayout hudLayout; VkPipeline hudPipe; VkFramebuffer hudFB;
     VkDescriptorSetLayout hudDSL; VkDescriptorSet hudSet; Img fontImg;
@@ -480,7 +489,8 @@ struct Renderer {
         ssrRP  =makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
         waterRP=makeWaterRP(dev);
         bloomRP=makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
-        postRP =makeRP(dev,OUT_FMT,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,false);  // HUD pass draws on top next
+        postRP =makeRP(dev,OUT_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);   // -> litLDR, sampled by TAA
+        taaRP  =makeRP(dev,OUT_FMT,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,false);       // -> out (copy to history, then HUD)
         hudRP  =makeHudRP(dev);
         shadowRP=makeShadowRP(dev);
         auto mkDSL=[&](uint32_t n){ std::vector<VkDescriptorSetLayoutBinding> b(n);
@@ -499,6 +509,7 @@ struct Renderer {
         ssaoDSL =mkUboDSL(2);   // UBO + gPosition + gNormal    (SSAO pass)
         lightDSL=mkUboDSL(5);   // UBO + shadow + albedo+normal+position + ssao (lighting)
         ssrDSL  =mkUboDSL(4);   // UBO + litColor + position + normal + albedo  (SSR)
+        taaDSL  =mkDSL(3);      // litLDR(cur) + history(prev) + gPosition       (TAA resolve)
         VkDescriptorPoolSize ps[2]={{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,32},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,8}};
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; pci.maxSets=12; pci.poolSizeCount=2; pci.pPoolSizes=ps;
         VK_CHECK(vkCreateDescriptorPool(dev,&pci,nullptr,&dpool));
@@ -516,6 +527,7 @@ struct Renderer {
         shadowLayout=mkPL(VK_NULL_HANDLE,sizeof(ShadowPC),VK_SHADER_STAGE_VERTEX_BIT);
         bloomLayout =mkPL(dsl1,sizeof(BloomPC),VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT);
         postLayout  =mkPL(dsl2,sizeof(PostPC),VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT);
+        taaLayout   =mkPL(taaDSL,sizeof(TaaPC),VK_SHADER_STAGE_FRAGMENT_BIT);
         VkShaderModule gv=makeShader(dev,sd+"/gbuffer.vert.spv"), gf=makeShader(dev,sd+"/gbuffer.frag.spv");
         VkShaderModule fv=makeShader(dev,sd+"/fullscreen.vert.spv");
         VkShaderModule af=makeShader(dev,sd+"/ssao.frag.spv"), lf=makeShader(dev,sd+"/lighting.frag.spv");
@@ -523,6 +535,7 @@ struct Renderer {
         VkShaderModule sv=makeShader(dev,sd+"/shadow.vert.spv");
         VkShaderModule wv=makeShader(dev,sd+"/water.vert.spv"), wf=makeShader(dev,sd+"/water.frag.spv");
         VkShaderModule rf=makeShader(dev,sd+"/ssr.frag.spv");
+        VkShaderModule tf=makeShader(dev,sd+"/taa.frag.spv");
         gbufPipe  =makeGBufPipe(dev,gbufRP,gbufLayout,gv,gf);
         ssaoPipe  =makeFsPipe(dev,ssaoRP,ssaoLayout,fv,af);
         lightPipe =makeFsPipe(dev,lightRP,lightLayout,fv,lf);
@@ -531,7 +544,8 @@ struct Renderer {
         shadowPipe=makeShadowPipe(dev,shadowRP,shadowLayout,sv);
         bloomPipe =makeFsPipe(dev,bloomRP,bloomLayout,fv,bf);
         postPipe  =makeFsPipe(dev,postRP,postLayout,fv,pf);
-        for(auto m:{gv,gf,fv,af,lf,bf,pf,sv,wv,wf,rf}) vkDestroyShaderModule(dev,m,nullptr);
+        taaPipe   =makeFsPipe(dev,taaRP,taaLayout,fv,tf);
+        for(auto m:{gv,gf,fv,af,lf,bf,pf,sv,wv,wf,rf,tf}) vkDestroyShaderModule(dev,m,nullptr);
         // scene UBO (persistently mapped) + shadow map image/framebuffer (fixed size)
         sceneUBO=makeBuffer(pd,dev,sizeof(SceneUBO),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         vkMapMemory(dev,sceneUBO.mem,0,sizeof(SceneUBO),0,&sceneUBOmap);
@@ -541,7 +555,7 @@ struct Renderer {
         // descriptor sets
         auto alloc=[&](VkDescriptorSetLayout l){ VkDescriptorSet s; VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; a.descriptorPool=dpool; a.descriptorSetCount=1; a.pSetLayouts=&l; VK_CHECK(vkAllocateDescriptorSets(dev,&a,&s)); return s; };
         bloomSet=alloc(dsl1); postSet=alloc(dsl2);
-        sceneSet=alloc(sceneDSL); ssaoSet=alloc(ssaoDSL); lightSet=alloc(lightDSL); ssrSet=alloc(ssrDSL); waterSet=alloc(waterDSL);
+        sceneSet=alloc(sceneDSL); ssaoSet=alloc(ssaoDSL); lightSet=alloc(lightDSL); ssrSet=alloc(ssrDSL); waterSet=alloc(waterDSL); taaSet=alloc(taaDSL);
         // fixed bindings that never change on resize: the scene UBO (all three sets)
         // and the shadow map (scene + lighting sets). G-buffer/AO image bindings are
         // (re)written in buildTargets.
@@ -641,6 +655,8 @@ struct Renderer {
         hdr2 = makeImg(pd,dev,e.width,e.height,HDR_FMT,CA_S,VK_IMAGE_ASPECT_COLOR_BIT);
         bloom= makeImg(pd,dev,halfExt.width,halfExt.height,HDR_FMT,CA_S,VK_IMAGE_ASPECT_COLOR_BIT);
         out  = makeImg(pd,dev,e.width,e.height,OUT_FMT,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+        litLDR  = makeImg(pd,dev,e.width,e.height,OUT_FMT,CA_S,VK_IMAGE_ASPECT_COLOR_BIT);                                  // post output, sampled by TAA
+        history = makeImg(pd,dev,e.width,e.height,OUT_FMT,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
         Img d= makeImg(pd,dev,e.width,e.height,DEPTH_FMT,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
         depthImg=d.img; depthMem=d.mem; depthView=d.view;
         auto mkFB=[&](VkRenderPass rp, std::vector<VkImageView> views, VkExtent2D ex){
@@ -653,7 +669,8 @@ struct Renderer {
         waterFB=mkFB(waterRP,{hdr.view,depthView},ext);
         ssrFB  =mkFB(ssrRP,{hdr2.view},ext);
         bloomFB=mkFB(bloomRP,{bloom.view},halfExt);
-        postFB =mkFB(postRP,{out.view},ext);
+        postFB =mkFB(postRP,{litLDR.view},ext);
+        taaFB  =mkFB(taaRP,{out.view},ext);
         hudFB  =mkFB(hudRP,{out.view},ext);
         // (re)point the image-sampling descriptors at the current targets
         VkDescriptorImageInfo gAi{samp,gAlbedo.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -663,6 +680,8 @@ struct Renderer {
         VkDescriptorImageInfo hi {samp,hdr.view,      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo h2i{samp,hdr2.view,     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo bi {samp,bloom.view,    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo li {samp,litLDR.view,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo hsi{samp,history.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         auto img=[&](VkDescriptorSet set,uint32_t b,VkDescriptorImageInfo* ii){ VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             w.dstSet=set; w.dstBinding=b; w.descriptorCount=1; w.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo=ii; return w; };
         VkWriteDescriptorSet w[]={
@@ -670,16 +689,31 @@ struct Renderer {
             img(lightSet,2,&gAi), img(lightSet,3,&gNi), img(lightSet,4,&gPi), img(lightSet,5,&aoi),
             img(ssrSet,1,&hi), img(ssrSet,2,&gPi), img(ssrSet,3,&gNi), img(ssrSet,4,&gAi),
             img(waterSet,2,&gPi),                                            // water reads bed position for depth
-            img(bloomSet,0,&h2i), img(postSet,0,&h2i), img(postSet,1,&bi) };   // bloom/post read SSR output
+            img(bloomSet,0,&h2i), img(postSet,0,&h2i), img(postSet,1,&bi),     // bloom/post read SSR output
+            img(taaSet,0,&li), img(taaSet,1,&hsi), img(taaSet,2,&gPi) };       // TAA: current + history + position
         vkUpdateDescriptorSets(dev,(uint32_t)(sizeof(w)/sizeof(w[0])),w,0,nullptr);
+        // history starts black & in SHADER_READ_ONLY so the first TAA read is valid;
+        // a fresh target set means no usable history yet.
+        oneTimeSubmit([&](VkCommandBuffer c){
+            VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; b.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED; b.image=history.img; b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}; b.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(c,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&b);
+            VkClearColorValue z{}; z.float32[0]=z.float32[1]=z.float32[2]=0.0f; z.float32[3]=1.0f;
+            VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}; vkCmdClearColorImage(c,history.img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&z,1,&rng);
+            b.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; b.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(c,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&b);
+        });
+        taaHistoryValid=false;
     }
     void destroyTargets(){
         vkDestroyFramebuffer(dev,gbufFB,nullptr); vkDestroyFramebuffer(dev,ssaoFB,nullptr); vkDestroyFramebuffer(dev,lightFB,nullptr);
         vkDestroyFramebuffer(dev,waterFB,nullptr); vkDestroyFramebuffer(dev,bloomFB,nullptr); vkDestroyFramebuffer(dev,postFB,nullptr); vkDestroyFramebuffer(dev,hudFB,nullptr);
+        vkDestroyFramebuffer(dev,taaFB,nullptr);
         vkDestroyImageView(dev,depthView,nullptr); vkDestroyImage(dev,depthImg,nullptr); vkFreeMemory(dev,depthMem,nullptr);
         vkDestroyFramebuffer(dev,ssrFB,nullptr);
         destroyImg(dev,gAlbedo); destroyImg(dev,gNormal); destroyImg(dev,gPosition); destroyImg(dev,ssaoImg);
         destroyImg(dev,hdr); destroyImg(dev,hdr2); destroyImg(dev,bloom); destroyImg(dev,out);
+        destroyImg(dev,litLDR); destroyImg(dev,history);
     }
     void resize(VkExtent2D e){ vkDeviceWaitIdle(dev); destroyTargets(); buildTargets(e); }
 
@@ -696,8 +730,17 @@ struct Renderer {
         ShadowPC spc{lightVP}; vkCmdPushConstants(cmd,shadowLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(spc),&spc);
         vkCmdBindVertexBuffers(cmd,0,1,&vb.buf,&off); vkCmdBindIndexBuffer(cmd,ib.buf,0,VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd,indexCount,1,0,0,0); vkCmdEndRenderPass(cmd);
-        // --- update scene UBO ---
-        SceneUBO ubo{}; ubo.viewProj=cam.viewProj((float)ext.width/ext.height); ubo.lightVP=lightVP;
+        // --- update scene UBO (with sub-pixel TAA jitter on the projection) ---
+        float aspect=(float)ext.width/ext.height;
+        Mat4 proj=perspectiveVk(cam.fovy,aspect,0.4f,4000.0f);
+        Mat4 view=lookAt(cam.pos,cam.pos+cam.fwd,cam.up);
+        Mat4 vpUnjit=mul(proj,view);                       // clean VP, used for reprojection
+        { uint32_t ji=frameIndex%8u + 1u;                  // Halton(2,3), 8-sample loop
+          float jx=(halton((int)ji,2)-0.5f)*2.0f/(float)ext.width;
+          float jy=(halton((int)ji,3)-0.5f)*2.0f/(float)ext.height;
+          proj.m[8]+=jx; proj.m[9]+=jy; }                  // shift projection by <=0.5px in NDC
+        Mat4 vpJit=mul(proj,view);
+        SceneUBO ubo{}; ubo.viewProj=vpJit; ubo.lightVP=lightVP;
         Vec3 sun=normalize(Vec3{-0.48f,0.60f,0.64f}); ubo.sunDir[0]=sun.x;ubo.sunDir[1]=sun.y;ubo.sunDir[2]=sun.z;
         ubo.camPos[0]=cam.pos.x;ubo.camPos[1]=cam.pos.y;ubo.camPos[2]=cam.pos.z;ubo.camPos[3]=620.0f;
         memcpy(sceneUBOmap,&ubo,sizeof(ubo));
@@ -765,7 +808,7 @@ struct Renderer {
         BloomPC bpc{}; bpc.texel[0]=1.0f/halfExt.width; bpc.texel[1]=1.0f/halfExt.height; bpc.threshold=1.1f; bpc.knee=0.6f;
         vkCmdPushConstants(cmd,bloomLayout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(bpc),&bpc);
         vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
-        // post -> out
+        // post -> litLDR (tonemapped current frame; TAA resolves it into `out` next)
         VkClearValue co{}; co.color={{0,0,0,1}};
         VkRenderPassBeginInfo r3{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; r3.renderPass=postRP; r3.framebuffer=postFB; r3.renderArea={{0,0},ext}; r3.clearValueCount=1; r3.pClearValues=&co;
         vkCmdBeginRenderPass(cmd,&r3,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
@@ -782,6 +825,39 @@ struct Renderer {
             ppc.sunUV[0]=nx*0.5f+0.5f; ppc.sunUV[1]=ny*0.5f+0.5f; } }
         vkCmdPushConstants(cmd,postLayout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(ppc),&ppc);
         vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
+        // --- TAA resolve: reproject history + blend with the jittered current frame -> out ---
+        { VkClearValue ct{}; ct.color={{0,0,0,1}};
+          VkRenderPassBeginInfo rt{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rt.renderPass=taaRP; rt.framebuffer=taaFB; rt.renderArea={{0,0},ext}; rt.clearValueCount=1; rt.pClearValues=&ct;
+          vkCmdBeginRenderPass(cmd,&rt,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
+          vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,taaPipe);
+          vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,taaLayout,0,1,&taaSet,0,nullptr);
+          TaaPC tpc{}; tpc.prevVP=prevVP;
+          Vec3 f=cam.fwd; Vec3 r=normalize(cross(f,cam.up)); Vec3 up=normalize(cross(r,f));
+          tpc.camPos[0]=cam.pos.x;tpc.camPos[1]=cam.pos.y;tpc.camPos[2]=cam.pos.z; tpc.camPos[3]=taaHistoryValid?0.92f:0.0f;
+          tpc.camDir[0]=f.x;tpc.camDir[1]=f.y;tpc.camDir[2]=f.z; tpc.camDir[3]=tanf(cam.fovy*0.5f);
+          tpc.camRight[0]=r.x;tpc.camRight[1]=r.y;tpc.camRight[2]=r.z; tpc.camRight[3]=aspect;
+          tpc.camUp[0]=up.x;tpc.camUp[1]=up.y;tpc.camUp[2]=up.z;
+          vkCmdPushConstants(cmd,taaLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(tpc),&tpc);
+          vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
+        }
+        // Capture the resolved frame (pre-HUD) into history for next frame, then put
+        // `out` back into COLOR_ATTACHMENT so the HUD pass can draw on it. (out is
+        // TRANSFER_SRC after taaRP; history was SHADER_READ_ONLY.)
+        { VkImageMemoryBarrier hb{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; hb.srcQueueFamilyIndex=hb.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+          hb.image=history.img; hb.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+          hb.oldLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; hb.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; hb.srcAccessMask=VK_ACCESS_SHADER_READ_BIT; hb.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+          vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&hb);
+          VkImageCopy cp{}; cp.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; cp.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; cp.extent={ext.width,ext.height,1};
+          vkCmdCopyImage(cmd,out.img,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,history.img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&cp);
+          hb.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; hb.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; hb.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; hb.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+          vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&hb);
+          VkImageMemoryBarrier ob{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; ob.srcQueueFamilyIndex=ob.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+          ob.image=out.img; ob.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+          ob.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; ob.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ob.srcAccessMask=VK_ACCESS_TRANSFER_READ_BIT; ob.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+          vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,nullptr,0,nullptr,1,&ob);
+        }
+        // remember this frame's clean VP + mark history usable for the next resolve
+        prevVP=vpUnjit; taaHistoryValid=true; frameIndex++;
         // --- HUD overlay: alpha-blend text on the final image (always runs to
         //     transition `out` COLOR_ATTACHMENT -> TRANSFER_SRC for the blit/copy) ---
         {
@@ -851,17 +927,27 @@ static int runOffscreen(World& world, const std::string& sd, const std::string& 
         printf("[ride] t=%.1fs  %.0f km/h  alt %.0fm  %.2fg  %s\n",g_rideSec,tel.speedKmh,tel.altitude,tel.gForce,tel.element); } }
     R.uploadMesh(world); R.buildTargets({W,H}); R.setCenter(shadowCenter);
     Buffer rb=makeBuffer(R.pd,R.dev,(VkDeviceSize)W*H*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx;
+    VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx; cpi.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     VkCommandPool pool; VK_CHECK(vkCreateCommandPool(R.dev,&cpi,nullptr,&pool));
     VkCommandBufferAllocateInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; cbi.commandPool=pool; cbi.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; cbi.commandBufferCount=1;
     VkCommandBuffer cmd; VK_CHECK(vkAllocateCommandBuffers(R.dev,&cbi,&cmd));
     VkCommandBufferBeginInfo bbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; bbi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VK_CHECK(vkBeginCommandBuffer(cmd,&bbi));
-    R.record(cmd,view);
+    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence; VK_CHECK(vkCreateFence(R.dev,&fci,nullptr,&fence));
+    // Accumulate several jittered frames so the still shot is TAA-supersampled (the
+    // camera is static, so reprojected history converges to a clean anti-aliased image).
+    const int TAA_N=8;
+    for(int i=0;i<TAA_N;i++){
+        vkResetCommandBuffer(cmd,0); VK_CHECK(vkBeginCommandBuffer(cmd,&bbi));
+        R.record(cmd,view);
+        VK_CHECK(vkEndCommandBuffer(cmd));
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO}; si.commandBufferCount=1; si.pCommandBuffers=&cmd;
+        VK_CHECK(vkQueueSubmit(R.queue,1,&si,fence)); VK_CHECK(vkWaitForFences(R.dev,1,&fence,VK_TRUE,UINT64_MAX)); VK_CHECK(vkResetFences(R.dev,1,&fence));
+    }
+    // final copy of the resolved frame to the readback buffer (out is TRANSFER_SRC after the HUD pass)
+    vkResetCommandBuffer(cmd,0); VK_CHECK(vkBeginCommandBuffer(cmd,&bbi));
     VkBufferImageCopy reg{}; reg.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; reg.imageExtent={W,H,1};
     vkCmdCopyImageToBuffer(cmd,R.out.img,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,rb.buf,1,&reg);
     VK_CHECK(vkEndCommandBuffer(cmd));
-    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence fence; VK_CHECK(vkCreateFence(R.dev,&fci,nullptr,&fence));
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO}; si.commandBufferCount=1; si.pCommandBuffers=&cmd;
     VK_CHECK(vkQueueSubmit(R.queue,1,&si,fence)); VK_CHECK(vkWaitForFences(R.dev,1,&fence,VK_TRUE,UINT64_MAX));
     void* mp; vkMapMemory(R.dev,rb.mem,0,(VkDeviceSize)W*H*4,0,&mp); const uint8_t* px=(const uint8_t*)mp;

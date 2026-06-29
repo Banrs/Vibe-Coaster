@@ -53,6 +53,10 @@ gamma) → 9. **HUD** overlay → blit/copy.
 - `Hud.h`: font atlas + `addText`/`addRect` + **`buildGameHud(GameHud)`** = exact
   base-game HUD layout (SCORE, speed card, element panel, boost meter).
 - `Physics.h`: `world::RideSim` (ported train kinematics: `advance`, `frame`, `feltG`).
+  Now a full port of the base player loop (`src/main.cpp ~1540-1667`): slope/gravity/
+  drag/friction, launch/climb/boost, chain-lift, uphill assist, **inversion pre-braking**
+  (`Track::invRAt`), `du`/speedScale advance, plus accumulated `score` and a low-passed
+  felt-g (`gVert`; `feltG()` returns the smoothed value, `instG()` the raw one).
 - `Water.h`: `buildWaterMesh` (grid at WATER_Y-0.28 to avoid shoreline z-fight).
 - `Math.h`, `Props.h` (station/coins), `Track.h` (mesh helpers/addBox).
 
@@ -68,7 +72,8 @@ history + 3x3 neighbourhood clamp; `shaders/taa.frag` + the TAA block in `record
 Offscreen `--shot` accumulates 8 jittered frames -> supersampled stills. HUD is drawn
 AFTER the resolve so it stays crisp and never feeds back into history. This is exactly
 the jitter+motion+history plumbing a DLSS backend consumes — DLSS drops in for the
-taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up).
+taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up) ·
+**ride-physics parity** (inversion pre-braking + score accrual + g-smoothing — see below).
 
 ## Current state
 - Build is **clean** and headless run does **not crash** (verified: `--ride 30`,
@@ -80,6 +85,19 @@ taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up)
   ripples. No horizon/water colour-morph, no shoreline z-fight.
 - **TAA verified**: before/after edge crops show jaggies → clean AA; ride shot confirms
   the HUD stays crisp (drawn post-resolve) and the train/telemetry are intact.
+- **Coaster runs like the original (verified).** Telemetry sweep `--ride {5..240}`:
+  score climbs monotonically (1.7k → 67k), g-forces stay inside the base game's OWN
+  validated envelope (+10 / −6 vert, ±6 lat — see `--gaudit` thresholds in
+  `src/main.cpp:1165,1177`), and the **PRETZEL LOOP is entered at ~157 km/h** (braked
+  from the ~230 km/h cruise) — i.e. inversion pre-braking works. The earlier "high g"
+  worry was a false alarm: motion was already faithful (same physics + same
+  `coaster_track.cpp`); the only real gaps were the three behaviors now added.
+- NOTE: could NOT build the base game for a literal side-by-side — its CMake
+  `FetchContent`s raylib from github.com, which the env proxy blocks (403). Parity is by
+  shared source, not by A/B run. `--simtest` / `--gaudit` / `--gtest` are headless physics
+  references in `src/main.cpp` if a future env can fetch raylib.
+- Known cosmetic nit: the HUD SCORE digits slightly overlap the "SCORE" label
+  (pre-existing `Hud.h::buildGameHud` layout, was just hidden when score was always 0).
 
 ## Outstanding user feedback (chronological, newest last)
 1. Sky/clouds tuning — addressed (deeper blue, sparser clouds).
@@ -97,8 +115,13 @@ taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up)
 10. "Whichever AA requires least work when porting to DLSS" — **TAA** (chosen + done):
     DLSS reuses TAA's jitter + motion(reprojection) + history, so it's the least extra
     work to reach DLSS; FXAA shares nothing with it.
+11. "Does the coaster run like the original? make sure it works before more graphics" —
+    addressed + **verified** (see Current state): inversion braking, score, g-smoothing
+    ported; behavior confirmed in the base game's own valid envelope.
 
 ## Suggested next steps (priority order)
+The user gated further graphics work on confirming the ride works (now done). Likely
+next is one of the graphics items below, OR remaining gameplay parity. Confirm with them.
 1. **CSM** (#3): single 260 m ortho shadow map is coarse far out; cascades sharpen
    near-field shadows — a visible realism win.
 2. Full **split-sum IBL** (#8): prefiltered env map + BRDF LUT (currently analytic sky
@@ -111,8 +134,10 @@ taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up)
    via static-world reprojection).
 4. **Async streaming**: the patch re-bake is synchronous (~visible hitch). Consider a
    tighter cell-budget trigger + threading the rebuild.
-5. HUD `score`/`boost` are passed as 0 (RideSim doesn't model them) — wire real values
-   if desired (e.g. coins for score).
+5. Remaining gameplay parity (optional): **station stops** every ~95 s (base
+   `src/main.cpp:1593-1613`; deliberately omitted so the endless demo never pauses),
+   `boost`/brake input, wire `boost` meter to a real value. Fix the HUD SCORE label
+   overlap nit.
 
 ## Task tracker
 TaskList has #1-16. Done: 1,2,4,5,6,7,9,10,11,13. In-progress/partial: 8 (IBL).
@@ -125,3 +150,13 @@ Pending: 3 (CSM), 12 (on-foot/cam modes), 14 (render_fx port), 15 (pathtrace
 - Ride POV + HUD: `--ride 12` (no --cam) ; external train: `--ride 0 --cam -8.5,115,-14.6,-2.356,-0.42`
 - God rays toward sun: `--cam -431,135,360,-0.6,0.05`
 (Focus prints at startup as `[vk] focus: …`; train pos as `[train] pos …`.)
+
+## Ride / physics verification recipe
+```
+cd /home/user/Claude-Coaster/vk && cmake --build build -j
+for s in 5 12 20 30 45 70 100 140 180 240; do \
+  VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json ./build/minecoaster_vk \
+    --shot --ride $s -o /tmp/r.ppm 2>&1 | grep '^\[ride\]'; done
+# expect: km/h ~150-345, |g| inside +10/-6, score climbing each line,
+# inversions (PRETZEL/LOOP/COBRA/...) entered at reduced speed.
+```

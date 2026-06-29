@@ -1163,7 +1163,7 @@ int main(int argc, char **argv) {
                 if (gV < kMinV[kd]) kMinV[kd] = gV;
                 if (fabsf(gL) > kMaxL[kd]) kMaxL[kd] = fabsf(gL);
                 if (gV > seedMaxV) { seedMaxV = gV; seedMaxK = k; }
-                if (gV > 10.0f || gV < -6.0f || fabsf(gL) > 6.0f)
+                if (gV > 8.0f || gV < -5.0f || gL > 8.0f || gL < -5.0f)   // user envelope: vert +8/-5, lat +8/-5
                     offenders.push_back({gV, sd, k, kd, (int)t.kind[k-1], (int)t.kind[k+1], vAt[k], p1.y, gL});
             }
             printf("seed %2d  worst vert g = %+6.1f at cp %d (%s)\n", sd, seedMaxV, seedMaxK,
@@ -1175,12 +1175,12 @@ int main(int argc, char **argv) {
         printf("  %-9s %8s %8s %8s\n", "element", "maxVert", "minVert", "maxLat");
         for (int i = 0; i < M_COUNT; i++) {
             if (kMaxV[i] < -1e8f) continue;
-            const char* flag = (kMaxV[i] > 10.0f || kMinV[i] < -6.0f) ? "  <-- OVER" : "";
+            const char* flag = (kMaxV[i] > 8.0f || kMinV[i] < -5.0f || kMaxL[i] > 8.0f) ? "  <-- OVER" : "";
             printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], kMaxV[i], kMinV[i], kMaxL[i], flag);
         }
         std::sort(offenders.begin(), offenders.end(), [](const Off&a,const Off&b){
             return fabsf(a.g-1.0f) > fabsf(b.g-1.0f); });
-        printf("\n  OFFENDERS outside +10/-6 vert (or |lat|>6): %d total. Worst 25:\n", (int)offenders.size());
+        printf("\n  OFFENDERS outside +8/-5 vert or +8/-5 lat: %d total. Worst 25:\n", (int)offenders.size());
         for (int i = 0; i < (int)offenders.size() && i < 25; i++) {
             Off& o = offenders[i];
             printf("  seed%-2d cp%-3d  vertG=%+6.1f latG=%+5.1f  v=%4.0f (%3.0fkm/h) y=%6.1f  %s [%s->%s->%s]\n",

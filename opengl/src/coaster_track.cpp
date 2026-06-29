@@ -155,7 +155,7 @@ struct Track {
     }
 
     void initLoop() {
-        { float bt; lR = invRFor(M_LOOP, bt); lR *= frnd(0.85f, 1.0f); }
+        { float bt; lR = invRFor(M_LOOP, bt); lR *= frnd(0.95f, 1.0f); }   // don't shrink below the rMin floor
         lf     = headingVec();
         lside  = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -221,10 +221,13 @@ struct Track {
     void initStall() {
         mode = M_STALL;
         setClearance(24.0f, 48.0f);
-        stallLen    = irnd(9, 13);
+        stallLen    = irnd(10, 14);
 
+        // stallH = GRAV*L^2/(8 v^2) is the ballistic (0-g) crest height. The old min of 18 forced
+        // the hill TALLER than ballistic at high speed -> +g that the roll projects onto the lateral
+        // axis. Lower floor keeps it near-ballistic (floaty) so lateral stays in envelope.
         { float L = stallLen * SEG_LEN;
-          stallH  = Clamp(GRAV * L * L / (8.0f * genV * genV), 18.0f, 34.0f); }
+          stallH  = Clamp(GRAV * L * L / (8.0f * genV * genV), 11.0f, 34.0f); }
         stallH      = fminf(stallH, maxClearH());
         stallEntryY = gpos.y;
         stallF      = headingVec();
@@ -329,12 +332,12 @@ struct Track {
         mode = M_WINGOVER;
         setClearance(14.0f, 46.0f);
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag   = turnMagFor(5.0f, 0.06f, 0.30f);
-        bankT     = frnd(1.12f, 1.42f);
+        turnMag   = turnMagFor(3.0f, 0.05f, 0.18f);   // gentler heading rate -> lateral stays in envelope
+        bankT     = frnd(0.60f, 0.84f);               // less bank -> smaller up-vector snap into the exit FLAT
         hillBumps = 1;
-        hillH     = frnd(26.0f, 38.0f);
+        hillH     = frnd(20.0f, 28.0f);               // gentler crest -> less vertical g projected to lateral during the roll
         hillH     = fminf(hillH, maxClearH());
-        hillLen   = irnd(7, 10);
+        hillLen   = irnd(8, 11);
         remain    = hillLen;
     }
 
@@ -389,7 +392,7 @@ struct Track {
     static InvSpec invSpec(SegMode m) {
         switch (m) {
             // Record-sized (NOT inflated): g is held down by braking the ENTRY speed, not by huge radii.
-            case M_LOOP:     return {3.7f, 15.0f, 22.0f, 1.6f, 2.6f};
+            case M_LOOP:     return {3.7f, 24.0f, 22.0f, 1.6f, 2.6f};   // rMin raised (still <rMax 27.5): tops sit at ~36 m/s, a tight apex spikes +g
             case M_IMMEL:    return {3.2f, 17.0f, 26.0f, 1.0f, 2.0f};
             case M_DIVELOOP: return {2.6f, 18.0f, 28.0f, 1.0f, 2.0f};
             case M_COBRA:    return {3.0f, 15.0f, 24.0f, 1.0f, 2.2f};
@@ -403,7 +406,7 @@ struct Track {
     static float invRAt(SegMode m, float v, float &brakeTo) {
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) { brakeTo = 0.0f; return 0.0f; }
-        const float gCeil = 6.5f;            // brake inversion entry, cushion below +8 for spline overshoot
+        const float gCeil = 5.5f;            // brake inversion entry; cushion below +8 (actual spline curvature runs ~1.3x the nominal radius)
         float rMax = s.rMaxRec * 1.25f;      // cap at world-record +25% (manage g by speed/smoothing, not size)
         float vv   = Clamp(v, 28.0f, 135.0f);
 
@@ -497,7 +500,7 @@ struct Track {
         hillH     = fminf(hillH, maxAirH());
         { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 36); }
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        hillTurn  = turnDir * frnd(0.08f, 0.16f);
+        hillTurn  = turnDir * frnd(0.06f, 0.12f);   // gentler sustained turn -> wave lateral within -5 at speed
         bankT     = frnd(0.20f, 0.48f);
         remain    = hillLen;
     }
@@ -771,8 +774,8 @@ struct Track {
             // Cap sustained turn rate so lateral g stays within ~8 felt at the speeds turns are
             // ridden (often faster than the gen-time genV right after a drop). Size for a high
             // reference speed but keep radii within ~WR+25-40% (don't make turns unrealistically wide).
-            float vCap = fmaxf(genV, 74.0f);
-            float dyawMax = 4.7f * SEG_LEN * GRAV / (vCap * vCap);
+            float vCap = fmaxf(genV, 80.0f);
+            float dyawMax = 4.0f * SEG_LEN * GRAV / (vCap * vCap);
             dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;
         }
@@ -1091,15 +1094,25 @@ struct Track {
 
         if ((int)cp.size() >= 3) {
             int m = (int)cp.size() - 2;
-            float w = 0.16f;
-            if (seamEaseN > 0) {
-                float f = (float)seamEaseN / (float)seamEaseTot;
-                w = 0.16f + 0.30f * f;
-                seamEaseN--;
+            // Interior cps of the BIG circular loops are already a smooth parametric curve; the
+            // neighbor-midpoint pull only tightens their convex apex (a loop top measured ~15% tighter
+            // than its radius -> a +g spike). Skip it there. Tight rolls (ROLL/HEARTLINE) still need
+            // the smoothing, and seams/everything else are always smoothed.
+            unsigned char km = kind[m];
+            bool bigLoop = (km == M_LOOP || km == M_IMMEL || km == M_DIVELOOP ||
+                            km == M_COBRA || km == M_PRETZEL);
+            bool interiorInv = bigLoop && kind[m - 1] == km && kind[m + 1] == km && seamEaseN <= 0;
+            if (!interiorInv) {
+                float w = 0.16f;
+                if (seamEaseN > 0) {
+                    float f = (float)seamEaseN / (float)seamEaseTot;
+                    w = 0.16f + 0.30f * f;
+                    seamEaseN--;
+                }
+                cp[m] = Vector3Lerp(cp[m], Vector3Scale(Vector3Add(cp[m - 1], cp[m + 1]), 0.5f), w);
+                up[m] = Vector3Normalize(Vector3Lerp(up[m],
+                            Vector3Scale(Vector3Add(up[m - 1], up[m + 1]), 0.5f), w));
             }
-            cp[m] = Vector3Lerp(cp[m], Vector3Scale(Vector3Add(cp[m - 1], cp[m + 1]), 0.5f), w);
-            up[m] = Vector3Normalize(Vector3Lerp(up[m],
-                        Vector3Scale(Vector3Add(up[m - 1], up[m + 1]), 0.5f), w));
         }
 
         {
@@ -1137,6 +1150,42 @@ struct Track {
                     }
                     float target = Clamp(sd, (Gmin - 1.0f) * k, (Gtrough - 1.0f) * k);
                     cp[i].y = 0.5f * (cp[i + 1].y + cp[i - 1].y - target);
+                }
+        }
+
+        // Global felt-g safety net (vertical AND lateral). The vertical relax above only bounds the
+        // y-2nd-difference; it can't see sharp 3-D kinks (e.g. a corkscrew bottom turning 60 deg in
+        // one segment -> ~20 g). Here we measure the true felt g at each cp from the 3-point curvature
+        // and the logged ride speed, and where it busts the +8/-5 vert or +8/-5 lat envelope we ease
+        // that cp toward its neighbours' chord midpoint. Easing toward the midpoint only relaxes the
+        // local curvature and stays between the neighbours, so it never digs the track into the ground.
+        {
+            int n = (int)cp.size();
+            int lo = n - 14; if (lo < 1) lo = 1;
+            for (int sweep = 0; sweep < 9; sweep++)
+                for (int i = lo; i < n - 1; i++) {
+                    if (kind[i] == M_STATION) continue;
+                    Vector3 a = Vector3Subtract(cp[i], cp[i - 1]);
+                    Vector3 b = Vector3Subtract(cp[i + 1], cp[i]);
+                    float la = Vector3Length(a), lb = Vector3Length(b);
+                    if (la < 1e-3f || lb < 1e-3f) continue;
+                    Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f / lb),
+                                               Vector3Scale(a, 1.0f / la)), 1.0f / (0.5f * (la + lb)));
+                    Vector3 u   = Vector3Normalize(up[i]);
+                    Vector3 tan = Vector3Normalize(Vector3Subtract(cp[i + 1], cp[i - 1]));
+                    Vector3 lat = Vector3CrossProduct(u, tan);
+                    float ll = Vector3Length(lat); if (ll > 1e-4f) lat = Vector3Scale(lat, 1.0f / ll);
+                    // 1.4x speed margin + triggers a touch inside the limit: gvlog underestimates the
+                    // speed an element is actually ridden at (esp. loops/climbs reached via boosts), so
+                    // the cushion is needed to catch those before the audited felt g busts the band.
+                    // Worst element (loop) still lands ~7.8 (at the +8 limit); proportions hold.
+                    float v2 = fmaxf(1.4f * gvlog[i] * gvlog[i], 100.0f);
+                    float gV = Vector3DotProduct(WUP, u) + v2 * Vector3DotProduct(kap, u) / GRAV;
+                    float gL = v2 * Vector3DotProduct(kap, lat) / GRAV;
+                    if (gV > 7.6f || gV < -4.3f || gL > 4.8f || gL < -4.8f) {
+                        Vector3 mid = Vector3Scale(Vector3Add(cp[i - 1], cp[i + 1]), 0.5f);
+                        cp[i] = Vector3Lerp(cp[i], mid, 0.5f);
+                    }
                 }
         }
 

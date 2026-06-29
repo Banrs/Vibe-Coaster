@@ -76,26 +76,39 @@ static inline Vec3 biomeColor(float wx,float wz,int h){
     return cap*s;
 }
 
-// Build a terrain heightmap mesh over [cx-half, cx+half] x [cz-half, cz+half].
-inline void buildTerrain(float cx, float cz, float half, float step, Mesh& out){
+// One flat-shaded quad (a,b,c,d CCW) with an explicit face normal + color.
+inline void addQuad(Mesh& out, Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 n, Vec3 col){
+    uint32_t base=(uint32_t)out.verts.size();
+    out.verts.push_back({a,n,col}); out.verts.push_back({b,n,col});
+    out.verts.push_back({c,n,col}); out.verts.push_back({d,n,col});
+    out.idx.insert(out.idx.end(), { base,base+1,base+2, base,base+2,base+3 });
+}
+
+// Build a *blocky* (voxel) terrain surface over a (2*half)^2 area of 1 m cells,
+// matching the base game's look: each cell is a flat-topped block (cap quad at
+// its integer height) plus vertical side faces dropping only to the lower
+// neighbour. Faces are flat-normal, so the result reads as cubes, and nothing
+// below a neighbour's surface is ever built (never-visible = not drawn).
+inline void buildTerrain(float cx, float cz, float half, float /*step*/, Mesh& out){
     out.verts.clear(); out.idx.clear();
-    int N = (int)(2*half/step) + 1;
-    auto H = [&](int i,int j){ float wx=cx-half+i*step, wz=cz-half+j*step; return (float)terrainH(wx,wz); };
-    out.verts.reserve((size_t)N*N);
-    for(int j=0;j<N;j++) for(int i=0;i<N;i++){
-        float wx=cx-half+i*step, wz=cz-half+j*step;
-        float y=H(i,j);
-        // central-difference normal
-        float hl=H(i>0?i-1:i,j), hr=H(i<N-1?i+1:i,j);
-        float hd=H(i,j>0?j-1:j), hu=H(i,j<N-1?j+1:j);
-        Vec3 n=normalize(Vec3{(hl-hr), 2.0f*step, (hd-hu)});
-        Vec3 col=biomeColor(wx,wz,(int)y);
-        out.verts.push_back({ Vec3{wx,y,wz}, n, col });
-    }
-    out.idx.reserve((size_t)(N-1)*(N-1)*6);
-    for(int j=0;j<N-1;j++) for(int i=0;i<N-1;i++){
-        uint32_t a=j*N+i, b=j*N+i+1, c=(j+1)*N+i, d=(j+1)*N+i+1;
-        out.idx.insert(out.idx.end(), { a,c,b, b,c,d });
+    int R = (int)half;
+    int ox = (int)floorf(cx), oz = (int)floorf(cz);
+    for(int dz=-R; dz<=R; dz++) for(int dx=-R; dx<=R; dx++){
+        float wx=(float)(ox+dx), wz=(float)(oz+dz);
+        int h=terrainH(wx,wz);
+        float top=(float)h+1.0f;
+        Vec3 cap=biomeColor(wx,wz,h);
+        Vec3 body=cap*0.6f;                       // darker sides read as cube faces
+        float xm=wx-0.5f, xp=wx+0.5f, zm=wz-0.5f, zp=wz+0.5f;
+
+        addQuad(out, {xm,top,zm},{xp,top,zm},{xp,top,zp},{xm,top,zp}, {0,1,0}, cap);
+
+        int hpx=terrainH(wx+1,wz), hnx=terrainH(wx-1,wz);
+        int hpz=terrainH(wx,wz+1), hnz=terrainH(wx,wz-1);
+        if(h>hpx){ float b=(float)hpx+1.0f; addQuad(out, {xp,b,zm},{xp,top,zm},{xp,top,zp},{xp,b,zp}, { 1,0,0}, body); }
+        if(h>hnx){ float b=(float)hnx+1.0f; addQuad(out, {xm,b,zm},{xm,top,zm},{xm,top,zp},{xm,b,zp}, {-1,0,0}, body); }
+        if(h>hpz){ float b=(float)hpz+1.0f; addQuad(out, {xm,b,zp},{xp,b,zp},{xp,top,zp},{xm,top,zp}, {0,0, 1}, body); }
+        if(h>hnz){ float b=(float)hnz+1.0f; addQuad(out, {xm,b,zm},{xp,b,zm},{xp,top,zm},{xm,top,zm}, {0,0,-1}, body); }
     }
 }
 

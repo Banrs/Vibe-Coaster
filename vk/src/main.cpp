@@ -207,7 +207,7 @@ int main(int argc, char** argv){
     VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gpi,nullptr,&pipe));
 
     // ---- world mesh ----
-    const float CX=0, CZ=0, HALF=240.0f, STEP=1.5f;
+    const float CX=0, CZ=0, HALF=140.0f, STEP=1.0f;
     Mesh mesh; world::buildTerrain(CX,CZ,HALF,STEP,mesh); world::appendWater(CX,CZ,HALF,mesh);
     printf("[vk] world mesh: %zu verts, %zu indices (%zu tris)\n",
            mesh.verts.size(), mesh.idx.size(), mesh.idx.size()/3);

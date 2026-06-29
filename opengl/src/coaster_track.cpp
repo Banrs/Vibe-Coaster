@@ -403,8 +403,8 @@ struct Track {
     static float invRAt(SegMode m, float v, float &brakeTo) {
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) { brakeTo = 0.0f; return 0.0f; }
-        const float gCeil = 8.0f;            // brake inversion entry to hold +8 g
-        float rMax = s.rMaxRec * 1.30f;      // cap at world-record +30% (manage g by speed, not size)
+        const float gCeil = 6.5f;            // brake inversion entry, cushion below +8 for spline overshoot
+        float rMax = s.rMaxRec * 1.25f;      // cap at world-record +25% (manage g by speed/smoothing, not size)
         float vv   = Clamp(v, 28.0f, 135.0f);
 
         float R    = Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
@@ -764,8 +764,16 @@ struct Track {
         }
 
         if (mode != M_LAUNCH && mode != M_BOOST && mode != M_STATION && !stationRamping) {
-            float jlimYaw = Clamp(2.0f * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.0015f, 0.20f);
+            // Gentler heading-rate ramp (jerk) at seams so the spline doesn't overshoot the
+            // turn entry/exit into a lateral-g spike; the coefficient is speed-scaled.
+            float jlimYaw = Clamp(1.1f * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.0010f, 0.16f);
             dyaw = Clamp(dyaw, genPrevDyaw - jlimYaw, genPrevDyaw + jlimYaw);
+            // Cap sustained turn rate so lateral g stays within ~8 felt at the speeds turns are
+            // ridden (often faster than the gen-time genV right after a drop). Size for a high
+            // reference speed but keep radii within ~WR+25-40% (don't make turns unrealistically wide).
+            float vCap = fmaxf(genV, 74.0f);
+            float dyawMax = 4.7f * SEG_LEN * GRAV / (vCap * vCap);
+            dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;
         }
         gyaw += dyaw;
@@ -788,7 +796,7 @@ struct Track {
                 dy = (y1 - y0) + fminf(((gt + 14.0f) - gpos.y) * 0.12f, 0.0f);
                 break;
             }
-            case M_CLIMB: dy = mega ? 20.0f : 11.0f; break;
+            case M_CLIMB: dy = mega ? 17.0f : 11.0f; break;
             case M_DROP: {
                 float dh = gpos.y - gt;
                 dy = (dh > 70.0f) ? -44.0f : (dh > 34.0f) ? -19.0f : -fmaxf(dh - 9.0f, 0.0f) * 0.32f - 2.0f;
@@ -842,7 +850,7 @@ struct Track {
             float dlim = Clamp(6.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 1.5f, 18.0f);
             // Top-hat / drop family may steepen faster (near-vertical faces); the g-relaxation
             // pass still bounds crest/pull-out g. Inversions keep the conservative dlim above.
-            if (mode == M_DROP || mode == M_CLIMB || mode == M_DIVE) dlim = fmaxf(dlim, 4.0f);
+            if (mode == M_DROP || mode == M_CLIMB || mode == M_DIVE) dlim = fmaxf(dlim, 3.0f);
 
             float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, dlim);
             float curv = dy - genPrevDy;
@@ -1095,14 +1103,14 @@ struct Track {
         }
 
         {
-            const float Gmax = 8.0f, Gmin = -4.5f;
+            const float Gmax = 6.3f, Gmin = -3.0f;   // relax target below the +8/-5 limit so spline overshoot lands within it
             int n = (int)cp.size();
             int lo = n - 14; if (lo < 1) lo = 1;
             for (int sweep = 0; sweep < 4; sweep++)
                 for (int i = lo; i < n - 1; i++) {
                     unsigned char ki = kind[i];
 
-                    if (ki == M_STATION || ki == M_CLIMB) continue;
+                    if (ki == M_STATION) continue;   // CLIMB now relaxed too, so 200m top-hat crests round within +8/-5
 
                     if (up[i].y < 0.55f) continue;
                     float dxa = sqrtf((cp[i].x-cp[i-1].x)*(cp[i].x-cp[i-1].x) + (cp[i].z-cp[i-1].z)*(cp[i].z-cp[i-1].z));

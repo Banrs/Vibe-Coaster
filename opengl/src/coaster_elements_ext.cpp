@@ -98,7 +98,7 @@
 
         brH    = Clamp(0.35f * v, 22.0f, 28.0f);
         brH    = fminf(brH, maxClearH());
-        brSpan = Clamp(1.4f * v, 70.0f, 130.0f);
+        brSpan = Clamp(1.1f * v, 60.0f, 108.0f);   // tighter lateral span -> banana lateral g <=8
         remain = brSteps;
     }
     Vector3 stepBanana() {

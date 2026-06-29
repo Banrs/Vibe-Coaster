@@ -23,7 +23,7 @@ static const float BUILD_MAX  = 430.0f;
 static const float TERRA_MAX  = 320.0f;
 static const float GRAV      = 9.81f;
 
-static float       DRAG      = 0.00047f;  // realistic aero drag; tuned so 200m-drop peaks land ~305-310, avg ~225
+static float       DRAG      = 0.00060f;  // drops settle ~10-20 km/h below the boost peak; minimal braking elsewhere
 static const float FRICTION  = 0.010f;    // steel-on-steel rolling resistance (low)
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
@@ -1011,7 +1011,7 @@ int main(int argc, char **argv) {
                     SegMode ahead = (SegMode)t.tagAt(u + la);
                     if (!Track::isHardInversion(ahead)) continue;
                     float bt; Track::invRAt(ahead, v, bt);
-                    if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
+                    if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 22.0f : 14.0f) * dt, bt);
                     break;
                 }
 
@@ -1118,7 +1118,7 @@ int main(int argc, char **argv) {
                     SegMode ahead = (SegMode)t.tagAt(u + la);
                     if (!Track::isHardInversion(ahead)) continue;
                     float bt; Track::invRAt(ahead, v, bt);
-                    if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
+                    if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 22.0f : 14.0f) * dt, bt);
                     break;
                 }
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
@@ -1577,7 +1577,7 @@ int main(int argc, char **argv) {
                 if (!Track::isHardInversion(ahead)) continue;
 
                 float bt; Track::invRAt(ahead, v, bt);
-                if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 24.0f : 16.0f) * dt, bt);
+                if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 22.0f : 14.0f) * dt, bt);
                 break;
             }
 

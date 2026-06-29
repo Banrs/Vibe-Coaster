@@ -56,7 +56,8 @@ vec4 cloudVolume(vec3 ro, vec3 rd, vec3 sun, float lift){
     t+=dt; }
   return vec4(acc, 1.0-trans);
 }
-vec3 skyCol(vec3 d, vec3 sun, vec3 ro){
+// cloud-free sky gradient — also serves as the IBL reflection probe
+vec3 skyBase(vec3 d, vec3 sun){
   const vec3 ZEN=vec3(0.020,0.14,0.55), MID=vec3(0.10,0.34,0.80), HOR=vec3(0.30,0.54,0.88);
   const vec3 HAZE=vec3(1.0,0.80,0.52), GND=vec3(0.20,0.40,0.62);
   float h = clamp(d.y*0.5+0.5,0.0,1.0); float t = smoothstep(0.03,0.92,h);
@@ -73,9 +74,13 @@ vec3 skyCol(vec3 d, vec3 sun, vec3 ro){
   c += sunTint*pow(fwd,8.0)*0.10*lift;
   float disc = smoothstep(0.9994,0.99986,mu);
   c += vec3(1.0,0.95,0.80)*disc*6.0*lift;
-  vec4 cl = cloudVolume(ro, d, sun, lift);
-  c = c*(1.0-cl.a) + cl.rgb;
   return c;
+}
+vec3 skyCol(vec3 d, vec3 sun, vec3 ro){
+  vec3 c = skyBase(d, sun);
+  float lift = smoothstep(-0.12,0.55,sun.y);
+  vec4 cl = cloudVolume(ro, d, sun, lift);
+  return c*(1.0-cl.a) + cl.rgb;
 }
 
 // ---- PBR ----
@@ -171,7 +176,12 @@ void main(){
 
     vec3 skyA=vec3(0.34,0.45,0.66), ground=vec3(0.16,0.15,0.13);
     vec3 amb = mix(ground, skyA, clamp(N.y*0.5+0.5,0.0,1.0)) * albedo * ao;
-    vec3 c = Lo + amb;
+    // image-based ambient specular: reflect the sky probe, Fresnel-weighted, blurred by roughness
+    vec3 Rdir = reflect(-V, N);
+    vec3 Fr = F_Schlick(NoV, F0);
+    vec3 env = mix(skyBase(Rdir, L), skyA, rough);             // rough -> duller, sky-tinted
+    vec3 iblSpec = env * Fr * ao * (1.0 - rough*0.6);
+    vec3 c = Lo + amb + iblSpec;
 
     float dist = length(wp - ro);
     float fogEnd = max(u.camPos.w, 1.0);

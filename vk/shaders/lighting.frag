@@ -38,7 +38,7 @@ float cloudDens(vec3 p){
   vec3 q=p*0.0012; vec3 qb=floor(q*5.0)/5.0;
   float base=mix(vn3(q*5.0+3.1), vn3(qb*5.0+3.1), 0.5);
   float det=vn3(q*4.0)*0.5+vn3(q*9.5)*0.28+vn3(q*20.0)*0.14;
-  return smoothstep(0.42,0.95, base*0.72+det*0.5) * hf;
+  return smoothstep(0.54,1.0, base*0.72+det*0.5) * hf;   // sparser, thinner clouds
 }
 vec4 cloudVolume(vec3 ro, vec3 rd, vec3 sun, float lift){
   if(rd.y < 0.03) return vec4(0.0);
@@ -51,19 +51,19 @@ vec4 cloudVolume(vec3 ro, vec3 rd, vec3 sun, float lift){
   vec3 sunC=mix(vec3(1.0,0.85,0.70), vec3(1.0,0.97,0.92), lift); vec3 ambC=vec3(0.60,0.67,0.80);
   for(int i=0;i<N;i++){ vec3 p=ro+rd*t; float d=cloudDens(p);
     if(d>0.01){ float ld=cloudDens(p+sun*42.0)+cloudDens(p+sun*95.0)*0.6; float sh=exp(-ld*1.5);
-      vec3 col=ambC+sunC*sh*1.6; float a=clamp(d*0.9,0.0,1.0);
+      vec3 col=ambC+sunC*sh*1.35; float a=clamp(d*0.6,0.0,1.0);
       acc+=trans*a*col; trans*=(1.0-a); if(trans<0.03) break; }
     t+=dt; }
   return vec4(acc, 1.0-trans);
 }
 vec3 skyCol(vec3 d, vec3 sun, vec3 ro){
-  const vec3 ZEN=vec3(0.035,0.22,0.62), MID=vec3(0.22,0.50,0.86), HOR=vec3(0.72,0.86,1.0);
+  const vec3 ZEN=vec3(0.025,0.17,0.58), MID=vec3(0.13,0.40,0.82), HOR=vec3(0.55,0.74,0.97);
   const vec3 HAZE=vec3(1.0,0.78,0.48), GND=vec3(0.30,0.38,0.47);
   float h = clamp(d.y*0.5+0.5,0.0,1.0); float t = smoothstep(0.03,0.92,h);
   vec3 c = mix(HOR,MID,smoothstep(0.0,0.55,t)); c = mix(c,ZEN,smoothstep(0.34,1.0,t));
-  float airMass = exp(-max(d.y,0.0)*2.6); c = mix(c, HOR, airMass*0.42);
+  float airMass = exp(-max(d.y,0.0)*2.6); c = mix(c, HOR, airMass*0.22);
   float hz = exp(-abs(d.y)*4.2); float lift = smoothstep(-0.12,0.55,sun.y);
-  c += HOR*hz*0.20; c += HAZE*hz*(0.08+0.18*(1.0-lift));
+  c += HOR*hz*0.10; c += HAZE*hz*(0.05+0.10*(1.0-lift));
   c = mix(GND,c,smoothstep(-0.10,0.04,d.y));
   float mu = clamp(dot(d,sun),-1.0,1.0); float fwd = max(mu,0.0);
   c *= 0.55+0.45*mu*mu;

@@ -41,6 +41,13 @@ static inline Mat4 lookAt(Vec3 eye, Vec3 center, Vec3 up){
     r.m[12]=-dot(s,eye); r.m[13]=-dot(u,eye); r.m[14]=dot(f,eye);
     return r;
 }
+// Vulkan orthographic (RH, depth [0,1]) — used for the sun shadow map.
+static inline Mat4 orthoVk(float halfW, float halfH, float zn, float zf){
+    Mat4 r{}; for(int i=0;i<16;i++) r.m[i]=0;
+    r.m[0]=1.0f/halfW; r.m[5]=1.0f/halfH;
+    r.m[10]=-1.0f/(zf-zn); r.m[14]=-zn/(zf-zn); r.m[15]=1.0f;
+    return r;
+}
 // Vulkan perspective: right-handed, depth [0,1], with Y flip baked in.
 static inline Mat4 perspectiveVk(float fovyRad, float aspect, float zn, float zf){
     float t = 1.0f/tanf(fovyRad*0.5f);

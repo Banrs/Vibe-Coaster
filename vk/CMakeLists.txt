@@ -43,7 +43,7 @@ endif()
 set(SHADER_OUT ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUT})
 set(SPV_FILES)
-foreach(stage mesh.vert mesh.frag fullscreen.vert bloom.frag post.frag)
+foreach(stage mesh.vert mesh.frag fullscreen.vert bloom.frag post.frag shadow.vert)
   add_custom_command(
     OUTPUT ${SHADER_OUT}/${stage}.spv
     COMMAND ${GLSLANG} -V ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${stage} -o ${SHADER_OUT}/${stage}.spv

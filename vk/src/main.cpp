@@ -26,8 +26,10 @@
 static const VkFormat HDR_FMT   = VK_FORMAT_R16G16B16A16_SFLOAT;
 static const VkFormat DEPTH_FMT = VK_FORMAT_D32_SFLOAT;
 static const VkFormat OUT_FMT   = VK_FORMAT_R8G8B8A8_UNORM;
+static const uint32_t SHADOW_DIM = 2048;
 
-struct ScenePC { Mat4 viewProj; float sunDir[4]; float camPos[4]; };
+struct SceneUBO { Mat4 viewProj; Mat4 lightVP; float sunDir[4]; float camPos[4]; };
+struct ShadowPC { Mat4 lightVP; };
 struct BloomPC { float texel[2]; float threshold; float knee; };
 struct PostPC  { float exposure; float bloomStrength; float pad[2]; };
 
@@ -161,6 +163,46 @@ static VkPipeline makeFsPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout lay
     VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gp,nullptr,&pipe)); return pipe;
 }
 
+static VkRenderPass makeShadowRP(VkDevice dev){
+    VkAttachmentDescription a{}; a.format=DEPTH_FMT; a.samples=VK_SAMPLE_COUNT_1_BIT;
+    a.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR; a.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    a.stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE; a.stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    a.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED; a.finalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkAttachmentReference dr{0,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription s{}; s.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS; s.pDepthStencilAttachment=&dr;
+    VkSubpassDependency dep[2]{};
+    dep[0].srcSubpass=VK_SUBPASS_EXTERNAL; dep[0].dstSubpass=0;
+    dep[0].srcStageMask=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT; dep[0].srcAccessMask=VK_ACCESS_SHADER_READ_BIT;
+    dep[0].dstStageMask=VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT; dep[0].dstAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep[1].srcSubpass=0; dep[1].dstSubpass=VK_SUBPASS_EXTERNAL;
+    dep[1].srcStageMask=VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT; dep[1].srcAccessMask=VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep[1].dstStageMask=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT; dep[1].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; rp.attachmentCount=1; rp.pAttachments=&a; rp.subpassCount=1; rp.pSubpasses=&s; rp.dependencyCount=2; rp.pDependencies=dep;
+    VkRenderPass out; VK_CHECK(vkCreateRenderPass(dev,&rp,nullptr,&out)); return out;
+}
+static VkPipeline makeShadowPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout layout, VkShaderModule vs){
+    VkPipelineShaderStageCreateInfo st{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; st.stage=VK_SHADER_STAGE_VERTEX_BIT; st.module=vs; st.pName="main";
+    VkVertexInputBindingDescription bind{0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription at{0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,pos)};
+    VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO}; vin.vertexBindingDescriptionCount=1; vin.pVertexBindingDescriptions=&bind; vin.vertexAttributeDescriptionCount=1; vin.pVertexAttributeDescriptions=&at;
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; vp.viewportCount=1; vp.scissorCount=1;
+    VkDynamicState dyn[2]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; ds.dynamicStateCount=2; ds.pDynamicStates=dyn;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode=VK_POLYGON_MODE_FILL; rs.cullMode=VK_CULL_MODE_NONE; rs.lineWidth=1.0f;
+    rs.depthBiasEnable=VK_TRUE; rs.depthBiasConstantFactor=1.25f; rs.depthBiasSlopeFactor=1.75f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth.depthTestEnable=VK_TRUE; depth.depthWriteEnable=VK_TRUE; depth.depthCompareOp=VK_COMPARE_OP_LESS;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; cb.attachmentCount=0;
+    VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp.stageCount=1; gp.pStages=&st; gp.pVertexInputState=&vin; gp.pInputAssemblyState=&ia; gp.pViewportState=&vp;
+    gp.pRasterizationState=&rs; gp.pMultisampleState=&ms; gp.pDepthStencilState=&depth; gp.pColorBlendState=&cb; gp.pDynamicState=&ds;
+    gp.layout=layout; gp.renderPass=rp; gp.subpass=0;
+    VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gp,nullptr,&pipe)); return pipe;
+}
+
 // ---- world ----
 struct World { Mesh mesh; Vec3 focus; };
 static World buildWorld(){
@@ -193,45 +235,80 @@ struct Renderer {
     Img hdr, bloom, out; VkImage depthImg; VkDeviceMemory depthMem; VkImageView depthView;
     VkFramebuffer sceneFB, bloomFB, postFB;
     Buffer vb, ib; uint32_t indexCount;
+    // shadows + scene UBO
+    VkRenderPass shadowRP; VkPipelineLayout shadowLayout; VkPipeline shadowPipe; VkFramebuffer shadowFB;
+    Img shadow; VkSampler shadowSamp;
+    VkDescriptorSetLayout sceneDSL; VkDescriptorSet sceneSet; Buffer sceneUBO; void* sceneUBOmap=nullptr;
+    Mat4 lightVP; Vec3 center{};
+
+    void setCenter(Vec3 c){
+        center=c;
+        Vec3 sun=normalize(Vec3{-0.48f,0.60f,0.64f});
+        Vec3 eye=center + sun*400.0f;
+        Mat4 lview=lookAt(eye, center, Vec3{0,1,0});
+        lightVP = mul(orthoVk(260.0f,260.0f,1.0f,800.0f), lview);
+    }
 
     void initPipelines(const std::string& sd){
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.magFilter=si.minFilter=VK_FILTER_LINEAR; si.addressModeU=si.addressModeV=si.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         VK_CHECK(vkCreateSampler(dev,&si,nullptr,&samp));
+        VkSamplerCreateInfo ssi{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        ssi.magFilter=ssi.minFilter=VK_FILTER_LINEAR; ssi.addressModeU=ssi.addressModeV=ssi.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        ssi.borderColor=VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;     // outside the map = lit
+        VK_CHECK(vkCreateSampler(dev,&ssi,nullptr,&shadowSamp));
         sceneRP=makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,true);
         bloomRP=makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
         postRP =makeRP(dev,OUT_FMT,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,false);
-        // descriptor set layouts (1 and 2 combined image samplers)
+        shadowRP=makeShadowRP(dev);
         auto mkDSL=[&](uint32_t n){ std::vector<VkDescriptorSetLayoutBinding> b(n);
             for(uint32_t i=0;i<n;i++){ b[i]={i,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}; }
             VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; ci.bindingCount=n; ci.pBindings=b.data();
             VkDescriptorSetLayout l; VK_CHECK(vkCreateDescriptorSetLayout(dev,&ci,nullptr,&l)); return l; };
         dsl1=mkDSL(1); dsl2=mkDSL(2);
-        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8};
-        VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; pci.maxSets=4; pci.poolSizeCount=1; pci.pPoolSizes=&ps;
+        { VkDescriptorSetLayoutBinding b[2]={
+            {0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
+            {1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr} };
+          VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; ci.bindingCount=2; ci.pBindings=b;
+          VK_CHECK(vkCreateDescriptorSetLayout(dev,&ci,nullptr,&sceneDSL)); }
+        VkDescriptorPoolSize ps[2]={{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,8},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,4}};
+        VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; pci.maxSets=8; pci.poolSizeCount=2; pci.pPoolSizes=ps;
         VK_CHECK(vkCreateDescriptorPool(dev,&pci,nullptr,&dpool));
-        // pipeline layouts
-        auto mkPL=[&](VkDescriptorSetLayout dsl, uint32_t pcSize){
-            VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,pcSize};
+        auto mkPL=[&](VkDescriptorSetLayout dsl, uint32_t pcSize, VkShaderStageFlags pcStage){
+            VkPushConstantRange pcr{pcStage,0,pcSize};
             VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-            if(dsl){ pli.setLayoutCount=1; pli.pSetLayouts=&dsl; } pli.pushConstantRangeCount=1; pli.pPushConstantRanges=&pcr;
+            if(dsl){ pli.setLayoutCount=1; pli.pSetLayouts=&dsl; }
+            if(pcSize){ pli.pushConstantRangeCount=1; pli.pPushConstantRanges=&pcr; }
             VkPipelineLayout l; VK_CHECK(vkCreatePipelineLayout(dev,&pli,nullptr,&l)); return l; };
-        sceneLayout=mkPL(VK_NULL_HANDLE,sizeof(ScenePC));
-        bloomLayout=mkPL(dsl1,sizeof(BloomPC));
-        postLayout =mkPL(dsl2,sizeof(PostPC));
+        sceneLayout =mkPL(sceneDSL,0,0);
+        shadowLayout=mkPL(VK_NULL_HANDLE,sizeof(ShadowPC),VK_SHADER_STAGE_VERTEX_BIT);
+        bloomLayout =mkPL(dsl1,sizeof(BloomPC),VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT);
+        postLayout  =mkPL(dsl2,sizeof(PostPC),VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT);
         VkShaderModule mv=makeShader(dev,sd+"/mesh.vert.spv"), mf=makeShader(dev,sd+"/mesh.frag.spv");
         VkShaderModule fv=makeShader(dev,sd+"/fullscreen.vert.spv");
         VkShaderModule bf=makeShader(dev,sd+"/bloom.frag.spv"), pf=makeShader(dev,sd+"/post.frag.spv");
-        scenePipe=makeScenePipe(dev,sceneRP,sceneLayout,mv,mf);
-        bloomPipe=makeFsPipe(dev,bloomRP,bloomLayout,fv,bf);
-        postPipe =makeFsPipe(dev,postRP,postLayout,fv,pf);
-        vkDestroyShaderModule(dev,mv,nullptr); vkDestroyShaderModule(dev,mf,nullptr);
-        vkDestroyShaderModule(dev,fv,nullptr); vkDestroyShaderModule(dev,bf,nullptr); vkDestroyShaderModule(dev,pf,nullptr);
+        VkShaderModule sv=makeShader(dev,sd+"/shadow.vert.spv");
+        scenePipe =makeScenePipe(dev,sceneRP,sceneLayout,mv,mf);
+        shadowPipe=makeShadowPipe(dev,shadowRP,shadowLayout,sv);
+        bloomPipe =makeFsPipe(dev,bloomRP,bloomLayout,fv,bf);
+        postPipe  =makeFsPipe(dev,postRP,postLayout,fv,pf);
+        for(auto m:{mv,mf,fv,bf,pf,sv}) vkDestroyShaderModule(dev,m,nullptr);
+        // scene UBO (persistently mapped) + shadow map image/framebuffer (fixed size)
+        sceneUBO=makeBuffer(pd,dev,sizeof(SceneUBO),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkMapMemory(dev,sceneUBO.mem,0,sizeof(SceneUBO),0,&sceneUBOmap);
+        shadow=makeImg(pd,dev,SHADOW_DIM,SHADOW_DIM,DEPTH_FMT,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);
+        { VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO}; fbi.renderPass=shadowRP; fbi.attachmentCount=1; fbi.pAttachments=&shadow.view; fbi.width=SHADOW_DIM; fbi.height=SHADOW_DIM; fbi.layers=1;
+          VK_CHECK(vkCreateFramebuffer(dev,&fbi,nullptr,&shadowFB)); }
         // descriptor sets
-        VkDescriptorSetAllocateInfo a1{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; a1.descriptorPool=dpool; a1.descriptorSetCount=1; a1.pSetLayouts=&dsl1;
-        VK_CHECK(vkAllocateDescriptorSets(dev,&a1,&bloomSet));
-        VkDescriptorSetAllocateInfo a2{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; a2.descriptorPool=dpool; a2.descriptorSetCount=1; a2.pSetLayouts=&dsl2;
-        VK_CHECK(vkAllocateDescriptorSets(dev,&a2,&postSet));
+        auto alloc=[&](VkDescriptorSetLayout l){ VkDescriptorSet s; VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; a.descriptorPool=dpool; a.descriptorSetCount=1; a.pSetLayouts=&l; VK_CHECK(vkAllocateDescriptorSets(dev,&a,&s)); return s; };
+        bloomSet=alloc(dsl1); postSet=alloc(dsl2); sceneSet=alloc(sceneDSL);
+        // scene set: UBO + shadow map (fixed; never changes on resize)
+        VkDescriptorBufferInfo ubi{sceneUBO.buf,0,sizeof(SceneUBO)};
+        VkDescriptorImageInfo smi{shadowSamp,shadow.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet sw[2]{};
+        sw[0]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; sw[0].dstSet=sceneSet; sw[0].dstBinding=0; sw[0].descriptorCount=1; sw[0].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sw[0].pBufferInfo=&ubi;
+        sw[1]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; sw[1].dstSet=sceneSet; sw[1].dstBinding=1; sw[1].descriptorCount=1; sw[1].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sw[1].pImageInfo=&smi;
+        vkUpdateDescriptorSets(dev,2,sw,0,nullptr);
     }
     void uploadMesh(const World& w){
         indexCount=(uint32_t)w.mesh.idx.size();
@@ -274,16 +351,28 @@ struct Renderer {
     void record(VkCommandBuffer cmd, const FlyCam& cam){
         auto setVP=[&](VkExtent2D e){ VkViewport v{0,0,(float)e.width,(float)e.height,0,1}; VkRect2D s{{0,0},e};
             vkCmdSetViewport(cmd,0,1,&v); vkCmdSetScissor(cmd,0,1,&s); };
-        // scene -> HDR
+        VkDeviceSize off=0;
+        // --- shadow pass: depth from the sun ---
+        VkClearValue sc; sc.depthStencil={1,0};
+        VkExtent2D sext{SHADOW_DIM,SHADOW_DIM};
+        VkRenderPassBeginInfo rs{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rs.renderPass=shadowRP; rs.framebuffer=shadowFB; rs.renderArea={{0,0},sext}; rs.clearValueCount=1; rs.pClearValues=&sc;
+        vkCmdBeginRenderPass(cmd,&rs,VK_SUBPASS_CONTENTS_INLINE); setVP(sext);
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowPipe);
+        ShadowPC spc{lightVP}; vkCmdPushConstants(cmd,shadowLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(spc),&spc);
+        vkCmdBindVertexBuffers(cmd,0,1,&vb.buf,&off); vkCmdBindIndexBuffer(cmd,ib.buf,0,VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd,indexCount,1,0,0,0); vkCmdEndRenderPass(cmd);
+        // --- update scene UBO ---
+        SceneUBO ubo{}; ubo.viewProj=cam.viewProj((float)ext.width/ext.height); ubo.lightVP=lightVP;
+        Vec3 sun=normalize(Vec3{-0.48f,0.60f,0.64f}); ubo.sunDir[0]=sun.x;ubo.sunDir[1]=sun.y;ubo.sunDir[2]=sun.z;
+        ubo.camPos[0]=cam.pos.x;ubo.camPos[1]=cam.pos.y;ubo.camPos[2]=cam.pos.z;ubo.camPos[3]=620.0f;
+        memcpy(sceneUBOmap,&ubo,sizeof(ubo));
+        // --- scene -> HDR ---
         VkClearValue cl[2]; cl[0].color={{0.18f,0.34f,0.85f,1}}; cl[1].depthStencil={1,0}; // linear sky
         VkRenderPassBeginInfo r1{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; r1.renderPass=sceneRP; r1.framebuffer=sceneFB; r1.renderArea={{0,0},ext}; r1.clearValueCount=2; r1.pClearValues=cl;
         vkCmdBeginRenderPass(cmd,&r1,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,scenePipe);
-        ScenePC pc{}; pc.viewProj=cam.viewProj((float)ext.width/ext.height);
-        Vec3 sun=normalize(Vec3{-0.48f,0.60f,0.64f}); pc.sunDir[0]=sun.x;pc.sunDir[1]=sun.y;pc.sunDir[2]=sun.z;
-        pc.camPos[0]=cam.pos.x;pc.camPos[1]=cam.pos.y;pc.camPos[2]=cam.pos.z;pc.camPos[3]=620.0f;
-        vkCmdPushConstants(cmd,sceneLayout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pc),&pc);
-        VkDeviceSize off=0; vkCmdBindVertexBuffers(cmd,0,1,&vb.buf,&off); vkCmdBindIndexBuffer(cmd,ib.buf,0,VK_INDEX_TYPE_UINT32);
+        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,sceneLayout,0,1,&sceneSet,0,nullptr);
+        vkCmdBindVertexBuffers(cmd,0,1,&vb.buf,&off); vkCmdBindIndexBuffer(cmd,ib.buf,0,VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd,indexCount,1,0,0,0); vkCmdEndRenderPass(cmd);
         // bloom -> half-res
         VkClearValue cb{}; cb.color={{0,0,0,1}};
@@ -329,7 +418,7 @@ static int runOffscreen(const World& world, const std::string& sd, const std::st
     float pr=1; VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qci.queueFamilyIndex=R.gfx; qci.queueCount=1; qci.pQueuePriorities=&pr;
     VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; dci.queueCreateInfoCount=1; dci.pQueueCreateInfos=&qci;
     VK_CHECK(vkCreateDevice(R.pd,&dci,nullptr,&R.dev)); vkGetDeviceQueue(R.dev,R.gfx,0,&R.queue);
-    R.initPipelines(sd); R.uploadMesh(world); R.buildTargets({W,H});
+    R.initPipelines(sd); R.uploadMesh(world); R.buildTargets({W,H}); R.setCenter(world.focus);
 
     FlyCam cam; cam.pos=world.focus+Vec3{135,98,165};
     Buffer rb=makeBuffer(R.pd,R.dev,(VkDeviceSize)W*H*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -384,7 +473,7 @@ static int runWindowed(const World& world, const std::string& sd, int maxFrames)
     VK_CHECK(vkCreateDevice(R.pd,&dci,nullptr,&R.dev)); vkGetDeviceQueue(R.dev,R.gfx,0,&R.queue);
 
     Swap swap{}; makeSwap(R.pd,R.dev,surf,swap,W,H);
-    R.initPipelines(sd); R.uploadMesh(world); R.buildTargets(swap.ext);
+    R.initPipelines(sd); R.uploadMesh(world); R.buildTargets(swap.ext); R.setCenter(world.focus);
 
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx; cpi.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     VkCommandPool pool; VK_CHECK(vkCreateCommandPool(R.dev,&cpi,nullptr,&pool));

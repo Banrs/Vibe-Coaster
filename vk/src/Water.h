@@ -29,7 +29,9 @@ inline Mesh buildWaterMesh(float cx, float cz, float half, int cells = 48){
         float z = z0 + step * (float)j;
         for(int i = 0; i <= N; ++i){
             float x = x0 + step * (float)i;
-            out.verts.push_back({ Vec3{x, WATER_Y, z}, nrm, col });
+            // sit just below sea level so the surface never coincides with a
+            // terrain block top at WATER_Y (which would z-fight at the shore)
+            out.verts.push_back({ Vec3{x, WATER_Y - 0.28f, z}, nrm, col });
         }
     }
     for(int j = 0; j < N; ++j){

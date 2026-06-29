@@ -299,7 +299,9 @@ static VkPipeline makeWaterPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout 
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth.depthTestEnable=VK_TRUE; depth.depthWriteEnable=VK_FALSE; depth.depthCompareOp=VK_COMPARE_OP_LESS;
-    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask=0xF;
+    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask=0xF; cba.blendEnable=VK_TRUE;   // transparent water
+    cba.srcColorBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA; cba.dstColorBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; cba.colorBlendOp=VK_BLEND_OP_ADD;
+    cba.srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor=VK_BLEND_FACTOR_ZERO; cba.alphaBlendOp=VK_BLEND_OP_ADD;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; cb.attachmentCount=1; cb.pAttachments=&cba;
     VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     gp.stageCount=2; gp.pStages=st; gp.pVertexInputState=&vin; gp.pInputAssemblyState=&ia; gp.pViewportState=&vp;

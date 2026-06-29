@@ -124,5 +124,9 @@ void main(){
     float glint = pow(max(dot(N, H), 0.0), 200.0) * rawSh;
     col += vec3(1.0, 0.96, 0.86) * glint * 1.6;
 
-    outColor = vec4(col, 1.0);
+    // Transparency: looking straight down (low fresnel) the water is clear and the
+    // lit bed already in the HDR target shows through; at grazing angles it turns
+    // reflective/opaque. Alpha blending composites over the terrain behind it.
+    float alpha = clamp(mix(0.50, 0.95, fres) + glint, 0.0, 1.0);
+    outColor = vec4(col, alpha);
 }

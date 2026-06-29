@@ -617,6 +617,12 @@ static void drawCubeTexAO(int tile, Vector3 p, float w, float h, float l, Color 
     if (gCapture || gVoxelBatchOpen) {
         emitCubeTex(tile, p, w, h, l, c);
     } else {
+        // A cube is 6 quads = 24 verts. raylib's immediate batch does NOT auto-flush
+        // from raw rlBegin/rlVertex, so without this the terrain overflows the
+        // 8192-quad batch buffer and renders only partially (half / striped every
+        // few rows / nothing, varying per frame). Force a draw when the next cube
+        // would not fit.
+        rlCheckRenderBatchLimit(24);
         rlSetTexture(gAtlas.id);
         rlBegin(RL_QUADS);
         emitCubeTex(tile, p, w, h, l, c);
@@ -1938,10 +1944,11 @@ int main(int argc, char **argv) {
                 float wx = cx * CELL + CELL * 0.5f, wz = cz * CELL + CELL * 0.5f;
                 float ddx = wx - P.x, ddz = wz - P.z;
                 float dist2 = ddx * ddx + ddz * ddz;
-                if (dist2 > fogEnd * fogEnd) continue;
-
+                // Terrain is never culled by view distance or direction — the whole
+                // TERRA_R ring is meshed. The only thing we skip is geometry that can
+                // never be seen (underground, below the lowest exposed neighbour),
+                // handled where the column bottom is chosen below.
                 float gateFog = Clamp((sqrtf(dist2) - fogEnd * 0.70f) / (fogEnd * 0.27f), 0.0f, 1.0f);
-                if (gateFog > 0.97f) continue;
                 const float fog = 0.0f;
 
                 float cellSz = CELL;
@@ -1987,8 +1994,23 @@ int main(int argc, char **argv) {
                     col = mixc(shade(colC, sh * 0.95f), FOG, fog);
                 }
 
-                float colDepth = 42.0f;
-                float colBot = h - colDepth;
+                // Descend only to the lowest adjacent *drawn* surface (natural
+                // terrain, or a neighbour force-lowered by a helix/station clamp).
+                // Anything below that is enclosed on all four sides and can never be
+                // seen, so it is never built — and unlike a fixed column depth this
+                // never leaves a gap at the foot of cliffs (terrain reaches 320 m).
+                auto nbTop = [&](int nbx, int nbz, int nbdx, int nbdz) -> float {
+                    float t = (float)gHCache.get(nbx, nbz);
+                    if (nbdx >= -TERRA_R && nbdx <= TERRA_R && nbdz >= -TERRA_R && nbdz <= TERRA_R) {
+                        float ft = forceTop[(nbdz + TERRA_R) * carveW + (nbdx + TERRA_R)];
+                        if (ft < 1e8f && ft < t) t = ft;
+                    }
+                    return t;
+                };
+                float colBot = fminf(
+                    fminf(nbTop(cx + 1, cz, dx + 1, dz), nbTop(cx - 1, cz, dx - 1, dz)),
+                    fminf(nbTop(cx, cz + 1, dx, dz + 1), nbTop(cx, cz - 1, dx, dz - 1)));
+                if (colBot > (float)h) colBot = (float)h;   // fully enclosed -> cap only
                 int   ci  = (dz + TERRA_R) * carveW + (dx + TERRA_R);
                 float cLo = carveLo[ci], cHi = carveHi[ci];
                 if (carveDeep[ci] < colBot) colBot = carveDeep[ci];
@@ -2006,7 +2028,8 @@ int main(int argc, char **argv) {
                         drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
                     }
                 } else {
-                    drawCubeTex(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col);
+                    if (h - colBot > 0.01f)   // skip the body entirely on flat ground (cap only)
+                        drawCubeTex(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col);
                     drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
 
                     if (!depthPass && dist2 < 56.0f * 56.0f && cHi <= cLo) {

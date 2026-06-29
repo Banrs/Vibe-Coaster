@@ -365,7 +365,7 @@ static World buildWorld(){
     world::buildTrackMesh(trk,w.mesh,w.focus.x,w.focus.z,half);
     world::buildStation(trk,w.mesh,w.focus.x,w.focus.z,half);
     world::buildCoins(trk,w.mesh,w.focus.x,w.focus.z,half);
-    w.water=world::buildWaterMesh(w.focus.x,w.focus.z,half);          // shaded as a separate pass
+    w.water=world::buildWaterMesh(w.focus.x,w.focus.z,1600.0f,120);   // ocean to the horizon around the island
     printf("[vk] world mesh: %zu verts, %zu tris; water: %zu tris\n",
            w.mesh.verts.size(), w.mesh.idx.size()/3, w.water.idx.size()/3);
     printf("[vk] focus: %.1f %.1f %.1f\n", w.focus.x, w.focus.y, w.focus.z);

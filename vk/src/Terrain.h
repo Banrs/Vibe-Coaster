@@ -11,7 +11,7 @@ struct Mesh   { std::vector<Vertex> verts; std::vector<uint32_t> idx; };
 
 namespace world {
 
-static const float WATER_Y   = 30.0f;
+static const float WATER_Y   = 64.0f;   // global sea level (Minecraft-style)
 static const float TERRA_MAX  = 320.0f;
 
 static inline float clampf(float v,float a,float b){ return v<a?a:(v>b?b:v); }

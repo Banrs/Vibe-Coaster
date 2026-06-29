@@ -334,7 +334,7 @@ static VkPipeline makeHudPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout la
     st[1]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; st[1].stage=VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module=fs; st[1].pName="main";
     VkVertexInputBindingDescription bind{0,sizeof(hud::Vtx),VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription at[3]={{0,0,VK_FORMAT_R32G32_SFLOAT,offsetof(hud::Vtx,x)},
-        {1,0,VK_FORMAT_R32G32_SFLOAT,offsetof(hud::Vtx,u)},{2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(hud::Vtx,r)}};
+        {1,0,VK_FORMAT_R32G32_SFLOAT,offsetof(hud::Vtx,u)},{2,0,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(hud::Vtx,r)}};
     VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vin.vertexBindingDescriptionCount=1; vin.pVertexBindingDescriptions=&bind; vin.vertexAttributeDescriptionCount=3; vin.pVertexAttributeDescriptions=at;
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -384,18 +384,25 @@ struct FlyCam {
 };
 
 // ---- on-rails ride camera + telemetry (drives the HUD) ----
-static const char* RIDE_NM[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION",
-    "DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL",
-    "DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
-struct RideTelemetry { float speedKmh=0, altitude=0, gForce=1; const char* element="FLAT"; };
+// Friendly element names matching the base game's OpenGL HUD (src/main.cpp).
+static const char* RIDE_NM[M_COUNT] = {"","TOP HAT","DROP","AIRTIME HILL","OVERBANKED TURN",
+    "VERTICAL LOOP","CORKSCREW","STATION","SPLASHDOWN","LAUNCH","HELIX","BOOSTER","IMMELMANN",
+    "S-CURVE","DIVE TURN","BANKED AIRTIME","WAVE TURN","ZERO-G STALL","DIVE LOOP","COBRA ROLL",
+    "WING-OVER","HEARTLINE ROLL","PRETZEL LOOP","STENGEL DIVE","BANANA ROLL"};
+static bool isSpecialElem(int k){
+    return k==M_LOOP||k==M_ROLL||k==M_IMMEL||k==M_STALL||k==M_DIVELOOP||k==M_COBRA||
+           k==M_HEARTLINE||k==M_WINGOVER||k==M_PRETZEL||k==M_STENGEL||k==M_BANANA;
+}
+struct RideTelemetry { float speedKmh=0, altitude=0, gForce=1; const char* element=""; bool special=false; };
 static CamView rideCamView(const ::Track& trk, const world::RideSim& rs, RideTelemetry& tel){
     Vector3 P,fwd,up,right; rs.frame(trk,P,fwd,up,right);
     Vec3 vP=world::v3(P), vF=normalize(world::v3(fwd)), vU=normalize(world::v3(up));
     CamView c; c.pos = vP + vU*2.3f - vF*0.6f;     // seat just above & behind the rail point
     c.fwd = vF; c.up = vU; c.fovy = 1.18f;          // a touch wider for the sense of speed
-    tel.speedKmh = rs.v*3.6f; tel.altitude = P.y; tel.gForce = rs.feltG(trk);
+    tel.speedKmh = rs.v*3.6f; tel.altitude = P.y - groundTopAt(P.x,P.z); tel.gForce = rs.feltG(trk);
     int k=(int)rs.u; int n=(int)trk.kind.size();
-    if(n>0){ if(k<0)k=0; if(k>=n)k=n-1; int kind=trk.kind[k]; tel.element=(kind>=0&&kind<M_COUNT)?RIDE_NM[kind]:"FLAT"; }
+    if(n>0){ if(k<0)k=0; if(k>=n)k=n-1; int kind=trk.kind[k];
+        tel.element=(kind>=0&&kind<M_COUNT)?RIDE_NM[kind]:""; tel.special=isSpecialElem(kind); }
     return c;
 }
 // optional --ride <seconds> for headless ride-camera verification
@@ -728,16 +735,40 @@ struct Renderer {
         // --- HUD overlay: alpha-blend text on the final image (always runs to
         //     transition `out` COLOR_ATTACHMENT -> TRANSFER_SRC for the blit/copy) ---
         {
-            std::vector<hud::Vtx> v; v.reserve(512);
-            hud::addText(v,"MINECOASTER",18.0f,16.0f,22.0f, 1.0f,1.0f,1.0f);
+            std::vector<hud::Vtx> v; v.reserve(2048);
+            float W=(float)ext.width, Hh=(float)ext.height;
+            auto panel=[&](float x,float y,float w,float h,float a){ hud::addRect(v,x,y,w,h, 0.07f,0.085f,0.13f, a); };
+            auto txt=[&](const char* s,float x,float y,float sc,float r,float g,float b){
+                hud::addText(v,s,x+1.5f,y+1.5f,sc, 0.05f,0.06f,0.10f,0.85f);   // drop shadow
+                hud::addText(v,s,x,y,sc, r,g,b,1.0f); };
+            // brand panel (top-left)
+            panel(18,14,232,40,0.60f); txt("MINECOASTER",30,20,22, 1.0f,1.0f,1.0f);
             if(hudRide){
-                char b[64];
-                snprintf(b,sizeof b,"SPEED  %4.0f KM/H",hudTel.speedKmh); hud::addText(v,b,18.0f,52.0f,20.0f, 1.0f,0.86f,0.30f);
-                snprintf(b,sizeof b,"ALT    %4.0f M",   hudTel.altitude); hud::addText(v,b,18.0f,78.0f,20.0f, 0.70f,0.92f,1.0f);
-                snprintf(b,sizeof b,"G      %+.1f",      hudTel.gForce);   hud::addText(v,b,18.0f,104.0f,20.0f, 1.0f,0.55f,0.55f);
-                snprintf(b,sizeof b,"ELEM   %s",         hudTel.element);  hud::addText(v,b,18.0f,130.0f,20.0f, 0.80f,1.0f,0.80f);
+                // speed card (top-right): big colour-coded KM/H + altitude
+                char num[16]; snprintf(num,sizeof num,"%d",(int)hudTel.speedKmh);
+                float sc=40.0f, nw=hud::textWidth(num,sc);
+                float cardW=nw+152.0f, cardX=W-cardW-18.0f;
+                panel(cardX,14,cardW,64,0.60f);
+                float sr=1,sg=1,sb=1;
+                if(hudTel.speedKmh>250){ sr=1.0f;sg=0.47f;sb=0.35f; } else if(hudTel.speedKmh>150){ sr=0.47f;sg=0.90f;sb=0.66f; }
+                txt(num,cardX+18,20,sc, sr,sg,sb);
+                txt("KM/H",cardX+30+nw,34,18, 0.66f,0.72f,0.84f);
+                char alt[24]; snprintf(alt,sizeof alt,"ALT %dM",(int)hudTel.altitude);
+                float aw=hud::textWidth(alt,15.0f); txt(alt,cardX+cardW-aw-14,57,15, 0.59f,0.66f,0.78f);
+                // element name panel with accent bar (below the speed card)
+                if(hudTel.element && hudTel.element[0]){
+                    float esc=18.0f, ew=hud::textWidth(hudTel.element,esc), pw=ew+30.0f, px=W-pw-18.0f, py=88.0f;
+                    panel(px,py,pw,30,0.60f);
+                    float ar=0.59f,ag=0.72f,ab=0.90f; if(hudTel.special){ ar=1.0f;ag=0.78f;ab=0.43f; }
+                    hud::addRect(v,px+8,py+8,4,14, ar,ag,ab,1.0f);
+                    txt(hudTel.element,px+18,py+7,esc, hudTel.special?ar:0.84f, hudTel.special?ag:0.88f, hudTel.special?ab:0.94f);
+                }
+                // g-meter (bottom-left)
+                char gs[24]; snprintf(gs,sizeof gs,"%+.1f G",hudTel.gForce);
+                float gr=1.0f,gg=0.80f,gb=0.45f; if(hudTel.gForce>5.0f||hudTel.gForce<-1.5f){ gr=1.0f;gg=0.40f;gb=0.35f; }
+                panel(18,Hh-50,150,34,0.55f); txt(gs,30,Hh-44,20, gr,gg,gb);
             } else {
-                hud::addText(v,"FREE-FLY  (C TO RIDE)",18.0f,52.0f,16.0f, 0.85f,0.90f,0.95f);
+                txt("FREE-FLY   PRESS C TO RIDE",30,62,15, 0.80f,0.86f,0.95f);
             }
             hudVtxCount=(uint32_t)v.size(); if(hudVtxCount>hudVtxCap) hudVtxCount=hudVtxCap;
             if(hudVtxCount) memcpy(hudVBmap,v.data(),(size_t)hudVtxCount*sizeof(hud::Vtx));

@@ -25,9 +25,9 @@ namespace hud {
 // ---------------------------------------------------------------------------
 
 struct Vtx {
-    float x, y;     // position in pixels, top-left origin
-    float u, v;     // texture coordinate, [0,1]
-    float r, g, b;  // color
+    float x, y;        // position in pixels, top-left origin
+    float u, v;        // texture coordinate, [0,1]
+    float r, g, b, a;  // colour + alpha (final alpha = atlas.r * a)
 };
 
 struct Atlas {
@@ -158,6 +158,10 @@ static constexpr uint8_t kFont[kNumChars][8] = {
 static constexpr int kRows = (kNumChars + kCols - 1) / kCols; // 6 rows for 95 glyphs
 static constexpr int kAtlasW = kCols * (kGlyphW + kPad);
 static constexpr int kAtlasH = kRows * (kGlyphH + kPad);
+// the last grid cell (index 95) is unused by glyphs; we fill it solid white so
+// untextured panels can sample a fully-opaque texel.
+static constexpr float kSolidU = (kCols*(kGlyphW+kPad) - 4.0f) / float(kAtlasW);
+static constexpr float kSolidV = (kRows*(kGlyphH+kPad) - 4.0f) / float(kAtlasH);
 
 } // namespace detail
 
@@ -189,6 +193,10 @@ inline Atlas fontAtlas() {
             }
         }
     }
+    // solid white block in the unused last cell (for untextured panels)
+    for (int py = kAtlasH - 8; py < kAtlasH; ++py)
+        for (int px = kAtlasW - 8; px < kAtlasW; ++px)
+            a.pixels[static_cast<size_t>(py) * a.w + px] = 255;
     return a;
 }
 
@@ -210,9 +218,22 @@ inline float textWidth(const std::string& text, float scale) {
 // Append textured quads for `text` at pixel (px,py) (top-left of first glyph
 // cell). `scale` is the size in pixels of one glyph cell. Six vertices per glyph
 // (two triangles), suitable for a non-indexed triangle-list draw.
+// Append a solid (untextured) filled rectangle — used for HUD panels/bars.
+inline void addRect(std::vector<Vtx>& out, float x, float y, float w, float h,
+                    float r, float g, float b, float a) {
+    using namespace detail;
+    float u = kSolidU, v = kSolidV;
+    Vtx tl{ x,   y,   u, v, r, g, b, a };
+    Vtx bl{ x,   y+h, u, v, r, g, b, a };
+    Vtx br{ x+w, y+h, u, v, r, g, b, a };
+    Vtx tr{ x+w, y,   u, v, r, g, b, a };
+    out.push_back(tl); out.push_back(bl); out.push_back(br);
+    out.push_back(tl); out.push_back(br); out.push_back(tr);
+}
+
 inline void addText(std::vector<Vtx>& out, const std::string& text,
                     float px, float py, float scale,
-                    float r, float g, float b) {
+                    float r, float g, float b, float a = 1.0f) {
     using namespace detail;
 
     const float du = static_cast<float>(kGlyphW) / static_cast<float>(kAtlasW);
@@ -244,10 +265,10 @@ inline void addText(std::vector<Vtx>& out, const std::string& text,
             float y1 = y + scale;
 
             // Two triangles: (TL,BL,BR) and (TL,BR,TR)
-            Vtx tl{ x0, y0, u0, v0, r, g, b };
-            Vtx bl{ x0, y1, u0, v1, r, g, b };
-            Vtx br{ x1, y1, u1, v1, r, g, b };
-            Vtx tr{ x1, y0, u1, v0, r, g, b };
+            Vtx tl{ x0, y0, u0, v0, r, g, b, a };
+            Vtx bl{ x0, y1, u0, v1, r, g, b, a };
+            Vtx br{ x1, y1, u1, v1, r, g, b, a };
+            Vtx tr{ x1, y0, u1, v0, r, g, b, a };
 
             out.push_back(tl);
             out.push_back(bl);

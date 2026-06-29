@@ -13,6 +13,8 @@
 #include "Terrain.h"
 #include "Track.h"
 #include "CoasterTrack.h"
+#include "Props.h"
+#include "Physics.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -212,6 +214,8 @@ static World buildWorld(){
     world::appendWater(w.focus.x,w.focus.z,half,w.mesh);
     world::buildTrees(w.focus.x,w.focus.z,half,w.mesh);
     world::buildTrackMesh(trk,w.mesh,w.focus.x,w.focus.z,half);
+    world::buildStation(trk,w.mesh,w.focus.x,w.focus.z,half);
+    world::buildCoins(trk,w.mesh,w.focus.x,w.focus.z,half);
     printf("[vk] world mesh: %zu verts, %zu tris\n", w.mesh.verts.size(), w.mesh.idx.size()/3);
     return w;
 }

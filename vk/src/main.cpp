@@ -306,9 +306,9 @@ static VkPipeline makeWaterPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout 
 }
 
 // ---- world ----
-struct World { Mesh mesh; Mesh water; Vec3 focus; };
+struct World { Mesh mesh; Mesh water; Vec3 focus; ::Track trk; };
 static World buildWorld(){
-    World w; ::Track trk; world::genLongTrack(trk,2200);
+    World w; ::Track& trk=w.trk; world::genLongTrack(trk,2200);
     w.focus=world::trackFocus(trk,260); float half=170.0f;
     world::buildTerrain(w.focus.x,w.focus.z,half,1.0f,w.mesh);
     world::buildTrees(w.focus.x,w.focus.z,half,w.mesh);
@@ -321,11 +321,35 @@ static World buildWorld(){
     printf("[vk] focus: %.1f %.1f %.1f\n", w.focus.x, w.focus.y, w.focus.z);
     return w;
 }
+// A concrete camera (position + orthonormal basis) the renderer consumes. Both
+// the free-fly camera and the on-rails ride camera resolve to one of these.
+struct CamView {
+    Vec3 pos{0,0,0}, fwd{0,0,1}, up{0,1,0}; float fovy=1.05f;
+    Mat4 viewProj(float a) const { return mul(perspectiveVk(fovy,a,0.4f,4000.0f), lookAt(pos,pos+fwd,up)); }
+};
 struct FlyCam {
     Vec3 pos; float yaw=-2.2f, pitch=-0.32f;
     Vec3 fwd() const { float cp=cosf(pitch),sp=sinf(pitch),cy=cosf(yaw),sy=sinf(yaw); return normalize(Vec3{cp*sy,sp,cp*cy}); }
-    Mat4 viewProj(float a) const { Vec3 f=fwd(); return mul(perspectiveVk(1.05f,a,0.4f,4000.0f), lookAt(pos,pos+f,Vec3{0,1,0})); }
+    CamView view() const { CamView v; v.pos=pos; v.fwd=fwd(); v.up={0,1,0}; return v; }
 };
+
+// ---- on-rails ride camera + telemetry (drives the HUD) ----
+static const char* RIDE_NM[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION",
+    "DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL",
+    "DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+struct RideTelemetry { float speedKmh=0, altitude=0, gForce=1; const char* element="FLAT"; };
+static CamView rideCamView(const ::Track& trk, const world::RideSim& rs, RideTelemetry& tel){
+    Vector3 P,fwd,up,right; rs.frame(trk,P,fwd,up,right);
+    Vec3 vP=world::v3(P), vF=normalize(world::v3(fwd)), vU=normalize(world::v3(up));
+    CamView c; c.pos = vP + vU*2.3f - vF*0.6f;     // seat just above & behind the rail point
+    c.fwd = vF; c.up = vU; c.fovy = 1.18f;          // a touch wider for the sense of speed
+    tel.speedKmh = rs.v*3.6f; tel.altitude = P.y; tel.gForce = rs.feltG(trk);
+    int k=(int)rs.u; int n=(int)trk.kind.size();
+    if(n>0){ if(k<0)k=0; if(k>=n)k=n-1; int kind=trk.kind[k]; tel.element=(kind>=0&&kind<M_COUNT)?RIDE_NM[kind]:"FLAT"; }
+    return c;
+}
+// optional --ride <seconds> for headless ride-camera verification
+static bool g_rideSet=false; static float g_rideSec=0.0f;
 
 // =====================================================================
 // Renderer: HDR scene -> bloom -> post, into outImg (TRANSFER_SRC)
@@ -504,7 +528,7 @@ struct Renderer {
     }
     void resize(VkExtent2D e){ vkDeviceWaitIdle(dev); destroyTargets(); buildTargets(e); }
 
-    void record(VkCommandBuffer cmd, const FlyCam& cam){
+    void record(VkCommandBuffer cmd, const CamView& cam){
         auto setVP=[&](VkExtent2D e){ VkViewport v{0,0,(float)e.width,(float)e.height,0,1}; VkRect2D s{{0,0},e};
             vkCmdSetViewport(cmd,0,1,&v); vkCmdSetScissor(cmd,0,1,&s); };
         VkDeviceSize off=0;
@@ -543,10 +567,10 @@ struct Renderer {
         vkCmdBeginRenderPass(cmd,&r1,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,lightPipe);
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,lightLayout,0,1,&lightSet,0,nullptr);
-        { Vec3 f=cam.fwd(); Vec3 r=normalize(cross(f,Vec3{0,1,0})); Vec3 up=cross(r,f);
+        { Vec3 f=cam.fwd; Vec3 r=normalize(cross(f,cam.up)); Vec3 up=normalize(cross(r,f));
           LightPC lpc{}; lpc.camDir[0]=f.x;lpc.camDir[1]=f.y;lpc.camDir[2]=f.z;
           lpc.camRight[0]=r.x;lpc.camRight[1]=r.y;lpc.camRight[2]=r.z; lpc.camUp[0]=up.x;lpc.camUp[1]=up.y;lpc.camUp[2]=up.z;
-          lpc.params[0]=tanf(1.05f*0.5f); lpc.params[1]=(float)ext.width/ext.height; lpc.params[2]=timeSec;
+          lpc.params[0]=tanf(cam.fovy*0.5f); lpc.params[1]=(float)ext.width/ext.height; lpc.params[2]=timeSec;
           vkCmdPushConstants(cmd,lightLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(lpc),&lpc); }
         vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
         // --- forward water over the lit HDR, depth-tested against terrain ---
@@ -607,6 +631,10 @@ static int runOffscreen(const World& world, const std::string& sd, const std::st
 
     FlyCam cam; cam.pos=world.focus+Vec3{135,98,165};
     if(g_camSet){ cam.pos=g_camPos; cam.yaw=g_camYaw; cam.pitch=g_camPitch; }
+    CamView view=cam.view();
+    if(g_rideSet){ world::RideSim rs; rs.reset(world.trk); rs.advance(world.trk,g_rideSec);
+        RideTelemetry tel; view=rideCamView(world.trk,rs,tel);
+        printf("[ride] t=%.1fs  %.0f km/h  alt %.0fm  %.2fg  %s\n",g_rideSec,tel.speedKmh,tel.altitude,tel.gForce,tel.element); }
     Buffer rb=makeBuffer(R.pd,R.dev,(VkDeviceSize)W*H*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx;
     VkCommandPool pool; VK_CHECK(vkCreateCommandPool(R.dev,&cpi,nullptr,&pool));
@@ -614,7 +642,7 @@ static int runOffscreen(const World& world, const std::string& sd, const std::st
     VkCommandBuffer cmd; VK_CHECK(vkAllocateCommandBuffers(R.dev,&cbi,&cmd));
     VkCommandBufferBeginInfo bbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; bbi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(cmd,&bbi));
-    R.record(cmd,cam);
+    R.record(cmd,view);
     VkBufferImageCopy reg{}; reg.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; reg.imageExtent={W,H,1};
     vkCmdCopyImageToBuffer(cmd,R.out.img,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,rb.buf,1,&reg);
     VK_CHECK(vkEndCommandBuffer(cmd));
@@ -669,33 +697,44 @@ static int runWindowed(const World& world, const std::string& sd, int maxFrames)
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; fci.flags=VK_FENCE_CREATE_SIGNALED_BIT; VkFence fence; VK_CHECK(vkCreateFence(R.dev,&fci,nullptr,&fence));
 
     FlyCam cam; cam.pos=world.focus+Vec3{120,86,150};
+    world::RideSim rs; rs.reset(world.trk); bool rideMode=false; RideTelemetry tel; float telAcc=0;
     SDL_SetRelativeMouseMode(SDL_TRUE);
-    printf("[vk] controls: WASD move, Q/E down/up, mouse look, Shift fast, Esc quit\n");
+    printf("[vk] controls: WASD move, Q/E down/up, mouse look, Shift fast, C ride coaster, Esc quit\n");
     auto recreate=[&](){ vkDeviceWaitIdle(R.dev); vkDestroySwapchainKHR(R.dev,swap.chain,nullptr); makeSwap(R.pd,R.dev,surf,swap,W,H); R.resize(swap.ext); };
 
     bool run=true; uint32_t last=SDL_GetTicks(); int frame=0;
     while(run){
         uint32_t now=SDL_GetTicks(); float dt=(now-last)/1000.0f; last=now; if(dt>0.1f)dt=0.1f;
+        R.timeSec += dt;
         SDL_Event e;
         while(SDL_PollEvent(&e)){
             if(e.type==SDL_QUIT) run=false;
             else if(e.type==SDL_KEYDOWN&&e.key.keysym.sym==SDLK_ESCAPE) run=false;
-            else if(e.type==SDL_MOUSEMOTION){ cam.yaw-=e.motion.xrel*0.0025f; cam.pitch-=e.motion.yrel*0.0025f;
+            else if(e.type==SDL_KEYDOWN&&e.key.keysym.sym==SDLK_c){ rideMode=!rideMode; if(rideMode) rs.reset(world.trk);
+                printf("[vk] %s\n", rideMode?"ride camera ON (C to exit)":"free-fly camera"); }
+            else if(e.type==SDL_MOUSEMOTION&&!rideMode){ cam.yaw-=e.motion.xrel*0.0025f; cam.pitch-=e.motion.yrel*0.0025f;
                 if(cam.pitch>1.5f)cam.pitch=1.5f; if(cam.pitch<-1.5f)cam.pitch=-1.5f; }
             else if(e.type==SDL_WINDOWEVENT&&e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED) recreate();
         }
-        const Uint8* ks=SDL_GetKeyboardState(nullptr); Vec3 f=cam.fwd(), r=normalize(cross(f,Vec3{0,1,0}));
-        float sp=(ks[SDL_SCANCODE_LSHIFT]?120.0f:38.0f)*dt;
-        if(ks[SDL_SCANCODE_W])cam.pos=cam.pos+f*sp; if(ks[SDL_SCANCODE_S])cam.pos=cam.pos-f*sp;
-        if(ks[SDL_SCANCODE_D])cam.pos=cam.pos+r*sp; if(ks[SDL_SCANCODE_A])cam.pos=cam.pos-r*sp;
-        if(ks[SDL_SCANCODE_E])cam.pos.y+=sp; if(ks[SDL_SCANCODE_Q])cam.pos.y-=sp;
+        CamView view;
+        if(rideMode){
+            rs.advance(world.trk,dt); view=rideCamView(world.trk,rs,tel);
+            telAcc+=dt; if(telAcc>0.5f){ telAcc=0; printf("[ride] %.0f km/h  alt %.0fm  %.2fg  %s\n",tel.speedKmh,tel.altitude,tel.gForce,tel.element); }
+        } else {
+            const Uint8* ks=SDL_GetKeyboardState(nullptr); Vec3 f=cam.fwd(), r=normalize(cross(f,Vec3{0,1,0}));
+            float sp=(ks[SDL_SCANCODE_LSHIFT]?120.0f:38.0f)*dt;
+            if(ks[SDL_SCANCODE_W])cam.pos=cam.pos+f*sp; if(ks[SDL_SCANCODE_S])cam.pos=cam.pos-f*sp;
+            if(ks[SDL_SCANCODE_D])cam.pos=cam.pos+r*sp; if(ks[SDL_SCANCODE_A])cam.pos=cam.pos-r*sp;
+            if(ks[SDL_SCANCODE_E])cam.pos.y+=sp; if(ks[SDL_SCANCODE_Q])cam.pos.y-=sp;
+            view=cam.view();
+        }
 
         VK_CHECK(vkWaitForFences(R.dev,1,&fence,VK_TRUE,UINT64_MAX));
         uint32_t idx; VkResult acq=vkAcquireNextImageKHR(R.dev,swap.chain,UINT64_MAX,semAcq,VK_NULL_HANDLE,&idx);
         if(acq==VK_ERROR_OUT_OF_DATE_KHR){ recreate(); continue; }
         VK_CHECK(vkResetFences(R.dev,1,&fence)); vkResetCommandBuffer(cmd,0);
         VkCommandBufferBeginInfo bbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; VK_CHECK(vkBeginCommandBuffer(cmd,&bbi));
-        R.record(cmd,cam);
+        R.record(cmd,view);
         // blit out -> swapchain image
         VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; toDst.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED; toDst.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         toDst.srcQueueFamilyIndex=toDst.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED; toDst.image=swap.images[idx]; toDst.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
@@ -734,6 +773,7 @@ int main(int argc, char** argv){
         else if(!strcmp(argv[i],"--frames")&&i+1<argc) maxFrames=atoi(argv[++i]);
         else if(!strcmp(argv[i],"--cam")&&i+1<argc){ // x,y,z,yaw,pitch
             float x,y,z,yw,pt; if(sscanf(argv[++i],"%f,%f,%f,%f,%f",&x,&y,&z,&yw,&pt)==5){ g_camSet=true; g_camPos={x,y,z}; g_camYaw=yw; g_camPitch=pt; } }
+        else if(!strcmp(argv[i],"--ride")&&i+1<argc){ g_rideSet=true; g_rideSec=(float)atof(argv[++i]); }
     }
     World world=buildWorld();
     return shot ? runOffscreen(world,sd,outPath) : runWindowed(world,sd,maxFrames);

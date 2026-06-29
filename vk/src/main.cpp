@@ -38,6 +38,8 @@ struct SceneUBO { Mat4 viewProj; Mat4 lightVP; float sunDir[4]; float camPos[4];
 struct ShadowPC { Mat4 lightVP; };
 struct BloomPC { float texel[2]; float threshold; float knee; };
 struct PostPC  { float exposure; float bloomStrength; float pad[2]; };
+struct LightPC { float camDir[4]; float camRight[4]; float camUp[4]; float params[4]; }; // params: tanHalfFovY, aspect, time, 0
+struct WaterPC { float misc[4]; }; // misc.x = time
 
 static std::vector<char> readFile(const std::string& p){
     FILE* f=fopen(p.c_str(),"rb"); if(!f){ fprintf(stderr,"cannot open %s\n",p.c_str()); exit(1);}
@@ -285,7 +287,7 @@ struct Renderer {
     VkRenderPass shadowRP; VkPipelineLayout shadowLayout; VkPipeline shadowPipe; VkFramebuffer shadowFB;
     Img shadow; VkSampler shadowSamp;
     VkDescriptorSetLayout sceneDSL; VkDescriptorSet sceneSet; Buffer sceneUBO; void* sceneUBOmap=nullptr;
-    Mat4 lightVP; Vec3 center{};
+    Mat4 lightVP; Vec3 center{}; float timeSec=0.0f;
 
     void setCenter(Vec3 c){
         center=c;
@@ -334,7 +336,7 @@ struct Renderer {
             VkPipelineLayout l; VK_CHECK(vkCreatePipelineLayout(dev,&pli,nullptr,&l)); return l; };
         gbufLayout  =mkPL(sceneDSL,0,0);
         ssaoLayout  =mkPL(ssaoDSL,0,0);
-        lightLayout =mkPL(lightDSL,0,0);
+        lightLayout =mkPL(lightDSL,sizeof(LightPC),VK_SHADER_STAGE_FRAGMENT_BIT);
         shadowLayout=mkPL(VK_NULL_HANDLE,sizeof(ShadowPC),VK_SHADER_STAGE_VERTEX_BIT);
         bloomLayout =mkPL(dsl1,sizeof(BloomPC),VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT);
         postLayout  =mkPL(dsl2,sizeof(PostPC),VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -464,6 +466,11 @@ struct Renderer {
         vkCmdBeginRenderPass(cmd,&r1,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,lightPipe);
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,lightLayout,0,1,&lightSet,0,nullptr);
+        { Vec3 f=cam.fwd(); Vec3 r=normalize(cross(f,Vec3{0,1,0})); Vec3 up=cross(r,f);
+          LightPC lpc{}; lpc.camDir[0]=f.x;lpc.camDir[1]=f.y;lpc.camDir[2]=f.z;
+          lpc.camRight[0]=r.x;lpc.camRight[1]=r.y;lpc.camRight[2]=r.z; lpc.camUp[0]=up.x;lpc.camUp[1]=up.y;lpc.camUp[2]=up.z;
+          lpc.params[0]=tanf(1.05f*0.5f); lpc.params[1]=(float)ext.width/ext.height; lpc.params[2]=timeSec;
+          vkCmdPushConstants(cmd,lightLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(lpc),&lpc); }
         vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
         // bloom -> half-res
         VkClearValue cb{}; cb.color={{0,0,0,1}};

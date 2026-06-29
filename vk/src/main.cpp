@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 #include "Math.h"
 #include "Terrain.h"
+#include "Track.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -209,6 +210,7 @@ int main(int argc, char** argv){
     // ---- world mesh ----
     const float CX=0, CZ=0, HALF=140.0f, STEP=1.0f;
     Mesh mesh; world::buildTerrain(CX,CZ,HALF,STEP,mesh); world::appendWater(CX,CZ,HALF,mesh);
+    world::buildTrack(mesh);
     printf("[vk] world mesh: %zu verts, %zu indices (%zu tris)\n",
            mesh.verts.size(), mesh.idx.size(), mesh.idx.size()/3);
 
@@ -225,8 +227,8 @@ int main(int argc, char** argv){
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     // ---- camera + push constants ----
-    Vec3 target{CX, (float)world::terrainH(CX,CZ)+10.0f, CZ};
-    Vec3 eye = target + Vec3{170.0f, 160.0f, 170.0f};
+    Vec3 target{CX, (float)world::terrainH(CX,CZ)+34.0f, CZ};
+    Vec3 eye = target + Vec3{120.0f, 82.0f, 150.0f};
     Mat4 view=lookAt(eye,target,Vec3{0,1,0});
     Mat4 proj=perspectiveVk(1.05f,(float)W/(float)H,0.5f,3000.0f);
     PushConstants pc{}; pc.viewProj=mul(proj,view);

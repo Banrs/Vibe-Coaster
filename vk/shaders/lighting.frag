@@ -129,6 +129,25 @@ float godRays(vec3 ro, vec3 rd, float maxD, float mu){
     return acc * phase;
 }
 
+// Screen-space contact shadows: a short march toward the sun in screen space,
+// catching fine near-contact occlusion the shadow map is too coarse to resolve.
+float contactShadow(vec3 P, vec3 N, vec3 L){
+    const int M = 12; const float stepLen = 0.40;
+    vec3 sp = P + N*0.15;
+    for(int i=0;i<M;i++){
+        sp += L*stepLen;
+        vec4 clip = u.viewProj * vec4(sp,1.0);
+        if(clip.w <= 0.0) break;
+        vec2 suv = (clip.xy/clip.w)*0.5 + 0.5;
+        if(suv.x<0.0||suv.x>1.0||suv.y<0.0||suv.y>1.0) break;
+        vec4 g = texture(gPosition, suv);
+        if(g.a < 0.5) continue;
+        float d = distance(u.camPos.xyz, sp) - distance(u.camPos.xyz, g.xyz);
+        if(d > 0.04 && d < 1.4) return 0.0;            // a closer surface blocks the sun
+    }
+    return 1.0;
+}
+
 void main(){
     vec3 sun = normalize(u.sunDir.xyz);
     vec3 ro  = u.camPos.xyz;
@@ -171,6 +190,7 @@ void main(){
 
     vec4 lightPos = u.lightVP * vec4(wp, 1.0);
     float shadow = sampleShadow(lightPos, NoL);
+    if(shadow > 0.5 && NoL > 0.0) shadow = min(shadow, contactShadow(wp, N, L));  // contact shadows
     vec3 sunRad = vec3(3.4,3.1,2.7);
     vec3 Lo = (diffuse + spec) * sunRad * NoL * shadow;
 
@@ -182,6 +202,10 @@ void main(){
     vec3 env = mix(skyBase(Rdir, L), skyA, rough);             // rough -> duller, sky-tinted
     vec3 iblSpec = env * Fr * ao * (1.0 - rough*0.6);
     vec3 c = Lo + amb + iblSpec;
+    // cheap subsurface scattering for foliage: sun transmitted through thin leaves
+    float foliage = clamp((albedo.g - max(albedo.r, albedo.b))*3.5, 0.0, 1.0);
+    float back = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0) + 0.15*clamp(dot(-N,L),0.0,1.0);
+    c += foliage * back * albedo * sunRad * shadow * 0.6;
 
     float dist = length(wp - ro);
     float fogEnd = max(u.camPos.w, 1.0);

@@ -180,8 +180,8 @@ inline Atlas fontAtlas() {
         for (int row = 0; row < kGlyphH; ++row) {
             uint8_t bits = kFont[g][row];
             for (int col = 0; col < kGlyphW; ++col) {
-                // bit 0 (value 1) is the leftmost pixel.
-                if (bits & (1u << col)) {
+                // bit 7 (MSB) is the leftmost pixel (standard 8x8 font convention).
+                if (bits & (0x80u >> col)) {
                     int px = ox + col;
                     int py = oy + row;
                     a.pixels[static_cast<size_t>(py) * a.w + px] = 255;

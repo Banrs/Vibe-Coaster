@@ -16,12 +16,14 @@
 #include "CoasterTrack.h"
 #include "Props.h"
 #include "Physics.h"
+#include "Hud.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <string>
+#include <functional>
 
 #define VK_CHECK(x) do { VkResult _r=(x); if(_r!=VK_SUCCESS){ \
     fprintf(stderr,"VK error %d at %s:%d\n",_r,__FILE__,__LINE__); exit(1);} } while(0)
@@ -41,6 +43,7 @@ struct BloomPC { float texel[2]; float threshold; float knee; };
 struct PostPC  { float exposure; float bloomStrength; float pad[2]; };
 struct LightPC { float camDir[4]; float camRight[4]; float camUp[4]; float params[4]; }; // params: tanHalfFovY, aspect, time, 0
 struct WaterPC { float misc[4]; }; // misc.x = time
+struct HudPC   { float screen[2]; float pad[2]; }; // framebuffer size in pixels
 // optional --cam override for framing headless verification shots
 static bool g_camSet=false; static Vec3 g_camPos; static float g_camYaw=0, g_camPitch=0;
 
@@ -305,6 +308,53 @@ static VkPipeline makeWaterPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout 
     VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gp,nullptr,&pipe)); return pipe;
 }
 
+// HUD overlay render pass: alpha-blend text onto the final image (LOAD), then
+// hand it to the blit/copy as TRANSFER_SRC.
+static VkRenderPass makeHudRP(VkDevice dev){
+    VkAttachmentDescription a{}; a.format=OUT_FMT; a.samples=VK_SAMPLE_COUNT_1_BIT;
+    a.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD; a.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    a.stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE; a.stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    a.initialLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; a.finalLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    VkAttachmentReference cr{0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription s{}; s.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS; s.colorAttachmentCount=1; s.pColorAttachments=&cr;
+    VkSubpassDependency dep[2]{};
+    dep[0].srcSubpass=VK_SUBPASS_EXTERNAL; dep[0].dstSubpass=0;
+    dep[0].srcStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; dep[0].srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dep[0].dstStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; dep[0].dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+    dep[1].srcSubpass=0; dep[1].dstSubpass=VK_SUBPASS_EXTERNAL;
+    dep[1].srcStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; dep[1].srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dep[1].dstStageMask=VK_PIPELINE_STAGE_TRANSFER_BIT; dep[1].dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+    VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; rp.attachmentCount=1; rp.pAttachments=&a; rp.subpassCount=1; rp.pSubpasses=&s; rp.dependencyCount=2; rp.pDependencies=dep;
+    VkRenderPass out; VK_CHECK(vkCreateRenderPass(dev,&rp,nullptr,&out)); return out;
+}
+// Textured-quad pipeline for HUD glyphs: pos(vec2)+uv(vec2)+col(vec3), alpha blend.
+static VkPipeline makeHudPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout layout, VkShaderModule vs, VkShaderModule fs){
+    VkPipelineShaderStageCreateInfo st[2]{};
+    st[0]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; st[0].stage=VK_SHADER_STAGE_VERTEX_BIT; st[0].module=vs; st[0].pName="main";
+    st[1]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; st[1].stage=VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module=fs; st[1].pName="main";
+    VkVertexInputBindingDescription bind{0,sizeof(hud::Vtx),VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription at[3]={{0,0,VK_FORMAT_R32G32_SFLOAT,offsetof(hud::Vtx,x)},
+        {1,0,VK_FORMAT_R32G32_SFLOAT,offsetof(hud::Vtx,u)},{2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(hud::Vtx,r)}};
+    VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vin.vertexBindingDescriptionCount=1; vin.pVertexBindingDescriptions=&bind; vin.vertexAttributeDescriptionCount=3; vin.pVertexAttributeDescriptions=at;
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; vp.viewportCount=1; vp.scissorCount=1;
+    VkDynamicState dyn[2]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; ds.dynamicStateCount=2; ds.pDynamicStates=dyn;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode=VK_POLYGON_MODE_FILL; rs.cullMode=VK_CULL_MODE_NONE; rs.lineWidth=1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask=0xF; cba.blendEnable=VK_TRUE;
+    cba.srcColorBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA; cba.dstColorBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; cba.colorBlendOp=VK_BLEND_OP_ADD;
+    cba.srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor=VK_BLEND_FACTOR_ZERO; cba.alphaBlendOp=VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; cb.attachmentCount=1; cb.pAttachments=&cba;
+    VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp.stageCount=2; gp.pStages=st; gp.pVertexInputState=&vin; gp.pInputAssemblyState=&ia; gp.pViewportState=&vp;
+    gp.pRasterizationState=&rs; gp.pMultisampleState=&ms; gp.pColorBlendState=&cb; gp.pDynamicState=&ds;
+    gp.layout=layout; gp.renderPass=rp; gp.subpass=0;
+    VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gp,nullptr,&pipe)); return pipe;
+}
+
 // ---- world ----
 struct World { Mesh mesh; Mesh water; Vec3 focus; ::Track trk; };
 static World buildWorld(){
@@ -370,6 +420,11 @@ struct Renderer {
     // forward water pass (separate mesh, depth-tested against the G-buffer depth)
     VkRenderPass waterRP; VkPipelineLayout waterLayout; VkPipeline waterPipe; VkFramebuffer waterFB;
     Buffer wvb, wib; uint32_t waterIndexCount=0;
+    // HUD overlay (alpha-blended text on the final image)
+    VkRenderPass hudRP; VkPipelineLayout hudLayout; VkPipeline hudPipe; VkFramebuffer hudFB;
+    VkDescriptorSetLayout hudDSL; VkDescriptorSet hudSet; Img fontImg;
+    Buffer hudVB; void* hudVBmap=nullptr; uint32_t hudVtxCount=0, hudVtxCap=0;
+    RideTelemetry hudTel; bool hudRide=false;
     // shadows + scene UBO
     VkRenderPass shadowRP; VkPipelineLayout shadowLayout; VkPipeline shadowPipe; VkFramebuffer shadowFB;
     Img shadow; VkSampler shadowSamp;
@@ -397,7 +452,8 @@ struct Renderer {
         lightRP=makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
         waterRP=makeWaterRP(dev);
         bloomRP=makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
-        postRP =makeRP(dev,OUT_FMT,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,false);
+        postRP =makeRP(dev,OUT_FMT,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,false);  // HUD pass draws on top next
+        hudRP  =makeHudRP(dev);
         shadowRP=makeShadowRP(dev);
         auto mkDSL=[&](uint32_t n){ std::vector<VkDescriptorSetLayoutBinding> b(n);
             for(uint32_t i=0;i<n;i++){ b[i]={i,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}; }
@@ -464,6 +520,45 @@ struct Renderer {
             w.dstSet=set; w.dstBinding=b; w.descriptorCount=1; w.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo=ii; return w; };
         VkWriteDescriptorSet sw[5]={ ubo(sceneSet), img(sceneSet,1,&smi), ubo(ssaoSet), ubo(lightSet), img(lightSet,1,&smi) };
         vkUpdateDescriptorSets(dev,5,sw,0,nullptr);
+        // ---- HUD: pipeline, font atlas texture, dynamic vertex buffer ----
+        hudLayout=mkPL(dsl1,sizeof(HudPC),VK_SHADER_STAGE_VERTEX_BIT);
+        { VkShaderModule hv=makeShader(dev,sd+"/hud.vert.spv"), hf=makeShader(dev,sd+"/hud.frag.spv");
+          hudPipe=makeHudPipe(dev,hudRP,hudLayout,hv,hf); vkDestroyShaderModule(dev,hv,nullptr); vkDestroyShaderModule(dev,hf,nullptr); }
+        hud::Atlas atlas=hud::fontAtlas();
+        fontImg=makeImg(pd,dev,(uint32_t)atlas.w,(uint32_t)atlas.h,VK_FORMAT_R8_UNORM,
+                        VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+        { VkDeviceSize n=(VkDeviceSize)atlas.w*atlas.h;
+          Buffer stg=makeBuffer(pd,dev,n,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+          void* mp; vkMapMemory(dev,stg.mem,0,n,0,&mp); memcpy(mp,atlas.pixels.data(),n); vkUnmapMemory(dev,stg.mem);
+          oneTimeSubmit([&](VkCommandBuffer c){
+            VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER}; b.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED; b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED; b.image=fontImg.img; b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}; b.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(c,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&b);
+            VkBufferImageCopy r{}; r.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; r.imageExtent={(uint32_t)atlas.w,(uint32_t)atlas.h,1};
+            vkCmdCopyBufferToImage(c,stg.buf,fontImg.img,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&r);
+            b.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; b.newLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; b.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; b.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(c,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,0,0,nullptr,0,nullptr,1,&b);
+          });
+          vkDestroyBuffer(dev,stg.buf,nullptr); vkFreeMemory(dev,stg.mem,nullptr); }
+        hudSet=alloc(dsl1);
+        VkDescriptorImageInfo fi{samp,fontImg.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet fw=img(hudSet,0,&fi); vkUpdateDescriptorSets(dev,1,&fw,0,nullptr);
+        hudVtxCap=8192;
+        hudVB=makeBuffer(pd,dev,(VkDeviceSize)hudVtxCap*sizeof(hud::Vtx),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        vkMapMemory(dev,hudVB.mem,0,(VkDeviceSize)hudVtxCap*sizeof(hud::Vtx),0,&hudVBmap);
+    }
+    // run a short transfer/transition command synchronously (one-time setup)
+    void oneTimeSubmit(const std::function<void(VkCommandBuffer)>& fn){
+        VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=gfx; cpi.flags=VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        VkCommandPool p; VK_CHECK(vkCreateCommandPool(dev,&cpi,nullptr,&p));
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; ai.commandPool=p; ai.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount=1;
+        VkCommandBuffer c; VK_CHECK(vkAllocateCommandBuffers(dev,&ai,&c));
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(c,&bi); fn(c); vkEndCommandBuffer(c);
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO}; si.commandBufferCount=1; si.pCommandBuffers=&c;
+        VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; VkFence f; vkCreateFence(dev,&fci,nullptr,&f);
+        vkQueueSubmit(queue,1,&si,f); vkWaitForFences(dev,1,&f,VK_TRUE,UINT64_MAX);
+        vkDestroyFence(dev,f,nullptr); vkDestroyCommandPool(dev,p,nullptr);
     }
     void uploadMesh(const World& w){
         indexCount=(uint32_t)w.mesh.idx.size();
@@ -504,6 +599,7 @@ struct Renderer {
         waterFB=mkFB(waterRP,{hdr.view,depthView},ext);
         bloomFB=mkFB(bloomRP,{bloom.view},halfExt);
         postFB =mkFB(postRP,{out.view},ext);
+        hudFB  =mkFB(hudRP,{out.view},ext);
         // (re)point the image-sampling descriptors at the current targets
         VkDescriptorImageInfo gAi{samp,gAlbedo.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo gNi{samp,gNormal.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -521,7 +617,7 @@ struct Renderer {
     }
     void destroyTargets(){
         vkDestroyFramebuffer(dev,gbufFB,nullptr); vkDestroyFramebuffer(dev,ssaoFB,nullptr); vkDestroyFramebuffer(dev,lightFB,nullptr);
-        vkDestroyFramebuffer(dev,waterFB,nullptr); vkDestroyFramebuffer(dev,bloomFB,nullptr); vkDestroyFramebuffer(dev,postFB,nullptr);
+        vkDestroyFramebuffer(dev,waterFB,nullptr); vkDestroyFramebuffer(dev,bloomFB,nullptr); vkDestroyFramebuffer(dev,postFB,nullptr); vkDestroyFramebuffer(dev,hudFB,nullptr);
         vkDestroyImageView(dev,depthView,nullptr); vkDestroyImage(dev,depthImg,nullptr); vkFreeMemory(dev,depthMem,nullptr);
         destroyImg(dev,gAlbedo); destroyImg(dev,gNormal); destroyImg(dev,gPosition); destroyImg(dev,ssaoImg);
         destroyImg(dev,hdr); destroyImg(dev,bloom); destroyImg(dev,out);
@@ -601,6 +697,34 @@ struct Renderer {
         PostPC ppc{}; ppc.exposure=1.0f; ppc.bloomStrength=0.55f;
         vkCmdPushConstants(cmd,postLayout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(ppc),&ppc);
         vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
+        // --- HUD overlay: alpha-blend text on the final image (always runs to
+        //     transition `out` COLOR_ATTACHMENT -> TRANSFER_SRC for the blit/copy) ---
+        {
+            std::vector<hud::Vtx> v; v.reserve(512);
+            hud::addText(v,"MINECOASTER",18.0f,16.0f,22.0f, 1.0f,1.0f,1.0f);
+            if(hudRide){
+                char b[64];
+                snprintf(b,sizeof b,"SPEED  %4.0f KM/H",hudTel.speedKmh); hud::addText(v,b,18.0f,52.0f,20.0f, 1.0f,0.86f,0.30f);
+                snprintf(b,sizeof b,"ALT    %4.0f M",   hudTel.altitude); hud::addText(v,b,18.0f,78.0f,20.0f, 0.70f,0.92f,1.0f);
+                snprintf(b,sizeof b,"G      %+.1f",      hudTel.gForce);   hud::addText(v,b,18.0f,104.0f,20.0f, 1.0f,0.55f,0.55f);
+                snprintf(b,sizeof b,"ELEM   %s",         hudTel.element);  hud::addText(v,b,18.0f,130.0f,20.0f, 0.80f,1.0f,0.80f);
+            } else {
+                hud::addText(v,"FREE-FLY  (C TO RIDE)",18.0f,52.0f,16.0f, 0.85f,0.90f,0.95f);
+            }
+            hudVtxCount=(uint32_t)v.size(); if(hudVtxCount>hudVtxCap) hudVtxCount=hudVtxCap;
+            if(hudVtxCount) memcpy(hudVBmap,v.data(),(size_t)hudVtxCount*sizeof(hud::Vtx));
+            VkRenderPassBeginInfo rh{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rh.renderPass=hudRP; rh.framebuffer=hudFB; rh.renderArea={{0,0},ext}; rh.clearValueCount=0;
+            vkCmdBeginRenderPass(cmd,&rh,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
+            if(hudVtxCount){
+                vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,hudPipe);
+                vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,hudLayout,0,1,&hudSet,0,nullptr);
+                HudPC hpc{}; hpc.screen[0]=(float)ext.width; hpc.screen[1]=(float)ext.height;
+                vkCmdPushConstants(cmd,hudLayout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(hpc),&hpc);
+                vkCmdBindVertexBuffers(cmd,0,1,&hudVB.buf,&off);
+                vkCmdDraw(cmd,hudVtxCount,1,0,0);
+            }
+            vkCmdEndRenderPass(cmd);
+        }
         // out is now TRANSFER_SRC_OPTIMAL
     }
 };
@@ -631,9 +755,9 @@ static int runOffscreen(const World& world, const std::string& sd, const std::st
 
     FlyCam cam; cam.pos=world.focus+Vec3{135,98,165};
     if(g_camSet){ cam.pos=g_camPos; cam.yaw=g_camYaw; cam.pitch=g_camPitch; }
-    CamView view=cam.view();
+    CamView view=cam.view(); R.hudRide=g_rideSet;
     if(g_rideSet){ world::RideSim rs; rs.reset(world.trk); rs.advance(world.trk,g_rideSec);
-        RideTelemetry tel; view=rideCamView(world.trk,rs,tel);
+        RideTelemetry tel; view=rideCamView(world.trk,rs,tel); R.hudTel=tel;
         printf("[ride] t=%.1fs  %.0f km/h  alt %.0fm  %.2fg  %s\n",g_rideSec,tel.speedKmh,tel.altitude,tel.gForce,tel.element); }
     Buffer rb=makeBuffer(R.pd,R.dev,(VkDeviceSize)W*H*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx;
@@ -716,9 +840,9 @@ static int runWindowed(const World& world, const std::string& sd, int maxFrames)
                 if(cam.pitch>1.5f)cam.pitch=1.5f; if(cam.pitch<-1.5f)cam.pitch=-1.5f; }
             else if(e.type==SDL_WINDOWEVENT&&e.window.event==SDL_WINDOWEVENT_SIZE_CHANGED) recreate();
         }
-        CamView view;
+        CamView view; R.hudRide=rideMode;
         if(rideMode){
-            rs.advance(world.trk,dt); view=rideCamView(world.trk,rs,tel);
+            rs.advance(world.trk,dt); view=rideCamView(world.trk,rs,tel); R.hudTel=tel;
             telAcc+=dt; if(telAcc>0.5f){ telAcc=0; printf("[ride] %.0f km/h  alt %.0fm  %.2fg  %s\n",tel.speedKmh,tel.altitude,tel.gForce,tel.element); }
         } else {
             const Uint8* ks=SDL_GetKeyboardState(nullptr); Vec3 f=cam.fwd(), r=normalize(cross(f,Vec3{0,1,0}));

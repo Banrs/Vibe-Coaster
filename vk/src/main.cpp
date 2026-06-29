@@ -5,8 +5,9 @@
 // chain + descriptor infrastructure is the base for the deferred G-buffer and the
 // screen-space effects (SSAO/SSR/CSM/TAA) that follow.
 #include <vulkan/vulkan.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
+#define SDL_MAIN_HANDLED          // we provide our own main() (no SDL2main / WinMain)
+#include <SDL.h>                  // portable across vcpkg / pkg-config include dirs
+#include <SDL_vulkan.h>
 
 #include "Math.h"
 #include "Terrain.h"
@@ -445,6 +446,7 @@ static int runWindowed(const World& world, const std::string& sd, int maxFrames)
 }
 
 int main(int argc, char** argv){
+    SDL_SetMainReady();           // required when SDL_MAIN_HANDLED is defined
     // default shaders/ resolved next to the executable (CMake copies them there)
     std::string sd="shaders";
     if(char* base=SDL_GetBasePath()){ sd=std::string(base)+"shaders"; SDL_free(base); }

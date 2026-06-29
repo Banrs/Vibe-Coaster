@@ -20,7 +20,7 @@ endif()
 set(SHADER_OUT ${CMAKE_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${SHADER_OUT})
 set(SPV_FILES)
-foreach(stage mesh.vert mesh.frag)
+foreach(stage mesh.vert mesh.frag fullscreen.vert bloom.frag post.frag)
   add_custom_command(
     OUTPUT ${SHADER_OUT}/${stage}.spv
     COMMAND ${GLSLANG} -V ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${stage} -o ${SHADER_OUT}/${stage}.spv
@@ -38,3 +38,9 @@ target_compile_options(minecoaster_vk PRIVATE ${SDL2_CFLAGS_OTHER})
 
 # put the exe where it can find shaders/ at runtime
 set_target_properties(minecoaster_vk PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# copy compiled shaders next to the executable so it finds shaders/ from anywhere
+add_custom_command(TARGET minecoaster_vk POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:minecoaster_vk>/shaders"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${SHADER_OUT}" "$<TARGET_FILE_DIR:minecoaster_vk>/shaders"
+  VERBATIM)

@@ -68,13 +68,13 @@ void main() {
     vec3 amb = mix(ground, sky, clamp(N.y*0.5+0.5,0.0,1.0)) * albedo;
     vec3 c = Lo + amb;
 
-    // distance fog
+    // distance fog (toward a linear sky tone). Output stays LINEAR HDR; the post
+    // pass does exposure + ACES + gamma.
     float d = length(vWorldPos - pc.camPos.xyz);
     float fogEnd = max(pc.camPos.w, 1.0);
     float fog = clamp((d - fogEnd*0.65)/(fogEnd*0.35), 0.0, 1.0); fog *= fog;
-    c = mix(c, vec3(0.45,0.62,0.92), fog*0.7);
+    vec3 skyLin = vec3(0.18, 0.34, 0.85);
+    c = mix(c, skyLin, fog*0.75);
 
-    c = aces(c);
-    c = pow(c, vec3(1.0/2.2));
     outColor = vec4(c, 1.0);
 }

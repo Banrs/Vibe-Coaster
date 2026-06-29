@@ -11,6 +11,7 @@
 
 #include "Math.h"
 #include "Terrain.h"
+#include "Water.h"
 #include "Track.h"
 #include "CoasterTrack.h"
 #include "Props.h"
@@ -40,6 +41,8 @@ struct BloomPC { float texel[2]; float threshold; float knee; };
 struct PostPC  { float exposure; float bloomStrength; float pad[2]; };
 struct LightPC { float camDir[4]; float camRight[4]; float camUp[4]; float params[4]; }; // params: tanHalfFovY, aspect, time, 0
 struct WaterPC { float misc[4]; }; // misc.x = time
+// optional --cam override for framing headless verification shots
+static bool g_camSet=false; static Vec3 g_camPos; static float g_camYaw=0, g_camPitch=0;
 
 static std::vector<char> readFile(const std::string& p){
     FILE* f=fopen(p.c_str(),"rb"); if(!f){ fprintf(stderr,"cannot open %s\n",p.c_str()); exit(1);}
@@ -247,18 +250,75 @@ static VkPipeline makeGBufPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout l
     VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gp,nullptr,&pipe)); return pipe;
 }
 
+// Forward water render pass: composites over the lit HDR (LOAD) and depth-tests
+// against the G-buffer depth (LOAD) so water is occluded by terrain/props.
+static VkRenderPass makeWaterRP(VkDevice dev){
+    VkAttachmentDescription a[2]{};
+    a[0].format=HDR_FMT; a[0].samples=VK_SAMPLE_COUNT_1_BIT;
+    a[0].loadOp=VK_ATTACHMENT_LOAD_OP_LOAD; a[0].storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    a[0].stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE; a[0].stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    a[0].initialLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; a[0].finalLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    a[1].format=DEPTH_FMT; a[1].samples=VK_SAMPLE_COUNT_1_BIT;
+    a[1].loadOp=VK_ATTACHMENT_LOAD_OP_LOAD; a[1].storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    a[1].stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE; a[1].stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    a[1].initialLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; a[1].finalLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference cr{0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference dr{1,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription s{}; s.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS; s.colorAttachmentCount=1; s.pColorAttachments=&cr; s.pDepthStencilAttachment=&dr;
+    VkSubpassDependency dep[2]{};
+    dep[0].srcSubpass=VK_SUBPASS_EXTERNAL; dep[0].dstSubpass=0;
+    dep[0].srcStageMask=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dep[0].srcAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep[0].dstStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT|VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep[0].dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep[1].srcSubpass=0; dep[1].dstSubpass=VK_SUBPASS_EXTERNAL;
+    dep[1].srcStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; dep[1].srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dep[1].dstStageMask=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT; dep[1].dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO}; rp.attachmentCount=2; rp.pAttachments=a; rp.subpassCount=1; rp.pSubpasses=&s; rp.dependencyCount=2; rp.pDependencies=dep;
+    VkRenderPass out; VK_CHECK(vkCreateRenderPass(dev,&rp,nullptr,&out)); return out;
+}
+// Forward water pipeline: full Vertex input, depth test (no write), one HDR target.
+static VkPipeline makeWaterPipe(VkDevice dev, VkRenderPass rp, VkPipelineLayout layout, VkShaderModule vs, VkShaderModule fs){
+    VkPipelineShaderStageCreateInfo st[2]{};
+    st[0]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; st[0].stage=VK_SHADER_STAGE_VERTEX_BIT; st[0].module=vs; st[0].pName="main";
+    st[1]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}; st[1].stage=VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module=fs; st[1].pName="main";
+    VkVertexInputBindingDescription bind{0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription at[3]={{0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,pos)},
+        {1,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,nrm)},{2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,col)}};
+    VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vin.vertexBindingDescriptionCount=1; vin.pVertexBindingDescriptions=&bind; vin.vertexAttributeDescriptionCount=3; vin.pVertexAttributeDescriptions=at;
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; vp.viewportCount=1; vp.scissorCount=1;
+    VkDynamicState dyn[2]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO}; ds.dynamicStateCount=2; ds.pDynamicStates=dyn;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode=VK_POLYGON_MODE_FILL; rs.cullMode=VK_CULL_MODE_NONE; rs.frontFace=VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth=1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth.depthTestEnable=VK_TRUE; depth.depthWriteEnable=VK_FALSE; depth.depthCompareOp=VK_COMPARE_OP_LESS;
+    VkPipelineColorBlendAttachmentState cba{}; cba.colorWriteMask=0xF;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; cb.attachmentCount=1; cb.pAttachments=&cba;
+    VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp.stageCount=2; gp.pStages=st; gp.pVertexInputState=&vin; gp.pInputAssemblyState=&ia; gp.pViewportState=&vp;
+    gp.pRasterizationState=&rs; gp.pMultisampleState=&ms; gp.pDepthStencilState=&depth; gp.pColorBlendState=&cb; gp.pDynamicState=&ds;
+    gp.layout=layout; gp.renderPass=rp; gp.subpass=0;
+    VkPipeline pipe; VK_CHECK(vkCreateGraphicsPipelines(dev,VK_NULL_HANDLE,1,&gp,nullptr,&pipe)); return pipe;
+}
+
 // ---- world ----
-struct World { Mesh mesh; Vec3 focus; };
+struct World { Mesh mesh; Mesh water; Vec3 focus; };
 static World buildWorld(){
     World w; ::Track trk; world::genLongTrack(trk,2200);
     w.focus=world::trackFocus(trk,260); float half=170.0f;
     world::buildTerrain(w.focus.x,w.focus.z,half,1.0f,w.mesh);
-    world::appendWater(w.focus.x,w.focus.z,half,w.mesh);
     world::buildTrees(w.focus.x,w.focus.z,half,w.mesh);
     world::buildTrackMesh(trk,w.mesh,w.focus.x,w.focus.z,half);
     world::buildStation(trk,w.mesh,w.focus.x,w.focus.z,half);
     world::buildCoins(trk,w.mesh,w.focus.x,w.focus.z,half);
-    printf("[vk] world mesh: %zu verts, %zu tris\n", w.mesh.verts.size(), w.mesh.idx.size()/3);
+    w.water=world::buildWaterMesh(w.focus.x,w.focus.z,half);          // shaded as a separate pass
+    printf("[vk] world mesh: %zu verts, %zu tris; water: %zu tris\n",
+           w.mesh.verts.size(), w.mesh.idx.size()/3, w.water.idx.size()/3);
+    printf("[vk] focus: %.1f %.1f %.1f\n", w.focus.x, w.focus.y, w.focus.z);
     return w;
 }
 struct FlyCam {
@@ -283,6 +343,9 @@ struct Renderer {
     VkImage depthImg; VkDeviceMemory depthMem; VkImageView depthView;
     VkFramebuffer gbufFB, ssaoFB, lightFB, bloomFB, postFB;
     Buffer vb, ib; uint32_t indexCount;
+    // forward water pass (separate mesh, depth-tested against the G-buffer depth)
+    VkRenderPass waterRP; VkPipelineLayout waterLayout; VkPipeline waterPipe; VkFramebuffer waterFB;
+    Buffer wvb, wib; uint32_t waterIndexCount=0;
     // shadows + scene UBO
     VkRenderPass shadowRP; VkPipelineLayout shadowLayout; VkPipeline shadowPipe; VkFramebuffer shadowFB;
     Img shadow; VkSampler shadowSamp;
@@ -308,6 +371,7 @@ struct Renderer {
         gbufRP =makeGBufRP(dev);
         ssaoRP =makeRP(dev,AO_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
         lightRP=makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
+        waterRP=makeWaterRP(dev);
         bloomRP=makeRP(dev,HDR_FMT,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,false);
         postRP =makeRP(dev,OUT_FMT,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,false);
         shadowRP=makeShadowRP(dev);
@@ -336,6 +400,7 @@ struct Renderer {
             VkPipelineLayout l; VK_CHECK(vkCreatePipelineLayout(dev,&pli,nullptr,&l)); return l; };
         gbufLayout  =mkPL(sceneDSL,0,0);
         ssaoLayout  =mkPL(ssaoDSL,0,0);
+        waterLayout =mkPL(sceneDSL,sizeof(WaterPC),VK_SHADER_STAGE_FRAGMENT_BIT);
         lightLayout =mkPL(lightDSL,sizeof(LightPC),VK_SHADER_STAGE_FRAGMENT_BIT);
         shadowLayout=mkPL(VK_NULL_HANDLE,sizeof(ShadowPC),VK_SHADER_STAGE_VERTEX_BIT);
         bloomLayout =mkPL(dsl1,sizeof(BloomPC),VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -345,13 +410,15 @@ struct Renderer {
         VkShaderModule af=makeShader(dev,sd+"/ssao.frag.spv"), lf=makeShader(dev,sd+"/lighting.frag.spv");
         VkShaderModule bf=makeShader(dev,sd+"/bloom.frag.spv"), pf=makeShader(dev,sd+"/post.frag.spv");
         VkShaderModule sv=makeShader(dev,sd+"/shadow.vert.spv");
+        VkShaderModule wv=makeShader(dev,sd+"/water.vert.spv"), wf=makeShader(dev,sd+"/water.frag.spv");
         gbufPipe  =makeGBufPipe(dev,gbufRP,gbufLayout,gv,gf);
         ssaoPipe  =makeFsPipe(dev,ssaoRP,ssaoLayout,fv,af);
         lightPipe =makeFsPipe(dev,lightRP,lightLayout,fv,lf);
+        waterPipe =makeWaterPipe(dev,waterRP,waterLayout,wv,wf);
         shadowPipe=makeShadowPipe(dev,shadowRP,shadowLayout,sv);
         bloomPipe =makeFsPipe(dev,bloomRP,bloomLayout,fv,bf);
         postPipe  =makeFsPipe(dev,postRP,postLayout,fv,pf);
-        for(auto m:{gv,gf,fv,af,lf,bf,pf,sv}) vkDestroyShaderModule(dev,m,nullptr);
+        for(auto m:{gv,gf,fv,af,lf,bf,pf,sv,wv,wf}) vkDestroyShaderModule(dev,m,nullptr);
         // scene UBO (persistently mapped) + shadow map image/framebuffer (fixed size)
         sceneUBO=makeBuffer(pd,dev,sizeof(SceneUBO),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         vkMapMemory(dev,sceneUBO.mem,0,sizeof(SceneUBO),0,&sceneUBOmap);
@@ -381,6 +448,15 @@ struct Renderer {
         ib=makeBuffer(pd,dev,ibS,VK_BUFFER_USAGE_INDEX_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         void* p; vkMapMemory(dev,vb.mem,0,vbS,0,&p); memcpy(p,w.mesh.verts.data(),vbS); vkUnmapMemory(dev,vb.mem);
         vkMapMemory(dev,ib.mem,0,ibS,0,&p); memcpy(p,w.mesh.idx.data(),ibS); vkUnmapMemory(dev,ib.mem);
+        // separate water mesh
+        waterIndexCount=(uint32_t)w.water.idx.size();
+        if(waterIndexCount){
+            VkDeviceSize wvbS=w.water.verts.size()*sizeof(Vertex), wibS=w.water.idx.size()*sizeof(uint32_t);
+            wvb=makeBuffer(pd,dev,wvbS,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            wib=makeBuffer(pd,dev,wibS,VK_BUFFER_USAGE_INDEX_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            vkMapMemory(dev,wvb.mem,0,wvbS,0,&p); memcpy(p,w.water.verts.data(),wvbS); vkUnmapMemory(dev,wvb.mem);
+            vkMapMemory(dev,wib.mem,0,wibS,0,&p); memcpy(p,w.water.idx.data(),wibS); vkUnmapMemory(dev,wib.mem);
+        }
     }
     void buildTargets(VkExtent2D e){
         ext=e; halfExt={ (e.width+1)/2, (e.height+1)/2 };
@@ -401,6 +477,7 @@ struct Renderer {
         gbufFB =mkFB(gbufRP,{gAlbedo.view,gNormal.view,gPosition.view,depthView},ext);
         ssaoFB =mkFB(ssaoRP,{ssaoImg.view},ext);
         lightFB=mkFB(lightRP,{hdr.view},ext);
+        waterFB=mkFB(waterRP,{hdr.view,depthView},ext);
         bloomFB=mkFB(bloomRP,{bloom.view},halfExt);
         postFB =mkFB(postRP,{out.view},ext);
         // (re)point the image-sampling descriptors at the current targets
@@ -420,7 +497,7 @@ struct Renderer {
     }
     void destroyTargets(){
         vkDestroyFramebuffer(dev,gbufFB,nullptr); vkDestroyFramebuffer(dev,ssaoFB,nullptr); vkDestroyFramebuffer(dev,lightFB,nullptr);
-        vkDestroyFramebuffer(dev,bloomFB,nullptr); vkDestroyFramebuffer(dev,postFB,nullptr);
+        vkDestroyFramebuffer(dev,waterFB,nullptr); vkDestroyFramebuffer(dev,bloomFB,nullptr); vkDestroyFramebuffer(dev,postFB,nullptr);
         vkDestroyImageView(dev,depthView,nullptr); vkDestroyImage(dev,depthImg,nullptr); vkFreeMemory(dev,depthMem,nullptr);
         destroyImg(dev,gAlbedo); destroyImg(dev,gNormal); destroyImg(dev,gPosition); destroyImg(dev,ssaoImg);
         destroyImg(dev,hdr); destroyImg(dev,bloom); destroyImg(dev,out);
@@ -472,6 +549,16 @@ struct Renderer {
           lpc.params[0]=tanf(1.05f*0.5f); lpc.params[1]=(float)ext.width/ext.height; lpc.params[2]=timeSec;
           vkCmdPushConstants(cmd,lightLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(lpc),&lpc); }
         vkCmdDraw(cmd,3,1,0,0); vkCmdEndRenderPass(cmd);
+        // --- forward water over the lit HDR, depth-tested against terrain ---
+        if(waterIndexCount){
+            VkRenderPassBeginInfo rw{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; rw.renderPass=waterRP; rw.framebuffer=waterFB; rw.renderArea={{0,0},ext}; rw.clearValueCount=0;
+            vkCmdBeginRenderPass(cmd,&rw,VK_SUBPASS_CONTENTS_INLINE); setVP(ext);
+            vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,waterPipe);
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,waterLayout,0,1,&sceneSet,0,nullptr);
+            WaterPC wpc{}; wpc.misc[0]=timeSec; vkCmdPushConstants(cmd,waterLayout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(wpc),&wpc);
+            vkCmdBindVertexBuffers(cmd,0,1,&wvb.buf,&off); vkCmdBindIndexBuffer(cmd,wib.buf,0,VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd,waterIndexCount,1,0,0,0); vkCmdEndRenderPass(cmd);
+        }
         // bloom -> half-res
         VkClearValue cb{}; cb.color={{0,0,0,1}};
         VkRenderPassBeginInfo r2{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO}; r2.renderPass=bloomRP; r2.framebuffer=bloomFB; r2.renderArea={{0,0},halfExt}; r2.clearValueCount=1; r2.pClearValues=&cb;
@@ -519,6 +606,7 @@ static int runOffscreen(const World& world, const std::string& sd, const std::st
     R.initPipelines(sd); R.uploadMesh(world); R.buildTargets({W,H}); R.setCenter(world.focus);
 
     FlyCam cam; cam.pos=world.focus+Vec3{135,98,165};
+    if(g_camSet){ cam.pos=g_camPos; cam.yaw=g_camYaw; cam.pitch=g_camPitch; }
     Buffer rb=makeBuffer(R.pd,R.dev,(VkDeviceSize)W*H*4,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; cpi.queueFamilyIndex=R.gfx;
     VkCommandPool pool; VK_CHECK(vkCreateCommandPool(R.dev,&cpi,nullptr,&pool));
@@ -644,6 +732,8 @@ int main(int argc, char** argv){
         else if(!strcmp(argv[i],"-o")&&i+1<argc){ outPath=argv[++i]; shot=true; }
         else if(!strcmp(argv[i],"--shot")) shot=true;
         else if(!strcmp(argv[i],"--frames")&&i+1<argc) maxFrames=atoi(argv[++i]);
+        else if(!strcmp(argv[i],"--cam")&&i+1<argc){ // x,y,z,yaw,pitch
+            float x,y,z,yw,pt; if(sscanf(argv[++i],"%f,%f,%f,%f,%f",&x,&y,&z,&yw,&pt)==5){ g_camSet=true; g_camPos={x,y,z}; g_camYaw=yw; g_camPitch=pt; } }
     }
     World world=buildWorld();
     return shot ? runOffscreen(world,sd,outPath) : runWindowed(world,sd,maxFrames);

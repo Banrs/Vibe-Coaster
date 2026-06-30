@@ -1664,6 +1664,23 @@ int main(int argc, char **argv) {
             v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
             if (gForceSpeed > 0.0f) v = gForceSpeed;
 
+            if (benchMode) {   // launch top-hat drop, measured on the REAL physics path (== live ride)
+                static unsigned char lhPrev = 255; static bool lhSaw=false, lhDrop=false, lhDone=false;
+                static float lhCY=0, lhBY=1e9f, lhPk=0, lhEntV=0;
+                if (!lhDone) {
+                    Vector3 Pc = trk.pos(u);
+                    if (tg == M_CLIMB && lhPrev == M_LAUNCH) { lhSaw = true; lhEntV = v; }
+                    if (lhSaw && !lhDrop && Pc.y > lhCY) lhCY = Pc.y;
+                    if (lhSaw && tg == M_DROP) { lhDrop = true; if (v > lhPk) lhPk = v; if (Pc.y < lhBY) lhBY = Pc.y; }
+                    if (lhDrop && tg != M_DROP) {
+                        printf("[LAUNCH-HAT bench] entV=%.0f crestY=%.0f bottomY=%.0f dropH=%.0fm peak=%.0fkm/h\n",
+                               lhEntV*3.6f, lhCY, lhBY, lhCY-lhBY, lhPk*3.6f);
+                        lhDone = true;
+                    }
+                    lhPrev = tg;
+                }
+            }
+
             sinceStation += dt;
             if (!shotMode && !benchMode && sinceStation > 95.0f &&
                 !trk.stationPending && !trk.stationActive)

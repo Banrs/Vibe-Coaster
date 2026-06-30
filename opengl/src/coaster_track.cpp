@@ -692,7 +692,7 @@ struct Track {
                 else if (launchElem == M_BANKAIR) { rememberElement(M_BANKAIR); initBankAir(); }
                 else {
                     mode = M_CLIMB; chainMode = false;
-                    mega = (rnd01() < 0.50f);
+                    mega = true;   // launch top-hat is always the tall "mega" one (user: signature first drop)
 
                     {
                         float vCrest = mega ? 30.0f : 38.0f;

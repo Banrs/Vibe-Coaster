@@ -1003,9 +1003,19 @@ int main(int argc, char **argv) {
             float minV = 9999; int run = 0, maxRun = 0;
             float topHatV = 0;   // diag: speed at LAUNCH->CLIMB transition (booster speed entering a top-hat)
             float boostV = 0;    // diag: max speed reached on a BOOST section
+            float dropV = 0;     // diag: max speed reached on a DROP (down a top-hat/hill)
+            float maxClimbTop = 0; // diag: tallest crest height above ground reached on a CLIMB
+            // per-drop peaks (each individual drop's max speed) -> reveals the WEAK drops the
+            // rider notices, vs the single best drop that dropV reports.
+            float curDropPk = 0; bool inDrop = false;
+            float dropPkMin = 9999, dropPkSum = 0; int dropN = 0;
+            // THE launch top-hat drop specifically: crest Y, bottom Y, peak speed.
+            bool sawLaunchHat = false, lhDropping = false;
+            float lhCrestY = 0, lhBottomY = 1e9f, lhDropPk = 0;
             unsigned char stallTag = 255, stallPrev = 255, prevTag2 = 255;
+            static float simDt = getenv("MC_DT") ? (float)atof(getenv("MC_DT")) : (1.0f / 60.0f);
             for (int f = 0; f < 30000; f++) {
-                float dt = 1.0f / 60.0f;
+                float dt = simDt;
                 t.ensureAhead(u + 16);
                 float slope = t.tangent(u).y;
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
@@ -1036,6 +1046,15 @@ int main(int argc, char **argv) {
                     prevTag2 = (tg != prevTag) ? prevTag : prevTag2;
                     if (tg == M_CLIMB && prevTag == M_LAUNCH && v > topHatV) topHatV = v;
                     if (tg == M_BOOST && v > boostV) boostV = v;
+                    if (tg == M_DROP && v > dropV) dropV = v;
+                    if (tg == M_DROP) { inDrop = true; if (v > curDropPk) curDropPk = v; }
+                    else if (inDrop) { if (curDropPk > 0) { dropN++; dropPkSum += curDropPk; if (curDropPk < dropPkMin) dropPkMin = curDropPk; } curDropPk = 0; inDrop = false; }
+                    if (tg == M_CLIMB) { Vector3 Pc = t.pos(u); float ca = Pc.y - groundTopAt(Pc.x, Pc.z); if (ca > maxClimbTop) maxClimbTop = ca; }
+                    // the launch top hat = first CLIMB after the LAUNCH; then its drop
+                    if (tg == M_CLIMB && prevTag == M_LAUNCH) sawLaunchHat = true;
+                    if (sawLaunchHat && !lhDropping) { Vector3 Pc = t.pos(u); if (Pc.y > lhCrestY) lhCrestY = Pc.y; }
+                    if (sawLaunchHat && tg == M_DROP) { lhDropping = true; if (v > lhDropPk) lhDropPk = v;
+                        Vector3 Pc = t.pos(u); if (Pc.y < lhBottomY) lhBottomY = Pc.y; }
                     prevTag = tg; }
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
                 if (!(du == du)) du = 0;
@@ -1065,9 +1084,10 @@ int main(int argc, char **argv) {
             }
             double avg = nV ? sumV / nV : 0;
             const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
-            printf("seed %u  avgV=%.0fkm/h  maxV=%.0fkm/h  launch->topHat=%.0fkm/h  boostPeak=%.0fkm/h  stall=%df on %s\n",
-                   seed, avg * 3.6, maxV * 3.6, topHatV * 3.6, boostV * 3.6, maxRun,
-                   stallTag < 25 ? NM[stallTag] : "-");
+            printf("seed %u  avgV=%.0f  maxV=%.0f  topHat=%.0f  drop[min/mean/max]=%.0f/%.0f/%.0f (n=%d)  | LAUNCH-HAT: crestY=%.0f bottomY=%.0f dropH=%.0fm peak=%.0fkm/h  stall=%df\n",
+                   seed, avg * 3.6, maxV * 3.6, topHatV * 3.6,
+                   (dropN?dropPkMin:0) * 3.6, (dropN?dropPkSum/dropN:0) * 3.6, dropV * 3.6, dropN,
+                   lhCrestY, lhBottomY<1e8f?lhBottomY:0, lhCrestY-(lhBottomY<1e8f?lhBottomY:lhCrestY), lhDropPk * 3.6, maxRun);
         }
         printf("SIMTEST DONE (no hang)  -> OVERALL AVG RIDE SPEED = %.1f m/s (%.0f km/h)  | powered duty: boost %.1f%% launch %.1f%% | inversions: %ld over 8 seeds (~%.1f/ride)\n",
                gNV ? gSumV / gNV : 0.0, gNV ? gSumV / gNV * 3.6 : 0.0,
@@ -1103,6 +1123,12 @@ int main(int argc, char **argv) {
 
         float kMaxV[M_COUNT], kMinV[M_COUNT], kMaxL[M_COUNT];
         for (int i=0;i<M_COUNT;i++){ kMaxV[i]=-1e9f; kMinV[i]=1e9f; kMaxL[i]=0; }
+        // In-game-accurate g: smooth-spline du-window curvature + the HUD's 6 Hz temporal
+        // lowpass (exactly what the rider's g-meter shows). The coarse 3-point arrays above
+        // read the raw control points, so they catch rail-joint kinks the smooth spline never
+        // exposes -- this second table is what the player actually feels.
+        float hMaxV[M_COUNT], hMinV[M_COUNT], hMaxL[M_COUNT];
+        for (int i=0;i<M_COUNT;i++){ hMaxV[i]=-1e9f; hMinV[i]=1e9f; hMaxL[i]=0; }
         struct Off { float g; int seed,k,kind,pk,nk; float v,y,lat; };
         std::vector<Off> offenders;
         int totalPts = 0;
@@ -1116,6 +1142,7 @@ int main(int argc, char **argv) {
             std::vector<float> vAt(n, 0.0f);
             float u = 0.5f, v = LAUNCH_V;
             int lastK = -1;
+            float gVh = 1.0f, gLh = 0.0f;   // temporally-smoothed felt g state (HUD meter), reset per seed
             for (int f = 0; f < 200000 && u < n - 4; f++) {
                 float dt = 1.0f / 60.0f;
                 float slope = t.tangent(u).y;
@@ -1139,6 +1166,32 @@ int main(int argc, char **argv) {
             v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
                 int ki = (int)u;
                 if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
+
+                // --- in-game-accurate felt g (mirrors the HUD meter, src/main.cpp ~1666) ---
+                {
+                    float ss  = fmaxf(t.speedScale(u), 1.0f);
+                    float duw = Clamp(7.5f / ss, 0.35f, 1.1f);
+                    Vector3 Tb = t.tangent(u - duw), Tf = t.tangent(u + duw);
+                    float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 2.0f);
+                    Vector3 N  = orthoUp(t.tangent(u), t.upAt(u));
+                    Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
+                    Vector3 felt  = Vector3Add(Vector3Scale(kappa, v * v), Vector3{ 0, GRAV, 0 });
+                    Vector3 rRight = Vector3Normalize(Vector3CrossProduct(N, t.tangent(u)));
+                    float iv = Vector3DotProduct(felt, N) / GRAV;
+                    float il = Vector3DotProduct(felt, rRight) / GRAV;
+                    if (!(iv == iv)) iv = 1.0f;
+                    if (!(il == il)) il = 0.0f;
+                    float kk = 1.0f - expf(-dt * 6.0f);
+                    gVh += (iv - gVh) * kk;
+                    gLh += (il - gLh) * kk;
+                    if (f > 30) {
+                        int kd = t.tagAt(u); if (kd < 0 || kd >= M_COUNT) kd = 0;
+                        if (gVh > hMaxV[kd]) hMaxV[kd] = gVh;
+                        if (gVh < hMinV[kd]) hMinV[kd] = gVh;
+                        if (fabsf(gLh) > hMaxL[kd]) hMaxL[kd] = fabsf(gLh);
+                    }
+                }
+
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
                 if (!(du == du)) du = 0;
                 u += fminf(du, 1.5f);
@@ -1184,6 +1237,14 @@ int main(int argc, char **argv) {
             const char* flag = (kMaxV[i] > 9.8f || kMinV[i] < -6.0f || kMaxL[i] > 9.8f) ? "  <-- OVER" : "";
             printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], kMaxV[i], kMinV[i], kMaxL[i], flag);
         }
+        printf("\n  IN-GAME-ACCURATE FELT-G (HUD meter: smooth spline + 6 Hz lowpass, %d seeds):\n", seeds);
+        printf("  %-9s %8s %8s %8s\n", "element", "maxVert", "minVert", "maxLat");
+        for (int i = 0; i < M_COUNT; i++) {
+            if (hMaxV[i] < -1e8f) continue;
+            const char* flag = (hMaxV[i] > 9.8f || hMinV[i] < -6.0f || hMaxL[i] > 9.8f) ? "  <-- OVER" : "";
+            printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], hMaxV[i], hMinV[i], hMaxL[i], flag);
+        }
+
         std::sort(offenders.begin(), offenders.end(), [](const Off&a,const Off&b){
             return fabsf(a.g-1.0f) > fabsf(b.g-1.0f); });
         printf("\n  OFFENDERS outside +9.8/-6 vert or +9.8/-6 lat: %d total. Worst 25:\n", (int)offenders.size());

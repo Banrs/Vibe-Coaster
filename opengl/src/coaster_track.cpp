@@ -721,7 +721,7 @@ struct Track {
                 enterDrop(Clamp((int)(h / 14.0f), 2, 8));
                 break;
             case M_DROP:
-                if (h > 30.0f) { remain = 2; return; }
+                if (h > 14.0f) { remain = 2; return; }   // ride the drop down near to ground level (was 30 m up) so it recovers the full crest height -> the launch-level speed
                 mode = M_FLAT; remain = irnd(5, 7);
                 break;
             case M_LOOP:
@@ -800,7 +800,7 @@ struct Track {
                 dy = (y1 - y0) + fminf(((gt + 14.0f) - gpos.y) * 0.12f, 0.0f);
                 break;
             }
-            case M_CLIMB: dy = mega ? 17.0f : 11.0f; break;
+            case M_CLIMB: dy = mega ? 21.0f : 13.0f; break;   // steeper top-hat incline (atan(21/14)=56 deg): more dramatic AND reaches crest with less climbing loss -> faster drop
             case M_DROP: {
                 float dh = gpos.y - gt;
                 dy = (dh > 70.0f) ? -44.0f : (dh > 34.0f) ? -19.0f : -fmaxf(dh - 9.0f, 0.0f) * 0.32f - 2.0f;
@@ -854,7 +854,7 @@ struct Track {
             float dlim = Clamp(6.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 1.5f, 18.0f);
             // Top-hat / drop family may steepen faster (near-vertical faces); the g-relaxation
             // pass still bounds crest/pull-out g. Inversions keep the conservative dlim above.
-            if (mode == M_DROP || mode == M_CLIMB || mode == M_DIVE) dlim = fmaxf(dlim, 3.0f);
+            if (mode == M_DROP || mode == M_CLIMB || mode == M_DIVE) dlim = fmaxf(dlim, 4.0f);   // keep the drop face steep further down (maxSteep ~ sqrt(2*dlim*gap)) so it recovers the crest height as speed instead of going shallow up high; pull-out still bounded
 
             float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, dlim);
             float curv = dy - genPrevDy;

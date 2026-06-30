@@ -363,12 +363,12 @@ struct Track {
     void startLaunch() {
         elems = 0; elemLimit = irnd(7, 11); chainMode = false; launchElem = pickLaunchExit();
         setClearance(10.0f, 36.0f);
-        mode = M_LAUNCH; remain = irnd(4, 6);
+        mode = M_LAUNCH; remain = irnd(7, 9);   // ~98-126 m launch (real-life LSM length); longer than boost -> reaches the ~310 cap before a top-hat
     }
 
     void startBoost() {
         chainMode = false; mode = M_BOOST;
-        remain = irnd(6, 8);    // shorter + punchier boost (higher accel, same ~310 end speed)
+        remain = irnd(4, 6);    // ~56-84 m boost (real-life-ish, shorter than the launch); same accel as launch but less distance -> ~300 km/h vs launch's ~310
     }
 
     int airtimeLen(int base) const { return (int)(base * Clamp(genV / 50.0f, 1.0f, 2.0f)); }
@@ -1201,9 +1201,9 @@ struct Track {
                 // Match the RIDE's powered model (main.cpp): LSM thrust that fades toward
                 // LAUNCH_V (no clamp). Keeping this in sync is what sizes elements for the
                 // ACTUAL post-launch/post-boost speed -- otherwise g blows up downstream.
-                if      (tag == M_LAUNCH)                              genV += 100.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
+                if      (tag == M_LAUNCH)                              genV += 112.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
                 else if (tag == M_CLIMB && ch == 0 && genV < CLIMB_V)  genV = fminf(genV + 34.0f * gdt, CLIMB_V);
-                if      (tag == M_BOOST)                               genV += 120.0f * fmaxf(0.0f, 1.0f - genV / LAUNCH_V) * gdt;
+                if      (tag == M_BOOST)                               genV += 112.0f * fmaxf(0.0f, 1.0f - genV / 89.0f) * gdt;
                 if (ch && slope > 0.05f) { float lv = (slope > 0.55f) ? 27.0f : CHAIN_V; if (genV < lv) genV = fminf(genV + 20.0f * gdt, lv); }
 
                 if (trimNext != M_FLAT && trimV > 0.0f && genV > trimV)

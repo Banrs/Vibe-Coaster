@@ -29,7 +29,7 @@ static const float FRICTION  = 0.010f;    // steel-on-steel rolling resistance (
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 88.5f;   // asymptote ~319 so boosts actually reach ~310 before they end (max ~1.25x Falcon's Flight)
+static const float LAUNCH_V  = 95.0f;   // asymptote ~342; gives headroom so launch reaches the ~310 cap before thrust fades
 static const float CLIMB_V   = 40.0f;
 static float       BOOST_V   = 62.0f;
 static float       BOOST_TRIG = 58.0f;
@@ -1001,6 +1001,8 @@ int main(int argc, char **argv) {
             double sumV = 0; long nV = 0; float maxV = 0;
             unsigned char prevTag = 255;
             float minV = 9999; int run = 0, maxRun = 0;
+            float topHatV = 0;   // diag: speed at LAUNCH->CLIMB transition (booster speed entering a top-hat)
+            float boostV = 0;    // diag: max speed reached on a BOOST section
             unsigned char stallTag = 255, stallPrev = 255, prevTag2 = 255;
             for (int f = 0; f < 30000; f++) {
                 float dt = 1.0f / 60.0f;
@@ -1009,9 +1011,9 @@ int main(int argc, char **argv) {
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
                 v += acc * dt;
                 unsigned char tg = t.tagAt(u);
-                if (tg == M_LAUNCH) v += 100.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
 
                 for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
@@ -1025,13 +1027,15 @@ int main(int argc, char **argv) {
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
                 v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.4f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
                 if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
                     if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
                     if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;
                     if (v < minV) minV = v;
                     if (v < 26.0f) { if (++run > maxRun) { maxRun = run; stallTag = tg; stallPrev = prevTag2; } } else run = 0;
                     prevTag2 = (tg != prevTag) ? prevTag : prevTag2;
+                    if (tg == M_CLIMB && prevTag == M_LAUNCH && v > topHatV) topHatV = v;
+                    if (tg == M_BOOST && v > boostV) boostV = v;
                     prevTag = tg; }
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
                 if (!(du == du)) du = 0;
@@ -1061,9 +1065,9 @@ int main(int argc, char **argv) {
             }
             double avg = nV ? sumV / nV : 0;
             const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
-            printf("seed %u  avgV=%.1f (%.0f km/h)  maxV=%.1f (%.0f km/h)  minV=%.1f (%.0f km/h)  worst stall=%d frames (%.1fs) on %s (after %s)\n",
-                   seed, avg, avg * 3.6, maxV, maxV * 3.6, minV, minV * 3.6, maxRun, maxRun / 60.0f,
-                   stallTag < 25 ? NM[stallTag] : "-", stallPrev < 25 ? NM[stallPrev] : "-");
+            printf("seed %u  avgV=%.0fkm/h  maxV=%.0fkm/h  launch->topHat=%.0fkm/h  boostPeak=%.0fkm/h  stall=%df on %s\n",
+                   seed, avg * 3.6, maxV * 3.6, topHatV * 3.6, boostV * 3.6, maxRun,
+                   stallTag < 25 ? NM[stallTag] : "-");
         }
         printf("SIMTEST DONE (no hang)  -> OVERALL AVG RIDE SPEED = %.1f m/s (%.0f km/h)  | powered duty: boost %.1f%% launch %.1f%% | inversions: %ld over 8 seeds (~%.1f/ride)\n",
                gNV ? gSumV / gNV : 0.0, gNV ? gSumV / gNV * 3.6 : 0.0,
@@ -1118,9 +1122,9 @@ int main(int argc, char **argv) {
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
                 v += acc * dt;
                 unsigned char tg = t.tagAt(u);
-                if (tg == M_LAUNCH) v += 100.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
                 for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
                     SegMode ahead = (SegMode)t.tagAt(u + la);
@@ -1132,7 +1136,7 @@ int main(int argc, char **argv) {
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
                 v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.4f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
                 int ki = (int)u;
                 if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
                 float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
@@ -1223,10 +1227,10 @@ int main(int argc, char **argv) {
                 float slope = t.tangent(u).y;
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
                 v += acc * dt;
-                if (t.tagAt(u) == M_LAUNCH) v += 100.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
-                if (t.tagAt(u) == M_BOOST)  v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades near ~320 (no clamp)
+                if (t.tagAt(u) == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
+                if (t.tagAt(u) == M_BOOST)  v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades near ~320 (no clamp)
                 v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.4f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
 
                 sinceStation += dt;
                 if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
@@ -1571,11 +1575,11 @@ int main(int argc, char **argv) {
             }
 
             unsigned char tg = trk.tagAt(u);
-            if      (tg == M_LAUNCH) v += 100.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
+            if      (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
             else if (tg == M_CLIMB && !trk.chainAt(u) && v < CLIMB_V)
                 v = fminf(v + 44.0f * dt, CLIMB_V);
 
-            if (tg == M_BOOST) v += 120.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // boost thrust, fades near ~320 (no clamp)
+            if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades near ~320 (no clamp)
 
             bool onLift = trk.chainAt(u);
             if (onLift && slope > 0.05f) {
@@ -1596,7 +1600,7 @@ int main(int argc, char **argv) {
             if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !onLift && v < 36.0f)
                 v = fminf(v + 28.0f * dt, 36.0f);
             v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.4f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
             if (gForceSpeed > 0.0f) v = gForceSpeed;
 
             sinceStation += dt;

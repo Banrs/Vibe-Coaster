@@ -674,7 +674,10 @@ struct Track {
             (mode == M_FLAT || mode == M_TURN || mode == M_HILLS)) {
             float cs = cosf(gyaw), sn = sinf(gyaw);
             float maxG = groundTopAt(gpos.x, gpos.z);
-            for (float lz = -28.0f; lz <= 72.0f; lz += 6.0f)
+            // Scan the whole station + flat LAUNCH corridor ahead (~200 m): the launch must stay
+            // dead flat for the LSM, so it can't ride over rising ground -- set the deck above the
+            // tallest terrain along it (an elevated station) so the launch never tunnels underground.
+            for (float lz = -28.0f; lz <= 200.0f; lz += 6.0f)
                 for (float lx = -6.0f; lx <= 6.0f; lx += 6.0f)
                     maxG = fmaxf(maxG, groundTopAt(gpos.x + cs*lx + sn*lz, gpos.z - sn*lx + cs*lz));
             stationDeckY  = fmaxf(gpos.y, maxG + 6.0f);
@@ -864,10 +867,10 @@ struct Track {
 
             if (dy < 0.0f && mode != M_DIP && mode != M_HELIX) {
                 float gtLook = gt;
-                for (int la = 1; la <= 4; la++)
+                for (int la = 1; la <= 8; la++)   // longer lookahead: anticipate rising ground sooner so the pull-out starts early instead of plunging into it
                     gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
                                                        gpos.z + cosf(gyaw) * SEG_LEN * la));
-                float gap      = gpos.y - (gtLook + 4.5f);
+                float gap      = gpos.y - (gtLook + 14.0f);   // pull out to ~14 m above terrain (was 4.5): leaves a buffer so the post-gen smoothing can't dig the pull-out under the ground
                 float maxSteep = sqrtf(2.0f * dlim * fmaxf(gap, 0.0f));
                 if (dy < -maxSteep) dy = -maxSteep;
             }
@@ -1187,6 +1190,23 @@ struct Track {
                         cp[i] = Vector3Lerp(cp[i], mid, 0.5f);
                     }
                 }
+        }
+
+        // Rate-limited terrain floor: the smoothing/relaxation passes above pull cps ~15-30 m below
+        // the per-cp terrain clamp (the track rides under the ground). Lift the just-frozen cp
+        // (index n-15: out of the smoothing window AND not read by the genV step below, so element
+        // sizing is untouched) up onto the terrain -- but rising no faster than ~7 m/cp (~26 deg) so
+        // a sharp terrain spike becomes a climbable slope, never the vertical wall that stalled the
+        // generator. Elevated track (cp above terrain) is left alone.
+        if ((int)cp.size() >= 16) {
+            int i = (int)cp.size() - 15;
+            unsigned char ki = kind[i];
+            if (ki != M_STATION) {   // stations stay dead flat; everything else (incl. LAUNCH) rides up onto the terrain rather than tunnelling through it -- an uphill launch still reaches 310 (thrust >> gravity)
+                float clr    = (ki == M_DIP) ? 1.5f : 4.5f;   // DIP skims water shallower; still floored so it can't plunge through a hillside
+                float tf     = groundTopAt(cp[i].x, cp[i].z) + clr;
+                float floorY = fminf(tf, cp[i - 1].y + 8.0f);
+                if (cp[i].y < floorY) cp[i].y = floorY;
+            }
         }
 
         if (cp.size() >= 2) {

@@ -30,6 +30,7 @@ struct Track {
     unsigned char lastGenMode = (unsigned char)M_FLAT;
     Vector3 genPrevUp = WUP;
     int     upEaseSteps = 0;
+    float   upEaseRate  = 0.38f;   // how fast the bank unwinds after an element; lower = gentler (helix needs slow so the bank outlasts the turn)
 
     int     seamEaseN = 0;
     int     seamEaseTot = 0;
@@ -1046,10 +1047,15 @@ struct Track {
                 Vector3 a = cp[cp.size() - 2], b = cp.back();
                 float dx = b.x - a.x, dz = b.z - a.z;
                 if (dx * dx + dz * dz > 1e-4f) gyaw = atan2f(dx, dz);
-                upEaseSteps = 6;
+                // The helix exits a TIGHT banked coil; its turn unwinds over ~8 jerk-limited steps,
+                // so unwind the bank slowly (over ~10 steps) -- otherwise the bank drops out first and
+                // the still-turning car takes the full lateral g un-banked (the "bad on exit" spike).
+                bool steepBankExit = (lastGenMode == (unsigned char)M_HELIX);
+                upEaseSteps = steepBankExit ? 10 : 6;
+                upEaseRate  = steepBankExit ? 0.18f : 0.38f;
 
                 if (lastGenMode == (unsigned char)M_COBRA)      { levelHold = 4; }
-                else if (isHardInversion((SegMode)lastGenMode)) { seamEaseN = 4; seamEaseTot = 4; }
+                else if (isHardInversion((SegMode)lastGenMode) || lastGenMode == (unsigned char)M_HELIX) { seamEaseN = 4; seamEaseTot = 4; }
             }
         }
 
@@ -1078,7 +1084,7 @@ struct Track {
             upv = easeUpVec(genPrevUp, upv, 0.18f);
 
         if (upEaseSteps > 0 && (mode == M_DROP || mode == M_FLAT)) {
-            upv = easeUpVec(genPrevUp, upv, 0.38f);
+            upv = easeUpVec(genPrevUp, upv, upEaseRate);
             upEaseSteps--;
         }
         float appliedDy = gpos.y - yBefore;

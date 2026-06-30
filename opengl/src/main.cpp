@@ -24,12 +24,12 @@ static const float BUILD_MAX  = 430.0f;
 static const float TERRA_MAX  = 320.0f;
 static const float GRAV      = 9.81f;
 
-static float       DRAG      = 0.00048f;  // lower drag lifts avg to ~223 km/h AND flattens the speed profile so gen-speed tracks ride-speed (fewer g outliers); drops still settle below boost
+static float       DRAG      = 0.00028f;  // realistic aero drag: ~1.8 m/s^2 at 80 m/s (a ~10t train, ~5 m^2, Cd~0.7). The old 0.00048 was ~2x reality and was capping tall drops at ~296; lower drag lets drops recover their crest-height speed (~300+).
 static const float FRICTION  = 0.010f;    // steel-on-steel rolling resistance (low)
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 95.0f;   // asymptote ~342; gives headroom so launch reaches the ~310 cap before thrust fades
+static const float LAUNCH_V  = 105.0f;  // asymptote ~378: keeps strong thrust (~20 m/s^2) right up to the 86.1 m/s (310) clamp, so the launch reliably saturates 310 with margin (was 95 -> faded to ~10 and topped ~300)
 static const float CLIMB_V   = 40.0f;
 static float       BOOST_V   = 62.0f;
 static float       BOOST_TRIG = 58.0f;
@@ -1216,7 +1216,10 @@ int main(int argc, char **argv) {
                 float gL = vv * Vector3DotProduct(kap, lat) / GRAV;
                 int kd = t.kind[k]; if (kd < 0 || kd >= M_COUNT) kd = 0;
                 float clr = p1.y - groundTopAt(p1.x, p1.z);
-                if (clr < gMinClear) { gMinClear = clr; gMinClearK = (int)t.base + k; gMinClearSeed = sd; gMinClearLocalK = k; }
+                // Skip the last ~16 cps: they never left the smoothing window so the terrain floor
+                // hasn't been applied to them yet. In live play the track generates continuously, so
+                // every cp the car reaches HAS been floored -- those tail cps are an audit-only artifact.
+                if (k < n - 16 && clr < gMinClear) { gMinClear = clr; gMinClearK = (int)t.base + k; gMinClearSeed = sd; gMinClearLocalK = k; }
                 totalPts++;
                 if (gV > kMaxV[kd]) kMaxV[kd] = gV;
                 if (gV < kMinV[kd]) kMinV[kd] = gV;

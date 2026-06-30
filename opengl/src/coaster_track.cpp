@@ -443,7 +443,7 @@ struct Track {
         mode = M_HELIX;
         setClearance(18.0f, 58.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag = turnMagFor(5.5f, 0.13f, 0.55f);   // ~5.5 g lateral target -> radius ~100-120 m (was ~140-160 m); smaller without spiking g at the ~76 m/s it's ridden
+        turnMag = turnMagFor(9.0f, 0.13f, 0.60f);   // tight coil: ~9 g-budget turn target -> radius ~75 m (was ~120 m). Ridden fast (post-boost, NO brakes); banking keeps the felt lateral ~half this, so this brings it up toward the limit instead of a lazy 3 g spiral.
         bankT   = frnd(0.62f, 0.82f);
 
         float R = SEG_LEN / turnMag;
@@ -775,7 +775,8 @@ struct Track {
             // turns are ridden. Higher cap = TIGHTER turns/helices (smaller, more thrilling) instead of
             // the old huge-radius low-g spirals. The felt-g safety net still trims anything over.
             float vCap = fmaxf(genV, 80.0f);
-            float dyawMax = 5.5f * SEG_LEN * GRAV / (vCap * vCap);
+            float capK = (mode == M_HELIX) ? 9.0f : 5.5f;   // helix gets a tighter coil (it reads as only ~3 g live; banking eats the rest), the rest stay at the comfort cap
+            float dyawMax = capK * SEG_LEN * GRAV / (vCap * vCap);
             dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;
         }

@@ -26,7 +26,7 @@
 
 static const float SEG_LEN   = 14.0f;
 static const float CELL      = 1.0f;
-static const int   TERRA_R   = 192;
+static const int   TERRA_R   = 256;   // 16 chunks * 16 m/chunk (TERRAIN_BUCKET) render distance
 
 static const float WATER_Y   = 30.0f;
 static const float BUILD_MAX  = 430.0f;
@@ -2340,6 +2340,7 @@ int main(int argc, char **argv) {
         }
         };
 
+        float curShadowCullR = SHADOW_CASCADE_CULL_R[0];   // set per-cascade before each depth-pass drawWorld(true) call
         auto drawWorld = [&](bool depthPass, bool coasterOnly = false) {
         if (!coasterOnly && gTerrainMesh.live) {
 
@@ -2356,14 +2357,13 @@ int main(int argc, char **argv) {
             // DrawMesh calls for chunks that can't be seen, it never skips generating them,
             // so it cannot reintroduce the old per-chunk-streaming void bug.
             if (depthPass) {
-                // Shadow pass uses a +-105 ortho box centred on P (see computeLightVP) that
-                // can be rotated by the sun direction; cull by 3-D distance from P with a
-                // margin past the box's half-diagonal (105*sqrt2 ~= 148) so nothing the
-                // shadow map could need is ever skipped.
-                const float SHADOW_CULL_R = 170.0f;
+                // Each cascade uses its own ortho box centred on P (see ShadowSys::computeLightVP)
+                // -- cull by 3-D distance from P using the CURRENT cascade's cull radius
+                // (curShadowCullR, set by the caller before each cascade's drawWorld(true) call),
+                // which already includes a margin past that cascade's box half-diagonal.
                 for (auto &c : gTerrainMesh.chunks) {
                     float dx = c.center.x - P.x, dy = c.center.y - P.y, dz = c.center.z - P.z;
-                    if (sqrtf(dx*dx + dy*dy + dz*dz) - c.radius > SHADOW_CULL_R) continue;
+                    if (sqrtf(dx*dx + dy*dy + dz*dz) - c.radius > curShadowCullR) continue;
                     DrawMesh(c.mesh, mat, MatrixIdentity());
                 }
             } else {
@@ -2578,25 +2578,53 @@ int main(int argc, char **argv) {
             if (!gTerrainMesh.live) gTerrainMesh.finish(true);   // first build: must have a mesh to draw
         }
 
-        Matrix lightVP = gShadow.computeLightVP(P);
+        gShadow.computeLightVP(P);
         BeginDrawing();
 
         rlDrawRenderBatchActive();
-        rlEnableFramebuffer(gShadow.fbo);
-        rlViewport(0, 0, gShadow.SM, gShadow.SM);
-        rlClearScreenBuffers();
-        rlDisableColorBlend();
-        rlEnableDepthTest(); rlEnableDepthMask();
-        glDepthFunc(GL_LEQUAL);
-        rlSetMatrixProjection(MatrixIdentity());
-        rlSetMatrixModelview(lightVP);
-        BeginShaderMode(gShadow.depth);
-        drawWorld(true);
-        rlDrawRenderBatchActive();
-        EndShaderMode();
-        rlEnableColorBlend();
-        rlDisableFramebuffer();
+        for (int ci = 0; ci < SHADOW_CASCADES; ci++) {
+            rlEnableFramebuffer(gShadow.fbo[ci]);
+            rlViewport(0, 0, gShadow.SM[ci], gShadow.SM[ci]);
+            rlClearScreenBuffers();
+            rlDisableColorBlend();
+            rlEnableDepthTest(); rlEnableDepthMask();
+            glDepthFunc(GL_LEQUAL);
+            rlSetMatrixProjection(MatrixIdentity());
+            rlSetMatrixModelview(gShadow.lightVP[ci]);
+            BeginShaderMode(gShadow.depth);
+            curShadowCullR = SHADOW_CASCADE_CULL_R[ci];
+            drawWorld(true);
+            rlDrawRenderBatchActive();
+            EndShaderMode();
+            rlEnableColorBlend();
+            rlDisableFramebuffer();
+        }
         rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
+
+        // Bind all 3 cascade matrices/textures once per frame; every gShadow.lit
+        // draw call below (main pass, water, path-trace overlays) shares them.
+        auto bindShadowUniforms = [&]() {
+            for (int i = 0; i < SHADOW_CASCADES; i++) {
+                SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP[i], gShadow.lightVP[i]);
+                float texel[2] = { 1.0f / gShadow.SM[i], 1.0f / gShadow.SM[i] };
+                SetShaderValue(gShadow.lit, gShadow.locShadowTexel[i], texel, SHADER_UNIFORM_VEC2);
+                SetShaderValue(gShadow.lit, gShadow.locInvRange[i], &gShadow.invRange[i], SHADER_UNIFORM_FLOAT);
+            }
+            SetShaderValue(gShadow.lit, gShadow.locCascadeSplit0, &SHADOW_CASCADE_R[0], SHADER_UNIFORM_FLOAT);
+            SetShaderValue(gShadow.lit, gShadow.locCascadeSplit1, &SHADOW_CASCADE_R[1], SHADER_UNIFORM_FLOAT);
+        };
+        static const int SHADOW_TEX_UNITS[SHADOW_CASCADES] = { 10, 13, 14 };
+        auto bindShadowTextures = [&]() {
+            for (int i = 0; i < SHADOW_CASCADES; i++) {
+                SetShaderValue(gShadow.lit, gShadow.locShadowMap[i], &SHADOW_TEX_UNITS[i], SHADER_UNIFORM_INT);
+                rlActiveTextureSlot(SHADOW_TEX_UNITS[i]); rlEnableTexture(gShadow.depthTex[i]);
+            }
+            rlActiveTextureSlot(0);
+        };
+        auto unbindShadowTextures = [&]() {
+            for (int i = 0; i < SHADOW_CASCADES; i++) { rlActiveTextureSlot(SHADOW_TEX_UNITS[i]); rlDisableTexture(); }
+            rlActiveTextureSlot(0);
+        };
 
         if (!liveRT) {
         ClearBackground(SKY);
@@ -2635,9 +2663,7 @@ int main(int argc, char **argv) {
         BeginMode3D(cam);
 
         {
-            SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP, lightVP);
-            float texel[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
-            SetShaderValue(gShadow.lit, gShadow.locShadowTexel, texel, SHADER_UNIFORM_VEC2);
+            bindShadowUniforms();
             float ld[3] = { g_sunDir.x, g_sunDir.y, g_sunDir.z };
             SetShaderValue(gShadow.lit, gShadow.locLightDir, ld, SHADER_UNIFORM_VEC3);
             float vp3[3] = { cam.position.x, cam.position.y, cam.position.z };
@@ -2650,13 +2676,11 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locGround, gnd, SHADER_UNIFORM_VEC3);
         }
 
-        const int SHADOW_UNIT = 10;
         BeginShaderMode(gShadow.lit);
-        SetShaderValue(gShadow.lit, gShadow.locShadowMap, &SHADOW_UNIT, SHADER_UNIFORM_INT);
-        rlActiveTextureSlot(SHADOW_UNIT); rlEnableTexture(gShadow.depthTex); rlActiveTextureSlot(0);
+        bindShadowTextures();
         drawWorld(false);
         EndShaderMode();
-        rlActiveTextureSlot(SHADOW_UNIT); rlDisableTexture(); rlActiveTextureSlot(0);
+        unbindShadowTextures();
 
         {
             struct SplashContact { Vector3 p, fwd, right; float gap; };
@@ -2757,10 +2781,8 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
             SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
 
-            const int SHADOW_UNIT_W = 10;
             BeginShaderMode(gShadow.lit);
-            SetShaderValue(gShadow.lit, gShadow.locShadowMap, &SHADOW_UNIT_W, SHADER_UNIFORM_INT);
-            rlActiveTextureSlot(SHADOW_UNIT_W); rlEnableTexture(gShadow.depthTex); rlActiveTextureSlot(0);
+            bindShadowTextures();
 
             rlSetTexture(gAtlas.id);
             float wu = (T_WHITE * 16 + 8.0f) / (float)(TILE_N * 16);
@@ -2788,7 +2810,7 @@ int main(int argc, char **argv) {
             }
             rlEnd();
             EndShaderMode();
-            rlActiveTextureSlot(SHADOW_UNIT_W); rlDisableTexture(); rlActiveTextureSlot(0);
+            unbindShadowTextures();
             float off = 0.0f;
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);
         }
@@ -2842,8 +2864,12 @@ int main(int argc, char **argv) {
             SetShaderValue(gPT.rt, gPT.rAtlasSize, asz, SHADER_UNIFORM_VEC2);
             SetShaderValue(gPT.rt, gPT.rVoxSize, &vsz, SHADER_UNIFORM_FLOAT);
 
-            SetShaderValueMatrix(gPT.rt, gPT.rLightVP, lightVP);
-            float rstx[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
+            // The voxel path tracer has its own single-shadow-map shader interface (it
+            // computes most shadowing via its own voxel ray march); feed it cascade 1
+            // (mid distance) as a reasonable single proxy rather than extending its
+            // shader to the full 3-cascade scheme.
+            SetShaderValueMatrix(gPT.rt, gPT.rLightVP, gShadow.lightVP[1]);
+            float rstx[2] = { 1.0f / gShadow.SM[1], 1.0f / gShadow.SM[1] };
             SetShaderValue(gPT.rt, gPT.rShadowTexel, rstx, SHADER_UNIFORM_VEC2);
             const int RT_SHADOW_UNIT = 12;
             SetShaderValue(gPT.rt, gPT.rShadowMap, &RT_SHADOW_UNIT, SHADER_UNIFORM_INT);
@@ -2851,7 +2877,7 @@ int main(int argc, char **argv) {
             BeginTextureMode(gPT.rtBuf);
                 rlEnableDepthTest();
                 glDepthFunc(GL_ALWAYS);
-                rlActiveTextureSlot(RT_SHADOW_UNIT); rlEnableTexture(gShadow.depthTex); rlActiveTextureSlot(0);
+                rlActiveTextureSlot(RT_SHADOW_UNIT); rlEnableTexture(gShadow.depthTex[1]); rlActiveTextureSlot(0);
                 BeginShaderMode(gPT.rt);
                     DrawTexturePro(gPT.vox,
                         Rectangle{0,0,(float)gPT.vox.width,(float)gPT.vox.height},
@@ -2883,9 +2909,7 @@ int main(int argc, char **argv) {
             glDepthFunc(GL_LEQUAL);
 
             BeginMode3D(cam);
-                SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP, lightVP);
-                float texelL[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
-                SetShaderValue(gShadow.lit, gShadow.locShadowTexel, texelL, SHADER_UNIFORM_VEC2);
+                bindShadowUniforms();
                 float ldL[3] = { g_sunDir.x, g_sunDir.y, g_sunDir.z };
                 SetShaderValue(gShadow.lit, gShadow.locLightDir, ldL, SHADER_UNIFORM_VEC3);
                 float vpL[3] = { cam.position.x, cam.position.y, cam.position.z };
@@ -2896,13 +2920,11 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locSun, sunL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, skyL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gndL, SHADER_UNIFORM_VEC3);
-                const int SHADOW_UNIT_L = 10;
                 BeginShaderMode(gShadow.lit);
-                    SetShaderValue(gShadow.lit, gShadow.locShadowMap, &SHADOW_UNIT_L, SHADER_UNIFORM_INT);
-                    rlActiveTextureSlot(SHADOW_UNIT_L); rlEnableTexture(gShadow.depthTex); rlActiveTextureSlot(0);
+                    bindShadowTextures();
                     drawWorld(false, true);
                 EndShaderMode();
-                rlActiveTextureSlot(SHADOW_UNIT_L); rlDisableTexture(); rlActiveTextureSlot(0);
+                unbindShadowTextures();
             EndMode3D();
         }
 
@@ -2980,9 +3002,7 @@ int main(int argc, char **argv) {
             rlDrawRenderBatchActive();
             glClear(GL_DEPTH_BUFFER_BIT);
             BeginMode3D(cam);
-                SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP, lightVP);
-                float texel2[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
-                SetShaderValue(gShadow.lit, gShadow.locShadowTexel, texel2, SHADER_UNIFORM_VEC2);
+                bindShadowUniforms();
                 float ld2[3] = { g_sunDir.x, g_sunDir.y, g_sunDir.z };
                 SetShaderValue(gShadow.lit, gShadow.locLightDir, ld2, SHADER_UNIFORM_VEC3);
                 float vp2[3] = { cam.position.x, cam.position.y, cam.position.z };
@@ -2994,13 +3014,11 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locSun, sun2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, sky2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gnd2, SHADER_UNIFORM_VEC3);
-                const int SHADOW_UNIT2 = 10;
                 BeginShaderMode(gShadow.lit);
-                    SetShaderValue(gShadow.lit, gShadow.locShadowMap, &SHADOW_UNIT2, SHADER_UNIFORM_INT);
-                    rlActiveTextureSlot(SHADOW_UNIT2); rlEnableTexture(gShadow.depthTex); rlActiveTextureSlot(0);
+                    bindShadowTextures();
                     drawWorld(false, true);
                 EndShaderMode();
-                rlActiveTextureSlot(SHADOW_UNIT2); rlDisableTexture(); rlActiveTextureSlot(0);
+                unbindShadowTextures();
             EndMode3D();
         }
 
@@ -3356,7 +3374,7 @@ int main(int argc, char **argv) {
 
     gBaker.shutdown();
     UnloadShader(gShadow.lit); UnloadShader(gShadow.depth);
-    rlUnloadFramebuffer(gShadow.fbo);
+    for (int ci = 0; ci < SHADOW_CASCADES; ci++) rlUnloadFramebuffer(gShadow.fbo[ci]);
     UnloadTexture(gAtlas);
     UnloadAudioStream(wind);
     UnloadSound(sndCoin);

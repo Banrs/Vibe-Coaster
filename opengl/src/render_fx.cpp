@@ -5,21 +5,18 @@ static const char *SHADOW_VS =
     "#version 330\n"
     "in vec3 vertexPosition; in vec2 vertexTexCoord; in vec3 vertexNormal; in vec4 vertexColor;\n"
     "uniform mat4 mvp;\n"
-    "uniform mat4 lightVP;\n"
-    "out vec2 fragTexCoord; out vec4 fragColor; out vec3 fragNormal; out vec3 fragWorld; out vec4 fragLightPos;\n"
+    "out vec2 fragTexCoord; out vec4 fragColor; out vec3 fragNormal; out vec3 fragWorld;\n"
     "void main(){\n"
     "  vec4 wp = vec4(vertexPosition,1.0);\n"
     "  fragWorld = wp.xyz;\n"
     "  fragTexCoord = vertexTexCoord; fragColor = vertexColor;\n"
     "  fragNormal = normalize(vertexNormal);\n"
-    "  fragLightPos = lightVP*wp;\n"
     "  gl_Position = mvp*vec4(vertexPosition,1.0);\n"
     "}\n";
 static const char *SHADOW_FS =
     "#version 330\n"
-    "in vec2 fragTexCoord; in vec4 fragColor; in vec3 fragNormal; in vec3 fragWorld; in vec4 fragLightPos;\n"
+    "in vec2 fragTexCoord; in vec4 fragColor; in vec3 fragNormal; in vec3 fragWorld;\n"
     "uniform sampler2D texture0; uniform vec4 colDiffuse;\n"
-    "uniform sampler2D shadowMap; uniform vec2 shadowTexel;\n"
     "uniform vec3 lightDir; uniform vec3 viewPos;\n"
     "uniform vec3 sunCol; uniform vec3 skyCol; uniform vec3 groundCol;\n"
     "uniform float uTime;\n"
@@ -27,35 +24,76 @@ static const char *SHADOW_FS =
     "uniform float fogEnd; uniform vec3 fogCol;\n"
     "out vec4 finalColor;\n"
 
+    // Cascaded shadow maps: 3 cascades (near/mid/far), each its own ortho box +
+    // texture, so near-field shadows get far more texel density than a single
+    // map could afford at this render distance, while the far cascade still
+    // reaches out to the edge of the generated terrain ring.
+    "uniform mat4 lightVP0; uniform mat4 lightVP1; uniform mat4 lightVP2;\n"
+    "uniform sampler2D shadowMap0; uniform sampler2D shadowMap1; uniform sampler2D shadowMap2;\n"
+    "uniform vec2 shadowTexel0; uniform vec2 shadowTexel1; uniform vec2 shadowTexel2;\n"
+    // Each cascade's normalized [0,1] depth-buffer range covers a different span
+    // of world metres (near cascades are tight/shallow, far cascades deep) -- a
+    // single normalized bias would be either too small (acne) on the far
+    // cascade or too large (peter-panning) on the near one, so bias is computed
+    // in world metres then converted per-cascade via its own inverse depth range.
+    "uniform float invRange0; uniform float invRange1; uniform float invRange2;\n"
+    "uniform float cascadeSplit0; uniform float cascadeSplit1;\n"
+
     "const vec2 PD12[12] = vec2[12](\n"
     "  vec2(-0.326,-0.406),vec2(-0.840,-0.074),vec2(-0.696, 0.457),vec2(-0.203, 0.621),\n"
     "  vec2( 0.962,-0.195),vec2( 0.473,-0.480),vec2( 0.519, 0.767),vec2( 0.185,-0.893),\n"
     "  vec2( 0.507, 0.064),vec2( 0.896, 0.412),vec2(-0.322,-0.933),vec2(-0.792,-0.598));\n"
-    "float shadow(vec3 N){\n"
-    "  vec3 p = fragLightPos.xyz/fragLightPos.w; p = p*0.5+0.5;\n"
-    "  if(p.z<=0.0||p.z>1.0) return 1.0;\n"
-    "  if(p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "  float NoL = max(dot(N,lightDir),0.0);\n"
-
-    // The shadow ortho box spans a 512 m depth range (near=8, far=520; see
-    // computeLightVP), so 1 world metre of depth is only ~1/512 = 0.00195 in the
-    // [0,1] depth-buffer range the shadow map stores. The thin-skin terrain (see
-    // main.cpp's hidden-face culling) has ~1 m height steps between MANY adjacent
-    // cells -- the old bias (max 0.0014) was smaller than a single such step, so
-    // a flat cap right next to a 1 m-lower/higher neighbour would self-shadow
-    // against that neighbour's recorded depth, as fine acne/speckle across the
-    // whole terrain. Bias now comfortably clears a couple of such steps.
-    "  float bias = clamp(0.0028 + 0.0035*(1.0-NoL),0.0028,0.0063);\n"
+    "float pcfTap(sampler2D sm, vec2 texel, vec3 p, float bias){\n"
     "  float ang = fract(sin(dot(fragWorld.xz, vec2(12.9898,78.233)))*43758.5453)*6.2831853;\n"
     "  float ca=cos(ang), sa=sin(ang); mat2 rot=mat2(ca,-sa,sa,ca);\n"
-    "  vec2 o = shadowTexel*1.4;\n"
+    "  vec2 o = texel*1.4;\n"
     "  float s=0.0;\n"
     "  for(int i=0; i<12; i++){\n"
     "    vec2 tap = p.xy + rot*PD12[i]*o;\n"
     "    if(tap.x<0.0||tap.x>1.0||tap.y<0.0||tap.y>1.0) s += 1.0;\n"
-    "    else s += (p.z-bias > texture(shadowMap, tap).r) ? 0.0 : 1.0;\n"
+    "    else s += (p.z-bias > texture(sm, tap).r) ? 0.0 : 1.0;\n"
     "  }\n"
     "  return s*(1.0/12.0);\n"
+    "}\n"
+    // Bias tuned in world metres (matches the old single-map 1.4-3.2 m range,
+    // now comfortably clearing the ~1 m terrain height steps regardless of
+    // which cascade is sampled); converted to each cascade's normalized units
+    // by the caller via invRangeN.
+    "float worldBias(float NoL){ return clamp(1.4 + 1.75*(1.0-NoL), 1.4, 3.2); }\n"
+    "float shadowCascade(int idx, vec3 N){\n"
+    "  float NoL = max(dot(N,lightDir),0.0);\n"
+    "  vec4 wp = vec4(fragWorld,1.0);\n"
+    "  if(idx==0){\n"
+    "    vec4 lp = lightVP0*wp; vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
+    "    if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
+    "    return pcfTap(shadowMap0, shadowTexel0, p, worldBias(NoL)*invRange0);\n"
+    "  } else if(idx==1){\n"
+    "    vec4 lp = lightVP1*wp; vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
+    "    if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
+    "    return pcfTap(shadowMap1, shadowTexel1, p, worldBias(NoL)*invRange1);\n"
+    "  } else {\n"
+    "    vec4 lp = lightVP2*wp; vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
+    "    if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
+    "    return pcfTap(shadowMap2, shadowTexel2, p, worldBias(NoL)*invRange2);\n"
+    "  }\n"
+    "}\n"
+    // Select cascade by camera-XZ distance (matches the fog/culling convention
+    // used elsewhere in this shader), soft-blending across a band near each
+    // split so the cascade seam is never a visible hard line.
+    "float shadow(vec3 N){\n"
+    "  float d = length(viewPos.xz - fragWorld.xz);\n"
+    "  float band0 = cascadeSplit0*0.85, band1 = cascadeSplit1*0.85;\n"
+    "  if(d < band0) return shadowCascade(0, N);\n"
+    "  if(d < cascadeSplit0){\n"
+    "    float t = (d-band0)/max(cascadeSplit0-band0,0.001);\n"
+    "    return mix(shadowCascade(0,N), shadowCascade(1,N), t);\n"
+    "  }\n"
+    "  if(d < band1) return shadowCascade(1, N);\n"
+    "  if(d < cascadeSplit1){\n"
+    "    float t = (d-band1)/max(cascadeSplit1-band1,0.001);\n"
+    "    return mix(shadowCascade(1,N), shadowCascade(2,N), t);\n"
+    "  }\n"
+    "  return shadowCascade(2, N);\n"
     "}\n"
 
     "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
@@ -179,21 +217,51 @@ static const char *DEPTH_FS =
     "#version 330\n"
     "void main(){}\n";
 
+static const int SHADOW_CASCADES = 3;
+// Cascade half-extents (world m): near/mid/far. The terrain ring generates out
+// to TERRA_R=256 m around the camera (main.cpp, 16 chunks @ 16 m/chunk), so
+// the far cascade is sized to use nearly all of that footprint rather than
+// reaching past ground that will never exist.
+static const float SHADOW_CASCADE_R[SHADOW_CASCADES] = { 32.0f, 100.0f, 245.0f };
+// Depth-pass draw-call cull radius per cascade: box half-diagonal (R*sqrt2)
+// plus a safety margin, mirroring the old single-map SHADOW_CULL_R pattern.
+static const float SHADOW_CASCADE_CULL_R[SHADOW_CASCADES] = {
+    SHADOW_CASCADE_R[0] * 1.42f + 15.0f,
+    SHADOW_CASCADE_R[1] * 1.42f + 15.0f,
+    SHADOW_CASCADE_R[2] * 1.42f + 15.0f,
+};
+
 struct ShadowSys {
     Shader lit{}, depth{};
-    unsigned int fbo = 0, depthTex = 0;
-    int SM = 2048;
-    int locLightVP=-1, locShadowMap=-1, locShadowTexel=-1, locLightDir=-1, locViewPos=-1;
+    unsigned int fbo[SHADOW_CASCADES] = {0,0,0};
+    unsigned int depthTex[SHADOW_CASCADES] = {0,0,0};
+    int SM[SHADOW_CASCADES] = { 2048, 1536, 1024 };   // near cascade keeps full res; far cascade doesn't need it
+    int locLightVP[SHADOW_CASCADES]   = {-1,-1,-1};
+    int locShadowMap[SHADOW_CASCADES] = {-1,-1,-1};
+    int locShadowTexel[SHADOW_CASCADES] = {-1,-1,-1};
+    int locInvRange[SHADOW_CASCADES]  = {-1,-1,-1};
+    int locCascadeSplit0=-1, locCascadeSplit1=-1;
+    int locLightDir=-1, locViewPos=-1;
     int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1, locTime=-1;
     int locFogEnd=-1, locFogCol=-1;
-    Matrix lightVP{};
+    Matrix lightVP[SHADOW_CASCADES]{};
+    float invRange[SHADOW_CASCADES]{};
 
     void init() {
         lit   = LoadShaderFromMemory(SHADOW_VS, SHADOW_FS);
         depth = LoadShaderFromMemory(DEPTH_VS, DEPTH_FS);
-        locLightVP     = GetShaderLocation(lit, "lightVP");
-        locShadowMap   = GetShaderLocation(lit, "shadowMap");
-        locShadowTexel = GetShaderLocation(lit, "shadowTexel");
+        const char *vpNames[SHADOW_CASCADES]    = { "lightVP0", "lightVP1", "lightVP2" };
+        const char *mapNames[SHADOW_CASCADES]   = { "shadowMap0", "shadowMap1", "shadowMap2" };
+        const char *texelNames[SHADOW_CASCADES] = { "shadowTexel0", "shadowTexel1", "shadowTexel2" };
+        const char *rangeNames[SHADOW_CASCADES] = { "invRange0", "invRange1", "invRange2" };
+        for (int i = 0; i < SHADOW_CASCADES; i++) {
+            locLightVP[i]     = GetShaderLocation(lit, vpNames[i]);
+            locShadowMap[i]   = GetShaderLocation(lit, mapNames[i]);
+            locShadowTexel[i] = GetShaderLocation(lit, texelNames[i]);
+            locInvRange[i]    = GetShaderLocation(lit, rangeNames[i]);
+        }
+        locCascadeSplit0 = GetShaderLocation(lit, "cascadeSplit0");
+        locCascadeSplit1 = GetShaderLocation(lit, "cascadeSplit1");
         locLightDir    = GetShaderLocation(lit, "lightDir");
         locViewPos     = GetShaderLocation(lit, "viewPos");
         locSun         = GetShaderLocation(lit, "sunCol");
@@ -202,23 +270,32 @@ struct ShadowSys {
         locTime        = GetShaderLocation(lit, "uTime");
         locFogEnd      = GetShaderLocation(lit, "fogEnd");
         locFogCol      = GetShaderLocation(lit, "fogCol");
-        fbo = rlLoadFramebuffer();
-        rlEnableFramebuffer(fbo);
-        depthTex = rlLoadTextureDepth(SM, SM, false);
-        rlFramebufferAttach(fbo, depthTex, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
-        if (!rlFramebufferComplete(fbo)) TraceLog(LOG_WARNING, "SHADOW: framebuffer is incomplete, shadows may be disabled");
-        rlDisableFramebuffer();
+        for (int i = 0; i < SHADOW_CASCADES; i++) {
+            fbo[i] = rlLoadFramebuffer();
+            rlEnableFramebuffer(fbo[i]);
+            depthTex[i] = rlLoadTextureDepth(SM[i], SM[i], false);
+            rlFramebufferAttach(fbo[i], depthTex[i], RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+            if (!rlFramebufferComplete(fbo[i])) TraceLog(LOG_WARNING, "SHADOW: cascade %d framebuffer is incomplete, shadows may be disabled", i);
+            rlDisableFramebuffer();
+        }
     }
 
-    Matrix computeLightVP(Vector3 focus) {
-
-        float R = 110.0f;
-        Vector3 ctr = focus;
-        Vector3 eye = Vector3Add(ctr, Vector3Scale(g_sunDir, 240.0f));
-        Matrix view = MatrixLookAt(eye, ctr, Vector3{ 0, 1, 0 });
-        Matrix proj = MatrixOrtho(-R, R, -R, R, 8.0f, 500.0f);
-        lightVP = MatrixMultiply(view, proj);
-        return lightVP;
+    // Fills lightVP[]/invRange[] for all cascades, centred on `focus` (the
+    // camera/train focus point) along the fixed sun direction. Each cascade's
+    // eye distance and far plane scale with its own half-extent so the box is
+    // always fully contained regardless of sun elevation.
+    void computeLightVP(Vector3 focus) {
+        for (int i = 0; i < SHADOW_CASCADES; i++) {
+            float R = SHADOW_CASCADE_R[i];
+            float eyeDist = R * 2.2f + 40.0f;
+            float nearP = 4.0f;
+            float farP  = eyeDist + R * 1.8f;
+            Vector3 eye = Vector3Add(focus, Vector3Scale(g_sunDir, eyeDist));
+            Matrix view = MatrixLookAt(eye, focus, Vector3{ 0, 1, 0 });
+            Matrix proj = MatrixOrtho(-R, R, -R, R, nearP, farP);
+            lightVP[i] = MatrixMultiply(view, proj);
+            invRange[i] = 1.0f / (farP - nearP);
+        }
     }
 };
 static ShadowSys gShadow;

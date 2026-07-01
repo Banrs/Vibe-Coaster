@@ -2464,10 +2464,15 @@ int main(int argc, char **argv) {
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
+            // BANANA is excluded here on purpose: unlike the tight, self-contained loop-shaped
+            // elements below (whose top/bottom sit at nearly the same X/Z), a banana roll travels
+            // forward continuously across its whole length while doing one roll, so its inverted
+            // midpoint is tens of meters from every other point of the same element -- a straight-down
+            // support there can't clip through its own track, and skipping it left a large unsupported gap.
             if ((tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
                  tg == M_STALL || tg == M_DIVELOOP || tg == M_COBRA ||
                  tg == M_HEARTLINE || tg == M_WINGOVER ||
-                 tg == M_PRETZEL || tg == M_BANANA) && trk.up[i].y < 0.35f) continue;
+                 tg == M_PRETZEL) && trk.up[i].y < 0.35f) continue;
             float ddx = p.x - P.x, ddz = p.z - P.z;
             float dist = sqrtf(ddx * ddx + ddz * ddz);
             float fog = Clamp((dist - trackFog * 0.70f) / (trackFog * 0.27f), 0.0f, 1.0f);

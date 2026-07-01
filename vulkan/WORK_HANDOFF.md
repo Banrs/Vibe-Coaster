@@ -54,9 +54,12 @@ gamma) → 9. **HUD** overlay → blit/copy.
   base-game HUD layout (SCORE, speed card, element panel, boost meter).
 - `Physics.h`: `world::RideSim` (ported train kinematics: `advance`, `frame`, `feltG`).
   Now a full port of the base player loop (`src/main.cpp ~1540-1667`): slope/gravity/
-  drag/friction, launch/climb/boost, chain-lift, uphill assist, **inversion pre-braking**
-  (`Track::invRAt`), `du`/speedScale advance, plus accumulated `score` and a low-passed
-  felt-g (`gVert`; `feltG()` returns the smoothed value, `instG()` the raw one).
+  drag/friction, launch/climb/boost, chain-lift, uphill assist, `du`/speedScale advance,
+  plus accumulated `score` and a low-passed felt-g (`gVert`; `feltG()` returns the
+  smoothed value, `instG()` the raw one). NOTE: `Track::invRAt` (element radius sizing)
+  no longer brakes entry speed — g is managed by sizing the element radius from
+  whatever real/unthrottled speed the physics delivers, not by slowing the train down
+  first. The "pre-braking" description below is stale; kept only as a historical note.
 - `Water.h`: `buildWaterMesh` (grid at WATER_Y-0.28 to avoid shoreline z-fight).
 - `Math.h`, `Props.h` (station/coins), `Track.h` (mesh helpers/addBox).
 
@@ -85,13 +88,15 @@ taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up)
   ripples. No horizon/water colour-morph, no shoreline z-fight.
 - **TAA verified**: before/after edge crops show jaggies → clean AA; ride shot confirms
   the HUD stays crisp (drawn post-resolve) and the train/telemetry are intact.
-- **Coaster runs like the original (verified).** Telemetry sweep `--ride {5..240}`:
-  score climbs monotonically (1.7k → 67k), g-forces stay inside the base game's OWN
-  validated envelope (+10 / −6 vert, ±6 lat — see `--gaudit` thresholds in
-  `src/main.cpp:1165,1177`), and the **PRETZEL LOOP is entered at ~157 km/h** (braked
-  from the ~230 km/h cruise) — i.e. inversion pre-braking works. The earlier "high g"
-  worry was a false alarm: motion was already faithful (same physics + same
-  `coaster_track.cpp`); the only real gaps were the three behaviors now added.
+- **Coaster runs like the original (verified at the time).** Telemetry sweep
+  `--ride {5..240}`: score climbs monotonically (1.7k → 67k), g-forces stay inside the
+  base game's OWN validated envelope (+10 / −6 vert, ±6 lat — see `--gaudit` thresholds
+  in `src/main.cpp:1165,1177`). Since this was written, `coaster_track.cpp` (shared with
+  Vulkan via `#include`) had its entry-braking removed on purpose — g is now managed by
+  sizing each inversion's radius from the real unthrottled entry speed instead of
+  slowing the train first — so re-run `--gaudit`/`--ride` after pulling latest before
+  trusting these specific numbers again. The underlying claim (motion is faithful
+  because it's literally the same physics + same `coaster_track.cpp`) still holds.
 - NOTE: could NOT build the base game for a literal side-by-side — its CMake
   `FetchContent`s raylib from github.com, which the env proxy blocks (403). Parity is by
   shared source, not by A/B run. `--simtest` / `--gaudit` / `--gtest` are headless physics

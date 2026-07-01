@@ -384,7 +384,12 @@ static SkySys gSky;
 
 #endif
 
-enum Tile { T_WHITE, T_GRAIN, T_GRASS, T_PLANK, T_LOG, T_LEAF, T_GOLD, T_IRON, TILE_N };
+// T_RAIL is texturally identical to T_IRON (same brushed-metal generator below) but gets
+// its own atlas slot so the fragment shader can tell "this quad is a running rail" from
+// fragTexCoord alone -- a texcoord-range check is a genuinely per-vertex signal (unlike a
+// plain uniform, which rlgl's immediate-mode batching can't scope to a handful of draw
+// calls without forcing extra batch flushes), so this needs zero new per-frame draw calls.
+enum Tile { T_WHITE, T_GRAIN, T_GRASS, T_PLANK, T_LOG, T_LEAF, T_GOLD, T_IRON, T_RAIL, TILE_N };
 static Texture2D gAtlas;
 
 static Texture2D makeAtlas() {
@@ -457,7 +462,10 @@ static Texture2D makeAtlas() {
                         else if (dx + dy < 4) v = 255;
                         else v = 204 + (int)(32 * r1);
                     } break;
-                    case T_IRON: {
+                    case T_IRON: case T_RAIL: {
+                        // T_RAIL intentionally reuses T_IRON's exact formula (hashed on the
+                        // real tile index t, which differs, so the noise phase isn't
+                        // identical pixel-for-pixel, but the brushed-metal look matches).
                         float brush = tnoise(t, fx*0.25f, fy, 16.0f);
                         v = 222 + (int)(30 * brush) - ((y == 8 || y == 9) ? 28 : 0);
                         if (r1 > 0.96f) v += 10;
@@ -1477,6 +1485,16 @@ int main(int argc, char **argv) {
     g_sunDir = Vector3Normalize(g_sunDir);
     gShadow.init();
     gSky.init();
+    {
+        // Set once: the atlas-space U range of the T_RAIL tile, matching the
+        // half-texel-inset UV rect emitCubeTex() uses for every tile (see u0/u1
+        // there). The fragment shader uses this fixed range to recognise rail
+        // quads without any per-draw-call uniform toggling.
+        float railU0 = (T_RAIL * 16 + 0.5f) / (float)(TILE_N * 16);
+        float railU1 = (T_RAIL * 16 + 15.5f) / (float)(TILE_N * 16);
+        float ruv[2] = { railU0, railU1 };
+        SetShaderValue(gShadow.lit, gShadow.locRailUVRange, ruv, SHADER_UNIFORM_VEC2);
+    }
 
     std::vector<float> ptBakeBuf;
 
@@ -2576,8 +2594,16 @@ int main(int argc, char **argv) {
                     Color sc  = mixc(Color{ 44, 47, 55, 255 }, FOG, fog);
                     drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.30f, 0.46f, rl, sc);
                 }
-                drawCubeTex(T_IRON, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
-                drawCubeTex(T_IRON, Vector3{  0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
+                {
+                    // The rail's world-space tangent for the anisotropic highlight: safe to
+                    // update every sample with a plain uniform (no batch-flush needed) since
+                    // *which fragments* it applies to is decided per-vertex in the shader via
+                    // the T_RAIL texcoord range, not by this uniform's on/off timing.
+                    float tanv[3] = { t.x, t.y, t.z };
+                    SetShaderValue(gShadow.lit, gShadow.locRailTangent, tanv, SHADER_UNIFORM_VEC3);
+                    drawCubeTex(T_RAIL, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
+                    drawCubeTex(T_RAIL, Vector3{  0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
+                }
                 if ((j & 1) == 0)
 
                     drawCubeTex(T_IRON, Vector3{ 0, -0.17f, 0 }, 1.35f, 0.14f, 0.45f, tie);

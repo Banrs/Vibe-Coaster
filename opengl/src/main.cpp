@@ -41,7 +41,16 @@ static const float MAX_V     = 82.0f;
 static const float LAUNCH_V  = 105.0f;  // asymptote ~378: keeps strong thrust (~20 m/s^2) right up to the 86.1 m/s (310) clamp, so the launch reliably saturates 310 with margin (was 95 -> faded to ~10 and topped ~300)
 static const float CLIMB_V   = 40.0f;
 static float       BOOST_V   = 62.0f;
-static float       BOOST_TRIG = 58.0f;
+// Ambient re-power threshold: below this speed the ride considers itself "run down" and
+// re-launches/re-boosts (uniformly, regardless of what element comes next -- this is pure
+// pacing, not an inversion-reactive brake). Was 58.0, which sat ABOVE every hard-inversion's
+// speed gate (eligibleElem()'s invSpec-derived gates run ~36.5-54.2 m/s), so the ride always
+// got re-powered before genV could ever coast down into an inversion's eligible window --
+// LOOP/ROLL/IMMEL/DIVELOOP/COBRA/PRETZEL/HEARTLINE were structurally unreachable (measured:
+// 0/8 rides). Lowering it lets the ride coast further before re-powering, giving genV real
+// chances to fall through the inversion gates naturally (confirmed via --gaudit: g-safety
+// unaffected, offender counts stay in the same pre-existing noise band as baseline).
+static float       BOOST_TRIG = 52.0f;
 
 static const Vector3 WUP = { 0, 1, 0 };
 

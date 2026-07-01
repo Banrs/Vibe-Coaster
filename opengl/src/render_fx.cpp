@@ -36,6 +36,18 @@ static const char *SHADOW_FS =
     // to just the rail quads without forcing a GPU flush around every one of
     // the ~1000+ rail samples drawn per frame).
     "uniform vec3 railTangent; uniform vec2 railUVRange;\n"
+    // The main gameplay pass now renders into an offscreen linear-HDR target
+    // (see PostFX below / main.cpp) that tonemaps + gamma-encodes once,
+    // centrally, in a single composite pass -- so by default this shader
+    // outputs straight linear HDR color (still lit/fogged, just not
+    // tonemapped/gamma-encoded/saturated). The path-trace preview (KEY_T live
+    // mode) and the offline path-trace --shot capture still composite this
+    // shader's decorative-overlay draws (rails, ties, station dressing)
+    // directly onto an already-tonemapped LDR backbuffer with no post pass of
+    // their own -- for those two call sites main.cpp sets legacyTonemap=1 so
+    // this shader falls back to doing its own inline tonemap+gamma+saturation
+    // exactly as before.
+    "uniform float legacyTonemap;\n"
     "out vec4 finalColor;\n"
 
     // Cascaded shadow maps: 3 cascades (near/mid/far), each its own ortho box +
@@ -188,8 +200,10 @@ static const char *SHADOW_FS =
 
     "    float foam = smoothstep(0.62, 0.70, fragColor.a);\n"
     "    vec3 wcol = waterShade(base, rawShW, foam);\n"
-    "    wcol = aces(wcol*0.94);\n"
-    "    wcol = pow(wcol, vec3(1.0/2.2));\n"
+    "    if(legacyTonemap > 0.5){\n"
+    "      wcol = aces(wcol*0.94);\n"
+    "      wcol = pow(wcol, vec3(1.0/2.2));\n"
+    "    }\n"
     "    float wa = mix(0.90, 0.96, foam);\n"
 
     "    if(fogEnd > 0.0){\n"
@@ -250,11 +264,12 @@ static const char *SHADOW_FS =
     "    }\n"
     "  }\n"
     "  vec3 col = albedo*(ambient + direct) + sunCol*(spec + aniso*0.85) + skyCol*rim;\n"
-    "  col = aces(col*0.94);\n"
-    "  col = pow(col, vec3(1.0/2.2));\n"
-
-    "  float lum = dot(col, vec3(0.299,0.587,0.114));\n"
-    "  col = mix(vec3(lum), col, 1.10);\n"
+    "  if(legacyTonemap > 0.5){\n"
+    "    col = aces(col*0.94);\n"
+    "    col = pow(col, vec3(1.0/2.2));\n"
+    "    float lum = dot(col, vec3(0.299,0.587,0.114));\n"
+    "    col = mix(vec3(lum), col, 1.10);\n"
+    "  }\n"
 
     "  if(fogEnd > 0.0){\n"
     "    float d = length(viewPos.xz - fragWorld.xz);\n"
@@ -300,6 +315,7 @@ struct ShadowSys {
     int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1, locTime=-1;
     int locFogEnd=-1, locFogCol=-1;
     int locRailTangent=-1, locRailUVRange=-1;
+    int locLegacyTonemap=-1;
     Matrix lightVP[SHADOW_CASCADES]{};
     float invRange[SHADOW_CASCADES]{};
     Vector3 focus{};   // last point cascades were centred on -- shaders must select cascades by distance from THIS, not the camera
@@ -330,6 +346,7 @@ struct ShadowSys {
         locFogCol      = GetShaderLocation(lit, "fogCol");
         locRailTangent = GetShaderLocation(lit, "railTangent");
         locRailUVRange = GetShaderLocation(lit, "railUVRange");
+        locLegacyTonemap = GetShaderLocation(lit, "legacyTonemap");
         for (int i = 0; i < SHADOW_CASCADES; i++) {
             fbo[i] = rlLoadFramebuffer();
             rlEnableFramebuffer(fbo[i]);
@@ -380,8 +397,10 @@ static const char *SKY_FS =
     "const vec3 HAZE    = vec3(1.00, 0.78, 0.50);\n"
 
     "const vec3 GROUND  = vec3(0.64, 0.72, 0.80);\n"
-    "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
-
+    // Sky is only ever drawn into the offscreen HDR scene target (see PostFX)
+    // -- no inline tonemap/gamma here anymore; the single composite pass at
+    // the end of the frame handles that once for the whole image, so the sun
+    // disc/corona/shafts stay properly over-bright (>1.0) for bloom to pick up.
     "float h13(vec3 p){ p=fract(p*0.1031); p+=dot(p,p.yzx+33.33); return fract((p.x+p.y)*p.z); }\n"
     "float vn3(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);\n"
     "  return mix(mix(mix(h13(i+vec3(0,0,0)),h13(i+vec3(1,0,0)),f.x), mix(h13(i+vec3(0,1,0)),h13(i+vec3(1,1,0)),f.x),f.y),\n"
@@ -482,8 +501,7 @@ static const char *SKY_FS =
 
     "  vec4 cl = cloudVolume(camPos, dir, sun, sunLift);\n"
     "  col = col*(1.0-cl.a) + cl.rgb;\n"
-    "  col = aces(col*1.08);\n"
-    "  finalColor = vec4(pow(clamp(col, 0.0, 1.0), vec3(1.0/2.2)), 1.0);\n"
+    "  finalColor = vec4(max(col, 0.0), 1.0);\n"
     "}\n";
 
 struct SkySys {
@@ -502,5 +520,322 @@ struct SkySys {
     }
 };
 static SkySys gSky;
+
+// ---------------------------------------------------------------------------
+// Post-processing: a single offscreen linear-HDR scene target (sky + opaque +
+// water all render into this instead of the backbuffer) followed by one
+// fullscreen composite pass: bloom add -> vignette -> chromatic aberration ->
+// film grain/dither -> ACES tonemap + gamma + saturation. This replaces the 3
+// duplicated inline tonemap copies that used to live in SHADOW_FS's opaque
+// and water branches and in SKY_FS -- now there is exactly one.
+//
+// Bloom is kept cheap on purpose (this is a software rasterizer sandbox and a
+// prior pass already had to fight hard for a double-digit-percent frame-time
+// win): the bright-pass extraction happens directly at a downsampled
+// resolution (1/BLOOM_DOWNSCALE per axis, so 1/16th the pixel count) and the
+// blur is a small 5-tap separable pass at that same low resolution -- never a
+// full-res or large-kernel blur.
+//
+// All tuning knobs are named constants here so they're easy to dial back:
+//
+// BLOOM_THRESHOLD is expressed in POST-tonemap luma (0..1), not raw linear
+// HDR magnitude: ordinary sunlit terrain/track already sits at a linear HDR
+// magnitude of ~1-3 in this engine (that's exactly the range the old inline
+// aces(col*0.94) curve was designed to compress down to a pleasant ~0.75-0.95
+// display value), so a raw-linear threshold anywhere near 1.0 caught nearly
+// everything lit by the sun and bloomed the whole frame into a haze. Running
+// the same aces() curve inside the bright-pass first and thresholding its
+// *output* isolates only the pixels that would render at the very top of the
+// display range -- the sun disc, hard specular glints, bright sky near the
+// sun -- regardless of how big the underlying linear HDR value actually is.
+static const float BLOOM_THRESHOLD    = 0.965f;  // post-tonemap luma above this feeds bloom (near-saturated highlights only)
+static const float BLOOM_INTENSITY    = 0.22f;   // additive strength of the blurred bright-pass once composited back
+static const float VIGNETTE_STRENGTH  = 0.16f;   // 0 = off; darkening only reaches the far corners, kept subtle
+static const float CHROMATIC_ABERRATION_STRENGTH = 0.0020f; // per-channel radial UV offset scale -- barely perceptible by design
+static const float FILM_GRAIN_STRENGTH = 0.012f; // additive grain/dither amplitude, applied pre-tonemap
+static const int   BLOOM_DOWNSCALE    = 4;       // bloom buffers render at 1/4 x 1/4 resolution (1/16th the pixels)
+
+// Shared fullscreen-quad vertex shader: derives a plain pixel-space UV in
+// [0,1] from vertexPosition (mirrors SKY_VS's trick), assuming the caller
+// always draws a DrawRectangle(0,0,resolution.x,resolution.y,...) while this
+// shader is active.
+static const char *POST_VS =
+    "#version 330\n"
+    "in vec3 vertexPosition; in vec2 vertexTexCoord;\n"
+    "uniform mat4 mvp;\n"
+    "uniform vec2 resolution;\n"
+    "out vec2 uv;\n"
+    "void main(){ uv = vertexPosition.xy/resolution; gl_Position = mvp*vec4(vertexPosition,1.0); }\n";
+
+// NOTE on the flip: every custom offscreen target here (scene HDR target,
+// bloom buffers) is written via raylib's BeginTextureMode, which uses a
+// top-left-origin pixel convention for rasterization -- but when that same
+// texture is later *sampled* with texture(), GL's bottom-left-origin sampling
+// convention means the image reads back upside-down unless corrected. uv (as
+// produced by POST_VS above) is also top-left-origin, so every sample of one
+// of our own render targets flips V: texture(tex, vec2(uv.x, 1.0-uv.y)).
+// (Blur's symmetric +/- taps don't care about this sign, so it skips the flip
+// on its step direction and only flips the base sample.)
+
+static const char *BRIGHTPASS_FS =
+    "#version 330\n"
+    "in vec2 uv; out vec4 finalColor;\n"
+    "uniform sampler2D sceneTex; uniform vec2 srcTexel; uniform float uThreshold;\n"
+    "vec3 sampleFlip(vec2 u){ return texture(sceneTex, vec2(u.x, 1.0-u.y)).rgb; }\n"
+    // Same aces() curve as the composite pass's final tonemap -- used here
+    // only to measure "how close to display-white would this pixel end up",
+    // not to actually tonemap the bloom contribution itself.
+    "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
+    "void main(){\n"
+    // 4-tap box average of the full-res scene texture (source-texel footprint
+    // around this low-res texel's centre) -- cheap anti-alias for the
+    // downsample so thin bright details (rail glints) don't shimmer once blurred.
+    "  vec3 c = sampleFlip(uv + srcTexel*vec2(-0.5,-0.5))\n"
+    "         + sampleFlip(uv + srcTexel*vec2( 0.5,-0.5))\n"
+    "         + sampleFlip(uv + srcTexel*vec2(-0.5, 0.5))\n"
+    "         + sampleFlip(uv + srcTexel*vec2( 0.5, 0.5));\n"
+    "  c *= 0.25;\n"
+    // Threshold on POST-tonemap luma, not raw linear magnitude: ordinary
+    // sunlit terrain/track already sits at linear HDR ~1-3 in this engine (see
+    // BLOOM_THRESHOLD's comment above), so thresholding the raw value bloomed
+    // almost the entire frame. Measuring "where would this land on the
+    // display curve" isolates only near-saturated highlights.
+    "  vec3 tm = aces(c*0.94);\n"
+    "  float lum = max(max(tm.r,tm.g),tm.b);\n"
+    "  float knee = (1.0-uThreshold)*0.5 + 1e-4;\n"
+    "  float soft = clamp(lum - uThreshold + knee, 0.0, 2.0*knee);\n"
+    "  soft = (soft*soft) / (4.0*knee);\n"
+    "  float contrib = max(soft, lum - uThreshold);\n"
+    "  c *= contrib / max(lum, 1e-4);\n"
+    "  finalColor = vec4(max(c, 0.0), 1.0);\n"
+    "}\n";
+
+static const char *BLUR_FS =
+    "#version 330\n"
+    "in vec2 uv; out vec4 finalColor;\n"
+    "uniform sampler2D srcTex; uniform vec2 texelStep;\n"
+    "void main(){\n"
+    "  vec2 suv = vec2(uv.x, 1.0-uv.y);\n"
+    // Small-radius separable 5-tap Gaussian (sigma ~1 texel of the already-
+    // downsampled bloom buffer) -- deliberately not a large-kernel blur.
+    "  vec3 c = texture(srcTex, suv).rgb * 0.398943;\n"
+    "  c += (texture(srcTex, suv+texelStep).rgb     + texture(srcTex, suv-texelStep).rgb)     * 0.242036;\n"
+    "  c += (texture(srcTex, suv+texelStep*2.0).rgb + texture(srcTex, suv-texelStep*2.0).rgb) * 0.060626;\n"
+    "  finalColor = vec4(max(c, 0.0), 1.0);\n"
+    "}\n";
+
+static const char *COMPOSITE_FS =
+    "#version 330\n"
+    "in vec2 uv; out vec4 finalColor;\n"
+    "uniform sampler2D sceneTex; uniform sampler2D bloomTex;\n"
+    "uniform float uBloomIntensity, uVignette, uCA, uGrain, uTime;\n"
+    // Same aces() curve/constants as the old inline copies (SHADOW_FS's
+    // opaque+water branches used *0.94 before this curve; that's the constant
+    // kept here -- SKY_FS used a slightly different *1.08 pre-scale, now
+    // unified to the single canonical value since the whole frame shares one
+    // exposure/tonemap from this point on).
+    "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
+    "float hashN(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)))*43758.5453); }\n"
+    "void main(){\n"
+    "  vec2 d = uv - 0.5;\n"
+    "  float r2 = dot(d,d);\n"
+    // Chromatic aberration: tiny per-channel radial UV offset, growing with
+    // (distance from centre)^2 so it stays essentially invisible near the
+    // middle of the frame and only barely shows at the extreme edges.
+    "  vec2 caOff = d * uCA * r2;\n"
+    "  vec2 uvR = vec2(uv.x + caOff.x, 1.0 - (uv.y + caOff.y));\n"
+    "  vec2 uvG = vec2(uv.x,           1.0 -  uv.y);\n"
+    "  vec2 uvB = vec2(uv.x - caOff.x, 1.0 - (uv.y - caOff.y));\n"
+    "  vec3 col;\n"
+    "  col.r = texture(sceneTex, uvR).r;\n"
+    "  col.g = texture(sceneTex, uvG).g;\n"
+    "  col.b = texture(sceneTex, uvB).b;\n"
+    // Bloom add (bloomTex is the small blurred bright-pass buffer; GL's own
+    // bilinear filtering upsamples it back to full res for free here).
+    "  vec3 bloomCol = texture(bloomTex, uvG).rgb;\n"
+    "  col += bloomCol * uBloomIntensity;\n"
+    // Vignette: subtle radial darkening that only really bites past ~35% of
+    // the half-diagonal, i.e. the outer corners, not the whole frame.
+    "  float vig = 1.0 - uVignette*smoothstep(0.15, 0.75, sqrt(r2));\n"
+    "  col *= vig;\n"
+    // Film grain / dither: tiny per-pixel, per-frame noise. Subtle enough to
+    // read as grain rather than static, and doubles as banding-reduction
+    // dither for the point-filtered/no-mipmap procedural textures.
+    "  float grain = (hashN(gl_FragCoord.xy + fract(uTime)*997.13) - 0.5) * uGrain;\n"
+    "  col += grain;\n"
+    "  col = max(col, 0.0);\n"
+    "  col = aces(col*0.94);\n"
+    "  col = pow(col, vec3(1.0/2.2));\n"
+    "  float lum = dot(col, vec3(0.299,0.587,0.114));\n"
+    "  col = mix(vec3(lum), col, 1.10);\n"
+    "  finalColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n"
+    "}\n";
+
+struct PostFX {
+    Shader brightpass{}, blur{}, composite{};
+    int locBP_Res=-1, locBP_SrcTexel=-1, locBP_Thresh=-1, locBP_SceneTex=-1;
+    int locBL_Res=-1, locBL_TexelStep=-1, locBL_SrcTex=-1;
+    int locCP_Res=-1, locCP_BloomI=-1, locCP_Vignette=-1, locCP_CA=-1, locCP_Grain=-1, locCP_Time=-1;
+    int locCP_SceneTex=-1, locCP_BloomTex=-1;
+
+    RenderTexture2D sceneRT{};
+    RenderTexture2D bloomRT[2]{};
+    int sceneW=0, sceneH=0, bloomW=0, bloomH=0;
+
+    // Mirrors pathtrace.cpp's gPT.accum/gPT.rtBuf low-level pattern (manual
+    // rlLoadFramebuffer/rlLoadTexture/rlFramebufferAttach rather than
+    // LoadRenderTexture) so the whole scene stays in a half-float linear HDR
+    // buffer without clipping bright values before the bloom bright-pass runs.
+    static void makeColorTarget(RenderTexture2D &rt, int w, int h, bool withDepth) {
+        rt = RenderTexture2D{};
+        rt.id = rlLoadFramebuffer();
+        rlEnableFramebuffer(rt.id);
+        rt.texture.id = rlLoadTexture(NULL, w, h, RL_PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, 1);
+        rt.texture.width = w; rt.texture.height = h; rt.texture.mipmaps = 1;
+        rt.texture.format = PIXELFORMAT_UNCOMPRESSED_R16G16B16A16;
+        rlFramebufferAttach(rt.id, rt.texture.id, RL_ATTACHMENT_COLOR_CHANNEL0, RL_ATTACHMENT_TEXTURE2D, 0);
+        if (withDepth) {
+            rt.depth.id = rlLoadTextureDepth(w, h, false);
+            rt.depth.width = w; rt.depth.height = h;
+            rlFramebufferAttach(rt.id, rt.depth.id, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+        } else {
+            rt.depth.id = 0;
+        }
+        if (!rlFramebufferComplete(rt.id)) TraceLog(LOG_WARNING, "POSTFX: framebuffer incomplete (%dx%d)", w, h);
+        rlDisableFramebuffer();
+        SetTextureFilter(rt.texture, TEXTURE_FILTER_BILINEAR);
+        // Chromatic aberration's radial UV offset pushes samples slightly outside [0,1]
+        // near the screen edges -- rlLoadTexture defaults to REPEAT wrap, so without this
+        // those samples wrap around and pick up the OPPOSITE edge of the frame instead of
+        // clamping, producing a colored fringe down the left/right/top/bottom borders
+        // (confirmed visually: a magenta fringe down the left edge before this fix).
+        SetTextureWrap(rt.texture, TEXTURE_WRAP_CLAMP);
+    }
+
+    void init(int w, int h) {
+        sceneW = w; sceneH = h;
+        bloomW = w / BLOOM_DOWNSCALE; if (bloomW < 1) bloomW = 1;
+        bloomH = h / BLOOM_DOWNSCALE; if (bloomH < 1) bloomH = 1;
+
+        makeColorTarget(sceneRT,    sceneW, sceneH, true);
+        makeColorTarget(bloomRT[0], bloomW, bloomH, false);
+        makeColorTarget(bloomRT[1], bloomW, bloomH, false);
+
+        brightpass = LoadShaderFromMemory(POST_VS, BRIGHTPASS_FS);
+        blur       = LoadShaderFromMemory(POST_VS, BLUR_FS);
+        composite  = LoadShaderFromMemory(POST_VS, COMPOSITE_FS);
+
+        locBP_Res      = GetShaderLocation(brightpass, "resolution");
+        locBP_SrcTexel = GetShaderLocation(brightpass, "srcTexel");
+        locBP_Thresh   = GetShaderLocation(brightpass, "uThreshold");
+        locBP_SceneTex = GetShaderLocation(brightpass, "sceneTex");
+
+        locBL_Res       = GetShaderLocation(blur, "resolution");
+        locBL_TexelStep = GetShaderLocation(blur, "texelStep");
+        locBL_SrcTex    = GetShaderLocation(blur, "srcTex");
+
+        locCP_Res      = GetShaderLocation(composite, "resolution");
+        locCP_BloomI   = GetShaderLocation(composite, "uBloomIntensity");
+        locCP_Vignette = GetShaderLocation(composite, "uVignette");
+        locCP_CA       = GetShaderLocation(composite, "uCA");
+        locCP_Grain    = GetShaderLocation(composite, "uGrain");
+        locCP_Time     = GetShaderLocation(composite, "uTime");
+        locCP_SceneTex = GetShaderLocation(composite, "sceneTex");
+        locCP_BloomTex = GetShaderLocation(composite, "bloomTex");
+
+        float thr = BLOOM_THRESHOLD;
+        SetShaderValue(brightpass, locBP_Thresh, &thr, SHADER_UNIFORM_FLOAT);
+        float bloomI = BLOOM_INTENSITY, vig = VIGNETTE_STRENGTH,
+              ca = CHROMATIC_ABERRATION_STRENGTH, gr = FILM_GRAIN_STRENGTH;
+        SetShaderValue(composite, locCP_BloomI,   &bloomI, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(composite, locCP_Vignette, &vig,    SHADER_UNIFORM_FLOAT);
+        SetShaderValue(composite, locCP_CA,       &ca,     SHADER_UNIFORM_FLOAT);
+        SetShaderValue(composite, locCP_Grain,    &gr,     SHADER_UNIFORM_FLOAT);
+    }
+
+    // Sky + opaque + water all render between these two, into sceneRT instead
+    // of the backbuffer, so their fragment shaders can stay in linear HDR.
+    void beginScene() { BeginTextureMode(sceneRT); }
+    void endScene()   { EndTextureMode(); }
+
+    // Bloom extract+blur (cheap: low-res throughout) then the single
+    // fullscreen composite pass, written to whatever framebuffer is currently
+    // bound (the default backbuffer, from the main render loop) -- must run
+    // before any HUD drawing so HUD text/icons never pick up bloom/vignette/
+    // CA/grain.
+    void resolve(int rw, int rh, float time) {
+        static const int SCENE_UNIT = 15, BLOOM_UNIT = 16;
+        rlDrawRenderBatchActive();
+
+        // ---- bright-pass extract: full-res scene -> low-res bloomRT[0] ----
+        BeginTextureMode(bloomRT[0]);
+            rlDisableDepthTest(); rlDisableDepthMask();
+            float bpRes[2] = { (float)bloomW, (float)bloomH };
+            float srcTexel[2] = { 1.0f / sceneW, 1.0f / sceneH };
+            SetShaderValue(brightpass, locBP_Res, bpRes, SHADER_UNIFORM_VEC2);
+            SetShaderValue(brightpass, locBP_SrcTexel, srcTexel, SHADER_UNIFORM_VEC2);
+            BeginShaderMode(brightpass);
+                SetShaderValue(brightpass, locBP_SceneTex, &SCENE_UNIT, SHADER_UNIFORM_INT);
+                rlActiveTextureSlot(SCENE_UNIT); rlEnableTexture(sceneRT.texture.id);
+                rlActiveTextureSlot(0);
+                DrawRectangle(0, 0, bloomW, bloomH, WHITE);
+                rlDrawRenderBatchActive();
+                rlActiveTextureSlot(SCENE_UNIT); rlDisableTexture(); rlActiveTextureSlot(0);
+            EndShaderMode();
+        EndTextureMode();
+
+        // ---- separable blur, ping-ponged at the same low res ----
+        auto blurPass = [&](RenderTexture2D &src, RenderTexture2D &dst, float dx, float dy) {
+            BeginTextureMode(dst);
+                float blRes[2] = { (float)bloomW, (float)bloomH };
+                float step[2] = { dx / bloomW, dy / bloomH };
+                SetShaderValue(blur, locBL_Res, blRes, SHADER_UNIFORM_VEC2);
+                SetShaderValue(blur, locBL_TexelStep, step, SHADER_UNIFORM_VEC2);
+                BeginShaderMode(blur);
+                    SetShaderValue(blur, locBL_SrcTex, &SCENE_UNIT, SHADER_UNIFORM_INT);
+                    rlActiveTextureSlot(SCENE_UNIT); rlEnableTexture(src.texture.id);
+                    rlActiveTextureSlot(0);
+                    DrawRectangle(0, 0, bloomW, bloomH, WHITE);
+                    rlDrawRenderBatchActive();
+                    rlActiveTextureSlot(SCENE_UNIT); rlDisableTexture(); rlActiveTextureSlot(0);
+                EndShaderMode();
+            EndTextureMode();
+        };
+        blurPass(bloomRT[0], bloomRT[1], 1.0f, 0.0f);
+        blurPass(bloomRT[1], bloomRT[0], 0.0f, 1.0f);
+        // Final blurred bloom now sits in bloomRT[0].
+
+        // ---- final composite onto the currently-bound (default) framebuffer ----
+        rlViewport(0, 0, rw, rh);
+        rlSetMatrixProjection(MatrixOrtho(0, rw, rh, 0, 0.0, 1.0));
+        rlSetMatrixModelview(MatrixIdentity());
+        rlDisableDepthTest(); rlDisableDepthMask();
+        float cpRes[2] = { (float)rw, (float)rh };
+        SetShaderValue(composite, locCP_Res, cpRes, SHADER_UNIFORM_VEC2);
+        SetShaderValue(composite, locCP_Time, &time, SHADER_UNIFORM_FLOAT);
+        BeginShaderMode(composite);
+            SetShaderValue(composite, locCP_SceneTex, &SCENE_UNIT, SHADER_UNIFORM_INT);
+            SetShaderValue(composite, locCP_BloomTex, &BLOOM_UNIT, SHADER_UNIFORM_INT);
+            rlActiveTextureSlot(SCENE_UNIT); rlEnableTexture(sceneRT.texture.id);
+            rlActiveTextureSlot(BLOOM_UNIT); rlEnableTexture(bloomRT[0].texture.id);
+            rlActiveTextureSlot(0);
+            DrawRectangle(0, 0, rw, rh, WHITE);
+            rlDrawRenderBatchActive();
+            rlActiveTextureSlot(SCENE_UNIT); rlDisableTexture();
+            rlActiveTextureSlot(BLOOM_UNIT); rlDisableTexture();
+            rlActiveTextureSlot(0);
+        EndShaderMode();
+        // Leave depth test/mask disabled here, matching the state EndMode3D()
+        // already leaves things in pre-existing code paths: nothing else this
+        // frame (HUD, screenshot triggers) needs depth testing, and the next
+        // frame's shadow-cascade pass re-enables both explicitly before it
+        // needs them. The default framebuffer's own depth attachment is never
+        // written by this pipeline any more (all 3-D geometry now depth-tests
+        // against sceneRT's own depth texture instead), so its contents are
+        // stale/undefined -- re-enabling depth test here would depth-test HUD
+        // draws against that stale buffer for no benefit.
+    }
+};
+static PostFX gPostFX;
 
 #endif

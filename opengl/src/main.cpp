@@ -1520,6 +1520,7 @@ int main(int argc, char **argv) {
     g_sunDir = Vector3Normalize(g_sunDir);
     gShadow.init();
     gSky.init();
+    gPostFX.init(GetRenderWidth(), GetRenderHeight());
     {
         // Set once: the atlas-space U range of the T_RAIL tile, matching the
         // half-texel-inset UV rect emitCubeTex() uses for every tile (see u0/u1
@@ -2735,6 +2736,11 @@ int main(int argc, char **argv) {
         };
 
         if (!liveRT) {
+        // Sky + opaque + water all render into the offscreen linear-HDR scene
+        // target now, instead of straight to the backbuffer -- gPostFX.resolve()
+        // (called after EndMode3D below) does the bloom/vignette/CA/grain/
+        // tonemap composite once, before the HUD gets drawn.
+        gPostFX.beginScene();
         ClearBackground(SKY);
 
         {
@@ -2782,6 +2788,10 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locSun, sun, SHADER_UNIFORM_VEC3);
             SetShaderValue(gShadow.lit, gShadow.locSky, sky, SHADER_UNIFORM_VEC3);
             SetShaderValue(gShadow.lit, gShadow.locGround, gnd, SHADER_UNIFORM_VEC3);
+            // Rendering into the offscreen HDR scene target now (gPostFX) --
+            // stay linear HDR here, the post pass tonemaps once at the end.
+            float legacyOff = 0.0f;
+            SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyOff, SHADER_UNIFORM_FLOAT);
         }
 
         double tMain0 = diagTiming ? GetTime() : 0.0;
@@ -2931,6 +2941,11 @@ int main(int argc, char **argv) {
         }
 
         EndMode3D();
+        gPostFX.endScene();
+        {
+            int rw = GetRenderWidth(), rh = GetRenderHeight();
+            gPostFX.resolve(rw, rh, (float)GetTime());
+        }
         } else {
 
             int rw = GetRenderWidth(), rh = GetRenderHeight();
@@ -3035,6 +3050,12 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locSun, sunL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, skyL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gndL, SHADER_UNIFORM_VEC3);
+                // This overlay composites straight onto the live path-trace
+                // preview's already-tonemapped LDR backbuffer (no post pass of
+                // its own here) -- fall back to gShadow.lit's own inline
+                // tonemap+gamma+saturation so it matches that backdrop.
+                float legacyOn = 1.0f;
+                SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyOn, SHADER_UNIFORM_FLOAT);
                 BeginShaderMode(gShadow.lit);
                     bindShadowTextures();
                     drawWorld(false, true);
@@ -3129,6 +3150,11 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locSun, sun2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, sky2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gnd2, SHADER_UNIFORM_VEC3);
+                // Same reasoning as the live path-trace preview overlay above:
+                // this composites onto the offline path-tracer's already-
+                // tonemapped LDR shot, so use gShadow.lit's own inline tonemap.
+                float legacyOn2 = 1.0f;
+                SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyOn2, SHADER_UNIFORM_FLOAT);
                 BeginShaderMode(gShadow.lit);
                     bindShadowTextures();
                     drawWorld(false, true);

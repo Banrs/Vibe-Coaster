@@ -887,6 +887,15 @@ struct Track {
             // pass still bounds crest/pull-out g. Inversions keep the conservative dlim above.
             if (mode == M_DROP || mode == M_CLIMB || mode == M_DIVE) dlim = fmaxf(dlim, 3.0f);
 
+            // DROP/CLIMB/DIVE run a much larger dlim (steep faces need it), but genPrevCurv carries
+            // straight across the mode switch into whatever comes next (e.g. FLAT, dlim ~1.5 at hot
+            // entry speed). jlim only lets curv relax toward the new (smaller) dlim gradually -- at
+            // high speed jlim itself is tiny, so a DROP exiting at curv~2-3 could take many FLAT steps
+            // to bleed back down to 1.5, holding a sustained over-budget curvature meanwhile. Snap
+            // genPrevCurv down to the NEW mode's dlim the instant the mode changes so the very first
+            // step already respects its own (smaller) budget instead of slow-walking down to it.
+            if (mode != lastGenMode) genPrevCurv = Clamp(genPrevCurv, -dlim, dlim);
+
             float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, dlim);
             float curv = dy - genPrevDy;
             curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);
@@ -894,8 +903,16 @@ struct Track {
             dy = genPrevDy + curv;
 
             if (dy < 0.0f && mode != M_DIP && mode != M_HELIX) {
+                // Lookahead extended 8 -> 32 steps (112 m -> 448 m). The underground-dive bug (track
+                // plunging 100-180+ m below terrain) traced back to this exact clamp: 112 m is only
+                // enough to see the NEAR side of a valley -- plenty of the generated terrain rises
+                // again well beyond that, so gtLook stayed low, gap stayed huge, maxSteep stayed huge,
+                // and a dive kept diving at its full raw rate straight through the far rise before this
+                // clamp ever saw it coming. A farther-out lookahead means gtLook picks up the rise
+                // while the car is still well above it, gap shrinks, and maxSteep tightens in time to
+                // arrest the dive at a normal pull-out distance instead of underground.
                 float gtLook = gt;
-                for (int la = 1; la <= 8; la++)   // longer lookahead: anticipate rising ground sooner so the pull-out starts early instead of plunging into it
+                for (int la = 1; la <= 32; la++)
                     gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
                                                        gpos.z + cosf(gyaw) * SEG_LEN * la));
                 float gap      = gpos.y - (gtLook + 14.0f);   // pull out to ~14 m above terrain (was 4.5): leaves a buffer so the post-gen smoothing can't dig the pull-out under the ground
@@ -1155,6 +1172,13 @@ struct Track {
         {
             const float Gmax = 6.3f, Gmin = -3.0f;   // relax target below the +8/-5 limit so spline overshoot lands within it
             int n = (int)cp.size();
+            // NOTE: widening this window (tried 14->22, to give neighbours more time to settle before
+            // a cp freezes -- e.g. the rare FLAT +10.4g seen at 150-seed gaudit) backfires: LOOP/
+            // DIVELOOP/etc run 40-48 steps of their own dedicated closed-form geometry, and a window
+            // that reaches that far back starts relaxing points that are supposed to hold an exact
+            // circle toward their neighbours' chord midpoint, kinking the loop (measured +12-17g at
+            // 300-seed gaudit, LOOP only, when tried). Left at 14 -- the rare FLAT/DIP tail case this
+            // would have fixed is the lesser risk of the two.
             int lo = n - 14; if (lo < 1) lo = 1;
             for (int sweep = 0; sweep < 4; sweep++)
                 for (int i = lo; i < n - 1; i++) {
@@ -1227,13 +1251,23 @@ struct Track {
 
         // Curvature-bounded terrain floor: the smoothing/relaxation passes above pull cps below the
         // per-cp terrain clamp, so the track rides under the ground. Lift the just-frozen cp (index
-        // n-15: out of the smoothing window and not read by the genV step below) onto the terrain --
-        // but the floor climbs as a SMOOTH ramp (bounded slope AND bounded acceleration) so it never
-        // creates the convex kink that a hard rate-limited lift did (+30 g spikes). Where terrain
-        // rises faster than the curvature bound allows, the floor lags (a little underground) rather
-        // than spiking g -- the lesser evil. Elevated track (cp above the floor) is untouched.
-        if ((int)cp.size() >= 16) {
-            int i = (int)cp.size() - 15;
+        // n-23: out of the smoothing window above and not read by the genV step below) onto the
+        // terrain -- but the floor climbs as a SMOOTH ramp (bounded slope AND bounded acceleration)
+        // so it never creates the convex kink that a hard rate-limited lift did (+30 g spikes). Where
+        // terrain rises faster than the curvature bound allows, the floor lags (a little underground)
+        // rather than spiking g -- the lesser evil. Elevated track (cp above the floor) is untouched.
+        //
+        // Hardening: genFloorY's OWN ramp is bounded call-to-call, but the final `cp[i].y = genFloorY`
+        // snap used to be UNCONDITIONAL -- it compared genFloorY only against itself, never against the
+        // track's actual cp[i].y/cp[i-1].y. If the curvature-driven track ever sits far enough below a
+        // fast-climbing genFloorY (terrain rising sharply over the previous several cps), this could
+        // snap cp[i] up in one oversized step relative to the already-frozen cp[i-1]. Cap how far THIS
+        // lift may raise cp[i].y above its pre-floor value in one step, using the same speed-scaled
+        // curvature budget (dlim-style) the rest of the generator uses, relative to the frozen
+        // cp[i-1]/cp[i-2] trend -- so the floor still "catches up" to genFloorY over several cps
+        // instead of ever exceeding the g envelope in a single jump.
+        if ((int)cp.size() >= 24) {
+            int i = (int)cp.size() - 23;
             unsigned char ki = kind[i];
             if (ki != M_STATION) {
                 float clr = (ki == M_DIP) ? 1.5f : 4.5f;
@@ -1245,7 +1279,14 @@ struct Track {
                     genFloorY += genFloorVy;
                     if (genFloorY > tf) { genFloorY = tf; genFloorVy = 0.0f; }
                 }
-                if (cp[i].y < genFloorY) cp[i].y = genFloorY;
+                if (cp[i].y < genFloorY) {
+                    float vFloor  = fmaxf(gvlog[i], 20.0f);
+                    float dlimF   = Clamp(6.0f * SEG_LEN * SEG_LEN * GRAV / (vFloor * vFloor), 0.6f, 18.0f);
+                    float trendDy = (i >= 2) ? (cp[i - 1].y - cp[i - 2].y) : 0.0f;
+                    float maxLiftY = cp[i - 1].y + trendDy + dlimF;   // curvature-safe ceiling for this single step
+                    cp[i].y = fminf(genFloorY, maxLiftY);
+                    if (cp[i].y < cp[i - 1].y) cp[i].y = cp[i - 1].y;   // never lift backwards past the last frozen cp
+                }
             }
         }
 

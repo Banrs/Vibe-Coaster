@@ -98,7 +98,16 @@
 
         brH    = Clamp(0.35f * v, 22.0f, 28.0f);
         brH    = fminf(brH, maxClearH());
-        brSpan = Clamp(0.80f * v, 46.0f, 80.0f);   // narrower span -> banana lateral within -5 (ridden fast post-boost)
+        // brSpan/brH are sized from v clamped to <=95, so above genV=95 the element held a FIXED
+        // span while the real ride speed kept climbing (up to the genV hard clamp of 135) -- lateral
+        // g scales with v_real^2 at a fixed span/curvature, so a hot entry above 95 rode this fixed
+        // geometry ~2x hotter than it was sized for (same v^2 bug class as turnMagFor's lo gotcha,
+        // applied to a span instead of a turn rate). Past the 95 m/s design point, shrink span with
+        // 1/genV^2 (holding the v^2*span product, and so lateral g, roughly constant) instead of
+        // holding span fixed.
+        float spanRef = Clamp(0.80f * v, 46.0f, 80.0f);
+        float over    = fmaxf(genV, v) / v;
+        brSpan = spanRef / (over * over);
         remain = brSteps;
     }
     Vector3 stepBanana() {

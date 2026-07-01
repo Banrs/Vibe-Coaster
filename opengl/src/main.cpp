@@ -513,6 +513,7 @@ static const float TERRAIN_BUCKET = 16.0f;   // world units per draw-culling buc
 struct CapBucket {
     std::vector<float> pos, uv, nrm;
     std::vector<unsigned char> col;
+    std::vector<unsigned short> idx;   // 2 tris (0,1,2, 0,2,3) per quad -- see capQuad()
     Vector3 bmin{ 1e9f, 1e9f, 1e9f }, bmax{ -1e9f, -1e9f, -1e9f };
 };
 // NOT thread_local: exactly like the flat arrays this replaces, only the single in-flight
@@ -531,7 +532,9 @@ static inline int64_t terrainBucketKey(float x, float z) {
 // both of them at every chunk seam.
 static thread_local int64_t gCapBucketKey = 0;
 
-static inline void capVert(float x, float y, float z, float u, float v,
+// Returns the new vertex's index within its bucket (so callers building indexed quads
+// know what to reference from the shared index buffer).
+static inline unsigned short capVert(float x, float y, float z, float u, float v,
                            float nx, float ny, float nz, Color c) {
     CapBucket &b = gCapBuckets[gCapBucketKey];
     b.pos.push_back(x); b.pos.push_back(y); b.pos.push_back(z);
@@ -541,6 +544,28 @@ static inline void capVert(float x, float y, float z, float u, float v,
     if (x < b.bmin.x) b.bmin.x = x; if (x > b.bmax.x) b.bmax.x = x;
     if (y < b.bmin.y) b.bmin.y = y; if (y > b.bmax.y) b.bmax.y = y;
     if (z < b.bmin.z) b.bmin.z = z; if (z > b.bmax.z) b.bmax.z = z;
+    return (unsigned short)(b.pos.size() / 3 - 1);
+}
+// Emits ONE quad (corners a,b,c,d in fan order, same winding CAPQ used to feed two
+// standalone triangles a-b-c / a-c-d) as 4 unique vertices + 6 indices instead of 6
+// duplicated vertices -- corners a and c are shared by both triangles of the quad, and
+// every caller already passes identical position/uv/color for a shape corner each time
+// it appears (see emitCubeTex's CAPQ invocations), so this is a lossless 6->4 vertex
+// dedup per quad (33% fewer vertices through the vertex pipeline for terrain, which is
+// by far the largest source of geometry in the scene and gets rasterized up to 4x per
+// frame -- once per shadow cascade plus the main pass).
+static inline void capQuad(float nx, float ny, float nz,
+                           float ax, float ay, float az, float au, float av, Color ac,
+                           float bx, float by, float bz, float bu, float bv, Color bc,
+                           float cx, float cy, float cz, float cu, float cv, Color cc,
+                           float dx, float dy, float dz, float du, float dv, Color dc) {
+    CapBucket &b = gCapBuckets[gCapBucketKey];
+    unsigned short i0 = capVert(ax, ay, az, au, av, nx, ny, nz, ac);
+    unsigned short i1 = capVert(bx, by, bz, bu, bv, nx, ny, nz, bc);
+    unsigned short i2 = capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
+    unsigned short i3 = capVert(dx, dy, dz, du, dv, nx, ny, nz, dc);
+    b.idx.push_back(i0); b.idx.push_back(i1); b.idx.push_back(i2);
+    b.idx.push_back(i0); b.idx.push_back(i2); b.idx.push_back(i3);
 }
 
 struct TerrainChunk { Mesh mesh{}; Vector3 center{}; float radius = 0.0f; };
@@ -586,15 +611,20 @@ struct TerrainMesh {
         if (vcount == 0) return;
         TerrainChunk c{};
         c.mesh.vertexCount   = vcount;
-        c.mesh.triangleCount = vcount / 3;
+        // Every quad is now 4 unique vertices + 6 indices (see capQuad) instead of 6
+        // duplicated vertices -- triangleCount must come from the index count, not
+        // vertexCount, or DrawMesh/UploadMesh under-draws by a third.
+        c.mesh.triangleCount = (int)(b.idx.size() / 3);
         c.mesh.vertices  = (float *)RL_CALLOC(vcount * 3, sizeof(float));
         c.mesh.texcoords = (float *)RL_CALLOC(vcount * 2, sizeof(float));
         c.mesh.normals   = (float *)RL_CALLOC(vcount * 3, sizeof(float));
         c.mesh.colors    = (unsigned char *)RL_CALLOC(vcount * 4, sizeof(unsigned char));
+        c.mesh.indices   = (unsigned short *)RL_CALLOC(b.idx.size(), sizeof(unsigned short));
         std::copy(b.pos.begin(), b.pos.end(), c.mesh.vertices);
         std::copy(b.uv.begin(),  b.uv.end(),  c.mesh.texcoords);
         std::copy(b.nrm.begin(), b.nrm.end(), c.mesh.normals);
         std::copy(b.col.begin(), b.col.end(), c.mesh.colors);
+        std::copy(b.idx.begin(), b.idx.end(), c.mesh.indices);
         UploadMesh(&c.mesh, true);
         c.center = Vector3Scale(Vector3Add(b.bmin, b.bmax), 0.5f);
         c.radius = Vector3Distance(c.center, b.bmax) + 0.5f;
@@ -632,6 +662,12 @@ struct TerrainMesh {
         for (auto &c : chunks) UnloadMesh(c.mesh);
         chunks = std::move(pendingChunks);
         live = !chunks.empty();
+        if (getenv("MC_DIAG")) {
+            long totalV = 0; int maxV = 0;
+            for (auto &c : chunks) { totalV += c.mesh.vertexCount; if (c.mesh.vertexCount > maxV) maxV = c.mesh.vertexCount; }
+            printf("[diag-chunks] count=%zu totalVerts=%ld avgVertsPerChunk=%.1f maxVertsPerChunk=%d\n",
+                   chunks.size(), totalV, chunks.empty() ? 0.0 : (double)totalV / chunks.size(), maxV);
+        }
         pendingBuckets.clear(); pendingChunks.clear(); uploadCursor = 0;
         keyCx = pendCx; keyCz = pendCz; keyU = pendU;
         building = false;
@@ -672,8 +708,7 @@ static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c,
         float xm = x - w/2, xp = x + w/2, ym = y - h/2, yp = y + h/2, zm = z - l/2, zp = z + l/2;
 
         #define CAPQ(nx,ny,nz, ax,ay,az,au,av,ac, bx,by,bz,bu,bv,bc, ccx,ccy,ccz,cu,cv,cc, dx,dy,dz,du,dv,dc) \
-            capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(bx,by,bz,bu,bv,nx,ny,nz,bc); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); \
-            capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); capVert(dx,dy,dz,du,dv,nx,ny,nz,dc)
+            capQuad(nx,ny,nz, ax,ay,az,au,av,ac, bx,by,bz,bu,bv,bc, ccx,ccy,ccz,cu,cv,cc, dx,dy,dz,du,dv,dc)
         if (mask & CFACE_PZ) CAPQ(0,0,1,  xm,ym,zp,u0,v1,cB,  xp,ym,zp,u1,v1,cB,  xp,yp,zp,u1,v0,cT,  xm,yp,zp,u0,v0,cT);
         if (mask & CFACE_NZ) CAPQ(0,0,-1, xm,ym,zm,u1,v1,cB,  xm,yp,zm,u1,v0,cT,  xp,yp,zm,u0,v0,cT,  xp,ym,zm,u0,v1,cB);
         if (mask & CFACE_PY) CAPQ(0,1,0,  xm,yp,zm,u0,v0,cT,  xm,yp,zp,u0,v1,cT,  xp,yp,zp,u1,v1,cT,  xp,yp,zm,u1,v0,cT);
@@ -2378,7 +2413,10 @@ int main(int argc, char **argv) {
         }
         };
 
+        static double dwTerrainAcc = 0.0, dwTrackAcc = 0.0; static int dwN = 0;
+        static bool diagWorld = getenv("MC_DIAG") != nullptr;
         auto drawWorld = [&](bool depthPass, bool coasterOnly = false, float cullR = 0.0f) {
+        double dwT0 = diagWorld ? GetTime() : 0.0;
         if (!coasterOnly && gTerrainMesh.live) {
 
             Material mat = gTerrainMat;
@@ -2402,11 +2440,14 @@ int main(int argc, char **argv) {
                 // (also XZ-only, see render_fx.cpp) -- a 3-D check would under-cull tall/deep
                 // chunks whose vertical offset from P is large but whose XZ offset is well within
                 // the box, silently dropping them from the depth pass.
+                int dcnt = 0;
                 for (auto &c : gTerrainMesh.chunks) {
                     float dx = c.center.x - P.x, dz = c.center.z - P.z;
                     if (sqrtf(dx*dx + dz*dz) - c.radius > cullR) continue;
                     DrawMesh(c.mesh, mat, MatrixIdentity());
+                    dcnt++;
                 }
+                if (diagWorld) printf("[diag-cull] cullR=%.1f drawn=%d/%zu\n", cullR, dcnt, gTerrainMesh.chunks.size());
             } else {
                 Vector3 F = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
                 Vector3 Rt = Vector3Normalize(Vector3CrossProduct(F, cam.up));
@@ -2440,6 +2481,8 @@ int main(int argc, char **argv) {
             if (midStation)
                 drawStation(trk, curPlatPos, curPlatYaw, P, fogEnd);
         }
+        double dwT1 = diagWorld ? GetTime() : 0.0;
+        if (diagWorld) dwTerrainAcc += (dwT1 - dwT0) * 1000.0;
 
         int k0 = (int)fmaxf(1.0f, u - 14.0f), k1 = (int)(u + 64);
 
@@ -2626,6 +2669,11 @@ int main(int argc, char **argv) {
                 popFrame();
             }
         }
+        if (diagWorld) {
+            dwTrackAcc += (GetTime() - dwT1) * 1000.0;
+            dwN++;
+            if (dwN % 80 == 0) printf("[diag-dw] n=%d terrain_avg=%.3fms track_avg=%.3fms (per-call)\n", dwN, dwTerrainAcc/dwN, dwTrackAcc/dwN);
+        }
         };
 
         if (wantRebuild) {
@@ -2636,6 +2684,9 @@ int main(int argc, char **argv) {
         gShadow.computeLightVP(P);
         BeginDrawing();
 
+        static bool diagTiming = getenv("MC_DIAG") != nullptr;
+        static double dShadowAcc = 0.0, dMainAcc = 0.0; static int dN = 0;
+        double tShadow0 = diagTiming ? GetTime() : 0.0;
         rlDrawRenderBatchActive();
         for (int ci = 0; ci < SHADOW_CASCADES; ci++) {
             rlEnableFramebuffer(gShadow.fbo[ci]);
@@ -2654,6 +2705,7 @@ int main(int argc, char **argv) {
             rlDisableFramebuffer();
         }
         rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
+        if (diagTiming) dShadowAcc += (GetTime() - tShadow0) * 1000.0;
 
         // Bind all 3 cascade matrices/textures once per frame; every gShadow.lit
         // draw call below (main pass, water, path-trace overlays) shares them.
@@ -2732,11 +2784,18 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locGround, gnd, SHADER_UNIFORM_VEC3);
         }
 
+        double tMain0 = diagTiming ? GetTime() : 0.0;
         BeginShaderMode(gShadow.lit);
         bindShadowTextures();
         drawWorld(false);
         EndShaderMode();
         unbindShadowTextures();
+        if (diagTiming) {
+            rlDrawRenderBatchActive();
+            dMainAcc += (GetTime() - tMain0) * 1000.0;
+            dN++;
+            if (dN % 20 == 0) printf("[diag] n=%d shadow3x_avg=%.2fms main_avg=%.2fms\n", dN, dShadowAcc/dN, dMainAcc/dN);
+        }
 
         {
             struct SplashContact { Vector3 p, fwd, right; float gap; };
@@ -3333,6 +3392,17 @@ int main(int argc, char **argv) {
 
         EndDrawing();
         if (lastShot) break;
+
+        if (benchMode) {
+            static int shotFrameWanted = getenv("MC_SHOT_FRAME") ? atoi(getenv("MC_SHOT_FRAME")) : -1;
+            if (frame == shotFrameWanted) {
+                Image img = LoadImageFromScreen();
+                ExportImage(img, "bench_shot.png");
+                UnloadImage(img);
+                printf("[bench-shot] frame %d -> bench_shot.png\n", frame);
+                fflush(stdout);
+            }
+        }
 
         if (benchMode) {
             double ms = (GetTime() - tFrame0) * 1000.0;

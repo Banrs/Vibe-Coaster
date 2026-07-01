@@ -66,40 +66,51 @@ static const char *SHADOW_FS =
     // which cascade is sampled); converted to each cascade's normalized units
     // by the caller via invRangeN.
     "float worldBias(float NoL){ return clamp(1.4 + 1.75*(1.0-NoL), 1.4, 3.2); }\n"
-    "float shadowCascade(int idx, vec3 N){\n"
+    // Split per-cascade so every call site passes a compile-time-known cascade --
+    // no runtime idx branch (the old single shadowCascade(idx,N) re-tested idx on
+    // every call even though callers always pass a literal 0/1/2).
+    "float shadowCascade0(vec3 N){\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
-    "  vec4 wp = vec4(fragWorld,1.0);\n"
-    "  if(idx==0){\n"
-    "    vec4 lp = lightVP0*wp; vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
-    "    if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "    return pcfTap(shadowMap0, shadowTexel0, p, worldBias(NoL)*invRange0);\n"
-    "  } else if(idx==1){\n"
-    "    vec4 lp = lightVP1*wp; vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
-    "    if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "    return pcfTap(shadowMap1, shadowTexel1, p, worldBias(NoL)*invRange1);\n"
-    "  } else {\n"
-    "    vec4 lp = lightVP2*wp; vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
-    "    if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "    return pcfTap(shadowMap2, shadowTexel2, p, worldBias(NoL)*invRange2);\n"
-    "  }\n"
+    "  vec4 lp = lightVP0*vec4(fragWorld,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
+    "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
+    "  return pcfTap(shadowMap0, shadowTexel0, p, worldBias(NoL)*invRange0);\n"
     "}\n"
-    // Select cascade by camera-XZ distance (matches the fog/culling convention
+    "float shadowCascade1(vec3 N){\n"
+    "  float NoL = max(dot(N,lightDir),0.0);\n"
+    "  vec4 lp = lightVP1*vec4(fragWorld,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
+    "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
+    "  return pcfTap(shadowMap1, shadowTexel1, p, worldBias(NoL)*invRange1);\n"
+    "}\n"
+    "float shadowCascade2(vec3 N){\n"
+    "  float NoL = max(dot(N,lightDir),0.0);\n"
+    "  vec4 lp = lightVP2*vec4(fragWorld,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
+    "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
+    "  return pcfTap(shadowMap2, shadowTexel2, p, worldBias(NoL)*invRange2);\n"
+    "}\n"
+    // Select cascade by focus-XZ distance (matches the fog/culling convention
     // used elsewhere in this shader), soft-blending across a band near each
-    // split so the cascade seam is never a visible hard line.
+    // split so the cascade seam is never a visible hard line. Right at each
+    // band's inner/outer edge t is ~0 or ~1 and the far/near tap contributes
+    // negligibly -- skip it there so the common case (deep inside a cascade,
+    // or barely past a blend edge) never pays for a second full 12-tap PCF.
     "float shadow(vec3 N){\n"
     "  float d = length(shadowFocus.xz - fragWorld.xz);\n"
     "  float band0 = cascadeSplit0*0.85, band1 = cascadeSplit1*0.85;\n"
-    "  if(d < band0) return shadowCascade(0, N);\n"
+    "  if(d < band0) return shadowCascade0(N);\n"
     "  if(d < cascadeSplit0){\n"
     "    float t = (d-band0)/max(cascadeSplit0-band0,0.001);\n"
-    "    return mix(shadowCascade(0,N), shadowCascade(1,N), t);\n"
+    "    if(t < 0.02) return shadowCascade0(N);\n"
+    "    if(t > 0.98) return shadowCascade1(N);\n"
+    "    return mix(shadowCascade0(N), shadowCascade1(N), t);\n"
     "  }\n"
-    "  if(d < band1) return shadowCascade(1, N);\n"
+    "  if(d < band1) return shadowCascade1(N);\n"
     "  if(d < cascadeSplit1){\n"
     "    float t = (d-band1)/max(cascadeSplit1-band1,0.001);\n"
-    "    return mix(shadowCascade(1,N), shadowCascade(2,N), t);\n"
+    "    if(t < 0.02) return shadowCascade1(N);\n"
+    "    if(t > 0.98) return shadowCascade2(N);\n"
+    "    return mix(shadowCascade1(N), shadowCascade2(N), t);\n"
     "  }\n"
-    "  return shadowCascade(2, N);\n"
+    "  return shadowCascade2(N);\n"
     "}\n"
 
     "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"

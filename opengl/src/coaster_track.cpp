@@ -446,7 +446,14 @@ struct Track {
         mode = M_HELIX;
         setClearance(18.0f, 58.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag = turnMagFor(9.0f, 0.13f, 0.60f);   // tight coil: ~9 g-budget turn target -> radius ~75 m (was ~120 m). Ridden fast (post-boost, NO brakes); banking keeps the felt lateral ~half this, so this brings it up toward the limit instead of a lazy 3 g spiral.
+        // Radius budget: this feeds the simple planar v^2/r estimate, but the REAL felt-g
+        // (measured via 3-D curvature on the descending, banked spiral this actually builds)
+        // comes out ~2x the planar estimate -- a 9.0 "budget" here measured +13/-16 g on the
+        // real track (--gaudit), way past the +9.8/-6 envelope. 4.5 measures out at a real
+        // +6..+8.4 vert / <=5.6 lat across 12 seeds (0 offenders) -- as tight/thrilling as the
+        // envelope allows without adding entry braking (kept fast, no brakes, per the ride's
+        // "helix is always ridden hot" design).
+        turnMag = turnMagFor(4.5f, 0.13f, 0.60f);
         bankT   = frnd(0.62f, 0.82f);
 
         float R = SEG_LEN / turnMag;
@@ -781,7 +788,9 @@ struct Track {
             // turns are ridden. Higher cap = TIGHTER turns/helices (smaller, more thrilling) instead of
             // the old huge-radius low-g spirals. The felt-g safety net still trims anything over.
             float vCap = fmaxf(genV, 80.0f);
-            float capK = (mode == M_HELIX) ? 9.0f : 5.5f;   // helix gets a tighter coil (it reads as only ~3 g live; banking eats the rest), the rest stay at the comfort cap
+            // Must track initHelix()'s turnMagFor() budget (4.5) -- this is the live per-step
+            // clamp on the same quantity, so the two have to agree or this silently overrides it.
+            float capK = (mode == M_HELIX) ? 4.5f : 5.5f;
             float dyawMax = capK * SEG_LEN * GRAV / (vCap * vCap);
             dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;

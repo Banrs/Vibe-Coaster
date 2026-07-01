@@ -37,7 +37,15 @@ static const char *SHADOW_FS =
     "  if(p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
 
-    "  float bias = clamp(0.00026 + 0.00120*(1.0-NoL),0.00026,0.00140);\n"
+    // The shadow ortho box spans a 512 m depth range (near=8, far=520; see
+    // computeLightVP), so 1 world metre of depth is only ~1/512 = 0.00195 in the
+    // [0,1] depth-buffer range the shadow map stores. The thin-skin terrain (see
+    // main.cpp's hidden-face culling) has ~1 m height steps between MANY adjacent
+    // cells -- the old bias (max 0.0014) was smaller than a single such step, so
+    // a flat cap right next to a 1 m-lower/higher neighbour would self-shadow
+    // against that neighbour's recorded depth, as fine acne/speckle across the
+    // whole terrain. Bias now comfortably clears a couple of such steps.
+    "  float bias = clamp(0.0028 + 0.0035*(1.0-NoL),0.0028,0.0063);\n"
     "  float ang = fract(sin(dot(fragWorld.xz, vec2(12.9898,78.233)))*43758.5453)*6.2831853;\n"
     "  float ca=cos(ang), sa=sin(ang); mat2 rot=mat2(ca,-sa,sa,ca);\n"
     "  vec2 o = shadowTexel*1.4;\n"

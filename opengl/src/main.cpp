@@ -1,15 +1,24 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
-#define GL_SILENCE_DEPRECATION
-#include <OpenGL/gl3.h>
+#if defined(__APPLE__)
+    #define GL_SILENCE_DEPRECATION
+    #include <OpenGL/gl3.h>
+#elif defined(_WIN32)
+    #include <windows.h>
+    #include <GL/gl.h>
+#else
+    #include <GL/gl.h>
+#endif
 
 #include <deque>
 #include <vector>
+#include <unordered_map>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <ctime>
 #include <thread>
 #include <atomic>
@@ -470,18 +479,53 @@ static void endVoxelBatch() {
 }
 
 static thread_local bool gCapture = false;
-static std::vector<float>         gCapPos, gCapUV, gCapNrm;
-static std::vector<unsigned char> gCapCol;
+
+// Terrain vertices are captured into fixed-size world-space BUCKETS instead of one flat
+// array -- 16x16 world units, the same footprint as a Minecraft chunk (CELL=1.0, so that's
+// 16x16 cells). Generation is UNCHANGED (still one worker thread builds the whole TERRA_R
+// ring synchronously, still swapped in atomically -- see TerrainMesh::finish -- so this
+// cannot reintroduce the old async per-chunk streaming void bug: nothing is generated on
+// demand, everything is generated together, every time, exactly as before). Bucketing only
+// lets the DRAW side skip submitting buckets that are off-screen / outside the shadow box,
+// instead of always drawing the entire ring's geometry regardless of what's visible.
+static const float TERRAIN_BUCKET = 16.0f;   // world units per draw-culling bucket (16x16, MC-style)
+struct CapBucket {
+    std::vector<float> pos, uv, nrm;
+    std::vector<unsigned char> col;
+    Vector3 bmin{ 1e9f, 1e9f, 1e9f }, bmax{ -1e9f, -1e9f, -1e9f };
+};
+// NOT thread_local: exactly like the flat arrays this replaces, only the single in-flight
+// worker thread ever writes here (gated by TerrainMesh::building), and the main thread only
+// reads it after worker.join() in finish() -- the same single-writer contract as before.
+static std::unordered_map<int64_t, CapBucket> gCapBuckets;
+
+static inline int64_t terrainBucketKey(float x, float z) {
+    int bx = (int)floorf(x / TERRAIN_BUCKET) + 100000;
+    int bz = (int)floorf(z / TERRAIN_BUCKET) + 100000;
+    return ((int64_t)bx << 32) | (uint32_t)bz;
+}
+// Set ONCE per primitive (by emitCubeTex, from the shape's own centre) before it emits any
+// vertices -- capVert must NOT recompute a bucket per vertex: a cube straddling a bucket
+// boundary would then split its own triangles across two chunk meshes and tear a gap in
+// both of them at every chunk seam.
+static thread_local int64_t gCapBucketKey = 0;
+
 static inline void capVert(float x, float y, float z, float u, float v,
                            float nx, float ny, float nz, Color c) {
-    gCapPos.push_back(x); gCapPos.push_back(y); gCapPos.push_back(z);
-    gCapUV.push_back(u);  gCapUV.push_back(v);
-    gCapNrm.push_back(nx); gCapNrm.push_back(ny); gCapNrm.push_back(nz);
-    gCapCol.push_back(c.r); gCapCol.push_back(c.g); gCapCol.push_back(c.b); gCapCol.push_back(c.a);
+    CapBucket &b = gCapBuckets[gCapBucketKey];
+    b.pos.push_back(x); b.pos.push_back(y); b.pos.push_back(z);
+    b.uv.push_back(u);  b.uv.push_back(v);
+    b.nrm.push_back(nx); b.nrm.push_back(ny); b.nrm.push_back(nz);
+    b.col.push_back(c.r); b.col.push_back(c.g); b.col.push_back(c.b); b.col.push_back(c.a);
+    if (x < b.bmin.x) b.bmin.x = x; if (x > b.bmax.x) b.bmax.x = x;
+    if (y < b.bmin.y) b.bmin.y = y; if (y > b.bmax.y) b.bmax.y = y;
+    if (z < b.bmin.z) b.bmin.z = z; if (z > b.bmax.z) b.bmax.z = z;
 }
 
+struct TerrainChunk { Mesh mesh{}; Vector3 center{}; float radius = 0.0f; };
+
 struct TerrainMesh {
-    Mesh mesh{};
+    std::vector<TerrainChunk> chunks;
     bool live = false;
     int keyCx = INT_MIN, keyCz = INT_MIN, keyU = INT_MIN;
     std::thread worker;
@@ -501,49 +545,49 @@ struct TerrainMesh {
     void dispatch(EmitFn &&emit, int cx, int cz, int uIdx) {
         pendCx = cx; pendCz = cz; pendU = uIdx; building = true;
         ready = false;
-        gCapPos.clear(); gCapUV.clear(); gCapNrm.clear(); gCapCol.clear();
+        gCapBuckets.clear();
 
         worker = std::thread([this, emit]() { gCapture = true; emit(); gCapture = false; ready = true; });
     }
 
-    int capVerts = 0;
     // block=false: poll — only join+upload once the worker has finished, so the main thread
-    // never stalls on the ~90 ms build (the previous mesh stays visible meanwhile). block=true:
-    // wait (first build / screenshot modes / shutdown, where a complete mesh must exist now).
+    // never stalls on the ~90 ms build (the previous chunks stay visible meanwhile). block=true:
+    // wait (first build / screenshot modes / shutdown, where complete chunks must exist now).
     void finish(bool block = false) {
         if (!building) return;
         if (!block && !ready.load()) return;
         if (worker.joinable()) worker.join();
-        int vcount = (int)(gCapPos.size() / 3);
-        if (vcount > 0) {
-            if (live && vcount <= capVerts) {
 
-                mesh.vertexCount   = vcount;
-                mesh.triangleCount = vcount / 3;
-                UpdateMeshBuffer(mesh, 0, gCapPos.data(), (int)(gCapPos.size() * sizeof(float)), 0);
-                UpdateMeshBuffer(mesh, 1, gCapUV.data(),  (int)(gCapUV.size()  * sizeof(float)), 0);
-                UpdateMeshBuffer(mesh, 2, gCapNrm.data(), (int)(gCapNrm.size() * sizeof(float)), 0);
-                UpdateMeshBuffer(mesh, 3, gCapCol.data(), (int)(gCapCol.size() * sizeof(unsigned char)), 0);
-            } else {
-
-                if (live) { UnloadMesh(mesh); mesh = Mesh{}; live = false; }
-                capVerts = (vcount * 5) / 4;
-                mesh.vertexCount   = capVerts;
-                mesh.triangleCount = capVerts / 3;
-                mesh.vertices  = (float *)RL_CALLOC(capVerts * 3, sizeof(float));
-                mesh.texcoords = (float *)RL_CALLOC(capVerts * 2, sizeof(float));
-                mesh.normals   = (float *)RL_CALLOC(capVerts * 3, sizeof(float));
-                mesh.colors    = (unsigned char *)RL_CALLOC(capVerts * 4, sizeof(unsigned char));
-                std::copy(gCapPos.begin(), gCapPos.end(), mesh.vertices);
-                std::copy(gCapUV.begin(),  gCapUV.end(),  mesh.texcoords);
-                std::copy(gCapNrm.begin(), gCapNrm.end(), mesh.normals);
-                std::copy(gCapCol.begin(), gCapCol.end(), mesh.colors);
-                UploadMesh(&mesh, true);
-                mesh.vertexCount   = vcount;
-                mesh.triangleCount = vcount / 3;
-                live = true;
-            }
+        // Build the new chunk set from the buckets the worker just filled, then swap the
+        // WHOLE set in at once -- the old chunks (still `live`, still fully drawable) are
+        // only torn down once every new chunk has finished uploading, so there is never a
+        // frame where the terrain is partially missing.
+        std::vector<TerrainChunk> fresh;
+        fresh.reserve(gCapBuckets.size());
+        for (auto &kv : gCapBuckets) {
+            CapBucket &b = kv.second;
+            int vcount = (int)(b.pos.size() / 3);
+            if (vcount == 0) continue;
+            TerrainChunk c{};
+            c.mesh.vertexCount   = vcount;
+            c.mesh.triangleCount = vcount / 3;
+            c.mesh.vertices  = (float *)RL_CALLOC(vcount * 3, sizeof(float));
+            c.mesh.texcoords = (float *)RL_CALLOC(vcount * 2, sizeof(float));
+            c.mesh.normals   = (float *)RL_CALLOC(vcount * 3, sizeof(float));
+            c.mesh.colors    = (unsigned char *)RL_CALLOC(vcount * 4, sizeof(unsigned char));
+            std::copy(b.pos.begin(), b.pos.end(), c.mesh.vertices);
+            std::copy(b.uv.begin(),  b.uv.end(),  c.mesh.texcoords);
+            std::copy(b.nrm.begin(), b.nrm.end(), c.mesh.normals);
+            std::copy(b.col.begin(), b.col.end(), c.mesh.colors);
+            UploadMesh(&c.mesh, true);
+            c.center = Vector3Scale(Vector3Add(b.bmin, b.bmax), 0.5f);
+            c.radius = Vector3Distance(c.center, b.bmax) + 0.5f;
+            fresh.push_back(c);
         }
+        for (auto &c : chunks) UnloadMesh(c.mesh);
+        chunks = std::move(fresh);
+        live = !chunks.empty();
+        gCapBuckets.clear();
         keyCx = pendCx; keyCz = pendCz; keyU = pendU;
         building = false;
     }
@@ -561,7 +605,11 @@ static inline Color capCol(Color c, float k) {
     return Color{ (unsigned char)(c.r * k), (unsigned char)(c.g * k),
                   (unsigned char)(c.b * k), c.a };
 }
-static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c) {
+// Per-face bit mask so callers (the terrain heightfield) can emit only the faces that
+// are actually exposed to air, instead of every face of a fully-buried cube.
+enum { CFACE_PZ = 1, CFACE_NZ = 2, CFACE_PY = 4, CFACE_NY = 8, CFACE_PX = 16, CFACE_NX = 32,
+       CFACE_ALL = 63 };
+static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c, unsigned mask = CFACE_ALL) {
     float x = p.x, y = p.y, z = p.z;
     float u0 = (tile * 16 + 0.5f) / (float)(TILE_N * 16);
     float u1 = (tile * 16 + 15.5f) / (float)(TILE_N * 16);
@@ -569,6 +617,11 @@ static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c)
 
     float kT = gAOTop / 255.0f, kB = gAOBot / 255.0f;
     if (gCapture) {
+        // Route every vertex of THIS cube into the bucket keyed by the cube's own centre,
+        // never per-vertex -- a cube that straddles a bucket boundary must still land as
+        // one whole primitive in one chunk mesh, or the boundary vertices split across two
+        // chunks and tear the shared triangles apart (visible gaps at chunk seams).
+        gCapBucketKey = terrainBucketKey(x, z);
 
         Color cB = capCol(c, kB), cT = capCol(c, kT);
         float xm = x - w/2, xp = x + w/2, ym = y - h/2, yp = y + h/2, zm = z - l/2, zp = z + l/2;
@@ -576,60 +629,84 @@ static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c)
         #define CAPQ(nx,ny,nz, ax,ay,az,au,av,ac, bx,by,bz,bu,bv,bc, ccx,ccy,ccz,cu,cv,cc, dx,dy,dz,du,dv,dc) \
             capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(bx,by,bz,bu,bv,nx,ny,nz,bc); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); \
             capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); capVert(dx,dy,dz,du,dv,nx,ny,nz,dc)
-        CAPQ(0,0,1,  xm,ym,zp,u0,v1,cB,  xp,ym,zp,u1,v1,cB,  xp,yp,zp,u1,v0,cT,  xm,yp,zp,u0,v0,cT);
-        CAPQ(0,0,-1, xm,ym,zm,u1,v1,cB,  xm,yp,zm,u1,v0,cT,  xp,yp,zm,u0,v0,cT,  xp,ym,zm,u0,v1,cB);
-        CAPQ(0,1,0,  xm,yp,zm,u0,v0,cT,  xm,yp,zp,u0,v1,cT,  xp,yp,zp,u1,v1,cT,  xp,yp,zm,u1,v0,cT);
-        CAPQ(0,-1,0, xm,ym,zm,u1,v0,cB,  xp,ym,zm,u0,v0,cB,  xp,ym,zp,u0,v1,cB,  xm,ym,zp,u1,v1,cB);
-        CAPQ(1,0,0,  xp,ym,zm,u1,v1,cB,  xp,yp,zm,u1,v0,cT,  xp,yp,zp,u0,v0,cT,  xp,ym,zp,u0,v1,cB);
-        CAPQ(-1,0,0, xm,ym,zm,u0,v1,cB,  xm,ym,zp,u1,v1,cB,  xm,yp,zp,u1,v0,cT,  xm,yp,zm,u0,v0,cT);
+        if (mask & CFACE_PZ) CAPQ(0,0,1,  xm,ym,zp,u0,v1,cB,  xp,ym,zp,u1,v1,cB,  xp,yp,zp,u1,v0,cT,  xm,yp,zp,u0,v0,cT);
+        if (mask & CFACE_NZ) CAPQ(0,0,-1, xm,ym,zm,u1,v1,cB,  xm,yp,zm,u1,v0,cT,  xp,yp,zm,u0,v0,cT,  xp,ym,zm,u0,v1,cB);
+        if (mask & CFACE_PY) CAPQ(0,1,0,  xm,yp,zm,u0,v0,cT,  xm,yp,zp,u0,v1,cT,  xp,yp,zp,u1,v1,cT,  xp,yp,zm,u1,v0,cT);
+        if (mask & CFACE_NY) CAPQ(0,-1,0, xm,ym,zm,u1,v0,cB,  xp,ym,zm,u0,v0,cB,  xp,ym,zp,u0,v1,cB,  xm,ym,zp,u1,v1,cB);
+        if (mask & CFACE_PX) CAPQ(1,0,0,  xp,ym,zm,u1,v1,cB,  xp,yp,zm,u1,v0,cT,  xp,yp,zp,u0,v0,cT,  xp,ym,zp,u0,v1,cB);
+        if (mask & CFACE_NX) CAPQ(-1,0,0, xm,ym,zm,u0,v1,cB,  xm,ym,zp,u1,v1,cB,  xm,yp,zp,u1,v0,cT,  xm,yp,zm,u0,v0,cT);
         #undef CAPQ
         return;
     }
 
+    if (mask & CFACE_PZ) {
     rlNormal3f(0, 0, 1);
     aoColor(c, kB); rlTexCoord2f(u0, v1); rlVertex3f(x - w/2, y - h/2, z + l/2);
     aoColor(c, kB); rlTexCoord2f(u1, v1); rlVertex3f(x + w/2, y - h/2, z + l/2);
     aoColor(c, kT); rlTexCoord2f(u1, v0); rlVertex3f(x + w/2, y + h/2, z + l/2);
     aoColor(c, kT); rlTexCoord2f(u0, v0); rlVertex3f(x - w/2, y + h/2, z + l/2);
+    }
+    if (mask & CFACE_NZ) {
     rlNormal3f(0, 0, -1);
     aoColor(c, kB); rlTexCoord2f(u1, v1); rlVertex3f(x - w/2, y - h/2, z - l/2);
     aoColor(c, kT); rlTexCoord2f(u1, v0); rlVertex3f(x - w/2, y + h/2, z - l/2);
     aoColor(c, kT); rlTexCoord2f(u0, v0); rlVertex3f(x + w/2, y + h/2, z - l/2);
     aoColor(c, kB); rlTexCoord2f(u0, v1); rlVertex3f(x + w/2, y - h/2, z - l/2);
+    }
+    if (mask & CFACE_PY) {
     rlNormal3f(0, 1, 0);
     aoColor(c, kT); rlTexCoord2f(u0, v0); rlVertex3f(x - w/2, y + h/2, z - l/2);
     aoColor(c, kT); rlTexCoord2f(u0, v1); rlVertex3f(x - w/2, y + h/2, z + l/2);
     aoColor(c, kT); rlTexCoord2f(u1, v1); rlVertex3f(x + w/2, y + h/2, z + l/2);
     aoColor(c, kT); rlTexCoord2f(u1, v0); rlVertex3f(x + w/2, y + h/2, z - l/2);
+    }
+    if (mask & CFACE_NY) {
     rlNormal3f(0, -1, 0);
     aoColor(c, kB); rlTexCoord2f(u1, v0); rlVertex3f(x - w/2, y - h/2, z - l/2);
     aoColor(c, kB); rlTexCoord2f(u0, v0); rlVertex3f(x + w/2, y - h/2, z - l/2);
     aoColor(c, kB); rlTexCoord2f(u0, v1); rlVertex3f(x + w/2, y - h/2, z + l/2);
     aoColor(c, kB); rlTexCoord2f(u1, v1); rlVertex3f(x - w/2, y - h/2, z + l/2);
+    }
+    if (mask & CFACE_PX) {
     rlNormal3f(1, 0, 0);
     aoColor(c, kB); rlTexCoord2f(u1, v1); rlVertex3f(x + w/2, y - h/2, z - l/2);
     aoColor(c, kT); rlTexCoord2f(u1, v0); rlVertex3f(x + w/2, y + h/2, z - l/2);
     aoColor(c, kT); rlTexCoord2f(u0, v0); rlVertex3f(x + w/2, y + h/2, z + l/2);
     aoColor(c, kB); rlTexCoord2f(u0, v1); rlVertex3f(x + w/2, y - h/2, z + l/2);
+    }
+    if (mask & CFACE_NX) {
     rlNormal3f(-1, 0, 0);
     aoColor(c, kB); rlTexCoord2f(u0, v1); rlVertex3f(x - w/2, y - h/2, z - l/2);
     aoColor(c, kB); rlTexCoord2f(u1, v1); rlVertex3f(x - w/2, y - h/2, z + l/2);
     aoColor(c, kT); rlTexCoord2f(u1, v0); rlVertex3f(x - w/2, y + h/2, z + l/2);
     aoColor(c, kT); rlTexCoord2f(u0, v0); rlVertex3f(x - w/2, y + h/2, z - l/2);
+    }
 }
 
-static void drawCubeTexAO(int tile, Vector3 p, float w, float h, float l, Color c,
-                          unsigned char aoTop, unsigned char aoBot) {
+static void drawCubeTexAOFace(int tile, Vector3 p, float w, float h, float l, Color c,
+                          unsigned char aoTop, unsigned char aoBot, unsigned mask) {
     gAOTop = aoTop; gAOBot = aoBot;
     if (gCapture || gVoxelBatchOpen) {
-        emitCubeTex(tile, p, w, h, l, c);
+        emitCubeTex(tile, p, w, h, l, c, mask);
     } else {
         rlSetTexture(gAtlas.id);
         rlBegin(RL_QUADS);
-        emitCubeTex(tile, p, w, h, l, c);
+        emitCubeTex(tile, p, w, h, l, c, mask);
         rlEnd();
     }
     gAOTop = 255; gAOBot = 255;
+}
+static void drawCubeTexAO(int tile, Vector3 p, float w, float h, float l, Color c,
+                          unsigned char aoTop, unsigned char aoBot) {
+    drawCubeTexAOFace(tile, p, w, h, l, c, aoTop, aoBot, CFACE_ALL);
+}
+// Only emit the specified faces -- used by the terrain heightfield so a fully-buried cube
+// face (hidden against an equal-or-taller neighbour, or facing straight down into the
+// ground) is never generated at all, instead of generated and then merely hidden.
+static void drawCubeTexFace(int tile, Vector3 p, float w, float h, float l, Color c, unsigned mask) {
+    unsigned char aoBot = 255;
+    if (h > 1.2f) aoBot = 196;
+    drawCubeTexAOFace(tile, p, w, h, l, c, 255, aoBot, mask);
 }
 static void drawCubeTex(int tile, Vector3 p, float w, float h, float l, Color c) {
 
@@ -2117,22 +2194,35 @@ int main(int argc, char **argv) {
                         drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
                     }
                 } else {
-                    drawCubeTex(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col);
+                    // Thin-skin heightfield (Minecraft-style hidden-face culling) for the
+                    // BODY only. The top layer (the cap the player actually walks/rides on)
+                    // keeps its full, unculled cube -- every face always emitted, exactly
+                    // like the original renderer -- since culling it was the source of the
+                    // visible artifacting. Only the body underneath it (never visible except
+                    // at an exposed cliff/step) is thinned out below.
+                    const float SKIRT = 0.06f;
                     drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
 
-                    if (!depthPass && dist2 < 56.0f * 56.0f && cHi <= cLo) {
-                        const float HC = cellSz * 0.5f;
-                        struct { int ox, oz; float dx, dz; } nb[4] = {
-                            { 1, 0,  HC*0.5f, 0 }, { -1, 0, -HC*0.5f, 0 },
-                            { 0, 1,  0,  HC*0.5f }, { 0,-1, 0, -HC*0.5f } };
+                    if (cHi <= cLo) {   // no local carve cavity complicating the column here
+                        int hN[4] = { gHCache.get(cx + 1, cz), gHCache.get(cx - 1, cz),
+                                      gHCache.get(cx, cz + 1), gHCache.get(cx, cz - 1) };
+                        unsigned fc[4] = { CFACE_PX, CFACE_NX, CFACE_PZ, CFACE_NZ };
                         for (int n = 0; n < 4; n++) {
-                            int hN = gHCache.get(cx + nb[n].ox, cz + nb[n].oz);
-                            if (h - hN != 1) continue;
-                            float ew = (nb[n].ox != 0) ? HC : cellSz;
-                            float el = (nb[n].oz != 0) ? HC : cellSz;
-                            drawCubeTex(capTile, Vector3{ wx + nb[n].dx, h - 0.5f, wz + nb[n].dz },
-                                        ew, 1.0f, el, cap);
+                            if (hN[n] >= h) continue;                       // hidden: neighbour same height or taller
+                            float rawTop = top, rawBot = fmaxf((float)hN[n] + 1.0f, colBot);
+                            float rawH = rawTop - rawBot;
+                            if (rawH < 0.02f) continue;
+                            bool ledge = rawH <= 1.05f;   // a 1-unit step reads as a grassy ledge, matching the cap
+                            float faceTop = rawTop + SKIRT, faceBot = rawBot - SKIRT;
+                            drawCubeTexFace(ledge ? capTile : T_GRAIN,
+                                            Vector3{ wx, (faceBot + faceTop) * 0.5f, wz },
+                                            cellSz + SKIRT, faceTop - faceBot, cellSz + SKIRT, ledge ? cap : col, fc[n]);
                         }
+                    } else {
+                        // A carve cavity touches this column (rare -- only near specific
+                        // track features): fall back to the old full-depth body so the
+                        // cavity's own floor/roof logic above still has solid walls to meet.
+                        drawCubeTex(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col);
                     }
                 }
 
@@ -2264,7 +2354,40 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
             }
-            DrawMesh(gTerrainMesh.mesh, mat, MatrixIdentity());
+            // Cull terrain chunks before submitting them. The full TERRA_R ring is always
+            // generated together every rebuild (see TerrainMesh::finish) -- this only skips
+            // DrawMesh calls for chunks that can't be seen, it never skips generating them,
+            // so it cannot reintroduce the old per-chunk-streaming void bug.
+            if (depthPass) {
+                // Shadow pass uses a +-105 ortho box centred on P (see computeLightVP) that
+                // can be rotated by the sun direction; cull by 3-D distance from P with a
+                // margin past the box's half-diagonal (105*sqrt2 ~= 148) so nothing the
+                // shadow map could need is ever skipped.
+                const float SHADOW_CULL_R = 170.0f;
+                for (auto &c : gTerrainMesh.chunks) {
+                    float dx = c.center.x - P.x, dy = c.center.y - P.y, dz = c.center.z - P.z;
+                    if (sqrtf(dx*dx + dy*dy + dz*dz) - c.radius > SHADOW_CULL_R) continue;
+                    DrawMesh(c.mesh, mat, MatrixIdentity());
+                }
+            } else {
+                Vector3 F = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+                Vector3 Rt = Vector3Normalize(Vector3CrossProduct(F, cam.up));
+                Vector3 Up = Vector3CrossProduct(Rt, F);
+                float aspect = (float)GetRenderWidth() / (float)GetRenderHeight();
+                // 20% margin past the true half-angle so a chunk can never pop off-screen;
+                // errs toward drawing a little extra, never toward under-drawing.
+                float tanV = tanf(cam.fovy * 0.5f * DEG2RAD) * 1.2f;
+                float tanH = tanV * aspect;
+                for (auto &c : gTerrainMesh.chunks) {
+                    Vector3 d = Vector3Subtract(c.center, cam.position);
+                    float fz = Vector3DotProduct(d, F);
+                    if (fz + c.radius < 0.0f) continue;                    // fully behind camera
+                    float zc = fmaxf(fz, 0.0f);
+                    if (fabsf(Vector3DotProduct(d, Rt)) > zc * tanH + c.radius) continue;
+                    if (fabsf(Vector3DotProduct(d, Up)) > zc * tanV + c.radius) continue;
+                    DrawMesh(c.mesh, mat, MatrixIdentity());
+                }
+            }
             if (!depthPass) {
                 float off = 0.0f;
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);

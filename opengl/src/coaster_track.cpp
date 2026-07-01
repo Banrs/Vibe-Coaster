@@ -220,7 +220,7 @@ struct Track {
 
     void initStall() {
         mode = M_STALL;
-        setClearance(24.0f, 48.0f);
+        setClearance(24.0f, STALL_CLEARANCE_HI);
         stallLen    = irnd(10, 14);
 
         // stallH = GRAV*L^2/(8 v^2) is the ballistic (0-g) crest height. The old min of 18 forced
@@ -330,7 +330,7 @@ struct Track {
 
     void initWingover() {
         mode = M_WINGOVER;
-        setClearance(14.0f, 46.0f);
+        setClearance(14.0f, WINGOVER_CLEARANCE_HI);
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
         turnMag   = turnMagFor(3.0f, 0.015f, 0.18f);   // gentler heading rate -> lateral stays in envelope; lo lowered, see initTurn/initHelix
         bankT     = frnd(0.60f, 0.84f);               // less bank -> smaller up-vector snap into the exit FLAT
@@ -593,11 +593,17 @@ struct Track {
     // has BOTH conditions true at once (measured: 0 inversions across 8 full --simtest
     // rides when tried) -- their radius-from-speed sizing already keeps them realistic
     // without needing a separate height cap.
+    // STALL/WINGOVER's cap is deliberately the SAME number as their initStall/initWingover
+    // setClearance() hi bound (named constants below, shared by both call sites so they
+    // can't silently drift apart) -- BANANA/STENGEL have no equivalent setClearance() call,
+    // so their caps are independent literals.
+    static constexpr float STALL_CLEARANCE_HI    = 48.0f;
+    static constexpr float WINGOVER_CLEARANCE_HI = 46.0f;
     static float maxTrickHeight(SegMode m) {
         switch (m) {
-            case M_STALL:     return 48.0f;
+            case M_STALL:     return STALL_CLEARANCE_HI;
             case M_BANANA:    return 36.0f;
-            case M_WINGOVER:  return 46.0f;
+            case M_WINGOVER:  return WINGOVER_CLEARANCE_HI;
             case M_STENGEL:   return 40.0f;
             default:          return -1.0f;   // not height-gated
         }
@@ -621,6 +627,21 @@ struct Track {
         if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
     }
+    // The speed/height safety gates only, with no family/prevElem variety constraint --
+    // used as pickFromPool's fallback so a degenerate pool (every candidate sharing
+    // lastElem's family) can still never hand back a physics-gated element.
+    bool eligibleSafety(SegMode m) const {
+        InvSpec s = invSpec(m);
+        if (s.gT > 0.0f) {
+            const float gCeil = 7.8f;
+            float rMax = s.rMaxRec * 1.25f;
+            float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
+            if (genV > gate) return false;
+        }
+        float trickMax = maxTrickHeight(m);
+        if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
+        return true;
+    }
 
     SegMode pickFromPool(const SegMode *pool, int n) const {
         SegMode valid[32]; float w[32]; int vc = 0; float wsum = 0;
@@ -629,6 +650,18 @@ struct Track {
             float age = (float)(elemSeq - lastUsedAt[pool[i]]) + 1.0f;
             valid[vc] = pool[i]; w[vc] = age * age; wsum += w[vc]; vc++;
         }
+        if (vc == 0) {
+            // Full eligibleElem() found nothing (variety constraint exhausted the pool) --
+            // retry ignoring only the family/prevElem check, so we never bypass the
+            // physics safety gates (speed-gated hard inversions, height-gated tricks).
+            for (int i = 0; i < n && vc < 32; i++) {
+                if (!eligibleSafety(pool[i])) continue;
+                valid[vc] = pool[i]; w[vc] = 1.0f; wsum += 1.0f; vc++;
+            }
+        }
+        // Degenerate case: even the safety-only pass found nothing (every pool entry is a
+        // hard-gated element and genV/height violates all of them at once) -- fall back to
+        // uniform-random rather than stall, but this should be vanishingly rare in practice.
         if (vc == 0) return pool[irnd(0, n - 1)];
         float r = frnd(0.0f, wsum);
         for (int i = 0; i < vc; i++) { r -= w[i]; if (r <= 0.0f) return valid[i]; }

@@ -47,7 +47,12 @@ static const Vector3 WUP = { 0, 1, 0 };
 
 static const Color SKY    = {186, 205, 232, 255};
 
-static const Color FOG    = {198, 214, 232, 255};
+// Sampled directly from SKY_FS's actual rendered horizon pixel colour (the raw
+// HORIZON/ZENITH shader constants are much bluer than what tonemapping +
+// atmospheric blending actually produce on screen) so distant fogged terrain
+// blends into the real sky behind it instead of a visibly different "wall"
+// at the render-distance frontier.
+static const Color FOG    = {198, 204, 209, 255};
 static const Color GRASS  = {130, 206, 102, 255};
 static const Color SAND   = {242, 228, 184, 255};
 static const Color DIRT   = {158, 116,  82, 255};
@@ -2612,6 +2617,8 @@ int main(int argc, char **argv) {
             }
             SetShaderValue(gShadow.lit, gShadow.locCascadeSplit0, &SHADOW_CASCADE_R[0], SHADER_UNIFORM_FLOAT);
             SetShaderValue(gShadow.lit, gShadow.locCascadeSplit1, &SHADOW_CASCADE_R[1], SHADER_UNIFORM_FLOAT);
+            float sf[3] = { gShadow.focus.x, gShadow.focus.y, gShadow.focus.z };
+            SetShaderValue(gShadow.lit, gShadow.locShadowFocus, sf, SHADER_UNIFORM_VEC3);
         };
         static const int SHADOW_TEX_UNITS[SHADOW_CASCADES] = { 10, 13, 14 };
         auto bindShadowTextures = [&]() {

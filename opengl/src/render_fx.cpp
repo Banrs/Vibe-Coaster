@@ -38,6 +38,12 @@ static const char *SHADOW_FS =
     // in world metres then converted per-cascade via its own inverse depth range.
     "uniform float invRange0; uniform float invRange1; uniform float invRange2;\n"
     "uniform float cascadeSplit0; uniform float cascadeSplit1;\n"
+    // The cascades are centred on the train/focus point P (see ShadowSys::computeLightVP),
+    // NOT the camera -- cascade SELECTION must use distance from that same point, or any
+    // shot where the camera sits away from the train (orbit/free-look/elevated views) picks
+    // the wrong cascade (or falls outside all of them, going flat/shadowless) even though
+    // the fragment is well within a cascade's actual coverage box.
+    "uniform vec3 shadowFocus;\n"
 
     "const vec2 PD12[12] = vec2[12](\n"
     "  vec2(-0.326,-0.406),vec2(-0.840,-0.074),vec2(-0.696, 0.457),vec2(-0.203, 0.621),\n"
@@ -81,7 +87,7 @@ static const char *SHADOW_FS =
     // used elsewhere in this shader), soft-blending across a band near each
     // split so the cascade seam is never a visible hard line.
     "float shadow(vec3 N){\n"
-    "  float d = length(viewPos.xz - fragWorld.xz);\n"
+    "  float d = length(shadowFocus.xz - fragWorld.xz);\n"
     "  float band0 = cascadeSplit0*0.85, band1 = cascadeSplit1*0.85;\n"
     "  if(d < band0) return shadowCascade(0, N);\n"
     "  if(d < cascadeSplit0){\n"
@@ -163,7 +169,7 @@ static const char *SHADOW_FS =
 
     "    if(fogEnd > 0.0){\n"
     "      float d = length(viewPos.xz - fragWorld.xz);\n"
-    "      float fog = clamp((d - fogEnd*0.70)/(fogEnd*0.27), 0.0, 1.0);\n"
+    "      float fog = clamp((d - fogEnd*0.55)/(fogEnd*0.40), 0.0, 1.0);\n"
     "      wcol = mix(wcol, fogCol, fog);\n"
     "      wa = mix(wa, 0.0, fog);\n"
     "    }\n"
@@ -203,7 +209,7 @@ static const char *SHADOW_FS =
 
     "  if(fogEnd > 0.0){\n"
     "    float d = length(viewPos.xz - fragWorld.xz);\n"
-    "    float fog = clamp((d - fogEnd*0.70)/(fogEnd*0.27), 0.0, 1.0);\n"
+    "    float fog = clamp((d - fogEnd*0.55)/(fogEnd*0.40), 0.0, 1.0);\n"
     "    col = mix(col, fogCol, fog);\n"
     "  }\n"
     "  finalColor = vec4(col, tex.a*fragColor.a*colDiffuse.a);\n"
@@ -240,12 +246,13 @@ struct ShadowSys {
     int locShadowMap[SHADOW_CASCADES] = {-1,-1,-1};
     int locShadowTexel[SHADOW_CASCADES] = {-1,-1,-1};
     int locInvRange[SHADOW_CASCADES]  = {-1,-1,-1};
-    int locCascadeSplit0=-1, locCascadeSplit1=-1;
+    int locCascadeSplit0=-1, locCascadeSplit1=-1, locShadowFocus=-1;
     int locLightDir=-1, locViewPos=-1;
     int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1, locTime=-1;
     int locFogEnd=-1, locFogCol=-1;
     Matrix lightVP[SHADOW_CASCADES]{};
     float invRange[SHADOW_CASCADES]{};
+    Vector3 focus{};   // last point cascades were centred on -- shaders must select cascades by distance from THIS, not the camera
 
     void init() {
         lit   = LoadShaderFromMemory(SHADOW_VS, SHADOW_FS);
@@ -262,6 +269,7 @@ struct ShadowSys {
         }
         locCascadeSplit0 = GetShaderLocation(lit, "cascadeSplit0");
         locCascadeSplit1 = GetShaderLocation(lit, "cascadeSplit1");
+        locShadowFocus   = GetShaderLocation(lit, "shadowFocus");
         locLightDir    = GetShaderLocation(lit, "lightDir");
         locViewPos     = GetShaderLocation(lit, "viewPos");
         locSun         = GetShaderLocation(lit, "sunCol");
@@ -284,7 +292,8 @@ struct ShadowSys {
     // camera/train focus point) along the fixed sun direction. Each cascade's
     // eye distance and far plane scale with its own half-extent so the box is
     // always fully contained regardless of sun elevation.
-    void computeLightVP(Vector3 focus) {
+    void computeLightVP(Vector3 f) {
+        focus = f;
         for (int i = 0; i < SHADOW_CASCADES; i++) {
             float R = SHADOW_CASCADE_R[i];
             float eyeDist = R * 2.2f + 40.0f;

@@ -42,7 +42,6 @@ static const float LAUNCH_V  = 105.0f;  // asymptote ~378: keeps strong thrust (
 static const float CLIMB_V   = 40.0f;
 static float       BOOST_V   = 62.0f;
 static float       BOOST_TRIG = 58.0f;
-static float       INV_GATE  = 64.0f;
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -533,6 +532,16 @@ struct TerrainMesh {
     std::atomic<bool> ready{false};   // worker sets when the CPU build has finished
     int  pendCx = 0, pendCz = 0, pendU = 0;
 
+    // Upload-spreading state (see finish()): once the worker's CPU build is done, GPU
+    // uploads for the (possibly hundreds of) new chunk buckets are throttled to a few per
+    // frame instead of all at once, exactly like the project's earlier chunked renderer did
+    // (git: "perf: spread chunk uploads across frames") -- one full-ring rebuild uploading
+    // every bucket in a single frame is the "insane fps spike" on every rebuild.
+    std::vector<CapBucket> pendingBuckets;
+    std::vector<TerrainChunk> pendingChunks;
+    size_t uploadCursor = 0;
+    static const int UPLOAD_BUDGET = 12;   // chunks uploaded per frame once the world is already live
+
     static const int REBUILD_CELLS = 40;   // re-centre the mesh every ~40 m (was 12 -> rebuilt ~7x/sec at speed)
     static const int REBUILD_U     = 8;
     bool needsRebuild(int cx, int cz, int uIdx) const {
@@ -550,44 +559,58 @@ struct TerrainMesh {
         worker = std::thread([this, emit]() { gCapture = true; emit(); gCapture = false; ready = true; });
     }
 
-    // block=false: poll — only join+upload once the worker has finished, so the main thread
-    // never stalls on the ~90 ms build (the previous chunks stay visible meanwhile). block=true:
-    // wait (first build / screenshot modes / shutdown, where complete chunks must exist now).
+    void uploadOne(CapBucket &b) {
+        int vcount = (int)(b.pos.size() / 3);
+        if (vcount == 0) return;
+        TerrainChunk c{};
+        c.mesh.vertexCount   = vcount;
+        c.mesh.triangleCount = vcount / 3;
+        c.mesh.vertices  = (float *)RL_CALLOC(vcount * 3, sizeof(float));
+        c.mesh.texcoords = (float *)RL_CALLOC(vcount * 2, sizeof(float));
+        c.mesh.normals   = (float *)RL_CALLOC(vcount * 3, sizeof(float));
+        c.mesh.colors    = (unsigned char *)RL_CALLOC(vcount * 4, sizeof(unsigned char));
+        std::copy(b.pos.begin(), b.pos.end(), c.mesh.vertices);
+        std::copy(b.uv.begin(),  b.uv.end(),  c.mesh.texcoords);
+        std::copy(b.nrm.begin(), b.nrm.end(), c.mesh.normals);
+        std::copy(b.col.begin(), b.col.end(), c.mesh.colors);
+        UploadMesh(&c.mesh, true);
+        c.center = Vector3Scale(Vector3Add(b.bmin, b.bmax), 0.5f);
+        c.radius = Vector3Distance(c.center, b.bmax) + 0.5f;
+        pendingChunks.push_back(c);
+    }
+
+    // block=false: poll — once the worker's CPU build is done, upload a handful of chunks
+    // per call (spread across frames) so the main thread never stalls on hundreds of
+    // UploadMesh calls at once; the previous chunks stay visible the whole time. block=true:
+    // finish everything synchronously now (first build / screenshot modes / shutdown, where
+    // complete chunks must exist immediately).
     void finish(bool block = false) {
         if (!building) return;
-        if (!block && !ready.load()) return;
-        if (worker.joinable()) worker.join();
-
-        // Build the new chunk set from the buckets the worker just filled, then swap the
-        // WHOLE set in at once -- the old chunks (still `live`, still fully drawable) are
-        // only torn down once every new chunk has finished uploading, so there is never a
-        // frame where the terrain is partially missing.
-        std::vector<TerrainChunk> fresh;
-        fresh.reserve(gCapBuckets.size());
-        for (auto &kv : gCapBuckets) {
-            CapBucket &b = kv.second;
-            int vcount = (int)(b.pos.size() / 3);
-            if (vcount == 0) continue;
-            TerrainChunk c{};
-            c.mesh.vertexCount   = vcount;
-            c.mesh.triangleCount = vcount / 3;
-            c.mesh.vertices  = (float *)RL_CALLOC(vcount * 3, sizeof(float));
-            c.mesh.texcoords = (float *)RL_CALLOC(vcount * 2, sizeof(float));
-            c.mesh.normals   = (float *)RL_CALLOC(vcount * 3, sizeof(float));
-            c.mesh.colors    = (unsigned char *)RL_CALLOC(vcount * 4, sizeof(unsigned char));
-            std::copy(b.pos.begin(), b.pos.end(), c.mesh.vertices);
-            std::copy(b.uv.begin(),  b.uv.end(),  c.mesh.texcoords);
-            std::copy(b.nrm.begin(), b.nrm.end(), c.mesh.normals);
-            std::copy(b.col.begin(), b.col.end(), c.mesh.colors);
-            UploadMesh(&c.mesh, true);
-            c.center = Vector3Scale(Vector3Add(b.bmin, b.bmax), 0.5f);
-            c.radius = Vector3Distance(c.center, b.bmax) + 0.5f;
-            fresh.push_back(c);
+        if (uploadCursor == 0 && pendingBuckets.empty()) {
+            // Not yet past the CPU-build stage: wait for (or poll) the worker.
+            if (!block && !ready.load()) return;
+            if (worker.joinable()) worker.join();
+            pendingBuckets.reserve(gCapBuckets.size());
+            for (auto &kv : gCapBuckets) pendingBuckets.push_back(std::move(kv.second));
+            gCapBuckets.clear();
+            pendingChunks.clear();
+            pendingChunks.reserve(pendingBuckets.size());
+            uploadCursor = 0;
         }
+
+        int budget = (block || !live) ? (int)pendingBuckets.size() : UPLOAD_BUDGET;
+        size_t end = uploadCursor + (size_t)budget;
+        if (end > pendingBuckets.size()) end = pendingBuckets.size();
+        for (; uploadCursor < end; uploadCursor++) uploadOne(pendingBuckets[uploadCursor]);
+        if (uploadCursor < pendingBuckets.size()) return;   // more to upload next frame
+
+        // Every bucket is uploaded: swap the WHOLE new chunk set in at once -- the old
+        // chunks (still `live`, still fully drawable) are only torn down now, so there is
+        // never a frame where the terrain is partially missing.
         for (auto &c : chunks) UnloadMesh(c.mesh);
-        chunks = std::move(fresh);
+        chunks = std::move(pendingChunks);
         live = !chunks.empty();
-        gCapBuckets.clear();
+        pendingBuckets.clear(); pendingChunks.clear(); uploadCursor = 0;
         keyCx = pendCx; keyCz = pendCz; keyU = pendU;
         building = false;
     }
@@ -794,8 +817,6 @@ enum SegMode { M_FLAT, M_CLIMB, M_DROP, M_HILLS, M_TURN, M_LOOP, M_ROLL,
                M_WINGOVER, M_HEARTLINE,
                M_PRETZEL, M_STENGEL, M_BANANA,
                M_COUNT };
-
-struct Coin { Vector3 pos; bool alive; };
 
 static int   gForceElem  = -1;
 static float gForceSpeed = 0.0f;
@@ -1064,8 +1085,7 @@ int main(int argc, char **argv) {
         if (argc > 2) DRAG       = (float)atof(argv[2]);
         if (argc > 3) BOOST_V    = (float)atof(argv[3]);
         if (argc > 4) BOOST_TRIG = (float)atof(argv[4]);
-        if (argc > 5) INV_GATE   = (float)atof(argv[5]);
-        printf("(using DRAG=%.5f BOOST_V=%.1f BOOST_TRIG=%.1f INV_GATE=%.1f)\n", DRAG, BOOST_V, BOOST_TRIG, INV_GATE);
+        printf("(using DRAG=%.5f BOOST_V=%.1f BOOST_TRIG=%.1f)\n", DRAG, BOOST_V, BOOST_TRIG);
         double gSumV = 0; long gNV = 0;
         long gBoostF = 0, gLaunchF = 0;
         long gInv = 0;
@@ -1073,7 +1093,7 @@ int main(int argc, char **argv) {
             g_rng = seed * 2654435761u | 1u;
             Track t; t.reset();
             float u = 0.5f, v = LAUNCH_V;
-            size_t maxCP = 0, maxCoins = 0; int bad = 0;
+            size_t maxCP = 0; int bad = 0;
             float maxAlt = 0, maxY = 0;
             double sumV = 0; long nV = 0; float maxV = 0;
             unsigned char prevTag = 255;
@@ -1103,14 +1123,6 @@ int main(int argc, char **argv) {
                 if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
 
-                for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
-                    SegMode ahead = (SegMode)t.tagAt(u + la);
-                    if (!Track::isHardInversion(ahead)) continue;
-                    float bt; Track::invRAt(ahead, v, bt);
-                    if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 22.0f : 14.0f) * dt, bt);
-                    break;
-                }
-
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
                 v = fmaxf(v, 20.0f);
@@ -1137,11 +1149,6 @@ int main(int argc, char **argv) {
                 if (!(du == du)) du = 0;
                 u += fminf(du, 1.5f);
                 while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
-                while (!t.coins.empty()) {
-                    Vector3 d = Vector3Subtract(t.coins.front().pos, t.pos(u));
-                    Vector3 th = Vector3Normalize(Vector3{ t.tangent(u).x, 0, t.tangent(u).z });
-                    if (d.x * th.x + d.z * th.z < -30.0f) t.coins.pop_front(); else break;
-                }
                 Vector3 P = t.pos(u);
                 if (!(P.x == P.x) || !(u == u) || !(v == v)) bad++;
                 float a = P.y - groundTopAt(P.x, P.z);
@@ -1157,7 +1164,6 @@ int main(int argc, char **argv) {
                         !(rt.y == rt.y) || !(rt.z == rt.z) || Vector3Length(rt) < 1e-3f) bad++;
                 }
                 maxCP = maxCP > t.cp.size() ? maxCP : t.cp.size();
-                maxCoins = maxCoins > t.coins.size() ? maxCoins : t.coins.size();
             }
             double avg = nV ? sumV / nV : 0;
             const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
@@ -1230,13 +1236,6 @@ int main(int argc, char **argv) {
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
                 if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
-                for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
-                    SegMode ahead = (SegMode)t.tagAt(u + la);
-                    if (!Track::isHardInversion(ahead)) continue;
-                    float bt; Track::invRAt(ahead, v, bt);
-                    if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 22.0f : 14.0f) * dt, bt);
-                    break;
-                }
                 if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
                 v = fmaxf(v, 20.0f);
@@ -1729,15 +1728,6 @@ int main(int argc, char **argv) {
                 if (v < liftV) v = fminf(v + 20.0f * dt, liftV);
             }
 
-            for (float la = 1.0f; la <= 9.0f; la += 1.0f) {
-                SegMode ahead = (SegMode)trk.tagAt(u + la);
-                if (!Track::isHardInversion(ahead)) continue;
-
-                float bt; Track::invRAt(ahead, v, bt);
-                if (bt > 0.0f && v > bt) v = fmaxf(v - (la <= 4.0f ? 22.0f : 14.0f) * dt, bt);
-                break;
-            }
-
             if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !onLift && v < 36.0f)
                 v = fminf(v + 28.0f * dt, 36.0f);
             v = fmaxf(v, 20.0f);
@@ -1920,10 +1910,12 @@ int main(int argc, char **argv) {
             cam.fovy     = 62;
         }
         if (orbitShot && !onFoot) {
-            cam.position = Vector3Add(P, Vector3{ 58.0f, 62.0f, 58.0f });
+            Vector3 off = { 58.0f, 62.0f, 58.0f };
+            if (const char* ov = getenv("MC_CAMOFF")) sscanf(ov, "%f,%f,%f", &off.x, &off.y, &off.z);
+            cam.position = Vector3Add(P, off);
             cam.target   = P;
             cam.up       = Vector3{ 0, 1, 0 };
-            cam.fovy     = 60;
+            cam.fovy     = getenv("MC_CAMFOV") ? (float)atof(getenv("MC_CAMFOV")) : 60;
         }
         if (waterShot) {
 
@@ -2089,7 +2081,12 @@ int main(int argc, char **argv) {
             if (trk.stationActive) stampStation(trk.stationPos, trk.stationYaw);
         }
 
-        for (float su = fmaxf(u - 14.0f, 0.0f); su <= u + 28.0f; su += 0.17f) {
+        // Step big enough to still fully cover the DEEP_R=10.5 m corridor with no gaps
+        // (consecutive samples only need to stay under ~2*DEEP_R apart; at ~14 m of arc
+        // length per su unit, 0.17 was sampling every ~2.4 m -- ~8x more samples than the
+        // corridor needs, the single largest CPU cost of a terrain rebuild). 0.4 samples
+        // every ~5.6 m: same coverage, ~2.4x fewer iterations of the carve-corridor scan.
+        for (float su = fmaxf(u - 14.0f, 0.0f); su <= u + 28.0f; su += 0.4f) {
             Vector3 ps = trk.pos(su);
             float lo = ps.y - 4.0f, hi = ps.y + 4.5f;
             int scx = (int)floorf(ps.x / CELL), scz = (int)floorf(ps.z / CELL);
@@ -3267,8 +3264,8 @@ int main(int argc, char **argv) {
             double ms = (GetTime() - tFrame0) * 1000.0;
             float alt = P.y - groundTopAt(P.x, P.z);
             if ((frame % 25) == 0 || ms > 60.0)
-                printf("f%-5d cam%d  %6.1fms  u=%.2f v=%.1f alt=%.0f cp=%zu coins=%zu tag=%d invY=%.2f\n",
-                       frame, camMode, ms, u, v, alt, trk.cp.size(), trk.coins.size(),
+                printf("f%-5d cam%d  %6.1fms  u=%.2f v=%.1f alt=%.0f cp=%zu tag=%d invY=%.2f\n",
+                       frame, camMode, ms, u, v, alt, trk.cp.size(),
                        (int)trk.tagAt(u), N.y);
             fflush(stdout);
         }

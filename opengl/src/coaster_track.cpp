@@ -5,7 +5,6 @@ struct Track {
     std::deque<unsigned char> chainf;
     std::deque<float>         arc;
     std::deque<float>         gvlog;
-    std::deque<Coin>          coins;
     long base = 0;
 
     Vector3 gpos{};
@@ -36,8 +35,6 @@ struct Track {
     int     seamEaseTot = 0;
     int     levelHold = 0;
     int     queuedInv = 0;
-    SegMode trimNext = M_FLAT;
-    float   trimV    = 0;
     SegMode lastElem = M_FLAT, prevElem = M_FLAT;
     SegMode launchElem = M_CLIMB;
     float   clearanceBase = 14.0f;
@@ -111,7 +108,7 @@ struct Track {
     }
 
     void reset() {
-        cp.clear(); up.clear(); kind.clear(); chainf.clear(); arc.clear(); gvlog.clear(); coins.clear(); base = 0;
+        cp.clear(); up.clear(); kind.clear(); chainf.clear(); arc.clear(); gvlog.clear(); base = 0;
         chainMode = false; stationPending = false; stationActive = false; stationRamping = false;
 
         Theme th    = THEMES[irnd(0, THEME_N - 1)];
@@ -158,7 +155,7 @@ struct Track {
     }
 
     void initLoop() {
-        { float bt; lR = invRFor(M_LOOP, bt); lR *= frnd(0.95f, 1.0f); }   // don't shrink below the rMin floor
+        { lR = invRFor(M_LOOP); lR *= frnd(0.95f, 1.0f); }   // don't shrink below the rMin floor
         lf     = headingVec();
         lside  = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -170,7 +167,7 @@ struct Track {
 
     void initImmel() {
         mode    = M_IMMEL;
-        { float bt; lR = invRFor(M_IMMEL, bt); lR *= frnd(0.85f, 1.0f); }
+        { lR = invRFor(M_IMMEL); lR *= frnd(0.85f, 1.0f); }
         lf      = headingVec();
         lside   = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -242,7 +239,7 @@ struct Track {
     void initDiveLoop() {
         mode = M_DIVELOOP;
         setClearance(18.0f, 40.0f);
-        { float bt; dlR = invRFor(M_DIVELOOP, bt); dlR *= frnd(0.85f, 1.0f); }
+        { dlR = invRFor(M_DIVELOOP); dlR *= frnd(0.85f, 1.0f); }
         dlf      = headingVec();
         dlside   = Vector3Normalize(Vector3CrossProduct(WUP, dlf));
         dlcenter = { gpos.x, gpos.y + dlR, gpos.z };
@@ -274,7 +271,7 @@ struct Track {
     void initCobra() {
         mode = M_COBRA;
         setClearance(24.0f, 58.0f);
-        { float bt; cbR = invRFor(M_COBRA, bt); cbR *= frnd(0.92f, 1.12f); }
+        { cbR = invRFor(M_COBRA); cbR *= frnd(0.92f, 1.12f); }
         cbF     = headingVec();
         float side = (rnd01() < 0.5f) ? 1.0f : -1.0f;
         cbSide  = Vector3Scale(Vector3Normalize(Vector3CrossProduct(WUP, cbF)), side);
@@ -406,32 +403,39 @@ struct Track {
         }
     }
 
-    static float invRAt(SegMode m, float v, float &brakeTo) {
+    // Radius sized from real (unthrottled) entry speed, clamped to a realistic
+    // record-based range -- no entry braking: whatever speed physics delivers is
+    // what the element is built at, so a hot entry genuinely feels hotter.
+    static float invRAt(SegMode m, float v) {
         InvSpec s = invSpec(m);
-        if (s.gT <= 0.0f) { brakeTo = 0.0f; return 0.0f; }
-        const float gCeil = 7.8f;            // brake inversion entry only enough to stay <=+9.8 (actual spline curvature ~1.3x nominal); higher ceiling = far less braking, higher avg speed
+        if (s.gT <= 0.0f) return 0.0f;
         float rMax = s.rMaxRec * 1.25f;      // cap at world-record +25% (manage g by speed/smoothing, not size)
         float vv   = Clamp(v, 28.0f, 135.0f);
-
-        float R    = Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
-        float g    = 1.0f + vv * vv / (s.gMul * R * GRAV);
-        brakeTo    = (g > gCeil) ? sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax) : 0.0f;
-        return R;
+        return Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
     }
-    float invRFor(SegMode m, float &brakeTo) const { return invRAt(m, genV, brakeTo); }
+    float invRFor(SegMode m) const { return invRAt(m, genV); }
     void initHills() {
         mode = M_HILLS;
         setClearance(7.0f, 38.0f);
         hillBumps = irnd(1, 3);
-        hillH     = frnd(14.0f, 28.0f) + (clearanceBase > 32.0f ? frnd(4.0f, 12.0f) : 0.0f);
+        // Floor raised (was 14) -- the low end of the old range rolled hills so
+        // small they barely registered as airtime; measured felt-g (--gaudit) has
+        // plenty of headroom below the +9.8/-6 envelope (~5g typical), so a taller
+        // floor is still safe.
+        hillH     = frnd(22.0f, 34.0f) + (clearanceBase > 32.0f ? frnd(6.0f, 14.0f) : 0.0f);
         hillH     = fminf(hillH, maxAirH());
 
         { float gT = 3.3f;
           float L  = 2.0f * PI * hillBumps * genV * sqrtf(0.5f * hillH / (gT * GRAV));
           hillLen  = Clamp((int)(L / SEG_LEN), hillBumps * 3, 40); }
-        hillTurn  = frnd(-0.08f, 0.08f);
+        // Per-step lateral turn rate, sized from the ACTUAL entry speed like turnMag
+        // (turnMagFor) rather than a fixed range: a fixed rate held over the
+        // longer-duration hills a hot (unbraked) entry produces would push lateral g
+        // with v^2 and blow past -6 at speed extremes -- this keeps the target
+        // ~1.2g lateral component regardless of entry speed.
+        turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
+        hillTurn  = turnDir * turnMagFor(1.2f, 0.008f, 0.055f);
         bankT     = fabsf(hillTurn) * 1.2f;
-        turnDir   = (hillTurn < 0) ? -1.0f : 1.0f;
         remain    = hillLen;
     }
     void initTurn(bool big) {
@@ -439,8 +443,12 @@ struct Track {
         setClearance(big ? 12.0f : 6.0f, big ? 48.0f : 30.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
 
-        if (big) { turnMag = turnMagFor(5.0f, 0.07f, 0.45f); bankT = frnd(0.92f, 1.28f); remain = irnd(4, 6); }
-        else     { turnMag = turnMagFor(3.0f, 0.05f, 0.18f); bankT = frnd(0.30f, 0.62f); remain = irnd(3, 5);  }
+        // lo floors kept well below what the formula reaches even at the genV hard
+        // clamp (135 m/s) -- a floor any higher silently re-flattens the curve back
+        // out at extreme speed and reintroduces the v^2 lateral-g growth the
+        // speed-scaling exists to prevent (see initHills).
+        if (big) { turnMag = turnMagFor(5.0f, 0.025f, 0.45f); bankT = frnd(0.92f, 1.28f); remain = irnd(4, 6); }
+        else     { turnMag = turnMagFor(3.0f, 0.015f, 0.18f); bankT = frnd(0.30f, 0.62f); remain = irnd(3, 5);  }
     }
     void initHelix() {
         mode = M_HELIX;
@@ -453,7 +461,11 @@ struct Track {
         // +6..+8.4 vert / <=5.6 lat across 12 seeds (0 offenders) -- as tight/thrilling as the
         // envelope allows without adding entry braking (kept fast, no brakes, per the ride's
         // "helix is always ridden hot" design).
-        turnMag = turnMagFor(4.5f, 0.13f, 0.60f);
+        // lo floor lowered (was 0.13, reached below 70 m/s -- routinely, once braking
+        // no longer caps entry speed -- and re-flattened the curve straight back into
+        // the +13/-16g bug this budget was chosen to fix); now stays out of the way
+        // up to the genV hard clamp.
+        turnMag = turnMagFor(4.5f, 0.02f, 0.60f);
         bankT   = frnd(0.62f, 0.82f);
 
         float R = SEG_LEN / turnMag;
@@ -477,8 +489,13 @@ struct Track {
         mode = M_SCURVE;
         setClearance(6.0f, 34.0f);
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag   = turnMagFor(4.0f, 0.06f, 0.26f);
-        bankT     = frnd(0.30f, 0.52f);
+        // Budget trimmed slightly (was 6.0) -- the real (spline-measured) lateral g
+        // runs ~1.15-1.2x this planar target (same effect as the loop/helix sizing),
+        // so 6.0 was clearing -6 at hot entry speeds (--gaudit, 60+ seeds). lo floor
+        // lowered (was 0.11, reached below 87 m/s) so it stays out of the way up to
+        // the genV hard clamp instead of re-flattening the curve at extreme speed.
+        turnMag   = turnMagFor(5.0f, 0.025f, 0.34f);
+        bankT     = frnd(0.42f, 0.68f);
         scurveLen = irnd(6, 10);
         remain    = scurveLen;
     }
@@ -486,7 +503,7 @@ struct Track {
         mode = M_DIVE;
         setClearance(4.0f, 24.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag = turnMagFor(4.0f, 0.07f, 0.36f);
+        turnMag = turnMagFor(4.0f, 0.02f, 0.36f);   // lo lowered, see initTurn/initHelix
         bankT   = frnd(0.78f, 1.12f);
         remain  = irnd(4, 7);
     }
@@ -494,23 +511,30 @@ struct Track {
         mode = M_BANKAIR;
         setClearance(12.0f, 52.0f);
         hillBumps = irnd(1, 2);
-        hillH     = frnd(14.0f, 32.0f) + (clearanceBase > 38.0f ? frnd(6.0f, 18.0f) : 0.0f);
+        hillH     = frnd(22.0f, 38.0f) + (clearanceBase > 38.0f ? frnd(8.0f, 20.0f) : 0.0f);
         hillH     = fminf(hillH, maxAirH());
         { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 36); }
-        hillTurn  = frnd(-0.09f, 0.09f);
+        // Speed-scaled per-step turn (see initHills) so lateral g holds ~1.2g
+        // regardless of entry speed instead of growing with v^2 on a hot entry
+        // (1.4 still cleared -6 at the top of the speed range across 150 seeds).
+        turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
+        hillTurn  = turnDir * turnMagFor(1.2f, 0.008f, 0.065f);
         bankT     = frnd(0.18f, 0.42f);
-        turnDir   = (hillTurn < 0) ? -1.0f : 1.0f;
         remain    = hillLen;
     }
     void initWave() {
         mode = M_WAVE;
         setClearance(7.0f, 38.0f);
         hillBumps = irnd(1, 2);
-        hillH     = frnd(13.0f, 28.0f) + (clearanceBase > 30.0f ? frnd(5.0f, 14.0f) : 0.0f);
+        hillH     = frnd(20.0f, 32.0f) + (clearanceBase > 30.0f ? frnd(6.0f, 16.0f) : 0.0f);
         hillH     = fminf(hillH, maxAirH());
         { float gT = 3.3f; float L = 2.0f*PI*hillBumps*genV*sqrtf(0.5f*hillH/(gT*GRAV)); hillLen = Clamp((int)(L/SEG_LEN), hillBumps*3, 36); }
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        hillTurn  = turnDir * frnd(0.06f, 0.12f);   // gentler sustained turn -> wave lateral within -5 at speed
+        // Speed-scaled per-step turn (see initHills): a fixed rate held over the
+        // longer, faster-entry waves this hot-entry track now reaches pushed lateral
+        // g with v^2 well past -6 (--gaudit at 60+ seeds); this holds ~1.75g lateral
+        // at any entry speed instead.
+        hillTurn  = turnDir * turnMagFor(1.75f, 0.012f, 0.08f);
         bankT     = frnd(0.20f, 0.48f);
         remain    = hillLen;
     }
@@ -558,14 +582,18 @@ struct Track {
         return m == M_LOOP || m == M_ROLL || m == M_IMMEL || m == M_DIVELOOP || m == M_COBRA || m == M_PRETZEL || m == M_HEARTLINE;
     }
     bool eligibleElem(SegMode m) const {
-        // Per-element speed gate: tight inversions are only OFFERED once the forward-sim
-        // speed has bled into the range where a realistic-size element holds the g envelope
-        // (real coasters place cobras/dive-loops after a hill, not at top speed). Loops/rolls
-        // hold the envelope at cruise so they use the high INV_GATE.
-        if (invSpec(m).gT > 0.0f) {
-            float gate = INV_GATE;
-            if      (m == M_COBRA)                                  gate = 42.0f;  // ~150 km/h entry
-            else if (m == M_DIVELOOP || m == M_IMMEL || m == M_PRETZEL) gate = 50.0f;  // ~180 km/h entry
+        // Per-element speed gate, derived from the SAME record-capped radius formula
+        // invRAt uses to size the element: above this speed, even the max-record
+        // radius can't hold real (spline-measured) g under ~9.8, so the element
+        // isn't OFFERED for this slot -- no entry braking is inserted, the ride just
+        // picks something else here and takes this element later once genV has
+        // naturally bled off (real coasters place loops/cobras after a hill or drop,
+        // not straight off a launcher at top speed).
+        InvSpec s = invSpec(m);
+        if (s.gT > 0.0f) {
+            const float gCeil = 7.8f;   // planar-formula ceiling; real 3-D-spline g runs ~1.3x this estimate, so 7.8 here ~= 9.8 actual
+            float rMax = s.rMaxRec * 1.25f;
+            float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;
         }
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
@@ -600,31 +628,12 @@ struct Track {
         return pickFromPool(pool, (int)(sizeof(pool) / sizeof(pool[0])));
     }
 
-    void startTrim(SegMode elem, float targetV) {
-        trimNext = elem;
-        trimV    = targetV;
-        mode     = M_FLAT;
-
-        float a  = 0.8f * GRAV;
-        float d  = (genV * genV - trimV * trimV) / (2.0f * a);
-        remain   = Clamp((int)(d / SEG_LEN) + 2, 3, 9);
-        levelHold = remain;
-    }
-
     void chooseElement(float h) {
         (void)h;
 
         if (fabsf(genPrevDy) > 0.18f * SEG_LEN) { mode = M_FLAT; remain = 3; levelHold = 3; return; }
         SegMode pick = rollElementPick();
 
-        if (isHardInversion(pick)) {
-            float bt; invRFor(pick, bt);
-            if (bt > 0.0f && genV > bt + 3.0f) {
-                rememberElement(pick);
-                startTrim(pick, bt);
-                return;
-            }
-        }
         rememberElement(pick);
 
         switch (pick) {
@@ -651,22 +660,6 @@ struct Track {
         }
     }
 
-    void startTrimmedElem() {
-
-        if (fabsf(genPrevDy) > 0.18f * SEG_LEN) { mode = M_FLAT; remain = 3; levelHold = 3; return; }
-        SegMode elem = trimNext; trimNext = M_FLAT; trimV = 0;
-
-        switch (elem) {
-            case M_LOOP:     initLoop();     mode = M_LOOP; break;
-            case M_ROLL:     initRoll();     mode = M_ROLL; break;
-            case M_IMMEL:    initImmel();    break;
-            case M_DIVELOOP: initDiveLoop(); break;
-            case M_COBRA:    initCobra();    break;
-            case M_PRETZEL:  initPretzel();  break;
-            default:         initLoop();     mode = M_LOOP; break;
-        }
-    }
-
     void enterDrop(int n) {
         bool powered = (mode == M_LAUNCH || mode == M_BOOST || mode == M_CLIMB);
         mode   = powered ? M_DROP : M_FLAT;
@@ -675,8 +668,6 @@ struct Track {
 
     void nextMode() {
         float h = gpos.y - groundTopAt(gpos.x, gpos.z);
-
-        if (trimNext != M_FLAT) { startTrimmedElem(); return; }
 
         if (stationRamping) { stationRamping = false; startStation(); return; }
 
@@ -790,7 +781,9 @@ struct Track {
             float vCap = fmaxf(genV, 80.0f);
             // Must track initHelix()'s turnMagFor() budget (4.5) -- this is the live per-step
             // clamp on the same quantity, so the two have to agree or this silently overrides it.
-            float capK = (mode == M_HELIX) ? 4.5f : 5.5f;
+            // Non-helix budget trimmed 5.5->5.0: real (spline-measured) g runs ~1.15-1.2x
+            // this planar nominal (see initSCurve), so 5.5 nominal could still clear -6/+9.8.
+            float capK = (mode == M_HELIX) ? 4.5f : 5.0f;
             float dyawMax = capK * SEG_LEN * GRAV / (vCap * vCap);
             dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;
@@ -1251,8 +1244,6 @@ struct Track {
                 if      (tag == M_BOOST)                               genV += 112.0f * fmaxf(0.0f, 1.0f - genV / 89.0f) * gdt;
                 if (ch && slope > 0.05f) { float lv = (slope > 0.55f) ? 27.0f : CHAIN_V; if (genV < lv) genV = fminf(genV + 20.0f * gdt, lv); }
 
-                if (trimNext != M_FLAT && trimV > 0.0f && genV > trimV)
-                    genV = fmaxf(genV - 18.0f * gdt, trimV);
                 genV = fmaxf(genV, 20.0f); genV = fminf(genV, 135.0f);
             }
         }

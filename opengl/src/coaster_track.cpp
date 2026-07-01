@@ -581,6 +581,27 @@ struct Track {
     static bool isHardInversion(SegMode m) {
         return m == M_LOOP || m == M_ROLL || m == M_IMMEL || m == M_DIVELOOP || m == M_COBRA || m == M_PRETZEL || m == M_HEARTLINE;
     }
+    // Real rolls/dives sit at modest height (rarely much past ~50m even on record-sized
+    // coasters) -- height comes from hills/drops/launch towers, not from the trick
+    // elements themselves. Nothing else bounds how high gpos.y can drift (momentum from
+    // an earlier climb/drop can leave it elevated for a while), so without this a
+    // banana/stall/wingover/stengel can end up executing 100-200m in the air with no
+    // speed gate to naturally rule that out.
+    // isHardInversion() elements (LOOP/ROLL/IMMEL/DIVELOOP/COBRA/PRETZEL/HEARTLINE) are
+    // deliberately NOT listed here: they already have a speed gate (eligibleElem's
+    // invSpec branch below), and stacking an independent height gate on top very rarely
+    // has BOTH conditions true at once (measured: 0 inversions across 8 full --simtest
+    // rides when tried) -- their radius-from-speed sizing already keeps them realistic
+    // without needing a separate height cap.
+    static float maxTrickHeight(SegMode m) {
+        switch (m) {
+            case M_STALL:     return 48.0f;
+            case M_BANANA:    return 36.0f;
+            case M_WINGOVER:  return 46.0f;
+            case M_STENGEL:   return 40.0f;
+            default:          return -1.0f;   // not height-gated
+        }
+    }
     bool eligibleElem(SegMode m) const {
         // Per-element speed gate, derived from the SAME record-capped radius formula
         // invRAt uses to size the element: above this speed, even the max-record
@@ -596,6 +617,8 @@ struct Track {
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;
         }
+        float trickMax = maxTrickHeight(m);
+        if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
     }
 

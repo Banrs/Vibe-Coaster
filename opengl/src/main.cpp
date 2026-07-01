@@ -1209,8 +1209,8 @@ int main(int argc, char **argv) {
         const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
         const Vector3 WUP3 = {0,1,0};
 
-        float kMaxV[M_COUNT], kMinV[M_COUNT], kMaxL[M_COUNT];
-        for (int i=0;i<M_COUNT;i++){ kMaxV[i]=-1e9f; kMinV[i]=1e9f; kMaxL[i]=0; }
+        float kMaxV[M_COUNT], kMinV[M_COUNT], kMaxL[M_COUNT], kMaxClr[M_COUNT];
+        for (int i=0;i<M_COUNT;i++){ kMaxV[i]=-1e9f; kMinV[i]=1e9f; kMaxL[i]=0; kMaxClr[i]=-1e9f; }
         // In-game-accurate g: smooth-spline du-window curvature + the HUD's 6 Hz temporal
         // lowpass (exactly what the rider's g-meter shows). The coarse 3-point arrays above
         // read the raw control points, so they catch rail-joint kinks the smooth spline never
@@ -1301,6 +1301,7 @@ int main(int argc, char **argv) {
                 // hasn't been applied to them yet. In live play the track generates continuously, so
                 // every cp the car reaches HAS been floored -- those tail cps are an audit-only artifact.
                 if (k < n - 16 && clr < gMinClear) { gMinClear = clr; gMinClearK = (int)t.base + k; gMinClearSeed = sd; gMinClearLocalK = k; }
+                if (k < n - 16 && clr > kMaxClr[kd]) kMaxClr[kd] = clr;
                 totalPts++;
                 if (gV > kMaxV[kd]) kMaxV[kd] = gV;
                 if (gV < kMinV[kd]) kMinV[kd] = gV;
@@ -1315,11 +1316,11 @@ int main(int argc, char **argv) {
         printf("\n  MIN TRACK CLEARANCE above terrain = %+.1f m (at abs cp %ld) %s\n",
                gMinClear, gMinClearK, gMinClear < -2.0f ? " <-- UNDER THE MAP" : "");
         printf("  PER-ELEMENT FELT-G (across %d seeds, %d cps):\n", seeds, totalPts);
-        printf("  %-9s %8s %8s %8s\n", "element", "maxVert", "minVert", "maxLat");
+        printf("  %-9s %8s %8s %8s %9s\n", "element", "maxVert", "minVert", "maxLat", "maxClrM");
         for (int i = 0; i < M_COUNT; i++) {
             if (kMaxV[i] < -1e8f) continue;
             const char* flag = (kMaxV[i] > 9.8f || kMinV[i] < -6.0f || kMaxL[i] > 9.8f) ? "  <-- OVER" : "";
-            printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], kMaxV[i], kMinV[i], kMaxL[i], flag);
+            printf("  %-9s %+8.1f %+8.1f %8.1f %9.1f%s\n", NM[i], kMaxV[i], kMinV[i], kMaxL[i], kMaxClr[i], flag);
         }
         printf("\n  IN-GAME-ACCURATE FELT-G (HUD meter: smooth spline + 6 Hz lowpass, %d seeds):\n", seeds);
         printf("  %-9s %8s %8s %8s\n", "element", "maxVert", "minVert", "maxLat");

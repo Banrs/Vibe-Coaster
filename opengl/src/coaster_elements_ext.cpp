@@ -40,7 +40,24 @@
         sdBase = gpos;
         float v   = Clamp(genV, 40.0f, 95.0f);
 
-        float avail = sdBase.y - groundTopAt(sdBase.x, sdBase.z) - 14.0f;
+        // avail used to be bounded by the START point's terrain only -- STENGEL is a closed-form
+        // element (its whole path is fixed by sdDrop/sdH/sdSpan at init time, with zero per-step
+        // terrain feedback once it's underway, unlike the generic stepGeneric() modes), so a start
+        // point sitting well clear of the ground gave no guarantee the terrain stayed low across the
+        // ~112-364 m the dive travels forward, or across the lateral drift (up to ~L*0.22, the
+        // sdSpan sizing below) the banked path bows out to. Sample a corridor along the fixed
+        // heading (sdF) AND out to sdSide, over the longest/widest this element can possibly run,
+        // and fold that into avail too, so a rising slope anywhere under the actual curved path
+        // trims the dive depth before it's committed instead of the element diving through it.
+        float aheadMax = sdBase.y - 14.0f;
+        for (int la = 1; la <= 26; la++)
+            for (int ls = -1; ls <= 1; ls++) {
+                float latOff = ls * 0.22f * (la * SEG_LEN);   // matches sdSpan = L*0.22 at this reach
+                aheadMax = fminf(aheadMax, sdBase.y - groundTopAt(
+                    sdBase.x + sdF.x * SEG_LEN * la + sdSide.x * latOff,
+                    sdBase.z + sdF.z * SEG_LEN * la + sdSide.z * latOff) - 14.0f);
+            }
+        float avail = fminf(sdBase.y - groundTopAt(sdBase.x, sdBase.z) - 14.0f, aheadMax);
         sdDrop    = Clamp(0.55f * v, 30.0f, 55.0f);
         sdDrop    = fminf(sdDrop, fmaxf(avail, 10.0f));
 

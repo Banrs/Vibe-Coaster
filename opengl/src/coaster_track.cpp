@@ -364,6 +364,24 @@ struct Track {
         elems = 0; elemLimit = irnd(7, 11); chainMode = false; launchElem = pickLaunchExit();
         setClearance(10.0f, 36.0f);
         mode = M_LAUNCH; remain = irnd(7, 9);   // ~98-126 m launch (real-life LSM length); longer than boost -> reaches the ~310 cap before a top-hat
+        // M_LAUNCH rides dead flat (dy is always 0.0f in stepGeneric -- a real LSM launch track
+        // can't tilt), so unlike every other mode it has NO per-step terrain reaction at all once
+        // started. Unlike the dedicated station build (nextMode()'s stationPending branch), this
+        // path is taken straight from whatever element/mode was running when elemLimit hit (e.g.
+        // WINGOVER, TURN, HILLS...) with no corridor scan, so a launch beginning just before a
+        // terrain rise rode dead flat straight into the ground (seed59 cp357: launch started at
+        // y=159 while terrain over the corridor climbed to 190, clr -31). Scan the same forward
+        // corridor the launch is about to occupy and lift the start height above the tallest
+        // terrain in it -- mirrors the existing station corridor scan's margin/logic.
+        {
+            float cs = cosf(gyaw), sn = sinf(gyaw);
+            float maxG = groundTopAt(gpos.x, gpos.z);
+            float corridor = remain * SEG_LEN + 20.0f;
+            for (float lz = -14.0f; lz <= corridor; lz += 7.0f)
+                for (float lx = -6.0f; lx <= 6.0f; lx += 6.0f)
+                    maxG = fmaxf(maxG, groundTopAt(gpos.x + cs * lx + sn * lz, gpos.z - sn * lx + cs * lz));
+            gpos.y = fmaxf(gpos.y, maxG + 6.0f);
+        }
     }
 
     void startBoost() {
@@ -851,9 +869,24 @@ struct Track {
 
         float dy = 0;
         switch (mode) {
-            case M_FLAT:  dy = stationRamping ? (stationDeckY - gpos.y) * 0.45f
-                          : levelHold > 0     ? 0.0f
-                                              : ((gt + 9.0f) - gpos.y) * 0.50f; break;
+            case M_FLAT: {
+                if (stationRamping)      { dy = (stationDeckY - gpos.y) * 0.45f; break; }
+                if (levelHold > 0)       { dy = 0.0f; break; }
+                // Same forward-blindness bug as M_DIP's floor (see the lookahead added there):
+                // FLAT's target was only ever "current ground + 9", so a stretch of climbing
+                // terrain right after a valley (or right under a flat run) rode straight into
+                // rising ground before the proportional term ever caught up (seed135 cp93: FLAT
+                // rode into terrain climbing 76->192 over a handful of cps, clr -79.9). Fold a
+                // forward terrain sample into the target the same way; the 0.50 gain + downstream
+                // dlim/jlim curvature caps still own how FAST it may climb (comfort), this only
+                // fixes WHAT it climbs toward.
+                float gtLook = gt;
+                for (int la = 1; la <= 20; la++)
+                    gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                                       gpos.z + cosf(gyaw) * SEG_LEN * la));
+                dy = ((gtLook + 9.0f) - gpos.y) * 0.50f;
+                break;
+            }
             case M_TURN:  dy = ((gt + 13.0f) - gpos.y) * 0.40f; break;
             case M_HILLS: {
                 int   i  = hillLen - remain;
@@ -903,7 +936,24 @@ struct Track {
             case M_DIP: {
                 int   i  = dipLen - remain;
                 float t1 = (float)(i + 1) / dipLen;
-                float floorY = fmaxf(gt + 2.0f, WATER_Y + 1.0f);
+                // floorY used to be the CURRENT point's terrain only, with zero forward
+                // visibility -- the generic dive-arrest lookahead further below explicitly
+                // skips M_DIP (this is a dedicated element with its own floor formula), so a
+                // DIP sinking toward a valley bottom had no way to see terrain that climbs
+                // again before or shortly after the dip's exit, and rode its sinusoidal floor
+                // straight down into ground that was about to wall up in front of it (seed285
+                // cp374: a DIP dove to y~59 while terrain over the next ~10 cps climbed from
+                // 137 to 275, 213 m of negative clearance). Sample terrain over the remaining
+                // dip steps plus a buffer reaching into the mode right after DIP ends, and
+                // never target a floor lower than that peak: genuinely low ground still gets
+                // hugged, but the dip can no longer be lured into a valley that's about to
+                // close up ahead of it.
+                float gtLook = gt;
+                int   dipLookSteps = remain + 20;
+                for (int la = 1; la <= dipLookSteps; la++)
+                    gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                                       gpos.z + cosf(gyaw) * SEG_LEN * la));
+                float floorY = fmaxf(gtLook + 2.0f, WATER_Y + 1.0f);
                 float depth  = sinf(PI * t1);
                 dy = (dipEntryY * (1 - depth) + floorY * depth) - gpos.y;
                 break;
@@ -979,7 +1029,21 @@ struct Track {
             float sd  = gpos.y - 2.0f * p1.y + p0.y;
 
             float clamped = Clamp(sd, -7.0f * k, 9.0f * k);
-            gpos.y += (clamped - sd);
+            // This is a per-step vertical-g cap on the discrete 2nd difference of y (sd), oblivious
+            // to the ground: after the dive-arrest lookahead above correctly flattens dy toward 0 to
+            // avoid a rising/near terrain, the previous two committed points (p0/p1) still carry the
+            // steep dive's trend, so sd swings hard positive (an abrupt "deceleration" the cap doesn't
+            // like) and (clamped - sd) is a large NEGATIVE delta -- which drags gpos.y right back down
+            // to continue the old dive, undoing the arrest and diving the track straight into (or
+            // through) the ground it just tried to pull out of. Never let this g-force correction push
+            // gpos.y below a safe margin over the local terrain -- the dive-arrest lookahead already
+            // owns keeping the pull-out g-safe from the OTHER direction (dlim/maxSteep), so clamping
+            // the delta here to not cross the floor just stops this cap from re-introducing the exact
+            // underground dive the arrest exists to prevent.
+            float floorHere = groundTopAt(gpos.x, gpos.z) + 8.0f;
+            float delta = clamped - sd;
+            if (gpos.y + delta < floorHere) delta = fmaxf(floorHere - gpos.y, 0.0f);
+            gpos.y += delta;
         }
 
         Vector3 upv = WUP;

@@ -50,7 +50,7 @@ static float       BOOST_V   = 62.0f;
 // 0/8 rides). Lowering it lets the ride coast further before re-powering, giving genV real
 // chances to fall through the inversion gates naturally (confirmed via --gaudit: g-safety
 // unaffected, offender counts stay in the same pre-existing noise band as baseline).
-static float       BOOST_TRIG = 52.0f;
+static float       BOOST_TRIG = 48.0f;
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -2474,14 +2474,15 @@ int main(int argc, char **argv) {
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
-            // BANANA is excluded here on purpose: unlike the tight, self-contained loop-shaped
-            // elements below (whose top/bottom sit at nearly the same X/Z), a banana roll travels
-            // forward continuously across its whole length while doing one roll, so its inverted
-            // midpoint is tens of meters from every other point of the same element -- a straight-down
-            // support there can't clip through its own track, and skipping it left a large unsupported gap.
+            // BANANA and WINGOVER are deliberately NOT in this exclusion list: unlike the tight,
+            // self-contained loop-shaped elements below (whose top/bottom sit at nearly the same
+            // X/Z), both travel forward continuously across their whole length while banking/
+            // inverting, so the inverted midpoint is tens of meters from every other point of the
+            // same element -- a straight-down support there can't clip through its own track, and
+            // excluding them left a large unsupported gap during the tallest, most inverted part.
             if ((tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
                  tg == M_STALL || tg == M_DIVELOOP || tg == M_COBRA ||
-                 tg == M_HEARTLINE || tg == M_WINGOVER ||
+                 tg == M_HEARTLINE ||
                  tg == M_PRETZEL) && trk.up[i].y < 0.35f) continue;
             float ddx = p.x - P.x, ddz = p.z - P.z;
             float dist = sqrtf(ddx * ddx + ddz * ddz);

@@ -332,7 +332,7 @@ struct Track {
         mode = M_WINGOVER;
         setClearance(14.0f, 46.0f);
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag   = turnMagFor(3.0f, 0.05f, 0.18f);   // gentler heading rate -> lateral stays in envelope
+        turnMag   = turnMagFor(3.0f, 0.015f, 0.18f);   // gentler heading rate -> lateral stays in envelope; lo lowered, see initTurn/initHelix
         bankT     = frnd(0.60f, 0.84f);               // less bank -> smaller up-vector snap into the exit FLAT
         hillBumps = 1;
         hillH     = frnd(20.0f, 28.0f);               // gentler crest -> less vertical g projected to lateral during the roll

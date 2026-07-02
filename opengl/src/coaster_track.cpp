@@ -309,7 +309,15 @@ struct Track {
         float hF = rho * sinf(theta) + adv * t;
         float hS = rho * (1.0f - cosf(theta));
 
-        float fU = Hcr * 0.5f * (1.0f - cosf(2.0f * PI * t)) * (1.0f - 0.10f * 0.5f * (1.0f + cosf(4.0f * PI * t)));
+        // A real cobra roll is TWO half-loops connected by an S-shaped neck -- riders go over
+        // the top twice, not once. fU used to be one single hump with only a +-5% ripple on top
+        // of it -- geometrically one loop with a wobble, not a cobra, despite the name. beta/up
+        // below already assumed two full inversions (passes back through upright at t=0, 0.5,
+        // AND 1 -- a dead giveaway the banking was designed for a double-loop shape); only the
+        // vertical position was under-built to match. New profile: two genuine peaks (~1.06*Hcr)
+        // at t=0.25/0.75 with a real elevated saddle between them (~0.5*Hcr at t=0.5, not a
+        // return to ground level), both endpoints at 0.
+        float fU = Hcr * sinf(PI * t) * (1.0f - 0.5f * cosf(4.0f * PI * t));
         pos = { cbBase.x + cbF.x * hF + cbSide.x * hS,
                 cbBase.y + fU,
                 cbBase.z + cbF.z * hF + cbSide.z * hS };
@@ -336,7 +344,15 @@ struct Track {
         // real; this loop computes a REAL (non-planar) g directly from 3-pt curvature, so GCAP is
         // set straight to that target (was 6.5, closed the last small gap to it).
         const float GCAP = 6.7f;
-        const float CBR_MAX = 34.0f;
+        // Raised from 34: the double-loop fU above needs real room for each hump to develop
+        // gently -- at the old cap the convergence loop below couldn't reach GCAP at all for any
+        // realistic entry speed (it would just pin at 34 with real g still far over target, not
+        // converge). 55 is the point where it actually converges (settles below the cap on its
+        // own, e.g. cbR~54 at 40 m/s) rather than merely being clamped there -- verified safe at
+        // COBRA's own worst realistic entry (its eligibility gate, ~44.7 m/s): 6.24G, real margin
+        // under the 9.8 hard ceiling, plus another ~4 m/s of buffer past the gate before it climbs
+        // toward that ceiling.
+        const float CBR_MAX = 55.0f;
         cbR = fminf(cbR, CBR_MAX);
 
         float v = fmaxf(genV, 30.0f) * 1.12f;
@@ -360,7 +376,15 @@ struct Track {
                 cbUps.push_back(Vector3Normalize(Vector3Lerp(du[j], du[j+1], f)));
             }
 
-            float kmax = 0.0f;
+            // gMax used to come from the single highest curvature point times a CONSTANT speed
+            // (v, fixed for the whole shape) -- but real speed varies with height (energy
+            // conservation: slower climbing, faster descending), so a constant-speed estimate
+            // overstates g exactly at this shape's highest points, where real speed is actually
+            // lowest. That inflated "worst case" was driving cbR to grow far more than truly
+            // needed (confirmed via the standalone --cobratest tool, which had -- and fixed --
+            // the identical bug): use the LOCAL energy-conserving speed at each sampled point's
+            // own height instead of one constant v for the whole curve.
+            float gMax = 0.0f;
             int np = (int)cbPts.size();
             for (int k = 1; k < np - 2; k++) {
                 Vector3 p0 = cbPts[k-1], p1 = cbPts[k], p2 = cbPts[k+1], p3 = cbPts[k+2];
@@ -373,10 +397,11 @@ struct Track {
                     if (la < 1e-4f || lb < 1e-4f) continue;
                     float kk = Vector3Length(Vector3Subtract(Vector3Scale(b, 1.0f/lb),
                                                              Vector3Scale(a, 1.0f/la))) / (0.5f*(la+lb));
-                    if (kk > kmax) kmax = kk;
+                    float vLocal = sqrtf(fmaxf(v * v - 2.0f * GRAV * (c1.y - cbBase.y), 100.0f));
+                    float g = 1.0f + kk * vLocal * vLocal / GRAV;
+                    if (g > gMax) gMax = g;
                 }
             }
-            float gMax = 1.0f + v*v*kmax/GRAV;
             if (gMax <= GCAP || cbR >= CBR_MAX - 0.01f) break;
             float want = cbR * sqrtf((gMax - 1.0f) / (GCAP - 1.0f));
             cbR = fminf(want, CBR_MAX);

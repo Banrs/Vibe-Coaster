@@ -409,14 +409,20 @@ struct Track {
     struct InvSpec { float gT, rMin, rMaxRec, gMul, hMul; };
     static InvSpec invSpec(SegMode m) {
         switch (m) {
-            // Record-sized (NOT inflated): g is held down by braking the ENTRY speed, not by huge radii.
-            case M_LOOP:     return {3.7f, 24.0f, 22.0f, 1.6f, 2.6f};   // rMin raised (still <rMax 27.5): tops sit at ~36 m/s, a tight apex spikes +g
-            case M_IMMEL:    return {3.2f, 17.0f, 26.0f, 1.0f, 2.0f};
-            case M_DIVELOOP: return {2.6f, 18.0f, 28.0f, 1.0f, 2.0f};
-            case M_COBRA:    return {3.0f, 15.0f, 24.0f, 1.0f, 2.2f};
-            case M_PRETZEL:  return {3.6f, 20.0f, 26.0f, 1.0f, 2.0f};
-            case M_ROLL:     return {3.0f, 10.0f, 16.0f, 1.0f, 1.6f};   // brake entry so the corkscrew holds g at realistic size
-            case M_HEARTLINE:return {2.2f, 14.0f, 20.0f, 1.0f, 1.6f};   // brake entry to tame lateral g
+            // Record-sized (NOT inflated): g is held up near the physiological ceiling by raising
+            // the sizing TARGET (gT) itself, not by shrinking radii below record scale -- rMin is
+            // only raised where a higher gT would otherwise let the raw formula collapse the radius
+            // well below its old (usually rMax-clamped) typical size; rMaxRec/rMax are untouched.
+            // Tight vertical/near-vertical shapes (LOOP/COBRA/PRETZEL) can sustain the most g;
+            // combined turn+roll shapes (IMMEL/DIVELOOP) a bit less; lateral-dominant corkscrew/
+            // roll shapes (ROLL/HEARTLINE) least, matching how real coasters differentiate.
+            case M_LOOP:     return {5.6f, 24.0f, 22.0f, 1.6f, 2.6f};   // rMin unchanged: already near rMax(27.5), no collapse risk
+            case M_IMMEL:    return {5.0f, 24.0f, 26.0f, 1.0f, 2.0f};   // rMin raised 17->24: old gT always clamped to rMax(32.5); new gT would otherwise dip toward 17
+            case M_DIVELOOP: return {4.4f, 26.0f, 28.0f, 1.0f, 2.0f};   // kept most conservative of the two loop-family elements (LOOP smoothing-window regression history); rMin raised 18->26
+            case M_COBRA:    return {5.2f, 22.0f, 24.0f, 1.0f, 2.2f};   // rMin raised 15->22: old gT always clamped to rMax(30); prevents collapse toward 15
+            case M_PRETZEL:  return {5.4f, 24.0f, 26.0f, 1.0f, 2.0f};   // rMin raised 20->24: old gT always clamped to rMax(32.5); prevents collapse toward 20
+            case M_ROLL:     return {4.4f, 10.0f, 16.0f, 1.0f, 1.6f};   // rMin unchanged: stays rMax(20)-clamped at this gT (needs gT>5.0 to unclamp), so no collapse risk
+            case M_HEARTLINE:return {3.8f, 14.0f, 20.0f, 1.0f, 1.6f};   // rMin unchanged: stays rMax(25)-clamped at this gT (needs gT>4.2 to unclamp), so no collapse risk
             default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};
         }
     }

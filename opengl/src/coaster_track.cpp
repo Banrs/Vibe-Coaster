@@ -283,13 +283,13 @@ struct Track {
         cbSide  = Vector3Scale(Vector3Normalize(Vector3CrossProduct(WUP, cbF)), side);
         cbBase  = gpos;
 
-        // GCAP raised 5.5->6.5: COBRA is invRFor-independent in practice (this loop's own
-        // convergence dominates the invRFor(gT)-based starting radius regardless of gT -- see the
-        // invSpec() note above), so this constant is the actual sizing target. Duration-scaled:
-        // COBRA's own harness-measured typical exposure ~7.2-10.6 s (a long, sweeping cobra-roll)
-        // gives gMax(t) ~= 6+6/8.9 =~ 6.7 real; this loop computes a REAL (non-planar) g directly
-        // from 3-pt curvature, so GCAP is set straight to that target.
-        const float GCAP = 6.5f;
+        // COBRA is invRFor-independent in practice (this loop's own convergence dominates the
+        // invRFor(gT)-based starting radius regardless of gT -- see the invSpec() note above), so
+        // this constant is the actual sizing target. Duration-scaled: COBRA's own harness-measured
+        // typical exposure ~7.2-10.6 s (a long, sweeping cobra-roll) gives gMax(t) ~= 6+6/8.9 =~ 6.7
+        // real; this loop computes a REAL (non-planar) g directly from 3-pt curvature, so GCAP is
+        // set straight to that target (was 6.5, closed the last small gap to it).
+        const float GCAP = 6.7f;
         const float CBR_MAX = 34.0f;
         cbR = fminf(cbR, CBR_MAX);
 
@@ -447,33 +447,36 @@ struct Track {
             // eligibleElem() gates (36.5-48.3 m/s) AT OR BELOW BOOST_TRIG (48, off-limits to touch per
             // this task), so -- same honest limitation 23bc288 already documented -- they remain
             // structurally unreachable in natural generation regardless of gT; only LOOP (gate 54.2)
-            // is reliably reached, so it's left at its already-validated 5.6. The other 6 got a modest
-            // (not the full duration-model jump) further raise: harness testing AT the literal gate
-            // speed shows even the CURRENT (23bc288) sizing produces worst-case spikes over +9.8/-6 in
-            // rare seeds purely from the record-radius clamp meeting a hot entry (a pre-existing
-            // characteristic of "clamp to record radius as speed approaches the gate", present before
-            // this task too, and also true of the already-shipped, naturally-reachable LOOP at its own
-            // gate) -- so these 6 were nudged toward, not all the way to, their duration targets, to
-            // avoid compounding that existing edge behavior on elements that can't be cross-checked
-            // against the real natural --gaudit distribution the way LOOP can.
+            // is reliably reached, so it's left at its already-validated 5.6. The other 6 originally
+            // got only a modest (not the full duration-model) raise here, hedged because they can't be
+            // cross-checked against the real natural --gaudit distribution the way LOOP can (they sit
+            // at gates at/below BOOST_TRIG, so 0 natural occurrences -- a separate reachability issue,
+            // not a sizing one, still open). Per an explicit follow-up request to go all the way to the
+            // already-computed duration targets rather than stop short of them, IMMEL/PRETZEL now sit
+            // at the middle of their own target range and DIVELOOP halfway there (kept more conservative
+            // specifically because of the LOOP/DIVELOOP smoothing-window regression history noted
+            // above -- not extended the full 5.2-6.0 range). HEARTLINE/ROLL are lateral-dominant
+            // (continuous barrel-roll/corkscrew, not banked turns), and lateral/Gy human tolerance is
+            // physiologically lower than vertical/Gz, so they're deliberately NOT pushed to match --
+            // see their own init*() comments below, unchanged here.
             case M_LOOP:     return {5.6f, 24.0f, 22.0f, 1.6f, 2.6f};   // rMin unchanged: already near rMax(27.5), no collapse risk. Unchanged: already validated via real --gaudit (0 offenders, naturally reachable)
-            case M_IMMEL:    return {5.6f, 24.0f, 26.0f, 1.0f, 2.0f};   // rMin unchanged (still clamps to rMax(32.5) at this gT); duration target ~5.8-6.6 planar, nudged 5.0->5.6
-            case M_DIVELOOP: return {5.0f, 26.0f, 28.0f, 1.0f, 2.0f};   // kept most conservative of the two loop-family elements (LOOP smoothing-window regression history); duration target ~5.2-6.0, nudged 4.4->5.0 only
+            case M_IMMEL:    return {6.2f, 24.0f, 26.0f, 1.0f, 2.0f};   // rMin unchanged (still clamps to rMax(32.5) at this gT); duration target 5.8-6.6 planar -- now at its midpoint (was 5.6)
+            case M_DIVELOOP: return {5.4f, 26.0f, 28.0f, 1.0f, 2.0f};   // kept more conservative than the full 5.2-6.0 duration target (LOOP/DIVELOOP smoothing-window regression history); halfway there (was 5.0)
             // COBRA/ROLL/HEARTLINE's gT LEFT UNCHANGED here (not a typo/oversight): verified via
             // harness that gT is not actually their operative sizing lever --
-            //   COBRA: initCobra()'s own GCAP=5.5 iterative shrink loop converges cbR to ~GCAP
+            //   COBRA: initCobra()'s own GCAP iterative shrink loop converges cbR to ~GCAP
             //   regardless of the invRFor(gT)-based starting estimate (raising gT here measurably
             //   changed NOTHING in harness testing) -- COBRA's real duration-scaled lever is that
             //   GCAP constant, tuned directly below.
             //   ROLL: initRoll() never calls invRFor/invSpec at all -- rR is drawn from its own
-            //   hardcoded 7-12 m ranges, with a separate GCAP=6.0 loop that only GROWS radius as a
+            //   hardcoded 7-12 m ranges, with a separate GCAP loop that only GROWS radius as a
             //   safety net (never shrinks) -- gT here is dead code. Real levers (base rR range,
             //   GCAP) tuned directly in initRoll().
             //   HEARTLINE: initHeartline() never calls invRFor/invSpec either -- hlH (loop height,
             //   the actual g driver) comes from a fixed-vRef ballistic-parabola formula -- gT here
             //   is dead code too. Real lever (vRef) tuned directly in initHeartline().
             case M_COBRA:    return {5.2f, 22.0f, 24.0f, 1.0f, 2.2f};
-            case M_PRETZEL:  return {5.8f, 24.0f, 26.0f, 1.0f, 2.0f};   // duration target ~5.85-6.67 planar, nudged 5.4->5.8 -- PRETZEL DOES use invRFor directly with no override loop, verified this one has real effect
+            case M_PRETZEL:  return {6.2f, 24.0f, 26.0f, 1.0f, 2.0f};   // duration target 5.85-6.67 planar -- now at its midpoint (was 5.8); PRETZEL DOES use invRFor directly with no override loop, verified this one has real effect
             case M_ROLL:     return {4.4f, 10.0f, 16.0f, 1.0f, 1.6f};
             case M_HEARTLINE:return {3.8f, 14.0f, 20.0f, 1.0f, 1.6f};
             default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};

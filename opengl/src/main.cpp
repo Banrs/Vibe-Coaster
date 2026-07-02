@@ -2659,22 +2659,41 @@ int main(int argc, char **argv) {
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
+            bool tightShape = (tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
+                                tg == M_STALL || tg == M_DIVELOOP || tg == M_COBRA ||
+                                tg == M_HEARTLINE || tg == M_PRETZEL);
             // BANANA and WINGOVER are deliberately NOT in this exclusion list: unlike the tight,
             // self-contained loop-shaped elements below (whose top/bottom sit at nearly the same
             // X/Z), both travel forward continuously across their whole length while banking/
             // inverting, so the inverted midpoint is tens of meters from every other point of the
             // same element -- a straight-down support there can't clip through its own track, and
             // excluding them left a large unsupported gap during the tallest, most inverted part.
-            if ((tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
-                 tg == M_STALL || tg == M_DIVELOOP || tg == M_COBRA ||
-                 tg == M_HEARTLINE ||
-                 tg == M_PRETZEL) && trk.up[i].y < 0.35f) continue;
+            if (tightShape && trk.up[i].y < 0.35f) continue;
             float ddx = p.x - P.x, ddz = p.z - P.z;
             float dist = sqrtf(ddx * ddx + ddz * ddz);
             float fog = Clamp((dist - trackFog * 0.70f) / (trackFog * 0.27f), 0.0f, 1.0f);
             if (fog > 0.97f) continue;
             float g = groundTopAt(p.x, p.z);
             if (p.y - g < 1.5f) continue;
+            // The up.y check above only excludes the bottom of THIS point's own rotation phase --
+            // it doesn't stop a strut placed during the "upright" phase (up.y>=0.35) from clipping
+            // through the SAME loop/roll/etc.'s own track at a nearby point along its length that
+            // happens to pass through where the strut physically runs (straight down from p to the
+            // ground). Scan a local window (one full rotation of these elements is well under 48
+            // control points) and skip the support if another point of the same contiguous element
+            // sits close in XZ while between the ground and this point's height.
+            if (tightShape) {
+                bool blocked = false;
+                int wStart = (i - 48 > 0) ? i - 48 : 0;
+                int wEnd   = (i + 48 < (int)trk.cp.size() - 1) ? i + 48 : (int)trk.cp.size() - 1;
+                for (int j = wStart; j <= wEnd; j++) {
+                    if (j == i || trk.kind[j] != tg) continue;
+                    Vector3 q = trk.cp[j];
+                    float qdx = q.x - p.x, qdz = q.z - p.z;
+                    if (qdx*qdx + qdz*qdz < 9.0f && q.y > g + 1.0f && q.y < p.y - 1.0f) { blocked = true; break; }
+                }
+                if (blocked) continue;
+            }
             Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
             Vector3 lat = Vector3Normalize(Vector3CrossProduct(Vector3{ t.x, 0, t.z }, Vector3{ 0, 1, 0 }));
             Color sc = mixc(Color{ 118, 122, 130, 255 }, FOG, fog);

@@ -26,7 +26,7 @@
 
 static const float SEG_LEN   = 14.0f;
 static const float CELL      = 1.0f;
-static const int   TERRA_R   = 256;   // 16 chunks * 16 m/chunk (TERRAIN_BUCKET) render distance
+static const int   TERRA_R   = 320;   // 20 chunks * 16 m/chunk (TERRAIN_BUCKET) render distance
 
 static const float WATER_Y   = 30.0f;
 static const float BUILD_MAX  = 430.0f;

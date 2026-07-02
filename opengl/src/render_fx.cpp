@@ -221,14 +221,25 @@ static const char *SHADOW_FS =
     "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN/pcssTexelWorld2, PCSS_MIN_TEXELS, PCSS_MAX_TEXELS);\n"
     "  return pcfTap(shadowMap2, shadowTexel2, p, bias, radius);\n"
     "}\n"
-    // Select cascade by focus-XZ distance (matches the fog/culling convention
-    // used elsewhere in this shader), soft-blending across a band near each
-    // split so the cascade seam is never a visible hard line. Right at each
-    // band's inner/outer edge t is ~0 or ~1 and the far/near tap contributes
-    // negligibly -- skip it there so the common case (deep inside a cascade,
-    // or barely past a blend edge) never pays for a second full 12-tap PCF.
+    // Select cascade by full 3D distance from focus, not XZ-only: the ortho
+    // box each cascade's computeLightVP builds is centred on the TRAIN's
+    // actual 3D position (main.cpp calls computeLightVP(P), not a ground-
+    // projected point), so when the train is high up, ground fragments almost
+    // directly below it have a small XZ offset but a huge vertical one. XZ-only
+    // selection picked the small near cascade for those fragments purely
+    // because they're horizontally close, even though the vertical gap alone
+    // could exceed that cascade's half-extent -- the fragment then fails the
+    // light-space bounds check in shadowCascadeN (p.y out of [0,1]) and reads
+    // as fully lit, which is what showed up as the shadow going stale/dropping
+    // near max altitude. 3D distance correctly escalates to a bigger-radius
+    // cascade whenever any axis (including height) is large.
+    // Soft-blending across a band near each split keeps the cascade seam from
+    // ever being a visible hard line; right at each band's inner/outer edge t
+    // is ~0 or ~1 and the far/near tap contributes negligibly -- skip it there
+    // so the common case (deep inside a cascade, or barely past a blend edge)
+    // never pays for a second full 12-tap PCF.
     "float shadow(vec3 N){\n"
-    "  float d = length(shadowFocus.xz - fragWorld.xz);\n"
+    "  float d = length(shadowFocus - fragWorld);\n"
     "  float band0 = cascadeSplit0*0.85, band1 = cascadeSplit1*0.85;\n"
     "  if(d < band0) return shadowCascade0(N);\n"
     "  if(d < cascadeSplit0){\n"
@@ -484,10 +495,16 @@ static const char *DEPTH_FS =
 
 static const int SHADOW_CASCADES = 3;
 // Cascade half-extents (world m): near/mid/far. The terrain ring generates out
-// to TERRA_R=256 m around the camera (main.cpp, 16 chunks @ 16 m/chunk), so
-// the far cascade is sized to use nearly all of that footprint rather than
-// reaching past ground that will never exist.
-static const float SHADOW_CASCADE_R[SHADOW_CASCADES] = { 32.0f, 100.0f, 245.0f };
+// to TERRA_R=320 m around the camera (main.cpp, 20 chunks @ 16 m/chunk).
+// The far cascade is centred on the TRAIN's own 3D position (computeLightVP(P),
+// main.cpp), not projected to ground level, so its half-extent has to clear
+// the tallest elements' altitude (~250 m) as well as the horizontal footprint
+// or a fragment almost directly below a high train falls outside the ortho
+// box on its vertical axis and reads as unshadowed -- previously R=245 left
+// under 5 m of margin below that 250 m ceiling, which was visible as the
+// shadow going stale/dropping out near max height. 256 m (16 chunks) clears
+// it with real margin.
+static const float SHADOW_CASCADE_R[SHADOW_CASCADES] = { 32.0f, 100.0f, 256.0f };
 // Depth-pass draw-call cull radius per cascade: box half-diagonal (R*sqrt2)
 // plus a safety margin, mirroring the old single-map SHADOW_CULL_R pattern.
 static const float SHADOW_CASCADE_CULL_R[SHADOW_CASCADES] = {
@@ -500,7 +517,12 @@ struct ShadowSys {
     Shader lit{}, depth{};
     unsigned int fbo[SHADOW_CASCADES] = {0,0,0};
     unsigned int depthTex[SHADOW_CASCADES] = {0,0,0};
-    int SM[SHADOW_CASCADES] = { 2048, 1536, 1024 };   // near cascade keeps full res; far cascade doesn't need it
+    // All three cascades at full 2048 res: with the far cascade's radius now
+    // 8x the near one, keeping resolution uniform (rather than the old
+    // 2048/1536/1024 taper) is what "consistently high quality" means here --
+    // otherwise a bigger far R alone would make distant/high-altitude shadows
+    // visibly blurrier than before even though coverage improved.
+    int SM[SHADOW_CASCADES] = { 2048, 2048, 2048 };
     int locLightVP[SHADOW_CASCADES]   = {-1,-1,-1};
     int locShadowMap[SHADOW_CASCADES] = {-1,-1,-1};
     int locShadowTexel[SHADOW_CASCADES] = {-1,-1,-1};

@@ -1445,6 +1445,44 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    // Generic version of --cobratest/--divelooptest for the remaining closed-form elements
+    // (direct t-parametric evaluation at FIXED step count, no arc-length resampling): drives
+    // init/step exactly like real generation, reports per-point energy-conserving g the same way.
+    if (argc > 2 && TextIsEqual(argv[1], "--elemgtest")) {
+        g_rng = 1337u;
+        Track t; t.reset();
+        t.genV = (float)atof(argv[3]);
+        t.gpos = { 0, 200.0f, 0 };
+        t.gyaw = 0;
+        float y0 = t.gpos.y, v0 = t.genV;
+        const char *name = argv[2];
+        Vector3 (Track::*stepFn)() = nullptr;
+        if (TextIsEqual(name, "PRETZEL"))       { t.initPretzel();   stepFn = &Track::stepPretzel; }
+        else if (TextIsEqual(name, "HEARTLINE")) { t.initHeartline(); stepFn = &Track::stepHeartline; }
+        else if (TextIsEqual(name, "BANANA"))    { t.initBanana();    stepFn = &Track::stepBanana; }
+        else { printf("--elemgtest: unknown element '%s' (PRETZEL/HEARTLINE/BANANA)\n", name); return 1; }
+        int total = t.remain;
+        printf("[elemgtest] %s genV=%.1f steps=%d\n", name, t.genV, total);
+        std::vector<Vector3> pts;
+        for (int i = 0; i < total; i++) { (t.*stepFn)(); pts.push_back(t.gpos); }
+        float maxG = 0; int maxK = -1;
+        for (int k = 1; k < (int)pts.size() - 1; k++) {
+            Vector3 p0 = pts[k-1], p1 = pts[k], p2 = pts[k+1];
+            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
+            float la = Vector3Length(a), lb = Vector3Length(b);
+            float g = 0;
+            if (la > 1e-4f && lb > 1e-4f) {
+                Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
+                float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
+                g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
+            }
+            if (g > maxG) { maxG = g; maxK = k; }
+            printf("[elemgtest] pt%d pos=(%.2f,%.2f,%.2f) segLen=%.2f g=%.2f\n", k, p1.x, p1.y, p1.z, la, g);
+        }
+        printf("[elemgtest] maxCurvatureG=%.2f at pt%d\n", maxG, maxK);
+        return 0;
+    }
+
     if (argc > 1 && TextIsEqual(argv[1], "--gaudit")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 12;
         if (argc > 3) DRAG       = (float)atof(argv[3]);

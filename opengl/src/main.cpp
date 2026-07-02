@@ -1370,20 +1370,30 @@ int main(int argc, char **argv) {
         t.genV = (float)atof(argv[2]);
         t.gpos = { 0, 200.0f, 0 };
         t.gyaw = 0;
+        float y0 = t.gpos.y, v0 = t.genV;
         t.initCobra();
         printf("[cobratest] genV=%.1f cbR=%.2f cbSteps=%d points=%zu\n", t.genV, t.cbR, t.cbSteps, t.cbPts.size());
-        float maxG = 0, maxY = -1e9f, minY = 1e9f;
+        // g at each point uses the LOCAL speed from energy conservation (v(y) = sqrt(v0^2 -
+        // 2*g*(y-y0)), floored so a too-high climb doesn't go imaginary) rather than a constant
+        // genV -- the real ride slows down climbing and speeds up descending, and using a fixed
+        // speed everywhere overstates g exactly at the highest points (where real speed is
+        // lowest) and understates it at the lowest points. This was the actual bug in the first
+        // version of this tool and the reason the earlier COBRA redesign attempt looked far more
+        // dangerous than it may really be -- its "spike" landed right at peak height, precisely
+        // where a constant-speed estimate is most wrong.
+        float maxG = 0, maxY = -1e9f, minY = 1e9f; int maxK = -1;
         for (int k = 1; k < (int)t.cbPts.size() - 1; k++) {
             Vector3 p0 = t.cbPts[k-1], p1 = t.cbPts[k], p2 = t.cbPts[k+1];
             Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
             float la = Vector3Length(a), lb = Vector3Length(b);
             if (la < 1e-4f || lb < 1e-4f) continue;
             Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
-            float g = 1.0f + Vector3Length(kap) * t.genV * t.genV / GRAV;
-            if (g > maxG) maxG = g;
+            float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
+            float g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
+            if (g > maxG) { maxG = g; maxK = k; }
             maxY = fmaxf(maxY, p1.y); minY = fminf(minY, p1.y);
         }
-        printf("[cobratest] maxCurvatureG=%.2f  yRange=[%.2f,%.2f]  peakHeight=%.2f\n", maxG, minY, maxY, maxY - t.gpos.y);
+        printf("[cobratest] maxCurvatureG=%.2f at pt%d  yRange=[%.2f,%.2f]  peakHeight=%.2f\n", maxG, maxK, minY, maxY, maxY - t.gpos.y);
         for (int k = 1; k < (int)t.cbPts.size() - 1; k++) {
             Vector3 p0 = t.cbPts[k-1], p1 = t.cbPts[k], p2 = t.cbPts[k+1];
             Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
@@ -1391,10 +1401,47 @@ int main(int argc, char **argv) {
             float g = 0;
             if (la > 1e-4f && lb > 1e-4f) {
                 Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
-                g = 1.0f + Vector3Length(kap) * t.genV * t.genV / GRAV;
+                float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
+                g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
             }
             printf("[cobratest] pt%d y=%.2f g=%.2f\n", k, p1.y, g);
         }
+        return 0;
+    }
+
+    // Same idea as --cobratest but for DIVELOOP, which builds its path incrementally via
+    // repeated stepDiveLoop() calls (no precomputed point array to inspect directly like
+    // COBRA's cbPts) -- drive it the same way the real generator does and collect points here.
+    if (argc > 2 && TextIsEqual(argv[1], "--divelooptest")) {
+        g_rng = 1337u;
+        Track t; t.reset();
+        t.genV = (float)atof(argv[2]);
+        t.gpos = { 0, 200.0f, 0 };
+        t.gyaw = 0;
+        float y0 = t.gpos.y, v0 = t.genV;
+        t.initDiveLoop();
+        printf("[dltest] genV=%.1f dlR=%.2f dlLeadDrop=%.2f dlLeadSteps=%d dlsteps=%d dlturn=%.2f\n",
+               t.genV, t.dlR, t.dlLeadDrop, t.dlLeadSteps, t.dlsteps, t.dlturn);
+        std::vector<Vector3> pts;
+        int total = t.dlLeadSteps + t.dlsteps;
+        for (int i = 0; i < total; i++) { t.stepDiveLoop(); pts.push_back(t.gpos); }
+        // g uses the LOCAL energy-conserving speed at each point's height, not a constant genV
+        // -- see the long comment in --cobratest above (same fix, same reason).
+        float maxG = 0; int maxK = -1;
+        for (int k = 1; k < (int)pts.size() - 1; k++) {
+            Vector3 p0 = pts[k-1], p1 = pts[k], p2 = pts[k+1];
+            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
+            float la = Vector3Length(a), lb = Vector3Length(b);
+            float g = 0;
+            if (la > 1e-4f && lb > 1e-4f) {
+                Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
+                float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
+                g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
+            }
+            if (g > maxG) { maxG = g; maxK = k; }
+            printf("[dltest] pt%d pos=(%.2f,%.2f,%.2f) segLen=%.2f g=%.2f\n", k, p1.x, p1.y, p1.z, la, g);
+        }
+        printf("[dltest] maxCurvatureG=%.2f at pt%d\n", maxG, maxK);
         return 0;
     }
 

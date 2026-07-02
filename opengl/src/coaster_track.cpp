@@ -60,9 +60,11 @@ struct Track {
     int     stallLen = 9;
     float   stallDir = 1;
 
-    Vector3 dlf{}, dlside{}, dlcenter{};
+    Vector3 dlf{}, dlside{}, dlcenter{}, dlLeadStart{};
     float   dltheta = 0, dlR = 12, dlturn = 1.57f;
     int     dlsteps = 18;
+    int     dlLeadSteps = 0;
+    float   dlLeadDrop = 0;
 
     Vector3 cbF{}, cbSide{};
     Vector3 cbBase{};
@@ -246,13 +248,56 @@ struct Track {
     void initDiveLoop() {
         mode = M_DIVELOOP;
         setClearance(18.0f, 40.0f);
-        { dlR = invRFor(M_DIVELOOP); dlR *= frnd(0.85f, 1.0f); }
         dlf      = headingVec();
         dlside   = Vector3Normalize(Vector3CrossProduct(WUP, dlf));
-        dlcenter = { gpos.x, gpos.y + dlR, gpos.z };
+        dlLeadStart = gpos;
+
+        // Real dive loops start upright and PLUNGE DOWN before curving into the loop -- the
+        // loop itself used to begin immediately at gpos with zero lead-in, an entry identical to
+        // a plain LOOP's. A first attempt at a lead-in used a constant-angle straight dive (zero
+        // curvature -> zero g cost, the same principle STENGEL's straight run uses) -- but the
+        // loop's own bottom point has a LEVEL (horizontal) tangent, so ending the lead-in still
+        // pitched downward left a real, measured kink right at the handoff (confirmed via the
+        // --divelooptest tool: a ~23 degree direction jump concentrated in a couple of metres,
+        // reading as real curvature-g, not a numerical artefact). Fix: an S-curve (smoothstep)
+        // vertical profile that is LEVEL at both ends (zero slope entering AND leaving) with all
+        // the net drop happening in between -- matches whatever came before at the start and
+        // matches the loop's flat bottom at the end, so there's no discontinuity to spike on.
+        // Needed real resolution to converge (checked via --divelooptest at each step count):
+        // fewer steps left visible residual slope on the last discrete segment before the
+        // transition, spiking curvature there even though the underlying curve is smooth.
+        // 14 steps / 10m of drop is as far as this could be pushed while staying meaningfully
+        // under the 9.8 hard ceiling at DIVELOOP's own worst realistic entry (right at its
+        // eligibility gate, ~48 m/s) -- not as compact as a real dive loop's reputation, but
+        // safety took priority over matching that exactly.
+        dlLeadSteps = 14;
+        float wantDrop = 10.0f;   // total lead-in drop
+        auto smooth = [](float t) { return t * t * (3.0f - 2.0f * t); };
+        float maxTotalDrop = wantDrop;
+        for (int la = 1; la <= dlLeadSteps; la++) {
+            float t  = (float)la / (float)dlLeadSteps;
+            float gt = groundTopAt(gpos.x + dlf.x * SEG_LEN * la, gpos.z + dlf.z * SEG_LEN * la);
+            float budget = gpos.y - gt - 14.0f;
+            maxTotalDrop = fminf(maxTotalDrop, budget / fmaxf(smooth(t), 1e-3f));
+        }
+        dlLeadDrop = Clamp(maxTotalDrop, 0.0f, wantDrop);   // dlLeadDrop now holds the TOTAL drop
+
+        // The physics sim follows this drop like any other track height loss -- it genuinely
+        // speeds the train up before it reaches the loop (no entry braking anywhere in this
+        // codebase, by design). Sizing dlR from the PRE-dive genV would size the loop for a
+        // speed the train no longer has by the time it gets there. Estimate the post-dive speed
+        // from energy conservation (ignoring drag over this short a run slightly OVERESTIMATES
+        // the speed gain, erring toward a bigger, safer loop) and size the loop from THAT.
+        float vAfterDive = sqrtf(genV * genV + 2.0f * GRAV * dlLeadDrop);
+        { dlR = invRAt(M_DIVELOOP, vAfterDive); dlR *= frnd(0.85f, 1.0f); }
+
+        Vector3 leadEnd = { gpos.x + dlf.x * SEG_LEN * dlLeadSteps,
+                             gpos.y - dlLeadDrop,
+                             gpos.z + dlf.z * SEG_LEN * dlLeadSteps };
+        dlcenter = { leadEnd.x, leadEnd.y + dlR, leadEnd.z };
         dltheta  = 0; dlsteps = irnd(40, 46);
         dlturn   = (rnd01() < 0.5f ? 1.0f : -1.0f) * frnd(0.8f, 1.2f);
-        remain   = dlsteps;
+        remain   = dlLeadSteps + dlsteps;
     }
 
     void cobraSample(float t, Vector3 &pos, Vector3 &up) const {
@@ -1338,6 +1383,19 @@ struct Track {
     }
 
     Vector3 stepDiveLoop() {
+        if (remain > dlsteps) {
+            // S-curve (smoothstep) lead-in: level at both ends, all net drop in between -- see
+            // the long comment in initDiveLoop() for why (matches the loop's own level bottom
+            // tangent, so there's no kink at the handoff).
+            int   i = dlLeadSteps - (remain - dlsteps) + 1;
+            float t = (float)i / (float)dlLeadSteps;
+            float smooth = t * t * (3.0f - 2.0f * t);
+            gpos = { dlLeadStart.x + dlf.x * SEG_LEN * (float)i,
+                      dlLeadStart.y - dlLeadDrop * smooth,
+                      dlLeadStart.z + dlf.z * SEG_LEN * (float)i };
+            --remain;
+            return WUP;
+        }
         dltheta += (2.0f * PI) / dlsteps;
         float prog = dltheta / (2.0f * PI);
         float e = prog * prog * (3.0f - 2.0f * prog);

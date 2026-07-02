@@ -777,12 +777,46 @@ struct Track {
         return true;
     }
 
+    // Real coasters are mostly plain hills/turns/drops with occasional named "signature"
+    // inversions -- a Cobra Roll or Stengel Dive is a once-or-twice-a-ride event, not a
+    // recurring element on the same footing as an airtime hill. Without this, pickFromPool's
+    // only weighting was recency (age*age below), which treats every pool entry as equally
+    // likely in the long run regardless of how exotic it is -- LOOP/COBRA/PRETZEL would show
+    // up about as often as HILLS/TURN over a long ride. This is a multiplicative base weight,
+    // not a hard cap: a rare element's age*age term still grows unboundedly the longer it goes
+    // unused, so it always eventually gets its turn (matching a real designer using the
+    // signature piece once it's been "due" for a while) -- it just needs a much longer wait
+    // than a common element does, rather than showing up on the same cadence.
+    static float elemRarityWeight(SegMode m) {
+        switch (m) {
+            case M_HILLS:     return 6.0f;   // the single most common real coaster element (airtime hills)
+            case M_TURN:      return 5.0f;
+            case M_DIP:       return 4.0f;
+            case M_SCURVE:    return 4.0f;
+            case M_DIVE:      return 4.0f;
+            case M_WAVE:      return 3.0f;
+            case M_BANKAIR:   return 2.0f;
+            case M_WINGOVER:  return 1.5f;
+            case M_STALL:     return 1.5f;
+            case M_BANANA:    return 1.2f;
+            case M_LOOP:      return 1.0f;   // the most common NAMED inversion, but still just a handful per ride
+            case M_HELIX:     return 0.8f;   // usually a single finale element
+            case M_ROLL:      return 0.6f;
+            case M_IMMEL:     return 0.6f;
+            case M_HEARTLINE: return 0.5f;
+            case M_STENGEL:   return 0.5f;
+            case M_DIVELOOP:  return 0.5f;
+            case M_COBRA:     return 0.4f;   // real cobra rolls are a one-per-ride signature piece
+            case M_PRETZEL:   return 0.35f;
+            default:          return 1.0f;
+        }
+    }
     SegMode pickFromPool(const SegMode *pool, int n) const {
         SegMode valid[32]; float w[32]; int vc = 0; float wsum = 0;
         for (int i = 0; i < n && vc < 32; i++) {
             if (!eligibleElem(pool[i])) continue;
             float age = (float)(elemSeq - lastUsedAt[pool[i]]) + 1.0f;
-            valid[vc] = pool[i]; w[vc] = age * age; wsum += w[vc]; vc++;
+            valid[vc] = pool[i]; w[vc] = elemRarityWeight(pool[i]) * age * age; wsum += w[vc]; vc++;
         }
         if (vc == 0) {
             // Full eligibleElem() found nothing (variety constraint exhausted the pool) --

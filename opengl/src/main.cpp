@@ -1360,6 +1360,44 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    // Direct, no-rendering geometry test for closed-form elements that rarely/never occur in
+    // natural generation (COBRA chief among them) -- calls the exact same init*()/cobraSample()
+    // path real gameplay uses, including COBRA's own live radius/curvature convergence loop, so
+    // this is a faithful check without needing --gtest's much slower full-render path.
+    if (argc > 2 && TextIsEqual(argv[1], "--cobratest")) {
+        g_rng = 1337u;
+        Track t; t.reset();
+        t.genV = (float)atof(argv[2]);
+        t.gpos = { 0, 200.0f, 0 };
+        t.gyaw = 0;
+        t.initCobra();
+        printf("[cobratest] genV=%.1f cbR=%.2f cbSteps=%d points=%zu\n", t.genV, t.cbR, t.cbSteps, t.cbPts.size());
+        float maxG = 0, maxY = -1e9f, minY = 1e9f;
+        for (int k = 1; k < (int)t.cbPts.size() - 1; k++) {
+            Vector3 p0 = t.cbPts[k-1], p1 = t.cbPts[k], p2 = t.cbPts[k+1];
+            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
+            float la = Vector3Length(a), lb = Vector3Length(b);
+            if (la < 1e-4f || lb < 1e-4f) continue;
+            Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
+            float g = 1.0f + Vector3Length(kap) * t.genV * t.genV / GRAV;
+            if (g > maxG) maxG = g;
+            maxY = fmaxf(maxY, p1.y); minY = fminf(minY, p1.y);
+        }
+        printf("[cobratest] maxCurvatureG=%.2f  yRange=[%.2f,%.2f]  peakHeight=%.2f\n", maxG, minY, maxY, maxY - t.gpos.y);
+        for (int k = 1; k < (int)t.cbPts.size() - 1; k++) {
+            Vector3 p0 = t.cbPts[k-1], p1 = t.cbPts[k], p2 = t.cbPts[k+1];
+            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
+            float la = Vector3Length(a), lb = Vector3Length(b);
+            float g = 0;
+            if (la > 1e-4f && lb > 1e-4f) {
+                Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
+                g = 1.0f + Vector3Length(kap) * t.genV * t.genV / GRAV;
+            }
+            printf("[cobratest] pt%d y=%.2f g=%.2f\n", k, p1.y, g);
+        }
+        return 0;
+    }
+
     if (argc > 1 && TextIsEqual(argv[1], "--gaudit")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 12;
         if (argc > 3) DRAG       = (float)atof(argv[3]);

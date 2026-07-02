@@ -21,7 +21,13 @@ static const char *SHADOW_FS =
     "uniform vec3 sunCol; uniform vec3 skyCol; uniform vec3 groundCol;\n"
     "uniform float uTime;\n"
 
-    "uniform float fogEnd; uniform vec3 fogCol;\n"
+    // fogCol is a display-space (post-tonemap, gamma-encoded) target color, correct to
+    // mix in directly when legacyTonemap>0.5 (col is already display-space there too).
+    // fogColLinear is the SAME fog color stopped before the tonemap tail -- used when
+    // legacyTonemap<=0.5 (the main HDR path), where col is still linear at this point
+    // and mixing toward a display-space value would get double-processed by the
+    // composite pass's later tonemap (see computeFogColorLinear()'s comment in main.cpp).
+    "uniform float fogEnd; uniform vec3 fogCol; uniform vec3 fogColLinear;\n"
     // Anisotropic highlight for the running rails. railTangent is the rail's own
     // world-space tangent (its long axis), updated every sample as the track is
     // drawn -- cheap to set with a plain uniform since it only steers the
@@ -216,7 +222,8 @@ static const char *SHADOW_FS =
     "    if(fogEnd > 0.0){\n"
     "      float d = length(viewPos.xz - fragWorld.xz);\n"
     "      float fog = clamp((d - fogEnd*0.55)/(fogEnd*0.40), 0.0, 1.0);\n"
-    "      wcol = mix(wcol, fogCol, fog);\n"
+    "      vec3 fogTarget = legacyTonemap > 0.5 ? fogCol : fogColLinear;\n"
+    "      wcol = mix(wcol, fogTarget, fog);\n"
     "      wa = mix(wa, 0.0, fog);\n"
     "    }\n"
     "    finalColor = vec4(wcol, wa);\n"
@@ -297,7 +304,8 @@ static const char *SHADOW_FS =
     "  if(fogEnd > 0.0){\n"
     "    float d = length(viewPos.xz - fragWorld.xz);\n"
     "    float fog = clamp((d - fogEnd*0.55)/(fogEnd*0.40), 0.0, 1.0);\n"
-    "    col = mix(col, fogCol, fog);\n"
+    "    vec3 fogTarget = legacyTonemap > 0.5 ? fogCol : fogColLinear;\n"
+    "    col = mix(col, fogTarget, fog);\n"
     "  }\n"
     "  finalColor = vec4(col, tex.a*fragColor.a*colDiffuse.a);\n"
     "}\n";
@@ -336,7 +344,7 @@ struct ShadowSys {
     int locCascadeSplit0=-1, locCascadeSplit1=-1, locShadowFocus=-1;
     int locLightDir=-1, locViewPos=-1;
     int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1, locTime=-1;
-    int locFogEnd=-1, locFogCol=-1;
+    int locFogEnd=-1, locFogCol=-1, locFogColLinear=-1;
     int locRailTangent=-1, locRailUVRange=-1;
     int locLegacyTonemap=-1;
     Matrix lightVP[SHADOW_CASCADES]{};
@@ -367,6 +375,7 @@ struct ShadowSys {
         locTime        = GetShaderLocation(lit, "uTime");
         locFogEnd      = GetShaderLocation(lit, "fogEnd");
         locFogCol      = GetShaderLocation(lit, "fogCol");
+        locFogColLinear = GetShaderLocation(lit, "fogColLinear");
         locRailTangent = GetShaderLocation(lit, "railTangent");
         locRailUVRange = GetShaderLocation(lit, "railUVRange");
         locLegacyTonemap = GetShaderLocation(lit, "legacyTonemap");

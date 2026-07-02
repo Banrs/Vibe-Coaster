@@ -101,7 +101,21 @@ static Vector3 acesTonemapC(Vector3 c) {
 // It's solved so the CURRENT default g_sunDir reproduces {198,204,209}
 // exactly; other sun elevations shift warmer/darker or cooler/brighter from
 // there, tracking the sky instead of sitting fixed.
-static Color computeFogColor(Vector3 sunDir) {
+// Pre-tonemap linear sky-derived fog color (everything computeFogColor() below does,
+// minus the exposure/ACES/gamma/calibration tail) -- exposed separately because the
+// PostFX-era SHADOW_FS mixes fog into scene color in TWO different spaces depending on
+// legacyTonemap: the legacy overlay paths mix into already-tonemapped/gamma-encoded
+// color (display space, matches computeFogColor()'s FOG), but the main HDR path mixes
+// BEFORE the composite pass's tonemap, i.e. into still-linear color -- mixing linear
+// scene color against a display-space FOG there double-processes fog through ACES+gamma
+// a second time when the composite pass runs, measurably shifting it brighter/flatter
+// than intended (checked: {198,204,209} would land around {221,222,223} on screen,
+// reintroducing a mild version of the "flat wall at the render-distance frontier" bug
+// this whole feature exists to prevent). FOG_LINEAR is this function's un-tonemapped
+// output, uploaded as a second uniform (fogColLinear) and used for the main path's mix
+// instead, so it only goes through ACES+gamma once, in the composite pass, same as
+// everything else in that path.
+static Vector3 computeFogColorLinear(Vector3 sunDir) {
     float sunLift = smoothstepf(-0.12f, 0.55f, sunDir.y);
 
     const float dirY    = 0.0f; // representative "looking at the horizon" elevation
@@ -127,8 +141,11 @@ static Color computeFogColor(Vector3 sunDir) {
 
     float rayleigh = 0.55f + 0.45f * mu * mu;
     col = Vector3Scale(col, rayleigh);
+    return col;
+}
 
-    col = Vector3Scale(col, 0.94f); // same pre-tonemap exposure as PostFX's composite pass
+static Color computeFogColor(Vector3 sunDir) {
+    Vector3 col = Vector3Scale(computeFogColorLinear(sunDir), 0.94f); // same pre-tonemap exposure as PostFX's composite pass
     col = acesTonemapC(col);
     col = { powf(col.x, 1.0f / 2.2f), powf(col.y, 1.0f / 2.2f), powf(col.z, 1.0f / 2.2f) };
 
@@ -150,6 +167,7 @@ static Color computeFogColor(Vector3 sunDir) {
 // recomputed once per frame instead *and* that update must be made safe
 // against TerrainMesh's worker thread, which also reads FOG concurrently.
 static Color FOG    = {198, 204, 209, 255};
+static Vector3 FOG_LINEAR = { 0.687f, 0.735f, 0.831f };   // overwritten alongside FOG, see above
 static const Color GRASS  = {130, 206, 102, 255};
 static const Color SAND   = {242, 228, 184, 255};
 static const Color DIRT   = {158, 116,  82, 255};
@@ -1609,7 +1627,10 @@ int main(int argc, char **argv) {
     // Derive fog from the sky's own gradient at the now-final sun direction
     // (see computeFogColor() above) -- must happen before anything reads FOG,
     // including the TerrainMesh background worker thread kicked off below.
+    // FOG_LINEAR is the same derivation stopped before the tonemap tail, for the
+    // main HDR render path's fog mix (see computeFogColorLinear()'s comment).
     FOG = computeFogColor(g_sunDir);
+    FOG_LINEAR = computeFogColorLinear(g_sunDir);
     gShadow.init();
     gSky.init();
     gPostFX.init(GetRenderWidth(), GetRenderHeight());
@@ -2517,8 +2538,10 @@ int main(int argc, char **argv) {
             if (!depthPass) {
                 float fe = fogEnd;
                 float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
+                float fcl[3] = { FOG_LINEAR.x, FOG_LINEAR.y, FOG_LINEAR.z };
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
+                SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
             }
             // Cull terrain chunks before submitting them. The full TERRA_R ring is always
             // generated together every rebuild (see TerrainMesh::finish) -- this only skips
@@ -2995,8 +3018,10 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locTime, &wt, SHADER_UNIFORM_FLOAT);
             float fe = fogEnd;
             float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
+            float fcl[3] = { FOG_LINEAR.x, FOG_LINEAR.y, FOG_LINEAR.z };
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
             SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
+            SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
 
             BeginShaderMode(gShadow.lit);
             bindShadowTextures();

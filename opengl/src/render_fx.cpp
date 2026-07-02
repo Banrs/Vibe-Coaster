@@ -656,11 +656,126 @@ static const char *BLUR_FS =
     "  finalColor = vec4(max(c, 0.0), 1.0);\n"
     "}\n";
 
+// ---------------------------------------------------------------------------
+// SSAO (screen-space ambient occlusion), depth-only (no normal G-buffer).
+//
+// sceneRT has a real camera-space depth attachment but SHADOW_FS/SKY_FS only
+// ever write color -- adding a second MRT output (view/world-space normals)
+// would mean touching both fragment shaders' `out` lists and wiring up a
+// second color attachment on sceneRT, which is more invasive than this
+// effect's subtle payoff justifies in this blocky/flat-shaded art style. So
+// AO here is reconstructed entirely from depth: view-space position comes
+// from un-projecting the depth buffer with the camera's known fovy/aspect
+// (the same tanHalfFovY/aspect the sky shader already derives from cam.fovy),
+// and a per-pixel normal is *estimated* from the local screen-space slope of
+// that reconstructed position (finite differences between neighboring
+// samples, picking whichever side of each axis has the smaller depth jump so
+// silhouette edges don't poison the estimate) -- a well-worn trick for
+// depth-only SSAO when no normal buffer exists.
+//
+// Renders at the same low resolution bloom's bright-pass already uses
+// (bloomW x bloomH, 1/16th the pixels) since 6 taps of contact AO don't need
+// full-res precision in this art style, then a 3x3 depth-weighted (bilateral)
+// blur pass hides the sample-count noise without smearing AO across depth
+// discontinuities (object silhouettes).
+static const float AO_RADIUS   = 1.0f;   // world metres -- roughly one voxel, tuned for contact/crevice occlusion (support-to-track joints, canopy interiors) not broad shading
+static const float AO_BIAS     = 0.06f;  // world metres -- clears self-occlusion acne from the coarse normal estimate
+static const float AO_STRENGTH = 0.30f;  // max darkening applied at full occlusion, further gated by brightness in the composite pass -- a hint, not an overpowering effect
+// Mirrors raylib's default projection clip planes (RL_CULL_DISTANCE_NEAR/FAR
+// in rlgl.h) -- main.cpp never calls rlSetClipPlanes to override these, so
+// the depth buffer's non-linear encoding is always relative to exactly these
+// two values.
+static const float AO_CAM_NEAR = 0.01f;
+static const float AO_CAM_FAR  = 1000.0f;
+
+static const char *AO_FS =
+    "#version 330\n"
+    "in vec2 uv; out vec4 finalColor;\n"
+    "uniform sampler2D depthTex;\n"
+    "uniform float camNear, camFar;\n"
+    "uniform float tanHalfFovY, aspect;\n"
+    "uniform float aoRadius, aoBias;\n"
+    "uniform vec2 nTexel;\n"
+    "float linZ(float d){ float z=d*2.0-1.0; return (2.0*camNear*camFar)/(camFar+camNear-z*(camFar-camNear)); }\n"
+    "vec3 viewPosAt(vec2 duv){\n"
+    "  float vz = linZ(texture(depthTex, duv).r);\n"
+    "  vec2 ndc = duv*2.0-1.0;\n"
+    "  return vec3(ndc.x*tanHalfFovY*aspect*vz, ndc.y*tanHalfFovY*vz, -vz);\n"
+    "}\n"
+    "vec2 projectToUV(vec3 p){\n"
+    "  float invz = 1.0/max(-p.z, 1e-4);\n"
+    "  vec2 ndc = vec2(p.x*invz/(tanHalfFovY*aspect), p.y*invz/tanHalfFovY);\n"
+    "  return ndc*0.5+0.5;\n"
+    "}\n"
+    "float hashN(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233)))*43758.5453); }\n"
+    // Fixed hemisphere-ish kernel (tangent space, z>0 biased) -- 6 taps,
+    // varying direction/radius so the pattern doesn't look uniform once
+    // oriented by the per-pixel random rotation below.
+    "const vec3 KERNEL[6] = vec3[6](\n"
+    "  vec3( 0.35, 0.15, 0.35), vec3(-0.30, 0.30, 0.45),\n"
+    "  vec3( 0.12,-0.40, 0.55), vec3(-0.42,-0.12, 0.62),\n"
+    "  vec3( 0.18, 0.46, 0.78), vec3(-0.22,-0.32, 0.90));\n"
+    "void main(){\n"
+    "  vec2 duv = vec2(uv.x, 1.0-uv.y);\n"
+    "  float rawD = texture(depthTex, duv).r;\n"
+    "  if(rawD >= 0.99999){ finalColor = vec4(1.0); return; }\n"
+    "  vec3 P0 = viewPosAt(duv);\n"
+    "  vec3 Px1 = viewPosAt(duv+vec2(nTexel.x,0.0)), Px2 = viewPosAt(duv-vec2(nTexel.x,0.0));\n"
+    "  vec3 Py1 = viewPosAt(duv+vec2(0.0,nTexel.y)), Py2 = viewPosAt(duv-vec2(0.0,nTexel.y));\n"
+    "  vec3 dx = (abs(Px1.z-P0.z) < abs(P0.z-Px2.z)) ? (Px1-P0) : (P0-Px2);\n"
+    "  vec3 dy = (abs(Py1.z-P0.z) < abs(P0.z-Py2.z)) ? (Py1-P0) : (P0-Py2);\n"
+    "  vec3 N = normalize(cross(dy, dx));\n"
+    "  if(dot(N, -P0) < 0.0) N = -N;\n"
+    "  float ang = hashN(gl_FragCoord.xy)*6.2831853;\n"
+    "  vec3 rvec = vec3(cos(ang), sin(ang), 0.0);\n"
+    "  vec3 T = normalize(rvec - N*dot(rvec,N));\n"
+    "  vec3 B = cross(N,T);\n"
+    "  mat3 TBN = mat3(T,B,N);\n"
+    "  float occlusion = 0.0;\n"
+    "  for(int i=0;i<6;i++){\n"
+    "    vec3 sp = P0 + TBN*KERNEL[i]*aoRadius;\n"
+    "    vec2 suv = projectToUV(sp);\n"
+    "    float sceneVZ = linZ(texture(depthTex, suv).r);\n"
+    "    float sampleVZ = -sp.z;\n"
+    "    float rangeCheck = smoothstep(0.0, 1.0, aoRadius/max(abs(-P0.z - sceneVZ), 1e-4));\n"
+    "    occlusion += (sceneVZ <= sampleVZ - aoBias) ? rangeCheck : 0.0;\n"
+    "  }\n"
+    "  float ao = 1.0 - clamp(occlusion/6.0, 0.0, 1.0);\n"
+    "  finalColor = vec4(ao,ao,ao,1.0);\n"
+    "}\n";
+
+// Depth-weighted (bilateral) 3x3 box blur: hides the 6-tap kernel's noise
+// without smearing AO across depth discontinuities the way a naive blur
+// would (which reads as a halo around object silhouettes -- trees/track
+// against open sky, most noticeably).
+static const char *AOBLUR_FS =
+    "#version 330\n"
+    "in vec2 uv; out vec4 finalColor;\n"
+    "uniform sampler2D aoTex; uniform sampler2D depthTex;\n"
+    "uniform vec2 texelStep; uniform float camNear, camFar;\n"
+    "float linZ(float d){ float z=d*2.0-1.0; return (2.0*camNear*camFar)/(camFar+camNear-z*(camFar-camNear)); }\n"
+    "void main(){\n"
+    "  vec2 suv = vec2(uv.x, 1.0-uv.y);\n"
+    "  float d0 = linZ(texture(depthTex, suv).r);\n"
+    "  float asum = 0.0, wsum = 0.0;\n"
+    "  for(int y=-1;y<=1;y++){\n"
+    "    for(int x=-1;x<=1;x++){\n"
+    "      vec2 tuv = suv + vec2(float(x),float(y))*texelStep;\n"
+    "      float d = linZ(texture(depthTex, tuv).r);\n"
+    "      float a = texture(aoTex, tuv).r;\n"
+    "      float w = exp(-abs(d-d0)*0.35);\n"
+    "      asum += a*w; wsum += w;\n"
+    "    }\n"
+    "  }\n"
+    "  float ao = asum/max(wsum,1e-4);\n"
+    "  finalColor = vec4(ao,ao,ao,1.0);\n"
+    "}\n";
+
 static const char *COMPOSITE_FS =
     "#version 330\n"
     "in vec2 uv; out vec4 finalColor;\n"
-    "uniform sampler2D sceneTex; uniform sampler2D bloomTex;\n"
-    "uniform float uBloomIntensity, uVignette, uCA, uGrain, uTime;\n"
+    "uniform sampler2D sceneTex; uniform sampler2D bloomTex; uniform sampler2D aoTex;\n"
+    "uniform float uBloomIntensity, uVignette, uCA, uGrain, uTime, uAOStrength;\n"
     // Same aces() curve/constants as the old inline copies (SHADOW_FS's
     // opaque+water branches used *0.94 before this curve; that's the constant
     // kept here -- SKY_FS used a slightly different *1.08 pre-scale, now
@@ -682,6 +797,21 @@ static const char *COMPOSITE_FS =
     "  col.r = texture(sceneTex, uvR).r;\n"
     "  col.g = texture(sceneTex, uvG).g;\n"
     "  col.b = texture(sceneTex, uvB).b;\n"
+    // SSAO: multiply the low-res (bilinearly-upsampled, free via GL sampling)
+    // AO term into the scene color BEFORE bloom is added, so bloom highlights
+    // (already isolated to near-saturated pixels only) never get dimmed by a
+    // contact-shadow term meant for creases, not direct sunlit highlights.
+    // brightGate further restricts the darkening to color that isn't already
+    // near the top of the display range -- there is no separate ambient/
+    // direct buffer in this single-pass-forward pipeline to multiply AO into
+    // exclusively, so this luma gate is the practical stand-in: it keeps
+    // AO's effect concentrated in the dim/ambient-dominated regions (crevices,
+    // undersides, shadowed contact points) it's meant to darken, and fades it
+    // out on bright directly-lit surfaces.
+    "  float aoV = texture(aoTex, uvG).r;\n"
+    "  float sceneLum = max(max(col.r,col.g),col.b);\n"
+    "  float brightGate = 1.0 - smoothstep(1.0, 2.6, sceneLum);\n"
+    "  col *= mix(1.0, aoV, uAOStrength*brightGate);\n"
     // Bloom add (bloomTex is the small blurred bright-pass buffer; GL's own
     // bilinear filtering upsamples it back to full res for free here).
     "  vec3 bloomCol = texture(bloomTex, uvG).rgb;\n"
@@ -705,13 +835,18 @@ static const char *COMPOSITE_FS =
 
 struct PostFX {
     Shader brightpass{}, blur{}, composite{};
+    Shader aoGen{}, aoBlur{};
     int locBP_Res=-1, locBP_SrcTexel=-1, locBP_Thresh=-1, locBP_SceneTex=-1;
     int locBL_Res=-1, locBL_TexelStep=-1, locBL_SrcTex=-1;
     int locCP_Res=-1, locCP_BloomI=-1, locCP_Vignette=-1, locCP_CA=-1, locCP_Grain=-1, locCP_Time=-1;
-    int locCP_SceneTex=-1, locCP_BloomTex=-1;
+    int locCP_SceneTex=-1, locCP_BloomTex=-1, locCP_AoTex=-1, locCP_AoStrength=-1;
+    int locAO_DepthTex=-1, locAO_Near=-1, locAO_Far=-1, locAO_Tan=-1, locAO_Aspect=-1;
+    int locAO_Radius=-1, locAO_Bias=-1, locAO_NTexel=-1;
+    int locAOB_AoTex=-1, locAOB_DepthTex=-1, locAOB_TexelStep=-1, locAOB_Near=-1, locAOB_Far=-1;
 
     RenderTexture2D sceneRT{};
     RenderTexture2D bloomRT[2]{};
+    RenderTexture2D aoRT[2]{};
     int sceneW=0, sceneH=0, bloomW=0, bloomH=0;
 
     // Mirrors pathtrace.cpp's gPT.accum/gPT.rtBuf low-level pattern (manual
@@ -752,10 +887,17 @@ struct PostFX {
         makeColorTarget(sceneRT,    sceneW, sceneH, true);
         makeColorTarget(bloomRT[0], bloomW, bloomH, false);
         makeColorTarget(bloomRT[1], bloomW, bloomH, false);
+        // AO renders/blurs at the same low resolution as bloom (see AO_FS's
+        // comment above) -- reusing bloomW/bloomH keeps this cheap and needs
+        // no extra tuning knob.
+        makeColorTarget(aoRT[0], bloomW, bloomH, false);
+        makeColorTarget(aoRT[1], bloomW, bloomH, false);
 
         brightpass = LoadShaderFromMemory(POST_VS, BRIGHTPASS_FS);
         blur       = LoadShaderFromMemory(POST_VS, BLUR_FS);
         composite  = LoadShaderFromMemory(POST_VS, COMPOSITE_FS);
+        aoGen      = LoadShaderFromMemory(POST_VS, AO_FS);
+        aoBlur     = LoadShaderFromMemory(POST_VS, AOBLUR_FS);
 
         locBP_Res      = GetShaderLocation(brightpass, "resolution");
         locBP_SrcTexel = GetShaderLocation(brightpass, "srcTexel");
@@ -774,15 +916,42 @@ struct PostFX {
         locCP_Time     = GetShaderLocation(composite, "uTime");
         locCP_SceneTex = GetShaderLocation(composite, "sceneTex");
         locCP_BloomTex = GetShaderLocation(composite, "bloomTex");
+        locCP_AoTex      = GetShaderLocation(composite, "aoTex");
+        locCP_AoStrength = GetShaderLocation(composite, "uAOStrength");
+
+        locAO_DepthTex = GetShaderLocation(aoGen, "depthTex");
+        locAO_Near     = GetShaderLocation(aoGen, "camNear");
+        locAO_Far      = GetShaderLocation(aoGen, "camFar");
+        locAO_Tan      = GetShaderLocation(aoGen, "tanHalfFovY");
+        locAO_Aspect   = GetShaderLocation(aoGen, "aspect");
+        locAO_Radius   = GetShaderLocation(aoGen, "aoRadius");
+        locAO_Bias     = GetShaderLocation(aoGen, "aoBias");
+        locAO_NTexel   = GetShaderLocation(aoGen, "nTexel");
+
+        locAOB_AoTex     = GetShaderLocation(aoBlur, "aoTex");
+        locAOB_DepthTex  = GetShaderLocation(aoBlur, "depthTex");
+        locAOB_TexelStep = GetShaderLocation(aoBlur, "texelStep");
+        locAOB_Near      = GetShaderLocation(aoBlur, "camNear");
+        locAOB_Far       = GetShaderLocation(aoBlur, "camFar");
 
         float thr = BLOOM_THRESHOLD;
         SetShaderValue(brightpass, locBP_Thresh, &thr, SHADER_UNIFORM_FLOAT);
         float bloomI = BLOOM_INTENSITY, vig = VIGNETTE_STRENGTH,
-              ca = CHROMATIC_ABERRATION_STRENGTH, gr = FILM_GRAIN_STRENGTH;
+              ca = CHROMATIC_ABERRATION_STRENGTH, gr = FILM_GRAIN_STRENGTH,
+              aoStr = AO_STRENGTH;
         SetShaderValue(composite, locCP_BloomI,   &bloomI, SHADER_UNIFORM_FLOAT);
         SetShaderValue(composite, locCP_Vignette, &vig,    SHADER_UNIFORM_FLOAT);
         SetShaderValue(composite, locCP_CA,       &ca,     SHADER_UNIFORM_FLOAT);
         SetShaderValue(composite, locCP_Grain,    &gr,     SHADER_UNIFORM_FLOAT);
+        SetShaderValue(composite, locCP_AoStrength, &aoStr, SHADER_UNIFORM_FLOAT);
+
+        float aoNear = AO_CAM_NEAR, aoFar = AO_CAM_FAR, aoRad = AO_RADIUS, aoBiasV = AO_BIAS;
+        SetShaderValue(aoGen, locAO_Near,   &aoNear, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(aoGen, locAO_Far,    &aoFar,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(aoGen, locAO_Radius, &aoRad,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(aoGen, locAO_Bias,   &aoBiasV, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(aoBlur, locAOB_Near, &aoNear, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(aoBlur, locAOB_Far,  &aoFar,  SHADER_UNIFORM_FLOAT);
     }
 
     // Sky + opaque + water all render between these two, into sceneRT instead
@@ -794,9 +963,16 @@ struct PostFX {
     // fullscreen composite pass, written to whatever framebuffer is currently
     // bound (the default backbuffer, from the main render loop) -- must run
     // before any HUD drawing so HUD text/icons never pick up bloom/vignette/
-    // CA/grain.
-    void resolve(int rw, int rh, float time) {
-        static const int SCENE_UNIT = 15, BLOOM_UNIT = 16;
+    // CA/grain/AO. tanHalfFovY/aspect mirror what main.cpp already derives
+    // from cam.fovy for the sky shader -- SSAO needs the same values to
+    // reconstruct view-space position from sceneRT's depth texture.
+    void resolve(int rw, int rh, float time, float tanHalfFovY, float aspect) {
+        // DEPTH_UNIT/AO_UNIT picked distinct from every other texture unit already
+        // in use across this frame (shadow cascades 10/13/14, RT_SHADOW_UNIT=12 and
+        // RT_DEPTH_UNIT=11 in the separate liveRT path, SCENE_UNIT/BLOOM_UNIT below)
+        // so there's no ambiguity even though the liveRT ones are never live at the
+        // same time as this (offline) resolve() path.
+        static const int SCENE_UNIT = 15, BLOOM_UNIT = 16, DEPTH_UNIT = 18, AO_UNIT = 19;
         rlDrawRenderBatchActive();
 
         // ---- bright-pass extract: full-res scene -> low-res bloomRT[0] ----
@@ -837,6 +1013,43 @@ struct PostFX {
         blurPass(bloomRT[1], bloomRT[0], 0.0f, 1.0f);
         // Final blurred bloom now sits in bloomRT[0].
 
+        // ---- SSAO: generate at low-res from sceneRT's depth, then a 3x3
+        // depth-weighted blur pass to denoise (see AO_FS/AOBLUR_FS above) ----
+        BeginTextureMode(aoRT[0]);
+            rlDisableDepthTest(); rlDisableDepthMask();
+            float nTexel[2] = { 1.0f / bloomW, 1.0f / bloomH };
+            SetShaderValue(aoGen, locAO_Tan, &tanHalfFovY, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(aoGen, locAO_Aspect, &aspect, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(aoGen, locAO_NTexel, nTexel, SHADER_UNIFORM_VEC2);
+            BeginShaderMode(aoGen);
+                SetShaderValue(aoGen, locAO_DepthTex, &DEPTH_UNIT, SHADER_UNIFORM_INT);
+                rlActiveTextureSlot(DEPTH_UNIT); rlEnableTexture(sceneRT.depth.id);
+                rlActiveTextureSlot(0);
+                DrawRectangle(0, 0, bloomW, bloomH, WHITE);
+                rlDrawRenderBatchActive();
+                rlActiveTextureSlot(DEPTH_UNIT); rlDisableTexture(); rlActiveTextureSlot(0);
+            EndShaderMode();
+        EndTextureMode();
+
+        BeginTextureMode(aoRT[1]);
+            rlDisableDepthTest(); rlDisableDepthMask();
+            float aoBlurStep[2] = { 1.0f / bloomW, 1.0f / bloomH };
+            SetShaderValue(aoBlur, locAOB_TexelStep, aoBlurStep, SHADER_UNIFORM_VEC2);
+            BeginShaderMode(aoBlur);
+                SetShaderValue(aoBlur, locAOB_AoTex, &AO_UNIT, SHADER_UNIFORM_INT);
+                SetShaderValue(aoBlur, locAOB_DepthTex, &DEPTH_UNIT, SHADER_UNIFORM_INT);
+                rlActiveTextureSlot(AO_UNIT); rlEnableTexture(aoRT[0].texture.id);
+                rlActiveTextureSlot(DEPTH_UNIT); rlEnableTexture(sceneRT.depth.id);
+                rlActiveTextureSlot(0);
+                DrawRectangle(0, 0, bloomW, bloomH, WHITE);
+                rlDrawRenderBatchActive();
+                rlActiveTextureSlot(AO_UNIT); rlDisableTexture();
+                rlActiveTextureSlot(DEPTH_UNIT); rlDisableTexture();
+                rlActiveTextureSlot(0);
+            EndShaderMode();
+        EndTextureMode();
+        // Final blurred AO now sits in aoRT[1].
+
         // ---- final composite onto the currently-bound (default) framebuffer ----
         rlViewport(0, 0, rw, rh);
         rlSetMatrixProjection(MatrixOrtho(0, rw, rh, 0, 0.0, 1.0));
@@ -848,13 +1061,16 @@ struct PostFX {
         BeginShaderMode(composite);
             SetShaderValue(composite, locCP_SceneTex, &SCENE_UNIT, SHADER_UNIFORM_INT);
             SetShaderValue(composite, locCP_BloomTex, &BLOOM_UNIT, SHADER_UNIFORM_INT);
+            SetShaderValue(composite, locCP_AoTex, &AO_UNIT, SHADER_UNIFORM_INT);
             rlActiveTextureSlot(SCENE_UNIT); rlEnableTexture(sceneRT.texture.id);
             rlActiveTextureSlot(BLOOM_UNIT); rlEnableTexture(bloomRT[0].texture.id);
+            rlActiveTextureSlot(AO_UNIT); rlEnableTexture(aoRT[1].texture.id);
             rlActiveTextureSlot(0);
             DrawRectangle(0, 0, rw, rh, WHITE);
             rlDrawRenderBatchActive();
             rlActiveTextureSlot(SCENE_UNIT); rlDisableTexture();
             rlActiveTextureSlot(BLOOM_UNIT); rlDisableTexture();
+            rlActiveTextureSlot(AO_UNIT); rlDisableTexture();
             rlActiveTextureSlot(0);
         EndShaderMode();
         // Leave depth test/mask disabled here, matching the state EndMode3D()

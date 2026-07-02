@@ -3061,7 +3061,12 @@ int main(int argc, char **argv) {
         gPostFX.endScene();
         {
             int rw = GetRenderWidth(), rh = GetRenderHeight();
-            gPostFX.resolve(rw, rh, (float)GetTime());
+            // Same fovy/aspect derivation the sky shader uses above (cam.fovy
+            // varies by camera mode, 60-78 deg) -- SSAO needs these to
+            // reconstruct view-space position from sceneRT's depth texture.
+            float th  = tanf(cam.fovy * 0.5f * DEG2RAD);
+            float asp = (float)rw / (float)rh;
+            gPostFX.resolve(rw, rh, (float)GetTime(), th, asp);
         }
         } else {
 

@@ -1192,7 +1192,24 @@ struct Track {
             // it like a real coaster banks. No functional reason for the flip (HILLS/BANKAIR
             // share the exact same dyaw mechanic and don't flip); removed so WAVE banks into
             // its turn like its siblings.
-            float bank = bankT * dir;
+            //
+            // bank used to be the FULL target (bankT*dir) from the very first step of the
+            // element, regardless of how much the track is actually yawing right then -- the
+            // per-step jerk/safety clamps above (jlimYaw, capK) already ease the REAL applied
+            // dyaw in from 0 up to its plateau and back down to 0 at the seams, but bank had no
+            // matching ramp of its own, only the caller's fixed-rate easeUpVec() catching up to
+            // a constant target. With a short element (4-6 steps) and a real coaster-scale bank
+            // (up to ~1.28 rad), that catch-up rate could take about as long as the whole
+            // element, so the whole thing was spent racing to a full lean while the actual
+            // curve had barely started turning -- reads as one big lateral snap rather than a
+            // lean that builds and eases with the curve. Scale bank by how close the CURRENT
+            // yaw rate is to this element's own plateau (dyaw is already fully resolved above,
+            // after the same clamps): ramps in/out in lockstep with the real turning instead of
+            // its own independent schedule, and never leans harder than the track is actually
+            // curving.
+            float nomRate = (mode == M_HILLS || mode == M_BANKAIR || mode == M_WAVE) ? fabsf(hillTurn) : turnMag;
+            float rateFrac = Clamp(fabsf(dyaw) / fmaxf(nomRate, 1e-4f), 0.0f, 1.0f);
+            float bank = bankT * dir * rateFrac;
             upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(bank)),
                                               Vector3Scale(side, sinf(bank))));
         }

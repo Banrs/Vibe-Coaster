@@ -1385,6 +1385,25 @@ int main(int argc, char **argv) {
             while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
             int n = (int)t.cp.size();
 
+            if (const char *tg2 = getenv("MC_DUMP_ELEM")) {
+                int wantKind = -1;
+                for (int ti = 0; ti < M_COUNT; ti++) if (TextIsEqual(tg2, NM[ti])) wantKind = ti;
+                if (wantKind >= 0) {
+                    bool inRun = false;
+                    for (int k = 1; k < n; k++) {
+                        if (t.kind[k] == wantKind) {
+                            Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
+                            float dx = p1.x - p0.x, dz = p1.z - p0.z;
+                            float heading = atan2f(dx, dz) * 180.0f / PI;
+                            printf("[dump] seed%d cp%d kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f\n",
+                                   sd, k, NM[wantKind], p1.x, p1.y, p1.z, heading);
+                            inRun = true;
+                        } else if (inRun) { inRun = false; printf("[dump] --- run end ---\n"); }
+                    }
+                    if (sd >= 3) return 0;
+                }
+            }
+
             std::vector<float> vAt(n, 0.0f);
             float u = 0.5f, v = LAUNCH_V;
             int lastK = -1;

@@ -1040,9 +1040,19 @@ struct Track {
             // owns keeping the pull-out g-safe from the OTHER direction (dlim/maxSteep), so clamping
             // the delta here to not cross the floor just stops this cap from re-introducing the exact
             // underground dive the arrest exists to prevent.
-            float floorHere = groundTopAt(gpos.x, gpos.z) + 8.0f;
             float delta = clamped - sd;
-            if (gpos.y + delta < floorHere) delta = fmaxf(floorHere - gpos.y, 0.0f);
+            // M_DIP/M_HELIX are excluded, matching the dive-arrest lookahead just above (which
+            // excludes them for the same reason): both already have their OWN dedicated floor
+            // logic (M_DIP's forward-lookahead floorY targets gt+2; M_HELIX hugs close by design),
+            // so a blanket gt+8 floor here doesn't just catch runaway g-cap corrections -- it fires
+            // on nearly every ordinary low point of an unarrested M_DIP/M_HELIX (empirically: 73
+            // overrides across 20 --gaudit seeds, most with naturalDelta==0, i.e. no g-violation to
+            // correct at all) and yanks the track back up several metres, flattening the exact dip
+            // shape these modes exist to produce.
+            if (mode != M_DIP && mode != M_HELIX) {
+                float floorHere = groundTopAt(gpos.x, gpos.z) + 8.0f;
+                if (gpos.y + delta < floorHere) delta = fmaxf(floorHere - gpos.y, 0.0f);
+            }
             gpos.y += delta;
         }
 

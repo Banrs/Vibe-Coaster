@@ -56,12 +56,100 @@ static const Vector3 WUP = { 0, 1, 0 };
 
 static const Color SKY    = {186, 205, 232, 255};
 
-// Sampled directly from SKY_FS's actual rendered horizon pixel colour (the raw
-// HORIZON/ZENITH shader constants are much bluer than what tonemapping +
-// atmospheric blending actually produce on screen) so distant fogged terrain
-// blends into the real sky behind it instead of a visibly different "wall"
-// at the render-distance frontier.
-static const Color FOG    = {198, 204, 209, 255};
+// Sky gradient constants mirrored from render_fx.cpp's SKY_FS shader (its
+// ZENITH/MIDSKY/HORIZON/HAZE/GROUND consts) -- kept in sync by hand since fog
+// is computed CPU-side here, not via a shared header. Used only by
+// computeFogColor() below to derive FOG from the sky's own atmosphere model
+// instead of a hand-picked constant that silently drifts out of sync if the
+// sky is ever re-tuned.
+static const Vector3 SKY_ZENITH_C  = { 0.045f, 0.26f, 0.74f };
+static const Vector3 SKY_MIDSKY_C  = { 0.16f,  0.50f, 0.95f };
+static const Vector3 SKY_HORIZON_C = { 0.52f,  0.74f, 1.00f };
+static const Vector3 SKY_HAZE_C    = { 1.00f,  0.78f, 0.50f };
+static const Vector3 SKY_GROUND_C  = { 0.64f,  0.72f, 0.80f };
+
+static float smoothstepf(float e0, float e1, float x) {
+    float t = Clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+// Same ACES curve as PostFX's composite-pass tonemap (see render_fx.cpp) --
+// mirrored here (not called into) so this file doesn't reach into the PostFX
+// pipeline for a one-line curve.
+static Vector3 acesTonemapC(Vector3 c) {
+    auto ch = [](float x) {
+        float v = (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
+        return Clamp(v, 0.0f, 1.0f);
+    };
+    return { ch(c.x), ch(c.y), ch(c.z) };
+}
+
+// Derives the fog color from SKY_FS's own horizon-band gradient math,
+// evaluated at a fixed representative direction (looking exactly at the
+// horizon, side-on to the sun) rather than the full per-pixel/per-view
+// formula -- fog is a single non-directional color uploaded once a frame, so
+// what's wanted is a representative "ambient horizon tone", not one specific
+// on-screen pixel. The sun-elevation-driven term (sunLift's haze warmth)
+// still varies the result with sun position; the tail end runs it through
+// the same ACES+gamma tonemap the sky itself is composited with, so it lands
+// in the same post-tonemap space as what's actually on screen.
+//
+// CAL is a single fixed per-channel calibration scale applied on top -- the
+// same kind of empirical grading step that originally produced the
+// hand-picked {198,204,209} constant this replaces (it was "sampled directly
+// from SKY_FS's actual rendered horizon pixel colour"), just now applied to a
+// formula that responds to sun position instead of to a frozen RGB triple.
+// It's solved so the CURRENT default g_sunDir reproduces {198,204,209}
+// exactly; other sun elevations shift warmer/darker or cooler/brighter from
+// there, tracking the sky instead of sitting fixed.
+static Color computeFogColor(Vector3 sunDir) {
+    float sunLift = smoothstepf(-0.12f, 0.55f, sunDir.y);
+
+    const float dirY    = 0.0f; // representative "looking at the horizon" elevation
+    const float mu      = 0.0f; // representative "side-on to the sun" view azimuth
+    const float hazeMix = 0.6f; // matches SKY_FS's own lowHaze mix constant
+
+    float h = Clamp(dirY * 0.5f + 0.5f, 0.0f, 1.0f);
+    float skyT = smoothstepf(0.03f, 0.92f, h);
+    Vector3 col = Vector3Lerp(SKY_HORIZON_C, SKY_MIDSKY_C, smoothstepf(0.0f, 0.55f, skyT));
+    col = Vector3Lerp(col, SKY_ZENITH_C, smoothstepf(0.34f, 1.0f, skyT));
+
+    float airMass = expf(-fmaxf(dirY, 0.0f) * 2.6f);
+    col = Vector3Lerp(col, SKY_HORIZON_C, airMass * 0.22f);
+    float horizonGlow = expf(-fabsf(dirY) * 4.2f);
+    col = Vector3Add(col, Vector3Scale(SKY_HORIZON_C, horizonGlow * 0.22f));
+    col = Vector3Add(col, Vector3Scale(SKY_HAZE_C, horizonGlow * (0.10f + 0.20f * (1.0f - sunLift))));
+
+    const float sunAz = 1.0f / PI; // azimuth-averaged sunAz term (fog has no view direction of its own)
+    Vector3 groundWarm = { SKY_GROUND_C.x * 1.05f, SKY_GROUND_C.y * 1.0f, SKY_GROUND_C.z * 0.93f };
+    Vector3 lowHaze = Vector3Lerp(SKY_GROUND_C, groundWarm, sunAz * hazeMix);
+    float wt = smoothstepf(-0.16f, 0.06f, dirY);
+    col = Vector3Lerp(lowHaze, col, wt);
+
+    float rayleigh = 0.55f + 0.45f * mu * mu;
+    col = Vector3Scale(col, rayleigh);
+
+    col = Vector3Scale(col, 0.94f); // same pre-tonemap exposure as PostFX's composite pass
+    col = acesTonemapC(col);
+    col = { powf(col.x, 1.0f / 2.2f), powf(col.y, 1.0f / 2.2f), powf(col.z, 1.0f / 2.2f) };
+
+    static const Vector3 CAL = { 1.226045f, 1.069453f, 0.988171f };
+    col.x = Clamp(col.x * CAL.x, 0.0f, 1.0f);
+    col.y = Clamp(col.y * CAL.y, 0.0f, 1.0f);
+    col.z = Clamp(col.z * CAL.z, 0.0f, 1.0f);
+
+    return Color{ (unsigned char)roundf(col.x * 255.0f), (unsigned char)roundf(col.y * 255.0f),
+                  (unsigned char)roundf(col.z * 255.0f), 255 };
+}
+
+// Default matches the sky-derived value at the current default g_sunDir
+// exactly (see computeFogColor()) -- overwritten with the real derived value
+// in main() right after g_sunDir is finalized, before anything (including the
+// background terrain-mesh worker thread) reads FOG. g_sunDir is currently
+// fixed for the whole run, so a one-time derivation here is equivalent to a
+// per-frame one; if a live day/night cycle is ever added, this must be
+// recomputed once per frame instead *and* that update must be made safe
+// against TerrainMesh's worker thread, which also reads FOG concurrently.
+static Color FOG    = {198, 204, 209, 255};
 static const Color GRASS  = {130, 206, 102, 255};
 static const Color SAND   = {242, 228, 184, 255};
 static const Color DIRT   = {158, 116,  82, 255};
@@ -1518,6 +1606,10 @@ int main(int argc, char **argv) {
     gTerrainMat = LoadMaterialDefault();
     gTerrainMat.maps[MATERIAL_MAP_DIFFUSE].texture = gAtlas;
     g_sunDir = Vector3Normalize(g_sunDir);
+    // Derive fog from the sky's own gradient at the now-final sun direction
+    // (see computeFogColor() above) -- must happen before anything reads FOG,
+    // including the TerrainMesh background worker thread kicked off below.
+    FOG = computeFogColor(g_sunDir);
     gShadow.init();
     gSky.init();
     gPostFX.init(GetRenderWidth(), GetRenderHeight());

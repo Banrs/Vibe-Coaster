@@ -50,18 +50,124 @@ static float       BOOST_V   = 62.0f;
 // 0/8 rides). Lowering it lets the ride coast further before re-powering, giving genV real
 // chances to fall through the inversion gates naturally (confirmed via --gaudit: g-safety
 // unaffected, offender counts stay in the same pre-existing noise band as baseline).
-static float       BOOST_TRIG = 52.0f;
+static float       BOOST_TRIG = 48.0f;
 
 static const Vector3 WUP = { 0, 1, 0 };
 
 static const Color SKY    = {186, 205, 232, 255};
 
-// Sampled directly from SKY_FS's actual rendered horizon pixel colour (the raw
-// HORIZON/ZENITH shader constants are much bluer than what tonemapping +
-// atmospheric blending actually produce on screen) so distant fogged terrain
-// blends into the real sky behind it instead of a visibly different "wall"
-// at the render-distance frontier.
-static const Color FOG    = {198, 204, 209, 255};
+// Sky gradient constants mirrored from render_fx.cpp's SKY_FS shader (its
+// ZENITH/MIDSKY/HORIZON/HAZE/GROUND consts) -- kept in sync by hand since fog
+// is computed CPU-side here, not via a shared header. Used only by
+// computeFogColor() below to derive FOG from the sky's own atmosphere model
+// instead of a hand-picked constant that silently drifts out of sync if the
+// sky is ever re-tuned.
+static const Vector3 SKY_ZENITH_C  = { 0.045f, 0.26f, 0.74f };
+static const Vector3 SKY_MIDSKY_C  = { 0.16f,  0.50f, 0.95f };
+static const Vector3 SKY_HORIZON_C = { 0.52f,  0.74f, 1.00f };
+static const Vector3 SKY_HAZE_C    = { 1.00f,  0.78f, 0.50f };
+static const Vector3 SKY_GROUND_C  = { 0.64f,  0.72f, 0.80f };
+
+static float smoothstepf(float e0, float e1, float x) {
+    float t = Clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+// Same ACES curve as PostFX's composite-pass tonemap (see render_fx.cpp) --
+// mirrored here (not called into) so this file doesn't reach into the PostFX
+// pipeline for a one-line curve.
+static Vector3 acesTonemapC(Vector3 c) {
+    auto ch = [](float x) {
+        float v = (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
+        return Clamp(v, 0.0f, 1.0f);
+    };
+    return { ch(c.x), ch(c.y), ch(c.z) };
+}
+
+// Derives the fog color from SKY_FS's own horizon-band gradient math,
+// evaluated at a fixed representative direction (looking exactly at the
+// horizon, side-on to the sun) rather than the full per-pixel/per-view
+// formula -- fog is a single non-directional color uploaded once a frame, so
+// what's wanted is a representative "ambient horizon tone", not one specific
+// on-screen pixel. The sun-elevation-driven term (sunLift's haze warmth)
+// still varies the result with sun position; the tail end runs it through
+// the same ACES+gamma tonemap the sky itself is composited with, so it lands
+// in the same post-tonemap space as what's actually on screen.
+//
+// CAL is a single fixed per-channel calibration scale applied on top -- the
+// same kind of empirical grading step that originally produced the
+// hand-picked {198,204,209} constant this replaces (it was "sampled directly
+// from SKY_FS's actual rendered horizon pixel colour"), just now applied to a
+// formula that responds to sun position instead of to a frozen RGB triple.
+// It's solved so the CURRENT default g_sunDir reproduces {198,204,209}
+// exactly; other sun elevations shift warmer/darker or cooler/brighter from
+// there, tracking the sky instead of sitting fixed.
+// Pre-tonemap linear sky-derived fog color (everything computeFogColor() below does,
+// minus the exposure/ACES/gamma/calibration tail) -- exposed separately because the
+// PostFX-era SHADOW_FS mixes fog into scene color in TWO different spaces depending on
+// legacyTonemap: the legacy overlay paths mix into already-tonemapped/gamma-encoded
+// color (display space, matches computeFogColor()'s FOG), but the main HDR path mixes
+// BEFORE the composite pass's tonemap, i.e. into still-linear color -- mixing linear
+// scene color against a display-space FOG there double-processes fog through ACES+gamma
+// a second time when the composite pass runs, measurably shifting it brighter/flatter
+// than intended (checked: {198,204,209} would land around {221,222,223} on screen,
+// reintroducing a mild version of the "flat wall at the render-distance frontier" bug
+// this whole feature exists to prevent). FOG_LINEAR is this function's un-tonemapped
+// output, uploaded as a second uniform (fogColLinear) and used for the main path's mix
+// instead, so it only goes through ACES+gamma once, in the composite pass, same as
+// everything else in that path.
+static Vector3 computeFogColorLinear(Vector3 sunDir) {
+    float sunLift = smoothstepf(-0.12f, 0.55f, sunDir.y);
+
+    const float dirY    = 0.0f; // representative "looking at the horizon" elevation
+    const float mu      = 0.0f; // representative "side-on to the sun" view azimuth
+    const float hazeMix = 0.6f; // matches SKY_FS's own lowHaze mix constant
+
+    float h = Clamp(dirY * 0.5f + 0.5f, 0.0f, 1.0f);
+    float skyT = smoothstepf(0.03f, 0.92f, h);
+    Vector3 col = Vector3Lerp(SKY_HORIZON_C, SKY_MIDSKY_C, smoothstepf(0.0f, 0.55f, skyT));
+    col = Vector3Lerp(col, SKY_ZENITH_C, smoothstepf(0.34f, 1.0f, skyT));
+
+    float airMass = expf(-fmaxf(dirY, 0.0f) * 2.6f);
+    col = Vector3Lerp(col, SKY_HORIZON_C, airMass * 0.22f);
+    float horizonGlow = expf(-fabsf(dirY) * 4.2f);
+    col = Vector3Add(col, Vector3Scale(SKY_HORIZON_C, horizonGlow * 0.22f));
+    col = Vector3Add(col, Vector3Scale(SKY_HAZE_C, horizonGlow * (0.10f + 0.20f * (1.0f - sunLift))));
+
+    const float sunAz = 1.0f / PI; // azimuth-averaged sunAz term (fog has no view direction of its own)
+    Vector3 groundWarm = { SKY_GROUND_C.x * 1.05f, SKY_GROUND_C.y * 1.0f, SKY_GROUND_C.z * 0.93f };
+    Vector3 lowHaze = Vector3Lerp(SKY_GROUND_C, groundWarm, sunAz * hazeMix);
+    float wt = smoothstepf(-0.16f, 0.06f, dirY);
+    col = Vector3Lerp(lowHaze, col, wt);
+
+    float rayleigh = 0.55f + 0.45f * mu * mu;
+    col = Vector3Scale(col, rayleigh);
+    return col;
+}
+
+static Color computeFogColor(Vector3 sunDir) {
+    Vector3 col = Vector3Scale(computeFogColorLinear(sunDir), 0.94f); // same pre-tonemap exposure as PostFX's composite pass
+    col = acesTonemapC(col);
+    col = { powf(col.x, 1.0f / 2.2f), powf(col.y, 1.0f / 2.2f), powf(col.z, 1.0f / 2.2f) };
+
+    static const Vector3 CAL = { 1.226045f, 1.069453f, 0.988171f };
+    col.x = Clamp(col.x * CAL.x, 0.0f, 1.0f);
+    col.y = Clamp(col.y * CAL.y, 0.0f, 1.0f);
+    col.z = Clamp(col.z * CAL.z, 0.0f, 1.0f);
+
+    return Color{ (unsigned char)roundf(col.x * 255.0f), (unsigned char)roundf(col.y * 255.0f),
+                  (unsigned char)roundf(col.z * 255.0f), 255 };
+}
+
+// Default matches the sky-derived value at the current default g_sunDir
+// exactly (see computeFogColor()) -- overwritten with the real derived value
+// in main() right after g_sunDir is finalized, before anything (including the
+// background terrain-mesh worker thread) reads FOG. g_sunDir is currently
+// fixed for the whole run, so a one-time derivation here is equivalent to a
+// per-frame one; if a live day/night cycle is ever added, this must be
+// recomputed once per frame instead *and* that update must be made safe
+// against TerrainMesh's worker thread, which also reads FOG concurrently.
+static Color FOG    = {198, 204, 209, 255};
+static Vector3 FOG_LINEAR = { 0.687f, 0.735f, 0.831f };   // overwritten alongside FOG, see above
 static const Color GRASS  = {130, 206, 102, 255};
 static const Color SAND   = {242, 228, 184, 255};
 static const Color DIRT   = {158, 116,  82, 255};
@@ -384,7 +490,12 @@ static SkySys gSky;
 
 #endif
 
-enum Tile { T_WHITE, T_GRAIN, T_GRASS, T_PLANK, T_LOG, T_LEAF, T_GOLD, T_IRON, TILE_N };
+// T_RAIL is texturally identical to T_IRON (same brushed-metal generator below) but gets
+// its own atlas slot so the fragment shader can tell "this quad is a running rail" from
+// fragTexCoord alone -- a texcoord-range check is a genuinely per-vertex signal (unlike a
+// plain uniform, which rlgl's immediate-mode batching can't scope to a handful of draw
+// calls without forcing extra batch flushes), so this needs zero new per-frame draw calls.
+enum Tile { T_WHITE, T_GRAIN, T_GRASS, T_PLANK, T_LOG, T_LEAF, T_GOLD, T_IRON, T_RAIL, TILE_N };
 static Texture2D gAtlas;
 
 static Texture2D makeAtlas() {
@@ -457,7 +568,10 @@ static Texture2D makeAtlas() {
                         else if (dx + dy < 4) v = 255;
                         else v = 204 + (int)(32 * r1);
                     } break;
-                    case T_IRON: {
+                    case T_IRON: case T_RAIL: {
+                        // T_RAIL intentionally reuses T_IRON's exact formula (hashed on the
+                        // real tile index t, which differs, so the noise phase isn't
+                        // identical pixel-for-pixel, but the brushed-metal look matches).
                         float brush = tnoise(t, fx*0.25f, fy, 16.0f);
                         v = 222 + (int)(30 * brush) - ((y == 8 || y == 9) ? 28 : 0);
                         if (r1 > 0.96f) v += 10;
@@ -505,6 +619,7 @@ static const float TERRAIN_BUCKET = 16.0f;   // world units per draw-culling buc
 struct CapBucket {
     std::vector<float> pos, uv, nrm;
     std::vector<unsigned char> col;
+    std::vector<unsigned short> idx;   // 2 tris (0,1,2, 0,2,3) per quad -- see capQuad()
     Vector3 bmin{ 1e9f, 1e9f, 1e9f }, bmax{ -1e9f, -1e9f, -1e9f };
 };
 // NOT thread_local: exactly like the flat arrays this replaces, only the single in-flight
@@ -523,7 +638,9 @@ static inline int64_t terrainBucketKey(float x, float z) {
 // both of them at every chunk seam.
 static thread_local int64_t gCapBucketKey = 0;
 
-static inline void capVert(float x, float y, float z, float u, float v,
+// Returns the new vertex's index within its bucket (so callers building indexed quads
+// know what to reference from the shared index buffer).
+static inline unsigned short capVert(float x, float y, float z, float u, float v,
                            float nx, float ny, float nz, Color c) {
     CapBucket &b = gCapBuckets[gCapBucketKey];
     b.pos.push_back(x); b.pos.push_back(y); b.pos.push_back(z);
@@ -533,6 +650,28 @@ static inline void capVert(float x, float y, float z, float u, float v,
     if (x < b.bmin.x) b.bmin.x = x; if (x > b.bmax.x) b.bmax.x = x;
     if (y < b.bmin.y) b.bmin.y = y; if (y > b.bmax.y) b.bmax.y = y;
     if (z < b.bmin.z) b.bmin.z = z; if (z > b.bmax.z) b.bmax.z = z;
+    return (unsigned short)(b.pos.size() / 3 - 1);
+}
+// Emits ONE quad (corners a,b,c,d in fan order, same winding CAPQ used to feed two
+// standalone triangles a-b-c / a-c-d) as 4 unique vertices + 6 indices instead of 6
+// duplicated vertices -- corners a and c are shared by both triangles of the quad, and
+// every caller already passes identical position/uv/color for a shape corner each time
+// it appears (see emitCubeTex's CAPQ invocations), so this is a lossless 6->4 vertex
+// dedup per quad (33% fewer vertices through the vertex pipeline for terrain, which is
+// by far the largest source of geometry in the scene and gets rasterized up to 4x per
+// frame -- once per shadow cascade plus the main pass).
+static inline void capQuad(float nx, float ny, float nz,
+                           float ax, float ay, float az, float au, float av, Color ac,
+                           float bx, float by, float bz, float bu, float bv, Color bc,
+                           float cx, float cy, float cz, float cu, float cv, Color cc,
+                           float dx, float dy, float dz, float du, float dv, Color dc) {
+    CapBucket &b = gCapBuckets[gCapBucketKey];
+    unsigned short i0 = capVert(ax, ay, az, au, av, nx, ny, nz, ac);
+    unsigned short i1 = capVert(bx, by, bz, bu, bv, nx, ny, nz, bc);
+    unsigned short i2 = capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
+    unsigned short i3 = capVert(dx, dy, dz, du, dv, nx, ny, nz, dc);
+    b.idx.push_back(i0); b.idx.push_back(i1); b.idx.push_back(i2);
+    b.idx.push_back(i0); b.idx.push_back(i2); b.idx.push_back(i3);
 }
 
 struct TerrainChunk { Mesh mesh{}; Vector3 center{}; float radius = 0.0f; };
@@ -578,15 +717,20 @@ struct TerrainMesh {
         if (vcount == 0) return;
         TerrainChunk c{};
         c.mesh.vertexCount   = vcount;
-        c.mesh.triangleCount = vcount / 3;
+        // Every quad is now 4 unique vertices + 6 indices (see capQuad) instead of 6
+        // duplicated vertices -- triangleCount must come from the index count, not
+        // vertexCount, or DrawMesh/UploadMesh under-draws by a third.
+        c.mesh.triangleCount = (int)(b.idx.size() / 3);
         c.mesh.vertices  = (float *)RL_CALLOC(vcount * 3, sizeof(float));
         c.mesh.texcoords = (float *)RL_CALLOC(vcount * 2, sizeof(float));
         c.mesh.normals   = (float *)RL_CALLOC(vcount * 3, sizeof(float));
         c.mesh.colors    = (unsigned char *)RL_CALLOC(vcount * 4, sizeof(unsigned char));
+        c.mesh.indices   = (unsigned short *)RL_CALLOC(b.idx.size(), sizeof(unsigned short));
         std::copy(b.pos.begin(), b.pos.end(), c.mesh.vertices);
         std::copy(b.uv.begin(),  b.uv.end(),  c.mesh.texcoords);
         std::copy(b.nrm.begin(), b.nrm.end(), c.mesh.normals);
         std::copy(b.col.begin(), b.col.end(), c.mesh.colors);
+        std::copy(b.idx.begin(), b.idx.end(), c.mesh.indices);
         UploadMesh(&c.mesh, true);
         c.center = Vector3Scale(Vector3Add(b.bmin, b.bmax), 0.5f);
         c.radius = Vector3Distance(c.center, b.bmax) + 0.5f;
@@ -624,6 +768,12 @@ struct TerrainMesh {
         for (auto &c : chunks) UnloadMesh(c.mesh);
         chunks = std::move(pendingChunks);
         live = !chunks.empty();
+        if (getenv("MC_DIAG")) {
+            long totalV = 0; int maxV = 0;
+            for (auto &c : chunks) { totalV += c.mesh.vertexCount; if (c.mesh.vertexCount > maxV) maxV = c.mesh.vertexCount; }
+            printf("[diag-chunks] count=%zu totalVerts=%ld avgVertsPerChunk=%.1f maxVertsPerChunk=%d\n",
+                   chunks.size(), totalV, chunks.empty() ? 0.0 : (double)totalV / chunks.size(), maxV);
+        }
         pendingBuckets.clear(); pendingChunks.clear(); uploadCursor = 0;
         keyCx = pendCx; keyCz = pendCz; keyU = pendU;
         building = false;
@@ -664,8 +814,7 @@ static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c,
         float xm = x - w/2, xp = x + w/2, ym = y - h/2, yp = y + h/2, zm = z - l/2, zp = z + l/2;
 
         #define CAPQ(nx,ny,nz, ax,ay,az,au,av,ac, bx,by,bz,bu,bv,bc, ccx,ccy,ccz,cu,cv,cc, dx,dy,dz,du,dv,dc) \
-            capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(bx,by,bz,bu,bv,nx,ny,nz,bc); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); \
-            capVert(ax,ay,az,au,av,nx,ny,nz,ac); capVert(ccx,ccy,ccz,cu,cv,nx,ny,nz,cc); capVert(dx,dy,dz,du,dv,nx,ny,nz,dc)
+            capQuad(nx,ny,nz, ax,ay,az,au,av,ac, bx,by,bz,bu,bv,bc, ccx,ccy,ccz,cu,cv,cc, dx,dy,dz,du,dv,dc)
         if (mask & CFACE_PZ) CAPQ(0,0,1,  xm,ym,zp,u0,v1,cB,  xp,ym,zp,u1,v1,cB,  xp,yp,zp,u1,v0,cT,  xm,yp,zp,u0,v0,cT);
         if (mask & CFACE_NZ) CAPQ(0,0,-1, xm,ym,zm,u1,v1,cB,  xm,yp,zm,u1,v0,cT,  xp,yp,zm,u0,v0,cT,  xp,ym,zm,u0,v1,cB);
         if (mask & CFACE_PY) CAPQ(0,1,0,  xm,yp,zm,u0,v0,cT,  xm,yp,zp,u0,v1,cT,  xp,yp,zp,u1,v1,cT,  xp,yp,zm,u1,v0,cT);
@@ -1475,8 +1624,26 @@ int main(int argc, char **argv) {
     gTerrainMat = LoadMaterialDefault();
     gTerrainMat.maps[MATERIAL_MAP_DIFFUSE].texture = gAtlas;
     g_sunDir = Vector3Normalize(g_sunDir);
+    // Derive fog from the sky's own gradient at the now-final sun direction
+    // (see computeFogColor() above) -- must happen before anything reads FOG,
+    // including the TerrainMesh background worker thread kicked off below.
+    // FOG_LINEAR is the same derivation stopped before the tonemap tail, for the
+    // main HDR render path's fog mix (see computeFogColorLinear()'s comment).
+    FOG = computeFogColor(g_sunDir);
+    FOG_LINEAR = computeFogColorLinear(g_sunDir);
     gShadow.init();
     gSky.init();
+    gPostFX.init(GetRenderWidth(), GetRenderHeight());
+    {
+        // Set once: the atlas-space U range of the T_RAIL tile, matching the
+        // half-texel-inset UV rect emitCubeTex() uses for every tile (see u0/u1
+        // there). The fragment shader uses this fixed range to recognise rail
+        // quads without any per-draw-call uniform toggling.
+        float railU0 = (T_RAIL * 16 + 0.5f) / (float)(TILE_N * 16);
+        float railU1 = (T_RAIL * 16 + 15.5f) / (float)(TILE_N * 16);
+        float ruv[2] = { railU0, railU1 };
+        SetShaderValue(gShadow.lit, gShadow.locRailUVRange, ruv, SHADER_UNIFORM_VEC2);
+    }
 
     std::vector<float> ptBakeBuf;
 
@@ -1589,8 +1756,13 @@ int main(int argc, char **argv) {
     };
     if (onFoot) placeOnFoot();
 
+    std::vector<float> gBenchFrameMs;
+    if (benchMode) gBenchFrameMs.reserve(16384);
+    int benchFrameCap = gForceSpeed < 0.0f ? 16000 : gForceElem >= 0 ? 1500 : 5000;
+    if (benchMode) { if (const char *bf = getenv("MC_BENCH_FRAMES")) benchFrameCap = atoi(bf); }
+
     while (true) {
-        if (benchMode) { if (frame >= (gForceSpeed < 0.0f ? 16000 : gForceElem >= 0 ? 1500 : 5000)) break; }
+        if (benchMode) { if (frame >= benchFrameCap) break; }
         else if (WindowShouldClose()) break;
 
         double tFrame0 = GetTime();
@@ -2355,8 +2527,10 @@ int main(int argc, char **argv) {
         }
         };
 
-        float curShadowCullR = SHADOW_CASCADE_CULL_R[0];   // set per-cascade before each depth-pass drawWorld(true) call
-        auto drawWorld = [&](bool depthPass, bool coasterOnly = false) {
+        static double dwTerrainAcc = 0.0, dwTrackAcc = 0.0; static int dwN = 0;
+        static bool diagWorld = getenv("MC_DIAG") != nullptr;
+        auto drawWorld = [&](bool depthPass, bool coasterOnly = false, float cullR = 0.0f) {
+        double dwT0 = diagWorld ? GetTime() : 0.0;
         if (!coasterOnly && gTerrainMesh.live) {
 
             Material mat = gTerrainMat;
@@ -2364,8 +2538,10 @@ int main(int argc, char **argv) {
             if (!depthPass) {
                 float fe = fogEnd;
                 float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
+                float fcl[3] = { FOG_LINEAR.x, FOG_LINEAR.y, FOG_LINEAR.z };
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
+                SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
             }
             // Cull terrain chunks before submitting them. The full TERRA_R ring is always
             // generated together every rebuild (see TerrainMesh::finish) -- this only skips
@@ -2373,14 +2549,21 @@ int main(int argc, char **argv) {
             // so it cannot reintroduce the old per-chunk-streaming void bug.
             if (depthPass) {
                 // Each cascade uses its own ortho box centred on P (see ShadowSys::computeLightVP)
-                // -- cull by 3-D distance from P using the CURRENT cascade's cull radius
-                // (curShadowCullR, set by the caller before each cascade's drawWorld(true) call),
-                // which already includes a margin past that cascade's box half-diagonal.
+                // -- cull by XZ distance from P using the CURRENT cascade's cull radius (cullR,
+                // passed in by the caller for this depth-pass call), which already includes a
+                // margin past that cascade's box half-diagonal. Must be XZ-only (not 3-D) to match
+                // the ortho box's footprint and the shader's shadow() cascade-selection distance
+                // (also XZ-only, see render_fx.cpp) -- a 3-D check would under-cull tall/deep
+                // chunks whose vertical offset from P is large but whose XZ offset is well within
+                // the box, silently dropping them from the depth pass.
+                int dcnt = 0;
                 for (auto &c : gTerrainMesh.chunks) {
-                    float dx = c.center.x - P.x, dy = c.center.y - P.y, dz = c.center.z - P.z;
-                    if (sqrtf(dx*dx + dy*dy + dz*dz) - c.radius > curShadowCullR) continue;
+                    float dx = c.center.x - P.x, dz = c.center.z - P.z;
+                    if (sqrtf(dx*dx + dz*dz) - c.radius > cullR) continue;
                     DrawMesh(c.mesh, mat, MatrixIdentity());
+                    dcnt++;
                 }
+                if (diagWorld) printf("[diag-cull] cullR=%.1f drawn=%d/%zu\n", cullR, dcnt, gTerrainMesh.chunks.size());
             } else {
                 Vector3 F = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
                 Vector3 Rt = Vector3Normalize(Vector3CrossProduct(F, cam.up));
@@ -2414,6 +2597,8 @@ int main(int argc, char **argv) {
             if (midStation)
                 drawStation(trk, curPlatPos, curPlatYaw, P, fogEnd);
         }
+        double dwT1 = diagWorld ? GetTime() : 0.0;
+        if (diagWorld) dwTerrainAcc += (dwT1 - dwT0) * 1000.0;
 
         int k0 = (int)fmaxf(1.0f, u - 14.0f), k1 = (int)(u + 64);
 
@@ -2474,14 +2659,15 @@ int main(int argc, char **argv) {
         for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
-            // BANANA is excluded here on purpose: unlike the tight, self-contained loop-shaped
-            // elements below (whose top/bottom sit at nearly the same X/Z), a banana roll travels
-            // forward continuously across its whole length while doing one roll, so its inverted
-            // midpoint is tens of meters from every other point of the same element -- a straight-down
-            // support there can't clip through its own track, and skipping it left a large unsupported gap.
+            // BANANA and WINGOVER are deliberately NOT in this exclusion list: unlike the tight,
+            // self-contained loop-shaped elements below (whose top/bottom sit at nearly the same
+            // X/Z), both travel forward continuously across their whole length while banking/
+            // inverting, so the inverted midpoint is tens of meters from every other point of the
+            // same element -- a straight-down support there can't clip through its own track, and
+            // excluding them left a large unsupported gap during the tallest, most inverted part.
             if ((tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
                  tg == M_STALL || tg == M_DIVELOOP || tg == M_COBRA ||
-                 tg == M_HEARTLINE || tg == M_WINGOVER ||
+                 tg == M_HEARTLINE ||
                  tg == M_PRETZEL) && trk.up[i].y < 0.35f) continue;
             float ddx = p.x - P.x, ddz = p.z - P.z;
             float dist = sqrtf(ddx * ddx + ddz * ddz);
@@ -2567,8 +2753,16 @@ int main(int argc, char **argv) {
                     Color sc  = mixc(Color{ 44, 47, 55, 255 }, FOG, fog);
                     drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.30f, 0.46f, rl, sc);
                 }
-                drawCubeTex(T_IRON, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
-                drawCubeTex(T_IRON, Vector3{  0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
+                {
+                    // The rail's world-space tangent for the anisotropic highlight: safe to
+                    // update every sample with a plain uniform (no batch-flush needed) since
+                    // *which fragments* it applies to is decided per-vertex in the shader via
+                    // the T_RAIL texcoord range, not by this uniform's on/off timing.
+                    float tanv[3] = { t.x, t.y, t.z };
+                    SetShaderValue(gShadow.lit, gShadow.locRailTangent, tanv, SHADER_UNIFORM_VEC3);
+                    drawCubeTex(T_RAIL, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
+                    drawCubeTex(T_RAIL, Vector3{  0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
+                }
                 if ((j & 1) == 0)
 
                     drawCubeTex(T_IRON, Vector3{ 0, -0.17f, 0 }, 1.35f, 0.14f, 0.45f, tie);
@@ -2591,6 +2785,11 @@ int main(int argc, char **argv) {
                 popFrame();
             }
         }
+        if (diagWorld) {
+            dwTrackAcc += (GetTime() - dwT1) * 1000.0;
+            dwN++;
+            if (dwN % 80 == 0) printf("[diag-dw] n=%d terrain_avg=%.3fms track_avg=%.3fms (per-call)\n", dwN, dwTerrainAcc/dwN, dwTrackAcc/dwN);
+        }
         };
 
         if (wantRebuild) {
@@ -2601,6 +2800,9 @@ int main(int argc, char **argv) {
         gShadow.computeLightVP(P);
         BeginDrawing();
 
+        static bool diagTiming = getenv("MC_DIAG") != nullptr;
+        static double dShadowAcc = 0.0, dMainAcc = 0.0; static int dN = 0;
+        double tShadow0 = diagTiming ? GetTime() : 0.0;
         rlDrawRenderBatchActive();
         for (int ci = 0; ci < SHADOW_CASCADES; ci++) {
             rlEnableFramebuffer(gShadow.fbo[ci]);
@@ -2612,14 +2814,14 @@ int main(int argc, char **argv) {
             rlSetMatrixProjection(MatrixIdentity());
             rlSetMatrixModelview(gShadow.lightVP[ci]);
             BeginShaderMode(gShadow.depth);
-            curShadowCullR = SHADOW_CASCADE_CULL_R[ci];
-            drawWorld(true);
+            drawWorld(true, false, SHADOW_CASCADE_CULL_R[ci]);
             rlDrawRenderBatchActive();
             EndShaderMode();
             rlEnableColorBlend();
             rlDisableFramebuffer();
         }
         rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
+        if (diagTiming) dShadowAcc += (GetTime() - tShadow0) * 1000.0;
 
         // Bind all 3 cascade matrices/textures once per frame; every gShadow.lit
         // draw call below (main pass, water, path-trace overlays) shares them.
@@ -2649,6 +2851,11 @@ int main(int argc, char **argv) {
         };
 
         if (!liveRT) {
+        // Sky + opaque + water all render into the offscreen linear-HDR scene
+        // target now, instead of straight to the backbuffer -- gPostFX.resolve()
+        // (called after EndMode3D below) does the bloom/vignette/CA/grain/
+        // tonemap composite once, before the HUD gets drawn.
+        gPostFX.beginScene();
         ClearBackground(SKY);
 
         {
@@ -2696,13 +2903,24 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locSun, sun, SHADER_UNIFORM_VEC3);
             SetShaderValue(gShadow.lit, gShadow.locSky, sky, SHADER_UNIFORM_VEC3);
             SetShaderValue(gShadow.lit, gShadow.locGround, gnd, SHADER_UNIFORM_VEC3);
+            // Rendering into the offscreen HDR scene target now (gPostFX) --
+            // stay linear HDR here, the post pass tonemaps once at the end.
+            float legacyOff = 0.0f;
+            SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyOff, SHADER_UNIFORM_FLOAT);
         }
 
+        double tMain0 = diagTiming ? GetTime() : 0.0;
         BeginShaderMode(gShadow.lit);
         bindShadowTextures();
         drawWorld(false);
         EndShaderMode();
         unbindShadowTextures();
+        if (diagTiming) {
+            rlDrawRenderBatchActive();
+            dMainAcc += (GetTime() - tMain0) * 1000.0;
+            dN++;
+            if (dN % 20 == 0) printf("[diag] n=%d shadow3x_avg=%.2fms main_avg=%.2fms\n", dN, dShadowAcc/dN, dMainAcc/dN);
+        }
 
         {
             struct SplashContact { Vector3 p, fwd, right; float gap; };
@@ -2800,8 +3018,10 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locTime, &wt, SHADER_UNIFORM_FLOAT);
             float fe = fogEnd;
             float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
+            float fcl[3] = { FOG_LINEAR.x, FOG_LINEAR.y, FOG_LINEAR.z };
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
             SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
+            SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
 
             BeginShaderMode(gShadow.lit);
             bindShadowTextures();
@@ -2838,6 +3058,16 @@ int main(int argc, char **argv) {
         }
 
         EndMode3D();
+        gPostFX.endScene();
+        {
+            int rw = GetRenderWidth(), rh = GetRenderHeight();
+            // Same fovy/aspect derivation the sky shader uses above (cam.fovy
+            // varies by camera mode, 60-78 deg) -- SSAO needs these to
+            // reconstruct view-space position from sceneRT's depth texture.
+            float th  = tanf(cam.fovy * 0.5f * DEG2RAD);
+            float asp = (float)rw / (float)rh;
+            gPostFX.resolve(rw, rh, (float)GetTime(), th, asp);
+        }
         } else {
 
             int rw = GetRenderWidth(), rh = GetRenderHeight();
@@ -2942,6 +3172,12 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locSun, sunL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, skyL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gndL, SHADER_UNIFORM_VEC3);
+                // This overlay composites straight onto the live path-trace
+                // preview's already-tonemapped LDR backbuffer (no post pass of
+                // its own here) -- fall back to gShadow.lit's own inline
+                // tonemap+gamma+saturation so it matches that backdrop.
+                float legacyOn = 1.0f;
+                SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyOn, SHADER_UNIFORM_FLOAT);
                 BeginShaderMode(gShadow.lit);
                     bindShadowTextures();
                     drawWorld(false, true);
@@ -3036,6 +3272,11 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locSun, sun2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, sky2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gnd2, SHADER_UNIFORM_VEC3);
+                // Same reasoning as the live path-trace preview overlay above:
+                // this composites onto the offline path-tracer's already-
+                // tonemapped LDR shot, so use gShadow.lit's own inline tonemap.
+                float legacyOn2 = 1.0f;
+                SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyOn2, SHADER_UNIFORM_FLOAT);
                 BeginShaderMode(gShadow.lit);
                     bindShadowTextures();
                     drawWorld(false, true);
@@ -3301,7 +3542,19 @@ int main(int argc, char **argv) {
         if (lastShot) break;
 
         if (benchMode) {
+            static int shotFrameWanted = getenv("MC_SHOT_FRAME") ? atoi(getenv("MC_SHOT_FRAME")) : -1;
+            if (frame == shotFrameWanted) {
+                Image img = LoadImageFromScreen();
+                ExportImage(img, "bench_shot.png");
+                UnloadImage(img);
+                printf("[bench-shot] frame %d -> bench_shot.png\n", frame);
+                fflush(stdout);
+            }
+        }
+
+        if (benchMode) {
             double ms = (GetTime() - tFrame0) * 1000.0;
+            gBenchFrameMs.push_back((float)ms);
             float alt = P.y - groundTopAt(P.x, P.z);
             if ((frame % 25) == 0 || ms > 60.0)
                 printf("f%-5d cam%d  %6.1fms  u=%.2f v=%.1f alt=%.0f cp=%zu tag=%d invY=%.2f\n",
@@ -3311,6 +3564,26 @@ int main(int argc, char **argv) {
         }
     }
     gTerrainMesh.finish(true);   // shutdown: join the worker before teardown
+
+    if (benchMode && !gBenchFrameMs.empty()) {
+        std::vector<float> sortedMs = gBenchFrameMs;
+        std::sort(sortedMs.begin(), sortedMs.end());
+        size_t n = sortedMs.size();
+        double sum = 0; for (float ms : sortedMs) sum += ms;
+        double mean = sum / (double)n;
+        size_t worstN = std::max((size_t)1, n / 100);
+        double worstSum = 0; for (size_t i = n - worstN; i < n; i++) worstSum += sortedMs[i];
+        double onePctLow = worstSum / (double)worstN;
+        double p50 = sortedMs[n / 2];
+        double p95 = sortedMs[(size_t)(n * 0.95)];
+        double p99 = sortedMs[(size_t)(n * 0.99)];
+        printf("\n=== bench frame-time summary (n=%zu) ===\n", n);
+        printf("  mean=%.2fms (%.1f fps)  P50=%.2fms  min=%.2fms  max=%.2fms\n",
+               mean, mean > 0.0 ? 1000.0 / mean : 0.0, p50, sortedMs.front(), sortedMs.back());
+        printf("  P95=%.2fms  P99=%.2fms  1%%-low(avg worst %zu frames)=%.2fms\n",
+               p95, p99, worstN, onePctLow);
+        fflush(stdout);
+    }
 
     if (benchMode) {
         static const char *EN[M_COUNT] = {

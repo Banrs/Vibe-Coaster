@@ -77,7 +77,10 @@ static const float MAX_V    = 82.0f;
 static const float LAUNCH_V = 100.0f;
 static const float CLIMB_V  = 40.0f;
 static float       BOOST_V  = 79.0f;
-static float       BOOST_TRIG = 78.0f;
+// Mirrors opengl/src/main.cpp's BOOST_TRIG=48.0f (verified there via --gaudit sweep): 78 sat
+// above every hard-inversion speed gate in the shared coaster_track.cpp, so LOOP/ROLL/IMMEL/
+// DIVELOOP/COBRA/PRETZEL/HEARTLINE were structurally unreachable on this build too.
+static float       BOOST_TRIG = 48.0f;
 static const Vector3 WUP = { 0, 1, 0 };
 
 // ---- RNG (mirror ../../src/main.cpp) ----

@@ -40,7 +40,24 @@
         sdBase = gpos;
         float v   = Clamp(genV, 40.0f, 95.0f);
 
-        float avail = sdBase.y - groundTopAt(sdBase.x, sdBase.z) - 14.0f;
+        // avail used to be bounded by the START point's terrain only -- STENGEL is a closed-form
+        // element (its whole path is fixed by sdDrop/sdH/sdSpan at init time, with zero per-step
+        // terrain feedback once it's underway, unlike the generic stepGeneric() modes), so a start
+        // point sitting well clear of the ground gave no guarantee the terrain stayed low across the
+        // ~112-364 m the dive travels forward, or across the lateral drift (up to ~L*0.22, the
+        // sdSpan sizing below) the banked path bows out to. Sample a corridor along the fixed
+        // heading (sdF) AND out to sdSide, over the longest/widest this element can possibly run,
+        // and fold that into avail too, so a rising slope anywhere under the actual curved path
+        // trims the dive depth before it's committed instead of the element diving through it.
+        float aheadMax = sdBase.y - 14.0f;
+        for (int la = 1; la <= 26; la++)
+            for (int ls = -1; ls <= 1; ls++) {
+                float latOff = ls * 0.22f * (la * SEG_LEN);   // matches sdSpan = L*0.22 at this reach
+                aheadMax = fminf(aheadMax, sdBase.y - groundTopAt(
+                    sdBase.x + sdF.x * SEG_LEN * la + sdSide.x * latOff,
+                    sdBase.z + sdF.z * SEG_LEN * la + sdSide.z * latOff) - 14.0f);
+            }
+        float avail = fminf(sdBase.y - groundTopAt(sdBase.x, sdBase.z) - 14.0f, aheadMax);
         sdDrop    = Clamp(0.55f * v, 30.0f, 55.0f);
         sdDrop    = fminf(sdDrop, fmaxf(avail, 10.0f));
 
@@ -98,7 +115,43 @@
 
         brH    = Clamp(0.35f * v, 22.0f, 28.0f);
         brH    = fminf(brH, maxClearH());
-        brSpan = Clamp(0.80f * v, 46.0f, 80.0f);   // narrower span -> banana lateral within -5 (ridden fast post-boost)
+        // brSpan/brH are sized from v clamped to <=95, so above genV=95 the element held a FIXED
+        // span while the real ride speed kept climbing (up to the genV hard clamp of 135) -- lateral
+        // g scales with v_real^2 at a fixed span/curvature, so a hot entry above 95 rode this fixed
+        // geometry ~2x hotter than it was sized for (same v^2 bug class as turnMagFor's lo gotcha,
+        // applied to a span instead of a turn rate). Past the 95 m/s design point, shrink span with
+        // 1/genV^2 (holding the v^2*span product, and so lateral g, roughly constant) instead of
+        // holding span fixed.
+        float spanRef = Clamp(0.80f * v, 46.0f, 80.0f);
+        float over    = fmaxf(genV, v) / v;
+        brSpan = spanRef / (over * over);
+
+        // BANANA is a closed-form element (its whole vertical/lateral profile is fixed by
+        // brH/brSpan right here, with zero per-step terrain feedback once underway -- the
+        // same class of blind spot STENGEL had before its own corridor scan below). Its
+        // fU(t) profile always clears its OWN entry height (fU is a parabola, >=0, peaking
+        // at brH mid-element), so it never dives -- but a terrain bump anywhere under the
+        // forward+lateral corridor it actually sweeps can still rise faster than the fixed
+        // climb/roll profile provides, leaving the track under the bump despite still
+        // climbing (measured: --gaudit 300 min clearance case). Sample that corridor
+        // (matching the real es()-scaled lateral spread stepBanana bows out to) and, if some
+        // point needs more clearance than the current brH profile would deliver there, RAISE
+        // brH (never lower it) just enough to clear it -- capped at maxClearH() so this never
+        // asks for more height than the current speed can physically justify.
+        {
+            float L = brSteps * SEG_LEN;
+            float need = 0.0f;
+            for (int la = 1; la <= brSteps; la++) {
+                float t   = (float)la / (float)brSteps;
+                float es  = t * t * (3.0f - 2.0f * t);
+                float fUr = 1.0f - (2.0f * t - 1.0f) * (2.0f * t - 1.0f);   // matches stepBanana's fU shape
+                float tx  = brBase.x + brF.x * (L * t) + brSide.x * (brSpan * es * brDir);
+                float tz  = brBase.z + brF.z * (L * t) + brSide.z * (brSpan * es * brDir);
+                float wantHere = groundTopAt(tx, tz) + 14.0f - brBase.y;
+                if (fUr > 0.15f) need = fmaxf(need, wantHere / fUr);
+            }
+            if (need > brH) brH = fminf(need, maxClearH());
+        }
         remain = brSteps;
     }
     Vector3 stepBanana() {

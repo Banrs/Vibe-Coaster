@@ -304,7 +304,22 @@ struct Track {
         float R   = cbR;
         float Hcr = 1.8f * R;
         float rho = 1.9f * R;
-        float adv = 3.6f * R;
+        // Was 3.6R -- found via --cobratest that this element (both before AND after the
+        // double-loop fU change below) read a severe, asymmetric curvature spike concentrated in
+        // the last few points near the exit (t->1), absent at the entry (t->0): the ORIGINAL
+        // single-hump shape read 28.6G there even though nothing about it had been touched this
+        // session. Root cause: d(hF)/dt = rho*PI*cos(theta)+adv, which at theta->PI (t->1)
+        // approaches adv-rho*PI -- with the old adv=3.6R and rho*PI~5.97R, this is NEGATIVE, i.e.
+        // the path's forward progress briefly stalls (and even reverses) right before the exit.
+        // The convergence loop below resamples cbPts at uniform ARC LENGTH, so a stalled forward
+        // rate means many degrees of theta (and of the fU/hS bend) get compressed into a single
+        // short arc-length sample there -- a real, physical concentration of curvature, not a
+        // measurement artifact. Raising adv well past rho*PI (14R, comfortable margin) keeps
+        // d(hF)/dt positive throughout, spreading that same bend back out over its true arc
+        // length. Confirmed via --cobratest: exit-region peak dropped from 20-28G to a smooth,
+        // unremarkable ~5G that's now in the same range as the two loop peaks themselves, and (as
+        // a bonus) let the radius converge much smaller too -- see CBR_MAX below.
+        float adv = 14.0f * R;
         float theta = PI * t;
         float hF = rho * sinf(theta) + adv * t;
         float hS = rho * (1.0f - cosf(theta));
@@ -314,10 +329,16 @@ struct Track {
         // of it -- geometrically one loop with a wobble, not a cobra, despite the name. beta/up
         // below already assumed two full inversions (passes back through upright at t=0, 0.5,
         // AND 1 -- a dead giveaway the banking was designed for a double-loop shape); only the
-        // vertical position was under-built to match. New profile: two genuine peaks (~1.06*Hcr)
-        // at t=0.25/0.75 with a real elevated saddle between them (~0.5*Hcr at t=0.5, not a
-        // return to ground level), both endpoints at 0.
-        float fU = Hcr * sinf(PI * t) * (1.0f - 0.5f * cosf(4.0f * PI * t));
+        // vertical position was under-built to match.
+        // First attempt used sin(pi*t)*(1-0.5*cos(4*pi*t)): value matches 0 at both endpoints but
+        // its DERIVATIVE does not (measured non-zero via --cobratest, unlike the original
+        // formula, whose (1-cos(2*pi*t)) term has both zero value AND zero slope at t=0/1) -- so
+        // despite ending at height 0, the path was still actively tilting right at the exit
+        // boundary, reading as a real curvature spike there rather than at either loop peak.
+        // sin(pi*t)^2 fixes this: it and its derivative both vanish at t=0 and t=1 (a proper
+        // Hann-style window), matching the original's level in/out property while still framing
+        // the double-hump.
+        float fU = Hcr * sinf(PI * t) * sinf(PI * t) * (1.0f - 0.5f * cosf(4.0f * PI * t));
         pos = { cbBase.x + cbF.x * hF + cbSide.x * hS,
                 cbBase.y + fU,
                 cbBase.z + cbF.z * hF + cbSide.z * hS };
@@ -344,15 +365,18 @@ struct Track {
         // real; this loop computes a REAL (non-planar) g directly from 3-pt curvature, so GCAP is
         // set straight to that target (was 6.5, closed the last small gap to it).
         const float GCAP = 6.7f;
-        // Raised from 34: the double-loop fU above needs real room for each hump to develop
-        // gently -- at the old cap the convergence loop below couldn't reach GCAP at all for any
-        // realistic entry speed (it would just pin at 34 with real g still far over target, not
-        // converge). 55 is the point where it actually converges (settles below the cap on its
-        // own, e.g. cbR~54 at 40 m/s) rather than merely being clamped there -- verified safe at
-        // COBRA's own worst realistic entry (its eligibility gate, ~44.7 m/s): 6.24G, real margin
-        // under the 9.8 hard ceiling, plus another ~4 m/s of buffer past the gate before it climbs
-        // toward that ceiling.
-        const float CBR_MAX = 55.0f;
+        // With the exit-spike bug above fixed (adv), the convergence loop actually reaches GCAP
+        // on its own now instead of pinning at whatever cap is set -- e.g. cbR settles to ~32-37
+        // across COBRA's whole realistic entry-speed range, comfortably below this 42 cap, rather
+        // than being clamped there. (Before that fix, raising this cap alone just chased the
+        // artifact: it took CBR_MAX=55+ to satisfy the convergence loop, and even then the real
+        // peak height ballooned to ~110m+, ~3x an actual cobra roll's real-world scale of
+        // ~30-40m, without the underlying spike actually going away.) Verified via --cobratest
+        // across genV 40-48 (spanning COBRA's own eligibility gate, ~44.7 m/s): worst case ~5.4G,
+        // real margin under GCAP, peakHeight 55-62m -- bigger than a real cobra roll (matches this
+        // session's "signature element, don't shrink the scale" philosophy) but no longer wildly
+        // disproportionate.
+        const float CBR_MAX = 42.0f;
         cbR = fminf(cbR, CBR_MAX);
 
         float v = fmaxf(genV, 30.0f) * 1.12f;

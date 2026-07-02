@@ -146,6 +146,18 @@ static const char *SHADOW_FS =
     "float wvn(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);\n"
     "  return mix(mix(wh2(i),wh2(i+vec2(1,0)),f.x), mix(wh2(i+vec2(0,1)),wh2(i+vec2(1,1)),f.x), f.y); }\n"
 
+    // Analytic sky-gradient reflection sample, tinted toward the sun near R==lightDir.
+    // Originally lived only inside waterShade (duplicated inline); factored out so the
+    // new metal-reflection term below (bare iron/gold "sheen" surfaces) can reuse the
+    // exact same sky approximation water already uses, instead of a second copy.
+    "vec3 skyReflect(vec3 R){\n"
+    "  float ry = clamp(R.y, 0.0, 1.0);\n"
+    "  vec3 skyZen  = vec3(0.24, 0.46, 0.86);\n"
+    "  vec3 skyHorz = vec3(0.52, 0.70, 0.92);\n"
+    "  vec3 sky = mix(skyHorz, skyZen, pow(ry, 0.45));\n"
+    "  float sunGlow = pow(max(dot(R, lightDir), 0.0), 8.0);\n"
+    "  return mix(sky, sunCol*0.55, 0.30*sunGlow);\n"
+    "}\n"
     "vec3 waterShade(vec3 baseCol, float rawSh, float foam){\n"
     "  vec3 V = normalize(viewPos - fragWorld);\n"
     "  vec2 w = fragWorld.xz;\n"
@@ -172,12 +184,7 @@ static const char *SHADOW_FS =
     "  vec3 deep = body * (0.62 + 0.46*ndlW*mix(0.4,1.0,rawSh)) + groundCol*0.04;\n"
 
     "  vec3 R = reflect(-V, N);\n"
-    "  float ry = clamp(R.y, 0.0, 1.0);\n"
-    "  vec3 skyZen  = vec3(0.24, 0.46, 0.86);\n"
-    "  vec3 skyHorz = vec3(0.52, 0.70, 0.92);\n"
-    "  vec3 sky = mix(skyHorz, skyZen, pow(ry, 0.45));\n"
-    "  float sunGlow = pow(max(dot(R, lightDir), 0.0), 8.0);\n"
-    "  vec3 refl = mix(sky, sunCol*0.55, 0.30*sunGlow);\n"
+    "  vec3 refl = skyReflect(R);\n"
     "  vec3 col = mix(deep, refl, fres);\n"
 
     "  vec3 H = normalize(lightDir + V);\n"
@@ -264,6 +271,22 @@ static const char *SHADOW_FS =
     "    }\n"
     "  }\n"
     "  vec3 col = albedo*(ambient + direct) + sunCol*(spec + aniso*0.85) + skyCol*rim;\n"
+    // Metal reflection: bare iron/gold surfaces (rails, spine, ties, trim -- anything
+    // the existing `sheen` mask already flags as "shiny", the same mask spec/rim already
+    // use) get a sky reflection blended in via Fresnel, reusing skyReflect() from
+    // waterShade above rather than a second copy of the sky approximation. Blended
+    // (mix), not additive, so it stays energy-conserving and doesn't feed spurious
+    // extra brightness into the post-process bloom threshold. METAL_REFLECT_STRENGTH
+    // caps the blend well under 1 (max ~0.30 at full sheen and grazing angle) -- a
+    // hint of reflectivity, not a mirror finish.
+    "  if(sheen > 0.001){\n"
+    "    const float METAL_REFLECT_STRENGTH = 0.35;\n"
+    "    vec3 Rm = reflect(-V, N);\n"
+    "    vec3 metalRefl = skyReflect(Rm);\n"
+    "    float NoV2 = max(dot(N,V), 0.0);\n"
+    "    float fresM = clamp(0.04 + 0.96*pow(1.0-NoV2, 5.0), 0.04, 0.85);\n"
+    "    col = mix(col, metalRefl, sheen*fresM*METAL_REFLECT_STRENGTH);\n"
+    "  }\n"
     "  if(legacyTonemap > 0.5){\n"
     "    col = aces(col*0.94);\n"
     "    col = pow(col, vec3(1.0/2.2));\n"

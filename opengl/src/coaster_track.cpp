@@ -143,7 +143,7 @@ struct Track {
         }
 
         mode = M_CLIMB; mega = false; chainMode = false; remain = irnd(10, 13);
-        climbTop = frnd(110.0f, 160.0f);
+        climbTop = frnd(140.0f, 175.0f);   // lift-hill height toward WR (Falcon's Flight structure ~163m); was 110-160 (0.67-0.98x, below the 0.8x band). Mega top-hat (196-206m) stays the WR-scale signature drop.
         ensureAhead(24);
     }
 
@@ -450,7 +450,7 @@ struct Track {
         // that STAYS inverted -- but peaking close to full inversion and rolling back out is a
         // real, distinct, dramatic maneuver in its own right, and reads as the corkscrew-style
         // roll the name promises instead of a shallow tilt.
-        bankT     = frnd(2.55f, 2.95f);                // ~146-169 degrees at peak -- near-full inversion, not a lean
+        bankT     = 0.70f;   // OVER-BANK FRACTION toward inversion: thetaH(~72deg)+0.70*(180-72)~=148deg at apex -- WINGOVER's signature near-inverted half-corkscrew, now eased in/out by curvature (shape) instead of a fixed target
         hillBumps = 1;
         hillH     = frnd(20.0f, 28.0f);               // gentler crest -> less vertical g projected to lateral during the roll
         hillH     = fminf(hillH, maxClearH());
@@ -527,7 +527,7 @@ struct Track {
         return Clamp(0.68f * v * v / (gT * GRAV), lo, hi);
     }
 
-    float maxClearH(float crestMin = 28.0f) const {
+    float maxClearH(float crestMin = 36.0f) const {   // crest-speed floor 28->36 m/s: caps STALL/airtime height so the tallest ballistic (0-g) crest still carries >=36 m/s (129 km/h), matching the new speed floor -- keeps the STALL float exactly ballistic instead of the re-power having to over-float a fixed parabola
         return fmaxf((genV * genV - crestMin * crestMin) / (2.0f * GRAV) - 5.0f, 6.0f);
     }
 
@@ -627,7 +627,7 @@ struct Track {
         // ~5.0 (well under -6/+9.8), room to raise toward the same duration target as the vertical.
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
         hillTurn  = turnDir * turnMagFor(1.5f, 0.008f, 0.055f);
-        bankT     = fabsf(hillTurn) * 1.2f;
+        bankT     = 0.0f;   // pure heartline (over-bank fraction; see stepGeneric bank block): a steady banked hill-turn banks exactly to its own lateral load
         remain    = hillLen;
     }
     void initTurn(bool big) {
@@ -639,8 +639,8 @@ struct Track {
         // clamp (135 m/s) -- a floor any higher silently re-flattens the curve back
         // out at extreme speed and reintroduces the v^2 lateral-g growth the
         // speed-scaling exists to prevent (see initHills).
-        if (big) { turnMag = turnMagFor(5.0f, 0.025f, 0.45f); bankT = frnd(0.92f, 1.28f); remain = irnd(4, 6); }
-        else     { turnMag = turnMagFor(3.0f, 0.015f, 0.18f); bankT = frnd(0.30f, 0.62f); remain = irnd(3, 5);  }
+        if (big) { turnMag = turnMagFor(5.0f, 0.025f, 0.45f); bankT = 0.15f; remain = irnd(4, 6); }   // big TURN: small over-bank past its ~79deg heartline for a dramatic hard-turn lean
+        else     { turnMag = turnMagFor(3.0f, 0.015f, 0.18f); bankT = 0.0f; remain = irnd(3, 5);  }   // small TURN: pure heartline
     }
     void initHelix() {
         mode = M_HELIX;
@@ -682,7 +682,7 @@ struct Track {
         // the +13/-16g bug this budget was chosen to fix); now stays out of the way
         // up to the genV hard clamp.
         turnMag = turnMagFor(6.0f, 0.02f, 0.60f);
-        bankT   = frnd(0.62f, 0.82f);
+        bankT   = 0.10f;   // HELIX: slight over-bank on top of its gT=6 heartline, continuous over the coil
 
         float R = SEG_LEN / turnMag;
 
@@ -711,7 +711,7 @@ struct Track {
         // lowered (was 0.11, reached below 87 m/s) so it stays out of the way up to
         // the genV hard clamp instead of re-flattening the curve at extreme speed.
         turnMag   = turnMagFor(5.0f, 0.025f, 0.34f);
-        bankT     = frnd(0.42f, 0.68f);
+        bankT     = 0.0f;   // SCURVE: pure heartline -- the roll now sweeps continuously through 0 at the S inflection
         scurveLen = irnd(6, 10);
         remain    = scurveLen;
     }
@@ -720,7 +720,7 @@ struct Track {
         setClearance(4.0f, 24.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
         turnMag = turnMagFor(4.0f, 0.02f, 0.36f);   // lo lowered, see initTurn/initHelix
-        bankT   = frnd(0.78f, 1.12f);
+        bankT   = 0.20f;   // DIVE: over-bank fraction -> past-vertical lean for the diving turn, eased by shape
         remain  = irnd(4, 7);
     }
     void initBankAir() {
@@ -738,7 +738,7 @@ struct Track {
         // (1.4 still cleared -6 at the top of the speed range across 150 seeds).
         turnDir   = (rnd01() < 0.5f) ? -1.0f : 1.0f;
         hillTurn  = turnDir * turnMagFor(1.5f, 0.008f, 0.065f);
-        bankT     = frnd(0.18f, 0.42f);
+        bankT     = 0.0f;   // BANKAIR: pure heartline
         remain    = hillLen;
     }
     void initWave() {
@@ -756,7 +756,7 @@ struct Track {
         // g with v^2 well past -6 (--gaudit at 60+ seeds); this holds ~1.75g lateral
         // at any entry speed instead.
         hillTurn  = turnDir * turnMagFor(1.75f, 0.012f, 0.08f);
-        bankT     = frnd(0.20f, 0.48f);
+        bankT     = 0.0f;   // WAVE: pure heartline, banking into its turn
         remain    = hillLen;
     }
     void initDip() {
@@ -1019,7 +1019,7 @@ struct Track {
                     {
                         float vCrest = mega ? 30.0f : 38.0f;
                         float reach  = (genV * genV - vCrest * vCrest) / (2.0f * GRAV) - 10.0f;
-                        float want   = mega ? frnd(196.0f, 206.0f) : frnd(110.0f, 165.0f);
+                        float want   = mega ? frnd(196.0f, 206.0f) : frnd(140.0f, 175.0f);   // non-mega lift-hill raised off the sub-0.8x-WR floor (see startLaunch); mega arm unchanged (already 1.2x WR)
                         climbTop = Clamp(fminf(want, reach), 60.0f, 206.0f);
                     }
                     remain = mega ? irnd(11, 14) : irnd(6, 8);   // enough steps to actually reach ~200 m
@@ -1107,23 +1107,35 @@ struct Track {
         }
 
         if (mode != M_LAUNCH && mode != M_BOOST && mode != M_STATION && !stationRamping) {
-            // Gentler heading-rate ramp (jerk) at seams so the spline doesn't overshoot the
-            // turn entry/exit into a lateral-g spike; the coefficient is speed-scaled.
-            float jlimYaw = Clamp(1.1f * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.0010f, 0.16f);
+            // Transition-jerk limiter: bounds how fast dyaw may CHANGE step-to-step, ramping the
+            // turn rate in/out at seams so the spline never overshoots into a lateral-g spike.
+            // Coefficient raised 1.1->1.8 and ceiling 0.16->0.20: at typical speed the old 0.031
+            // rad/step ramp took ~4 steps to reach the plateau, and a big TURN is only 4-6 steps,
+            // so short turns spent their whole length ramping and NEVER reached full turn rate --
+            // the jerk limiter was doubling as a SUSTAINED tamer on short elements. A ~2-3 step
+            // ramp is still smooth relative to the ~1-cp felt-g du-window (no discontinuity), but
+            // lets short turns actually reach their (now higher) plateau and ease back out.
+            float jlimYaw = Clamp(1.8f * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.0010f, 0.20f);
             dyaw = Clamp(dyaw, genPrevDyaw - jlimYaw, genPrevDyaw + jlimYaw);
-            // Cap sustained turn rate so lateral g stays near the +9.8 limit (not above) at the speeds
-            // turns are ridden. Higher cap = TIGHTER turns/helices (smaller, more thrilling) instead of
-            // the old huge-radius low-g spirals. The felt-g safety net still trims anything over.
-            float vCap = fmaxf(genV, 80.0f);
-            // Must track initHelix()'s turnMagFor() budget (6.0, raised from 4.5 -- see the long
-            // comment in initHelix() for the duration-scaled-sustained-g reasoning and why 6.0, not
-            // a higher value, was chosen) -- this is the live per-step clamp on the same quantity, so
-            // the two have to agree or this silently overrides it (this exact mismatch previously
-            // masked a 4.5->9.0 sweep experiment entirely until both were updated together).
-            // Non-helix budget trimmed 5.5->5.0: real (spline-measured) g runs ~1.15-1.2x
-            // this planar nominal (see initSCurve), so 5.5 nominal could still clear -6/+9.8.
-            float capK = (mode == M_HELIX) ? 6.0f : 5.0f;
-            float dyawMax = capK * SEG_LEN * GRAV / (vCap * vCap);
+            // DECOUPLED turn-rate cap. The old cap fused TWO roles into one quantity
+            // (vCap = fmaxf(genV, 80)): a g-limiter AND an implicit arc-collapse geometry guard.
+            // Because they were fused, sustained g couldn't be raised without either keeping the
+            // vCap=80 floor -- which tamed typical-speed g to capK*(genV/80)^2 (~4.6 planar helix
+            // at genV=70 vs a 6g target) -- or lowering the floor, which simultaneously destroyed
+            // the geometry guard and let low-speed dyaw balloon into the felt-g du-window's 2 m
+            // arc-length floor (the -29.9G-on-FLAT experiment). Split them:
+            //   dyawG   = g-sized cap at the REAL speed (not a floored speed). For genV>=80 this
+            //             binds and delivers g=capK exactly as before -- no regression at speed;
+            //             for genV<80 it now allows the full capK planar g instead of shrinking it.
+            //   dyawGeo = explicit speed-INDEPENDENT geometric ceiling: horizontal turn radius
+            //             = SEG_LEN/dyaw stays >= ~90 m, so the felt-g du-window arc can NEVER pin
+            //             to its 2 m floor at any ride speed. This is the collapse guard the vCap
+            //             floor used to do implicitly -- but as a fixed geometry limit it cannot
+            //             balloon at low speed, which is exactly why it's safe where vCap=25 wasn't.
+            float capK    = (mode == M_HELIX) ? 6.0f : 5.0f;
+            float dyawG   = capK * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f);
+            float dyawGeo = (mode == M_HELIX) ? 0.150f : 0.130f;   // R_horiz >= 93/108 m; ~7.4-8.6 deg/seg
+            float dyawMax = fminf(dyawG, dyawGeo);
             dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;
         }
@@ -1328,34 +1340,36 @@ struct Track {
             Vector3 f = headingVec();
             Vector3 side = Vector3Normalize(Vector3CrossProduct(WUP, f));
 
-            float dir = (mode == M_SCURVE && (scurveLen - remain) >= scurveLen / 2)
-                        ? -turnDir : turnDir;
-            // WAVE used to force dir=-turnDir here, banking AWAY from the direction it was
-            // actually yawing (dyaw for M_WAVE is hillTurn = turnDir*rate, same sign
-            // convention HILLS/BANKAIR use and bank correctly with via the default `dir =
-            // turnDir` above) -- so WAVE was the one element of this hillTurn-driven family
-            // that leaned its up-vector outward, away from the turn center, instead of into
-            // it like a real coaster banks. No functional reason for the flip (HILLS/BANKAIR
-            // share the exact same dyaw mechanic and don't flip); removed so WAVE banks into
-            // its turn like its siblings.
-            //
-            // bank used to be the FULL target (bankT*dir) from the very first step of the
-            // element, regardless of how much the track is actually yawing right then -- the
-            // per-step jerk/safety clamps above (jlimYaw, capK) already ease the REAL applied
-            // dyaw in from 0 up to its plateau and back down to 0 at the seams, but bank had no
-            // matching ramp of its own, only the caller's fixed-rate easeUpVec() catching up to
-            // a constant target. With a short element (4-6 steps) and a real coaster-scale bank
-            // (up to ~1.28 rad), that catch-up rate could take about as long as the whole
-            // element, so the whole thing was spent racing to a full lean while the actual
-            // curve had barely started turning -- reads as one big lateral snap rather than a
-            // lean that builds and eases with the curve. Scale bank by how close the CURRENT
-            // yaw rate is to this element's own plateau (dyaw is already fully resolved above,
-            // after the same clamps): ramps in/out in lockstep with the real turning instead of
-            // its own independent schedule, and never leans harder than the track is actually
-            // curving.
+            // Lean INTO the turn. sign(dyaw) carries the turn direction AND SCURVE's mid-element
+            // reversal (dyaw already flips at the S's inflection via the same half-index test the
+            // old manual `dir` used), so the bank now passes smoothly through 0 at the inflection
+            // instead of snapping via an index flip. dyaw is jerk-limited above, so this is C1.
+            // (For TURN/HELIX/DIVE/WINGOVER/HILLS/BANKAIR/WAVE sign(dyaw)==turnDir, reproducing the
+            // old convention -- including the earlier WAVE dir-flip fix, since hillTurn=turnDir*rate.)
+            float dir = (dyaw >= 0.0f) ? 1.0f : -1.0f;
+            // CONTINUOUS HEARTLINE bank. The old bank was a per-element random constant (bankT)
+            // gated by a curvature ratio that saturated to 1 across the whole plateau -- so the
+            // up-vector was one frozen lean per element that snapped to a new one every element
+            // (~2-3 s), the reported "single angle that changes, not fluid". Instead, tilt so the
+            // net (gravity + lateral centripetal) vector stays in the rider's vertical plane -- a
+            // real heartline. Lateral accel comes from the FULLY-RESOLVED local curvature: the
+            // horizontal step is exactly SEG_LEN (gpos.x/z advance by sin/cos*SEG_LEN regardless
+            // of dy), so horizontal kappa = |dyaw|/SEG_LEN and a_lat = genV^2*kappa. This is a
+            // per-control-point function of the REAL turn: 0 at entry, peaks at the apex, eases to
+            // 0 at exit, C1 because dyaw is jerk-limited. kLat tunes the felt split: 1.3 fully
+            // heartlines (felt-lateral -> ~0, all g into the seat); 1.0 slightly under-banks,
+            // leaving ~20-25% residual felt-lateral thrill (keeps the audit's sustained lateral
+            // in the wanted band). bankT is now a unitless OVER-BANK FRACTION in [0,1]: 0 = pure
+            // heartline; >0 leans past heartline toward full inversion (PI) for signature elements
+            // (WINGOVER's near-inverted half-corkscrew, DIVE), eased in/out by `shape` so the
+            // over-bank builds and releases WITH the curve rather than as a constant. The heartline
+            // base needs no taper of its own -- thetaH already vanishes as dyaw ramps to 0.
+            const float kLat = 1.0f;
+            float aLat   = kLat * genV * genV * fabsf(dyaw) / SEG_LEN;   // lateral accel (m/s^2)
+            float thetaH = atan2f(aLat, GRAV);                          // heartline angle, 0..~PI/2
             float nomRate = (mode == M_HILLS || mode == M_BANKAIR || mode == M_WAVE) ? fabsf(hillTurn) : turnMag;
-            float rateFrac = Clamp(fabsf(dyaw) / fmaxf(nomRate, 1e-4f), 0.0f, 1.0f);
-            float bank = bankT * dir * rateFrac;
+            float shape  = Clamp(fabsf(dyaw) / fmaxf(nomRate, 1e-4f), 0.0f, 1.0f);
+            float bank   = dir * (thetaH + (PI - thetaH) * bankT * shape);
             upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(bank)),
                                               Vector3Scale(side, sinf(bank))));
         }
@@ -1579,7 +1593,12 @@ struct Track {
         }
 
         {
-            const float Gmax = 6.3f, Gmin = -3.0f;   // relax target below the +8/-5 limit so spline overshoot lands within it
+            // Gmin was the DOMINANT airtime tamer: this pass hard-sets crest curvature so felt
+            // airtime bottoms near Gmin, and at -3.0 (amplified by the gvlog-vs-actual-speed
+            // underestimate) it landed ~-4.6, well short of the -6 airtime target. -4.7 pushes
+            // sustained airtime toward -6 without a geometry change. Gmax 6.3->6.5 stops this pass
+            // from shaving a genuine 6g crest once the du-window/overshoot are included.
+            const float Gmax = 6.5f, Gmin = -4.7f;
             int n = (int)cp.size();
             // NOTE: widening this window (tried 14->22, to give neighbours more time to settle before
             // a cp freezes -- e.g. the rare FLAT +10.4g seen at 150-seed gaudit) backfires: LOOP/
@@ -1651,7 +1670,11 @@ struct Track {
                     float v2 = fmaxf(1.3f * gvlog[i] * gvlog[i], 100.0f);
                     float gV = Vector3DotProduct(WUP, u) + v2 * Vector3DotProduct(kap, u) / GRAV;
                     float gL = v2 * Vector3DotProduct(kap, lat) / GRAV;
-                    if (gV > 9.4f || gV < -5.7f || gL > 9.4f || gL < -5.7f) {
+                    // Vertical-negative trigger relaxed -5.7 -> -6.3: the -5.7 branch was a hard
+                    // ceiling clipping sustained airtime just short of the -6 target. The net still
+                    // carries its 1.3x speed margin, so this lets airtime reach -6 while still
+                    // trimming true busts beyond it. Lateral and positive-vert triggers untouched.
+                    if (gV > 9.4f || gV < -6.3f || gL > 9.4f || gL < -5.7f) {
                         Vector3 mid = Vector3Scale(Vector3Add(cp[i - 1], cp[i + 1]), 0.5f);
                         cp[i] = Vector3Lerp(cp[i], mid, 0.5f);
                     }
@@ -1717,7 +1740,14 @@ struct Track {
                 if      (tag == M_BOOST)                               genV += 112.0f * fmaxf(0.0f, 1.0f - genV / 89.0f) * gdt;
                 if (ch && slope > 0.05f) { float lv = (slope > 0.55f) ? 27.0f : CHAIN_V; if (genV < lv) genV = fminf(genV + 20.0f * gdt, lv); }
 
-                genV = fmaxf(genV, 20.0f); genV = fminf(genV, 135.0f);
+                // genV floor 20->36 to match the ride's new operative >=36 m/s (129 km/h) floor
+                // (the un-gated re-power in main.cpp). CRITICAL COUPLING: elements are sized from
+                // genV -- invR ~ v^2/(gT*g), turnMagFor, maxClearH, stallH all read it -- so if the
+                // ride holds 36 but the generator sized a radius for 20, that radius is too tight
+                // for the 36 m/s pass and g blows up. Because radii are g-preserving (g=v^2/(R*g)
+                // and R~v^2 => g constant), raising BOTH floors to the same 36 keeps geometry
+                // matched to the real speed: g-neutral, not a de-rate.
+                genV = fmaxf(genV, 36.0f); genV = fminf(genV, 135.0f);
             }
         }
     }

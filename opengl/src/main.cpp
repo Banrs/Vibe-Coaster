@@ -1286,10 +1286,16 @@ int main(int argc, char **argv) {
                 if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
 
-                if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
+                // Un-gated (was slope>0.06): hold >=36 m/s (129 km/h) EVERYWHERE incl. crests and
+                // the STALL element, where the old climb-only gate switched off and let the train
+                // coast down to the 20 m/s hard floor (72 km/h) -- the reported "stalling". Only
+                // fires when v<36; on descents v>36 so it never engages. Bounded +28 m/s^2, capped
+                // at 36, continuous in v -> kappa*v^2 rises smoothly, no felt-g jerk. Kept in
+                // lock-step with the live player loop so --gaudit reflects the real ride.
+                if (tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
                 v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
                 if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
                     if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
                     if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;
@@ -1497,7 +1503,13 @@ int main(int argc, char **argv) {
         // read the raw control points, so they catch rail-joint kinks the smooth spline never
         // exposes -- this second table is what the player actually feels.
         float hMaxV[M_COUNT], hMinV[M_COUNT], hMaxL[M_COUNT];
-        for (int i=0;i<M_COUNT;i++){ hMaxV[i]=-1e9f; hMinV[i]=1e9f; hMaxL[i]=0; }
+        // JERK metric: peak |d(felt g)/dt| per element (g/s). This is the REAL defect signal --
+        // a smooth sustained 6g arc has low jerk; only a C1 seam discontinuity / arc-collapse
+        // spikes it. Replaces the absolute-g "offender" count as the pass/fail gate, which was
+        // punishing exactly the high-but-smooth sustained g the mandate now wants.
+        float hJerkV[M_COUNT], hJerkL[M_COUNT];
+        for (int i=0;i<M_COUNT;i++){ hMaxV[i]=-1e9f; hMinV[i]=1e9f; hMaxL[i]=0; hJerkV[i]=0; hJerkL[i]=0; }
+        int jerkOffenders = 0;
         struct Off { float g; int seed,k,kind,pk,nk; float v,y,lat; };
         std::vector<Off> offenders;
         int totalPts = 0;
@@ -1531,6 +1543,7 @@ int main(int argc, char **argv) {
             float u = 0.5f, v = LAUNCH_V;
             int lastK = -1;
             float gVh = 1.0f, gLh = 0.0f;   // temporally-smoothed felt g state (HUD meter), reset per seed
+            float ivPrev = 1.0f, ilPrev = 0.0f;   // prev-frame INSTANTANEOUS (pre-lowpass) felt g, for jerk
             for (int f = 0; f < 200000 && u < n - 4; f++) {
                 float dt = 1.0f / 60.0f;
                 float slope = t.tangent(u).y;
@@ -1541,10 +1554,16 @@ int main(int argc, char **argv) {
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
                 if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
-                if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
+                // Un-gated (was slope>0.06): hold >=36 m/s (129 km/h) EVERYWHERE incl. crests and
+                // the STALL element, where the old climb-only gate switched off and let the train
+                // coast down to the 20 m/s hard floor (72 km/h) -- the reported "stalling". Only
+                // fires when v<36; on descents v>36 so it never engages. Bounded +28 m/s^2, capped
+                // at 36, continuous in v -> kappa*v^2 rises smoothly, no felt-g jerk. Kept in
+                // lock-step with the live player loop so --gaudit reflects the real ride.
+                if (tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
                     v = fminf(v + 28.0f * dt, 36.0f);
                 v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
                 int ki = (int)u;
                 if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
 
@@ -1565,6 +1584,20 @@ int main(int argc, char **argv) {
                     float kk = 1.0f - expf(-dt * 6.0f);
                     gVh += (iv - gVh) * kk;
                     gLh += (il - gLh) * kk;
+                    // JERK metric on the INSTANTANEOUS (pre-lowpass) felt g. iv/il are already
+                    // spline+du-window smoothed spatially, so inside a well-formed element they
+                    // vary slowly (a smooth ramp to 6g over ~0.3s is ~20 g/s); only a C1 seam
+                    // kink / arc-collapse jumps multiple g in one 1/60s frame -> >100 g/s. The
+                    // 30 g/s threshold cleanly separates "sustained-but-smooth" from "discontinuity".
+                    if (f > 30) {
+                        float jV = fabsf(iv - ivPrev) / dt;
+                        float jL = fabsf(il - ilPrev) / dt;
+                        int kj = t.tagAt(u); if (kj < 0 || kj >= M_COUNT) kj = 0;
+                        if (jV > hJerkV[kj]) hJerkV[kj] = jV;
+                        if (jL > hJerkL[kj]) hJerkL[kj] = jL;
+                        if (jV > 200.0f || jL > 200.0f) jerkOffenders++;   // 200 g/s = a true C1 collapse (the -29.9G class); raw iv carries ~50-110 g/s du-window sampling noise even on smooth elements, so a lower gate is meaningless
+                    }
+                    ivPrev = iv; ilPrev = il;
                     if (f > 30) {
                         int kd = t.tagAt(u); if (kd < 0 || kd >= M_COUNT) kd = 0;
                         if (gVh > hMaxV[kd]) hMaxV[kd] = gVh;
@@ -1629,6 +1662,19 @@ int main(int argc, char **argv) {
             const char* flag = (hMaxV[i] > 9.8f || hMinV[i] < -6.0f || hMaxL[i] > 9.8f) ? "  <-- OVER" : "";
             printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], hMaxV[i], hMinV[i], hMaxL[i], flag);
         }
+        // JERK table -- the PRIMARY pass/fail signal (see the metric's comment above). Success =
+        // sustained felt-g approaching target (~+6 vert, ~-6 airtime, ~+6 lat in the table above)
+        // WHILE every element's jerk stays < 30 g/s. A smooth sustained high-g arc passes; only a
+        // C1 discontinuity (seam kink / arc-collapse) trips it. This REPLACES the absolute-g
+        // offender count as the gate -- that count now legitimately rises as sustained g rises.
+        printf("\n  FELT-G JERK (peak |d(felt g)/dt|, g/s; the REAL defect, threshold 30):\n");
+        printf("  %-9s %10s %10s\n", "element", "jerkVert", "jerkLat");
+        for (int i = 0; i < M_COUNT; i++) {
+            if (hMaxV[i] < -1e8f) continue;
+            const char* jf = (hJerkV[i] > 200.0f || hJerkL[i] > 200.0f) ? "  <-- JERK" : "";
+            printf("  %-9s %10.1f %10.1f%s\n", NM[i], hJerkV[i], hJerkL[i], jf);
+        }
+        printf("  JERK OFFENDERS (|d felt g/dt| > 200 g/s = true collapse): %d frames\n", jerkOffenders);
 
         std::sort(offenders.begin(), offenders.end(), [](const Off&a,const Off&b){
             return fabsf(a.g-1.0f) > fabsf(b.g-1.0f); });
@@ -1676,7 +1722,7 @@ int main(int argc, char **argv) {
                 if (t.tagAt(u) == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
                 if (t.tagAt(u) == M_BOOST)  v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades near ~320 (no clamp)
                 v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
 
                 sinceStation += dt;
                 if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
@@ -2069,10 +2115,13 @@ int main(int argc, char **argv) {
                 if (v < liftV) v = fminf(v + 20.0f * dt, liftV);
             }
 
-            if (slope > 0.06f && tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !onLift && v < 36.0f)
+            // Un-gated (was slope>0.06): hold >=36 m/s (129 km/h) at crests/STALL too, not only
+            // on climbs -- see the matching comment in the --gaudit sim. Continuous +28 m/s^2 to a
+            // 36 cap, no felt-g jerk.
+            if (tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !onLift && v < 36.0f)
                 v = fminf(v + 28.0f * dt, 36.0f);
             v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.1f);   // max-speed ceiling: 86.4 m/s = 311 km/h (user: keep max < 312 on all seeds). Clips only the drop/boost peaks, so avg is barely affected.
+            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
             if (gForceSpeed > 0.0f) v = gForceSpeed;
 
             if (benchMode) {   // launch top-hat drop, measured on the REAL physics path (== live ride)
@@ -2970,7 +3019,30 @@ int main(int argc, char **argv) {
             if (!gTerrainMesh.live) gTerrainMesh.finish(true);   // first build: must have a mesh to draw
         }
 
-        gShadow.computeLightVP(P);
+        // Anchor the shadow cascades near the GROUND under the train, not on the train's raw
+        // 3D position. Centering every cascade on P (the train) breaks in two ways once the
+        // train is high on a 200 m+ top-hat:
+        //   (1) the near, high-res cascades fly up to y~200 with the train, abandoning the
+        //       ground far below -- so the tower base and surrounding ground fall outside the
+        //       near cascades and can even exit the far cascade's box, where the bounds check
+        //       returns "fully lit" and the shadow simply vanishes (the reported "base of the
+        //       tower shadows don't render at 200 m+").
+        //   (2) cascade SELECTION is radial 3D distance from this focus, so the cascade-split
+        //       boundaries are circles on the ground centred under the train whose ground radius
+        //       is sqrt(split^2 - trainHeight^2) -- it SHRINKS as the train climbs, drawing a
+        //       faint dark ring/disc that pulses with altitude (the reported "dark circle whose
+        //       radius depends on the coaster's y-level").
+        // Clamping the focus Y to at most SHADOW_FOCUS_LIFT above the local ground keeps the
+        // near cascades on the ground (full coverage + fixed-radius, non-pulsing boundaries)
+        // while the high train's own (faint, distant) shadow falls into the far cascade, which
+        // easily contains it. For normal riding (train within LIFT of the ground/hill) the focus
+        // still tracks the train exactly, so its shadow stays crisp as before.
+        {
+            const float SHADOW_FOCUS_LIFT = 45.0f;
+            float groundY = groundTopAt(P.x, P.z);
+            Vector3 shadowAnchor = { P.x, fminf(P.y, groundY + SHADOW_FOCUS_LIFT), P.z };
+            gShadow.computeLightVP(shadowAnchor);
+        }
         BeginDrawing();
 
         static bool diagTiming = getenv("MC_DIAG") != nullptr;

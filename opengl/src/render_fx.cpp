@@ -163,25 +163,32 @@ static const char *SHADOW_FS =
     // (~0.005) so the penumbra is actually visible at this game's scale
     // rather than a few sub-pixel texels, matching the "soft with distance"
     // look this pass is going for without pretending to be physically exact.
-    // Was 0.06 (~13x real) with an 11-texel cap: for an elevated blocker like
-    // the coaster/train riding high above the ground (hilltop, loop apex),
-    // worldZDiff grows into the tens of metres and the filter radius pinned
-    // at its max almost immediately -- with only 12 fixed PCF taps spread
-    // over that large a disk, the result undersamples into a blotchy, more
-    // solid-looking dark patch under the train rather than a smooth soft
-    // edge, and it visibly swells/shrinks as the coaster's height changes
-    // (reported as "a fake circular shadow chasing the coaster" / "darker
-    // for no reason, depends on y level"). Toned both knobs down so the
-    // penumbra still softens with height but stays far short of the
-    // undersampling regime at any height this track reaches.
-    // MIN/MAX clamp the resulting filter radius in texels: MIN keeps a touch
-    // of softness even for near-contact blockers (avoids a hard PCF-sized
-    // edge right where the penumbra should be tightest), MAX stops the filter
-    // from growing into a blurry mess for distant/large occluders.
+    // The penumbra half-width is now clamped in WORLD METRES, then converted to
+    // texels PER CASCADE at each use site -- this is the real fix for the
+    // "dark circle whose radius depends on the coaster's y-level".
+    //
+    // The old clamp was in TEXELS (MIN=1.1, MAX=6.0), but a texel is a different
+    // world size in each cascade: pcssTexelWorldN = 2*R/SM = 0.031 m (near),
+    // 0.098 m (mid), 0.25 m (far). And cascade selection is by distance from the
+    // focus, so an ELEVATED train pushes the ground beneath it into the far,
+    // coarse cascade -- where the same 6-texel clamp is 6*0.25 = 1.5 m of world
+    // penumbra, vs 0.19 m in the near cascade. As the train climbs it crosses
+    // into coarser cascades and the world penumbra swells 0.19 -> 0.59 -> 1.5 m,
+    // and blockerSearch (a Poisson DISK) isotropically dilates that thin train
+    // shadow into a metre-scale DISC -- exactly the reported circle. Toning
+    // PCSS_ANGULAR_TAN down earlier did nothing because the clamp was pegged at
+    // MAX=6 at every height this ride reaches, so the tan never entered the result.
+    //
+    // Clamping in world metres (MIN=0.04, MAX=0.25 m) and dividing by the
+    // cascade's own texel size gives an identical ~0.25 m soft edge at every
+    // altitude and cascade -- train-shaped, no swelling disc. (Anchoring the
+    // cascade focus near the ground, done in main.cpp, additionally keeps the
+    // ground under a high train in the fine NEAR cascade, so the two fixes
+    // compose.)
     "const float PCSS_ANGULAR_TAN = 0.022;\n"
-    "const float PCSS_MIN_TEXELS = 1.1;\n"
-    "const float PCSS_MAX_TEXELS = 6.0;\n"
-    "const float PCSS_SEARCH_TEXELS = 5.0;\n"
+    "const float PCSS_MIN_WORLD = 0.04;\n"
+    "const float PCSS_MAX_WORLD = 0.25;\n"
+    "const float PCSS_SEARCH_WORLD = 0.35;\n"
     // Split per-cascade so every call site passes a compile-time-known cascade --
     // no runtime idx branch (the old single shadowCascade(idx,N) re-tested idx on
     // every call even though callers always pass a literal 0/1/2).
@@ -191,10 +198,10 @@ static const char *SHADOW_FS =
     "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
     "  float bias = worldBias(NoL)*invRange0;\n"
     "  int nB; float avgB;\n"
-    "  blockerSearch(shadowMap0, shadowTexel0, p, bias, PCSS_SEARCH_TEXELS, nB, avgB);\n"
+    "  blockerSearch(shadowMap0, shadowTexel0, p, bias, PCSS_SEARCH_WORLD/pcssTexelWorld0, nB, avgB);\n"
     "  if(nB == 0) return 1.0;\n"
     "  float worldZDiff = (p.z - avgB) / invRange0;\n"
-    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN/pcssTexelWorld0, PCSS_MIN_TEXELS, PCSS_MAX_TEXELS);\n"
+    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld0;\n"
     "  return pcfTap(shadowMap0, shadowTexel0, p, bias, radius);\n"
     "}\n"
     "float shadowCascade1(vec3 N){\n"
@@ -203,10 +210,10 @@ static const char *SHADOW_FS =
     "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
     "  float bias = worldBias(NoL)*invRange1;\n"
     "  int nB; float avgB;\n"
-    "  blockerSearch(shadowMap1, shadowTexel1, p, bias, PCSS_SEARCH_TEXELS, nB, avgB);\n"
+    "  blockerSearch(shadowMap1, shadowTexel1, p, bias, PCSS_SEARCH_WORLD/pcssTexelWorld1, nB, avgB);\n"
     "  if(nB == 0) return 1.0;\n"
     "  float worldZDiff = (p.z - avgB) / invRange1;\n"
-    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN/pcssTexelWorld1, PCSS_MIN_TEXELS, PCSS_MAX_TEXELS);\n"
+    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld1;\n"
     "  return pcfTap(shadowMap1, shadowTexel1, p, bias, radius);\n"
     "}\n"
     "float shadowCascade2(vec3 N){\n"
@@ -215,10 +222,10 @@ static const char *SHADOW_FS =
     "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
     "  float bias = worldBias(NoL)*invRange2;\n"
     "  int nB; float avgB;\n"
-    "  blockerSearch(shadowMap2, shadowTexel2, p, bias, PCSS_SEARCH_TEXELS, nB, avgB);\n"
+    "  blockerSearch(shadowMap2, shadowTexel2, p, bias, PCSS_SEARCH_WORLD/pcssTexelWorld2, nB, avgB);\n"
     "  if(nB == 0) return 1.0;\n"
     "  float worldZDiff = (p.z - avgB) / invRange2;\n"
-    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN/pcssTexelWorld2, PCSS_MIN_TEXELS, PCSS_MAX_TEXELS);\n"
+    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld2;\n"
     "  return pcfTap(shadowMap2, shadowTexel2, p, bias, radius);\n"
     "}\n"
     // Select cascade by full 3D distance from focus, not XZ-only: the ortho

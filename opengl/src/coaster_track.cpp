@@ -194,8 +194,11 @@ struct Track {
         switch (irnd(0, 3)) {
             case 0: turns = 1; rR = frnd(6.0f,  7.7f);  stretch = frnd(0.45f, 0.65f); break;
             case 1: turns = 1; rR = frnd(8.1f, 10.2f);  stretch = frnd(1.00f, 1.40f); break;
+            // turns capped at 2 (was up to 3): a 3-roll corkscrew ran ~1.5x the WR roll count and
+            // stacked its per-roll length into a ~600 m element. Real inline-twist trains top out
+            // around a double; keep the double as the long-element case.
             case 2: turns = 2; rR = frnd(6.8f,  8.9f);  stretch = frnd(0.60f, 0.90f); break;
-            default:turns = 3; rR = frnd(6.8f,  8.5f);  stretch = frnd(0.55f, 0.80f); break;
+            default:turns = 2; rR = frnd(6.8f,  8.5f);  stretch = frnd(0.55f, 0.80f); break;
         }
         remain   = 16 * turns;
         rtheta   = 0; rfwd = 0; rfwdStep = SEG_LEN * stretch * 0.5f;
@@ -320,7 +323,7 @@ struct Track {
         // length. Confirmed via --cobratest: exit-region peak dropped from 20-28G to a smooth,
         // unremarkable ~5G that's now in the same range as the two loop peaks themselves, and (as
         // a bonus) let the radius converge much smaller too -- see CBR_MAX below.
-        float adv = 14.0f * R;
+        float adv = 13.0f * R;   // 14R->13R: shortens the forward span slightly toward WR length while keeping d(hF)/dt healthily positive to t->1 (--cobratest: raw exit curvature ~8 G, same class as 14R's 5.4 G; 12R=9.6 G, 10R=16 G). Length is inherently ~13x radius for a smooth double-inversion -- a true 50 m WR cobra at the 44 m/s gate would need R~4 m => lethal g; height (the tracked WR dimension) is capped correctly via CBR_MAX.
         float theta = PI * t;
         float hF = rho * sinf(theta) + adv * t;
         float hS = rho * (1.0f - cosf(theta));
@@ -377,7 +380,13 @@ struct Track {
         // real margin under GCAP, peakHeight 55-62m -- bigger than a real cobra roll (matches this
         // session's "signature element, don't shrink the scale" philosophy) but no longer wildly
         // disproportionate.
-        const float CBR_MAX = 42.0f;
+        // CBR_MAX 42->24: the WR cobra roll (Alpengeist/Hulk class) is ~30-32 m tall over ~50 m of
+        // track; the old 42 m radius built a ~60 m-tall, ~530 m-long element (1.85x/11x WR) whose
+        // curvature was so stretched it held only ~1.5 g -- absurd on BOTH counts. A ~24 m radius
+        // brings the height to ~1.3x WR and, with the shorter adv below, raises the g off the floor
+        // toward the GCAP target. (Still longer than a real cobra: at the ~44 m/s gate entry, g=v^2/R
+        // forbids a true 50 m cobra without lethal g -- see report.)
+        const float CBR_MAX = 24.0f;
         cbR = fminf(cbR, CBR_MAX);
 
         float v = fmaxf(genV, 30.0f) * 1.12f;
@@ -565,9 +574,14 @@ struct Track {
             // (continuous barrel-roll/corkscrew, not banked turns), and lateral/Gy human tolerance is
             // physiologically lower than vertical/Gz, so they're deliberately NOT pushed to match --
             // see their own init*() comments below, unchanged here.
-            case M_LOOP:     return {5.6f, 24.0f, 22.0f, 1.6f, 2.6f};   // rMin unchanged: already near rMax(27.5), no collapse risk. Unchanged: already validated via real --gaudit (0 offenders, naturally reachable)
-            case M_IMMEL:    return {6.2f, 24.0f, 26.0f, 1.0f, 2.0f};   // rMin unchanged (still clamps to rMax(32.5) at this gT); duration target 5.8-6.6 planar -- now at its midpoint (was 5.6)
-            case M_DIVELOOP: return {5.4f, 26.0f, 28.0f, 1.0f, 2.0f};   // kept more conservative than the full 5.2-6.0 duration target (LOOP/DIVELOOP smoothing-window regression history); halfway there (was 5.0)
+            // rMaxRec = researched real-record RADIUS (m). Built loop HEIGHT ~= 2.16x this radius,
+            // so the WR loop heights map back to these radii: LOOP 54.6 m (Tormenta 2026) -> r~25;
+            // IMMEL 66.4 m (Tormenta, tallest inversion) -> r~41 (kept 26, well under, not inflated);
+            // DIVELOOP no tracked record, taken as ~40 m height (B&M dive class) -> r~20 (was 28 =
+            // 1.75x too tall). PRETZEL 37.8 m (Tatsu) -> r~29. Cap 1.3x keeps built <=1.4x WR.
+            case M_LOOP:     return {5.6f, 24.0f, 22.0f, 1.6f, 2.6f};   // 22*1.3=28.6 -> ~62 m loop, 1.13x WR(54.6); left, already near record and validated (0 offenders)
+            case M_IMMEL:    return {6.2f, 24.0f, 26.0f, 1.0f, 2.0f};   // 0.79x WR built; left un-inflated
+            case M_DIVELOOP: return {5.4f, 18.0f, 20.0f, 1.0f, 2.0f};   // rMaxRec 28->20 and rMin 26->18: was building 70 m (1.75x the ~40 m dive-loop class); now ~52 m = 1.3x
             // COBRA/ROLL/HEARTLINE's gT LEFT UNCHANGED here (not a typo/oversight): verified via
             // harness that gT is not actually their operative sizing lever --
             //   COBRA: initCobra()'s own GCAP iterative shrink loop converges cbR to ~GCAP
@@ -581,7 +595,7 @@ struct Track {
             //   HEARTLINE: initHeartline() never calls invRFor/invSpec either -- hlH (loop height,
             //   the actual g driver) comes from a fixed-vRef ballistic-parabola formula -- gT here
             //   is dead code too. Real lever (vRef) tuned directly in initHeartline().
-            case M_COBRA:    return {5.2f, 22.0f, 24.0f, 1.0f, 2.2f};
+            case M_COBRA:    return {5.2f, 16.0f, 18.0f, 1.0f, 2.2f};   // rMaxRec 24->18, rMin 22->16: WR cobra ~32 m tall / ~50 m long (Alpengeist/Hulk class); was building ~62 m tall over ~530 m -- see the adv reduction in cobraSample() for the length
             case M_PRETZEL:  return {6.2f, 24.0f, 26.0f, 1.0f, 2.0f};   // duration target 5.85-6.67 planar -- now at its midpoint (was 5.8); PRETZEL DOES use invRFor directly with no override loop, verified this one has real effect
             case M_ROLL:     return {4.4f, 10.0f, 16.0f, 1.0f, 1.6f};
             case M_HEARTLINE:return {3.8f, 14.0f, 20.0f, 1.0f, 1.6f};
@@ -595,7 +609,7 @@ struct Track {
     static float invRAt(SegMode m, float v) {
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) return 0.0f;
-        float rMax = s.rMaxRec * 1.25f;      // cap at world-record +25% (manage g by speed/smoothing, not size)
+        float rMax = s.rMaxRec * 1.30f;      // cap radius at world-record x1.3 (rMaxRec = researched real-record RADIUS; keeps built size <=1.4x WR)
         float vv   = Clamp(v, 28.0f, 135.0f);
         return Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
     }
@@ -860,7 +874,7 @@ struct Track {
         InvSpec s = invSpec(m);
         if (s.gT > 0.0f) {
             const float gCeil = 7.8f;   // planar-formula ceiling; real 3-D-spline g runs ~1.3x this estimate, so 7.8 here ~= 9.8 actual
-            float rMax = s.rMaxRec * 1.25f;
+            float rMax = s.rMaxRec * 1.30f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;
         }
@@ -875,7 +889,7 @@ struct Track {
         InvSpec s = invSpec(m);
         if (s.gT > 0.0f) {
             const float gCeil = 7.8f;
-            float rMax = s.rMaxRec * 1.25f;
+            float rMax = s.rMaxRec * 1.30f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;
         }

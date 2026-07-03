@@ -1556,6 +1556,33 @@ int main(int argc, char **argv) {
                susV / susN, susL / susN, susC / susN);
         printf("  interior felt-g range: vert %+.2f .. %+.2f   |peak lat| %.2f   (%ld samples)\n",
                pkVn, pkV, pkL, susN);
+        // BUILT SIZE per instance: scan runs of consecutive control points tagged as this element
+        // and report the largest instance's height (max y - min y), horizontal footprint radius, and
+        // track length. This is what the 1.4x-WR size cap must bound.
+        {
+            float bestH = 0, bestLen = 0, bestRad = 0;
+            int k = 0;
+            while (k < n) {
+                if ((int)t.kind[k] != elem) { k++; continue; }
+                int j = k; float ymin = 1e9f, ymax = -1e9f, len = 0;
+                float cx = 0, cz = 0; int cnt = 0;
+                while (j < n && (int)t.kind[j] == elem) {
+                    ymin = fminf(ymin, t.cp[j].y); ymax = fmaxf(ymax, t.cp[j].y);
+                    cx += t.cp[j].x; cz += t.cp[j].z; cnt++;
+                    if (j > k) len += Vector3Distance(t.cp[j], t.cp[j-1]);
+                    j++;
+                }
+                cx /= fmaxf(cnt,1); cz /= fmaxf(cnt,1);
+                float rad = 0;
+                for (int q = k; q < j; q++) rad = fmaxf(rad, sqrtf((t.cp[q].x-cx)*(t.cp[q].x-cx)+(t.cp[q].z-cz)*(t.cp[q].z-cz)));
+                if (ymax - ymin > bestH) bestH = ymax - ymin;
+                if (len > bestLen) bestLen = len;
+                if (rad > bestRad) bestRad = rad;
+                k = j;
+            }
+            printf("  BUILT SIZE (largest instance): height %.1f m   horiz-radius %.1f m   track-length %.1f m\n",
+                   bestH, bestRad, bestLen);
+        }
         return 0;
     }
 

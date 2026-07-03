@@ -1517,6 +1517,14 @@ int main(int argc, char **argv) {
         // sections that dilute the sustained average). Target: raise sustainedG toward ~5-6 and
         // drop flatFrac by packing elements densely.
         double sumComb = 0.0; long combN = 0, flatN = 0;
+        // SUSTAINED felt-g PER ELEMENT: the temporally-smoothed g the rider actually holds
+        // THROUGH an element (not the peak). Accumulated only on INTERIOR control points -- a
+        // point is interior when the element tag has been stable for >=3 frames, which trims the
+        // entry ramp AND (via the felt-g du-window) the seam contamination from the neighbouring
+        // element, so e.g. a FLAT abutting a HELIX doesn't get charged the helix's g. This is the
+        // "sustained gs in each element" measure.
+        double susV[M_COUNT] = {0}, susAbsL[M_COUNT] = {0}, susComb[M_COUNT] = {0};
+        long   susN[M_COUNT] = {0};
         struct Off { float g; int seed,k,kind,pk,nk; float v,y,lat; };
         std::vector<Off> offenders;
         int totalPts = 0;
@@ -1551,6 +1559,7 @@ int main(int argc, char **argv) {
             int lastK = -1;
             float gVh = 1.0f, gLh = 0.0f;   // temporally-smoothed felt g state (HUD meter), reset per seed
             float ivPrev = 1.0f, ilPrev = 0.0f;   // prev-frame INSTANTANEOUS (pre-lowpass) felt g, for jerk
+            int susRunTag = -1, susRunLen = 0;    // element-run tracker for the sustained-g metric
             for (int f = 0; f < 200000 && u < n - 4; f++) {
                 float dt = 1.0f / 60.0f;
                 float slope = t.tangent(u).y;
@@ -1613,6 +1622,15 @@ int main(int argc, char **argv) {
                         float comb = sqrtf((gVh-1.0f)*(gVh-1.0f) + gLh*gLh);
                         sumComb += comb; combN++;
                         if (kd==M_FLAT||kd==M_DROP||kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST||kd==M_STATION||kd==M_DIP) flatN++;
+                        // SUSTAINED per-element: only accumulate on INTERIOR points (tag stable
+                        // >=3 frames) so the entry ramp + seam contamination are trimmed.
+                        if (kd == susRunTag) susRunLen++; else { susRunTag = kd; susRunLen = 0; }
+                        if (susRunLen >= 3) {
+                            susV[kd]    += gVh;
+                            susAbsL[kd] += fabsf(gLh);
+                            susComb[kd] += comb;
+                            susN[kd]++;
+                        }
                     }
                 }
 
@@ -1671,6 +1689,17 @@ int main(int argc, char **argv) {
             if (hMaxV[i] < -1e8f) continue;
             const char* flag = (hMaxV[i] > 9.8f || hMinV[i] < -6.0f || hMaxL[i] > 9.8f) ? "  <-- OVER" : "";
             printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], hMaxV[i], hMinV[i], hMaxL[i], flag);
+        }
+        // SUSTAINED felt-g the rider HOLDS through each element (interior arc-average, not the
+        // peak). susVert is signed (>1 = pressed into seat, <1 = airtime, 0 = freefall); susLat
+        // is the average |lateral|; susComb = avg sqrt((vert-1)^2+lat^2) = the felt "intensity"
+        // held through the element. This is the "sustained gs in each element" number.
+        printf("\n  SUSTAINED FELT-G PER ELEMENT (interior arc-avg -- the g HELD through the element, not the peak):\n");
+        printf("  %-9s %10s %10s %10s %9s\n", "element", "susVert", "susLat", "susIntens", "samples");
+        for (int i = 0; i < M_COUNT; i++) {
+            if (susN[i] < 20) continue;   // too few interior samples to be meaningful
+            printf("  %-9s %+10.2f %10.2f %10.2f %9ld\n", NM[i],
+                   (float)(susV[i]/susN[i]), (float)(susAbsL[i]/susN[i]), (float)(susComb[i]/susN[i]), susN[i]);
         }
         // JERK table -- the PRIMARY pass/fail signal (see the metric's comment above). Success =
         // sustained felt-g approaching target (~+6 vert, ~-6 airtime, ~+6 lat in the table above)

@@ -40,6 +40,15 @@ static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
 static const float LAUNCH_V  = 105.0f;  // asymptote ~378: keeps strong thrust (~20 m/s^2) right up to the 86.1 m/s (310) clamp, so the launch reliably saturates 310 with margin (was 95 -> faded to ~10 and topped ~300)
 static const float CLIMB_V   = 40.0f;
+// Operational speed band (user spec): the ride lives in 125-310 km/h, no train-like pinning
+// to a single clamp. V_MIN is the soft re-power target (a mid-course friction-wheel / booster,
+// the "stall = 125 km/h, never 0" floor) and V_MAX is the hard energy ceiling that keeps the
+// biggest drops inside 310. There is NO separate low hard floor anymore -- only a tiny numeric
+// guard (V_GUARD) to keep du/dt finite; the soft re-power carries speed back up to V_MIN within
+// a few tenths of a second, so the band is enforced physically, not by a snap clamp.
+static const float V_MIN     = 34.72f;   // 125 km/h
+static const float V_MAX     = 86.11f;   // 310 km/h
+static const float V_GUARD   =  6.0f;    // numeric-only floor (prevents v<=0 -> NaN du); well below the band, only touched transiently at a crest before re-power catches it
 static float       BOOST_V   = 62.0f;
 // Ambient re-power threshold: below this speed the ride considers itself "run down" and
 // re-launches/re-boosts (uniformly, regardless of what element comes next -- this is pure
@@ -1292,10 +1301,13 @@ int main(int argc, char **argv) {
                 // fires when v<36; on descents v>36 so it never engages. Bounded +28 m/s^2, capped
                 // at 36, continuous in v -> kappa*v^2 rises smoothly, no felt-g jerk. Kept in
                 // lock-step with the live player loop so --gaudit reflects the real ride.
-                if (tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
-                    v = fminf(v + 28.0f * dt, 36.0f);
-                v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
+                // soft re-power to the band floor (mid-course booster / friction wheel): keeps the
+                // ride >= 125 km/h everywhere except while actively launching/boosting. Applied on
+                // climb/chain too now, so no stretch of the ride drops below the 125-310 band.
+                if (tg != M_LAUNCH && tg != M_BOOST && v < V_MIN)
+                    v = fminf(v + 28.0f * dt, V_MIN);
+                v = fmaxf(v, V_GUARD);
+            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
                 if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
                     if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
                     if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;
@@ -1489,6 +1501,72 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    // Headless force-element sustained-g probe. Isolates ONE element (via Track::forcedElem) and
+    // measures the felt-g the rider HOLDS through it at a controlled entry speed, using the exact
+    // same du-window + 6 Hz temporal pipeline as the live HUD / --gaudit. This is the "force element
+    // tool at a realistic entry speed" verification: e.g. `--elemsust TURN 78` or `--elemsust HELIX 70`.
+    if (argc > 2 && TextIsEqual(argv[1], "--elemsust")) {
+        static const char* GN[M_COUNT] = {
+            "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION","DIP","LAUNCH",
+            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA",
+            "WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA" };
+        int elem = -1;
+        for (int t = 0; t < M_COUNT; t++) if (TextIsEqual(argv[2], GN[t])) elem = t;
+        if (elem < 0) { printf("--elemsust: unknown element '%s'\n", argv[2]); return 1; }
+        float spd = (argc > 3) ? (float)atof(argv[3]) : 60.0f;   // entry speed, m/s (125-310 km/h = 34.7-86.1)
+        g_rng = 1337u;
+        Track t; t.reset();
+        t.forcedElem = elem;
+        // Generate a long run of nothing but this element (repeated with random dir/length), pinning
+        // genV to the entry speed each point so every instance is sized for and entered at `spd`.
+        int target = 1500;
+        while ((int)t.cp.size() < target) { t.genV = spd; t.genPoint(); }
+        int n = (int)t.cp.size();
+
+        // felt-g sim at constant v = spd (mirrors --gaudit's interior-sustained accumulation)
+        float gVh = 1.0f, gLh = 0.0f;
+        double susV = 0, susL = 0, susC = 0; long susN = 0;
+        float pkV = -1e9f, pkVn = 1e9f, pkL = 0;
+        int susRunTag = -1, susRunLen = 0;
+        const float dt = 1.0f / 60.0f;
+        for (float u = 2.0f; u < n - 3; ) {
+            float ss  = fmaxf(t.speedScale(u), 1.0f);
+            float duw = Clamp(7.5f / ss, 0.35f, 1.1f);
+            Vector3 Tb = t.tangent(u - duw), Tf = t.tangent(u + duw);
+            float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 2.0f);
+            Vector3 N  = orthoUp(t.tangent(u), t.upAt(u));
+            Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
+            Vector3 felt  = Vector3Add(Vector3Scale(kappa, spd * spd), Vector3{ 0, GRAV, 0 });
+            Vector3 rRight = Vector3Normalize(Vector3CrossProduct(N, t.tangent(u)));
+            float iv = Vector3DotProduct(felt, N) / GRAV;
+            float il = Vector3DotProduct(felt, rRight) / GRAV;
+            if (!(iv == iv)) iv = 1.0f;
+            if (!(il == il)) il = 0.0f;
+            float kk = 1.0f - expf(-dt * 6.0f);
+            gVh += (iv - gVh) * kk;
+            gLh += (il - gLh) * kk;
+            int kd = t.tagAt(u); if (kd < 0 || kd >= M_COUNT) kd = 0;
+            if (kd == susRunTag) susRunLen++; else { susRunTag = kd; susRunLen = 0; }
+            if (kd == elem && susRunLen >= 3) {
+                float comb = sqrtf((gVh - 1.0f) * (gVh - 1.0f) + gLh * gLh);
+                susV += gVh; susL += fabsf(gLh); susC += comb; susN++;
+                if (gVh > pkV) pkV = gVh;
+                if (gVh < pkVn) pkVn = gVh;
+                if (fabsf(gLh) > pkL) pkL = fabsf(gLh);
+            }
+            float du = spd * dt / fmaxf(t.speedScale(u), 0.5f);
+            if (!(du == du)) du = 0;
+            u += fminf(du, 1.5f);
+        }
+        printf("[elemsust] %s @ %.1f m/s (%.0f km/h)\n", argv[2], spd, spd * 3.6f);
+        if (susN < 5) { printf("  (element produced too few interior samples -- gate may have blocked it at this speed)\n"); return 0; }
+        printf("  SUSTAINED felt-g held through the element (interior arc-avg): vert %+.2f  lat %.2f  combined %.2f\n",
+               susV / susN, susL / susN, susC / susN);
+        printf("  interior felt-g range: vert %+.2f .. %+.2f   |peak lat| %.2f   (%ld samples)\n",
+               pkVn, pkV, pkL, susN);
+        return 0;
+    }
+
     if (argc > 1 && TextIsEqual(argv[1], "--gaudit")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 12;
         if (argc > 3) DRAG       = (float)atof(argv[3]);
@@ -1576,10 +1654,13 @@ int main(int argc, char **argv) {
                 // fires when v<36; on descents v>36 so it never engages. Bounded +28 m/s^2, capped
                 // at 36, continuous in v -> kappa*v^2 rises smoothly, no felt-g jerk. Kept in
                 // lock-step with the live player loop so --gaudit reflects the real ride.
-                if (tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !t.chainAt(u) && v < 36.0f)
-                    v = fminf(v + 28.0f * dt, 36.0f);
-                v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
+                // soft re-power to the band floor (mid-course booster / friction wheel): keeps the
+                // ride >= 125 km/h everywhere except while actively launching/boosting. Applied on
+                // climb/chain too now, so no stretch of the ride drops below the 125-310 band.
+                if (tg != M_LAUNCH && tg != M_BOOST && v < V_MIN)
+                    v = fminf(v + 28.0f * dt, V_MIN);
+                v = fmaxf(v, V_GUARD);
+            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
                 int ki = (int)u;
                 if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
 
@@ -1762,8 +1843,8 @@ int main(int argc, char **argv) {
                 v += acc * dt;
                 if (t.tagAt(u) == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
                 if (t.tagAt(u) == M_BOOST)  v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades near ~320 (no clamp)
-                v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
+                v = fmaxf(v, V_GUARD);
+            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
 
                 sinceStation += dt;
                 if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
@@ -2159,10 +2240,11 @@ int main(int argc, char **argv) {
             // Un-gated (was slope>0.06): hold >=36 m/s (129 km/h) at crests/STALL too, not only
             // on climbs -- see the matching comment in the --gaudit sim. Continuous +28 m/s^2 to a
             // 36 cap, no felt-g jerk.
-            if (tg != M_LAUNCH && tg != M_BOOST && tg != M_CLIMB && !onLift && v < 36.0f)
-                v = fminf(v + 28.0f * dt, 36.0f);
-            v = fmaxf(v, 20.0f);
-            v = fminf(v, 86.7f);   // max-speed ceiling: 86.7 m/s = 312.1 km/h ~= 1.25x Falcon's Flight (250 km/h). Reliably saturated (LAUNCH thrust asymptote 105 >> this). Clips only the drop/boost peaks.
+            // soft re-power to the band floor (see audit sims): >= 125 km/h everywhere but launch/boost.
+            if (tg != M_LAUNCH && tg != M_BOOST && v < V_MIN)
+                v = fminf(v + 28.0f * dt, V_MIN);
+            v = fmaxf(v, V_GUARD);
+            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
             if (gForceSpeed > 0.0f) v = gForceSpeed;
 
             if (benchMode) {   // launch top-hat drop, measured on the REAL physics path (== live ride)

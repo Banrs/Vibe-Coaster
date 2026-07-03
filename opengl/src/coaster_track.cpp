@@ -20,6 +20,7 @@ struct Track {
     bool    chainMode = false;
     int     elems = 0;
     int     elemLimit = 3;
+    int     forcedElem = -1;   // headless test hook (--elemsust): when >=0, chooseElement always emits this element so a single element can be measured in isolation at a controlled entry speed
     float   genPrevDy = 0;
     float   genPrevCurv = 0;
     float   genPrevDyaw = 0;
@@ -644,8 +645,15 @@ struct Track {
         // clamp (135 m/s) -- a floor any higher silently re-flattens the curve back
         // out at extreme speed and reintroduces the v^2 lateral-g growth the
         // speed-scaling exists to prevent (see initHills).
-        if (big) { turnMag = turnMagFor(5.0f, 0.025f, 0.45f); bankT = 0.15f; remain = irnd(4, 6); }   // big TURN: small over-bank past its ~79deg heartline for a dramatic hard-turn lean
-        else     { turnMag = turnMagFor(3.0f, 0.015f, 0.18f); bankT = 0.0f; remain = irnd(3, 5);  }   // small TURN: pure heartline
+        // Lengths raised (big 4-6 -> 8-12, small 3-5 -> 6-9): a turn needs a flat-topped plateau of
+        // sustained g, not a triangular ramp. At ~70 m/s a big turn is now ~112-168 m / ~1.6-2.4 s of
+        // held ~6 g -- long enough that the interior arc-average actually approaches capK instead of
+        // averaging down over an all-ramp element (the old short turns measured ~2.7 sustained).
+        // gT budgets raised (big 5.0->6.5, small 3.0->4.0): with the higher capK/dyawGeo the turn-rate
+        // cap now BINDS at band speed and delivers ~6 g lateral, which the heartline bank rotates into
+        // the seat -> ~6 g sustained in-seat on a fully-built big turn (was ~3.4 sustained at gT 5.0).
+        if (big) { turnMag = turnMagFor(6.5f, 0.025f, 0.55f); bankT = 0.15f; remain = irnd(8, 12); }   // big TURN: small over-bank past its heartline for a dramatic hard-turn lean
+        else     { turnMag = turnMagFor(4.0f, 0.015f, 0.24f); bankT = 0.0f; remain = irnd(6, 9);  }   // small TURN: pure heartline
     }
     void initHelix() {
         mode = M_HELIX;
@@ -715,18 +723,18 @@ struct Track {
         // so 6.0 was clearing -6 at hot entry speeds (--gaudit, 60+ seeds). lo floor
         // lowered (was 0.11, reached below 87 m/s) so it stays out of the way up to
         // the genV hard clamp instead of re-flattening the curve at extreme speed.
-        turnMag   = turnMagFor(5.0f, 0.025f, 0.34f);
+        turnMag   = turnMagFor(6.0f, 0.025f, 0.44f);   // budget 5.0->6.0: each banked half of the S holds ~5-6 g in-seat
         bankT     = 0.0f;   // SCURVE: pure heartline -- the roll now sweeps continuously through 0 at the S inflection
-        scurveLen = irnd(6, 10);
+        scurveLen = irnd(10, 15);   // longer (was 6-10): each half of the S now holds its banked plateau instead of being all-ramp, so sustained lateral builds before the inflection flips it
         remain    = scurveLen;
     }
     void initDive() {
         mode = M_DIVE;
         setClearance(4.0f, 24.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag = turnMagFor(4.0f, 0.02f, 0.36f);   // lo lowered, see initTurn/initHelix
+        turnMag = turnMagFor(5.5f, 0.02f, 0.46f);   // budget 4.0->5.5: the diving turn holds ~5-6 g in-seat once banked (was ~2.8 sustained)
         bankT   = 0.20f;   // DIVE: over-bank fraction -> past-vertical lean for the diving turn, eased by shape
-        remain  = irnd(4, 7);
+        remain  = irnd(7, 11);   // longer (was 4-7): the diving turn holds its plateau instead of averaging down over an all-ramp element
     }
     void initBankAir() {
         mode = M_BANKAIR;
@@ -954,8 +962,8 @@ struct Track {
     void chooseElement(float h) {
         (void)h;
 
-        if (fabsf(genPrevDy) > 0.18f * SEG_LEN) { mode = M_FLAT; remain = 3; levelHold = 3; return; }
-        SegMode pick = rollElementPick();
+        if (forcedElem < 0 && fabsf(genPrevDy) > 0.18f * SEG_LEN) { mode = M_FLAT; remain = 3; levelHold = 3; return; }
+        SegMode pick = (forcedElem >= 0) ? (SegMode)forcedElem : rollElementPick();
 
         rememberElement(pick);
 
@@ -974,7 +982,7 @@ struct Track {
             case M_SCURVE:  initSCurve();  break;
             case M_DIVE:    initDive();    break;
             case M_BANKAIR: initBankAir(); break;
-            case M_HELIX:    queuedInv = 8; startBoost(); break;
+            case M_HELIX:    if (forcedElem >= 0) initHelix(); else { queuedInv = 8; startBoost(); } break;
             case M_TURN:    initTurn(true);break;
             case M_WINGOVER:initWingover();break;
             case M_DIP:     initDip();     break;
@@ -991,6 +999,15 @@ struct Track {
 
     void nextMode() {
         float h = gpos.y - groundTopAt(gpos.x, gpos.z);
+
+        if (forcedElem >= 0) {
+            // Headless isolation (--elemsust): repeat exactly [forced element -> short leveling flat],
+            // ignoring the launch/station/inversion-queue machinery so one element can be measured
+            // over and over at a controlled entry speed. genV is pinned by the caller.
+            if (mode != M_FLAT) { mode = M_FLAT; remain = 3; return; }
+            chooseElement(h);
+            return;
+        }
 
         if (stationRamping) { stationRamping = false; startStation(); return; }
 
@@ -1134,7 +1151,7 @@ struct Track {
             // the jerk limiter was doubling as a SUSTAINED tamer on short elements. A ~2-3 step
             // ramp is still smooth relative to the ~1-cp felt-g du-window (no discontinuity), but
             // lets short turns actually reach their (now higher) plateau and ease back out.
-            float jlimYaw = Clamp(1.8f * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.0010f, 0.20f);
+            float jlimYaw = Clamp(2.4f * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.0010f, 0.24f);
             dyaw = Clamp(dyaw, genPrevDyaw - jlimYaw, genPrevDyaw + jlimYaw);
             // DECOUPLED turn-rate cap. The old cap fused TWO roles into one quantity
             // (vCap = fmaxf(genV, 80)): a g-limiter AND an implicit arc-collapse geometry guard.
@@ -1151,9 +1168,21 @@ struct Track {
             //             to its 2 m floor at any ride speed. This is the collapse guard the vCap
             //             floor used to do implicitly -- but as a fixed geometry limit it cannot
             //             balloon at low speed, which is exactly why it's safe where vCap=25 wasn't.
-            float capK    = (mode == M_HELIX) ? 6.0f : 5.0f;
+            // Target is now ~6g SUSTAINED (user: "get it closer to 6g sustained"), not a 1.5x-real
+            // per-element figure. At the plateau of a banked turn aLat = capK*g and, once the heartline
+            // bank rotates that load into the seat, felt vertical ~= sqrt(capK^2 + 1) g -- so capK ~= 6
+            // is the value that makes a fully-built turn HOLD ~6 g. capK: helix 6.5, other banked 6.0.
+            // But capK only sets the plateau CEILING; a short turn spends its whole length ramping and
+            // never reaches it (the sustained audit measured turns at ~2-3 g against a 5.5 cap). The
+            // real levers for SUSTAINED are (a) LENGTH -- lengthened init*() remain counts below give a
+            // flat-topped plateau instead of a triangular ramp, and (b) a faster jerk ramp (jlimYaw
+            // 1.8->2.4) so the plateau is reached in ~2 segments, not ~3-4. dyawGeo is the pure
+            // arc-collapse geometry guard raised to 0.20 (R_horiz = 14/0.20 = 70 m) so it does not bind
+            // before capK at mid-band speed (~60 m/s), where a 6 g turn genuinely needs a ~62 m radius;
+            // 70 m is still ~5x the ~14 m felt-g arc-collapse point, so the -29.9G-class spike stays impossible.
+            float capK    = (mode == M_HELIX) ? 6.5f : 6.0f;
             float dyawG   = capK * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f);
-            float dyawGeo = (mode == M_HELIX) ? 0.150f : 0.130f;   // R_horiz >= 93/108 m; ~7.4-8.6 deg/seg
+            float dyawGeo = (mode == M_HELIX) ? 0.205f : 0.200f;   // R_horiz >= 68/70 m; well clear of arc-collapse
             float dyawMax = fminf(dyawG, dyawGeo);
             dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;
@@ -1383,7 +1412,7 @@ struct Track {
             // (WINGOVER's near-inverted half-corkscrew, DIVE), eased in/out by `shape` so the
             // over-bank builds and releases WITH the curve rather than as a constant. The heartline
             // base needs no taper of its own -- thetaH already vanishes as dyaw ramps to 0.
-            const float kLat = 1.0f;
+            const float kLat = 1.15f;   // 1.0->1.15: bank a little closer to full heartline (more dramatic lean, more load into the seat) without over-banking past vertical (kLat 1.25 tipped the resultant back out and lowered felt vert); leaves a little residual lateral thrill
             float aLat   = kLat * genV * genV * fabsf(dyaw) / SEG_LEN;   // lateral accel (m/s^2)
             float thetaH = atan2f(aLat, GRAV);                          // heartline angle, 0..~PI/2
             float nomRate = (mode == M_HILLS || mode == M_BANKAIR || mode == M_WAVE) ? fabsf(hillTurn) : turnMag;
@@ -1564,8 +1593,16 @@ struct Track {
 
         if (mode == M_TURN || mode == M_HILLS || mode == M_DIVE || mode == M_BANKAIR ||
             mode == M_WAVE || mode == M_SCURVE || mode == M_WINGOVER || mode == M_DIP ||
-            mode == M_FLAT || mode == M_DROP || mode == M_HELIX || mode == M_CLIMB)
-            upv = easeUpVec(genPrevUp, upv, 0.18f);
+            mode == M_FLAT || mode == M_DROP || mode == M_HELIX || mode == M_CLIMB) {
+            // Bank slew rate. The hard-banked high-g turns (TURN/DIVE/SCURVE/WINGOVER) track their
+            // heartline target faster (0.30) so the plateau spends its length AT full bank -- more of
+            // the lateral load rotates into the seat (raises sustained in-seat vert) instead of the
+            // bank perpetually lagging a still-ramping target. HELIX keeps the gentler 0.18 (its coil
+            // is long and already holds 5.5 g; a faster slew there risks overshoot at the tight top),
+            // and the airtime/transition modes keep 0.18 for smoothness.
+            float upEase = (mode == M_TURN || mode == M_DIVE || mode == M_SCURVE || mode == M_WINGOVER) ? 0.30f : 0.18f;
+            upv = easeUpVec(genPrevUp, upv, upEase);
+        }
 
         if (upEaseSteps > 0 && (mode == M_DROP || mode == M_FLAT)) {
             upv = easeUpVec(genPrevUp, upv, upEaseRate);

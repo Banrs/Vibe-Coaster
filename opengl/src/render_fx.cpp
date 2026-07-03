@@ -189,6 +189,17 @@ static const char *SHADOW_FS =
     "const float PCSS_MIN_WORLD = 0.04;\n"
     "const float PCSS_MAX_WORLD = 0.25;\n"
     "const float PCSS_SEARCH_WORLD = 0.35;\n"
+    // Remove the FAKE cast shadow of a high caster. worldZDiff (below) is the world
+    // distance from the blocker to the receiver it's shadowing -- for the ground
+    // under a train riding high on a hill/top-hat that's the train's altitude. A
+    // real object 100 m+ up casts an essentially invisible, hugely-diffused shadow,
+    // but the shadow map keeps drawing a distinct dark disc there (the reported
+    // "fake circular shadow chasing the coaster", its radius scaling with height via
+    // the penumbra). Fade the shadow to fully-lit as the caster gets far above the
+    // receiver: near-ground shadows (small worldZDiff -- terrain, supports, a train
+    // low to the ground) are untouched; the high-caster disc is deleted.
+    "const float SHADOW_FADE_NEAR = 40.0;\n"
+    "const float SHADOW_FADE_FAR  = 110.0;\n"
     // Split per-cascade so every call site passes a compile-time-known cascade --
     // no runtime idx branch (the old single shadowCascade(idx,N) re-tested idx on
     // every call even though callers always pass a literal 0/1/2).
@@ -202,7 +213,8 @@ static const char *SHADOW_FS =
     "  if(nB == 0) return 1.0;\n"
     "  float worldZDiff = (p.z - avgB) / invRange0;\n"
     "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld0;\n"
-    "  return pcfTap(shadowMap0, shadowTexel0, p, bias, radius);\n"
+    "  float sh = pcfTap(shadowMap0, shadowTexel0, p, bias, radius);\n"
+    "  return mix(1.0, sh, 1.0 - smoothstep(SHADOW_FADE_NEAR, SHADOW_FADE_FAR, worldZDiff));\n"
     "}\n"
     "float shadowCascade1(vec3 N){\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
@@ -214,7 +226,8 @@ static const char *SHADOW_FS =
     "  if(nB == 0) return 1.0;\n"
     "  float worldZDiff = (p.z - avgB) / invRange1;\n"
     "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld1;\n"
-    "  return pcfTap(shadowMap1, shadowTexel1, p, bias, radius);\n"
+    "  float sh = pcfTap(shadowMap1, shadowTexel1, p, bias, radius);\n"
+    "  return mix(1.0, sh, 1.0 - smoothstep(SHADOW_FADE_NEAR, SHADOW_FADE_FAR, worldZDiff));\n"
     "}\n"
     "float shadowCascade2(vec3 N){\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
@@ -226,7 +239,8 @@ static const char *SHADOW_FS =
     "  if(nB == 0) return 1.0;\n"
     "  float worldZDiff = (p.z - avgB) / invRange2;\n"
     "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld2;\n"
-    "  return pcfTap(shadowMap2, shadowTexel2, p, bias, radius);\n"
+    "  float sh = pcfTap(shadowMap2, shadowTexel2, p, bias, radius);\n"
+    "  return mix(1.0, sh, 1.0 - smoothstep(SHADOW_FADE_NEAR, SHADOW_FADE_FAR, worldZDiff));\n"
     "}\n"
     // Select cascade by full 3D distance from focus, not XZ-only: the ortho
     // box each cascade's computeLightVP builds is centred on the TRAIN's

@@ -323,7 +323,7 @@ struct Track {
         // length. Confirmed via --cobratest: exit-region peak dropped from 20-28G to a smooth,
         // unremarkable ~5G that's now in the same range as the two loop peaks themselves, and (as
         // a bonus) let the radius converge much smaller too -- see CBR_MAX below.
-        float adv = 13.0f * R;   // 14R->13R: shortens the forward span slightly toward WR length while keeping d(hF)/dt healthily positive to t->1 (--cobratest: raw exit curvature ~8 G, same class as 14R's 5.4 G; 12R=9.6 G, 10R=16 G). Length is inherently ~13x radius for a smooth double-inversion -- a true 50 m WR cobra at the 44 m/s gate would need R~4 m => lethal g; height (the tracked WR dimension) is capped correctly via CBR_MAX.
+        float adv = 11.0f * R;   // 14R->13R: shortens the forward span slightly toward WR length while keeping d(hF)/dt healthily positive to t->1 (--cobratest: raw exit curvature ~8 G, same class as 14R's 5.4 G; 12R=9.6 G, 10R=16 G). Length is inherently ~13x radius for a smooth double-inversion -- a true 50 m WR cobra at the 44 m/s gate would need R~4 m => lethal g; height (the tracked WR dimension) is capped correctly via CBR_MAX.
         float theta = PI * t;
         float hF = rho * sinf(theta) + adv * t;
         float hS = rho * (1.0f - cosf(theta));
@@ -872,13 +872,26 @@ struct Track {
     static float invVMinFrac(SegMode m) {
         switch (m) {
             case M_LOOP:     return 0.82f;
-            case M_IMMEL:    return 0.80f;
+            case M_IMMEL:    return 0.90f;   // enter near the TOP of its window: a giant immel bleeds a lot of speed climbing, so it needs a hot entry to hold g above its real counterpart instead of going floaty
             case M_PRETZEL:  return 0.80f;
             case M_DIVELOOP: return 0.74f;
-            case M_COBRA:    return 0.40f;
+            case M_COBRA:    return 0.78f;   // enter fast so the clothoid half-loops pull hard -> sustained above the real cobra, not below
             case M_ROLL:     return 0.35f;
             case M_HEARTLINE:return 0.30f;
             default:         return 0.0f;
+        }
+    }
+    // Per-element g-ceiling that sets the MAX entry speed of the gate (gate = sqrt((gCeil-1)*g*..)).
+    // IMMEL and COBRA are raised above the default so they GENERATE FASTER: at a fixed 1.25x-WR size,
+    // g = v^2/R, so a hotter entry is the only lever (short of shrinking them) that lifts their held
+    // g above their real-life counterparts (ratio > 1). Their half-loop bottoms then pull ~9-11 g
+    // briefly -- within the 6+6/t 10-12 brief allowance -- while the sustained interior climbs past
+    // the floaty-top drag. Everything else keeps the safe 7.8 (~9.8 real) ceiling.
+    static float invGCeil(SegMode m) {
+        switch (m) {
+            case M_IMMEL: return 9.3f;    // hotter entry to hold sustained clearly above the real immel (ratio >1) while keeping its bottom peak within the ~12 g brief cap
+            case M_COBRA: return 11.0f;   // cobra is stretched (low-g neck between the loops), so it needs a hot entry to lift the interior average above the real cobra
+            default:      return 7.8f;
         }
     }
     bool eligibleElem(SegMode m) const {
@@ -891,7 +904,7 @@ struct Track {
         // not straight off a launcher at top speed).
         InvSpec s = invSpec(m);
         if (s.gT > 0.0f) {
-            const float gCeil = 7.8f;   // planar-formula ceiling; real 3-D-spline g runs ~1.3x this estimate, so 7.8 here ~= 9.8 actual
+            const float gCeil = invGCeil(m);
             float rMax = s.rMaxRec * 1.25f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;
@@ -907,7 +920,7 @@ struct Track {
     bool eligibleSafety(SegMode m) const {
         InvSpec s = invSpec(m);
         if (s.gT > 0.0f) {
-            const float gCeil = 7.8f;
+            const float gCeil = invGCeil(m);
             float rMax = s.rMaxRec * 1.25f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;

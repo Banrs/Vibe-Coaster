@@ -580,7 +580,7 @@ struct Track {
             // DIVELOOP no tracked record, taken as ~40 m height (B&M dive class) -> r~20 (was 28 =
             // 1.75x too tall). PRETZEL 37.8 m (Tatsu) -> r~29. Cap 1.3x keeps built <=1.4x WR.
             case M_LOOP:     return {5.6f, 24.0f, 22.0f, 1.6f, 2.6f};   // 22*1.3=28.6 -> ~62 m loop, 1.13x WR(54.6); left, already near record and validated (0 offenders)
-            case M_IMMEL:    return {6.2f, 24.0f, 26.0f, 1.0f, 2.0f};   // 0.79x WR built; left un-inflated
+            case M_IMMEL:    return {6.2f, 24.0f, 43.0f, 1.0f, 2.0f};   // rMaxRec 26->43: was the ONE element BELOW its record (0.83x) because the old cap topped out ~54 m < the 66.4 m WR (Tormenta, tallest inversion ever). Immel height ~= 1.31x radius, so 43*1.3=55.9 radius -> ~73 m = ~1.1x WR, in line with the others (all slightly above record)
             case M_DIVELOOP: return {5.4f, 18.0f, 20.0f, 1.0f, 2.0f};   // rMaxRec 28->20 and rMin 26->18: was building 70 m (1.75x the ~40 m dive-loop class); now ~52 m = 1.3x
             // COBRA/ROLL/HEARTLINE's gT LEFT UNCHANGED here (not a typo/oversight): verified via
             // harness that gT is not actually their operative sizing lever --

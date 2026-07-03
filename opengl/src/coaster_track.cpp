@@ -130,7 +130,7 @@ struct Track {
         gpos = { 0, maxG + 6.0f, 0 };
         startPos = gpos; startYaw = gyaw;
         mode = M_FLAT; remain = 3; turnDir = 1; turnMag = 0.4f; mega = false; elems = 0;
-        elemLimit = irnd(7, 11); queuedInv = 0; launchElem = M_CLIMB;
+        elemLimit = irnd(11, 16); queuedInv = 0; launchElem = M_CLIMB;
         lastElem = M_FLAT; prevElem = M_FLAT; helixDrop = -3.4f; genV = LAUNCH_V;
         genPrevDy = 0; genPrevCurv = 0; genPrevDyaw = 0; genFloorY = -1e9f; genFloorVy = 0;
         setClearance(10.0f, 24.0f);
@@ -488,7 +488,7 @@ struct Track {
     }
 
     void startLaunch() {
-        elems = 0; elemLimit = irnd(7, 11); chainMode = false; launchElem = pickLaunchExit();
+        elems = 0; elemLimit = irnd(11, 16); chainMode = false; launchElem = pickLaunchExit();
         setClearance(10.0f, 36.0f);
         mode = M_LAUNCH; remain = irnd(7, 9);   // ~98-126 m launch (real-life LSM length); longer than boost -> reaches the ~310 cap before a top-hat
         // M_LAUNCH rides dead flat (dy is always 0.0f in stepGeneric -- a real LSM launch track
@@ -1049,7 +1049,7 @@ struct Track {
                 break;
             case M_DROP:
                 if (h > 30.0f) { remain = 2; return; }
-                mode = M_FLAT; remain = irnd(5, 7);
+                mode = M_FLAT; remain = irnd(3, 4);
                 break;
             case M_LOOP:
             case M_ROLL:
@@ -1076,12 +1076,26 @@ struct Track {
                 bool wasBanked = (mode == M_TURN || mode == M_HELIX || mode == M_HILLS ||
                                    mode == M_DIVE || mode == M_BANKAIR || mode == M_WAVE ||
                                    mode == M_SCURVE || mode == M_WINGOVER);
-                if (wasBanked)                  { mode = M_FLAT; remain = irnd(4, 6); }
-                else if (elems >= elemLimit)    startLaunch();
-                else if (slow && h < 22.0f)     startLaunch();
-                else if (slow)                  startBoost();
-
-                else if (mode != M_FLAT)        { mode = M_FLAT; remain = irnd(4, 6); }
+                // A power section (LAUNCH/BOOST) rides DEAD FLAT (up=WUP, it can't tilt), so a
+                // banked element flowing straight into it snaps the up-vector -- insert a SHORT
+                // unwind flat ONLY in that case. The old code forced a 4-6 seg (56-84 m) flat
+                // after EVERY banked element regardless of what came next, which is the dominant
+                // source of "too many flat sections", diluted SUSTAINED g (the meat of the ride
+                // was dead track), and banking that read as "distinct angles" (banked plateau ->
+                // flat -> banked plateau). Banked -> next element instead flows continuously: the
+                // heartline bank is C1 across the seam because dyaw carries over via genPrevDyaw
+                // and jerk-limits into the next element's curvature. So only unwind before a
+                // genuine power section; otherwise go straight to the next element.
+                bool wantLaunch = (elems >= elemLimit) || (slow && h < 22.0f);
+                bool wantBoost  = slow && !wantLaunch;
+                if ((wantLaunch || wantBoost) && wasBanked) { mode = M_FLAT; remain = 3; }
+                else if (wantLaunch)            startLaunch();
+                else if (wantBoost)             startBoost();
+                // Banked -> next element gets a short leveling flat. Its length is set adaptively
+                // by the terrain-follow logic elsewhere; keep it modest here (was 4-6). Denser
+                // packing than this needs the per-element terrain-clearance floor (below) so
+                // elements climb over rising ground instead of relying on this flat to level.
+                else if (wasBanked)             { mode = M_FLAT; remain = 3; }
                 else                            chooseElement(h);
                 break;
             }

@@ -34,7 +34,7 @@ static const float TERRA_MAX  = 320.0f;
 static const float GRAV      = 9.81f;
 
 static float       DRAG      = 0.00028f;  // realistic aero drag: ~1.8 m/s^2 at 80 m/s (a ~10t train, ~5 m^2, Cd~0.7). The old 0.00048 was ~2x reality and was capping tall drops at ~296; lower drag lets drops recover their crest-height speed (~300+).
-static const float FRICTION  = 0.010f;    // steel-on-steel rolling resistance (low)
+static const float FRICTION  = 0.015f;    // steel-on-steel rolling resistance, realistic: Crr~0.0015 * g ~= 0.015 m/s^2 constant decel. Steel coasters genuinely coast efficiently (that's why they hold speed) -- air DRAG below dominates the speed bleed at ride speed. Kept realistic per spec rather than exaggerated for feel; the dynamic speed variation comes from gravity over the hills + drag, not from an unrealistic friction term.
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
@@ -1510,6 +1510,13 @@ int main(int argc, char **argv) {
         float hJerkV[M_COUNT], hJerkL[M_COUNT];
         for (int i=0;i<M_COUNT;i++){ hMaxV[i]=-1e9f; hMinV[i]=1e9f; hMaxL[i]=0; hJerkV[i]=0; hJerkL[i]=0; }
         int jerkOffenders = 0;
+        // SUSTAINED intensity: arc-weighted average combined felt-g deviation
+        // sqrt((gVert-1)^2 + gLat^2) over the WHOLE ride -- this is the "sustained gs around 6"
+        // the mandate asks for (the per-element MAX above is the peak, not the sustained value).
+        // flatFrac = fraction of ride on FLAT/DROP/powered/station track (the dead, ~0-intensity
+        // sections that dilute the sustained average). Target: raise sustainedG toward ~5-6 and
+        // drop flatFrac by packing elements densely.
+        double sumComb = 0.0; long combN = 0, flatN = 0;
         struct Off { float g; int seed,k,kind,pk,nk; float v,y,lat; };
         std::vector<Off> offenders;
         int totalPts = 0;
@@ -1603,6 +1610,9 @@ int main(int argc, char **argv) {
                         if (gVh > hMaxV[kd]) hMaxV[kd] = gVh;
                         if (gVh < hMinV[kd]) hMinV[kd] = gVh;
                         if (fabsf(gLh) > hMaxL[kd]) hMaxL[kd] = fabsf(gLh);
+                        float comb = sqrtf((gVh-1.0f)*(gVh-1.0f) + gLh*gLh);
+                        sumComb += comb; combN++;
+                        if (kd==M_FLAT||kd==M_DROP||kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST||kd==M_STATION||kd==M_DIP) flatN++;
                     }
                 }
 
@@ -1675,6 +1685,8 @@ int main(int argc, char **argv) {
             printf("  %-9s %10.1f %10.1f%s\n", NM[i], hJerkV[i], hJerkL[i], jf);
         }
         printf("  JERK OFFENDERS (|d felt g/dt| > 200 g/s = true collapse): %d frames\n", jerkOffenders);
+        printf("  SUSTAINED intensity (whole-ride arc-avg combined felt-g, target ~5-6): %.2f g   |   dead/flat track fraction: %.0f%%\n",
+               combN ? sumComb / combN : 0.0, combN ? 100.0 * flatN / combN : 0.0);
 
         std::sort(offenders.begin(), offenders.end(), [](const Off&a,const Off&b){
             return fabsf(a.g-1.0f) > fabsf(b.g-1.0f); });

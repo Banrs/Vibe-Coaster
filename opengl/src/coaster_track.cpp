@@ -609,7 +609,7 @@ struct Track {
     static float invRAt(SegMode m, float v) {
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) return 0.0f;
-        float rMax = s.rMaxRec * 1.30f;      // cap radius at world-record x1.3 (rMaxRec = researched real-record RADIUS; keeps built size <=1.4x WR)
+        float rMax = s.rMaxRec * 1.25f;      // cap radius at world-record x1.3 (rMaxRec = researched real-record RADIUS; keeps built size <=1.4x WR)
         float vv   = Clamp(v, 28.0f, 135.0f);
         return Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
     }
@@ -666,7 +666,7 @@ struct Track {
         // gT budgets raised (big 5.0->6.5, small 3.0->4.0): with the higher capK/dyawGeo the turn-rate
         // cap now BINDS at band speed and delivers ~6 g lateral, which the heartline bank rotates into
         // the seat -> ~6 g sustained in-seat on a fully-built big turn (was ~3.4 sustained at gT 5.0).
-        if (big) { turnMag = turnMagFor(8.0f, 0.025f, 0.62f); bankT = 0.15f; remain = irnd(8, 12); }   // big TURN: small over-bank past its heartline for a dramatic hard-turn lean
+        if (big) { turnMag = turnMagFor(8.6f, 0.025f, 0.66f); bankT = 0.15f; remain = irnd(8, 12); }   // big TURN: small over-bank past its heartline for a dramatic hard-turn lean
         else     { turnMag = turnMagFor(4.0f, 0.015f, 0.24f); bankT = 0.0f; remain = irnd(6, 9);  }   // small TURN: pure heartline
     }
     void initHelix() {
@@ -708,7 +708,7 @@ struct Track {
         // no longer caps entry speed -- and re-flattened the curve straight back into
         // the +13/-16g bug this budget was chosen to fix); now stays out of the way
         // up to the genV hard clamp.
-        turnMag = turnMagFor(6.8f, 0.02f, 0.60f);
+        turnMag = turnMagFor(7.3f, 0.02f, 0.64f);
         bankT   = 0.10f;   // HELIX: slight over-bank on top of its gT=6 heartline, continuous over the coil
 
         float R = SEG_LEN / turnMag;
@@ -737,7 +737,7 @@ struct Track {
         // so 6.0 was clearing -6 at hot entry speeds (--gaudit, 60+ seeds). lo floor
         // lowered (was 0.11, reached below 87 m/s) so it stays out of the way up to
         // the genV hard clamp instead of re-flattening the curve at extreme speed.
-        turnMag   = turnMagFor(7.5f, 0.025f, 0.52f);   // budget 5.0->6.0: each banked half of the S holds ~5-6 g in-seat
+        turnMag   = turnMagFor(8.0f, 0.025f, 0.56f);   // budget 5.0->6.0: each banked half of the S holds ~5-6 g in-seat
         bankT     = 0.0f;   // SCURVE: pure heartline -- the roll now sweeps continuously through 0 at the S inflection
         scurveLen = irnd(10, 15);   // longer (was 6-10): each half of the S now holds its banked plateau instead of being all-ramp, so sustained lateral builds before the inflection flips it
         remain    = scurveLen;
@@ -746,7 +746,7 @@ struct Track {
         mode = M_DIVE;
         setClearance(4.0f, 24.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
-        turnMag = turnMagFor(7.0f, 0.02f, 0.54f);   // budget 4.0->5.5: the diving turn holds ~5-6 g in-seat once banked (was ~2.8 sustained)
+        turnMag = turnMagFor(7.6f, 0.02f, 0.58f);   // budget 4.0->5.5: the diving turn holds ~5-6 g in-seat once banked (was ~2.8 sustained)
         bankT   = 0.20f;   // DIVE: over-bank fraction -> past-vertical lean for the diving turn, eased by shape
         remain  = irnd(7, 11);   // longer (was 4-7): the diving turn holds its plateau instead of averaging down over an all-ramp element
     }
@@ -863,6 +863,24 @@ struct Track {
             default:          return -1.0f;   // not height-gated
         }
     }
+    // MINIMUM entry-speed fraction of the gate: an element is only OFFERED once the train is
+    // fast enough to actually pull its intended g at its fixed (1.25x WR) size. This is the
+    // "adjust the speed where they generate" lever -- since g = v^2/R at a fixed radius, a loop
+    // that generates at 0.82x its gate holds a much stronger bottom than one taken at a crawl
+    // (which would nearly stall over the top and read ~1.5 g). The strong-sustained inversions
+    // demand a high fraction; the gentle/lateral ones (cobra/roll/heartline) generate at any speed.
+    static float invVMinFrac(SegMode m) {
+        switch (m) {
+            case M_LOOP:     return 0.82f;
+            case M_IMMEL:    return 0.80f;
+            case M_PRETZEL:  return 0.80f;
+            case M_DIVELOOP: return 0.74f;
+            case M_COBRA:    return 0.40f;
+            case M_ROLL:     return 0.35f;
+            case M_HEARTLINE:return 0.30f;
+            default:         return 0.0f;
+        }
+    }
     bool eligibleElem(SegMode m) const {
         // Per-element speed gate, derived from the SAME record-capped radius formula
         // invRAt uses to size the element: above this speed, even the max-record
@@ -874,9 +892,10 @@ struct Track {
         InvSpec s = invSpec(m);
         if (s.gT > 0.0f) {
             const float gCeil = 7.8f;   // planar-formula ceiling; real 3-D-spline g runs ~1.3x this estimate, so 7.8 here ~= 9.8 actual
-            float rMax = s.rMaxRec * 1.30f;
+            float rMax = s.rMaxRec * 1.25f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;
+            if (genV < invVMinFrac(m) * gate) return false;   // too slow to pull its intended g -> take it later once the train is fast enough
         }
         float trickMax = maxTrickHeight(m);
         if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
@@ -889,7 +908,7 @@ struct Track {
         InvSpec s = invSpec(m);
         if (s.gT > 0.0f) {
             const float gCeil = 7.8f;
-            float rMax = s.rMaxRec * 1.30f;
+            float rMax = s.rMaxRec * 1.25f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             if (genV > gate) return false;
         }
@@ -943,9 +962,9 @@ struct Track {
     static float elemSpeedPref(SegMode m, float spd) {
         switch (m) {
             case M_TURN: case M_DIVE: case M_SCURVE: case M_HELIX: case M_WINGOVER:
-                return 0.35f + 1.60f * spd;    // hard sustained-g turns: strongly favored when fast
+                return 0.12f + 2.60f * spd;    // hard sustained-g turns: strongly favored when fast (g = v^2/R at their now-fixed radius -> faster entry is the lever for higher held g)
             case M_HILLS: case M_BANKAIR: case M_WAVE: case M_DIP:
-                return 1.25f - 0.70f * spd;    // airtime/filler: favored when slower
+                return 1.35f - 0.85f * spd;    // airtime/filler: favored when slower
             default:
                 return 1.0f;
         }
@@ -1220,9 +1239,9 @@ struct Track {
             // KEEP the proven-safe 6.0 / 0.26 values -- raising their geometry destabilized the du-window
             // on their combined vertical-crest + bank and produced -16..-19 g arc-collapse spikes.
             bool gElem = (mode == M_TURN || mode == M_DIVE || mode == M_SCURVE);
-            float capK    = (mode == M_HELIX) ? 6.8f : (gElem ? 7.5f : 6.0f);
+            float capK    = (mode == M_HELIX) ? 7.0f : (gElem ? 7.8f : 6.0f);
             float dyawG   = capK * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f);
-            float dyawGeo = (mode == M_HELIX) ? 0.270f : (gElem ? 0.275f : 0.260f);
+            float dyawGeo = (mode == M_HELIX) ? 0.270f : (gElem ? 0.300f : 0.260f);
             float dyawMax = fminf(dyawG, dyawGeo);
             dyaw = Clamp(dyaw, -dyawMax, dyawMax);
             genPrevDyaw = dyaw;

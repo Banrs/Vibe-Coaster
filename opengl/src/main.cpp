@@ -40,15 +40,11 @@ static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
 static const float LAUNCH_V  = 105.0f;  // asymptote ~378: keeps strong thrust (~20 m/s^2) right up to the 86.1 m/s (310) clamp, so the launch reliably saturates 310 with margin (was 95 -> faded to ~10 and topped ~300)
 static const float CLIMB_V   = 40.0f;
-// Operational speed band (user spec): the ride lives in 125-310 km/h, no train-like pinning
-// to a single clamp. V_MIN is the soft re-power target (a mid-course friction-wheel / booster,
-// the "stall = 125 km/h, never 0" floor) and V_MAX is the hard energy ceiling that keeps the
-// biggest drops inside 310. There is NO separate low hard floor anymore -- only a tiny numeric
-// guard (V_GUARD) to keep du/dt finite; the soft re-power carries speed back up to V_MIN within
-// a few tenths of a second, so the band is enforced physically, not by a snap clamp.
-static const float V_MIN     = 34.72f;   // 125 km/h
-static const float V_MAX     = 86.11f;   // 310 km/h
-static const float V_GUARD   =  6.0f;    // numeric-only floor (prevents v<=0 -> NaN du); well below the band, only touched transiently at a crest before re-power catches it
+// Speed is fully physics-driven (user choice): NO re-power floor and NO top cap. Speed is
+// whatever launch thrust + gravity + friction/drag produce -- launches asymptote toward the
+// LAUNCH_V thrust ceiling (~345 km/h) and low points may occasionally dip into a real stall,
+// both accepted for realism. Only V_GUARD remains, a pure numeric floor so du/dt stays finite.
+static const float V_GUARD   =  6.0f;    // numeric-only floor (prevents v<=0 -> NaN du)
 static float       BOOST_V   = 62.0f;
 // Ambient re-power threshold: below this speed the ride considers itself "run down" and
 // re-launches/re-boosts (uniformly, regardless of what element comes next -- this is pure
@@ -1301,13 +1297,9 @@ int main(int argc, char **argv) {
                 // fires when v<36; on descents v>36 so it never engages. Bounded +28 m/s^2, capped
                 // at 36, continuous in v -> kappa*v^2 rises smoothly, no felt-g jerk. Kept in
                 // lock-step with the live player loop so --gaudit reflects the real ride.
-                // soft re-power to the band floor (mid-course booster / friction wheel): keeps the
-                // ride >= 125 km/h everywhere except while actively launching/boosting. Applied on
-                // climb/chain too now, so no stretch of the ride drops below the 125-310 band.
-                if (tg != M_LAUNCH && tg != M_BOOST && v < V_MIN)
-                    v = fminf(v + 28.0f * dt, V_MIN);
+                // (speed floor removed -- fully physics-driven per user; only the V_GUARD numeric floor below keeps du/dt finite)
                 v = fmaxf(v, V_GUARD);
-            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
+            // (speed cap removed -- fully physics-driven per user; top speed governed by launch thrust + gravity)
                 if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
                     if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
                     if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;
@@ -1654,13 +1646,9 @@ int main(int argc, char **argv) {
                 // fires when v<36; on descents v>36 so it never engages. Bounded +28 m/s^2, capped
                 // at 36, continuous in v -> kappa*v^2 rises smoothly, no felt-g jerk. Kept in
                 // lock-step with the live player loop so --gaudit reflects the real ride.
-                // soft re-power to the band floor (mid-course booster / friction wheel): keeps the
-                // ride >= 125 km/h everywhere except while actively launching/boosting. Applied on
-                // climb/chain too now, so no stretch of the ride drops below the 125-310 band.
-                if (tg != M_LAUNCH && tg != M_BOOST && v < V_MIN)
-                    v = fminf(v + 28.0f * dt, V_MIN);
+                // (speed floor removed -- fully physics-driven per user; only the V_GUARD numeric floor below keeps du/dt finite)
                 v = fmaxf(v, V_GUARD);
-            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
+            // (speed cap removed -- fully physics-driven per user; top speed governed by launch thrust + gravity)
                 int ki = (int)u;
                 if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
 
@@ -1844,7 +1832,7 @@ int main(int argc, char **argv) {
                 if (t.tagAt(u) == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
                 if (t.tagAt(u) == M_BOOST)  v += 112.0f * fmaxf(0.0f, 1.0f - v / 89.0f) * dt;   // boost thrust, fades near ~320 (no clamp)
                 v = fmaxf(v, V_GUARD);
-            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
+            // (speed cap removed -- fully physics-driven per user; top speed governed by launch thrust + gravity)
 
                 sinceStation += dt;
                 if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
@@ -2240,11 +2228,9 @@ int main(int argc, char **argv) {
             // Un-gated (was slope>0.06): hold >=36 m/s (129 km/h) at crests/STALL too, not only
             // on climbs -- see the matching comment in the --gaudit sim. Continuous +28 m/s^2 to a
             // 36 cap, no felt-g jerk.
-            // soft re-power to the band floor (see audit sims): >= 125 km/h everywhere but launch/boost.
-            if (tg != M_LAUNCH && tg != M_BOOST && v < V_MIN)
-                v = fminf(v + 28.0f * dt, V_MIN);
+            // (speed floor removed -- fully physics-driven per user)
             v = fmaxf(v, V_GUARD);
-            v = fminf(v, V_MAX);   // 310 km/h energy ceiling (was 86.7=312). Reliably saturated (LAUNCH asymptote 105 >> this); clips only the biggest drop/boost peaks so the top of the band is 310.
+            // (speed cap removed -- fully physics-driven per user; top speed governed by launch thrust + gravity)
             if (gForceSpeed > 0.0f) v = gForceSpeed;
 
             if (benchMode) {   // launch top-hat drop, measured on the REAL physics path (== live ride)

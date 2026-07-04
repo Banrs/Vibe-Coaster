@@ -26,6 +26,7 @@ struct Track {
     float   genPrevDy = 0;
     float   genPrevCurv = 0;
     float   genPrevDyaw = 0;
+    int     dropRun = 0;   // how many cps the current M_DROP has run -- capped so a drop can't crawl forever down a descending slope and starve element generation
     float   genV      = LAUNCH_V;
     float   genFloorY = -1e9f;   // curvature-bounded terrain floor (lifts track out of the ground smoothly)
     float   genFloorVy = 0.0f;
@@ -632,7 +633,7 @@ struct Track {
         // small they barely registered as airtime; measured felt-g (--gaudit) has
         // plenty of headroom below the +9.8/-6 envelope (~5g typical), so a taller
         // floor is still safe.
-        hillH     = frnd(22.0f, 34.0f) + (clearanceBase > 32.0f ? frnd(6.0f, 14.0f) : 0.0f);
+        hillH     = frnd(26.0f, 42.0f) + (clearanceBase > 32.0f ? frnd(6.0f, 14.0f) : 0.0f);   // taller crests -> more visible up/down
         hillH     = fminf(hillH, maxAirH());
 
         // gT raised 3.3->3.7 (shortens hillLen for the same hillH -> a steeper, more curved crest
@@ -645,9 +646,13 @@ struct Track {
         // crest is at the TOP of the hill, away from terrain, so this does NOT worsen the ground
         // clearance offenders (which are HELIX/STENGEL/FLAT over rising terrain, a separate issue).
         // The vertical dlim clamp and the felt-g safety net still backstop the peak.
+        // PUNCHY airtime: cap each bump much shorter than the old 40-cp (560 m) ceiling. At 172 km/h
+        // the g-neutral length is ~220 m/bump -- shallow, reads as a "shake" -- so deliberately
+        // shorten toward ~7-9 cp/bump (100-125 m) for a steep crest and STRONG ejector airtime (user
+        // accepts high g). The dlim curvature cap in stepGeneric still backstops the very peak.
         { float gT = 5.2f;
           float L  = 2.0f * PI * hillBumps * genV * sqrtf(0.5f * hillH / (gT * GRAV));
-          hillLen  = Clamp((int)(L / SEG_LEN), hillBumps * 3, 40); }
+          hillLen  = Clamp((int)(L / SEG_LEN), hillBumps * 4, hillBumps * 9); }
         // Per-step lateral turn rate, sized from the ACTUAL entry speed like turnMag
         // (turnMagFor) rather than a fixed range: a fixed rate held over the
         // longer-duration hills a hot (unbraked) entry produces would push lateral g
@@ -744,18 +749,16 @@ struct Track {
         }
         float usable      = fmaxf(gpos.y - maxFloor - 8.0f, 4.0f);
         float stepsPerRev = 2.0f * PI / turnMag;
-        // A real helix is a nearly-flat TIGHT SPIRAL, not a plunge: it descends only a gentle
-        // fraction of its radius per revolution. The old code dropped ALL of `usable` (the entire
-        // height above ground) over 1-2 coils -> a ~100 m, ~45deg descent that both dwarfed a real
-        // helix AND tilted the element so hard the heartline projected the coil g onto the LATERAL
-        // axis instead of into the seat. Cap the pitch at ~0.55x radius per revolution and cap the
-        // total descent to ~1.25x the WR helix height (~55 m), spread over up to 3 coils. What it
-        // can't shed here it leaves for the following elements -- the descent no longer has to reach
-        // the ground inside one helix.
-        int   coils       = Clamp((int)(usable / 18.0f), 1, 3);
-        remain    = Clamp((int)(coils * stepsPerRev + 0.5f), 8, 54);
-        float descPerRev  = fminf(0.55f * R, usable / (float)coils);
-        float totalDesc   = fminf(descPerRev * (float)coils, 55.0f);
+        // A real helix (e.g. Goliath) is a TIGHT SPIRAL of 2-3 full rotations that descends gently
+        // toward the ground. Drive the coil count from a fixed ROTATION target (not the available
+        // height -- that made a floating helix do only 1 loosely-descending turn), and give it a
+        // gentle fixed pitch bounded by the height actually available so it never dives underground.
+        // A helix that starts low simply descends less (a ground-level coil); one that starts high
+        // descends more -- either way it is a proper multi-rotation spiral, not a flat float.
+        int   coils       = irnd(2, 3);
+        remain    = Clamp((int)(coils * stepsPerRev + 0.5f), 14, 64);
+        float descPerRev  = Clamp(0.6f * R, 10.0f, 20.0f);            // gentle real-helix pitch
+        float totalDesc   = fminf(descPerRev * (float)coils, usable); // never descend past the ground band
         helixDrop = -totalDesc / (float)remain;
     }
     int     scurveLen = 10;
@@ -1114,9 +1117,19 @@ struct Track {
     }
 
     void enterDrop(int n) {
+        // A closed-form element (loop/immel/stall/cobra/diveloop/heartline...) sets gpos.y directly
+        // and frequently ENDS ELEVATED (an IMMEL exits ~2*lR above entry, a STALL/COBRA on its crest).
+        // The old rule only made a real M_DROP when the mode was POWERED (launch/boost/climb); every
+        // inversion therefore fell through to M_FLAT at whatever altitude it stopped at, and M_FLAT's
+        // throttled terrain-hug (gain 0.5, jerk/dlim-capped, only 3-4 steps) shed barely ~30 m before
+        // the next element climbed again -> the track ratcheted UP and floated (clr 10-140). Force a
+        // genuine gravity descent whenever the element ends above the ground band (~16 m clr), not just
+        // when powered; M_DROP's own nextMode continuation then drives it all the way back to clr<12.
+        float h = gpos.y - groundTopAt(gpos.x, gpos.z);
         bool powered = (mode == M_LAUNCH || mode == M_BOOST || mode == M_CLIMB);
-        mode   = powered ? M_DROP : M_FLAT;
+        mode   = (powered || h > 20.0f) ? M_DROP : M_FLAT;
         remain = n;
+        dropRun = 0;
     }
 
     void nextMode() {
@@ -1187,8 +1200,14 @@ struct Track {
                 enterDrop(Clamp((int)(h / 14.0f), 2, 8));
                 break;
             case M_DROP:
-                if (h > 30.0f) { remain = 2; return; }
-                mode = M_FLAT; remain = irnd(3, 4);
+                // Keep falling toward the ground band, but CAP the drop length. Without the cap the
+                // drop re-extended itself every time h>12, so down a descending slope (where h hovers
+                // at ~12-15 forever) it crawled for 250+ cps as one giant DROP and STARVED all element
+                // generation (a whole lap of nothing but drop). ~10 cps is plenty to shed the tallest
+                // top-hat; after that, hand back to element generation even if still a bit elevated
+                // (the descend-when-high check and terrain-follow keep bringing it down).
+                if (h > 16.0f && dropRun < 10) { remain = 2; dropRun++; return; }
+                mode = M_FLAT; remain = irnd(2, 3);
                 break;
             case M_LOOP:
             case M_ROLL:
@@ -1232,35 +1251,28 @@ struct Track {
                     mcbrDone = true; mode = M_FLAT; remain = irnd(7, 11); levelHold = remain;
                     break;
                 }
-                bool wantLaunch = (elems >= elemLimit) || (slow && h < 22.0f);
+                // ONE top-hat per lap. wantLaunch (which runs the tall CLIMB top-hat) fires ONLY at
+                // lap end (elems>=elemLimit). A mid-lap "run-down" re-power is a FLAT BOOST, never a
+                // top-hat -- the old `slow && h<22 -> wantLaunch` planted a 130-250 m top-hat in the
+                // MIDDLE of the lap, and at 172 km/h the track can only descend ~5 m/cp, so it then
+                // spent dozens of cps crawling back down with no elements (the DROP/FLAT ping-pong at
+                // clr 25-50). Keeping the big climb to once per lap is what lets the ride hug the ground.
+                bool wantLaunch = (elems >= elemLimit);
                 bool wantBoost  = slow && !wantLaunch;
-                // REAL-COASTER UNDULATION + altitude management. Before anything else, if the track
-                // is floating well above the ground band, DESCEND -- real coasters drop between
-                // elevated elements rather than parking a roll/loop 150 m up, and the drop trades
-                // the height back into speed (gravity IS the coaster's re-power). This keeps every
-                // element in a realistic near-ground band and keeps the ride fast without a boost.
-                if (!wantLaunch && h > 78.0f) {
-                    // Only descend on a GENUINE float (well above the normal ~20-60 m element band --
-                    // a threshold of 46 fired at every airtime-hill crest and buried the ride in dead
-                    // drops). A STRAIGHT drop (no bank) falls cleanly to the ground band (M_DROP's own
-                    // nextMode continues it until h<30) and trades the height back into speed; a banked
-                    // initDive() here chained into itself (DIVE->DIVE->DIVE) and kinked. upEaseSteps
-                    // unwinds the exit bank of the element we just left so the banked->drop seam is smooth.
-                    mode = M_DROP; remain = irnd(3, 6);
-                    if (wasBanked) { upEaseSteps = 3; }
+                // SAWTOOTH ground-hug: if an element left the track elevated, DIVE back to the ground
+                // before the next element. Now that M_DROP commits (dlim ~10 -> a real 60-70deg drop
+                // face that reaches the valley floor in ~5 cps, then the dropRun cap hands back), this
+                // no longer ping-pongs -- it makes the classic element -> drop-to-ground -> element
+                // profile so the track actually touches the ground between elements instead of hovering.
+                if (!wantLaunch && !wantBoost && h > 16.0f) {
+                    mode = M_DROP; remain = irnd(3, 6); dropRun = 0;
+                    if (wasBanked) upEaseSteps = 3;
                 }
-                else if ((wantLaunch || wantBoost) && wasBanked) { mode = M_FLAT; remain = 3; }
                 else if (wantLaunch)            startLaunch();
                 else if (wantBoost)             startBoost();
-                // Banked -> next element gets a short leveling flat. Its length is set adaptively
-                // by the terrain-follow logic elsewhere; keep it modest here (was 4-6). Denser
-                // packing than this needs the per-element terrain-clearance floor (below) so
-                // elements climb over rising ground instead of relying on this flat to level.
-                // A banked element gets a SHORT (2-step) unwind before the next element: banked->banked
-                // is C1 (dyaw carries via genPrevDyaw), but banked->closed-form (loop/roll/stall, which
-                // start from a fresh up-vector) snaps the seat from a live bank to flat -> a jerk kink.
-                // Two steps (was the old dead 3-6) unwinds the bank without the long dead-flat gaps.
-                else if (wasBanked)             { mode = M_FLAT; remain = 3; }
+                // Flow straight into the next element. The exit taper (stepGeneric) already unwinds a
+                // banked element to near-flat over its last 2 steps, so banked->anything is smooth
+                // without a dead leveling flat.
                 else                            chooseElement(h);
                 break;
             }
@@ -1288,6 +1300,16 @@ struct Track {
             case M_BOOST:   dyaw = 0; break;
             case M_DIP:   dyaw = 0.0f; break;
             default: break;
+        }
+
+        // EXIT TAPER: ramp a banked element's turn rate to ~0 over its last 2 steps so it leaves
+        // NEAR-FLAT. A banked element can then flow straight into whatever comes next (another bank,
+        // a loop, a straight) without the seat snapping from a live ~75deg lean down to flat -- the
+        // "two banked things go to flat for 2 m then jerk back" seam. dyaw stays jerk-limited below.
+        {
+            bool bankedElem = (mode==M_TURN||mode==M_HELIX||mode==M_DIVE||mode==M_WINGOVER||
+                               mode==M_SCURVE||mode==M_HILLS||mode==M_BANKAIR||mode==M_WAVE);
+            if (bankedElem && remain <= 2) dyaw *= (float)(remain - 1) / 2.0f;   // remain 2 -> x0.5, remain 1 (last step) -> x0
         }
 
         if (mode != M_LAUNCH && mode != M_BOOST && mode != M_STATION && !stationRamping) {
@@ -1372,21 +1394,27 @@ struct Track {
                 // forward terrain sample into the target the same way; the 0.50 gain + downstream
                 // dlim/jlim curvature caps still own how FAST it may climb (comfort), this only
                 // fixes WHAT it climbs toward.
+                // SHORT lookahead (was 20 steps / 280 m of forward-MAX + 9 m): a long forward-max made
+                // FLAT ride at the height of the tallest terrain up to 280 m AHEAD, so over every valley
+                // it floated ~20 m up anticipating the next hill -- the "everything offset 20 m, nothing
+                // on the ground" report. A short 6-step lookahead + a 4 m margin lets FLAT DIVE into the
+                // valley and hug the local ground; the separate 32-step dive-arrest below still stops it
+                // from diving into terrain that rises further ahead.
                 float gtLook = gt;
-                for (int la = 1; la <= 20; la++)
+                for (int la = 1; la <= 6; la++)
                     gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
                                                        gpos.z + cosf(gyaw) * SEG_LEN * la));
-                dy = ((gtLook + 9.0f) - gpos.y) * 0.50f;
+                dy = ((gtLook + 4.0f) - gpos.y) * 0.55f;
                 break;
             }
-            case M_TURN:  dy = ((gt + 8.0f) - gpos.y) * 0.45f; break;   // hug closer to the ground (was gt+13); faster pull-down
+            case M_TURN:  dy = ((gt + 5.0f) - gpos.y) * 0.50f; break;   // hug the ground
             case M_HILLS: {
                 int   i  = hillLen - remain;
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
 
-                dy = (y1 - y0) + fminf(((gt + 8.0f) - gpos.y) * 0.20f, 0.0f);
+                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.22f, 0.0f);
                 break;
             }
             case M_CLIMB: dy = mega ? 21.0f : 13.0f; break;   // steeper top-hat incline (atan(21/14)=56 deg): more dramatic AND reaches crest with less climbing loss -> faster drop
@@ -1397,13 +1425,13 @@ struct Track {
             }
             case M_HELIX: dy = helixDrop; break;
             case M_DIVE:  dy = ((gt + 6.0f) - gpos.y) * 0.30f - 4.0f; break;
-            case M_SCURVE: dy = ((gt + 7.0f) - gpos.y) * 0.40f; break;   // hug closer (was gt+12)
+            case M_SCURVE: dy = ((gt + 4.0f) - gpos.y) * 0.45f; break;   // hug closer (was gt+12)
             case M_BANKAIR: {
                 int   i  = hillLen - remain;
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
-                dy = (y1 - y0) + fminf(((gt + 9.0f) - gpos.y) * 0.16f, 0.0f);
+                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.20f, 0.0f);
                 break;
             }
             case M_WAVE: {
@@ -1411,7 +1439,7 @@ struct Track {
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
-                dy = (y1 - y0) + fminf(((gt + 8.0f) - gpos.y) * 0.18f, 0.0f);
+                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.20f, 0.0f);
                 break;
             }
             case M_WINGOVER: {
@@ -1419,7 +1447,7 @@ struct Track {
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * t1));
-                dy = (y1 - y0) + ((gt + 10.0f) - gpos.y) * 0.16f;
+                dy = (y1 - y0) + ((gt + 6.0f) - gpos.y) * 0.18f;
                 break;
             }
             case M_STATION:
@@ -1460,7 +1488,14 @@ struct Track {
             float dlim = Clamp(6.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 1.5f, 18.0f);
             // Top-hat / drop family may steepen faster (near-vertical faces); the g-relaxation
             // pass still bounds crest/pull-out g. Inversions keep the conservative dlim above.
-            if (mode == M_DROP || mode == M_CLIMB || mode == M_DIVE) dlim = fmaxf(dlim, 3.0f);
+            if (mode == M_CLIMB) dlim = fmaxf(dlim, 3.0f);
+            // The DIVING modes get a MUCH higher curvature budget so they can actually pitch down
+            // steeply and DIVE to the ground between elements (real coasters dive into valleys with
+            // 60-80deg drop faces + strong pull-outs). At 172 km/h the base dlim is only ~5, which
+            // makes every descent a shallow ~20deg ramp that never reaches the ground -> the track
+            // hovers at clr 15-50. A budget of ~10 lets a drop/dive commit to the valley floor.
+            if (mode == M_DROP || mode == M_DIVE) dlim = fmaxf(dlim, 10.0f);
+            if (mode == M_DIP)                    dlim = fmaxf(dlim, 8.0f);
 
             // DROP/CLIMB/DIVE run a much larger dlim (steep faces need it), but genPrevCurv carries
             // straight across the mode switch into whatever comes next (e.g. FLAT, dlim ~1.5 at hot
@@ -1471,7 +1506,12 @@ struct Track {
             // step already respects its own (smaller) budget instead of slow-walking down to it.
             if (mode != lastGenMode) genPrevCurv = Clamp(genPrevCurv, -dlim, dlim);
 
-            float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, dlim);
+            // Cap the JERK limiter's upper bound at a modest value even when dlim is high for the
+            // diving modes: dlim high = the dive may get STEEP, but jlim low = it must RAMP into and
+            // out of that steepness gradually, so the pull-out at the bottom of a tunnel-dive spreads
+            // its g over several cps instead of a single |d g/dt|>200 collapse. Keeps the tunnels
+            // while cutting the dive jerk.
+            float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, fminf(dlim, 3.2f));
             float curv = dy - genPrevDy;
             curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);
             curv = Clamp(curv, -dlim, dlim);
@@ -1487,10 +1527,10 @@ struct Track {
                 // while the car is still well above it, gap shrinks, and maxSteep tightens in time to
                 // arrest the dive at a normal pull-out distance instead of underground.
                 float gtLook = gt;
-                for (int la = 1; la <= 32; la++)
+                for (int la = 1; la <= 14; la++)
                     gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
                                                        gpos.z + cosf(gyaw) * SEG_LEN * la));
-                float gap      = gpos.y - (gtLook + 14.0f);   // pull out to ~14 m above terrain (was 4.5): leaves a buffer so the post-gen smoothing can't dig the pull-out under the ground
+                float gap      = gpos.y - (gtLook - 8.0f);   // allow a dive to reach ~8 m BELOW the near terrain (tunnel); the hard floor caps the depth. Shorter 14-step lookahead so it dives through the immediate hill, not levels off 400 m early.
                 float maxSteep = sqrtf(2.0f * dlim * fmaxf(gap, 0.0f));
                 if (dy < -maxSteep) dy = -maxSteep;
             }
@@ -1501,10 +1541,13 @@ struct Track {
         float ceilY = fminf(gt + climbTop, BUILD_MAX - 6.0f);
 
         if (mode != M_STATION && mode != M_LAUNCH) {
-            float minClear = (mode == M_DIP) ? 1.5f : 4.5f;
-            if (gpos.y < gt + minClear) {
-                gpos.y = gt + minClear;
-
+            // Allow the track to TUNNEL (user: old tunnel frequency, clr ~-10 to -15). Instead of
+            // lifting to a fixed clearance, only cap the DEPTH -- the terrain-follow targets keep the
+            // track mostly above ground, so a tunnel happens naturally where terrain rises into a
+            // diving/flat section (a real terrain coaster carving through a hill after a top-hat).
+            float tunnelFloor = gt - 15.0f;
+            if (gpos.y < tunnelFloor) {
+                gpos.y = tunnelFloor;
                 if (mode == M_HELIX && remain > 1) remain = 1;
             }
         }
@@ -1542,7 +1585,7 @@ struct Track {
             // correct at all) and yanks the track back up several metres, flattening the exact dip
             // shape these modes exist to produce.
             if (mode != M_DIP && mode != M_HELIX) {
-                float floorHere = groundTopAt(gpos.x, gpos.z) + 8.0f;
+                float floorHere = groundTopAt(gpos.x, gpos.z) - 15.0f;   // allow tunnels (was +8); only stop the g-cap correction from burying deeper than the tunnel-depth cap
                 if (gpos.y + delta < floorHere) delta = fmaxf(floorHere - gpos.y, 0.0f);
             }
             gpos.y += delta;
@@ -1779,7 +1822,11 @@ struct Track {
         // it, so this is a harmless no-op for them and the missing guard for the closed-form ones).
         if (mode != M_STATION && mode != M_LAUNCH && mode != M_BOOST) {
             float gtN = groundTopAt(gpos.x, gpos.z);
-            float mc  = (mode == M_DIP) ? 1.5f : 4.5f;
+            // Inversions stay above ground (a buried loop looks broken); carving/transition modes may
+            // TUNNEL -- only depth-cap them so terrain can rise into them for the old tunnel look.
+            bool inv = (mode==M_LOOP||mode==M_IMMEL||mode==M_ROLL||mode==M_COBRA||mode==M_DIVELOOP||
+                        mode==M_PRETZEL||mode==M_HEARTLINE||mode==M_BANANA||mode==M_STENGEL||mode==M_WINGOVER);
+            float mc  = inv ? 3.0f : -15.0f;
             if (gpos.y < gtN + mc) gpos.y = gtN + mc;
         }
 
@@ -1958,7 +2005,9 @@ struct Track {
             int i = (int)cp.size() - 23;
             unsigned char ki = kind[i];
             if (ki != M_STATION) {
-                float clr = (ki == M_DIP) ? 1.5f : 4.5f;
+                bool invI = (ki==M_LOOP||ki==M_IMMEL||ki==M_ROLL||ki==M_COBRA||ki==M_DIVELOOP||
+                             ki==M_PRETZEL||ki==M_HEARTLINE||ki==M_BANANA||ki==M_STENGEL||ki==M_WINGOVER);
+                float clr = invI ? 4.0f : -13.0f;   // carving modes may tunnel to ~13 m deep; inversions stay above ground
                 float tf  = groundTopAt(cp[i].x, cp[i].z) + clr;
                 if (tf <= genFloorY) {            // terrain at/below the floor: follow it down, reset the climb
                     genFloorY = tf; genFloorVy = 0.0f;

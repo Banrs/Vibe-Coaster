@@ -1602,6 +1602,74 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    // GEOMETRY GROUND-TRUTH: dump the actual built track's vertical profile per element instance
+    // (vertical delta = how much the element ACTUALLY goes up/down, clearance above terrain, and
+    // horizontal span) plus an SVG side-view. This is the "run a side view" check -- it measures
+    // the SHAPE, not the felt-g, so a flattened airtime hill or a 20 m ground float shows up plainly.
+    if (argc > 1 && TextIsEqual(argv[1], "--profile")) {
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+        int seed = (argc > 2) ? atoi(argv[2]) : 1;
+        g_rng = (uint32_t)seed * 2654435761u | 1u;
+        Track t; t.reset();
+        for (int guard = 0; (int)t.cp.size() < 460 && guard < 4000; guard++) t.ensureAhead((float)t.cp.size() + 8.0f);
+        int n = (int)t.cp.size();
+        std::vector<float> dist(n, 0.0f), terr(n, 0.0f);
+        float maxY = -1e9f, minY = 1e9f, maxD = 0.0f;
+        for (int k = 0; k < n; k++) {
+            if (k) { float dx = t.cp[k].x - t.cp[k-1].x, dz = t.cp[k].z - t.cp[k-1].z; dist[k] = dist[k-1] + sqrtf(dx*dx+dz*dz); }
+            terr[k] = groundTopAt(t.cp[k].x, t.cp[k].z);
+            maxY = fmaxf(maxY, fmaxf(t.cp[k].y, terr[k])); minY = fminf(minY, fminf(t.cp[k].y, terr[k])); maxD = dist[k];
+        }
+        printf("[profile] seed %d: %d cps, %.0f m long\n", seed, n, maxD);
+        printf("  %-4s %-9s %6s %7s %7s %7s %7s\n", "cp", "elem", "dist", "vDelta", "clrMin", "clrMax", "hSpan");
+        int i = 0, tunnels = 0, onGround = 0;
+        while (i < n) {
+            int j = i; unsigned char kd = t.kind[i]; if (kd >= 25) kd = 0;
+            while (j < n && t.kind[j] == kd) j++;
+            float ymin = 1e9f, ymax = -1e9f, clrmin = 1e9f, clrmax = -1e9f;
+            for (int k = i; k < j; k++) { float clr = t.cp[k].y - terr[k]; ymin = fminf(ymin, t.cp[k].y); ymax = fmaxf(ymax, t.cp[k].y); clrmin = fminf(clrmin, clr); clrmax = fmaxf(clrmax, clr); }
+            if (clrmin < 0.0f) tunnels++;
+            if (clrmin < 6.0f) onGround++;
+            printf("  %-4d %-9s %6.0f %7.1f %7.1f %7.1f %7.1f\n", i, NM[kd], dist[i], ymax - ymin, clrmin, clrmax, dist[j-1] - dist[i]);
+            i = j;
+        }
+        printf("  --- instances that touch near-ground (clr<6m): %d ;  that tunnel (clr<0): %d ---\n", onGround, tunnels);
+        // SVG side-view (equal X/Y scale so slopes read true): terrain filled + track colored by element.
+        float W = 1800.0f, H = 620.0f, pad = 30.0f;
+        float s = fminf((W - 2*pad) / fmaxf(maxD, 1.0f), (H - 2*pad) / fmaxf(maxY - minY, 1.0f));
+        char path[256]; snprintf(path, sizeof path, "/home/user/Claude-Coaster/opengl/profile_seed%d.svg", seed);
+        FILE* f = fopen(path, "w");
+        if (f) {
+            #define PX(d) (pad + (d) * s)
+            #define PY(y) (H - pad - ((y) - minY) * s)
+            fprintf(f, "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='620' viewBox='0 0 1800 620'>");
+            fprintf(f, "<rect width='1800' height='620' fill='#0b1020'/>");
+            fprintf(f, "<polygon fill='#2a3b1e' stroke='#4a6b30' stroke-width='1' points='");
+            for (int k = 0; k < n; k++) fprintf(f, "%.1f,%.1f ", PX(dist[k]), PY(terr[k]));
+            fprintf(f, "%.1f,%.1f %.1f,%.1f'/>", PX(maxD), (double)(H-pad), PX(0.0f), (double)(H-pad));
+            for (int k = 1; k < n; k++) {
+                unsigned char kd = t.kind[k]; if (kd >= 25) kd = 0;
+                const char* col = "#7fd0ff";
+                if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE) col="#ffd24a";
+                else if (kd==M_DROP||kd==M_DIP) col="#ff6b6b";
+                else if (kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST) col="#9aa0a6";
+                else if (kd==M_LOOP||kd==M_IMMEL||kd==M_COBRA||kd==M_DIVELOOP||kd==M_ROLL||kd==M_PRETZEL||kd==M_HEARTLINE) col="#c77dff";
+                else if (kd==M_HELIX) col="#4ade80";
+                else if (kd==M_TURN||kd==M_SCURVE||kd==M_DIVE||kd==M_WINGOVER) col="#ff9e64";
+                fprintf(f, "<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='%s' stroke-width='2.5'/>",
+                        PX(dist[k-1]), PY(t.cp[k-1].y), PX(dist[k]), PY(t.cp[k].y), col);
+            }
+            fprintf(f, "<text x='34' y='24' fill='#cfe' font-family='monospace' font-size='14'>seed %d  len %.0fm  band %.0f-%.0fm  scale 1:1  (yellow=airtime red=drop green=helix purple=inversion orange=turn grey=powered)</text>",
+                    seed, maxD, minY, maxY);
+            fprintf(f, "</svg>");
+            #undef PX
+            #undef PY
+            fclose(f);
+            printf("  wrote %s\n", path);
+        }
+        return 0;
+    }
+
     if (argc > 1 && TextIsEqual(argv[1], "--gaudit")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 12;
         if (argc > 3) DRAG       = (float)atof(argv[3]);

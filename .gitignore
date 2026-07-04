@@ -8,3 +8,4 @@ src/vk/minecoaster_vk
 *.o
 track.txt
 .DS_Store
+opengl/profile_seed*.svg

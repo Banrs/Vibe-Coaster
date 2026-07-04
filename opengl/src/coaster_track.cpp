@@ -1530,7 +1530,7 @@ struct Track {
                 for (int la = 1; la <= 14; la++)
                     gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
                                                        gpos.z + cosf(gyaw) * SEG_LEN * la));
-                float gap      = gpos.y - (gtLook - 8.0f);   // allow a dive to reach ~8 m BELOW the near terrain (tunnel); the hard floor caps the depth. Shorter 14-step lookahead so it dives through the immediate hill, not levels off 400 m early.
+                float gap      = gpos.y - (gtLook - 5.0f);   // allow a dive to reach ~5 m below the near terrain (shallow tunnel); hard floor caps depth. Short 14-step lookahead so it dives through the immediate hill.
                 float maxSteep = sqrtf(2.0f * dlim * fmaxf(gap, 0.0f));
                 if (dy < -maxSteep) dy = -maxSteep;
             }
@@ -1545,7 +1545,7 @@ struct Track {
             // lifting to a fixed clearance, only cap the DEPTH -- the terrain-follow targets keep the
             // track mostly above ground, so a tunnel happens naturally where terrain rises into a
             // diving/flat section (a real terrain coaster carving through a hill after a top-hat).
-            float tunnelFloor = gt - 15.0f;
+            float tunnelFloor = gt - 5.0f;
             if (gpos.y < tunnelFloor) {
                 gpos.y = tunnelFloor;
                 if (mode == M_HELIX && remain > 1) remain = 1;
@@ -1585,7 +1585,7 @@ struct Track {
             // correct at all) and yanks the track back up several metres, flattening the exact dip
             // shape these modes exist to produce.
             if (mode != M_DIP && mode != M_HELIX) {
-                float floorHere = groundTopAt(gpos.x, gpos.z) - 15.0f;   // allow tunnels (was +8); only stop the g-cap correction from burying deeper than the tunnel-depth cap
+                float floorHere = groundTopAt(gpos.x, gpos.z) - 5.0f;   // allow tunnels (was +8); only stop the g-cap correction from burying deeper than the tunnel-depth cap
                 if (gpos.y + delta < floorHere) delta = fmaxf(floorHere - gpos.y, 0.0f);
             }
             gpos.y += delta;
@@ -1826,7 +1826,7 @@ struct Track {
             // TUNNEL -- only depth-cap them so terrain can rise into them for the old tunnel look.
             bool inv = (mode==M_LOOP||mode==M_IMMEL||mode==M_ROLL||mode==M_COBRA||mode==M_DIVELOOP||
                         mode==M_PRETZEL||mode==M_HEARTLINE||mode==M_BANANA||mode==M_STENGEL||mode==M_WINGOVER);
-            float mc  = inv ? 3.0f : -15.0f;
+            float mc  = inv ? 3.0f : -5.0f;
             if (gpos.y < gtN + mc) gpos.y = gtN + mc;
         }
 
@@ -2007,7 +2007,7 @@ struct Track {
             if (ki != M_STATION) {
                 bool invI = (ki==M_LOOP||ki==M_IMMEL||ki==M_ROLL||ki==M_COBRA||ki==M_DIVELOOP||
                              ki==M_PRETZEL||ki==M_HEARTLINE||ki==M_BANANA||ki==M_STENGEL||ki==M_WINGOVER);
-                float clr = invI ? 4.0f : -13.0f;   // carving modes may tunnel to ~13 m deep; inversions stay above ground
+                float clr = invI ? 4.0f : -5.0f;   // carving modes may tunnel to ~5 m deep; inversions stay above ground
                 float tf  = groundTopAt(cp[i].x, cp[i].z) + clr;
                 if (tf <= genFloorY) {            // terrain at/below the floor: follow it down, reset the climb
                     genFloorY = tf; genFloorVy = 0.0f;
@@ -2029,7 +2029,7 @@ struct Track {
                 // WANTS rare shallow tunnels ("some rare tunnels will be fun"), so allow the track to
                 // run up to ~14 m under a fast-rising hill -- a real tunnel-through-the-hill moment --
                 // while still capping the pathological 100-200 m underground dives the old bug produced.
-                float hardFloor = groundTopAt(cp[i].x, cp[i].z) - 14.0f;
+                float hardFloor = groundTopAt(cp[i].x, cp[i].z) - 7.0f;
                 if (cp[i].y < hardFloor) cp[i].y = hardFloor;
             }
         }

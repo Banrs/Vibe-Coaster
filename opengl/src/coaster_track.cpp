@@ -1758,6 +1758,22 @@ struct Track {
                 // pathological deep underground dive.
                 float hardFloor = groundTopAt(cp[i].x, cp[i].z) - 7.0f;
                 if (cp[i].y < hardFloor) cp[i].y = hardFloor;
+
+                // ROUND JUST THE TUNNEL-ENTRY LIP. Where a carving mode dives under terrain and the
+                // floor clamps it, a sharp vertical kink forms (the FLAT/DROP tunnel jerk). Detect that
+                // kink (large vertical 2nd difference) ONLY on near/below-ground carving points and
+                // blend it toward the local average -- softening the sharp lip while leaving the tunnel
+                // depth and every above-ground element's shape untouched (inversions are excluded, and
+                // the trigger threshold means smooth track is not touched at all).
+                if (!invI && ki != M_LAUNCH && ki != M_CLIMB && i >= 1 && i + 1 < (int)cp.size()) {
+                    float clrHere = cp[i].y - groundTopAt(cp[i].x, cp[i].z);
+                    if (clrHere < 7.0f) {
+                        float sd2 = cp[i + 1].y - 2.0f * cp[i].y + cp[i - 1].y;
+                        float kinkw = Clamp((fabsf(sd2) - 3.0f) / 12.0f, 0.0f, 0.5f);
+                        if (kinkw > 0.0f)
+                            cp[i].y += (0.5f * (cp[i - 1].y + cp[i + 1].y) - cp[i].y) * kinkw;
+                    }
+                }
             }
         }
 

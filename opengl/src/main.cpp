@@ -38,7 +38,7 @@ static const float FRICTION  = 0.015f;    // steel-on-steel rolling resistance, 
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 82.0f;   // asymptote ~295 km/h: TOP speed target 275-290 km/h (well above the ~250 km/h WR). The launch is the brief peak; the ride cruises ~175 km/h. Elements enter ~1.5x their real-world speed so a ~WR-radius element holds ~2x WR sustained g (g = v^2/R).
+static const float LAUNCH_V  = 95.0f;   // asymptote ~342 km/h: TOP speed ~320 km/h by physics (no cap), per user.
 static const float CLIMB_V   = 22.0f;   // crest speed off a lift/top-hat (~79 km/h): the drop supplies the speed, not the lift.
 // Speed is fully physics-driven (user choice): NO re-power floor and NO top cap. Speed is
 // whatever launch thrust + gravity + friction/drag produce -- launches asymptote toward the
@@ -55,7 +55,7 @@ static float       BOOST_V   = 62.0f;
 // 0/8 rides). Lowering it lets the ride coast further before re-powering, giving genV real
 // chances to fall through the inversion gates naturally (confirmed via --gaudit: g-safety
 // unaffected, offender counts stay in the same pre-existing noise band as baseline).
-static float       BOOST_TRIG = 57.0f;   // re-power below ~205 km/h and boost toward ~216 km/h so the whole-ride AVERAGE holds ~175 km/h (user target). The boost straights also add realistic idle track (~30% real-coaster range).
+static float       BOOST_TRIG = 70.0f;   // re-power below ~252 km/h so the whole-ride AVERAGE sits in the 225-250 km/h band (user).
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -1288,7 +1288,7 @@ int main(int argc, char **argv) {
                 unsigned char tg = t.tagAt(u);
                 if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 60.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
 
                 // Un-gated (was slope>0.06): hold >=36 m/s (129 km/h) EVERYWHERE incl. crests and
@@ -1749,7 +1749,7 @@ int main(int argc, char **argv) {
                 unsigned char tg = t.tagAt(u);
                 if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 60.0f) * dt;   // boost thrust, fades to 0 near ~320 (no clamp)
+                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
                 // Un-gated (was slope>0.06): hold >=36 m/s (129 km/h) EVERYWHERE incl. crests and
                 // the STALL element, where the old climb-only gate switched off and let the train
@@ -1950,7 +1950,7 @@ int main(int argc, char **argv) {
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
                 v += acc * dt;
                 if (t.tagAt(u) == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
-                if (t.tagAt(u) == M_BOOST)  v += 112.0f * fmaxf(0.0f, 1.0f - v / 60.0f) * dt;   // boost thrust, fades near ~320 (no clamp)
+                if (t.tagAt(u) == M_BOOST)  v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
                 v = fmaxf(v, V_GUARD);
             // (speed cap removed -- fully physics-driven per user; top speed governed by launch thrust + gravity)
 
@@ -2336,7 +2336,7 @@ int main(int argc, char **argv) {
             else if (tg == M_CLIMB && !trk.chainAt(u) && v < CLIMB_V)
                 v = fminf(v + 44.0f * dt, CLIMB_V);
 
-            if (tg == M_BOOST) v += 112.0f * fmaxf(0.0f, 1.0f - v / 60.0f) * dt;   // boost thrust, fades near ~320 (no clamp)
+            if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
 
             bool onLift = trk.chainAt(u);
             if (onLift && slope > 0.05f) {
@@ -3930,17 +3930,17 @@ int main(int argc, char **argv) {
 
         if (dispatched && !onFoot) {
             Vector2 gc = { (float)(sw - 96), (float)(shh - 150) };
-            float R = 48.0f, scale = R / 4.5f;
+            float R = 48.0f, scale = R / 10.0f;   // g-ball scaled to +-10 g (was 4.5): the ride now pulls well past 4.5 g, so the dot needs the full human range
             DrawCircleV(gc, R + 6.0f, Color{ 12, 15, 24, 150 });
             DrawRing(gc, R + 2.0f, R + 5.0f, 0, 360, 48, Color{ 80, 90, 110, 210 });
-            for (int gg = 1; gg <= 4; gg++)
+            for (int gg = 2; gg <= 10; gg += 2)
                 DrawCircleLines((int)gc.x, (int)gc.y, gg * scale,
-                                gg == 1 ? Color{ 110, 170, 140, 150 }
+                                gg == 2 ? Color{ 110, 170, 140, 150 }
                                         : Color{ 78, 86, 104, 90 });
             DrawLine((int)(gc.x - R), (int)gc.y, (int)(gc.x + R), (int)gc.y, Color{ 78, 86, 104, 70 });
             DrawLine((int)gc.x, (int)(gc.y - R), (int)gc.x, (int)(gc.y + R), Color{ 78, 86, 104, 70 });
 
-            Vector2 off = { Clamp(-gLat, -4.5f, 4.5f) * scale, Clamp(gVert, -4.5f, 4.5f) * scale };
+            Vector2 off = { Clamp(-gLat, -10.0f, 10.0f) * scale, Clamp(gVert, -10.0f, 10.0f) * scale };
             float ol = sqrtf(off.x * off.x + off.y * off.y);
             if (ol > R - 8.0f) off = Vector2Scale(off, (R - 8.0f) / ol);
             Vector2 ball = { gc.x + off.x, gc.y + off.y };

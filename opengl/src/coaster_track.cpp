@@ -147,7 +147,7 @@ struct Track {
         }
 
         mode = M_CLIMB; mega = false; chainMode = false; remain = irnd(10, 13);
-        climbTop = frnd(105.0f, 135.0f);   // lift-hill height: a ~120 m drop off a slow crest recovers toward the fast ~180 km/h cruise the ride now targets.
+        climbTop = frnd(90.0f, 150.0f);
         ensureAhead(24);
     }
 
@@ -633,7 +633,7 @@ struct Track {
         // small they barely registered as airtime; measured felt-g (--gaudit) has
         // plenty of headroom below the +9.8/-6 envelope (~5g typical), so a taller
         // floor is still safe.
-        hillH     = frnd(26.0f, 42.0f) + (clearanceBase > 32.0f ? frnd(6.0f, 14.0f) : 0.0f);   // taller crests -> more visible up/down
+        hillH     = frnd(45.0f, 74.0f) + (clearanceBase > 32.0f ? frnd(4.0f, 12.0f) : 0.0f);   // WR-or-higher airtime (real WR ~55-60 m), arcadified
         hillH     = fminf(hillH, maxAirH());
 
         // gT raised 3.3->3.7 (shortens hillLen for the same hillH -> a steeper, more curved crest
@@ -931,11 +931,11 @@ struct Track {
     // demand a high fraction; the gentle/lateral ones (cobra/roll/heartline) generate at any speed.
     static float invVMinFrac(SegMode m) {
         switch (m) {
-            case M_LOOP:     return 0.82f;
-            case M_IMMEL:    return 0.90f;   // enter near the TOP of its window: a giant immel bleeds a lot of speed climbing, so it needs a hot entry to hold g above its real counterpart instead of going floaty
-            case M_PRETZEL:  return 0.80f;
-            case M_DIVELOOP: return 0.74f;
-            case M_COBRA:    return 0.78f;   // enter fast so the clothoid half-loops pull hard -> sustained above the real cobra, not below
+            case M_LOOP:     return 0.30f;
+            case M_IMMEL:    return 0.30f;   // enter near the TOP of its window: a giant immel bleeds a lot of speed climbing, so it needs a hot entry to hold g above its real counterpart instead of going floaty
+            case M_PRETZEL:  return 0.30f;
+            case M_DIVELOOP: return 0.30f;
+            case M_COBRA:    return 0.30f;   // enter fast so the clothoid half-loops pull hard -> sustained above the real cobra, not below
             case M_ROLL:     return 0.35f;
             case M_HEARTLINE:return 0.30f;
             default:         return 0.0f;
@@ -949,9 +949,9 @@ struct Track {
     // the floaty-top drag. Everything else keeps the safe 7.8 (~9.8 real) ceiling.
     static float invGCeil(SegMode m) {
         switch (m) {
-            case M_IMMEL: return 9.3f;    // hotter entry to hold sustained clearly above the real immel (ratio >1) while keeping its bottom peak within the ~12 g brief cap
-            case M_COBRA: return 11.0f;   // cobra is stretched (low-g neck between the loops), so it needs a hot entry to lift the interior average above the real cobra
-            default:      return 7.8f;
+            case M_IMMEL: return 20.0f;    // hotter entry to hold sustained clearly above the real immel (ratio >1) while keeping its bottom peak within the ~12 g brief cap
+            case M_COBRA: return 20.0f;   // cobra is stretched (low-g neck between the loops), so it needs a hot entry to lift the interior average above the real cobra
+            default:      return 20.0f;
         }
     }
     bool eligibleElem(SegMode m) const {
@@ -967,8 +967,8 @@ struct Track {
             const float gCeil = invGCeil(m);
             float rMax = s.rMaxRec * 1.25f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
-            if (genV > gate) return false;
-            if (genV < invVMinFrac(m) * gate) return false;   // too slow to pull its intended g -> take it later once the train is fast enough
+            (void)gate;   // arcadey: no "too fast" g-gate -- inversions appear at any speed (g is uncapped now)
+            (void)invVMinFrac;   // arcadey: no "too slow" gate either
         }
         float trickMax = maxTrickHeight(m);
         if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
@@ -983,7 +983,7 @@ struct Track {
             const float gCeil = invGCeil(m);
             float rMax = s.rMaxRec * 1.25f;
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
-            if (genV > gate) return false;
+            (void)gate;   // arcadey: no "too fast" g-gate -- inversions appear at any speed (g is uncapped now)
         }
         float trickMax = maxTrickHeight(m);
         if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
@@ -1002,25 +1002,25 @@ struct Track {
     // than a common element does, rather than showing up on the same cadence.
     static float elemRarityWeight(SegMode m) {
         switch (m) {
-            case M_HILLS:     return 6.0f;   // the single most common real coaster element (airtime hills)
-            case M_TURN:      return 5.0f;
-            case M_DIP:       return 4.0f;
-            case M_SCURVE:    return 4.0f;
-            case M_DIVE:      return 4.0f;
-            case M_WAVE:      return 3.0f;
-            case M_BANKAIR:   return 2.0f;
-            case M_WINGOVER:  return 1.5f;
-            case M_STALL:     return 1.5f;
-            case M_BANANA:    return 1.2f;
-            case M_LOOP:      return 1.0f;   // the most common NAMED inversion, but still just a handful per ride
-            case M_HELIX:     return 0.8f;   // usually a single finale element
-            case M_ROLL:      return 0.6f;
-            case M_IMMEL:     return 0.6f;
-            case M_HEARTLINE: return 0.5f;
-            case M_STENGEL:   return 0.5f;
-            case M_DIVELOOP:  return 0.5f;
-            case M_COBRA:     return 0.4f;   // real cobra rolls are a one-per-ride signature piece
-            case M_PRETZEL:   return 0.35f;
+            case M_HILLS:     return 9.0f;   // the single most common real coaster element (airtime hills)
+            case M_TURN:      return 2.0f;
+            case M_DIP:       return 2.5f;
+            case M_SCURVE:    return 1.5f;
+            case M_DIVE:      return 1.8f;
+            case M_WAVE:      return 1.2f;
+            case M_BANKAIR:   return 1.2f;
+            case M_WINGOVER:  return 0.7f;
+            case M_STALL:     return 2.2f;
+            case M_BANANA:    return 2.2f;
+            case M_LOOP:      return 3.5f;   // the most common NAMED inversion, but still just a handful per ride
+            case M_HELIX:     return 2.0f;   // usually a single finale element
+            case M_ROLL:      return 3.0f;
+            case M_IMMEL:     return 2.8f;
+            case M_HEARTLINE: return 2.0f;
+            case M_STENGEL:   return 1.8f;
+            case M_DIVELOOP:  return 3.0f;
+            case M_COBRA:     return 2.8f;   // real cobra rolls are a one-per-ride signature piece
+            case M_PRETZEL:   return 2.0f;
             default:          return 1.0f;
         }
     }
@@ -1176,8 +1176,8 @@ struct Track {
                     {
                         float vCrest = mega ? 30.0f : 38.0f;
                         float reach  = (genV * genV - vCrest * vCrest) / (2.0f * GRAV) - 10.0f;
-                        float want   = mega ? frnd(155.0f, 185.0f) : frnd(105.0f, 135.0f);   // the mega top-hat (~170 m) is the signature drop; the LAUNCH itself (LAUNCH_V=72 -> ~256 km/h) supplies the >250 km/h TOP speed, and the tall drop keeps the cruise fast.
-                        climbTop = Clamp(fminf(want, reach), 40.0f, 190.0f);
+                        float want   = mega ? frnd(175.0f, 235.0f) : frnd(90.0f, 150.0f);   // full 0-250 m height spread: giant top-hats up to ~235 m, smaller lifts ~90-150 m
+                        climbTop = Clamp(fminf(want, reach), 40.0f, 245.0f);
                     }
                     remain = mega ? irnd(11, 14) : irnd(6, 8);   // enough steps to actually reach ~200 m
                 }
@@ -1480,22 +1480,19 @@ struct Track {
             }
             default: break;
         }
-        float dyMin = (mode == M_DROP || mode == M_DIVE) ? -46.0f : -36.0f;   // steeper drop faces (atan(46/14)=73 deg); gentler elsewhere
+        float dyMin = (mode == M_DROP || mode == M_DIVE) ? -64.0f : -44.0f;   // near-vertical arcadey drop faces
         dy = Clamp(dy, dyMin, 36.0f);
 
         if (mode != M_LAUNCH && mode != M_BOOST && mode != M_STATION && !stationRamping) {
 
-            float dlim = Clamp(6.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 1.5f, 18.0f);
-            // Top-hat / drop family may steepen faster (near-vertical faces); the g-relaxation
-            // pass still bounds crest/pull-out g. Inversions keep the conservative dlim above.
-            if (mode == M_CLIMB) dlim = fmaxf(dlim, 3.0f);
-            // The DIVING modes get a MUCH higher curvature budget so they can actually pitch down
-            // steeply and DIVE to the ground between elements (real coasters dive into valleys with
-            // 60-80deg drop faces + strong pull-outs). At 172 km/h the base dlim is only ~5, which
-            // makes every descent a shallow ~20deg ramp that never reaches the ground -> the track
-            // hovers at clr 15-50. A budget of ~10 lets a drop/dive commit to the valley floor.
-            if (mode == M_DROP || mode == M_DIVE) dlim = fmaxf(dlim, 10.0f);
-            if (mode == M_DIP)                    dlim = fmaxf(dlim, 8.0f);
+            // ARCADEY curvature budget (user: "make it arcadey, remove the constraints, it's fun to
+            // watch, you can't sit on it"). The comfort-limited dlim shrank with 1/v^2 to a tame ~4 at
+            // 200+ km/h -> shallow ramps, tiny delta-y, everything flattened by the smoother. Replace
+            // it with a big, near-flat budget so elements get STEEP faces and dramatic up/down; g is
+            // deliberately uncapped. Diving modes get a near-vertical budget on top.
+            float dlim = Clamp(24.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 12.0f, 46.0f);
+            if (mode == M_DROP || mode == M_DIVE) dlim = fmaxf(dlim, 40.0f);
+            if (mode == M_DIP || mode == M_CLIMB) dlim = fmaxf(dlim, 22.0f);
 
             // DROP/CLIMB/DIVE run a much larger dlim (steep faces need it), but genPrevCurv carries
             // straight across the mode switch into whatever comes next (e.g. FLAT, dlim ~1.5 at hot
@@ -1506,12 +1503,10 @@ struct Track {
             // step already respects its own (smaller) budget instead of slow-walking down to it.
             if (mode != lastGenMode) genPrevCurv = Clamp(genPrevCurv, -dlim, dlim);
 
-            // Cap the JERK limiter's upper bound at a modest value even when dlim is high for the
-            // diving modes: dlim high = the dive may get STEEP, but jlim low = it must RAMP into and
-            // out of that steepness gradually, so the pull-out at the bottom of a tunnel-dive spreads
-            // its g over several cps instead of a single |d g/dt|>200 collapse. Keeps the tunnels
-            // while cutting the dive jerk.
-            float jlim = Clamp(2.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 0.4f, fminf(dlim, 3.2f));
+            // Arcadey jerk budget: let the curvature snap in/out fast (punchy crests and pull-outs)
+            // instead of easing over many cps. A small amount of easing is kept so the spline stays
+            // continuous, but nothing like the old comfort limiter.
+            float jlim = Clamp(8.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 3.0f, fminf(dlim, 18.0f));
             float curv = dy - genPrevDy;
             curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);
             curv = Clamp(curv, -dlim, dlim);

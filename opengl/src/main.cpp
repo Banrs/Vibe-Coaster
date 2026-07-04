@@ -38,7 +38,7 @@ static const float FRICTION  = 0.015f;    // steel-on-steel rolling resistance: 
 static const float CHAIN_V   = 22.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 95.0f;   // asymptote ~342 km/h thrust ceiling; no top speed cap
+static const float LAUNCH_V  = 108.0f;  // asymptote ~389 km/h; drag-limited TOP speed ~350 km/h by physics (no cap).
 static const float CLIMB_V   = 22.0f;   // crest speed off a lift/top-hat (~79 km/h): the drop supplies the speed, not the lift.
 // Speed is fully physics-driven: no re-power floor and no top cap. Speed is whatever launch
 // thrust + gravity + friction/drag produce; low points may occasionally dip into a real stall.
@@ -49,7 +49,7 @@ static float       BOOST_V   = 62.0f;
 // re-launches/re-boosts (uniformly, regardless of what element comes next -- this is pure
 // pacing, not an inversion-reactive brake). Kept low enough that genV can coast down through
 // an inversion's eligible speed window before the ride re-powers.
-static float       BOOST_TRIG = 70.0f;   // re-power below ~252 km/h so the whole-ride average sits in the 225-250 km/h band
+static float       BOOST_TRIG = 77.0f;   // re-power below ~277 km/h so the whole-ride AVERAGE holds ~275 km/h.
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -1280,7 +1280,7 @@ int main(int argc, char **argv) {
                 unsigned char tg = t.tagAt(u);
                 if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
+                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
 
                 // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
@@ -1731,7 +1731,7 @@ int main(int argc, char **argv) {
                 unsigned char tg = t.tagAt(u);
                 if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
+                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
                 if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
                 // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
                 // numeric floor below keeps du/dt finite.
@@ -1924,7 +1924,7 @@ int main(int argc, char **argv) {
                 float acc = -GRAV * slope - DRAG * v * v - FRICTION;
                 v += acc * dt;
                 if (t.tagAt(u) == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
-                if (t.tagAt(u) == M_BOOST)  v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
+                if (t.tagAt(u) == M_BOOST)  v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
                 v = fmaxf(v, V_GUARD);
 
                 sinceStation += dt;
@@ -2309,7 +2309,7 @@ int main(int argc, char **argv) {
             else if (tg == M_CLIMB && !trk.chainAt(u) && v < CLIMB_V)
                 v = fminf(v + 44.0f * dt, CLIMB_V);
 
-            if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 80.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~288 km/h
+            if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
 
             bool onLift = trk.chainAt(u);
             if (onLift && slope > 0.05f) {

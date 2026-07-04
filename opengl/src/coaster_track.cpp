@@ -1000,8 +1000,8 @@ struct Track {
                     {
                         float vCrest = mega ? 30.0f : 38.0f;
                         float reach  = (genV * genV - vCrest * vCrest) / (2.0f * GRAV) - 10.0f;
-                        float want   = mega ? frnd(175.0f, 235.0f) : frnd(90.0f, 150.0f);   // full 0-250 m height spread: giant top-hats up to ~235 m, smaller lifts ~90-150 m
-                        climbTop = Clamp(fminf(want, reach), 40.0f, 245.0f);
+                        float want   = mega ? frnd(225.0f, 262.0f) : frnd(140.0f, 200.0f);   // top-hats biased toward ~250 m so the average drop height is ~200 m
+                        climbTop = Clamp(fminf(want, reach), 40.0f, 268.0f);
                     }
                     remain = mega ? irnd(11, 14) : irnd(6, 8);   // enough steps to actually reach ~200 m
                 }

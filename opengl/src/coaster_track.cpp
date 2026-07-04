@@ -751,9 +751,14 @@ struct Track {
             case M_STALL:     return STALL_CLEARANCE_HI;
             case M_BANANA:    return 44.0f;
             case M_WINGOVER:  return WINGOVER_CLEARANCE_HI;
+            // Airtime hills must START near the ground so the symmetric cosine hump reads as a
+            // rising-then-falling HILL. Offered high up, the crest clips the build ceiling and only
+            // the descending half survives -> the "hill" becomes a net drop (a mislabel). Gating it
+            // low also gives the wanted 5 m -> 60 m+ camelback shape and keeps the track ground-hugging.
+            case M_HILLS: return 22.0f;
             // Terrain-following banked elements ride a wide band and hug hillsides naturally.
             case M_TURN: case M_SCURVE: case M_DIVE:
-            case M_HILLS: case M_BANKAIR: case M_WAVE: return 72.0f;
+            case M_BANKAIR: case M_WAVE: return 72.0f;
             // STENGEL needs altitude to dive from -- its own corridor scan bounds it. Not gated.
             default:          return -1.0f;
         }
@@ -805,8 +810,20 @@ struct Track {
             (void)gate;   // arcadey: no "too fast" g-gate -- inversions appear at any speed (g is uncapped now)
             (void)invVMinFrac;   // arcadey: no "too slow" gate either
         }
+        float clr = gpos.y - groundTopAt(gpos.x, gpos.z);
         float trickMax = maxTrickHeight(m);
-        if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
+        if (trickMax > 0.0f && clr > trickMax) return false;
+        // A DIVE turn descends -- only offer it with real height to dive from, AND only where the
+        // ground ahead isn't rising (a dive into a climbing hillside gets lifted by the clearance
+        // floor and ends up CLIMBING, contradicting its name). Both guards keep the label honest.
+        if (m == M_DIVE) {
+            if (clr < 20.0f) return false;
+            float gtHere = groundTopAt(gpos.x, gpos.z), gtAhead = gtHere;
+            for (int la = 4; la <= 12; la++)
+                gtAhead = fmaxf(gtAhead, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                                     gpos.z + cosf(gyaw) * SEG_LEN * la));
+            if (gtAhead > gtHere + 28.0f) return false;   // only block a dive into a STEEP rising hillside; the HUD pitch-relabel backstops milder cases
+        }
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
     }
     // The speed/height safety gates only, with no family/prevElem variety constraint --
@@ -820,8 +837,10 @@ struct Track {
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             (void)gate;   // arcadey: no "too fast" g-gate -- inversions appear at any speed (g is uncapped now)
         }
+        float clr = gpos.y - groundTopAt(gpos.x, gpos.z);
         float trickMax = maxTrickHeight(m);
-        if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
+        if (trickMax > 0.0f && clr > trickMax) return false;
+        if (m == M_DIVE && clr < 24.0f) return false;
         return true;
     }
 
@@ -1200,7 +1219,7 @@ struct Track {
                 break;
             }
             case M_HELIX: dy = helixDrop; break;
-            case M_DIVE:  dy = ((gt + 6.0f) - gpos.y) * 0.30f - 4.0f; break;
+            case M_DIVE:  dy = fminf(((gt + 6.0f) - gpos.y) * 0.30f - 4.0f, -2.0f); break;   // a DIVE always loses altitude -- never let a low entry turn it into a climb (mislabel)
             case M_SCURVE: dy = ((gt + 4.0f) - gpos.y) * 0.45f; break;
             case M_BANKAIR: {
                 int   i  = hillLen - remain;
@@ -1298,7 +1317,10 @@ struct Track {
         gpos.y += dy;
         if (levelHold > 0 && mode == M_FLAT) levelHold--;
 
-        float ceilY = fminf(gt + climbTop, BUILD_MAX - 6.0f);
+        // Airtime hills own their crest: clipping it at gt+climbTop would flatten the top of the
+        // hump and leave only the descending half (a net drop wearing the HILLS label). Let a hill
+        // hump up to the hard build ceiling instead so the cosine stays symmetric.
+        float ceilY = (mode == M_HILLS) ? (BUILD_MAX - 6.0f) : fminf(gt + climbTop, BUILD_MAX - 6.0f);
 
         if (mode != M_STATION && mode != M_LAUNCH) {
             // Allow the track to TUNNEL. Instead of lifting to a fixed clearance, only cap the

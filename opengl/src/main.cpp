@@ -1603,7 +1603,7 @@ int main(int argc, char **argv) {
             maxY = fmaxf(maxY, fmaxf(t.cp[k].y, terr[k])); minY = fminf(minY, fminf(t.cp[k].y, terr[k])); maxD = dist[k];
         }
         printf("[profile] seed %d: %d cps, %.0f m long\n", seed, n, maxD);
-        printf("  %-4s %-9s %6s %7s %7s %7s %7s\n", "cp", "elem", "dist", "vDelta", "clrMin", "clrMax", "hSpan");
+        printf("  %-4s %-9s %6s %7s %7s %7s %7s %7s\n", "cp", "elem", "dist", "vDelta", "net", "clrMin", "clrMax", "hSpan");
         int i = 0, tunnels = 0, onGround = 0;
         while (i < n) {
             int j = i; unsigned char kd = t.kind[i]; if (kd >= 25) kd = 0;
@@ -1612,7 +1612,8 @@ int main(int argc, char **argv) {
             for (int k = i; k < j; k++) { float clr = t.cp[k].y - terr[k]; ymin = fminf(ymin, t.cp[k].y); ymax = fmaxf(ymax, t.cp[k].y); clrmin = fminf(clrmin, clr); clrmax = fmaxf(clrmax, clr); }
             if (clrmin < 0.0f) tunnels++;
             if (clrmin < 6.0f) onGround++;
-            printf("  %-4d %-9s %6.0f %7.1f %7.1f %7.1f %7.1f\n", i, NM[kd], dist[i], ymax - ymin, clrmin, clrmax, dist[j-1] - dist[i]);
+            float net = t.cp[j-1].y - t.cp[i > 0 ? i-1 : i].y;
+            printf("  %-4d %-9s %6.0f %7.1f %7.1f %7.1f %7.1f %7.1f\n", i, NM[kd], dist[i], ymax - ymin, net, clrmin, clrmax, dist[j-1] - dist[i]);
             i = j;
         }
         printf("  --- instances that touch near-ground (clr<6m): %d ;  that tunnel (clr<0): %d ---\n", onGround, tunnels);
@@ -3839,16 +3840,22 @@ int main(int argc, char **argv) {
         if (dispatched && !paused) {
             const char *en = nullptr;
             bool special = false;
+            // The vertical-transport tags (CLIMB/DROP/DIVE) are terrain-sensitive: a DROP forced up a
+            // rising hillside by the clearance floor genuinely CLIMBS, so naming it "DROP" mislabels
+            // what the rider sees. Name those by the ACTUAL local pitch (tangent.y = sin of the pitch
+            // angle, + up / - down) so the banner always matches the geometry. Signature shapes
+            // (loops, rolls, hills, ...) keep their tag name -- their form is recognizable regardless.
+            float pitch = trk.tangent(u).y;
             switch (trk.tagAt(u)) {
                 case M_LAUNCH: en = "LAUNCH";          break;
                 case M_BOOST:  en = "BOOSTER";         break;
-                case M_CLIMB:  en = "TOP HAT";         break;
-                case M_DROP:   en = "DROP";            break;
+                case M_CLIMB:  en = (pitch < -0.12f) ? "DROP" : "TOP HAT"; break;
+                case M_DROP:   en = (pitch >  0.12f) ? "CLIMB" : (pitch > -0.12f) ? "AIRTIME" : "DROP"; break;
                 case M_HILLS:  en = "AIRTIME HILL";    break;
                 case M_TURN:   en = "OVERBANKED TURN"; break;
                 case M_HELIX:  en = "HELIX";           break;
                 case M_SCURVE: en = "S-CURVE";         break;
-                case M_DIVE:   en = "DIVE TURN";       break;
+                case M_DIVE:   en = (pitch >  0.12f) ? "CLIMB" : "DIVE TURN"; break;
                 case M_BANKAIR:en = "BANKED AIRTIME";  break;
                 case M_WAVE:   en = "WAVE TURN";       break;
                 case M_LOOP:   en = "VERTICAL LOOP";   special = true; break;

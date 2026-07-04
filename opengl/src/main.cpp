@@ -1507,7 +1507,7 @@ int main(int argc, char **argv) {
             float ss  = fmaxf(t.speedScale(u), 1.0f);
             float duw = Clamp(7.5f / ss, 0.35f, 1.1f);
             Vector3 Tb = t.tangent(u - duw), Tf = t.tangent(u + duw);
-            float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 2.0f);
+            float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 13.0f);
             Vector3 N  = orthoUp(t.tangent(u), t.upAt(u));
             Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
             Vector3 felt  = Vector3Add(Vector3Scale(kappa, spd * spd), Vector3{ 0, GRAV, 0 });
@@ -1530,7 +1530,7 @@ int main(int argc, char **argv) {
             float il = Vector3DotProduct(felt, rRight) / GRAV;
             if (!(iv == iv)) iv = 1.0f;
             if (!(il == il)) il = 0.0f;
-            float kk = 1.0f - expf(-dt * 6.0f);
+            float kk = 1.0f - expf(-dt * 3.0f);
             gVh += (iv - gVh) * kk;
             gLh += (il - gLh) * kk;
             int kd = t.tagAt(u); if (kd < 0 || kd >= M_COUNT) kd = 0;
@@ -1744,7 +1744,7 @@ int main(int argc, char **argv) {
                     float ss  = fmaxf(t.speedScale(u), 1.0f);
                     float duw = Clamp(7.5f / ss, 0.35f, 1.1f);
                     Vector3 Tb = t.tangent(u - duw), Tf = t.tangent(u + duw);
-                    float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 2.0f);
+                    float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 13.0f);
                     Vector3 N  = orthoUp(t.tangent(u), t.upAt(u));
                     Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
                     Vector3 felt  = Vector3Add(Vector3Scale(kappa, v * v), Vector3{ 0, GRAV, 0 });
@@ -1753,7 +1753,7 @@ int main(int argc, char **argv) {
                     float il = Vector3DotProduct(felt, rRight) / GRAV;
                     if (!(iv == iv)) iv = 1.0f;
                     if (!(il == il)) il = 0.0f;
-                    float kk = 1.0f - expf(-dt * 6.0f);
+                    float kk = 1.0f - expf(-dt * 3.0f);
                     gVh += (iv - gVh) * kk;
                     gLh += (il - gLh) * kk;
                     // JERK metric on the INSTANTANEOUS (pre-lowpass) felt g. iv/il are already
@@ -2399,7 +2399,7 @@ int main(int argc, char **argv) {
             float ss  = fmaxf(trk.speedScale(u), 1.0f);
             float du  = Clamp(7.5f / ss, 0.35f, 1.1f);
             Vector3 Tb = trk.tangent(u - du), Tf = trk.tangent(u + du);
-            float arc = fmaxf(Vector3Distance(trk.pos(u - du), trk.pos(u + du)), 2.0f);
+            float arc = fmaxf(Vector3Distance(trk.pos(u - du), trk.pos(u + du)), 13.0f);
             Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
             Vector3 aCent = Vector3Scale(kappa, v * v);
             Vector3 felt  = Vector3Add(aCent, Vector3{ 0, GRAV, 0 });
@@ -2408,7 +2408,7 @@ int main(int argc, char **argv) {
             float instLat  = Vector3DotProduct(felt, rRight) / GRAV;
             if (!(instVert == instVert)) instVert = 1.0f;
             if (!(instLat  == instLat))  instLat  = 0.0f;
-            float k = 1.0f - expf(-dt * 6.0f);
+            float k = 1.0f - expf(-dt * 3.0f);
             gVert  = gVert  + (instVert - gVert)  * k;
             gLat   = gLat   + (instLat  - gLat)   * k;
             if (dispatched && !paused) {

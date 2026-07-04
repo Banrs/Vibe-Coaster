@@ -1262,9 +1262,6 @@ struct Track {
             // step already respects its own (smaller) budget instead of slow-walking down to it.
             if (mode != lastGenMode) genPrevCurv = Clamp(genPrevCurv, -dlim, dlim);
 
-            // Arcadey jerk budget: let the curvature snap in/out fast (punchy crests and pull-outs)
-            // instead of easing over many cps. A small amount of easing is kept so the spline stays
-            // continuous, but nothing like the old comfort limiter.
             float jlim = Clamp(8.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 3.0f, fminf(dlim, 18.0f));
             float curv = dy - genPrevDy;
             curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);

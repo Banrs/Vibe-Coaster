@@ -398,7 +398,7 @@ struct Track {
         // always returns to upright by the end of the element (this game has no standalone "ride
         // inverted into the next element" state), this peaks close to full inversion and rolls back
         // out -- a distinct, dramatic maneuver that reads as the corkscrew-style roll the name promises.
-        bankT     = 0.70f;   // OVER-BANK FRACTION toward inversion: thetaH(~72deg)+0.70*(180-72)~=148deg at apex -- WINGOVER's signature near-inverted half-corkscrew, now eased in/out by curvature (shape) instead of a fixed target
+        bankT     = 0.48f;   // OVER-BANK FRACTION toward inversion: thetaH(~72deg)+0.48*(180-72)~=124deg at apex -- WINGOVER's signature over-banked half-roll, tamed back from the old near-fully-inverted 148deg (user: tame the roll angle for some), eased in/out by curvature (shape)
         bankBase  = 1.0f;    // full heartline base under the over-bank
         hillBumps = 1;
         hillH     = frnd(20.0f, 28.0f);               // gentler crest -> less vertical g projected to lateral during the roll
@@ -504,13 +504,22 @@ struct Track {
         }
     }
 
+    // Per-element size margin above the world record: SMALLER record elements (corkscrew/roll/
+    // heartline, rMaxRec~16 m) are built up to ~2.0x WR; TALLER ones (immelmann rMaxRec~43 m)
+    // approach ~1.5x WR. Linear in rMaxRec between those anchors, clamped to [1.5, 2.0]. Used by
+    // BOTH the radius clamp (application) AND anything that reports built size (measurement), so the
+    // measured and applied sizes come from the identical parameter.
+    static float recCapMul(float rMaxRec) {
+        return Clamp(2.0f - (rMaxRec - 16.0f) / (43.0f - 16.0f) * 0.5f, 1.5f, 2.0f);
+    }
+
     // Radius sized from real (unthrottled) entry speed, clamped to a realistic
     // record-based range -- no entry braking: whatever speed physics delivers is
     // what the element is built at, so a hot entry genuinely feels hotter.
     static float invRAt(SegMode m, float v) {
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) return 0.0f;
-        float rMax = s.rMaxRec * 1.25f;      // rMaxRec = researched real-record RADIUS; caps built size to a realistic margin above the world record
+        float rMax = s.rMaxRec * recCapMul(s.rMaxRec);      // rMaxRec = researched real-record RADIUS; cap scales 2.0x (smaller elements) -> 1.5x (taller) above the record
         float vv   = Clamp(v, 28.0f, 135.0f);
         return Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), s.rMin, rMax);
     }
@@ -518,9 +527,8 @@ struct Track {
     void initHills() {
         mode = M_HILLS;
         setClearance(7.0f, 38.0f);
-        hillBumps = irnd(1, 3);
-        hillH     = frnd(45.0f, 74.0f) + (clearanceBase > 32.0f ? frnd(4.0f, 12.0f) : 0.0f);   // WR-or-higher airtime (real WR ~55-60 m), arcadified
-        hillH     = fminf(hillH, maxAirH());
+        hillBumps = irnd(1, 2);
+        hillH     = frnd(58.0f, 96.0f);   // every airtime hump >50 m in actual Y (no cap)
 
         // gT is the DESIGN crest g -- higher shortens hillLen for the same hillH, sharpening the
         // crest so airtime deepens toward the -6 target. The crest is at the TOP of the hill, away
@@ -530,7 +538,7 @@ struct Track {
         // strong ejector airtime. The dlim curvature cap in stepGeneric still backstops the very peak.
         { float gT = 5.2f;
           float L  = 2.0f * PI * hillBumps * genV * sqrtf(0.5f * hillH / (gT * GRAV));
-          hillLen  = Clamp((int)(L / SEG_LEN), hillBumps * 4, hillBumps * 9); }
+          hillLen  = Clamp((int)(L / SEG_LEN), hillBumps * 4, hillBumps * 7); }
         // Per-step lateral turn rate, sized from the ACTUAL entry speed like turnMag (turnMagFor)
         // rather than a fixed range: a fixed rate held over the longer-duration hills a hot entry
         // produces would push lateral g with v^2 and blow past the envelope at speed extremes --
@@ -743,9 +751,14 @@ struct Track {
             case M_STALL:     return STALL_CLEARANCE_HI;
             case M_BANANA:    return 44.0f;
             case M_WINGOVER:  return WINGOVER_CLEARANCE_HI;
+            // Airtime hills must START near the ground so the symmetric cosine hump reads as a
+            // rising-then-falling HILL. Offered high up, the crest clips the build ceiling and only
+            // the descending half survives -> the "hill" becomes a net drop (a mislabel). Gating it
+            // low also gives the wanted 5 m -> 60 m+ camelback shape and keeps the track ground-hugging.
+            case M_HILLS: return 22.0f;
             // Terrain-following banked elements ride a wide band and hug hillsides naturally.
             case M_TURN: case M_SCURVE: case M_DIVE:
-            case M_HILLS: case M_BANKAIR: case M_WAVE: return 72.0f;
+            case M_BANKAIR: case M_WAVE: return 72.0f;
             // STENGEL needs altitude to dive from -- its own corridor scan bounds it. Not gated.
             default:          return -1.0f;
         }
@@ -797,8 +810,20 @@ struct Track {
             (void)gate;   // arcadey: no "too fast" g-gate -- inversions appear at any speed (g is uncapped now)
             (void)invVMinFrac;   // arcadey: no "too slow" gate either
         }
+        float clr = gpos.y - groundTopAt(gpos.x, gpos.z);
         float trickMax = maxTrickHeight(m);
-        if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
+        if (trickMax > 0.0f && clr > trickMax) return false;
+        // A DIVE turn descends -- only offer it with real height to dive from, AND only where the
+        // ground ahead isn't rising (a dive into a climbing hillside gets lifted by the clearance
+        // floor and ends up CLIMBING, contradicting its name). Both guards keep the label honest.
+        if (m == M_DIVE) {
+            if (clr < 20.0f) return false;
+            float gtHere = groundTopAt(gpos.x, gpos.z), gtAhead = gtHere;
+            for (int la = 4; la <= 12; la++)
+                gtAhead = fmaxf(gtAhead, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                                     gpos.z + cosf(gyaw) * SEG_LEN * la));
+            if (gtAhead > gtHere + 28.0f) return false;   // only block a dive into a STEEP rising hillside; the HUD pitch-relabel backstops milder cases
+        }
         return elemFamily(m) != elemFamily(lastElem) && m != prevElem;
     }
     // The speed/height safety gates only, with no family/prevElem variety constraint --
@@ -812,8 +837,10 @@ struct Track {
             float gate = sqrtf((gCeil - 1.0f) * GRAV * s.gMul * rMax);
             (void)gate;   // arcadey: no "too fast" g-gate -- inversions appear at any speed (g is uncapped now)
         }
+        float clr = gpos.y - groundTopAt(gpos.x, gpos.z);
         float trickMax = maxTrickHeight(m);
-        if (trickMax > 0.0f && gpos.y - groundTopAt(gpos.x, gpos.z) > trickMax) return false;
+        if (trickMax > 0.0f && clr > trickMax) return false;
+        if (m == M_DIVE && clr < 24.0f) return false;
         return true;
     }
 
@@ -846,7 +873,7 @@ struct Track {
             case M_HEARTLINE: return 2.0f;
             case M_STENGEL:   return 1.8f;
             case M_DIVELOOP:  return 3.0f;
-            case M_COBRA:     return 2.8f;   // real cobra rolls are a one-per-ride signature piece
+            case M_COBRA:     return 0.0f;   // removed per user   // real cobra rolls are a one-per-ride signature piece
             case M_PRETZEL:   return 2.0f;
             default:          return 1.0f;
         }
@@ -898,8 +925,8 @@ struct Track {
         if (gForceElem >= 0) return (SegMode)gForceElem;
 
         static const SegMode pool[] = {
-            M_LOOP, M_ROLL, M_IMMEL, M_STALL, M_DIVELOOP, M_COBRA, M_HEARTLINE,
-            M_HILLS, M_BANKAIR, M_DIP, M_PRETZEL, M_STENGEL, M_BANANA,
+            M_LOOP, M_ROLL, M_IMMEL, M_STALL, M_DIVELOOP, M_HEARTLINE,
+            M_HILLS, M_BANKAIR, M_DIP, M_PRETZEL, M_STENGEL, M_BANANA, M_LOOP,
             M_HELIX, M_TURN, M_SCURVE, M_DIVE, M_WAVE, M_WINGOVER
         };
         return pickFromPool(pool, (int)(sizeof(pool) / sizeof(pool[0])));
@@ -1180,7 +1207,9 @@ struct Track {
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
 
-                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.22f, 0.0f);
+                // Pure ballistic hump: the cosine returns exactly to the entry height, so no
+                // terrain-follow term is needed -- and adding one would shave the >50 m crest.
+                dy = (y1 - y0);
                 break;
             }
             case M_CLIMB: dy = mega ? 21.0f : 13.0f; break;   // steeper top-hat incline (atan(21/14)=56 deg): more dramatic AND reaches crest with less climbing loss -> faster drop
@@ -1190,14 +1219,14 @@ struct Track {
                 break;
             }
             case M_HELIX: dy = helixDrop; break;
-            case M_DIVE:  dy = ((gt + 6.0f) - gpos.y) * 0.30f - 4.0f; break;
+            case M_DIVE:  dy = fminf(((gt + 6.0f) - gpos.y) * 0.30f - 4.0f, -2.0f); break;   // a DIVE always loses altitude -- never let a low entry turn it into a climb (mislabel)
             case M_SCURVE: dy = ((gt + 4.0f) - gpos.y) * 0.45f; break;
             case M_BANKAIR: {
                 int   i  = hillLen - remain;
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
-                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.20f, 0.0f);
+                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.05f, 0.0f);
                 break;
             }
             case M_WAVE: {
@@ -1205,7 +1234,7 @@ struct Track {
                 float t0 = (float)i / hillLen, t1 = (float)(i + 1) / hillLen;
                 float y0 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t0));
                 float y1 = 0.5f * hillH * (1 - cosf(2 * PI * hillBumps * t1));
-                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.20f, 0.0f);
+                dy = (y1 - y0) + fminf(((gt + 5.0f) - gpos.y) * 0.05f, 0.0f);
                 break;
             }
             case M_WINGOVER: {
@@ -1249,7 +1278,7 @@ struct Track {
             // 200+ km/h -> shallow ramps, tiny delta-y, everything flattened by the smoother. Replace
             // it with a big, near-flat budget so elements get STEEP faces and dramatic up/down; g is
             // deliberately uncapped. Diving modes get a near-vertical budget on top.
-            float dlim = Clamp(24.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 12.0f, 46.0f);
+            float dlim = Clamp(24.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 18.0f, 120.0f);   // curvature limiter effectively off
             if (mode == M_DROP || mode == M_DIVE) dlim = fmaxf(dlim, 40.0f);
             if (mode == M_DIP || mode == M_CLIMB) dlim = fmaxf(dlim, 22.0f);
 
@@ -1264,9 +1293,13 @@ struct Track {
 
             float jlim = Clamp(8.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 100.0f), 3.0f, fminf(dlim, 18.0f));
             float curv = dy - genPrevDy;
-            curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);
-            curv = Clamp(curv, -dlim, dlim);
-            dy = genPrevDy + curv;
+            // Airtime hills own their crest curvature/jerk -- the jerk & curvature clamps here would
+            // round the peak flat, so let the raw cosine derivative through (user: remove all caps).
+            if (mode != M_HILLS) {
+                curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);
+                curv = Clamp(curv, -dlim, dlim);
+                dy = genPrevDy + curv;
+            }
 
             if (dy < 0.0f && mode != M_DIP && mode != M_HELIX) {
                 // A far-out-enough lookahead means gtLook picks up any rise ahead while the car is
@@ -1284,7 +1317,10 @@ struct Track {
         gpos.y += dy;
         if (levelHold > 0 && mode == M_FLAT) levelHold--;
 
-        float ceilY = fminf(gt + climbTop, BUILD_MAX - 6.0f);
+        // Airtime hills own their crest: clipping it at gt+climbTop would flatten the top of the
+        // hump and leave only the descending half (a net drop wearing the HILLS label). Let a hill
+        // hump up to the hard build ceiling instead so the cosine stays symmetric.
+        float ceilY = (mode == M_HILLS) ? (BUILD_MAX - 6.0f) : fminf(gt + climbTop, BUILD_MAX - 6.0f);
 
         if (mode != M_STATION && mode != M_LAUNCH) {
             // Allow the track to TUNNEL. Instead of lifting to a fixed clearance, only cap the
@@ -1300,7 +1336,7 @@ struct Track {
         if (gpos.y > ceilY) { gpos.y = ceilY; if (mode == M_CLIMB) { mode = M_DROP; remain = irnd(3, 4); } }
 
         if ((int)cp.size() >= 2 && mode != M_STATION && mode != M_LAUNCH && mode != M_BOOST &&
-            !isHardInversion((SegMode)kind.back()) && genPrevUp.y >= 0.55f) {
+            mode != M_HILLS && !isHardInversion((SegMode)kind.back()) && genPrevUp.y >= 0.55f) {
             Vector3 p0 = cp[cp.size() - 2], p1 = cp.back();
 
             float dxz0 = sqrtf((p1.x-p0.x)*(p1.x-p0.x) + (p1.z-p0.z)*(p1.z-p0.z));
@@ -1377,7 +1413,7 @@ struct Track {
             // never past ~85deg, so the seat can't tip past horizontal ("helix on its side"). WINGOVER
             // is the one element here that is SUPPOSED to invert (its bankT=0.70 near-corkscrew), so it
             // gets a much higher limit (~155deg) to keep its signature half-inversion.
-            float bankLim = (mode == M_WINGOVER) ? 2.70f : 1.48f;
+            float bankLim = (mode == M_WINGOVER) ? 2.15f : 1.48f;
             bank = Clamp(bank, -bankLim, bankLim);
             upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(bank)),
                                               Vector3Scale(side, sinf(bank))));
@@ -1618,7 +1654,10 @@ struct Track {
             bool bigLoop = (km == M_LOOP || km == M_IMMEL || km == M_DIVELOOP ||
                             km == M_COBRA || km == M_PRETZEL);
             bool interiorInv = bigLoop && kind[m - 1] == km && kind[m + 1] == km && seamEaseN <= 0;
-            if (!interiorInv) {
+            // Airtime-hill crests must keep their full >50 m amplitude: the midpoint pull would
+            // shave the peak. Skip it on hill interior cps (seams still ease).
+            bool hillInterior = (km == M_HILLS && kind[m - 1] == M_HILLS && kind[m + 1] == M_HILLS);
+            if (!interiorInv && !hillInterior) {
                 float w = 0.16f;
                 if (seamEaseN > 0) {
                     float f = (float)seamEaseN / (float)seamEaseTot;
@@ -1633,7 +1672,7 @@ struct Track {
 
         {
             // Gmin/Gmax hard-set the crest curvature so felt airtime/crest g stays within envelope.
-            const float Gmax = 6.5f, Gmin = -4.7f;
+            const float Gmax = 80.0f, Gmin = -80.0f;   // caps removed (user: remove ALL constraints)
             int n = (int)cp.size();
             // NOTE: this window intentionally stays short (14): LOOP/DIVELOOP/etc run 40-48 steps of
             // their own dedicated closed-form geometry, and a window that reaches that far back would
@@ -1645,6 +1684,8 @@ struct Track {
                     unsigned char ki = kind[i];
 
                     if (ki == M_STATION) continue;
+                    // Airtime hills own their >50 m crest curvature -- don't relax it back flat.
+                    if (ki == M_HILLS) continue;
 
                     if (up[i].y < 0.55f) continue;
                     float dxa = sqrtf((cp[i].x-cp[i-1].x)*(cp[i].x-cp[i-1].x) + (cp[i].z-cp[i-1].z)*(cp[i].z-cp[i-1].z));
@@ -1667,7 +1708,7 @@ struct Track {
                     float Gtrough = Gmax;
                     if (valleyFam && i < n - 2) {
                         float dyMag = fmaxf(fabsf(cp[i].y - cp[i-1].y), fabsf(cp[i+1].y - cp[i].y));
-                        if (dyMag < 0.65f * span) Gtrough = 5.0f;
+                        // (trough cap removed)
                     }
                     float target = Clamp(sd, (Gmin - 1.0f) * k, (Gtrough - 1.0f) * k);
                     cp[i].y = 0.5f * (cp[i + 1].y + cp[i - 1].y - target);
@@ -1705,7 +1746,7 @@ struct Track {
                     // Triggers are set just inside the +9.8/-6 envelope (with the 1.3x speed margin
                     // above already baked in) so airtime can reach close to -6 while true busts
                     // beyond it still get trimmed.
-                    if (gV > 9.4f || gV < -6.3f || gL > 9.4f || gL < -5.7f) {
+                    if (gV > 900.0f) {   // felt-g safety net removed (user: no constraints)
                         Vector3 mid = Vector3Scale(Vector3Add(cp[i - 1], cp[i + 1]), 0.5f);
                         cp[i] = Vector3Lerp(cp[i], mid, 0.5f);
                     }

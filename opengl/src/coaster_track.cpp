@@ -445,7 +445,7 @@ struct Track {
     void startLaunch() {
         elems = 0; elemLimit = irnd(17, 24); chainMode = false; launchElem = pickLaunchExit(); mcbrDone = false; helixLap = false; wingLap = false;   // ~28% fewer elements per lap than the old 24-34: the WR-sized elements run 2-3x longer each, so the lap stays ~2-3 min without filler
         setClearance(10.0f, 36.0f);
-        mode = M_LAUNCH; remain = irnd(7, 9);   // ~98-126 m launch (real-life LSM length)
+        mode = M_LAUNCH; remain = irnd(9, 12);   // ~126-168 m, ~3-4 s from a rolling start: the LONGEST real launches (Formula Rossa 4.9 s / ~163 m, Red Force 5.0 s) -- durations matched toward the WR side
         // M_LAUNCH rides dead flat (dy is always 0.0f in stepGeneric -- a real LSM launch track
         // can't tilt), so unlike every other mode it has NO per-step terrain reaction once started.
         // This path is taken straight from whatever element/mode was running when elemLimit hit, with
@@ -471,7 +471,7 @@ struct Track {
     void startBoost() {
         chainMode = false; mode = M_BOOST;
         invSlotUsed = 0;   // re-powered: the next run-down window may go to inversions again
-        remain = irnd(5, 8);    // ~70-112 m boost: LSM-length, up from 4-6 cps to carry the average now that boosts queue behind the ground-hug drop
+        remain = irnd(6, 10);   // ~84-140 m, ~1.5-2.5 s: the long end of real mid-course LSM segments (Maverick 122 m, Taron's 118 m second launch; Falcon's Flight runs three long ones) -- durations matched toward the WR side
         // INCLINED LSM (~45% of boosts): grade follows the terrain rise over the boost's own
         // footprint (clamped +4-8 deg). No thrust-model change is needed anywhere: both the ride
         // sim and genV integrate the real geometry, so the climb's energy cost stays consistent
@@ -1311,7 +1311,7 @@ struct Track {
                 // banked, drop a flat brake straight -- the "catch your breath" section every long
                 // real coaster has. Adds realistic idle track and paces the ride.
                 if (!mcbrDone && elems >= elemLimit / 2 && h < 40.0f && !wasBanked) {
-                    mcbrDone = true; mode = M_FLAT; remain = irnd(7, 11); levelHold = remain;
+                    mcbrDone = true; mode = M_FLAT; remain = irnd(9, 14); levelHold = remain;   // ~126-196 m, ~2-3 s: real mid-course brake runs transit in ~3-6 s -- toward the WR side
                     break;
                 }
                 // ONE top-hat per lap. wantLaunch (which runs the tall CLIMB top-hat) fires ONLY at

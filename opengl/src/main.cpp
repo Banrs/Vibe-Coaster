@@ -2358,7 +2358,11 @@ int main(int argc, char **argv) {
             }
 
             sinceStation += dt;
-            if (!shotMode && !benchMode && sinceStation > 95.0f &&
+            // Station cadence matched to the LONGEST real full-circuit rides (Falcon's Flight
+            // runs 3:25-3:35 over 4.25 km; The Beast's 4:10 is the all-time record): a platform
+            // stop every ~3.5-4 min instead of every ~1.7 (the pending flag still waits for a
+            // low flat spot, so the realized interval runs a little past this trigger).
+            if (!shotMode && !benchMode && sinceStation > 205.0f &&
                 !trk.stationPending && !trk.stationActive)
                 trk.stationPending = true;
 

@@ -89,6 +89,25 @@ and peaks **≤4x real** (curvature/jerk budgets). Knob locations are listed per
 - The industry method is **Force Vector Design** (Stengel practice; tools: Newton2, openFVD, KexEdit): prescribe g_vert(t), g_lat(t), roll rate(t) and integrate the centerline — transitions are linear ramps in *force space* (clothoid = linear curvature ramp). ASTM F2291 measures onset over a 100 ms window; ~15 g/s is the transition guideline.
 - Code: the g-budget engine (directional curvature limits + ~30 g/s jerk budget = 2x guideline) approximates FVD; connective FLAT/TURN track carries a ~245 m-wavelength ±1 g swell; drops flow directly into elements (no dead shelf); powered flats taper in like a real LSM entry instead of snapping level.
 
+
+## Section durations — matched toward the longer / WR side
+
+Real transit times per element/section, and where the game sits (deliberately at or a
+little past the record end, per design). Game figures at typical ride speeds.
+
+| Section | Real-world (WR side) | In-game | Knob |
+|---|---|---|---|
+| Full circuit (station to station) | Falcon's Flight **3:25–3:35** over 4,250 m [official]; The Beast **4:10** (all-time longest) [official] | ~3.5–4 min (station trigger 205 s + wait for a low flat spot) | `sinceStation > 205` (main.cpp) |
+| Main launch | Formula Rossa **4.9 s / ~163 m** [official]; Red Force **5.0 s** [official]; TT2 3.8 s [official] | ~3–4 s / 126–168 m from a rolling start | `startLaunch remain irnd(9,12)` |
+| Mid-course LSM boost | Maverick 122 m [official], Taron second launch 118 m [official]; Falcon's Flight runs 3 long segments incl. an inclined lift [official] | ~1.5–2.5 s / 84–140 m, ~45% inclined +4–8° | `startBoost remain irnd(6,10)`, `boostGrade` |
+| Mid-course brake run | typical transit ~3–6 s | ~2–3 s / 126–196 m, dead flat (real MCBRs are) | mcbr `remain irnd(9,14)` |
+| Top hat (climb–crest–drop) | TT2/Kingda Ka tower transit ~8–12 s [est from POV] | ~10–15 s (160–198 m structure) | physics-driven |
+| Airtime hill (per hump) | Fury 325's 34 m hill ~2 s at 150 km/h [derived]; record-class 50–60 m humps ~2.5–3 s | ~4–6 s per hump (1.25x-record heights at 2x speed stretch the arc) — the "longer side" by design | `hillLenFor` crest-g sizing |
+| Vertical loop transit | Full Throttle ~3–5 s [est from POV] | ~4–6 s (1.25–1.45x-record size) | `stepLoop lsteps` |
+| Zero-g stall hang | Wildfire ~2–2.5 s, **ArieForce One ~4.5 s (record)** [est/press] | **2.5–4.5 s** (capped at the record) | `initStall stallLen ≤16` |
+| Helix | **Goliath SFMM 585° held ~6 s (record)** [official/press] | ~6–8 s, 470–650°, once per lap | `initHelix coils 1.3–1.8` |
+| Inversion cluster / arc | real launch coasters run 1–3 energy arcs per circuit | ~2.5 arcs/lap, signatures at each arc's bleed end | `pickFromPool arcT` |
+
 ## Known gaps (genuinely unpublished — not research shortfalls)
 - Turn/helix/crest radii: never published by manufacturers; back-solved from speed+g.
 - "Tallest" records for cobra roll / zero-g roll / corkscrew / heartline: untracked by RCDB/Guinness.

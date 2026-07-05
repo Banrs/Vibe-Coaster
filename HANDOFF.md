@@ -20,6 +20,49 @@ session — it is CURRENT again) for the full rule table and WR anchors.
 - **A next agent should actually run the game** to visually confirm the carve-aware
   terrain culling (tunnel interiors) — everything else is verified headless.
 
+## DONE 2026-07-04 later pass (roll cuts, real durations, pacing grammar)
+- **Roll-element cull (user: disorienting)**: BANANA + HEARTLINE removed (the zero-g
+  STALL is the one inverting-crest roll kept), WINGOVER (overbanked turn) removed.
+  Out of both pick pools; rarity 0; init/step code kept for --gtest/--elemsust.
+- **Real durations**: HELIX 1.3-1.8 rev (~470-650 deg, ~6-8 s -- Goliath's 585 deg/6 s
+  anchor; was 2-3 rev/11-13 s); STALL inverted hang capped ~2.5-4.5 s (ArieForce One
+  anchor; was 7-10 s).
+- **Flat-impostor hills fixed**: HILLS only offered where >=36 m is affordable
+  (ballistic budget minus terrain rise); BANKAIR/WAVE >=20. No more 4-degree 200 m
+  ramps wearing the AIRTIME label. HILLS rarity 9->13 keeps it the top pick.
+- **DOUBLE-DOWN added** (roll-free thrill): ~35% of tall drops shelve mid-face and
+  re-drop (El Toro/Maverick two-stage knuckle) -- ddKnuckle in enterDrop/M_DROP.
+- **Inclined LSM boosts** (~45%): boost grade +4-8 deg following terrain trend
+  (Falcon's Flight mid-course LSM lift). No thrust changes needed -- both sims
+  integrate real geometry. LAUNCH stays flat (real hydraulic/LSM launches are).
+- **Lap-phase energy arcs** (~2.5/lap) in pickFromPool: fast movers (family 3/5)
+  lead each arc, entry-gated signatures (family 1) take the bleed end -- the
+  Formula Rossa / Falcon's Flight discharge->recharge grammar, deliberate not
+  emergent. Station laps now bleed in (no boost once stationPending).
+- **RESEARCH.md added**: full per-element record table (coaster/park/year, heights,
+  radii where published, lengths, speeds, g, confidence flags, sources) and the
+  FVD (Force Vector Design) transition model the g-budget engine approximates.
+- Verified: 8/8 seeds stall=0f, avg ~251 km/h, max 356-367, ~9 inversions/ride,
+  HUD g inside +11/-6/lat 7.5; hats 160-198 m structural (Falcon's Flight 158 m
+  element anchor), total drops ~175-250 m (its ~195-200 m elevation change).
+
+## DONE 2026-07-04 (element density + seam fixes)
+- **invVMax dead-gate bug**: the STALL 48 / STENGEL 62 windows were dead code (invSpec
+  has no STALL/STENGEL entry, so the `gT<=0 -> 1e9` early-out fired first) -- stalls
+  were offered at 94 m/s, 8+/ride. Fixed-window cases now run FIRST; BANANA gained a
+  gate (54) too. STALL widened 48→56 (strict 2.2x sat below all pick speeds -> extinct).
+- **Density rebalance** (measured via new `MC_ELEMDBG=1` pick-speed histogram): HELIX/
+  WINGOVER/DIP are family monopolies -- age^2 recency re-picks them regardless of rarity
+  weight (rate ~ w^(1/3)). HELIX+WINGOVER now once-per-lap flags (reset in startLaunch);
+  DIP weight 2.5→1.2; HELIX 2.0→0.9; WINGOVER out of the fast-pref group; airtime pref
+  floor raised (1.35-0.35*spd -- hills stay competitive at cruise). Result: HILLS top-3
+  ~2.6/lap, HELIX/WINGOVER 1.0/lap, all named inversions now appear (LOOP 0.8/run).
+- **Powered-flat seams**: BOOST/LAUNCH now decay dy (0.55/step) instead of snapping to
+  0 (a BANKAIR->BOOST kink read -24 felt g; now within envelope), and startBoost/
+  startLaunch set seamEaseN=3 when entered from a shaped element. DIP -12.1 and
+  TURN-under-terrain broken points gone; jerk offenders >200 g/s down to 1 frame
+  (IMMEL entry -- the known sub-cp granularity item, open #4).
+
 ## DONE this session (major rewrite)
 - **Carve-aware terrain culling** (main.cpp ~2725-2874): interval-based side-face
   exposure — my solid span vs neighbour AIR spans (above the neighbour's forceTop-clamped

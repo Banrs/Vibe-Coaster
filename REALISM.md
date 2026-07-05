@@ -24,9 +24,13 @@ MINECOASTER is **arcadey but grounded in realism**. Every quantity is anchored t
 | Drop (tallest) | Falcon's Flight ~200 m (Six Flags Qiddiya) | mega climbTop frnd(200, 250) |
 | Top hat tower | tallest operating towers ~128-139 m (TT2 class) | non-mega climbTop frnd(100, 139) |
 | Airtime hill | tallest real camelbacks ~60 m | hillH frnd(50, 78) |
-| Zero-g stall | RMC (Goliath SFGA etc.) | quartic ballistic crest, self-sized |
-| Helix | Goliath SFMM 4.5 g sustained 6 s | turnMagFor(10.5) → measured ~7.5 sustained |
+| Zero-g stall | RMC (Goliath SFGA 2014; ArieForce One ~4.5 s hang) | quartic ballistic crest, hang capped ~2.5-4.5 s |
+| Helix | Goliath SFMM 585°, 4.5 g sustained 6 s | 1.3-1.8 rev, once per lap, measured ~7.5 sustained |
 | g standards | ASTM F2291 ≈ +6 g <1 s, ~−2 g, ±2 lat; ~15 g/s onset | budgets at ~2x |
+
+Removed from generation per user (roll overload): banana roll, heartline roll,
+overbanked turn (WINGOVER). New roll-free thrills: DOUBLE-DOWN two-stage drops,
+inclined LSM boosts (+4-8°, Falcon's Flight style). Full per-element data: `RESEARCH.md`.
 
 ## Hard rules (do not break)
 

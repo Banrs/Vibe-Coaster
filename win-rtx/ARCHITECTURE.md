@@ -2,12 +2,12 @@
 
 This document explains how the Windows RTX renderer maps the MINECOASTER voxel
 world onto NVIDIA RT cores and the DLSS 4.5 AI pipeline, and how it stays faithful
-to the look of the cross-platform software tracer in `../src/pathtrace.cpp`.
+to the look of the cross-platform software tracer in `../opengl/src/pathtrace.cpp`.
 
 ## 1. The scene model (shared with the software tracer)
 
 Both renderers describe the world the same way (see `src/SceneConstants.h`, which
-mirrors the constants at the top of `../src/pathtrace.cpp` and `../src/main.cpp`):
+mirrors the constants at the top of `../opengl/src/pathtrace.cpp` and `../opengl/src/main.cpp`):
 
 - A **fine voxel grid** of `PT_NX × PT_NY × PT_NZ = 176 × 168 × 176` cells,
   `PT_VOX = 1 m` each, recentred on the camera every rebuild (`gridMin`).

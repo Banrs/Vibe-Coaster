@@ -2,7 +2,7 @@
 
 A Windows / RTX hardware-ray-tracing renderer for the MINECOASTER voxel world.
 It is an **alternative renderer** to the cross-platform software/OpenGL voxel
-path tracer in [`../src/pathtrace.cpp`](../src/pathtrace.cpp): same scene model,
+path tracer in [`../opengl/src/pathtrace.cpp`](../opengl/src/pathtrace.cpp): same scene model,
 same look, but the rays are cast on RT cores via **DirectX Raytracing (DXR)** and
 the 1-spp path-traced frame is denoised and upscaled by **NVIDIA DLSS 4.5**
 (Super Resolution + Ray Reconstruction) through the **Streamline** SDK.

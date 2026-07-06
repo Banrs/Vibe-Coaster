@@ -6,10 +6,12 @@ published), **[measured]** (period test data), or **[est]** (enthusiast/derived 
 turns/helices/crests are essentially never published; where missing, back-solve from
 `r = v² / ((g_felt − 1) · 9.81)`).
 
-How the game uses this: element sizes are capped at **1.0–1.75x the record** (small
-elements up to 1.75x, the biggest at 1.25x — `recCapMul`), entry speeds run **~1.5–2.2x
-that element's real entry** (`invVMax` windows), sustained felt g lands **~1.75–2x real**
-and peaks **≤4x real** (curvature/jerk budgets). Knob locations are listed per element.
+How the game uses this: element sizes sit **at-and-above the record** in a 1.0–1.75x band
+(small elements up to 1.75x, the biggest at 1.25x — `recCapMul`), entry speeds run
+**~1.5–2.2x that element's real entry** (`invVMax` windows), sustained felt g lands
+**~1–2x real** and peaks **≤4x real** (curvature/jerk budgets), and transits land at
+**~1x the real element's own time** (see the durations section). Knob locations are
+listed per element.
 
 ---
 
@@ -62,12 +64,12 @@ and peaks **≤4x real** (curvature/jerk budgets). Knob locations are listed per
 - Code: M_WAVE/M_BANKAIR, bank ~35–40°, crest −3.2 felt.
 
 ### Overbanked turns — REMOVED from generation (user: roll overload)
-- Reference kept for the record: **Millennium Force**, Cedar Point, 2000, Intamin: three **122°** overbanks at 52/30/21 m crests, entered up to ~150 km/h, ride max 4.5 g [official]. WINGOVER's init/step code remains for `--gtest`.
+- Reference kept for the record: **Millennium Force**, Cedar Point, 2000, Intamin: three **122°** overbanks at 52/30/21 m crests, entered up to ~150 km/h, ride max 4.5 g [official]. WINGOVER's init/step code remains for `--elemsust`/`--elemgtest`.
 
 ### Helix
 - **Goliath**, Six Flags Magic Mountain, 2000, Giovanola: **585° descending helix, >4.5 g sustained ~6 s** [official/press] — the definitive sustained-g anchor.
 - **Mindbender**, Galaxyland, 1985, Schwarzkopf (closed 2023): 5.5–5.6 g measured 1987 (in the loop) [measured].
-- Code: `initHelix` coils 1.6–1.9 rev (585–680°, ~6–7 s) = 1.0–1.16x the WR rotation at ~1x its transit (user spec: at-and-above record; the original 2–3 rev/11–13 s stacked well past it); once-per-lap cap + the banked-cadence cooldown keep it a finale, not a recurring element.
+- Code: `initHelix` coils 1.6–1.9 rev (585–680°, ~5–7 s) = 1.0–1.16x the WR rotation at ~1x its transit (user spec: at-and-above record; the original 2–3 rev/11–13 s stacked well past it); once-per-lap cap + the banked-cadence cooldown keep it a finale, not a recurring element.
 
 ### Top hat towers
 - **Top Thrill 2** (above): 130 m, launches to 190 km/h; legacy Dragster 0–190 in 3.8 s ≈ 1.4 g [official].
@@ -114,7 +116,7 @@ stacking is gone (single humps at record height, one helix per lap, capped hangs
 | Vertical loop transit | Full Throttle ~3–5 s [est from POV] | ~4 s | `stepLoop lsteps` |
 | Dive loop transit | Valravn class ~4–5 s | ~6.5 s (lead-in cut 14→9 cps, radius held near the WR cap) | `initDiveLoop dlLeadSteps/dlR` |
 | Zero-g stall hang | Wildfire ~2–2.5 s typical; **ArieForce One ~4.5 s (record)** [est/press] | **~2.5–4.5 s** (up to the record) | `initStall stallLen ≤16` |
-| Helix | typical helices 300–450°; **Goliath SFMM 585° held ~6 s (record)** [official/press] | 585–680° (1.0–1.16x WR), ~6–7 s, once per lap | `initHelix coils 1.6–1.9` |
+| Helix | typical helices 300–450°; **Goliath SFMM 585° held ~6 s (record)** [official/press] | 585–680° (1.0–1.16x WR), ~5–7 s, once per lap | `initHelix coils 1.6–1.9` |
 | Corkscrew / inline roll | single rotation typical; doubles are signatures | ~75% single, ~25% double | `initRoll` |
 | Splashdown | B&M dive-coaster water brake (Griffon/SheiKra): scoops skim the pool ~1 s | water-seeking DIP: 5x pick weight near water, dip length aimed so the bottom lands ON the pond, held skim at WATER_Y+0.9 (~0.5–1 s, wheel spray fires); ~1/ride when water is on the route. HUD label SPLASHDOWN only while genuinely skimming (`rideElemName`) | `pickFromPool` water boost, `initDip`, M_DIP `waterRun` floor |
 | Inversion cluster / arc | real launch coasters run 1–3 energy arcs per circuit | ~2.5 arcs/lap, signatures at each arc's bleed end | `pickFromPool arcT` |

@@ -93,7 +93,7 @@ These can't be checked without an RTX device; verify them first when you run it:
 `VoxelScene` ports terrain/biome/water/trees and stamps a *representative* track
 ribbon. To render the actual game state instead, fill `VoxelScene::grid` and the
 brick lists from the game's existing CPU bake (`bakeVoxelsCPU` in
-`../src/pathtrace.cpp`) — the grid layout (`(z*NY+y)*NX+x`, RGBA32F, material in
+`../opengl/src/pathtrace.cpp`) — the grid layout (`(z*NY+y)*NX+x`, RGBA32F, material in
 alpha) is identical, so it's a direct copy plus `buildBricks()`. The game already
 runs that bake on a worker thread (`AsyncBaker`); hand the finished buffer to
 `RebuildScene` on the render thread.

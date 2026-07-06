@@ -12,27 +12,24 @@ Two motivations:
 2. **Performance** — one indexed draw for the world instead of ~hundreds of
    thousands of per-cube `rlBegin/rlEnd` calls.
 
-## Status
+## Status (see `WORK_HANDOFF.md` for the full state of work)
 
-This is the **first increment** of a one-shot rewrite, and it already builds and
-renders **headlessly** (verified on Mesa **lavapipe** software Vulkan in CI-less
-sandboxes — no GPU required):
+Builds and renders **headlessly** (verified on Mesa **lavapipe** software Vulkan —
+no GPU required) and interactively via SDL2:
 
-- ✅ Vulkan 1.1 core: instance / device / queue, offscreen color+depth targets,
-  render pass, graphics pipeline, host-visible mesh upload, fenced submit,
-  image→buffer readback to PPM.
-- ✅ Renderer-agnostic world gen ported from the base game (`src/Terrain.h`:
-  `terrainH`, biome palette, water) → a single indexed triangle mesh with
-  per-vertex normals + colors.
-- ✅ Sun + hemispherical ambient + distance fog + ACES in `shaders/mesh.frag`.
-- ✅ SDL2 window + swapchain + WASD/mouse fly camera (interactive; verified on
-  lavapipe), with the offscreen `--shot` path kept for headless tests.
-- ✅ Real physics-driven coaster generator ported (`src/coaster_track.cpp` via a
-  compat shim) — speed-sized loops/launches/boosts, ~7.7 km / 123 s at 225 km/h.
-- ✅ PBR forward shading (Cook-Torrance GGX + Fresnel-Schlick).
-- ⏳ Next: HDR(fp16) + deferred G-buffer + post chain, then CSM shadows, SSAO/GTAO,
-  SSR, volumetric fog, bloom, eye-adaptation, TAA; trees; water shading and sky;
-  then the path tracer (Vulkan compute / `VK_KHR_ray_tracing_pipeline`).
+- ✅ Deferred PBR pipeline: shadow map (PCF) → G-buffer MRT → SSAO → Cook-Torrance
+  lighting (sky + volumetric clouds, contact shadows, foliage SSS, sky-probe IBL,
+  god rays, fog) → forward water → SSR → bloom → post (ACES, auto-exposure) → HUD.
+- ✅ **TAA** (Halton jitter + reprojected history; `--shot` accumulates 8 jittered
+  frames into supersampled stills) — the same plumbing a DLSS backend consumes.
+- ✅ World/biomes/trees/water ported from the base game (`Terrain.h`, `Water.h`);
+  endless terrain + coaster streaming (rolling window).
+- ✅ The coaster is **the base game's actual generator** — the SAME
+  `../opengl/src/coaster_track.cpp` compiled via `GameCompat.h` (not a port); ride
+  physics mirrored in `Physics.h` (constants + thrust synced 2026-07-06); exact
+  base-game HUD (`Hud.h`) with the shared geometry-aware element names.
+- ⏳ Next (priority order in `WORK_HANDOFF.md`): CSM shadows, split-sum IBL, DLSS
+  backend seam, async streaming, station stops.
 - ⏳ `IRenderer` seam so `../win-rtx` (D3D12/DXR + DLSS) is the Windows RTX backend.
 
 ## Build
@@ -78,12 +75,17 @@ On a real GPU, drop `VK_ICD_FILENAMES`.
 
 ```
 vulkan/
-├─ CMakeLists.txt        Vulkan + glslang build
+├─ CMakeLists.txt        Vulkan + glslang build (shader list lives here)
 ├─ src/
 │  ├─ Math.h             minimal column-major vec/mat (Vulkan clip space)
-│  ├─ Terrain.h          ported terrainH / biome / water -> Mesh
-│  └─ main.cpp           offscreen Vulkan renderer
-└─ shaders/
-   ├─ mesh.vert          world mesh vertex stage
-   └─ mesh.frag          sun + ambient + fog + ACES
+│  ├─ GameCompat.h       physics/sizing constants mirroring ../opengl/src/main.cpp
+│  ├─ Terrain.h          ported terrainH / biomes / trees -> Mesh
+│  ├─ Water.h            water grid mesh
+│  ├─ Track.h            mesh helpers (addBox/addQuad)
+│  ├─ CoasterTrack.h     compiles ../opengl/src/coaster_track.cpp (SHARED generator)
+│  ├─ Physics.h          world::RideSim — mirrored ride loop (keep in sync BY HAND)
+│  ├─ Props.h            station / coins
+│  ├─ Hud.h              font atlas + exact base-game HUD
+│  └─ main.cpp           deferred renderer + passes + ride camera/telemetry
+└─ shaders/              G-buffer / SSAO / lighting / water / SSR / bloom / TAA / post
 ```

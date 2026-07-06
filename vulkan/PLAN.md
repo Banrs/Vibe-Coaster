@@ -1,6 +1,6 @@
 # MINECOASTER Vulkan port — master plan
 
-Goal: port the **entire** raylib game (`../src/*.cpp`) to the Vulkan renderer in
+Goal: port the **entire** raylib game (`../opengl/src/*.cpp`) to the Vulkan renderer in
 `vk/`, and implement the full modern-renderer feature list. Work continues until
 everything below is checked. Each item: build + lavapipe screenshot verify + commit
 to branch `claude/windows-rtx-ray-tracing-pkif4h` (PR #1).
@@ -67,7 +67,7 @@ convert PPM→PNG with PIL, Read the PNG to inspect. Windowed: `--frames N` unde
 ## Notes / conventions
 - Renderer-agnostic mesh helpers in `Terrain.h` (Vertex/Mesh/addQuad/addBox).
 - Game types come via `GameCompat.h` (raylib `Vector3` + raymath + constants) so the
-  real `../../src/coaster_track.cpp` compiles unchanged.
+  real `../../opengl/src/coaster_track.cpp` compiles unchanged.
 - Scene constants flow through a UBO (set 0): viewProj, lightVP, sun, camPos.
 - Parallel agents: one new self-contained file each, no edits to shared files, no
   cmake/build (shared build dir), g++ -fsyntax-only their own file, no commit.

@@ -1,10 +1,12 @@
 # MINECOASTER Vulkan port — work handoff
 
-Continuation brief for a new agent. The goal of this branch
-(`claude/vulkan-port-alpha-pkif4h`) is a **Vulkan renderer in `vulkan/` that has
-feature parity with the raylib base game in `src/`** (terrain, biomes, trees,
+Continuation brief for a new agent (originally written on the
+`claude/vulkan-port-alpha-pkif4h` branch — since merged; develop on whatever branch
+your session assigns). The goal is a **Vulkan renderer in `vulkan/` that has
+feature parity with the raylib base game in `opengl/src/`** (terrain, biomes, trees,
 coaster, HUD, physics) plus a modern PBR effect stack — and that the base-game
-logic is **ported, not reinvented**.
+logic is **ported, not reinvented**. The track generator is not even ported: it is
+the SAME `opengl/src/coaster_track.cpp`, compiled via `GameCompat.h`.
 
 ## Build & verify (READ THIS FIRST — avoid the mistakes I made)
 ```
@@ -27,10 +29,8 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json ./build/minecoaster_vk \
 - lavapipe is a software rasterizer: a `--shot` takes a few seconds; that's normal.
 
 ## Git
-- Commit author must be `Claude <noreply@anthropic.com>` (a stop-hook checks this).
-  `git config user.email noreply@anthropic.com && git config user.name Claude` is set.
 - End commit messages with the Co-Authored-By + Claude-Session trailers (see history).
-- Develop ONLY on `claude/vulkan-port-alpha-pkif4h`. `git push -u origin <branch>`.
+- Develop on the branch your session assigns; `git push -u origin <branch>`.
 - Do NOT put the model id in commits/PRs.
 
 ## Architecture (vulkan/)
@@ -47,19 +47,24 @@ gamma) → 9. **HUD** overlay → blit/copy.
 - `Terrain.h`: ported `terrainH`/noise + `biomeAt` (base-game biome classification:
   bio/humid/temp+height → cap/side colours + treeType/treeDen) + `addTree`
   (oak/birch/spruce/acacia) + `buildTerrain`/`buildTrees`. Trees match biomes.
-- `CoasterTrack.h`: drives the REAL `../../src/coaster_track.cpp` via `GameCompat.h`.
-  `genLongTrack`, `buildTrackMesh`, `buildTrainMesh`, and the endless-coaster helpers
-  `trackMaxU` / `extendTrack` / `trimBehind` (rolling window under the 512-cp cap).
+- `CoasterTrack.h`: drives the REAL `../../opengl/src/coaster_track.cpp` via
+  `GameCompat.h`. `genLongTrack`, `buildTrackMesh`, `buildTrainMesh`, and the
+  endless-coaster helpers `trackMaxU` / `extendTrack` / `trimBehind` (rolling window
+  under the 512-cp cap). HUD element names come from the shared `rideElemName()` in
+  that same file (geometry-aware: SPLASHDOWN only when skimming water, etc.).
 - `Hud.h`: font atlas + `addText`/`addRect` + **`buildGameHud(GameHud)`** = exact
   base-game HUD layout (SCORE, speed card, element panel, boost meter).
 - `Physics.h`: `world::RideSim` (ported train kinematics: `advance`, `frame`, `feltG`).
-  Now a full port of the base player loop (`src/main.cpp ~1540-1667`): slope/gravity/
-  drag/friction, launch/climb/boost, chain-lift, uphill assist, `du`/speedScale advance,
-  plus accumulated `score` and a low-passed felt-g (`gVert`; `feltG()` returns the
-  smoothed value, `instG()` the raw one). NOTE: `Track::invRAt` (element radius sizing)
-  no longer brakes entry speed — g is managed by sizing the element radius from
-  whatever real/unthrottled speed the physics delivers, not by slowing the train down
-  first. The "pre-braking" description below is stale; kept only as a historical note.
+  Mirrors the base ride loop (opengl/src/main.cpp ~2393-2410; synced 2026-07-06):
+  slope/gravity/drag/friction, asymptotic LSM launch, boost punch, chain-lift, the
+  anti-stall kicker tires, `du`/speedScale advance, NO top-speed clamp (numeric floor
+  only), plus accumulated `score` and a low-passed felt-g (`gVert`; `feltG()` smoothed,
+  `instG()` raw). Entry pre-braking no longer exists anywhere — g is managed by sizing
+  each element's radius from the real unthrottled entry speed.
+- `GameCompat.h`: physics/sizing constants mirroring opengl/src/main.cpp — the SHARED
+  generator reads these, so a stale mirror builds a genuinely different ride (it
+  happened: BOOST_TRIG 48 vs 84 starved every inversion). Sync in the same commit as
+  any opengl constant change.
 - `Water.h`: `buildWaterMesh` (grid at WATER_Y-0.28 to avoid shoreline z-fight).
 - `Math.h`, `Props.h` (station/coins), `Track.h` (mesh helpers/addBox).
 
@@ -76,7 +81,8 @@ Offscreen `--shot` accumulates 8 jittered frames -> supersampled stills. HUD is 
 AFTER the resolve so it stays crisp and never feeds back into history. This is exactly
 the jitter+motion+history plumbing a DLSS backend consumes — DLSS drops in for the
 taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up) ·
-**ride-physics parity** (inversion pre-braking + score accrual + g-smoothing — see below).
+**ride-physics parity** (score accrual + g-smoothing; thrust model re-synced 2026-07-06
+after the shared generator's entry pre-braking was removed upstream).
 
 ## Current state
 - Build is **clean** and headless run does **not crash** (verified: `--ride 30`,
@@ -88,19 +94,13 @@ taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up)
   ripples. No horizon/water colour-morph, no shoreline z-fight.
 - **TAA verified**: before/after edge crops show jaggies → clean AA; ride shot confirms
   the HUD stays crisp (drawn post-resolve) and the train/telemetry are intact.
-- **Coaster runs like the original (verified at the time).** Telemetry sweep
-  `--ride {5..240}`: score climbs monotonically (1.7k → 67k), g-forces stay inside the
-  base game's OWN validated envelope (+10 / −6 vert, ±6 lat — see `--gaudit` thresholds
-  in `src/main.cpp:1165,1177`). Since this was written, `coaster_track.cpp` (shared with
-  Vulkan via `#include`) had its entry-braking removed on purpose — g is now managed by
-  sizing each inversion's radius from the real unthrottled entry speed instead of
-  slowing the train first — so re-run `--gaudit`/`--ride` after pulling latest before
-  trusting these specific numbers again. The underlying claim (motion is faithful
-  because it's literally the same physics + same `coaster_track.cpp`) still holds.
-- NOTE: could NOT build the base game for a literal side-by-side — its CMake
-  `FetchContent`s raylib from github.com, which the env proxy blocks (403). Parity is by
-  shared source, not by A/B run. `--simtest` / `--gaudit` / `--gtest` are headless physics
-  references in `src/main.cpp` if a future env can fetch raylib.
+- **Coaster runs the SAME generator as the base game** (literally the same
+  `opengl/src/coaster_track.cpp`), and as of 2026-07-06 the mirrored constants
+  (`GameCompat.h`) and thrust model (`Physics.h`) are re-synced to the current base
+  ride loop — before that sync the Vulkan build was generating a slower,
+  inversion-starved ride from stale constants. Re-run `--ride` telemetry after any
+  upstream physics/pacing change; the base game's own gates are
+  `opengl/minecoaster --simtest / --gaudit / --pacing`.
 - Known cosmetic nit: the HUD SCORE digits slightly overlap the "SCORE" label
   (pre-existing `Hud.h::buildGameHud` layout, was just hidden when score was always 0).
 
@@ -112,7 +112,7 @@ taa.frag resolve, reusing the jitter and `prevVP` reprojection already wired up)
 5. HUD must match the base game's OpenGL HUD — addressed (`buildGameHud`).
 6. "Infinitely generating terrain and coaster" — addressed (rolling-window streaming).
 7. Trees must match biome like Minecraft + **port over everything, don't remake** —
-   addressed for terrain/biomes/trees/HUD/coaster (all now ported from `src/`).
+   addressed for terrain/biomes/trees/HUD/coaster (all now ported from `opengl/src/`).
 8. Keep a subtle MC-style biome blend (less than the old over-blend) — addressed
    (light 5-tap cap-colour blend in `buildTerrain`).
 9. "Water doesn't have a realistic depth feel — flat texture with fresnel" — addressed
@@ -139,10 +139,10 @@ next is one of the graphics items below, OR remaining gameplay parity. Confirm w
    via static-world reprojection).
 4. **Async streaming**: the patch re-bake is synchronous (~visible hitch). Consider a
    tighter cell-budget trigger + threading the rebuild.
-5. Remaining gameplay parity (optional): **station stops** every ~95 s (base
-   `src/main.cpp:1593-1613`; deliberately omitted so the endless demo never pauses),
-   `boost`/brake input, wire `boost` meter to a real value. Fix the HUD SCORE label
-   overlap nit.
+5. Remaining gameplay parity (optional): **station stops** every ~205 s (base
+   `opengl/src/main.cpp`, the `sinceStation` trigger; deliberately omitted here so the
+   endless demo never pauses), `boost`/brake input, wire `boost` meter to a real value.
+   Fix the HUD SCORE label overlap nit.
 
 ## Task tracker
 TaskList has #1-16. Done: 1,2,4,5,6,7,9,10,11,13. In-progress/partial: 8 (IBL).
@@ -162,6 +162,6 @@ cd /home/user/Claude-Coaster/vulkan && cmake --build build -j
 for s in 5 12 20 30 45 70 100 140 180 240; do \
   VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json ./build/minecoaster_vk \
     --shot --ride $s -o /tmp/r.ppm 2>&1 | grep '^\[ride\]'; done
-# expect: km/h ~150-345, |g| inside +10/-6, score climbing each line,
-# inversions (PRETZEL/LOOP/COBRA/...) entered at reduced speed.
+# expect: km/h up to ~370, |g| inside +10/-6, score climbing each line,
+# inversions (LOOP/IMMEL/DIVELOOP/...) appearing in the slow windows between boosts.
 ```

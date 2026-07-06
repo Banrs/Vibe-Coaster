@@ -1,9 +1,10 @@
 # MINECOASTER
 
 A voxel roller-coaster simulator. An endless, procedurally generated coaster threads
-through a streaming Minecraft-style world — launches, drops, loops, cobras, helices and
-inversions, all sized by a physics-driven generator that holds the felt-g inside a
-realistic-but-arcadey envelope.
+through a streaming Minecraft-style world — launches, drops, loops, corkscrews, helices,
+record-scale airtime hills and water splashdowns, all sized by a physics-driven generator
+that holds the felt-g inside a realistic-but-arcadey envelope. See `REALISM.md` for the
+sizing rules and `RESEARCH.md` for the real-world records behind every element.
 
 ## Repository layout
 
@@ -15,9 +16,9 @@ The same game world + ride physics drive three independent renderer backends:
 | [`vulkan/`](vulkan/) | **Vulkan** | alpha | A from-scratch deferred-PBR renderer that ports the OpenGL game's world, coaster, physics and HUD for feature parity, plus a modern effect stack (SSAO, SSR, god rays, IBL, TAA…). Compiles `opengl/src/coaster_track.cpp` directly so the track generator is shared, not duplicated. See [`vulkan/README.md`](vulkan/README.md) / [`vulkan/WORK_HANDOFF.md`](vulkan/WORK_HANDOFF.md). |
 | [`win-rtx/`](win-rtx/) | **Windows DXR + DLSS** | scaffold | Hardware ray-tracing backend for Windows + NVIDIA RTX (see below). |
 
-Docs at the root: this `README.md` and [`REALISM.md`](REALISM.md).
-
-Windows RT coming later
+Docs at the root: this `README.md`, [`REALISM.md`](REALISM.md) (sizing rules),
+[`RESEARCH.md`](RESEARCH.md) (real-world element records), and [`HANDOFF.md`](HANDOFF.md)
+(state of work for the next contributor).
 
 ## Features
 
@@ -82,5 +83,6 @@ opengl/minecoaster
 ```sh
 opengl/minecoaster --simtest     # ride 8 seeds, report avg speed / inversions / stalls
 opengl/minecoaster --gaudit      # audit per-element felt-g against the envelope
-opengl/minecoaster --pacing      # per-element time shares / transit seconds / flat share / density
+opengl/minecoaster --pacing      # per-element time shares / transit seconds / flat share / splashdowns
+opengl/minecoaster --profile N   # per-element built geometry (height delta / clearance / span) + SVG side view
 ```

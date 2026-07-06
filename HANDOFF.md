@@ -21,6 +21,36 @@ session — it is CURRENT again) for the full rule table and WR anchors.
 - **A next agent should actually run the game** to visually confirm the carve-aware
   terrain culling (tunnel interiors) — everything else is verified headless.
 
+## DONE 2026-07-06 later pass (honest element names, real splashdowns, WR-scale sizing)
+User feedback: (a) element names are often FAKE -- SPLASHDOWN shown on non-low, non-water
+track; splashdowns should be over water with spray; (b) sizes should sit AT-AND-ABOVE the
+record ([1.0x, recCapMul] band), which also lands transits at ~1x the real element's time.
+- **`rideElemName()` in coaster_track.cpp**: the ONE shared HUD-name diagnosis both
+  renderers now call (OpenGL main.cpp HUD banner + vulkan/src/main.cpp rideCamView, whose
+  static RIDE_NM table is gone). Names come from tag + ACTUAL geometry: SPLASHDOWN only
+  when skimming water (<3 m over a water tile), a valley-guarded high DIP relabels by
+  pitch, M_TURN reads BANKED TURN (overbanks were removed, "OVERBANKED" was fake too).
+- **Real splashdowns**: DIP gets a 5x pick-weight boost when water lies ahead
+  (`waterAhead`), initDip stretches the dip so its BOTTOM lands on the pond, and the
+  M_DIP floor targets WATER_Y+0.9 (inside the wheel-spray window) while the next few
+  steps are open water -- per-step, so the far shore doesn't hold the dip up. The
+  water-aimed profile flattens the sine bottom (sin^0.4) into a held skim. Measured
+  ~0.9/ride, ~0.5-1 s skim (pond width is the limiter, matching Griffon's ~1 s contact).
+  The existing wheel-spray system (main.cpp SplashContact) fires as-is.
+- **WR-side sizing (re-tune per user)**: HILLS frnd(60,78) single-hump (doubles only when
+  budget-shaved below record); HELIX 1.6-1.9 rev (585-680 deg, ~6-7 s ~= 1.0-1.16x WR);
+  STALL hang up to ~4.5 s (cap 16); BANKAIR 35-49 / WAVE 35-46 (bonus dropped); IMMEL/
+  DIVELOOP radius draws 0.92-1.0 of the WR-capped value; TURN 10-14/7-10, DIVE 7-10.
+  Cadence rules (bankCool/boostCool) unchanged -- record scale WITHOUT the old stacking.
+- **--pacing gained a splashdown metric** (genuine water-skim instances + seconds).
+- **LESSON (cost a full 8-seed stall regression)**: sinf(PI*1.0f) rounds to a TINY
+  NEGATIVE float, and powf(negative, frac) = NaN -- which poisoned every cp after it.
+  Guard any powf(sinf(...)) with fmaxf(.., 0).
+- Verified: 8/8 seeds stall=0f; avg 243 km/h, max ~360-370; ~11/ride inversions (8.3-min
+  window); gaudit BROKEN points 0 (baseline had 1), jerk 2 frames (known IMMEL seam);
+  banked ~3/min means 2.1-5.3 s; HILLS mean 5.9 s max 7.2 (record-height singles);
+  flat-ish 13.7%.
+
 ## DONE 2026-07-06 (banked-element cadence, real-typical durations, vulkan physics sync)
 User feedback: bank/tilt elements too often vs real life AND too long (few flat/low-tilt
 sections left); many elements take too long; too many dead-flat powered straights.
@@ -137,14 +167,14 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
 - STENGEL bank 2.18→1.95 rad + span 0.20 (lat 24.5→~4); STALL/STENGEL entry gates 48/62;
   STENGEL needs ≥30 m dive room; CLIMB_V 22→27; BOOST_TRIG 77→84; boost len 5–8 cps.
 
-## Current measured state (all 8 seeds, 2026-07-06)
-- stall=0f everywhere; avg ~247 km/h; max 356–367; LAUNCH-HAT drops 183–268 m;
-  inversions ~11.5 per 8.3-min simtest window (~5/lap).
-- Pacing (`--pacing`): banked elems ~3/min, ~17% of time, means 2.2–4.3 s; HILLS mean
-  5.6 s; flat-ish (FLAT+LAUNCH+BOOST+STN) 14.3%; density ~9.6 elements/min.
-- HUD felt-g: vert ≤ +10.1 max per element, min ≥ −2.9, lat ≤ 5.1.
-- SUSTAINED: TURN 5.8, HELIX 6.2, ROLL 5.0, IMMEL 4.0, DIVELOOP 4.0 (~0.9–1.9x real;
-  duration rule binds before the g multiple on the short-coil elements).
+## Current measured state (all 8 seeds, 2026-07-06 later pass)
+- stall=0f everywhere; avg ~243 km/h; max ~360–370; LAUNCH-HAT drops ~180–270 m;
+  inversions ~11 per 8.3-min simtest window (~5/lap).
+- Pacing (`--pacing`): banked elems ~3/min, ~18% of time, means 2.1–5.3 s; HILLS mean
+  5.9 s max 7.2 (60–78 m record singles); flat-ish 13.7%; density ~9.2 elements/min;
+  genuine SPLASHDOWNs ~0.9/ride (~0.5–1 s skim + wheel spray).
+- gaudit: BROKEN points 0; HUD peaks in envelope; jerk 2 frames >200 (known IMMEL seam).
+- SUSTAINED: TURN ~5.8, HELIX ~6.2, ROLL ~5.0, IMMEL ~4.0, DIVELOOP ~4.0.
 
 ## OPEN / TENTATIVE
 1. **Visual pass**: carve-aware culling + long parabolic hills + rounded hat crowns are

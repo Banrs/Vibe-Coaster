@@ -401,15 +401,9 @@ struct FlyCam {
 };
 
 // ---- on-rails ride camera + telemetry (drives the HUD) ----
-// Friendly element names matching the base game's OpenGL HUD (src/main.cpp).
-static const char* RIDE_NM[M_COUNT] = {"","TOP HAT","DROP","AIRTIME HILL","OVERBANKED TURN",
-    "VERTICAL LOOP","CORKSCREW","STATION","SPLASHDOWN","LAUNCH","HELIX","BOOSTER","IMMELMANN",
-    "S-CURVE","DIVE TURN","BANKED AIRTIME","WAVE TURN","ZERO-G STALL","DIVE LOOP","COBRA ROLL",
-    "WING-OVER","HEARTLINE ROLL","PRETZEL LOOP","STENGEL DIVE","BANANA ROLL"};
-static bool isSpecialElem(int k){
-    return k==M_LOOP||k==M_ROLL||k==M_IMMEL||k==M_STALL||k==M_DIVELOOP||k==M_COBRA||
-           k==M_HEARTLINE||k==M_WINGOVER||k==M_PRETZEL||k==M_STENGEL||k==M_BANANA;
-}
+// Element names come from rideElemName() in the SHARED coaster_track.cpp -- the same honest
+// geometry-aware diagnosis the OpenGL HUD uses (SPLASHDOWN only when actually skimming water,
+// pitch-relabelled climbs/drops, BANKED TURN, ...), so the two HUDs can't drift apart.
 struct RideTelemetry { float speedKmh=0, altitude=0, gForce=1; const char* element=""; bool special=false; };
 static CamView rideCamView(const ::Track& trk, const world::RideSim& rs, RideTelemetry& tel){
     Vector3 P,fwd,up,right; rs.frame(trk,P,fwd,up,right);
@@ -418,8 +412,10 @@ static CamView rideCamView(const ::Track& trk, const world::RideSim& rs, RideTel
     c.fwd = vF; c.up = vU; c.fovy = 1.18f;          // a touch wider for the sense of speed
     tel.speedKmh = rs.v*3.6f; tel.altitude = P.y - groundTopAt(P.x,P.z); tel.gForce = rs.feltG(trk);
     int k=(int)rs.u; int n=(int)trk.kind.size();
-    if(n>0){ if(k<0)k=0; if(k>=n)k=n-1; int kind=trk.kind[k];
-        tel.element=(kind>=0&&kind<M_COUNT)?RIDE_NM[kind]:""; tel.special=isSpecialElem(kind); }
+    if(n>0){ if(k<0)k=0; if(k>=n)k=n-1;
+        bool sp=false;
+        const char* nm = rideElemName(trk.kind[k], fwd.y, P.y, groundTopAt(P.x,P.z), sp);
+        tel.element = nm ? nm : ""; tel.special = sp; }
     return c;
 }
 // optional --ride <seconds> for headless ride-camera verification

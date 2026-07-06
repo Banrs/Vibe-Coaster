@@ -56,6 +56,7 @@ struct Track {
 
     int     dipLen = 6;
     float   dipEntryY = 0;
+    bool    dipSplash = false;   // water-aimed dip (see initDip): flattens the sine's bottom into a held surface skim
 
     Vector3 lcenter{}, lf{}, lside{};
     float   ltheta = 0, lR = 12, ldrift = 0, llat = 0;
@@ -181,7 +182,7 @@ struct Track {
 
     void initImmel() {
         mode    = M_IMMEL;
-        { lR = invRFor(M_IMMEL); lR *= frnd(0.85f, 1.0f); }
+        { lR = invRFor(M_IMMEL); lR *= frnd(0.92f, 1.0f); }   // hold near the speed-sized/WR-capped radius (user spec: at-and-above record)
         lf      = headingVec();
         lside   = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
@@ -253,10 +254,9 @@ struct Track {
         h         = fminf(h, maxClearH());
         float vc2 = fmaxf(genV * genV - 2.0f * GRAV * h, 100.0f);
         float L   = 4.0f * sqrtf(h * vc2 / GRAV) * 1.15f;   // +15% span: apex designed at ~+0.25 g (floater) instead of exact 0 -- the real train rides the crest a bit hotter than the genV design speed, and a true-ballistic apex then swung deep negative
-        // Span capped so the inverted hang sits at the TYPICAL real stall (~2-3.5 s, Wildfire
-        // class) rather than pinned at ArieForce One's record 4.5 s -- durations run at the
-        // real-typical multiple now, not the WR side (user: elements take too long).
-        stallLen  = Clamp((int)(L / SEG_LEN + 0.5f), 8, 13);
+        // Span capped so the inverted hang runs ~2.5-4.5 s -- at-and-up-to the WR (ArieForce
+        // One's ~4.5 s record hang), per the user's at-and-above-record sizing spec.
+        stallLen  = Clamp((int)(L / SEG_LEN + 0.5f), 8, 16);
         float Lf  = stallLen * SEG_LEN;
         stallH    = fminf(GRAV * Lf * Lf / (16.0f * vc2 * 1.32f), maxClearH());   // 1.32 = 1.15^2 keeps the height consistent with the widened span
         stallEntryY = gpos.y;
@@ -295,7 +295,7 @@ struct Track {
         // from energy conservation (ignoring drag slightly overestimates the gain, erring toward
         // a bigger, safer loop) and size the loop from THAT.
         float vAfterDive = sqrtf(genV * genV + 2.0f * GRAV * dlLeadDrop);
-        { dlR = invRAt(M_DIVELOOP, vAfterDive); dlR *= frnd(0.78f, 0.95f); }   // drawn a shade smaller: full-cap loops transited ~6.3 s vs Valravn's ~4-5 s (user: elements too long); still >= the rMin floor via invRAt's clamp
+        { dlR = invRAt(M_DIVELOOP, vAfterDive); dlR *= frnd(0.92f, 1.0f); }   // hold the speed-sized radius near its WR-capped value (user spec: at-and-above record); the trimmed lead-in below keeps transit near ~1x Valravn's ~4-5 s
 
         Vector3 leadEnd = { gpos.x + dlf.x * SEG_LEN * dlLeadSteps,
                              gpos.y - dlLeadDrop,
@@ -658,19 +658,18 @@ struct Track {
     void initHills() {
         mode = M_HILLS;
         setClearance(7.0f, 38.0f);
-        // HEIGHT MIX (user: elements take too long). At a fixed crest-g target the hump's transit
-        // time is ~independent of speed and scales with sqrt(h) (L = 2*pi*sqrt(h/2k), k ~ 1/v^2,
-        // t ~ L/v ~ sqrt(h)) -- so a ride whose EVERY hill is 50-78 m spends 5-6 s per hump no
-        // matter how fast it goes (measured mean 9.1 s/instance with 2-bump draws; real camelbacks
-        // transit in ~2.5-3 s). Real layouts are mostly ordinary 20-40 m humps with the occasional
-        // record piece, so draw from that shape: ~65% standard 32-48 m (~3.5-4.5 s), ~35% the
-        // record-class 52-78 m signature (0.85-1.3x the ~60 m WR camelback, per the size spec).
-        hillH     = (rnd01() < 0.65f) ? frnd(26.0f, 42.0f) : frnd(52.0f, 78.0f);
+        // HEIGHT DRAW (user spec: size AT-AND-ABOVE the record -- the [1.0x, cap] band -- which
+        // also lands transit at ~1x the real element's own time). At a fixed crest-g target the
+        // hump's transit is ~speed-independent and scales with sqrt(h) (L = 2*pi*sqrt(h/2k),
+        // k ~ 1/v^2, t ~ L/v ~ sqrt(h)): a 60-78 m hump takes ~5.5-6.2 s at ANY speed -- the
+        // same time the real WR camelback takes, i.e. exactly 1x. The old pathology wasn't the
+        // height, it was 50% DOUBLE-humped record draws (9.1 s/instance, max 18.8 s).
+        hillH     = frnd(60.0f, 78.0f);   // 1.0-1.3x the ~60 m WR camelback
         hillH     = fminf(hillH, maxClearH(34.0f) - hillRiseAhead());
-        hillH     = fmaxf(hillH, 24.0f);   // the eligibleElem gate guarantees >=36 is affordable, so this floor only catches the budget shave; a 24 m hump at crest -3.2 still runs a ~20 deg face (Mako speed-hill class), not a ramp
-        // Double humps only on the standard band (a 2-bump record-height instance ran 18+ s);
-        // record-class hills are a single signature camelback.
-        hillBumps = (hillH < 50.0f && rnd01() < 0.25f) ? 2 : 1;
+        hillH     = fmaxf(hillH, 30.0f);   // the eligibleElem gate guarantees >=36 is affordable, so this floor only catches the budget shave
+        // Record-class hills are a single signature camelback; occasional doubles only where the
+        // ballistic budget already shaved the hump below record height.
+        hillBumps = (hillH < 52.0f && rnd01() < 0.25f) ? 2 : 1;
         // Crest target -3.0 felt: 2x a real RMC ejector (-1.5); the trough side of the same
         // curvature lands ~+6-7 felt at entry speed (~2x a real pullout).
         hillLen   = hillLenFor(hillH, -3.2f);
@@ -702,8 +701,8 @@ struct Track {
         // longer plateaus so the interior arc-average actually reaches them.
         // Lengths trimmed a notch (16-cp big turns held the lean ~4-5 s; a real hard turn transits
         // ~2-3 s): still long enough for a sustained plateau, no longer a quarter-lap of lean.
-        if (big) { turnMag = turnMagFor(8.0f, 0.015f, 0.60f); bankT = 0.0f; remain = irnd(9, 13); }
-        else     { turnMag = turnMagFor(5.0f, 0.012f, 0.45f); bankT = 0.0f; remain = irnd(6, 9);  }
+        if (big) { turnMag = turnMagFor(8.0f, 0.015f, 0.60f); bankT = 0.0f; remain = irnd(10, 14); }
+        else     { turnMag = turnMagFor(5.0f, 0.012f, 0.45f); bankT = 0.0f; remain = irnd(7, 10);  }
     }
     void initHelix() {
         mode = M_HELIX;
@@ -737,12 +736,11 @@ struct Track {
         // gentle fixed pitch bounded by the height actually available so it never dives underground.
         // A helix that starts low simply descends less (a ground-level coil); one that starts high
         // descends more -- either way it is a proper multi-rotation spiral, not a flat float.
-        // Real-record scale: Goliath SFMM's famous helix is 585 deg (~1.6 rev) held ~6 s -- and
-        // that is the RECORD, not the typical helix. At the game's ~2x entry speeds the transit
-        // multiple the size/speed spec implies is ~0.6-0.8x real, so coil under the record
-        // (~380-520 deg, ~4-5.5 s of held bank) rather than at it: the old 1.3-1.8 rev matched
-        // the record's footprint and read as an 8 s wall of 80 deg lean (user: tilt too long).
-        float coils       = frnd(1.05f, 1.45f);
+        // Real-record scale: Goliath SFMM's famous helix is 585 deg (~1.63 rev) held ~6 s.
+        // User spec: size at-and-above the record -- 1.6-1.9 rev (585-680 deg, ~6-7 s) is
+        // 1.0-1.16x the WR rotation at ~1x its transit. Once-per-lap + the banked-cadence
+        // cooldown keep it a finale rather than a recurring lean.
+        float coils       = frnd(1.6f, 1.9f);
         remain    = Clamp((int)(coils * stepsPerRev + 0.5f), 12, 44);
         float descPerRev  = Clamp(0.6f * R, 10.0f, 20.0f);            // gentle real-helix pitch
         float totalDesc   = fminf(descPerRev * coils, usable);        // never descend past the ground band
@@ -778,13 +776,13 @@ struct Track {
         turnMag = turnMagFor(6.5f, 0.018f, 0.58f);   // gT ~= 2.4x the real diving-turn sustained (~2.5-2.75 g): lands the measured interior avg ~2x after slew/ramp dilution
         bankT   = 0.05f;   // a whisper of over-bank for the diving lean; the sub-vertical clamp keeps it upright
         bankBase = 1.0f;   // full heartline base
-        remain  = irnd(6, 9);   // long enough that the diving turn holds its plateau instead of averaging down over an all-ramp element, short enough that the lean doesn't outstay a real diving turn's ~2 s
+        remain  = irnd(7, 10);   // holds the plateau ~1x a real diving turn's ~2 s without the lean outstaying it
     }
     void initBankAir() {
         mode = M_BANKAIR;
         setClearance(12.0f, 52.0f);
-        hillBumps = 1;   // single banked hump (~3 s): the 2-bump draws held the lean 6-11 s (user: tilt too long); a real RMC wave/banked hill is one crest, not a chain
-        hillH     = frnd(22.0f, 38.0f) + (clearanceBase > 38.0f ? frnd(8.0f, 20.0f) : 0.0f);
+        hillBumps = 1;   // single banked hump (~4 s): the 2-bump draws held the lean 6-11 s (user: tilt too long); a real RMC wave/banked hill is one crest, not a chain
+        hillH     = frnd(35.0f, 49.0f);   // 1.0-1.4x the 35 m WR-class banked hill (at-and-above record; replaces the old sub-record base + clearance bonus)
         hillH     = fminf(hillH, maxAirH() - hillRiseAhead());
         hillH     = fmaxf(hillH, 20.0f);   // the eligibleElem gate guarantees >=20 is affordable here
         hillLen   = hillLenFor(hillH, -3.2f);   // crest sized like initHills: -3 felt, ~2x a real banked-airtime hill
@@ -800,7 +798,7 @@ struct Track {
         mode = M_WAVE;
         setClearance(7.0f, 38.0f);
         hillBumps = 1;   // single crest, same reasoning as initBankAir (Steel Vengeance's wave turn is ONE 35 m outward-banked hill)
-        hillH     = frnd(20.0f, 32.0f) + (clearanceBase > 30.0f ? frnd(6.0f, 16.0f) : 0.0f);
+        hillH     = frnd(35.0f, 46.0f);   // 1.0-1.3x the 35 m WR wave turn (at-and-above record; replaces the old sub-record base + clearance bonus)
         hillH     = fminf(hillH, maxAirH() - hillRiseAhead());
         hillH     = fmaxf(hillH, 20.0f);   // the eligibleElem gate guarantees >=20 is affordable here
         hillLen   = hillLenFor(hillH, -3.2f);   // crest sized like initHills: -3 felt (RMC wave turn scale)
@@ -816,8 +814,29 @@ struct Track {
         mode = M_DIP;
         setClearance(2.0f, 9.0f);
         dipLen = irnd(6, 9);
+        // SPLASHDOWN AIM: if there's water ahead, stretch the dip so its BOTTOM (the sine's
+        // midpoint, t=0.5) lands on the pond instead of bottoming out early on the shore --
+        // the water-seeking pick boost gets the dip OFFERED near water, this makes it HIT it.
+        {
+            int dw = 0;
+            for (int la = 2; la <= 16 && !dw; la += 2)
+                if (groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                gpos.z + cosf(gyaw) * SEG_LEN * la) <= WATER_Y + 0.01f) dw = la;
+            dipSplash = dw > 0;
+            if (dw > 0) dipLen = Clamp(2 * dw, 6, 16);
+        }
         dipEntryY = gpos.y;
         remain = dipLen;
+    }
+    // Water within the next few steps of corridor? groundTopAt floors at WATER_Y, so a sample
+    // AT water level means the tile is submerged. Used to water-seek the DIP pick (real
+    // splashdown elements are deliberately built over pools, not wherever the layout happens
+    // to be) so the SPLASHDOWN label + wheel spray actually get to fire.
+    bool waterAhead() const {
+        for (int la = 2; la <= 16; la += 2)
+            if (groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                            gpos.z + cosf(gyaw) * SEG_LEN * la) <= WATER_Y + 0.01f) return true;
+        return false;
     }
 
     void startStation() {
@@ -1124,6 +1143,7 @@ struct Track {
     }
     SegMode pickFromPool(const SegMode *pool, int n) const {
         SegMode valid[32]; float w[32]; int vc = 0; float wsum = 0;
+        bool wtr = waterAhead();   // water-seeking DIP: see below
         for (int i = 0; i < n && vc < 32; i++) {
             if (!eligibleElem(pool[i])) continue;
             float age = (float)(elemSeq - lastUsedAt[pool[i]]) + 1.0f;
@@ -1137,7 +1157,11 @@ struct Track {
             int   fam  = elemFamily(pool[i]);
             float phaseW = (fam == 3 || fam == 5) ? (1.4f - 0.8f * arcT)
                          : (fam == 1)             ? (0.6f + 0.9f * arcT) : 1.0f;
-            valid[vc] = pool[i]; w[vc] = elemRarityWeight(pool[i]) * age * age * elemSpeedPref(pool[i], spd) * phaseW; wsum += w[vc]; vc++;
+            float wgt = elemRarityWeight(pool[i]) * age * age * elemSpeedPref(pool[i], spd) * phaseW;
+            // Water ahead: strongly prefer the DIP so it becomes a genuine SPLASHDOWN (skims the
+            // pool, throws wheel spray) -- real parks place the splashdown over water on purpose.
+            if (pool[i] == M_DIP && wtr) wgt *= 5.0f;
+            valid[vc] = pool[i]; w[vc] = wgt; wsum += w[vc]; vc++;
         }
         if (vc == 0) {
             // Full eligibleElem() found nothing (variety constraint exhausted the pool) --
@@ -1654,13 +1678,31 @@ struct Track {
                 // plus a buffer reaching into the mode right after DIP ends, and never target a
                 // floor lower than that peak: genuinely low ground still gets hugged, but the dip
                 // can't be lured into a valley that's about to close up ahead of it.
-                float gtLook = gt;
+                float gtLook = gt, gtNear = gt;
                 int   dipLookSteps = remain + 20;
-                for (int la = 1; la <= dipLookSteps; la++)
-                    gtLook = fmaxf(gtLook, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
-                                                       gpos.z + cosf(gyaw) * SEG_LEN * la));
-                float floorY = fmaxf(gtLook + 2.0f, WATER_Y + 1.0f);
-                float depth  = sinf(PI * t1);
+                int   nearSpan = (remain < 5) ? remain : 5;
+                for (int la = 1; la <= dipLookSteps; la++) {
+                    float g = groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                          gpos.z + cosf(gyaw) * SEG_LEN * la);
+                    gtLook = fmaxf(gtLook, g);
+                    if (la <= nearSpan) gtNear = fmaxf(gtNear, g);
+                }
+                // SPLASHDOWN floor, evaluated PER STEP: while the track here and the next few
+                // steps sit over open water, target a surface skim (WATER_Y+0.9 puts the wheels
+                // inside the spray window) instead of letting shore terrain far beyond the pond
+                // hold the dip metres above it. Over land the conservative full-corridor floor
+                // stays (the closing-valley guard). Safe: the sine recomputes dy each step, so
+                // approaching the far shore the near-window picks the land back up and the dip
+                // pulls out under its normal curvature budget; it returns to dipEntryY regardless.
+                bool  waterRun = (gt <= WATER_Y + 0.01f) && (gtNear <= WATER_Y + 0.01f) &&
+                                 (gpos.y - gt < 60.0f);
+                float floorY = waterRun ? WATER_Y + 0.9f
+                                        : fmaxf(gtLook + 2.0f, WATER_Y + 1.0f);
+                // Water-aimed dips flatten the sine's bottom (sin^0.55) so the skim is HELD for
+                // ~1.5-2 s like a real splashdown run-out, not a single grazing frame.
+                // fmaxf guard: sinf(PI*1.0f) rounds to a TINY NEGATIVE in float, and
+                // powf(negative, 0.4) is NaN -- which would poison every cp after it.
+                float depth  = dipSplash ? powf(fmaxf(sinf(PI * t1), 0.0f), 0.40f) : sinf(PI * t1);
                 dy = (dipEntryY * (1 - depth) + floorY * depth) - gpos.y;
                 break;
             }
@@ -2330,3 +2372,52 @@ struct Track {
     }
     #include "coaster_elements_ext.cpp"
 };
+
+// HONEST HUD ELEMENT NAMES -- the ONE shared diagnosis both renderers use (user: names are
+// often fake, e.g. SPLASHDOWN shown on non-low, non-water track). The generator's tag says
+// what an element was MEANT to be; terrain feedback can bend the built shape (a DIP held high
+// by its valley-guard floor, a DROP forced up a rising hillside), so the banner is diagnosed
+// from the ACTUAL local geometry: tag + pitch (tangent.y) + track height vs ground/water.
+//   - SPLASHDOWN only when genuinely SKIMMING WATER (over a water tile, within ~3 m of the
+//     surface -- just above the wheel-spray window, so the label and the spray particles
+//     appear together). A DIP over dry land is a DIP; one held high relabels by pitch.
+//   - M_TURN reads BANKED TURN: the overbanked variants were removed from generation
+//     (bankT=0, bank hard-clamped below vertical), so "OVERBANKED" was a fake name too.
+// groundY must be the caller's groundTopAt(x,z), which floors at WATER_Y -- over water it
+// returns exactly WATER_Y, which is the water test used here.
+static const char* rideElemName(unsigned char tag, float pitch, float trackY, float groundY,
+                                bool &special) {
+    special = false;
+    float alt = trackY - groundY;
+    bool overWater = groundY <= WATER_Y + 0.01f;
+    const char* byPitch = (pitch > 0.12f) ? "CLIMB" : (pitch < -0.12f) ? "DROP" : "AIRTIME";
+    switch (tag) {
+        case M_LAUNCH: return "LAUNCH";
+        case M_BOOST:  return "BOOSTER";
+        case M_CLIMB:  return (pitch < -0.12f) ? "DROP" : "TOP HAT";
+        case M_DROP:   return byPitch;
+        case M_HILLS:  return "AIRTIME HILL";
+        case M_TURN:   return "BANKED TURN";
+        case M_HELIX:  return "HELIX";
+        case M_SCURVE: return "S-CURVE";
+        case M_DIVE:   return (pitch > 0.12f) ? "CLIMB" : "DIVE TURN";
+        case M_BANKAIR:return "BANKED AIRTIME";
+        case M_WAVE:   return "WAVE TURN";
+        case M_DIP:
+            if (overWater && trackY - WATER_Y < 3.0f) return "SPLASHDOWN";
+            if (alt < 12.0f)                          return "DIP";
+            return byPitch;   // a dip its valley guard kept high isn't visibly a dip at all
+        case M_LOOP:     special = true; return "VERTICAL LOOP";
+        case M_ROLL:     special = true; return "CORKSCREW";
+        case M_IMMEL:    special = true; return "IMMELMANN";
+        case M_STALL:    special = true; return "ZERO-G STALL";
+        case M_DIVELOOP: special = true; return "DIVE LOOP";
+        case M_COBRA:    special = true; return "COBRA ROLL";
+        case M_HEARTLINE:special = true; return "HEARTLINE ROLL";
+        case M_WINGOVER: special = true; return "WING-OVER";
+        case M_PRETZEL:  special = true; return "PRETZEL LOOP";
+        case M_STENGEL:  special = true; return "STENGEL DIVE";
+        case M_BANANA:   special = true; return "BANANA ROLL";
+        default: return nullptr;   // FLAT/STATION: no banner
+    }
+}

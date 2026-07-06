@@ -1362,11 +1362,13 @@ int main(int argc, char **argv) {
         double tagInstSec[M_COUNT] = {0};
         float  tagInstMax[M_COUNT] = {0};
         long   totFrames = 0;
+        long   splashF = 0, splashInst = 0;   // genuine water-skims (SPLASHDOWN label + spray active)
         for (uint32_t seed = 1; seed <= 8; seed++) {
             g_rng = seed * 2654435761u | 1u;
             Track t; t.reset();
             float u = 0.5f, v = LAUNCH_V;
             unsigned char curTag = 255; long curRun = 0;
+            bool inSplash = false;
             const float dt = 1.0f / 60.0f;
             for (int f = 0; f < 30000; f++) {
                 t.ensureAhead(u + 16);
@@ -1383,6 +1385,13 @@ int main(int argc, char **argv) {
                 if (f > 120) {
                     if (tg < M_COUNT) tagFrames[tg]++;
                     totFrames++;
+                    {   // same water-skim test as rideElemName's SPLASHDOWN + the wheel-spray window
+                        Vector3 Pp = t.pos(u);
+                        bool skim = tg == M_DIP && Pp.y - WATER_Y < 3.0f &&
+                                    groundTopAt(Pp.x, Pp.z) <= WATER_Y + 0.01f;
+                        if (skim) { splashF++; if (!inSplash) splashInst++; }
+                        inSplash = skim;
+                    }
                     if (tg != curTag) {
                         if (curTag < M_COUNT && curRun > 0) {
                             tagInst[curTag]++; tagInstSec[curTag] += curRun * dt;
@@ -1418,6 +1427,8 @@ int main(int argc, char **argv) {
         long flatF = tagFrames[M_FLAT] + tagFrames[M_LAUNCH] + tagFrames[M_BOOST] + tagFrames[M_STATION];
         printf("  --- flat-ish (FLAT+LAUNCH+BOOST+STN): %.1f%% of time | elements: %.1f/ride, density %.1f/min ---\n",
                100.0 * flatF / totFrames, elemInst / 8.0, elemInst / (totSec / 60.0));
+        printf("  --- genuine SPLASHDOWNs (DIP skimming water): %.1f/ride, %.1f s each ---\n",
+               splashInst / 8.0, splashInst ? (double)splashF / 60.0 / splashInst : 0.0);
         return 0;
     }
 
@@ -3976,40 +3987,13 @@ int main(int argc, char **argv) {
         }
 
         if (dispatched && !paused) {
-            const char *en = nullptr;
+            // Shared honest-name diagnosis (rideElemName in coaster_track.cpp): tag + actual local
+            // geometry (pitch, height over ground/water), so SPLASHDOWN only shows when genuinely
+            // skimming water, a valley-guarded high DIP relabels by pitch, a DROP forced up a
+            // rising hillside reads CLIMB, etc. The Vulkan HUD calls the SAME function.
             bool special = false;
-            // The vertical-transport tags (CLIMB/DROP/DIVE) are terrain-sensitive: a DROP forced up a
-            // rising hillside by the clearance floor genuinely CLIMBS, so naming it "DROP" mislabels
-            // what the rider sees. Name those by the ACTUAL local pitch (tangent.y = sin of the pitch
-            // angle, + up / - down) so the banner always matches the geometry. Signature shapes
-            // (loops, rolls, hills, ...) keep their tag name -- their form is recognizable regardless.
-            float pitch = trk.tangent(u).y;
-            switch (trk.tagAt(u)) {
-                case M_LAUNCH: en = "LAUNCH";          break;
-                case M_BOOST:  en = "BOOSTER";         break;
-                case M_CLIMB:  en = (pitch < -0.12f) ? "DROP" : "TOP HAT"; break;
-                case M_DROP:   en = (pitch >  0.12f) ? "CLIMB" : (pitch > -0.12f) ? "AIRTIME" : "DROP"; break;
-                case M_HILLS:  en = "AIRTIME HILL";    break;
-                case M_TURN:   en = "OVERBANKED TURN"; break;
-                case M_HELIX:  en = "HELIX";           break;
-                case M_SCURVE: en = "S-CURVE";         break;
-                case M_DIVE:   en = (pitch >  0.12f) ? "CLIMB" : "DIVE TURN"; break;
-                case M_BANKAIR:en = "BANKED AIRTIME";  break;
-                case M_WAVE:   en = "WAVE TURN";       break;
-                case M_LOOP:   en = "VERTICAL LOOP";   special = true; break;
-                case M_ROLL:   en = "CORKSCREW";       special = true; break;
-                case M_IMMEL:  en = "IMMELMANN";       special = true; break;
-                case M_STALL:    en = "ZERO-G STALL";  special = true; break;
-                case M_DIVELOOP: en = "DIVE LOOP";     special = true; break;
-                case M_COBRA:    en = "COBRA ROLL";    special = true; break;
-                case M_HEARTLINE:en = "HEARTLINE ROLL";special = true; break;
-                case M_WINGOVER: en = "WING-OVER";     special = true; break;
-                case M_PRETZEL:  en = "PRETZEL LOOP";  special = true; break;
-                case M_STENGEL:  en = "STENGEL DIVE";  special = true; break;
-                case M_BANANA:   en = "BANANA ROLL";   special = true; break;
-                case M_DIP:    en = "SPLASHDOWN";      break;
-                default: break;
-            }
+            const char *en = rideElemName(trk.tagAt(u), trk.tangent(u).y,
+                                          P.y, groundTopAt(P.x, P.z), special);
             if (en) {
                 int fs = 18;
                 int tw = MeasureText(en, fs);

@@ -78,7 +78,7 @@ vulkan/
 ├─ CMakeLists.txt        Vulkan + glslang build (shader list lives here)
 ├─ src/
 │  ├─ Math.h             minimal column-major vec/mat (Vulkan clip space)
-│  ├─ GameCompat.h       physics/sizing constants mirroring ../opengl/src/main.cpp
+│  ├─ GameCompat.h       raylib shim; shared constants via ../opengl/src/ride_constants.h
 │  ├─ Terrain.h          ported terrainH / biomes / trees -> Mesh
 │  ├─ Water.h            water grid mesh
 │  ├─ Track.h            mesh helpers (addBox/addQuad)

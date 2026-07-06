@@ -1,3 +1,11 @@
+// THE water test. groundTopAt() floors at WATER_Y, so a sample AT water level means the
+// tile is submerged (or sits exactly at the waterline). Every consumer -- the generator's
+// water-seeking scans, the M_DIP skim floor, the SPLASHDOWN label, the wheel-spray system,
+// and the --pacing splash metric -- must share this ONE predicate: the previous strict
+// `terrainH+1 < WATER_Y` spray test disagreed with the label on exact-waterline tiles
+// (terrainH+1 == WATER_Y), producing a SPLASHDOWN banner with zero spray.
+static inline bool submergedGround(float groundTopY) { return groundTopY <= WATER_Y + 0.01f; }
+
 struct Track {
     std::deque<Vector3>       cp;
     std::deque<Vector3>       up;
@@ -737,13 +745,23 @@ struct Track {
         // A helix that starts low simply descends less (a ground-level coil); one that starts high
         // descends more -- either way it is a proper multi-rotation spiral, not a flat float.
         // Real-record scale: Goliath SFMM's famous helix is 585 deg (~1.63 rev) held ~6 s.
-        // User spec: size at-and-above the record -- 1.6-1.9 rev (585-680 deg, ~6-7 s) is
-        // 1.0-1.16x the WR rotation at ~1x its transit. Once-per-lap + the banked-cadence
-        // cooldown keep it a finale rather than a recurring lean.
+        // coils 1.6-1.9 is the rotation TARGET (1.0-1.16x the WR's 585 deg). But a fixed step
+        // count can't honour both rotation AND duration: at post-boost entry speeds (~84-87 m/s,
+        // stepsPerRev ~31.5) 1.9 rev is ~60 steps, and the user's feedback was tilt-too-LONG, so
+        // duration outranks rotation. Cap by a speed-scaled ~7 s ceiling (~1.15x the record's 6 s
+        // hold) instead of a fixed step count -- at 2x real speeds a full record rotation would
+        // take 8-10 s, longer than the user tolerates. At ~85 m/s this lands ~42 steps (nearly
+        // identical to the old fixed-44 behaviour, so no pacing regression); the ceiling only
+        // BINDS on the hottest entries, where the achieved rotation then drops to ~1.3-1.5 rev --
+        // so the WR-rotation claim only holds at moderate entry speeds.
         float coils       = frnd(1.6f, 1.9f);
-        remain    = Clamp((int)(coils * stepsPerRev + 0.5f), 12, 44);
+        int   capSteps    = Clamp((int)(7.0f * genV / SEG_LEN), 24, 68);
+        remain    = Clamp((int)(coils * stepsPerRev + 0.5f), 12, capSteps);
+        // Pitch from the ACTUAL achieved rotation (remain), not the unclamped coils draw: dividing
+        // an unclamped-coils descent by the clamped remain steepened the per-step drop up to ~1.33x.
+        float actualCoils = (float)remain / stepsPerRev;
         float descPerRev  = Clamp(0.6f * R, 10.0f, 20.0f);            // gentle real-helix pitch
-        float totalDesc   = fminf(descPerRev * coils, usable);        // never descend past the ground band
+        float totalDesc   = fminf(descPerRev * actualCoils, usable);  // never descend past the ground band
         helixDrop = -totalDesc / (float)remain;
     }
     int     scurveLen = 10;
@@ -817,14 +835,14 @@ struct Track {
         // SPLASHDOWN AIM: if there's water ahead, stretch the dip so its BOTTOM (the sine's
         // midpoint, t=0.5) lands on the pond instead of bottoming out early on the shore --
         // the water-seeking pick boost gets the dip OFFERED near water, this makes it HIT it.
-        {
-            int dw = 0;
-            for (int la = 2; la <= 16 && !dw; la += 2)
-                if (groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
-                                gpos.z + cosf(gyaw) * SEG_LEN * la) <= WATER_Y + 0.01f) dw = la;
-            dipSplash = dw > 0;
-            if (dw > 0) dipLen = Clamp(2 * dw, 6, 16);
-        }
+        // The old cap of 16 (with a 16-step scan) bottomed the sine 2-8 steps SHORT of ponds
+        // found at dw>=10; cap 32 (matching waterAheadDist's 16-step scan) makes the bottom
+        // land ON the pond for every dw the scan can return (2*dw <= 32 for dw <= 16). Only
+        // water-aimed dips ever stretch this long -- the extra length is a shallow approach
+        // into the skim, like a real splashdown's run-in.
+        int dw = waterAheadDist();
+        dipSplash = dw > 0;
+        if (dw > 0) dipLen = Clamp(2 * dw, 6, 32);
         dipEntryY = gpos.y;
         remain = dipLen;
     }
@@ -832,11 +850,11 @@ struct Track {
     // AT water level means the tile is submerged. Used to water-seek the DIP pick (real
     // splashdown elements are deliberately built over pools, not wherever the layout happens
     // to be) so the SPLASHDOWN label + wheel spray actually get to fire.
-    bool waterAhead() const {
+    int waterAheadDist() const {   // first submerged step ahead (0 = none); scan cap 16 = half initDip's dipLen cap, so an aimed dip's bottom always reaches its pond
         for (int la = 2; la <= 16; la += 2)
-            if (groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
-                            gpos.z + cosf(gyaw) * SEG_LEN * la) <= WATER_Y + 0.01f) return true;
-        return false;
+            if (submergedGround(groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                            gpos.z + cosf(gyaw) * SEG_LEN * la))) return la;
+        return 0;
     }
 
     void startStation() {
@@ -1143,7 +1161,7 @@ struct Track {
     }
     SegMode pickFromPool(const SegMode *pool, int n) const {
         SegMode valid[32]; float w[32]; int vc = 0; float wsum = 0;
-        bool wtr = waterAhead();   // water-seeking DIP: see below
+        int wtrDist = -1;   // lazy: only sampled when an eligible M_DIP is actually in the pool
         for (int i = 0; i < n && vc < 32; i++) {
             if (!eligibleElem(pool[i])) continue;
             float age = (float)(elemSeq - lastUsedAt[pool[i]]) + 1.0f;
@@ -1160,7 +1178,10 @@ struct Track {
             float wgt = elemRarityWeight(pool[i]) * age * age * elemSpeedPref(pool[i], spd) * phaseW;
             // Water ahead: strongly prefer the DIP so it becomes a genuine SPLASHDOWN (skims the
             // pool, throws wheel spray) -- real parks place the splashdown over water on purpose.
-            if (pool[i] == M_DIP && wtr) wgt *= 5.0f;
+            if (pool[i] == M_DIP) {
+                if (wtrDist < 0) wtrDist = waterAheadDist();
+                if (wtrDist > 0) wgt *= 5.0f;   // water-seeking splashdown (see initDip)
+            }
             valid[vc] = pool[i]; w[vc] = wgt; wsum += w[vc]; vc++;
         }
         if (vc == 0) {
@@ -1537,6 +1558,7 @@ struct Track {
         float gt = groundTopAt(gpos.x, gpos.z);
 
         float dy = 0;
+        float dipFloorGuard = -1e9f;   // M_DIP's own per-step floor, handed to the g-cap block below
         switch (mode) {
             case M_FLAT: {
                 if (stationRamping)      { dy = (stationDeckY - gpos.y) * 0.45f; break; }
@@ -1694,8 +1716,10 @@ struct Track {
                 // stays (the closing-valley guard). Safe: the sine recomputes dy each step, so
                 // approaching the far shore the near-window picks the land back up and the dip
                 // pulls out under its normal curvature budget; it returns to dipEntryY regardless.
-                bool  waterRun = (gt <= WATER_Y + 0.01f) && (gtNear <= WATER_Y + 0.01f) &&
-                                 (gpos.y - gt < 60.0f);
+                // gtNear is seeded from gt (so submergedGround(gtNear) already covers "here"
+                // too -- the separate gt conjunct was redundant); the shared predicate keeps
+                // this skim test in lockstep with the SPLASHDOWN label and the wheel spray.
+                bool  waterRun = submergedGround(gtNear) && (gpos.y - gt < 60.0f);
                 float floorY = waterRun ? WATER_Y + 0.9f
                                         : fmaxf(gtLook + 2.0f, WATER_Y + 1.0f);
                 // Water-aimed dips flatten the sine's bottom (sin^0.55) so the skim is HELD for
@@ -1704,6 +1728,14 @@ struct Track {
                 // powf(negative, 0.4) is NaN -- which would poison every cp after it.
                 float depth  = dipSplash ? powf(fmaxf(sinf(PI * t1), 0.0f), 0.40f) : sinf(PI * t1);
                 dy = (dipEntryY * (1 - depth) + floorY * depth) - gpos.y;
+                // Arm the g-cap floor ONLY while actually skimming: it exists to stop the g-cap
+                // correction pushing a skim below the water surface. Arming it with the LAND
+                // floor too turned it into an instant unbudgeted lift the moment the near-window
+                // touched the far shore (floorY jumps to gtLook+2 while the track is still at
+                // ~31 m over the pond), yanking the skim up ~5 steps early -- measured: genuine
+                // splashdowns fell 0.9 -> 0.1/ride. Over land the g-cap keeps its historical
+                // unguarded M_DIP behavior (the dip's own dy targets + tunnelFloor own that).
+                dipFloorGuard = waterRun ? floorY - 0.5f : -1e9f;
                 break;
             }
             default: break;
@@ -1819,13 +1851,15 @@ struct Track {
             // the delta here to not cross the floor just stops this cap from re-introducing the exact
             // underground dive the arrest exists to prevent.
             float delta = clamped - sd;
-            // M_DIP/M_HELIX are excluded, matching the dive-arrest lookahead just above: both
-            // already have their OWN dedicated floor logic (M_DIP's forward-lookahead floorY
-            // targets gt+2; M_HELIX hugs close by design), so a blanket floor here would fire on
-            // nearly every ordinary low point of those modes and flatten the exact shape they
-            // exist to produce.
-            if (mode != M_DIP && mode != M_HELIX) {
-                float floorHere = groundTopAt(gpos.x, gpos.z) - 5.0f;   // only stop the g-cap correction from burying deeper than the tunnel-depth cap
+            // M_DIP now supplies its OWN per-step floor (dipFloorGuard = its dy case's floorY,
+            // which is WATER_Y+0.9 over a skimming pool -- so a negative g-cap delta can no
+            // longer push a splashdown below the water surface). It used to be excluded here on
+            // the stale premise that its floor always targets gt+2; the waterRun branch broke
+            // that. M_HELIX stays excluded: it hugs low by design, so a blanket floor would
+            // flatten the exact coil it exists to produce.
+            if (mode != M_HELIX) {
+                float floorHere = (mode == M_DIP) ? dipFloorGuard
+                                                  : groundTopAt(gpos.x, gpos.z) - 5.0f;   // only stop the g-cap correction from burying deeper than the tunnel-depth cap
                 if (gpos.y + delta < floorHere) delta = fmaxf(floorHere - gpos.y, 0.0f);
             }
             gpos.y += delta;
@@ -2389,7 +2423,7 @@ static const char* rideElemName(unsigned char tag, float pitch, float trackY, fl
                                 bool &special) {
     special = false;
     float alt = trackY - groundY;
-    bool overWater = groundY <= WATER_Y + 0.01f;
+    bool overWater = submergedGround(groundY);
     const char* byPitch = (pitch > 0.12f) ? "CLIMB" : (pitch < -0.12f) ? "DROP" : "AIRTIME";
     switch (tag) {
         case M_LAUNCH: return "LAUNCH";

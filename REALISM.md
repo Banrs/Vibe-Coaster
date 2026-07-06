@@ -28,8 +28,8 @@ MINECOASTER is **arcadey but grounded in realism**. Every quantity is anchored t
 | Top hat tower | tallest operating towers ~128-139 m (TT2 class; Kingda Ka demolished 2025) | non-mega climbTop frnd(100, 139) |
 | Airtime hill | tallest real camelbacks ~60 m | hillH frnd(60, 78) = 1.0–1.3x WR, SINGLE hump (doubles only when the ballistic budget shaves it below record height) |
 | Zero-g stall | RMC (Goliath SFGA 2014; ArieForce One ~4.5 s hang) | quartic ballistic crest, hang ~2.5–4.5 s (up to the record) |
-| Helix | Goliath SFMM 585°, 4.5 g sustained 6 s | 1.6–1.9 rev (585–680°, ~5–7 s) = 1.0–1.16x WR rotation, once per lap |
-| Splashdown | B&M dive-coaster water brake (Griffon/SheiKra), skim ~1 s | water-seeking DIP: 5x pick weight near water, dip bottom AIMED at the pond, held skim at WATER_Y+0.9 (inside the wheel-spray window); HUD says SPLASHDOWN only when genuinely skimming (`rideElemName`) |
+| Helix | Goliath SFMM 585°, 4.5 g sustained 6 s | rotation target 1.6–1.9 rev (1.0–1.16x WR); a speed-scaled ~7 s duration ceiling binds on the hottest entries (~1.3–1.5 rev built) — duration outranks rotation per user. ~4–7 s, once per lap |
+| Splashdown | B&M dive-coaster water brake (Griffon/SheiKra), skim ~1 s | water-seeking DIP: 5x pick weight near water, dip bottom AIMED at the pond, held skim at WATER_Y+0.9 (inside the wheel-spray window); ~0.6/ride when water is on the route; HUD says SPLASHDOWN only when genuinely skimming (`rideElemName`, same `submergedGround()` predicate as the spray) |
 | g standards | ASTM F2291 ≈ +6 g <1 s, ~−2 g, ±2 lat; ~15 g/s onset | budgets at ~2x |
 
 Removed from generation per user (roll overload): banana roll, heartline roll,
@@ -56,6 +56,6 @@ inclined LSM boosts (+4-8°, Falcon's Flight style). Full per-element data: `RES
 ./minecoaster --simtest    # MUST be stall=0f on all 8 seeds; avg ~245-255, max ~350-370
 ./minecoaster --gaudit 4   # HUD peaks: vert <= ~+11 / >= ~-5, lat <= ~6; SUSTAINED ~1-2x real per element
 ./minecoaster --profile N  # hills: vDelta ~60-78 (or budget-shaved) with hSpan ~300-450, net ~0
-./minecoaster --pacing     # banked elems <= ~1/3 of picks (~3/min, means 2-4.5 s); flat-ish <= ~15%; HILLS mean ~6 s; ~1 genuine SPLASHDOWN/ride
+./minecoaster --pacing     # banked elems <= ~1/3 of picks (~3/min, means 2-4.5 s); flat-ish <= ~15%; HILLS mean ~6 s; ~0.5-1 genuine SPLASHDOWN/ride
 ```
 `MC_STALLDBG=1 ./minecoaster --simtest` dumps the cp neighbourhood of any crawl-stall.

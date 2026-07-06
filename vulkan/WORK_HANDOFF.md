@@ -61,10 +61,12 @@ gamma) → 9. **HUD** overlay → blit/copy.
   only), plus accumulated `score` and a low-passed felt-g (`gVert`; `feltG()` smoothed,
   `instG()` raw). Entry pre-braking no longer exists anywhere — g is managed by sizing
   each element's radius from the real unthrottled entry speed.
-- `GameCompat.h`: physics/sizing constants mirroring opengl/src/main.cpp — the SHARED
-  generator reads these, so a stale mirror builds a genuinely different ride (it
-  happened: BOOST_TRIG 48 vs 84 starved every inversion). Sync in the same commit as
-  any opengl constant change.
+- `GameCompat.h`: physics/sizing constants now come from the ONE shared header
+  `../../opengl/src/ride_constants.h` (included by both hosts) — the old hand-kept
+  mirror drifted and built a genuinely different ride (BOOST_TRIG 48 vs 84 starved
+  every inversion). Only WATER_Y (world-dependent: opengl sea=30, vulkan=64 — it must
+  match world::WATER_Y or every water/splashdown test in the shared generator goes
+  dead) and WUP (needs this host's Vector3) remain per-host.
 - `Water.h`: `buildWaterMesh` (grid at WATER_Y-0.28 to avoid shoreline z-fight).
 - `Math.h`, `Props.h` (station/coins), `Track.h` (mesh helpers/addBox).
 

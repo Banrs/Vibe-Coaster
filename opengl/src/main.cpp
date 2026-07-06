@@ -24,32 +24,15 @@
 #include <atomic>
 #include <climits>
 
-static const float SEG_LEN   = 14.0f;
+// Shared physics/sizing constants (SEG_LEN, BUILD_MAX, GRAV, DRAG, FRICTION, CHAIN_V, MIN_V,
+// MAX_V, LAUNCH_V, CLIMB_V, V_GUARD, BOOST_V, BOOST_TRIG) live in one header the Vulkan host
+// includes too -- they FEED the shared generator, so a stale mirror built a different ride.
+#include "ride_constants.h"
 static const float CELL      = 1.0f;
 static const int   TERRA_R   = 320;   // 20 chunks * 16 m/chunk (TERRAIN_BUCKET) render distance
 
-static const float WATER_Y   = 30.0f;
-static const float BUILD_MAX  = 430.0f;
+static const float WATER_Y   = 30.0f;   // opengl world sea level -- WORLD-DEPENDENT, stays per-host (vulkan=64); see ride_constants.h
 static const float TERRA_MAX  = 320.0f;
-static const float GRAV      = 9.81f;
-
-static float       DRAG      = 0.00028f;  // realistic aero drag: ~1.8 m/s^2 at 80 m/s (a ~10t train, ~5 m^2, Cd~0.7)
-static const float FRICTION  = 0.015f;    // steel-on-steel rolling resistance: Crr~0.0015 * g ~= 0.015 m/s^2 constant decel; air DRAG dominates speed bleed at ride speed
-static const float CHAIN_V   = 22.0f;
-static const float MIN_V     = 42.0f;
-static const float MAX_V     = 82.0f;
-static const float LAUNCH_V  = 108.0f;  // asymptote ~389 km/h; drag-limited TOP speed ~350 km/h by physics (no cap).
-static const float CLIMB_V   = 27.0f;   // crest speed off a lift/top-hat (~97 km/h): the drop supplies the speed, not the lift. Raised from 22 so the long rounded crowns never dip under the 26 m/s crawl threshold.
-// Speed is fully physics-driven: no re-power floor and no top cap. Speed is whatever launch
-// thrust + gravity + friction/drag produce; low points may occasionally dip into a real stall.
-// Only V_GUARD remains, a pure numeric floor so du/dt stays finite.
-static const float V_GUARD   =  6.0f;    // numeric-only floor (prevents v<=0 -> NaN du)
-static float       BOOST_V   = 62.0f;
-// Ambient re-power threshold: below this speed the ride considers itself "run down" and
-// re-launches/re-boosts (uniformly, regardless of what element comes next -- this is pure
-// pacing, not an inversion-reactive brake). Kept low enough that genV can coast down through
-// an inversion's eligible speed window before the ride re-powers.
-static float       BOOST_TRIG = 84.0f;   // re-power below ~302 km/h: holds the ride average near ~265-270 km/h now that the slow windows are shared with the entry-gated inversions (nextMode's wantBoost hook) and boosts wait for the ground-hug drop first.
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -1380,15 +1363,18 @@ int main(int argc, char **argv) {
                 else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
                 if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;
                 if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires -- see the simtest copy
-                if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fmaxf(v, V_GUARD);
+                if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
                 v = fmaxf(v, V_GUARD);
                 if (f > 120) {
                     if (tg < M_COUNT) tagFrames[tg]++;
                     totFrames++;
-                    {   // same water-skim test as rideElemName's SPLASHDOWN + the wheel-spray window
-                        Vector3 Pp = t.pos(u);
-                        bool skim = tg == M_DIP && Pp.y - WATER_Y < 3.0f &&
-                                    groundTopAt(Pp.x, Pp.z) <= WATER_Y + 0.01f;
+                    {   // same water-skim test as rideElemName's SPLASHDOWN + the wheel-spray window;
+                        // pos(u) is a catmull eval, so only run it on M_DIP frames (short-circuit)
+                        bool skim = false;
+                        if (tg == M_DIP) {
+                            Vector3 Pp = t.pos(u);
+                            skim = Pp.y - WATER_Y < 3.0f && submergedGround(groundTopAt(Pp.x, Pp.z));
+                        }
                         if (skim) { splashF++; if (!inSplash) splashInst++; }
                         inSplash = skim;
                     }
@@ -3557,7 +3543,9 @@ int main(int argc, char **argv) {
             int contactN = 0;
 
             auto isWaterTile = [&](float wx, float wz) {
-                return (float)terrainH(wx, wz) + 1.0f < WATER_Y;
+                // groundTopAt = max(terrainH+1, WATER_Y), so this is EXACTLY the SPLASHDOWN
+                // label's predicate (submergedGround) -- spray and banner can't disagree.
+                return submergedGround(groundTopAt(wx, wz));
             };
             auto localToWorld = [&](Vector3 cp, Vector3 ct, Vector3 cu,
                                     float lx, float ly, float lz,
@@ -3967,6 +3955,7 @@ int main(int argc, char **argv) {
             textSh(sc, 92, 19, 26, RAYWHITE);
         }
 
+        float gY = groundTopAt(P.x, P.z);   // one ground sample shared by the ALT readout and the element banner below
         {
             int kmh = (int)(v * 3.6f);
             const char *num = TextFormat("%d", kmh);
@@ -3978,7 +3967,7 @@ int main(int argc, char **argv) {
                       : kmh > 150   ? Color{ 120, 230, 170, 255 } : RAYWHITE;
             textSh(num, (int)cardX + 18, 18, 44, spc);
             textSh(speedLagged ? "KM/H*" : "KM/H", (int)cardX + 26 + nw, 26, 18, Color{ 168, 184, 214, 235 });
-            const char *alt = TextFormat("ALT %dm", (int)(P.y - groundTopAt(P.x, P.z)));
+            const char *alt = TextFormat("ALT %dm", (int)(P.y - gY));
             textSh(alt, (int)(cardX + cardW) - MeasureText(alt, 16) - 16, 53, 16, Color{ 150, 168, 200, 220 });
         }
         if (speedLagged) {
@@ -3993,7 +3982,7 @@ int main(int argc, char **argv) {
             // rising hillside reads CLIMB, etc. The Vulkan HUD calls the SAME function.
             bool special = false;
             const char *en = rideElemName(trk.tagAt(u), trk.tangent(u).y,
-                                          P.y, groundTopAt(P.x, P.z), special);
+                                          P.y, gY, special);
             if (en) {
                 int fs = 18;
                 int tw = MeasureText(en, fs);

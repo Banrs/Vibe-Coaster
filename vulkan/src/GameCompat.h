@@ -65,23 +65,12 @@ static inline Vector3 catmull(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, fl
     return vlerp(B1,B2,(tt-t1)/(t2-t1));
 }
 
-// ---- physics / sizing constants (mirror ../../opengl/src/main.cpp top -- keep in sync BY HAND;
-// the shared coaster_track.cpp generator reads LAUNCH_V/CLIMB_V/BOOST_TRIG, so stale values here
-// build a DIFFERENT ride than the OpenGL game, not just a differently-tuned one) ----
-static const float SEG_LEN  = 14.0f;
-static const float BUILD_MAX = 430.0f;
-static const float GRAV     = 9.81f;
-static float       DRAG     = 0.00028f;  // realistic aero drag: ~1.8 m/s^2 at 80 m/s (a ~10t train, ~5 m^2, Cd~0.7)
-static const float FRICTION = 0.015f;    // steel-on-steel rolling resistance
-static const float CHAIN_V  = 22.0f;
-static const float MIN_V    = 42.0f;
-static const float MAX_V    = 82.0f;
-static const float LAUNCH_V = 108.0f;  // asymptote ~389 km/h; drag-limited TOP speed ~350 km/h by physics (no cap)
-static const float CLIMB_V  = 27.0f;   // crest speed off a lift/top-hat (~97 km/h): the drop supplies the speed, not the lift
-static float       BOOST_V  = 62.0f;
-// Ambient re-power threshold (below ~302 km/h the generator considers itself run down); the slow
-// windows under it are where the entry-gated inversions live -- see nextMode in coaster_track.cpp.
-static float       BOOST_TRIG = 84.0f;
+// ---- physics / sizing constants ----
+// These FEED the shared coaster_track.cpp generator (it reads LAUNCH_V/CLIMB_V/BOOST_TRIG/...),
+// so a stale hand-kept mirror here built a DIFFERENT ride than the OpenGL game. They now live in
+// ONE header included by both hosts. WATER_Y (world-dependent, see below) and WUP (needs this
+// host's Vector3) deliberately stay per-host.
+#include "../../opengl/src/ride_constants.h"
 static const Vector3 WUP = { 0, 1, 0 };
 
 // ---- RNG (mirror ../../src/main.cpp) ----
@@ -100,7 +89,11 @@ enum SegMode { M_FLAT, M_CLIMB, M_DROP, M_HILLS, M_TURN, M_LOOP, M_ROLL,
                M_PRETZEL, M_STENGEL, M_BANANA,
                M_COUNT };
 
-static const float WATER_Y = 30.0f;                 // global (matches world::WATER_Y)
+// WORLD-DEPENDENT sea level: must equal the sea level of the world the generator builds over
+// (opengl world sea=30, vulkan=64). groundTopAt() floors at world::WATER_Y=64, so the old 30
+// here made every `groundTopAt(...) <= WATER_Y + 0.01f` skim test in the shared generator DEAD
+// in the Vulkan build. That is why WATER_Y does NOT live in the shared ride_constants.h header.
+static const float WATER_Y = world::WATER_Y;
 static const Color RAIL = {190,198,212,255};
 static int   gForceElem  = -1;                       // generator debug knobs (unused here)
 static float gForceSpeed = 0.0f;

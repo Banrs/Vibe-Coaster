@@ -23,6 +23,44 @@ table and WR anchors; `RESEARCH.md` for the records behind them.
   terrain culling (tunnel interiors) and a splashdown (banner + wheel spray over water)
   — everything else is verified headless.
 
+## DONE 2026-07-06 code review pass (10 verified findings fixed)
+An 8-angle adversarial review of this branch surfaced 10 confirmed/plausible findings;
+all fixed (implementation largely by a delegated agent, spec + splashdown-regression
+debugging by the session):
+- **Vulkan WATER_Y was 30 but its world sea level is 64** (GameCompat.h) -- every water/
+  splashdown test in the shared generator was dead in the Vulkan build. Now
+  `WATER_Y = world::WATER_Y` with a world-dependent note.
+- **Shared constants header** `opengl/src/ride_constants.h` (SEG_LEN/BUILD_MAX/GRAV/DRAG/
+  FRICTION/CHAIN_V/MIN_V/MAX_V/LAUNCH_V/CLIMB_V/V_GUARD/BOOST_V/BOOST_TRIG) included by
+  BOTH hosts -- ends the hand-kept GameCompat mirror that had already drifted once.
+  WATER_Y and WUP stay per-host (world-dependent / host Vector3 type).
+- **Dip splash aim actually reaches its pond**: `waterAheadDist()` (one helper replaces
+  the duplicated waterAhead+initDip scans; lazy in pickFromPool -- only sampled when an
+  eligible M_DIP is in the pool) scans 16 steps; dipLen cap 32 = 2*scan, so the sine
+  bottom lands ON the water for every distance the scan can return (old: cap 16 with a
+  16-step scan bottomed 2-8 steps short).
+- **One water predicate** `submergedGround()` shared by the scans, the M_DIP skim floor,
+  rideElemName's SPLASHDOWN, the wheel spray (was strict `terrainH+1 < WATER_Y` --
+  disagreed with the label on exact-waterline tiles), and the --pacing metric.
+- **Helix duration ceiling made intentional**: fixed 44-step clamp -> speed-scaled ~7 s
+  cap (`capSteps`); pitch now derived from the ACHIEVED rotation (the unclamped-coils
+  descent over clamped steps steepened it ~1.33x). Rotation targets 1.6-1.9 rev; the
+  ceiling binds on the hottest entries (~1.3-1.5 rev) -- duration outranks rotation.
+- **--pacing chain-lift line was a mangled no-op copy** (fmaxf(v, V_GUARD)) -- now the
+  real +20 m/s^2 lift like the other five physics copies.
+- **g-cap floor for skimming dips** (dipFloorGuard): the correction block could push a
+  water skim below the surface (M_DIP was excluded from its floor guard on a stale
+  premise). REGRESSION CAUGHT IN MEASUREMENT: arming the guard with the LAND floor too
+  turned it into an unbudgeted instant lift the moment the 5-step near-window touched
+  the far shore, cutting skims ~70 m short (splashdowns 0.9 -> 0.1/ride). Guard is now
+  armed ONLY while waterRun (prevents underwater push, never yanks) -- 0.6/ride.
+- **HUD efficiency**: one groundTopAt per frame (was 2x in both HUDs); --pacing splash
+  metric short-circuits on tg==M_DIP before the catmull eval.
+- Verified: 8/8 stall=0f, avg 248 km/h, max ~355-367, ~11.8 inversions/window; pacing
+  flat-ish 14.0%, splashdowns 0.6/ride; vulkan header chain compiles. gaudit broken
+  points are DOMINATED BY A PRE-EXISTING PRETZEL/BANKAIR lateral arc-collapse class
+  (baseline 42 over 8 seeds, this tree 52 -- layout-shift noise, no new class; see OPEN).
+
 ## DONE 2026-07-06 later pass (honest element names, real splashdowns, WR-scale sizing)
 User feedback: (a) element names are often FAKE -- SPLASHDOWN shown on non-low, non-water
 track; splashdowns should be over water with spray; (b) sizes should sit AT-AND-ABOVE the
@@ -113,22 +151,28 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
 - **Carve-aware terrain culling** (main.cpp `effCol`): interval-based side-face exposure
   fixed the tunnel/cliff VOIDs. Needs the visual pass below.
 
-## Current measured state (all 8 seeds, 2026-07-06 later pass)
-- stall=0f everywhere; avg ~243 km/h; max ~360–370; LAUNCH-HAT drops ~180–270 m;
-  inversions ~11 per 8.3-min simtest window (~5/lap).
-- Pacing (`--pacing`): banked elems ~3/min, ~18% of time, means 2.1–5.3 s; HILLS mean
-  5.9 s max 7.2 (60–78 m record singles); flat-ish 13.7%; density ~9.2 elements/min;
-  genuine SPLASHDOWNs ~0.9/ride (~0.5–1 s skim + wheel spray).
-- gaudit: BROKEN points 0; HUD peaks in envelope; jerk 2 frames >200 (known IMMEL seam).
-- SUSTAINED: TURN ~5.8, HELIX ~6.2, ROLL ~5.0, IMMEL ~4.0, DIVELOOP ~4.0.
+## Current measured state (all 8 seeds, 2026-07-06 post-review)
+- stall=0f everywhere; avg ~248 km/h; max ~355–367; inversions ~11.8 per 8.3-min
+  simtest window (~5/lap).
+- Pacing (`--pacing`): banked cadence ~3/min unchanged; HILLS mean ~6 s; HELIX mean
+  ~4 s (7 s ceiling); flat-ish 14.0%; density ~9.5 elements/min; genuine SPLASHDOWNs
+  ~0.6/ride (~0.4–1 s skim + wheel spray, pond-width limited).
+- gaudit 4-seed: HUD peaks in envelope; jerk 1-3 frames >200 (known IMMEL seam).
+  gaudit 8-seed BROKEN ~50, pre-existing PRETZEL/BANKAIR class (OPEN 2b; baseline 42).
+- SUSTAINED (earlier this session): TURN ~6.1, HELIX ~8.1, LOOP ~6.7, IMMEL ~4.3.
 
 ## OPEN / TENTATIVE
 1. **Visual pass**: carve-aware culling (tunnel interiors), record-height parabolic
    hills, rounded hat crowns, and a SPLASHDOWN (banner + wheel spray over water) are
    verified by numbers/logic only — run the game and look.
-2. Jerk table peaks (~80–160 g/s at seams, 2 frames >200 at IMMEL entry) still above
+2. Jerk table peaks (~80–160 g/s at seams, 1-3 frames >200 at IMMEL entry) still above
    the 30 threshold the audit prints — sub-cp spline granularity; only fixable with
    denser cps or seam-specific easing.
+2b. **PRETZEL/BANKAIR lateral arc-collapse** (pre-existing, now the biggest geometry
+   defect): `--gaudit 8` shows ~40-50 BROKEN points across 8 seeds, nearly all PRETZEL
+   (lat up to ~29 g) with some BANKAIR — the pretzel's closed-form shape busts the
+   lateral envelope at some entries. Not introduced by any recent pass (baseline 42).
+   Candidates: PRETZEL entry gate/radius rework, or rarity 0 like the other cut rolls.
 3. DIVE frequency structurally low (~1/ride); genuine splashdowns depend on water on
    the route (~0.9/ride average, 0 on dry seeds) — could bias track heading toward
    lakes if the user wants more.
@@ -150,8 +194,13 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
 - Anti-stall kicker: FIVE copies now (simtest ~1284, pacing ~1382, gaudit ~1830,
   bench ~2024, ride ~2410) — keep in sync BY HAND like the thrust lines around them.
   vulkan/src/Physics.h carries a sixth (synced 2026-07-06).
-- SegMode enum main.cpp:973; physics constants main.cpp:36-55 (mirrored in
-  vulkan/src/GameCompat.h — keep in sync BY HAND).
+- SegMode enum main.cpp:973; SHARED physics constants in opengl/src/ride_constants.h
+  (included by both opengl/src/main.cpp and vulkan/src/GameCompat.h — no more hand-kept
+  mirror). WATER_Y stays per-host: it must equal that world's sea level (opengl 30,
+  vulkan 64) or every water/splashdown test in the shared generator goes dead.
+- Water plumbing: `submergedGround()` (top of coaster_track.cpp) is THE water predicate;
+  `waterAheadDist()` ~851 feeds both the pickFromPool 5x DIP boost (lazy) and initDip's
+  splash aim; M_DIP's waterRun floor + dipFloorGuard in stepGeneric's dy switch/g-cap.
 
 ## Lessons
 - Don't give edit-capable subagents the same file concurrently.
@@ -166,6 +215,10 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
   felt-g numbers alone would have misled.
 - `sinf(PI*1.0f)` rounds to a tiny NEGATIVE float; `powf(negative, frac)` = NaN and
   one NaN cp poisons the whole track. Guard `powf(sinf(...))` with `fmaxf(.., 0)`.
-- Mirror constants (vulkan/src/GameCompat.h) drift silently and the SHARED generator
-  reads them — a stale BOOST_TRIG made the Vulkan build a different ride. When tuning
-  opengl/src/main.cpp constants, sync GameCompat.h in the same commit.
+- Mirror constants drift silently and the SHARED generator reads them — a stale
+  BOOST_TRIG made the Vulkan build a different ride. Fixed structurally: shared
+  ride_constants.h. The residual per-host constant is WATER_Y (world-dependent).
+- A floor guard armed with a target that can JUMP (M_DIP's land floor vs skim floor)
+  becomes an unbudgeted teleport the moment the target jumps — guard only against the
+  invariant you actually need (don't sink below water), not the full moving target.
+  Measured cost before the fix: splashdowns 0.9 -> 0.1/ride.

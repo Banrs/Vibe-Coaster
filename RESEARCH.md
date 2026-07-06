@@ -69,7 +69,7 @@ listed per element.
 ### Helix
 - **Goliath**, Six Flags Magic Mountain, 2000, Giovanola: **585° descending helix, >4.5 g sustained ~6 s** [official/press] — the definitive sustained-g anchor.
 - **Mindbender**, Galaxyland, 1985, Schwarzkopf (closed 2023): 5.5–5.6 g measured 1987 (in the loop) [measured].
-- Code: `initHelix` coils 1.6–1.9 rev (585–680°, ~5–7 s) = 1.0–1.16x the WR rotation at ~1x its transit (user spec: at-and-above record; the original 2–3 rev/11–13 s stacked well past it); once-per-lap cap + the banked-cadence cooldown keep it a finale, not a recurring element.
+- Code: `initHelix` coils 1.6–1.9 rev is the ROTATION target (1.0–1.16x the WR 585°); a speed-scaled ~7 s duration ceiling (`capSteps`) binds on the hottest entries (achieved ~1.3–1.5 rev) because at ~2x real speeds the full record rotation would take 8–10 s — duration outranks rotation per user. Pitch derives from the ACHIEVED rotation. Once-per-lap cap + the banked-cadence cooldown keep it a finale.
 
 ### Top hat towers
 - **Top Thrill 2** (above): 130 m, launches to 190 km/h; legacy Dragster 0–190 in 3.8 s ≈ 1.4 g [official].
@@ -116,9 +116,9 @@ stacking is gone (single humps at record height, one helix per lap, capped hangs
 | Vertical loop transit | Full Throttle ~3–5 s [est from POV] | ~4 s | `stepLoop lsteps` |
 | Dive loop transit | Valravn class ~4–5 s | ~6.5 s (lead-in cut 14→9 cps, radius held near the WR cap) | `initDiveLoop dlLeadSteps/dlR` |
 | Zero-g stall hang | Wildfire ~2–2.5 s typical; **ArieForce One ~4.5 s (record)** [est/press] | **~2.5–4.5 s** (up to the record) | `initStall stallLen ≤16` |
-| Helix | typical helices 300–450°; **Goliath SFMM 585° held ~6 s (record)** [official/press] | 585–680° (1.0–1.16x WR), ~5–7 s, once per lap | `initHelix coils 1.6–1.9` |
+| Helix | typical helices 300–450°; **Goliath SFMM 585° held ~6 s (record)** [official/press] | rotation target 585–680° (~7 s duration ceiling binds on hottest entries), ~4–7 s, once per lap | `initHelix coils 1.6–1.9`, `capSteps` |
 | Corkscrew / inline roll | single rotation typical; doubles are signatures | ~75% single, ~25% double | `initRoll` |
-| Splashdown | B&M dive-coaster water brake (Griffon/SheiKra): scoops skim the pool ~1 s | water-seeking DIP: 5x pick weight near water, dip length aimed so the bottom lands ON the pond, held skim at WATER_Y+0.9 (~0.5–1 s, wheel spray fires); ~1/ride when water is on the route. HUD label SPLASHDOWN only while genuinely skimming (`rideElemName`) | `pickFromPool` water boost, `initDip`, M_DIP `waterRun` floor |
+| Splashdown | B&M dive-coaster water brake (Griffon/SheiKra): scoops skim the pool ~1 s | water-seeking DIP: 5x pick weight near water, dip length aimed so the bottom lands ON the pond, held skim at WATER_Y+0.9 (~0.5–1 s, wheel spray fires); ~0.6/ride when water is on the route. HUD label SPLASHDOWN only while genuinely skimming (`rideElemName`) | `pickFromPool` water boost, `initDip`, M_DIP `waterRun` floor |
 | Inversion cluster / arc | real launch coasters run 1–3 energy arcs per circuit | ~2.5 arcs/lap, signatures at each arc's bleed end | `pickFromPool arcT` |
 
 ### Banked-element cadence (added 2026-07-06)

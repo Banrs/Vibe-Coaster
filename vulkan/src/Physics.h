@@ -125,8 +125,8 @@ private:
         }
 
         // No speed floor or cap beyond this: fully physics-driven; only a numeric
-        // floor keeps du/dt finite (mirrors main.cpp's V_GUARD).
-        v = fmaxf(v, 6.0f);
+        // floor keeps du/dt finite (V_GUARD, shared from ride_constants.h via GameCompat.h).
+        v = fmaxf(v, V_GUARD);
 
         float du = v * dt / fmaxf(trk.speedScale(u), 0.5f);
         if (!(du == du)) du = 0.0f;

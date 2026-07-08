@@ -32,7 +32,7 @@ static const float CELL      = 1.0f;
 static const int   TERRA_R   = 320;   // 20 chunks * 16 m/chunk (TERRAIN_BUCKET) render distance
 
 static const float WATER_Y   = 30.0f;   // opengl world sea level -- WORLD-DEPENDENT, stays per-host (vulkan=64); see ride_constants.h
-static const float TERRA_MAX  = 320.0f;
+static const float TERRA_MAX  = 340.0f;
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -184,6 +184,18 @@ static float smooth01(float a, float b, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+// SIGNATURE CLIFF DIVE rim: a single track-registered synthetic mesa the once-per-lap dive plunges
+// off. The track generator (coaster_track.cpp, #included below) calls registerMesa() at the climb
+// crest so terrainH() presents a real rim EXACTLY where the scripted dive goes over the edge -- the
+// forward-marching dy generator could never carve a true near-vertical FACE, so instead the terrain
+// supplies one. Lifts-only (never lowers natural ground). One live site; re-registering moves it.
+static bool  gMesaOn   = false;
+static float gMesaX    = 0.0f, gMesaZ = 0.0f, gMesaYaw = 0.0f, gMesaTopY = 0.0f;
+static float gMesaBackMax = 1e9f;   // how far the back-slope wedge may extend behind the rim before it drops to natural -- capped by the caller so the mesa can never rise over track already built behind the crest
+static void registerMesa(float x, float z, float yaw, float topY, float backMax) {
+    gMesaX = x; gMesaZ = z; gMesaYaw = yaw; gMesaTopY = topY; gMesaBackMax = backMax; gMesaOn = true;
+}
+
 static float hashf(int x, int z) {
     uint32_t h = (uint32_t)x * 374761393u + (uint32_t)z * 668265263u;
     h = (h ^ (h >> 13)) * 1274126177u;
@@ -242,6 +254,39 @@ static int terrainH(float x, float z) {
     float terraced = floorf(h / terraceStep) * terraceStep + (det - 0.5f) * 3.0f;
     h = h + (terraced - h) * mesaMask * 0.58f;
     h += mesaMask * smooth01(0.35f, 0.70f, c) * 18.0f;
+    // SIGNATURE CLIFFS: rare tablelands with a SHARP, near-vertical rim. The NARROW smooth01 band
+    // collapses the full ~150 m rise into ~15 m horizontally (~10:1, an ~84 deg cliff FACE once
+    // voxelised) instead of the old 0.14-wide band's 45 deg mountain flank -- a real cliff, not a
+    // hill. Modelled on Falcon's Flight's Tuwaiq cliff; lifts-only so the rim sits cleanly over
+    // existing terrain. The once-per-lap signature dive (coaster_track.cpp) seeks these rims out.
+    float cliffN    = fbm(wx * 0.00060f + 300.0f, wz * 0.00060f + 150.0f, 2);
+    float cliffMask = smooth01(0.655f, 0.672f, cliffN);   // lower threshold -> more mesas so the signature dive lands on a real rim most laps; band still narrow -> sharp face
+    float cliffTop  = 250.0f + (det - 0.5f) * 14.0f;
+    if (cliffTop > h) h = h + (cliffTop - h) * cliffMask;
+
+    // SIGNATURE CLIFF DIVE rim (track-registered): a mesa whose rim line passes through (gMesaX,gMesaZ)
+    // perpendicular to gMesaYaw (the dive heading). BEHIND the rim (fwd<0, where the climb came up) the
+    // mesa top is gMesaTopY sloping down a ~60 deg back-slope wedge -- STEEPER than the climb's ~57 deg
+    // grade, so the mesa top sits just UNDER the climb track: it buries the support columns without
+    // burying the track. The wedge is cut off at gMesaBackMax (set by the caller from the existing cps)
+    // so it can never rise over track already built further behind. IN FRONT of the rim (fwd>0) the top
+    // falls to natural ground within ~9 m -> a near-vertical voxel FACE the dive plunges. ~80 m lateral
+    // half-width with a smooth falloff. Lifts-only, so it drops cleanly onto existing terrain. terrainH
+    // is a pure function of (x,z), so both the generator and the mesh see the same rim.
+    if (gMesaOn) {
+        float dx = x - gMesaX, dz = z - gMesaZ;
+        float fwd = dx * sinf(gMesaYaw) + dz * cosf(gMesaYaw);   // + = in front of the rim (dive direction)
+        float lat = dx * cosf(gMesaYaw) - dz * sinf(gMesaYaw);   // lateral offset from the rim centreline
+        float latK = 1.0f - smooth01(78.0f, 118.0f, fabsf(lat)); // 1 across the mesa core, 0 past the flanks
+        if (latK > 0.0f && -fwd <= gMesaBackMax) {               // no lift past the back cutoff (protects prior track behind the rim)
+            float mesaTop = (fwd <= 0.0f)
+                          ? gMesaTopY + fwd * 1.75f              // back-slope wedge: ~60 deg, steeper than the climb's ~57 deg so the top stays under the track
+                          : gMesaTopY - fwd * 20.0f;             // front face: ~87 deg, to natural within ~9 m
+            float raise = (mesaTop - h) * latK;                  // lateral falloff on the lift only
+            if (raise > 0.0f) h += raise;                        // lifts-only
+        }
+    }
+
     if (h < 1) h = 1; if (h > TERRA_MAX) h = TERRA_MAX;
     return (int)h;
 }
@@ -252,19 +297,36 @@ static float groundTopAt(float x, float z) {
 struct TerrainCache {
     int W = 0;
     std::vector<int> h, tx, tz;
-    void resize(int w) { W = w; h.assign(W * W, 0); tx.assign(W * W, INT_MIN); tz.assign(W * W, INT_MIN); }
+    // Biome noise (bio/humid/temp) is a pure function of (cx,cz) that never changes, yet the mesh
+    // loop used to recompute it (3 fbm/vnoise = ~24 hashf) for every one of ~322k cells EVERY
+    // rebuild. Cache it alongside height so it costs only the ~leading-band columns per re-center
+    // (filled in prefillTerrain's parallel pass), not the whole disc on the single mesh worker.
+    std::vector<float> bio, humid, temp;
+    void resize(int w) { W = w; int n = W * W; h.assign(n, 0); tx.assign(n, INT_MIN); tz.assign(n, INT_MIN);
+                         bio.assign(n, 0); humid.assign(n, 0); temp.assign(n, 0); }
     inline int slot(int cx, int cz) const {
         int ix = cx % W; if (ix < 0) ix += W;
         int iz = cz % W; if (iz < 0) iz += W;
         return iz * W + ix;
     }
+    inline void fill(int i, int cx, int cz) {
+        float wx = cx * CELL + CELL * 0.5f, wz = cz * CELL + CELL * 0.5f;
+        h[i]     = terrainH(wx, wz);
+        bio[i]   = vnoise(wx * 0.0045f + 91.3f, wz * 0.0045f + 23.1f);
+        humid[i] = fbm(wx * 0.0028f + 44.0f, wz * 0.0028f + 108.0f, 2);
+        temp[i]  = fbm(wx * 0.0019f + 12.0f, wz * 0.0019f + 204.0f, 2);
+        tx[i] = cx; tz[i] = cz;
+    }
     inline int get(int cx, int cz) {
         int i = slot(cx, cz);
-        if (tx[i] != cx || tz[i] != cz) {
-            h[i] = terrainH(cx * CELL + CELL * 0.5f, cz * CELL + CELL * 0.5f);
-            tx[i] = cx; tz[i] = cz;
-        }
+        if (tx[i] != cx || tz[i] != cz) fill(i, cx, cz);
         return h[i];
+    }
+    // Returns the (fresh) slot index so callers can read h/bio/humid/temp without recomputing.
+    inline int getSlot(int cx, int cz) {
+        int i = slot(cx, cz);
+        if (tx[i] != cx || tz[i] != cz) fill(i, cx, cz);
+        return i;
     }
 };
 static TerrainCache gHCache;
@@ -673,9 +735,9 @@ struct TerrainMesh {
     std::vector<CapBucket> pendingBuckets;
     std::vector<TerrainChunk> pendingChunks;
     size_t uploadCursor = 0;
-    static const int UPLOAD_BUDGET = 12;   // chunks uploaded per frame once the world is already live
+    static const int UPLOAD_BUDGET = 20;   // chunks uploaded per frame once the world is already live. 48 (this session) was a 4x jump in SYNCHRONOUS main-thread UploadMesh() calls per frame during the post-rebuild drain -- a measured frame-time spike on every re-center (user: FPS tanking). 20 still drains the ring promptly without the stall (was 12 pre-session).
 
-    static const int REBUILD_CELLS = 40;   // re-centre the mesh every ~40 m
+    static const int REBUILD_CELLS = 56;   // re-centre cadence: 96 made the atomic-swap re-centre JUMP ~96 m (a visible terrain pop); 56 halves that while the biome cache + center-relative cull + UPLOAD_BUDGET=48 keep each rebuild fast enough that a fast train still doesn't outrun the 320 m ring
     static const int REBUILD_U     = 8;
     bool needsRebuild(int cx, int cz, int uIdx) const {
         if (building) return false;
@@ -959,6 +1021,7 @@ enum SegMode { M_FLAT, M_CLIMB, M_DROP, M_HILLS, M_TURN, M_LOOP, M_ROLL,
                M_STALL, M_DIVELOOP, M_COBRA,
                M_WINGOVER, M_HEARTLINE,
                M_PRETZEL, M_STENGEL, M_BANANA,
+               M_CLIFFDIVE,
                M_COUNT };
 
 static int   gForceElem  = -1;
@@ -1277,7 +1340,7 @@ int main(int argc, char **argv) {
                     if (v < 26.0f) { if (++run > maxRun) { maxRun = run; stallTag = tg; stallPrev = prevTag2; }
                         if (getenv("MC_STALLDBG") && run == 1) {
                             Vector3 Ps = t.pos(u);
-                            const char* SNM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+                            const char* SNM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
                             printf("[stalldbg] f=%d u=%.1f v=%.1f y=%.1f gt=%.1f tag=%s | cps:\n", f, u, v, Ps.y, groundTopAt(Ps.x, Ps.z), (tg < M_COUNT) ? SNM[tg] : "?");
                             for (int k = (int)u - 8; k <= (int)u + 10 && k < (int)t.cp.size(); k++) {
                                 if (k < 0) continue;
@@ -1318,7 +1381,7 @@ int main(int argc, char **argv) {
                 maxCP = maxCP > t.cp.size() ? maxCP : t.cp.size();
             }
             double avg = nV ? sumV / nV : 0;
-            const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+            const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
             printf("seed %u  avgV=%.0f  maxV=%.0f  topHat=%.0f  drop[min/mean/max]=%.0f/%.0f/%.0f (n=%d)  | LAUNCH-HAT: crestY=%.0f bottomY=%.0f dropH=%.0fm peak=%.0fkm/h  stall=%df\n",
                    seed, avg * 3.6, maxV * 3.6, topHatV * 3.6,
                    (dropN?dropPkMin:0) * 3.6, (dropN?dropPkSum/dropN:0) * 3.6, dropV * 3.6, dropN,
@@ -1339,7 +1402,7 @@ int main(int argc, char **argv) {
     // reports, per tag: instances/ride, mean/max transit seconds, and % of ride time; plus
     // the aggregate flat share (FLAT+LAUNCH+BOOST+STATION) and element density (elements/min).
     if (argc > 1 && TextIsEqual(argv[1], "--pacing")) {
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
         long   tagFrames[M_COUNT] = {0};
         long   tagInst[M_COUNT]   = {0};
         double tagInstSec[M_COUNT] = {0};
@@ -1563,7 +1626,7 @@ int main(int argc, char **argv) {
         static const char* GN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION","DIP","LAUNCH",
             "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA",
-            "WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA" };
+            "WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
         int elem = -1;
         for (int t = 0; t < M_COUNT; t++) if (TextIsEqual(argv[2], GN[t])) elem = t;
         if (elem < 0) { printf("--elemsust: unknown element '%s'\n", argv[2]); return 1; }
@@ -1669,7 +1732,7 @@ int main(int argc, char **argv) {
     // horizontal span) plus an SVG side-view. This is the "run a side view" check -- it measures
     // the SHAPE, not the felt-g, so a flattened airtime hill or a 20 m ground float shows up plainly.
     if (argc > 1 && TextIsEqual(argv[1], "--profile")) {
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
         int seed = (argc > 2) ? atoi(argv[2]) : 1;
         g_rng = (uint32_t)seed * 2654435761u | 1u;
         Track t; t.reset();
@@ -1737,7 +1800,7 @@ int main(int argc, char **argv) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 12;
         if (argc > 3) DRAG       = (float)atof(argv[3]);
         if (argc > 4) BOOST_TRIG = (float)atof(argv[4]);
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA"};
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
         const Vector3 WUP3 = {0,1,0};
 
         float kMaxV[M_COUNT], kMinV[M_COUNT], kMaxL[M_COUNT], kMaxClr[M_COUNT];
@@ -2051,7 +2114,7 @@ int main(int argc, char **argv) {
         static const char *GN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION","DIP","LAUNCH",
             "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA",
-            "WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA" };
+            "WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
         for (int t = 0; t < M_COUNT; t++) if (TextIsEqual(argv[2], GN[t])) gForceElem = t;
         if (argc > 3) gForceSpeed = (float)atof(argv[3]);
         benchMode = true;
@@ -2092,6 +2155,12 @@ int main(int argc, char **argv) {
     InitWindow(1280, 720, "VOXELCOASTER");
     SetExitKey(KEY_NULL);
     SetTargetFPS(120);
+    // Raise the near clip from raylib's default 0.01 m to 0.2 m: with far=1200 the old 0.01:1000
+    // ratio spent almost all the 24-bit depth precision in the first few cm, leaving metre-scale
+    // resolution at ~300 m -- so the terraced/skirted distant terrain z-fought/shimmered. 0.2 m is
+    // still closer than the coaster/free cam ever gets to geometry. MUST match AO_CAM_NEAR/FAR
+    // (render_fx.cpp) or the SSAO/SSR depth reconstruction misaligns.
+    rlSetClipPlanes(0.2, 1200.0);
     InitAudioDevice();
     SetMasterVolume(getenv("MC_MUTE") ? 0.0f : 0.55f);
     gAtlas = makeAtlas();
@@ -2763,7 +2832,7 @@ int main(int argc, char **argv) {
         // length per su unit, 0.17 was sampling every ~2.4 m -- ~8x more samples than the
         // corridor needs, the single largest CPU cost of a terrain rebuild). 0.4 samples
         // every ~5.6 m: same coverage, ~2.4x fewer iterations of the carve-corridor scan.
-        for (float su = fmaxf(u - 14.0f, 0.0f); su <= u + 28.0f; su += 0.4f) {
+        for (float su = fmaxf(u - 14.0f, 0.0f); su <= u + 64.0f; su += 0.4f) {   // reach +64u (~896 m arc) to match the track draw range (k1=u+64): winding track that is Euclidean-near (rendered) but arc-far used to render UNCARVED until the train arrived
             Vector3 ps = trk.pos(su);
             float lo = ps.y - 4.0f, hi = ps.y + 4.5f;
             int scx = (int)floorf(ps.x / CELL), scz = (int)floorf(ps.z / CELL);
@@ -2824,7 +2893,12 @@ int main(int argc, char **argv) {
             for (int dx = -TERRA_R; dx <= TERRA_R; dx++) {
                 int cx = ccx + dx, cz = ccz + dz;
                 float wx = cx * CELL + CELL * 0.5f, wz = cz * CELL + CELL * 0.5f;
-                float ddx = wx - P.x, ddz = wz - P.z;
+                // Cull against the ring CENTER (ccx/ccz, captured by value at dispatch), NOT the live
+                // main-thread P: the worker runs detached while the main loop overwrites P every frame
+                // (a data race), and culling against a moving P built a ring whose fog boundary never
+                // matched where it was centred -- the leading edge came out missing/inconsistent and
+                // popped in on the next rebuild. Center-relative culling is race-free and consistent.
+                float ddx = wx - (ccx * CELL + CELL * 0.5f), ddz = wz - (ccz * CELL + CELL * 0.5f);
                 float dist2 = ddx * ddx + ddz * ddz;
                 if (dist2 > fogEnd * fogEnd) continue;
 
@@ -2833,7 +2907,8 @@ int main(int argc, char **argv) {
                 const float fog = 0.0f;
 
                 float cellSz = CELL;
-                int h = gHCache.get(cx, cz);
+                int hslot = gHCache.getSlot(cx, cz);
+                int h = gHCache.h[hslot];
 
                 {
                     float ft = forceTop[(dz + TERRA_R) * carveW + (dx + TERRA_R)];
@@ -2851,9 +2926,9 @@ int main(int argc, char **argv) {
 
                 if (!depthPass || dist2 < 58.0f * 58.0f) {
                     sh = 0.89f + 0.13f * hashf(cx * 5 + 1, cz * 5 + 2);
-                    bio = vnoise(wx * 0.0045f + 91.3f, wz * 0.0045f + 23.1f);
-                    float humid = fbm(wx * 0.0028f + 44.0f, wz * 0.0028f + 108.0f, 2);
-                    float temp  = fbm(wx * 0.0019f + 12.0f, wz * 0.0019f + 204.0f, 2);
+                    bio = gHCache.bio[hslot];              // cached (see TerrainCache): identical seeds/freqs as before
+                    float humid = gHCache.humid[hslot];
+                    float temp  = gHCache.temp[hslot];
                     Color capC = GRASS, colC = DIRT;
                     capTile = T_GRASS;
                     if (h >= 260)      { capC = Color{204,214,224,255}; colC = Color{132,140,154,255}; capTile = T_GRAIN; }
@@ -2973,8 +3048,8 @@ int main(int argc, char **argv) {
 	                        float treeLo = top - 0.05f;
 	                        float hitR = BORE_R + treeR + 1.25f;
 	                        float hitR2 = hitR * hitR;
-	                        int kS = (int)fmaxf(u - 8.0f, 0.0f);
-	                        int kE = (int)(u + 14.0f);
+	                        int kS = (int)fmaxf(u - 16.0f, 0.0f);   // widen the tree-clearance window to cover the carve corridor (u-14..) + margin, so every carved track segment is also tree-tested
+	                        int kE = (int)(u + 30.0f);
 	                        int maxK = (int)trk.cp.size() - 4;
 	                        if (kE > maxK) kE = maxK;
 	                        for (int k = kS; k <= kE; k++) {
@@ -2984,7 +3059,7 @@ int main(int argc, char **argv) {
 	                            for (int j = 0; j < nSmp; j++) {
 	                                Vector3 tp = trk.pos(k + (j + 0.5f) / nSmp);
 	                                if (tp.y + 4.5f < treeLo || tp.y - 4.0f > treeHi) continue;
-	                                float tx = tp.x - wx, tz = tp.z - wz;
+	                                float tx = tp.x - jwx, tz = tp.z - jwz;   // test at the tree's ACTUAL jittered draw position (jwx/jwz), not the cell centre -- the jitter (up to ~5 m) used to shove a "cleared" tree back into the track corridor
 	                                if (tx * tx + tz * tz < hitR2) return true;
 	                            }
 	                        }
@@ -3293,8 +3368,14 @@ int main(int argc, char **argv) {
                 float rl = segLen / nSmp + 0.18f;
                 unsigned char segTag = trk.tagAt(uu);
 
-                bool poweredSpine = (segTag == M_LAUNCH || segTag == M_BOOST ||
-                                     (segTag == M_CLIMB && !chain));
+                // LSM boosters ONLY on LAUNCH/BOOST -- the sections that ACTUALLY thrust the train.
+                // The top-hat climb used to get these accent "booster" fins too (M_CLIMB && !chain),
+                // which read as boosters that don't boost (user); it now gets the lift-assist look below.
+                bool poweredSpine = (segTag == M_LAUNCH || segTag == M_BOOST);
+                // LIFT ASSIST: the powered CLIMB (top-hat / forced climb / signature cliff back) holds
+                // the train at CLIMB_V up the grade -- a chain-lift, not an LSM. Mark it with an amber
+                // chain-dog spine so it's VISIBLE where the lift assist is, distinct from the boosters.
+                bool liftSpine    = (segTag == M_CLIMB && !chain);
                 Color rc = mixc(trk.railC,  FOG, fog);
                 Color tie = mixc(Color{ 96, 99, 108, 255 }, FOG, fog);
                 pushFrame(p, t, uvec);
@@ -3305,6 +3386,12 @@ int main(int argc, char **argv) {
                     if ((j & 1) == 0)
 
                         drawCubeTex(T_IRON, Vector3{ 0, -0.18f, 0 }, 0.62f, 0.22f, rl * 0.6f, fin);
+                } else if (liftSpine) {
+                    Color sc  = mixc(Color{ 58, 60, 68, 255 }, FOG, fog);
+                    Color dog = mixc(Color{ 232, 168, 60, 255 }, FOG, fog);   // amber chain-lift dogs down the centre
+                    drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.34f, 0.50f, rl, sc);
+                    if ((j & 1) == 0)
+                        drawCubeTex(T_IRON, Vector3{ 0, -0.08f, 0 }, 0.24f, 0.24f, rl * 0.5f, dog);
                 } else if (fog < 0.85f) {
 
                     Color sc  = mixc(Color{ 44, 47, 55, 255 }, FOG, fog);
@@ -4190,7 +4277,7 @@ int main(int argc, char **argv) {
         static const char *EN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL(corkscrew)","STATION","DIP","LAUNCH",
             "HELIX","BOOST","IMMELMANN","SCURVE","DIVE","BANKAIR","WAVE","STALL(0g)","DIVELOOP","COBRA",
-            "WINGOVER","HEARTLINE(0g roll)","PRETZEL","STENGEL","BANANA" };
+            "WINGOVER","HEARTLINE(0g roll)","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
         printf("\n=== per-element g profile (total felt g) ===\n");
         double avgSum = 0; int avgN = 0; double worstAvg = 0; const char *worstNm = "";
         for (int t = 0; t < M_COUNT; t++) {
@@ -4212,7 +4299,7 @@ int main(int argc, char **argv) {
         const char *EN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH",
             "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA",
-            "WINGOVER","HEART","PRETZEL","STENGEL","BANANA" };
+            "WINGOVER","HEART","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
         const int GW = 2400, GH = 1000, X0 = 80, X1 = GW - 30, Y0 = 50, Y1 = GH - 150;
         int N = (int)gtTot.size();
         float gLo = -8.0f, gHi = 18.0f;

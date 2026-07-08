@@ -7,7 +7,7 @@
 
         { pzR = invRFor(M_PRETZEL); pzR *= frnd(0.85f, 1.0f); }
         pzDrift = pzR * 1.5f;
-        pzLat   = pzR * frnd(1.4f, 1.9f);
+        pzLat   = pzR * frnd(1.0f, 1.35f);   // less lateral drift: 1.4-1.9x made the teardrop neck an S that projected crest-g into lateral (measured peak lat 8.3, seam -16.4). A real Tatsu pretzel is vertically dominant.
         pzSteps = 26;
         remain  = pzSteps;
     }

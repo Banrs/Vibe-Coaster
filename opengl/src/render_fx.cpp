@@ -825,12 +825,12 @@ static const char *BLUR_FS =
 static const float AO_RADIUS   = 1.0f;   // world metres -- roughly one voxel, tuned for contact/crevice occlusion (support-to-track joints, canopy interiors) not broad shading
 static const float AO_BIAS     = 0.06f;  // world metres -- clears self-occlusion acne from the coarse normal estimate
 static const float AO_STRENGTH = 0.30f;  // max darkening applied at full occlusion, further gated by brightness in the composite pass -- a hint, not an overpowering effect
-// Mirrors raylib's default projection clip planes (RL_CULL_DISTANCE_NEAR/FAR
-// in rlgl.h) -- main.cpp never calls rlSetClipPlanes to override these, so
-// the depth buffer's non-linear encoding is always relative to exactly these
-// two values.
-static const float AO_CAM_NEAR = 0.01f;
-static const float AO_CAM_FAR  = 1000.0f;
+// MUST match the rlSetClipPlanes(0.2, 1200) call in main.cpp (raised from raylib's
+// default 0.01/1000 to kill far-terrain z-fighting). The depth buffer's non-linear
+// encoding is relative to exactly these two values, so SSAO/SSR linZ() reconstruction
+// reads them here -- a mismatch misaligns AO and reflections.
+static const float AO_CAM_NEAR = 0.2f;
+static const float AO_CAM_FAR  = 1200.0f;
 
 static const char *AO_FS =
     "#version 330\n"

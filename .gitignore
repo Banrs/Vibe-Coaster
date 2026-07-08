@@ -9,3 +9,6 @@ src/vk/minecoaster_vk
 track.txt
 .DS_Store
 opengl/profile_seed*.svg
+
+# stray coaster build copies (e.g. minecoaster_cliff, minecoaster_dump)
+opengl/minecoaster_*

@@ -2741,7 +2741,7 @@ int main(int argc, char **argv) {
         std::sort(offenders.begin(), offenders.end(), [](const Off&a,const Off&b){
             return fabsf(a.g-1.0f) > fabsf(b.g-1.0f); });
         printf("\n  BROKEN-geometry points (vert>16 / lat>13 / <-6.5 -- past even the 2x-WR target, i.e. arc-collapse): %d total. Worst 25:\n", (int)offenders.size());
-        for (int i = 0; i < (int)offenders.size() && i < 25; i++) {
+        for (int i = 0; i < (int)offenders.size() && i < (getenv("MC_ALLOFF")?100000:25); i++) {
             Off& o = offenders[i];
             printf("  seed%-2d cp%-3d  vertG=%+6.1f latG=%+5.1f  v=%4.0f (%3.0fkm/h) y=%6.1f  %s [%s->%s->%s]\n",
                    o.seed, o.k, o.g, o.lat, o.v, o.v*3.6f, o.y, NM[o.kind],

@@ -48,6 +48,8 @@ struct Track {
     float   dropTopY = 1e9f;   // the current DROP run's entry crest, latched on its first step -- the ~300 m max-drop cap (user) measures every drop from here
     float   ddKnuckle = 0.0f;   // (see enterDrop)
     bool    crownLatched = false;   // once the CLIMB crest-lead fires, the crown-descent target stays asserted every step through the apex. The old genPrevDy>0 gate un-fired at the vertex (applied dy just crossed to <=0), dropping the crown and re-asserting the +36/+18 base climb target for one step -- the ceilY clip then pinned+flipped that spurious re-climb to M_DROP (267-326 m crest bust, a 5-cp apex shelf, a shallow drop face). Cleared at every CLIMB->DROP handoff / mode end.
+    float   crownY = 1e9f;       // the crest height latched the instant crownDrop arms -- the post-crest DROP's hard ceiling (crownY + margin) so the residual +dy can't re-climb above the crest it fell off, regardless of how nextMode re-cycles dropTopY on the way down.
+    bool    crownDrop = false;   // set at the mega-CLIMB -> DROP crest handoff (both the apex handoff and the ceilY clip): the FIRST few DROP steps keep the mega climb's bled effective speed (fminf(genV,54)) so the post-crest crown TURNS OVER instead of re-climbing. Without it the ceilY clip hands off with residual +dy and the M_DROP crest-cap (6) at optimistic genV~85 lifts the descent +65 m over ~9 cps (a DROP re-climb to y~314). Cleared once the drop is genuinely diving (dy <= -25) or the mode leaves M_DROP.
     float   boostGrade = 0.0f;   // INCLINED LSM boost: constant per-step climb (+4-8 deg) for ~45% of boosts, following the terrain trend -- Falcon's Flight's mid-course LSM lift (powered track that regains altitude while re-energizing); 0 = classic flat boost   // DOUBLE-DOWN: height above ground where this drop briefly shelves then re-drops (the El Toro/Maverick two-stage drop's ejector knuckle -- a roll-free thrill); 0 = plain drop
     float   genV      = LAUNCH_V;
     float   genFloorY = -1e9f;   // curvature-bounded terrain floor (lifts track out of the ground smoothly)
@@ -194,6 +196,7 @@ struct Track {
         lastElem = M_FLAT; prevElem = M_FLAT; helixDrop = -3.4f; genV = LAUNCH_V;
         genPrevDy = 0; genPrevCurv = 0; genPrevDyaw = 0; genFloorY = -1e9f; genFloorVy = 0;
         crownLatched = false;
+        crownDrop = false;
         setClearance(10.0f, 24.0f);
 
         pushCP(gpos, WUP, (unsigned char)M_LAUNCH);
@@ -749,6 +752,10 @@ struct Track {
         // (~0.30*hillH*(N-1)/N below entry) inside the band.
         float chainRoom = 1.0f / (1.0f + 0.30f * (float)(hillBumps - 1) / (float)hillBumps);
         hillH     = fminf(hillH, (maxClearH(34.0f) - hillRiseAhead()) * chainRoom);
+        // ABSOLUTE crest cap (crest < 296 hard, same rule as the top hats): a full-size camelback on a
+        // ~250 m mesa top crested at 299. Only bites when the entry is already high; on normal ground
+        // the ballistic budget above is far tighter, so this is a no-op there.
+        hillH     = fminf(hillH, fmaxf(286.0f - gpos.y, 14.0f));
         hillH     = fmaxf(hillH, chain ? 14.0f : 28.0f);   // floor only catches the budget shave; chain hops may go small
         // Crest target -3.0 felt: 2x a real RMC ejector (-1.5); the trough side of the same
         // curvature lands ~+6-7 felt at entry speed (~2x a real pullout).
@@ -1450,6 +1457,7 @@ struct Track {
 
     void nextMode() {
         crownLatched = false;   // an element ended: drop the crest-lead latch so it never leaks into the next element
+        crownDrop = false;      // and the post-crest bled-speed latch (a short drop that ended before diving must not bleed the next element)
         float h = gpos.y - groundTopAt(gpos.x, gpos.z);
 
         if (forcedElem >= 0) {
@@ -2285,11 +2293,31 @@ struct Track {
             // LOWER effective speed so the budgets open up: dy reaches its ~65 deg grade in a few
             // steps and the crest turns over inside a bounded height (a sharp, high-g top-hat apex,
             // which the user wants). Same vEff drives the post-hoc g-cap (k) and the crest-lead.
-            float vEff = (mode == M_CLIMB && mega) ? fminf(genV, 54.0f) : genV;
+            // CROWN-DROP DETECT: any DROP step still ASCENDING (genPrevDy > 6, i.e. carrying a residual
+            // climb velocity) is a post-crest crown -- whether a mega top-hat OR a terrain-mesa climb
+            // that plateaus (the runaway-crest class: the track climbs a mesa to terr~250, then the
+            // residual +34 dy flings the DROP +78 m above the plateau to y~330). Flagged CONTINUOUSLY
+            // (not just at the CLIMB->DROP handoff) because nextMode re-cycles the DROP element every
+            // few cps and would otherwise clear the latch after one step. The sharp crown budget + bled
+            // speed + the dropTopY ceiling below then turn it over instead of re-climbing.
+            if (mode == M_DROP && genPrevDy > 6.0f) { if (!crownDrop) crownY = gpos.y; crownDrop = true; }
+            // The same runaway also reaches a FLAT: a ballistic HILLS/BANKAIR climbing a mesa hands the
+            // FLAT a large residual +dy (measured +39), and a FLAT over a PLATEAU (terrain ahead not
+            // rising) has no business ascending -- ungated it flew +180 m above the mesa top to y~435.
+            // Arm only when the terrain ahead is NOT climbing (else a FLAT genuinely following rising
+            // ground would get pinned and fight the terrain floor).
+            if (mode == M_FLAT && genPrevDy > 6.0f) {
+                float gtA = gt;
+                for (int la = 1; la <= 6; la++)
+                    gtA = fmaxf(gtA, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                                 gpos.z + cosf(gyaw) * SEG_LEN * la));
+                if (gtA - gt < 8.0f) { if (!crownDrop) crownY = gpos.y; crownDrop = true; }
+            }
+            float vEff = ((mode == M_CLIMB && mega) || (mode == M_DROP && crownDrop)) ? fminf(genV, 54.0f) : genV;   // crownDrop: the post-crest DROP keeps the bled speed so its crest budget (dlimNeg) opens up and the crown turns over instead of re-climbing (see crownDrop decl)
             float v2 = fmaxf(vEff * vEff, 400.0f);
             float gPosT, gNegT;   // felt targets: trough/pull-up side, crest/airtime side
             switch (mode) {
-                case M_DROP:                           gPosT = 12.0f; gNegT = -4.0f; break;   // steep drop crest: loose ejector budget so dy reaches the ~68 deg face FAST (was -3, which jerk-shaved tall drops to ~55 deg). High crest ejector g is accepted (user).
+                case M_DROP:                           gPosT = 12.0f; gNegT = crownDrop ? -9.0f : -4.0f; break;   // steep drop crest: loose ejector budget so dy reaches the ~68 deg face FAST (was -3, which jerk-shaved tall drops to ~55 deg). High crest ejector g is accepted (user). crownDrop: the post-crest crown gets the mega climb's SHARP crown budget (-9, matching the M_CLIMB mega crest) so the residual +dy carried across the CLIMB->DROP handoff turns over inside a bounded height instead of a +21-51 m re-climb.
                 case M_DIVE:                           gPosT = 12.0f; gNegT = -3.0f; break;   // DIVE is banked -- keep the gentle crest so a hot crest doesn't stack onto its lateral
                 case M_CLIMB:                          gPosT = mega ? 18.0f : 12.0f; gNegT = mega ? -8.0f : -2.5f; break;   // -2.5 crest = a floater-plus top-hat crown. mega: pull-up budget 12->18 so the launch face RAMPS to its steep grade in a few steps (the +12 ramp reached only ~62 deg before the crown turned it over -- below the drop) and a SHARP crown (-8) then snaps over inside a bounded height that keeps the capped crest. High launch-face pull-up + crest ejector g accepted (user).
                 case M_DIP:                            gPosT = 12.0f; gNegT = -3.0f; break;
@@ -2320,6 +2348,7 @@ struct Track {
             // wanted, so open the mega-climb jerk budget so dy ramps to its steep grade in a few steps
             // and the sustained climb lands in the drop's 65-68 band. Crest stays capped (ceilNow/ceilY).
             if (mode == M_CLIMB && mega) jlim *= 2.6f;
+            if (mode == M_DROP && crownDrop) jlim *= 2.6f;   // the post-crest crown continues the mega climb's fast turnover through the DROP handoff so the residual +dy doesn't re-climb (see crownDrop / the -9 crest budget above)
             float curv = dy - genPrevDy;
             curv = Clamp(curv, genPrevCurv - jlim, genPrevCurv + jlim);
             curv = Clamp(curv, -dlimNeg, dlimPos);
@@ -2374,9 +2403,16 @@ struct Track {
                     signatureDive = false;   // apex fizzled low (entry wiggle): drop out of this climb...
                     if (++cliffFizzles <= 6) { cliffDone = false; cliffScanCool = 5; }   // ...but RE-ARM the signature this lap (spec: cliffdive >=1/lap) -- suppress the rim scan for a few elements so a later valley (structural plunge) takes it instead of the same fizzling rim. Bounded so a massif that can never hold a sub-300 crest can't loop the lap into all-climbs.
                 }
-                if (mode == M_CLIMB) { mode = M_DROP; remain = irnd(3, 4); dropTopY = gpos.y; crownLatched = false; }
+                if (mode == M_CLIMB) { bool wasMega = mega; mode = M_DROP; remain = irnd(3, 4); dropTopY = gpos.y; crownLatched = false; if (wasMega) { crownDrop = true; crownY = gpos.y; } }
             }
         }
+        // crownDrop ends once the post-crest crown has genuinely turned over into the descent
+        // (dy <= -12): the deep drop face then runs at the real genV so it reaches full speed. It also
+        // clears the instant a NEW ascent begins (CLIMB / LAUNCH / a closed-form inversion) so a stale
+        // crown latch can't clamp the next element. (Must NOT clear on `mode != M_DROP` -- the FLAT
+        // mesa-overshoot crown also needs the latch to persist, and that cleared it after one step,
+        // re-latching crownY to the rising y every step and defeating the ceiling.)
+        if (crownDrop && (dy <= -12.0f || mode == M_CLIMB || mode == M_LAUNCH || isHardInversion(mode))) crownDrop = false;
         gpos.y += dy;
         if (levelHold > 0 && mode == M_FLAT) levelHold--;
 
@@ -2387,6 +2423,12 @@ struct Track {
         float ceilY = (mode == M_HILLS) ? (BUILD_MAX - 6.0f) : fminf(gt + climbTop, BUILD_MAX - 6.0f);
         if (mode == M_CLIMB && !signatureDive && climbTop > 40.0f) ceilY = fminf(ceilY, 264.0f);   // absolute crest cap for every top hat (crestY < 300 hard); see the crest-lead comment above
         if (mode == M_CLIMB && signatureDive) ceilY = fminf(ceilY, 272.0f);   // signature cliff climb: cap the crest too so the dive's up-arc apexes < 300 (user: cliff crest < 300). On a real rim <270 this never binds; it catches the structural-fallback plunge on high plateaus (which would otherwise crest ~456).
+        // CROWN-DROP ceiling: a post-crest DROP must NOT re-climb above the crest it fell off. The
+        // curvature budget cannot shed a +34/step residual dy fast enough to keep the crest bounded
+        // (it flings the drop +78 m above a mesa plateau to y~330), so hard-cap the DROP at its own
+        // entry crest + a small round-over margin. The g-cap below smooths the resulting turnover;
+        // crownDrop only arms after a genuine +dy handoff so ordinary terrain-following drops are free.
+        if (mode == M_DROP && crownDrop) ceilY = fminf(ceilY, crownY + 6.0f);
 
         // GENERAL WALL-GUARD (one mechanism, extends the BOOST + HILLS/BANKAIR/WAVE wall-guards to
         // EVERY banked/carving element). A banked element whose coil/curve the terrain-floor is about
@@ -2427,7 +2469,7 @@ struct Track {
             // the dive's crest arc carries the tangent continuously from the climb's ~57 deg grade
             // down over the edge, so a hard flat clamp here would inject a sharp convex crest kink.
             if (mode == M_CLIMB && signatureDive) { initCliffDive(); }
-            else { gpos.y = ceilY; if (mode == M_CLIMB) { mode = M_DROP; remain = irnd(3, 4); dropTopY = gpos.y; crownLatched = false; } }
+            else { gpos.y = ceilY; if (mode == M_CLIMB) { bool wasMega = mega; mode = M_DROP; remain = irnd(3, 4); dropTopY = gpos.y; crownLatched = false; if (wasMega) { crownDrop = true; crownY = gpos.y; } } }
         }
 
         // M_BOOST is NO LONGER exempt here (LAUNCH still is -- it rides truly dead flat). A boost
@@ -2447,7 +2489,7 @@ struct Track {
             float dxz0 = sqrtf((p1.x-p0.x)*(p1.x-p0.x) + (p1.z-p0.z)*(p1.z-p0.z));
             float dxz1 = sqrtf((gpos.x-p1.x)*(gpos.x-p1.x) + (gpos.z-p1.z)*(gpos.z-p1.z));
             float span = fmaxf(0.5f * (dxz0 + dxz1), 1.0f);
-            float vEffK = (mode == M_CLIMB && mega) ? fminf(genV, 54.0f) : genV;   // tall launch-hat: same bled effective speed as the budget block, so this post-hoc 2nd-diff g-cap lets the pull-up ramp reach the ~65 deg grade and the crest turn over sharply instead of throttling both at the optimistic genV
+            float vEffK = ((mode == M_CLIMB && mega) || (mode == M_DROP && crownDrop)) ? fminf(genV, 54.0f) : genV;   // tall launch-hat: same bled effective speed as the budget block, so this post-hoc 2nd-diff g-cap lets the pull-up ramp reach the ~65 deg grade and the crest turn over sharply instead of throttling both at the optimistic genV. crownDrop extends it into the post-crest DROP so the -6*k crest-cap turns the crown over (2.5x sharper at 54 vs the optimistic ~85) instead of lifting a +65 m re-climb
             float k   = span * span * GRAV / fmaxf(vEffK * vEffK, 100.0f);
             float sd  = gpos.y - 2.0f * p1.y + p0.y;
 
@@ -2488,6 +2530,11 @@ struct Track {
             }
             gpos.y += delta;
         }
+        // CROWN-DROP hard ceiling: the g-cap above lifts a sharp crest (it reads the clamped crown as
+        // an abrupt convex turnover and "smooths" it upward), undoing the ceilY clamp. This is the LAST
+        // word on gpos.y for a post-crest crown -- the residual +dy simply cannot carry the drop above
+        // the crest it fell off (user: crest < 300 hard; the sharp turnover's ejector airtime is accepted).
+        if (crownDrop && gpos.y > crownY + 6.0f) gpos.y = crownY + 6.0f;
 
         Vector3 upv = WUP;
         if (mode == M_TURN || mode == M_HELIX || mode == M_HILLS ||

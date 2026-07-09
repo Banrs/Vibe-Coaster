@@ -55,6 +55,7 @@ struct Track {
     float   genFloorY = -1e9f;   // curvature-bounded terrain floor (lifts track out of the ground smoothly)
     float   genFloorVy = 0.0f;
     unsigned char lastGenMode = (unsigned char)M_FLAT;
+    unsigned char prevPushKind = (unsigned char)M_FLAT;   // item M: last COSMETIC kind pushed (may differ from lastGenMode on a retagged hat crown); chains the CLIMB relabel across a plateau run
     Vector3 genPrevUp = WUP;
     Vector3 genGeomUp = WUP;        // ROLL CARRY-THROUGH: the up-vector as it would evolve WITHOUT any carry (the baseline unwind). Feeds ONLY the post-hoc vertical-g cap gate (which exempts steep-banked seats) so a carried lean can't disable that cap on level FLAT/DROP geometry -- keeps the generated track bit-identical to baseline while genPrevUp carries the rendered lean.
     int     upEaseSteps = 0;
@@ -137,6 +138,7 @@ struct Track {
 
     // SIGNATURE CLIFF DIVE (scripted closed-form path off the synthetic rim -- stepCliffDive)
     int     cdPhase = 0;                 // 0 crest arc, 1 near-vertical face, 2 pullout arc
+    static constexpr float CD_FACE_P = -88.0f * DEG2RAD;   // near-vertical dive-face pitch (~88 deg, sustained >=60 m). Wall-hug pins the registered rim to where THIS face begins, so every face cp stays within a few m of the rim wall (user: hug the cliff, don't drift 30-60 m out)
     float   cdYaw = 0.0f, cdPitch = 0.0f;
     float   cdPulloutStartY = 0.0f, cdValleyY = 0.0f;
     float   cdRc = 30.0f, cdRp = 48.0f;  // crest/pullout arc radii, sized from the ACTUAL entry/bottom speed at init (felt-g bounded) -- a fixed radius rang -47 g when a lap's dive happened to crest fast
@@ -2354,7 +2356,7 @@ struct Track {
             curv = Clamp(curv, -dlimNeg, dlimPos);
             dy = genPrevDy + curv;
 
-            if (dy < 0.0f && mode != M_DIP && mode != M_HELIX) {
+            if (dy < 0.0f && mode != M_HELIX) {   // M_DIP is no longer exempt: a fast DIP diving into rising ground rang -58/+26 g (the documented fast-DIP attractor). Its water-skim floor is preserved below (gap vs dipFloorGuard), so splashdowns still reach the surface.
                 // A far-out-enough lookahead means gtLook picks up any rise ahead while the car is
                 // still well above it, so gap shrinks and maxSteep tightens in time to arrest the
                 // dive at a normal pull-out distance instead of diving underground.
@@ -2381,6 +2383,11 @@ struct Track {
                 // descent budget -- a hop trough breathes to its natural min dy (~-6/step) rather
                 // than getting pinned to 0 the instant gtLook creeps up to the hump.
                 if (mode == M_HILLS) gap = fmaxf(gap, 12.0f);
+                // A water-seeking DIP arrests toward ITS OWN skim floor, not the shoreline terrain
+                // (the water surface sits below the surrounding bank, so the terrain gap would
+                // flatten the splashdown the element exists to deliver). Non-water DIPs take the
+                // normal terrain arrest like any other descent.
+                if (mode == M_DIP && dipFloorGuard > -1e8f) gap = fmaxf(gap, gpos.y - dipFloorGuard);
                 // MAX-DROP CAP (user: ~300 m ceiling on any single drop): treat the cap altitude
                 // (drop crest - 296) exactly like rising ground -- the same anticipatory sqrt budget
                 // arrests the descent smoothly AT the cap, after all smoothing, with no hard shelf.
@@ -2630,6 +2637,21 @@ struct Track {
             Vector3 back = { -lf.x, 0, -lf.z };
             gpos = { gpos.x + back.x * SEG_LEN, gpos.y, gpos.z + back.z * SEG_LEN };
 
+            // ELEVATED-EXIT CROWN (item K): the half-roll-to-upright exit normally flies DEAD-LEVEL
+            // for its 6 cps, so an IMMEL that ends high (y-terr > ~40 m) stamps a flat box top and then
+            // the following DROP snaps down off it (measured seed6 cp359-363 / seed7 cp245-248: dy=+0.00
+            // held at apex). When elevated, hand off through a convex crown instead: subtract a per-cp
+            // drop that grows linearly (const curvature ~ circular crest), so dy ramps negative from ~0
+            // immediately -- no >=2-cp dead-level apex -- and reaches the DROP's entry grade smoothly.
+            // These IMMEL cps bypass the generic g-cap (isHardInversion), so the crown is shaped here at
+            // a gentle floater curvature (~-0.3 g at exit speed). Low IMMELs keep the level roll (their
+            // clearance floor would flatten a crown anyway).
+            float exitH = gpos.y - groundTopAt(gpos.x, gpos.z);
+            if (exitH > 40.0f) {
+                float pr = (float)(done - half + 1);      // 1,2,3,... over the exit roll
+                gpos.y -= 0.6f * (2.0f * pr - 1.0f);      // parabolic crest: cumulative drop = 0.6*pr^2
+            }
+
             float ang = PI * (1.0f - rollT);
             upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(ang)),
                                               Vector3Scale(lside, sinf(ang) * immelDir)));
@@ -2701,15 +2723,32 @@ struct Track {
         // normal drop rather than run a CLIFFDIVE-labeled crest over the cap. apexY adds the crest arc.
         if (gpos.y + fmaxf(30.0f, genV * genV / (GRAV * 6.3f)) * (1.0f - cosf(cdPitch)) > 296.0f) { if (++cliffFizzles <= 6) { cliffDone = false; cliffScanCool = 5; } enterDrop(irnd(2, 3)); return; }   // crest too high for a sub-300 apex: re-arm same-lap (rim scan suppressed so a lower valley structural plunge takes it); bounded so an all-too-tall massif can't loop
         mode    = M_CLIFFDIVE;
+        cdRc    = fmaxf(30.0f, genV * genV / (GRAV * 6.3f));   // crest-arc radius (speed-sized, needed here to place the rim at the face-top)
+        // WALL-HUG (user: hug the cliff, don't drift 30-60 m out): register the rim where the near-
+        // vertical FACE begins -- the crest-arc EXIT -- not at the climb crest. The crest arc rounds
+        // ~Rc forward over the top before the face drops; pinning the rim at the crest would leave the
+        // whole descent 40-55 m OUT from the registered wall (the old complaint). Advancing the rim to
+        // the face-top makes every face cp sit within a few m of the registered face plane (the ~88 deg
+        // face drifts <10 m over a 250 m drop). Closed-form from the crest arc (pitch cdPitch -> CD_FACE_P
+        // at radius cdRc): forward advance Rc*(sin cdPitch - sin faceP), vertical Rc*(cos faceP - cos cdPitch).
+        // rimBack seats the wall a few m BEHIND the dive line so the near-vertical face dives just IN
+        // FRONT of the rim block (hugging it) rather than plunging INTO the mesa top behind the edge --
+        // without this the last crest-arc cps land behind the rim and the min-clearance floor fights the
+        // scripted descent (a rim-edge jerk). The descent then stays ~4-13 m out from the wall the whole way.
+        const float rimBack = 8.0f;
+        float dxArc   = cdRc * (sinf(cdPitch) - sinf(CD_FACE_P)) - rimBack;
+        float dyArc   = cdRc * (cosf(CD_FACE_P) - cosf(cdPitch));
+        float rimX    = gpos.x + sinf(cdYaw) * dxArc;
+        float rimZ    = gpos.z + cosf(cdYaw) * dxArc;
+        float rimTopY = gpos.y + dyArc - 2.0f;                 // face-top, 2 m under the track
         // Cap how far the back-slope wedge may reach behind the rim: never far enough to rise over
         // track already built back there. Scan the existing cps in the mesa's lateral band that sit
         // behind the rim and BELOW where the wedge (slope 1.75, matching terrainH) would be -- the
-        // wedge must stop short of the nearest such cp. The signature climb itself rides ABOVE the
-        // steeper wedge, so it never triggers this cap.
-        float topY = gpos.y - 2.0f, backMax = 200.0f;
+        // wedge must stop short of the nearest such cp. The crest-arc/climb track sits ABOVE the wedge.
+        float topY = rimTopY, backMax = 200.0f;
         bool  mesaOk = true;
         for (int i = 0; i < (int)cp.size(); i++) {
-            float ddx = cp[i].x - gpos.x, ddz = cp[i].z - gpos.z;
+            float ddx = cp[i].x - rimX, ddz = cp[i].z - rimZ;
             float ff  = ddx * sinf(cdYaw) + ddz * cosf(cdYaw);
             float ll  = ddx * cosf(cdYaw) - ddz * sinf(cdYaw);
             if (fabsf(ll) >= 120.0f) continue;                 // scan the FULL lateral falloff band (lift extends to |lat|~118)
@@ -2724,22 +2763,20 @@ struct Track {
                 if (cp[i].y < wedgeY + 4.0f)                   // this cp would be buried (or nearly)
                     backMax = fminf(backMax, -ff - 8.0f);      // stop the wedge ~8 m short of it
             } else if (ff < 18.0f) {
-                float faceY = topY - ff * 20.0f;               // front face height at this cp
+                float faceY = topY - ff * 30.0f;               // front face height at this cp (~88 deg, matching terrainH)
                 if (cp[i].y < faceY + 4.0f) mesaOk = false;
             }
         }
         backMax = fmaxf(backMax, 0.0f);
-        // Register the synthetic rim at the crest: mesa top 2 m below the track (the track sits ON the
-        // rim), rim perpendicular to the dive heading, near-vertical face ahead, back-slope wedge behind.
-        if (mesaOk) registerMesa(gpos.x, gpos.z, gyaw, topY, backMax);
+        // Register the synthetic rim at the face-top: mesa top 2 m below the face-start point, rim
+        // perpendicular to the dive heading, near-vertical (~88 deg) face ahead, back-slope wedge behind.
+        if (mesaOk) registerMesa(rimX, rimZ, cdYaw, topY, backMax);
         // Valley target: natural ground ~85 m ahead (clear of the near-vertical face + the pullout footprint).
         float fx = gpos.x + sinf(cdYaw) * 85.0f, fz = gpos.z + cosf(cdYaw) * 85.0f;
         cdValleyY = groundTopAt(fx, fz) + 4.0f;
-        // SPEED-ADAPTIVE ARCS: bound the crest arc's negative g at ~6.3 (under the 6.5 audit line)
-        // and the pullout's positive g at ~11 felt AT THE ACTUAL SPEEDS -- most laps crest slow
-        // (~40 m/s -> the tight 30 m rim arc) but a lap that happens to arrive fast (measured 75 m/s
-        // once) needs a wider sweep or the fixed radius rings -47 g.
-        cdRc = fmaxf(30.0f, genV * genV / (GRAV * 6.3f));
+        // SPEED-ADAPTIVE ARCS: cdRc (crest, bounded at ~6.3 negative g) is set above with the rim
+        // placement; the pullout's positive g is bounded at ~11 felt AT THE ACTUAL SPEEDS below --
+        // a lap that arrives fast (measured 75 m/s once) needs a wider sweep or a fixed radius rings -47 g.
         // MAX-DROP CAP (user: drops ~300 m max): where a mountain rim would give a 330 m+ plunge,
         // start the pullout higher instead -- the dive levels out mid-air above the deep valley and
         // hands the rest to the normal terrain-following DROP. apexY accounts for the crest arc
@@ -2749,7 +2786,7 @@ struct Track {
         cdValleyY = fmaxf(cdValleyY, apexY - 275.0f);   // MAX total dive drop ~275 m (user: crest-to-valley 250-275, keep the >=150 floor + 85 deg face); start the pullout higher where a deeper valley would exceed it
         float vb2 = genV * genV + 2.0f * GRAV * fmaxf(apexY - cdValleyY, 0.0f);   // bottom-of-face speed^2 (drag ignored: conservative)
         cdRp = fmaxf(48.0f, vb2 / (GRAV * 11.0f));
-        cdPulloutStartY = cdValleyY + cdRp * (1.0f - cosf(85.0f * DEG2RAD));   // start the pullout this high so its arc bottoms out right at valleyY
+        cdPulloutStartY = cdValleyY + cdRp * (1.0f - cosf(CD_FACE_P));   // start the pullout this high so its arc (from the ~88 deg face) bottoms out right at valleyY
         remain = 200;                      // generous guard; the phase machine ends the element via enterDrop
         if (getenv("MC_CLIFFDBG"))
             fprintf(stderr, "[cliffdive] crestY=%.0f valleyY=%.0f pulloutStartY=%.0f yaw=%.2f\n",
@@ -2757,7 +2794,7 @@ struct Track {
     }
 
     Vector3 stepCliffDive() {
-        const float faceP = -85.0f * DEG2RAD;   // near-vertical face pitch (>= 84 deg descent)
+        const float faceP = CD_FACE_P;          // near-vertical face pitch (~88 deg descent, sustained >=60 m)
         const float Rc = cdRc, Rp = cdRp;       // crest/pullout arc radii, speed-sized at init: crest negative g ~6.3 (a hard ejector over the rim, under the 6.5 arc-collapse audit line), pullout ~+11 felt
         if (cdPhase == 0) {                      // crest arc: pitch 0 -> faceP
             cdPitch -= SEG_LEN / Rc;
@@ -2977,6 +3014,21 @@ struct Track {
         genPrevCurv = appliedDy - genPrevDy;
         genPrevDy   = appliedDy;
 
+        // TAG-AT-APEX (item M, cosmetic): the CLIMB->DROP hand-off flips the mode to M_DROP right at
+        // the crest, but the crown then holds AT that level for a cp or two (dy still >= 0) before the
+        // descent bites, so those still-rising cps read DROP-red while y is flat/climbing ("2-in-1" hat
+        // coloring). Relabel any still-rising cp handed straight out of a CLIMB back to CLIMB, so the
+        // stored kind only turns DROP once dy has actually crossed <= 0. STRICTLY cosmetic: it feeds ONLY
+        // the pushed kind[] below, never lastGenMode/mode/genPrev* (those keep the true generation mode),
+        // so geometry and the RNG stream are byte-identical. `prevPushKind` chains a run of plateau cps.
+        unsigned char pushKind = tag;
+        if (tag == (unsigned char)M_DROP && appliedDy > 0.03f && gpos.y > dropTopY - 6.0f &&
+            gpos.y < 296.0f &&   // never relabel a cp at/above the hard crest cap: the pre-existing tall launch-hat busts (crest ~320, EXPECTED-FAIL, owned by the hat follow-up) must stay OUT of the hat-family <296 crest gate -- item M only recolors the on-budget hats it targets
+            (lastGenMode == (unsigned char)M_CLIMB || prevPushKind == (unsigned char)M_CLIMB)) {
+            pushKind = (unsigned char)M_CLIMB;
+        }
+        prevPushKind = pushKind;
+
         if (cp.size() >= 2) {
             Vector3 a = cp[cp.size() - 2], b = cp.back();
             float yPrev = atan2f(b.x - a.x, b.z - a.z);
@@ -2991,7 +3043,7 @@ struct Track {
         }
         genPrevUp = upv;
         lastGenMode = tag;
-        pushCP(gpos, upv, tag, ch, baseUp);
+        pushCP(gpos, upv, pushKind, ch, baseUp);
 
         if ((int)cp.size() >= 3) {
             int m = (int)cp.size() - 2;

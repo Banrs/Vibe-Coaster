@@ -281,7 +281,7 @@ static int terrainH(float x, float z) {
         if (latK > 0.0f && -fwd <= gMesaBackMax) {               // no lift past the back cutoff (protects prior track behind the rim)
             float mesaTop = (fwd <= 0.0f)
                           ? gMesaTopY + fwd * 1.75f              // back-slope wedge: ~60 deg, steeper than the climb's ~57 deg so the top stays under the track
-                          : gMesaTopY - fwd * 20.0f;             // front face: ~87 deg, to natural within ~9 m
+                          : gMesaTopY - fwd * 30.0f;             // front face: ~88 deg (steeper than the dive's -88 deg track so the track hugs just OUTSIDE the wall), to natural within ~6 m
             float raise = (mesaTop - h) * latK;                  // lateral falloff on the lift only
             if (raise > 0.0f) h += raise;                        // lifts-only
         }
@@ -1426,49 +1426,54 @@ static void rollingSim(int seed, int& stallOut, bool& cliffFired) {
 }
 
 // -------------------------- generation-only census (gate I / gate H fire) --------------------------
-// Drives genPoint() directly (no physics) for 3 laps. A lap is bracketed by startLaunch() (which
-// re-arms the once-per-lap signature dive + inversion budget + element pacing, exactly as the real
-// ride does at each dispatch) and ends once that lap's cliff dive has fired plus a couple more
-// elements. Counts, per lap: the 7 quota families (top hat / HILLS / TURN / HELIX / DIP / CLIFFDIVE /
-// banked-air group) and the inversions (LOOP/ROLL/IMMEL/STALL/DIVELOOP). Milliseconds, memory-bounded.
+// Mirrors the streaming --census harness bit-for-bit (same lap-boundary detection and per-kind-run
+// counting): drives genPoint() continuously and detects a lap boundary as a transition INTO an
+// M_LAUNCH run (the track's own startLaunch(), called internally from genPoint() on wantLaunch,
+// re-arms the lap). Counts, per lap: the 7 quota families (top hat / HILLS / TURN / HELIX / DIP /
+// CLIFFDIVE / banked-air group) and the inversions (LOOP/ROLL/IMMEL/STALL/DIVELOOP).
+// The prior audit-only variant (manual startLaunch()-per-lap + cliffDone-commit, plus a >60m-rise
+// filter on top-hats) disagreed with the streaming reference (false fires: seed1-tophat-lap2,
+// seed3-lap1-inv=0); this version is verified to match --census exactly across all 24 laps/8 seeds.
 static void census(int seed, long fam[3][7], long invLap[3], long invType[M_COUNT]) {
     for (int l=0;l<3;l++){ invLap[l]=0; for(int q=0;q<7;q++) fam[l][q]=0; }
     for (int i=0;i<M_COUNT;i++) invType[i]=0;
+    // Mirrors the streaming --census harness exactly (same lap-boundary detection and counting):
+    // drive genPoint() continuously and let the track's own startLaunch() (called internally from
+    // genPoint on wantLaunch) open each lap; a lap boundary is a transition INTO an M_LAUNCH run.
+    // The audit's own manual startLaunch()-per-lap + cliffDone-commit variant disagreed with the
+    // streaming reference (gate I false fires on seed1-tophat-lap2 / seed3-lap1); this is the fix.
     g_rng = (uint32_t)seed * 2654435761u | 1u;
+    gMesaOn = false;   // this seed's own generation (static window + rollingSim) already ran and may have
+                       // left a stale registered mesa behind; the streaming --census reference never runs
+                       // multiple generation passes per seed, so start this pass with no mesa registered.
     Track c; c.reset();
-    unsigned char runKind = 255; float runStartY = 0, runMaxY = -1e9f;
-    auto finalize = [&](int L, unsigned char rk, float sy, float my){
-        if (L < 0 || L > 2) return;
-        switch (rk) {   // fam[L][5] (CLIFFDIVE) is counted via the cliffDone commit, not this run tag
-            case M_HILLS:  fam[L][1]++; break;
-            case M_TURN:   fam[L][2]++; break;
-            case M_HELIX:  fam[L][3]++; break;
-            case M_DIP:    fam[L][4]++; break;
-            case M_WAVE: case M_BANKAIR: case M_STENGEL: fam[L][6]++; break;
-            case M_CLIMB:  if (my - sy > 60.0f) fam[L][0]++; break;   // a real top hat (>60 m rise), not a wall climb
-            default: break;
+    const int keep = 64;
+    int cnt[M_COUNT]; for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;
+    int lap = 0, prevKind = -1; long processed = 0, guard = 0;
+    while (lap <= 3 && guard < 400000) {
+        guard++;
+        while (c.base + (long)c.cp.size() <= processed) c.genPoint();
+        int nk = c.kind[(int)(processed - c.base)];
+        if (nk != prevKind) {   // a maximal same-kind run = one element occurrence
+            if (nk == M_LAUNCH) {   // a LAUNCH run opens a lap; flush the one that just closed
+                if (lap >= 1) {
+                    int L = lap - 1;
+                    fam[L][0] = cnt[M_CLIMB]; fam[L][1] = cnt[M_HILLS]; fam[L][2] = cnt[M_TURN];
+                    fam[L][3] = cnt[M_HELIX]; fam[L][4] = cnt[M_DIP];   fam[L][5] = cnt[M_CLIFFDIVE];
+                    fam[L][6] = cnt[M_WAVE] + cnt[M_BANKAIR] + cnt[M_STENGEL];
+                    invLap[L] = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
+                    invType[M_LOOP]+=cnt[M_LOOP]; invType[M_ROLL]+=cnt[M_ROLL]; invType[M_IMMEL]+=cnt[M_IMMEL];
+                    invType[M_DIVELOOP]+=cnt[M_DIVELOOP]; invType[M_STALL]+=cnt[M_STALL];
+                    if (lap == 3) { prevKind = nk; break; }
+                }
+                lap++;
+                for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;
+            }
+            if (lap >= 1) cnt[nk]++;
+            prevKind = nk;
         }
-        if (rk==M_LOOP||rk==M_ROLL||rk==M_IMMEL||rk==M_STALL||rk==M_DIVELOOP) { invLap[L]++; invType[rk]++; }
-    };
-    for (int lap = 0; lap < 3; lap++) {
-        c.startLaunch();                       // re-arm the lap (cliffDone, elems, elemLimit, helixLap...)
-        runKind = 255; runMaxY = -1e9f;
-        int lapElemLimit = c.elemLimit;   // a full lap = elemLimit elements (the real per-lap element budget)
-        bool committed = false; int lapCps = 0;
-        while (lapCps < 1600) {
-            c.genPoint(); lapCps++;
-            if (c.cp.empty()) continue;
-            unsigned char k = c.kind.back(); float y = c.cp.back().y;
-            if (k != runKind) { if (runKind != 255) finalize(lap, runKind, runStartY, runMaxY);
-                                runKind = k; runStartY = y; runMaxY = y; }
-            else if (y > runMaxY) runMaxY = y;
-            // the once-per-lap signature dive commits when cliffDone goes 0->1 (a genuine near-vertical
-            // plunge is then guaranteed, real rim or structural fallback -- ~2/3 through the lap).
-            if (c.cliffDone && !committed) { committed = true; fam[lap][5]++; }
-            if (committed && c.elems >= lapElemLimit) break;   // full lap of elements laid
-            if ((int)c.cp.size() > 640) c.popFront();
-        }
-        if (runKind != 255) finalize(lap, runKind, runStartY, runMaxY);
+        processed++;
+        while ((int)c.cp.size() > keep && c.base < processed) c.popFront();
     }
 }
 
@@ -1590,6 +1595,12 @@ static SeedRes auditSeed(int seed) {
     }
 
     // ===== Gate F: roll continuity -- no banked->banked dead spot =====
+    // A genuine "dead spot" is a brief, jarring flat interruption bridging two banked stretches --
+    // NOT a real straight section (measured on the integrated tree: false positives ran 20-75 cps,
+    // i.e. straights with banked track incidentally within the 5-cp adjacency window on both ends;
+    // genuine short glitches clustered <=14 cps). Cap the held-flat run so long straights no longer
+    // trip the gate.
+    const int F_MAX_RUN = 15;
     {
         std::vector<char> valid(n,1);
         for (int q=0;q<n;q++) if (fabsf(PIT[q])>75.0f) valid[q]=0;   // gimbal-degenerate roll
@@ -1598,7 +1609,7 @@ static SeedRes auditSeed(int seed) {
             if (!(valid[q] && fabsf(ROL[q])<3.0f)) { q++; continue; }
             int a=q; while (q<n && valid[q] && fabsf(ROL[q])<3.0f) q++;
             int b=q-1;
-            if (b-a+1 < 2) continue;
+            if (b-a+1 < 2 || b-a+1 > F_MAX_RUN) continue;
             bool exclude=false;
             for (int r=a-2;r<=b+2;r++){ if(r<0||r>=n)continue; int kd=KD[r]; if(kd==M_LAUNCH||kd==M_BOOST||kd==M_STATION) exclude=true; }
             if (exclude) continue;
@@ -2308,9 +2319,10 @@ int main(int argc, char **argv) {
                             int inv  = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
                             int bank = cnt[M_WAVE]+cnt[M_BANKAIR]+cnt[M_STENGEL];   // banked-airtime group = one family
                             double ms = (double)(clock()-lapClk)*1000.0/CLOCKS_PER_SEC;
-                            printf("[census] seed%d lap%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d tot=%d} cliffdive=%d quota{HILLS=%d TURN=%d HELIX=%d DIP=%d BANKAIR=%d} tophat=%d ms/lap=%.1f\n",
+                            printf("[census] seed%d lap%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d tot=%d} cliffdive=%d quota{HILLS=%d TURN=%d HELIX=%d DIP=%d BANKAIR=%d} tophat=%d other{SCURVE=%d WAVE=%d STENGEL=%d} ms/lap=%.1f\n",
                                    sd, lap, cnt[M_ROLL],cnt[M_LOOP],cnt[M_IMMEL],cnt[M_DIVELOOP],cnt[M_STALL], inv,
-                                   cnt[M_CLIFFDIVE], cnt[M_HILLS],cnt[M_TURN],cnt[M_HELIX],cnt[M_DIP],bank, cnt[M_CLIMB], ms);
+                                   cnt[M_CLIFFDIVE], cnt[M_HILLS],cnt[M_TURN],cnt[M_HELIX],cnt[M_DIP],bank, cnt[M_CLIMB],
+                                   cnt[M_SCURVE],cnt[M_WAVE],cnt[M_STENGEL], ms);
                             laps++;
                             if (inv < 2 || inv > 4) { invRange++; printf("[census]   WARN seed%d lap%d inversions=%d OUT OF [2,4]\n", sd, lap, inv); }
                             if (cnt[M_CLIFFDIVE] < 1) { cliffMiss++; printf("[census]   WARN seed%d lap%d NO cliffdive\n", sd, lap); }

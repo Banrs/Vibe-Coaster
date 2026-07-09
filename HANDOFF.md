@@ -170,9 +170,11 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
    the 30 threshold the audit prints — sub-cp spline granularity; only fixable with
    denser cps or seam-specific easing.
 2b. **PRETZEL/BANKAIR lateral arc-collapse** (pre-existing, now the biggest geometry
-   defect): `--gaudit 8` shows ~40-50 BROKEN points across 8 seeds, nearly all PRETZEL
-   (lat up to ~29 g) with some BANKAIR — the pretzel's closed-form shape busts the
-   lateral envelope at some entries. Not introduced by any recent pass (baseline 42).
+   defect): the last runs of the retired `--gaudit 8` showed ~40-50 BROKEN points across
+   8 seeds, nearly all PRETZEL (lat up to ~29 g) with some BANKAIR — the pretzel's
+   closed-form shape busts the lateral envelope at some entries. Not introduced by any
+   recent pass (baseline 42). The BROKEN metric retired with `--gaudit`; `--audit` gates
+   B/C/D/F are the surviving structural proxies (see `opengl/COASTER_HANDOFF.md`).
    Candidates: PRETZEL entry gate/radius rework, or rarity 0 like the other cut rolls.
 3. DIVE frequency structurally low (~1/ride); genuine splashdowns depend on water on
    the route (~0.9/ride average, 0 on dry seeds) — could bias track heading toward
@@ -192,9 +194,9 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
 - Shared HUD name diagnosis: `rideElemName` ~2388 (used by opengl main.cpp HUD banner
   AND vulkan/src/main.cpp rideCamView — change it once, both HUDs follow).
 - Terrain skin culling: main.cpp `effCol` ~2821 + interval emission after it.
-- Anti-stall kicker: FIVE copies now (simtest ~1284, pacing ~1382, gaudit ~1830,
-  bench ~2024, ride ~2410) — keep in sync BY HAND like the thrust lines around them.
-  vulkan/src/Physics.h carries a sixth (synced 2026-07-06).
+- Anti-stall kicker: FOUR copies now (rollingSim ~1396, pacing ~1840, rollingdump ~2137,
+  ride ~2547) — keep in sync BY HAND like the thrust lines around them.
+  vulkan/src/Physics.h carries a fifth (synced 2026-07-06).
 - SegMode enum main.cpp:973; SHARED physics constants in opengl/src/ride_constants.h
   (included by both opengl/src/main.cpp and vulkan/src/GameCompat.h — no more hand-kept
   mirror). WATER_Y stays per-host: it must equal that world's sea level (opengl 30,
@@ -212,8 +214,9 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
   otherwise drag their rigid shapes up any hillside (66 m loop → 134 m climb stall).
 - Python str.replace on code: beware substring matches across indentation variants (a
   12-space pattern matched inside 16-space lines and double-inserted the kicker).
-- `--simtest` stall attribution + `MC_STALLDBG` cp dumps found every root cause fast;
-  felt-g numbers alone would have misled.
+- `--simtest` stall attribution + `MC_STALLDBG` cp dumps (both retired; successors:
+  `--audit` gate A + MC_DUMP_ELEM) found every root cause fast; felt-g numbers alone
+  would have misled.
 - `sinf(PI*1.0f)` rounds to a tiny NEGATIVE float; `powf(negative, frac)` = NaN and
   one NaN cp poisons the whole track. Guard `powf(sinf(...))` with `fmaxf(.., 0)`.
 - Mirror constants drift silently and the SHARED generator reads them — a stale

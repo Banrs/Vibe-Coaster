@@ -170,32 +170,18 @@ static const char *SHADOW_FS =
     // terrain, supports, a train low to the ground) are untouched.
     "const float SHADOW_FADE_NEAR = 120.0;\n"
     "const float SHADOW_FADE_FAR  = 400.0;\n"
-    // Cascade0 only: its 0.031 m/texel map resolves dense sub-metre detail
-    // (grass tufts, flower/decor voxels, blocky terrain micro-relief) that the
-    // coarser cascade1/2 maps physically cannot represent. At cascade0's texel
-    // density the PCSS blocker-search picks those up as occluders and smears
-    // their micro-shadows into a continuous grey carpet over open ground inside
-    // band0 -- the reported dark disc around the train. Raising cascade0's bias
-    // (which gates both the blocker-search and the PCF depth compare) so only
-    // occluders taller than ~6 m cast in the near cascade drops that carpet
-    // while keeping real tree/support/structure shadows, matching what forcing
-    // the near band onto cascade1 does. Cascade1/2 bias is unchanged.
-    "const float CASCADE0_BIAS_MULT = 16.0;\n"
+    // Cascade0 is retired from sampling: its 0.031 m/texel map resolves dense
+    // sub-metre detail (grass tufts, flower/decor voxels, blocky terrain
+    // micro-relief) that the coarser cascade1/2 maps physically cannot
+    // represent, and at that texel density the PCSS blocker-search picked
+    // those up as occluders, smearing their micro-shadows into a continuous
+    // grey carpet over open ground near the train. The near field now samples
+    // shadowCascade1 directly, matching the cascade1/2 quality that already
+    // looks right in the 15-400 m field. Its map may still render host-side;
+    // skipping that render pass entirely is a possible future perf win, not
+    // done here.
     // Split per-cascade so every call site passes a compile-time-known cascade --
     // no runtime idx branch needed since callers always pass a literal 0/1/2.
-    "float shadowCascade0(vec3 N){\n"
-    "  float NoL = max(dot(N,lightDir),0.0);\n"
-    "  vec4 lp = lightVP0*vec4(fragWorld,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
-    "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "  float bias = worldBias(NoL)*invRange0*CASCADE0_BIAS_MULT;\n"
-    "  int nB; float avgB;\n"
-    "  blockerSearch(shadowMap0, shadowTexel0, p, bias, PCSS_SEARCH_WORLD/pcssTexelWorld0, nB, avgB);\n"
-    "  if(nB == 0) return 1.0;\n"
-    "  float worldZDiff = (p.z - avgB) / invRange0;\n"
-    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld0;\n"
-    "  float sh = pcfTap(shadowMap0, shadowTexel0, p, bias, radius);\n"
-    "  return mix(1.0, sh, 1.0 - smoothstep(SHADOW_FADE_NEAR, SHADOW_FADE_FAR, worldZDiff));\n"
-    "}\n"
     "float shadowCascade1(vec3 N){\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
     "  vec4 lp = lightVP1*vec4(fragWorld,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
@@ -237,14 +223,7 @@ static const char *SHADOW_FS =
     // never pays for a second full 12-tap PCF.
     "float shadow(vec3 N){\n"
     "  float d = length(shadowFocus - fragWorld);\n"
-    "  float band0 = cascadeSplit0*0.85, band1 = cascadeSplit1*0.85;\n"
-    "  if(d < band0) return shadowCascade0(N);\n"
-    "  if(d < cascadeSplit0){\n"
-    "    float t = (d-band0)/max(cascadeSplit0-band0,0.001);\n"
-    "    if(t < 0.02) return shadowCascade0(N);\n"
-    "    if(t > 0.98) return shadowCascade1(N);\n"
-    "    return mix(shadowCascade0(N), shadowCascade1(N), t);\n"
-    "  }\n"
+    "  float band1 = cascadeSplit1*0.85;\n"
     "  if(d < band1) return shadowCascade1(N);\n"
     "  if(d < cascadeSplit1){\n"
     "    float t = (d-band1)/max(cascadeSplit1-band1,0.001);\n"

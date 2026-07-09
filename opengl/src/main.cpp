@@ -1485,6 +1485,48 @@ static SeedRes auditSeed(int seed) {
     Track t; t.reset();
     while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
     int n = (int)t.cp.size();
+
+    // MC_DUMP_ELEM/MC_DUMP_SEEDS test instrument, REHOMED from the legacy --gaudit's identical
+    // static 470-cp window (same env-var interface, same [dump] line format). Invocation:
+    // `MC_DUMP_ELEM=<NAME|ALL> MC_DUMP_SEEDS=<N> ./minecoaster --audit <seeds>` (see COASTER_HANDOFF.md).
+    if (const char *tg2 = getenv("MC_DUMP_ELEM")) {
+        int wantKind = -1;
+        bool dumpAll = TextIsEqual(tg2, "ALL");
+        for (int ti = 0; ti < M_COUNT; ti++) if (TextIsEqual(tg2, NM[ti])) wantKind = ti;
+        if (wantKind >= 0 || dumpAll) {
+            int dumpSeeds = 3;
+            if (const char *ds = getenv("MC_DUMP_SEEDS")) dumpSeeds = atoi(ds);
+            bool inRun = false;
+            for (int k = 1; k < n; k++) {
+                if (dumpAll || t.kind[k] == wantKind) {
+                    Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
+                    float dx = p1.x - p0.x, dz = p1.z - p0.z;
+                    float heading = atan2f(dx, dz) * 180.0f / PI;
+                    // Signed bank/roll: angle of up[k] away from the "flat" up in the
+                    // plane normal to the track tangent (0 = level, +right lean).
+                    float roll = 0.0f;
+                    if (k < n - 1) {
+                        Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
+                        Vector3 side = Vector3CrossProduct((Vector3){0,1,0}, tanv);
+                        float sl = Vector3Length(side);
+                        if (sl > 1e-4f) {
+                            side = Vector3Scale(side, 1.0f/sl);
+                            Vector3 flatUp = Vector3CrossProduct(tanv, side);
+                            roll = atan2f(Vector3DotProduct(t.up[k], side),
+                                          Vector3DotProduct(t.up[k], flatUp)) * 180.0f / PI;
+                        }
+                    }
+                    printf("[dump] seed%d cp%d kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f dy=%+.2f terr=%.1f roll=%+.1f v=%.1f\n",
+                           seed, k, NM[t.kind[k]], p1.x, p1.y, p1.z, heading,
+                           p1.y - p0.y, groundTopAt(p1.x, p1.z), roll,
+                           k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f);
+                    inRun = true;
+                } else if (inRun) { inRun = false; printf("[dump] --- run end ---\n"); }
+            }
+            if (seed >= dumpSeeds) exit(0);
+        }
+    }
+
     std::vector<int>   KD(n);
     std::vector<float> Y(n), TR(n), DY(n), PIT(n), ROL(n);
     for (int k=0;k<n;k++) {
@@ -1767,132 +1809,6 @@ int main(int argc, char **argv) {
     bool shotMode = framesMode || rasterShot || orbitShot || waterShot || (argc > 1 && TextIsEqual(argv[1], "--shot"));
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));
 
-    if (argc > 1 && TextIsEqual(argv[1], "--simtest")) {
-
-        {
-            const int BIN_N = 10;
-            int bins[BIN_N] = {0}; int hi = 0, lo = 9999; long n = 0;
-            for (int z = -1500; z <= 1500; z += 5)
-                for (int x = -1500; x <= 1500; x += 5) {
-                    int h = terrainH((float)x, (float)z);
-                    int b = h / 32; if (b < 0) b = 0; if (b > BIN_N - 1) b = BIN_N - 1;
-                    bins[b]++; n++;
-                    if (h > hi) hi = h; if (h < lo) lo = h;
-                }
-            printf("TERRAIN min=%d max=%d  bands[0-31..288-320]:", lo, hi);
-            for (int i = 0; i < BIN_N; i++) printf(" %.1f%%", 100.0 * bins[i] / n);
-            printf("\n");
-        }
-
-        if (argc > 2) DRAG       = (float)atof(argv[2]);
-        if (argc > 3) BOOST_V    = (float)atof(argv[3]);
-        if (argc > 4) BOOST_TRIG = (float)atof(argv[4]);
-        printf("(using DRAG=%.5f BOOST_V=%.1f BOOST_TRIG=%.1f)\n", DRAG, BOOST_V, BOOST_TRIG);
-        double gSumV = 0; long gNV = 0;
-        long gBoostF = 0, gLaunchF = 0;
-        long gInv = 0;
-        for (uint32_t seed = 1; seed <= 8; seed++) {
-            g_rng = seed * 2654435761u | 1u;
-            Track t; t.reset();
-            float u = 0.5f, v = LAUNCH_V;
-            size_t maxCP = 0; int bad = 0;
-            float maxAlt = 0, maxY = 0;
-            double sumV = 0; long nV = 0; float maxV = 0;
-            unsigned char prevTag = 255;
-            float minV = 9999; int run = 0, maxRun = 0;
-            float topHatV = 0;   // diag: speed at LAUNCH->CLIMB transition (booster speed entering a top-hat)
-            float boostV = 0;    // diag: max speed reached on a BOOST section
-            float dropV = 0;     // diag: max speed reached on a DROP (down a top-hat/hill)
-            float maxClimbTop = 0; // diag: tallest crest height above ground reached on a CLIMB
-            // per-drop peaks (each individual drop's max speed) -> reveals the WEAK drops the
-            // rider notices, vs the single best drop that dropV reports.
-            float curDropPk = 0; bool inDrop = false;
-            float dropPkMin = 9999, dropPkSum = 0; int dropN = 0;
-            // THE launch top-hat drop specifically: crest Y, bottom Y, peak speed.
-            bool sawLaunchHat = false, lhDropping = false;
-            float lhCrestY = 0, lhBottomY = 1e9f, lhDropPk = 0;
-            unsigned char stallTag = 255, stallPrev = 255, prevTag2 = 255;
-            static float simDt = getenv("MC_DT") ? (float)atof(getenv("MC_DT")) : (1.0f / 60.0f);
-            for (int f = 0; f < 30000; f++) {
-                float dt = simDt;
-                t.ensureAhead(u + 16);
-                float slope = t.tangent(u).y;
-                float acc = -GRAV * slope - DRAG * v * v - FRICTION;
-                v += acc * dt;
-                unsigned char tg = t.tagAt(u);
-                if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
-                else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
-                if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires (real coasters drive slow sections): only ever active under ~108 km/h, holds forced terrain climbs at ~30+ m/s
-                if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
-
-                // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
-                // numeric floor below keeps du/dt finite.
-                v = fmaxf(v, V_GUARD);
-                if (f > 120) { sumV += v; nV++; gSumV += v; gNV++; if (v > maxV) maxV = v;
-                    if (tg == M_BOOST) gBoostF++; if (tg == M_LAUNCH) gLaunchF++;
-                    if (tg != prevTag && Track::isHardInversion((SegMode)tg)) gInv++;
-                    if (v < minV) minV = v;
-                    if (v < 26.0f) { if (++run > maxRun) { maxRun = run; stallTag = tg; stallPrev = prevTag2; }
-                        if (getenv("MC_STALLDBG") && run == 1) {
-                            Vector3 Ps = t.pos(u);
-                            const char* SNM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-                            printf("[stalldbg] f=%d u=%.1f v=%.1f y=%.1f gt=%.1f tag=%s | cps:\n", f, u, v, Ps.y, groundTopAt(Ps.x, Ps.z), (tg < M_COUNT) ? SNM[tg] : "?");
-                            for (int k = (int)u - 8; k <= (int)u + 10 && k < (int)t.cp.size(); k++) {
-                                if (k < 0) continue;
-                                printf("    cp%+d %-9s y=%.1f gt=%.1f gv=%.0f\n", k - (int)u, SNM[t.kind[k]], t.cp[k].y, groundTopAt(t.cp[k].x, t.cp[k].z), t.gvlog[k]);
-                            }
-                        } } else run = 0;
-                    prevTag2 = (tg != prevTag) ? prevTag : prevTag2;
-                    if (tg == M_CLIMB && prevTag == M_LAUNCH && v > topHatV) topHatV = v;
-                    if (tg == M_BOOST && v > boostV) boostV = v;
-                    if (tg == M_DROP && v > dropV) dropV = v;
-                    if (tg == M_DROP) { inDrop = true; if (v > curDropPk) curDropPk = v; }
-                    else if (inDrop) { if (curDropPk > 0) { dropN++; dropPkSum += curDropPk; if (curDropPk < dropPkMin) dropPkMin = curDropPk; } curDropPk = 0; inDrop = false; }
-                    if (tg == M_CLIMB) { Vector3 Pc = t.pos(u); float ca = Pc.y - groundTopAt(Pc.x, Pc.z); if (ca > maxClimbTop) maxClimbTop = ca; }
-                    // the launch top hat = first CLIMB after the LAUNCH; then its drop
-                    if (tg == M_CLIMB && prevTag == M_LAUNCH) sawLaunchHat = true;
-                    if (sawLaunchHat && !lhDropping) { Vector3 Pc = t.pos(u); if (Pc.y > lhCrestY) lhCrestY = Pc.y; }
-                    if (sawLaunchHat && tg == M_DROP) { lhDropping = true; if (v > lhDropPk) lhDropPk = v;
-                        Vector3 Pc = t.pos(u); if (Pc.y < lhBottomY) lhBottomY = Pc.y; }
-                    prevTag = tg; }
-                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
-                if (!(du == du)) du = 0;
-                u += fminf(du, 1.5f);
-                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
-                Vector3 P = t.pos(u);
-                if (!(P.x == P.x) || !(u == u) || !(v == v)) bad++;
-                float a = P.y - groundTopAt(P.x, P.z);
-                if (a > maxAlt) maxAlt = a;
-                if (P.y > maxY) maxY = P.y;
-
-                for (float s = u - 2.0f; s <= u + 15.0f; s += 0.13f) {
-                    if (s < 0) continue;
-                    Vector3 fwd = t.tangent(s);
-                    Vector3 up  = orthoUp(fwd, t.upAt(s));
-                    Vector3 rt  = Vector3CrossProduct(up, fwd);
-                    if (!(up.x == up.x) || !(rt.x == rt.x) ||
-                        !(rt.y == rt.y) || !(rt.z == rt.z) || Vector3Length(rt) < 1e-3f) bad++;
-                }
-                maxCP = maxCP > t.cp.size() ? maxCP : t.cp.size();
-            }
-            double avg = nV ? sumV / nV : 0;
-            const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-            printf("seed %u  avgV=%.0f  maxV=%.0f  topHat=%.0f  drop[min/mean/max]=%.0f/%.0f/%.0f (n=%d)  | LAUNCH-HAT: crestY=%.0f bottomY=%.0f dropH=%.0fm peak=%.0fkm/h  stall=%df\n",
-                   seed, avg * 3.6, maxV * 3.6, topHatV * 3.6,
-                   (dropN?dropPkMin:0) * 3.6, (dropN?dropPkSum/dropN:0) * 3.6, dropV * 3.6, dropN,
-                   lhCrestY, lhBottomY<1e8f?lhBottomY:0, lhCrestY-(lhBottomY<1e8f?lhBottomY:lhCrestY), lhDropPk * 3.6, maxRun);
-            if (maxRun > 0 && stallTag < M_COUNT)
-                printf("         ^ stall inside %s (element before it: %s)\n",
-                       NM[stallTag], stallPrev < M_COUNT ? NM[stallPrev] : "?");
-        }
-        printf("SIMTEST DONE (no hang)  -> OVERALL AVG RIDE SPEED = %.1f m/s (%.0f km/h)  | powered duty: boost %.1f%% launch %.1f%% | inversions: %ld over 8 seeds (~%.1f/ride)\n",
-               gNV ? gSumV / gNV : 0.0, gNV ? gSumV / gNV * 3.6 : 0.0,
-               gNV ? 100.0 * gBoostF / gNV : 0.0, gNV ? 100.0 * gLaunchF / gNV : 0.0,
-               gInv, gInv / 8.0);
-        return 0;
-    }
-
     // PACING AUDIT: per-mode TIME accounting as ridden -- the numbers behind "too much flat"
     // and "elements take too long". Runs the same physics loop as --simtest over 8 seeds and
     // reports, per tag: instances/ride, mean/max transit seconds, and % of ride time; plus
@@ -1995,234 +1911,6 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    // Direct, no-rendering geometry test for closed-form elements that rarely/never occur in
-    // natural generation (COBRA chief among them) -- calls the exact same init*()/cobraSample()
-    // path real gameplay uses, including COBRA's own live radius/curvature convergence loop, so
-    // this is a faithful check without needing --gtest's much slower full-render path.
-    if (argc > 2 && TextIsEqual(argv[1], "--cobratest")) {
-        g_rng = 1337u;
-        Track t; t.reset();
-        t.genV = (float)atof(argv[2]);
-        t.gpos = { 0, 200.0f, 0 };
-        t.gyaw = 0;
-        float y0 = t.gpos.y, v0 = t.genV;
-        t.initCobra();
-        printf("[cobratest] genV=%.1f cbR=%.2f cbSteps=%d points=%zu\n", t.genV, t.cbR, t.cbSteps, t.cbPts.size());
-        // g at each point uses the LOCAL speed from energy conservation (v(y) = sqrt(v0^2 -
-        // 2*g*(y-y0)), floored so a too-high climb doesn't go imaginary) rather than a constant
-        // genV -- the real ride slows down climbing and speeds up descending, and using a fixed
-        // speed everywhere overstates g at the highest points and understates it at the lowest.
-        float maxG = 0, maxY = -1e9f, minY = 1e9f; int maxK = -1;
-        for (int k = 1; k < (int)t.cbPts.size() - 1; k++) {
-            Vector3 p0 = t.cbPts[k-1], p1 = t.cbPts[k], p2 = t.cbPts[k+1];
-            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
-            float la = Vector3Length(a), lb = Vector3Length(b);
-            if (la < 1e-4f || lb < 1e-4f) continue;
-            Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
-            float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
-            float g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
-            if (g > maxG) { maxG = g; maxK = k; }
-            maxY = fmaxf(maxY, p1.y); minY = fminf(minY, p1.y);
-        }
-        printf("[cobratest] maxCurvatureG=%.2f at pt%d  yRange=[%.2f,%.2f]  peakHeight=%.2f\n", maxG, maxK, minY, maxY, maxY - t.gpos.y);
-        for (int k = 1; k < (int)t.cbPts.size() - 1; k++) {
-            Vector3 p0 = t.cbPts[k-1], p1 = t.cbPts[k], p2 = t.cbPts[k+1];
-            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
-            float la = Vector3Length(a), lb = Vector3Length(b);
-            float g = 0;
-            if (la > 1e-4f && lb > 1e-4f) {
-                Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
-                float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
-                g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
-            }
-            printf("[cobratest] pt%d y=%.2f g=%.2f\n", k, p1.y, g);
-        }
-        return 0;
-    }
-
-    // Same idea as --cobratest but for DIVELOOP, which builds its path incrementally via
-    // repeated stepDiveLoop() calls (no precomputed point array to inspect directly like
-    // COBRA's cbPts) -- drive it the same way the real generator does and collect points here.
-    if (argc > 2 && TextIsEqual(argv[1], "--divelooptest")) {
-        g_rng = 1337u;
-        Track t; t.reset();
-        t.genV = (float)atof(argv[2]);
-        t.gpos = { 0, 200.0f, 0 };
-        t.gyaw = 0;
-        float y0 = t.gpos.y, v0 = t.genV;
-        t.initDiveLoop();
-        printf("[dltest] genV=%.1f dlR=%.2f dlLeadDrop=%.2f dlLeadSteps=%d dlsteps=%d dlturn=%.2f\n",
-               t.genV, t.dlR, t.dlLeadDrop, t.dlLeadSteps, t.dlsteps, t.dlturn);
-        std::vector<Vector3> pts;
-        int total = t.dlLeadSteps + t.dlsteps;
-        for (int i = 0; i < total; i++) { t.stepDiveLoop(); pts.push_back(t.gpos); }
-        // g uses the LOCAL energy-conserving speed at each point's height, not a constant genV
-        // -- see the long comment in --cobratest above (same fix, same reason).
-        float maxG = 0; int maxK = -1;
-        for (int k = 1; k < (int)pts.size() - 1; k++) {
-            Vector3 p0 = pts[k-1], p1 = pts[k], p2 = pts[k+1];
-            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
-            float la = Vector3Length(a), lb = Vector3Length(b);
-            float g = 0;
-            if (la > 1e-4f && lb > 1e-4f) {
-                Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
-                float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
-                g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
-            }
-            if (g > maxG) { maxG = g; maxK = k; }
-            printf("[dltest] pt%d pos=(%.2f,%.2f,%.2f) segLen=%.2f g=%.2f\n", k, p1.x, p1.y, p1.z, la, g);
-        }
-        printf("[dltest] maxCurvatureG=%.2f at pt%d\n", maxG, maxK);
-        return 0;
-    }
-
-    // Generic version of --cobratest/--divelooptest for the remaining closed-form elements
-    // (direct t-parametric evaluation at FIXED step count, no arc-length resampling): drives
-    // init/step exactly like real generation, reports per-point energy-conserving g the same way.
-    if (argc > 2 && TextIsEqual(argv[1], "--elemgtest")) {
-        g_rng = 1337u;
-        Track t; t.reset();
-        t.genV = (float)atof(argv[3]);
-        t.gpos = { 0, 200.0f, 0 };
-        t.gyaw = 0;
-        float y0 = t.gpos.y, v0 = t.genV;
-        const char *name = argv[2];
-        Vector3 (Track::*stepFn)() = nullptr;
-        if (TextIsEqual(name, "PRETZEL"))       { t.initPretzel();   stepFn = &Track::stepPretzel; }
-        else if (TextIsEqual(name, "HEARTLINE")) { t.initHeartline(); stepFn = &Track::stepHeartline; }
-        else if (TextIsEqual(name, "BANANA"))    { t.initBanana();    stepFn = &Track::stepBanana; }
-        else { printf("--elemgtest: unknown element '%s' (PRETZEL/HEARTLINE/BANANA)\n", name); return 1; }
-        int total = t.remain;
-        printf("[elemgtest] %s genV=%.1f steps=%d\n", name, t.genV, total);
-        std::vector<Vector3> pts;
-        for (int i = 0; i < total; i++) { (t.*stepFn)(); pts.push_back(t.gpos); }
-        float maxG = 0; int maxK = -1;
-        for (int k = 1; k < (int)pts.size() - 1; k++) {
-            Vector3 p0 = pts[k-1], p1 = pts[k], p2 = pts[k+1];
-            Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
-            float la = Vector3Length(a), lb = Vector3Length(b);
-            float g = 0;
-            if (la > 1e-4f && lb > 1e-4f) {
-                Vector3 kap = Vector3Scale(Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)), 1.0f/(0.5f*(la+lb)));
-                float vLocal = sqrtf(fmaxf(v0 * v0 - 2.0f * GRAV * (p1.y - y0), 100.0f));
-                g = 1.0f + Vector3Length(kap) * vLocal * vLocal / GRAV;
-            }
-            if (g > maxG) { maxG = g; maxK = k; }
-            printf("[elemgtest] pt%d pos=(%.2f,%.2f,%.2f) segLen=%.2f g=%.2f\n", k, p1.x, p1.y, p1.z, la, g);
-        }
-        printf("[elemgtest] maxCurvatureG=%.2f at pt%d\n", maxG, maxK);
-        return 0;
-    }
-
-    // Headless force-element sustained-g probe. Isolates ONE element (via Track::forcedElem) and
-    // measures the felt-g the rider HOLDS through it at a controlled entry speed, using the exact
-    // same du-window + 6 Hz temporal pipeline as the live HUD / --gaudit. This is the "force element
-    // tool at a realistic entry speed" verification: e.g. `--elemsust TURN 78` or `--elemsust HELIX 70`.
-    if (argc > 2 && TextIsEqual(argv[1], "--elemsust")) {
-        static const char* GN[M_COUNT] = {
-            "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION","DIP","LAUNCH",
-            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA",
-            "WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
-        int elem = -1;
-        for (int t = 0; t < M_COUNT; t++) if (TextIsEqual(argv[2], GN[t])) elem = t;
-        if (elem < 0) { printf("--elemsust: unknown element '%s'\n", argv[2]); return 1; }
-        float spd = (argc > 3) ? (float)atof(argv[3]) : 60.0f;   // entry speed, m/s (125-310 km/h = 34.7-86.1)
-        g_rng = 1337u;
-        Track t; t.reset();
-        t.forcedElem = elem;
-        // Generate a long run of nothing but this element (repeated with random dir/length), pinning
-        // genV to the entry speed each point so every instance is sized for and entered at `spd`.
-        int target = 1500;
-        while ((int)t.cp.size() < target) { t.genV = spd; t.genPoint(); }
-        int n = (int)t.cp.size();
-
-        // felt-g sim at constant v = spd (mirrors --gaudit's interior-sustained accumulation)
-        float gVh = 1.0f, gLh = 0.0f;
-        double susV = 0, susL = 0, susC = 0, susRoll = 0; long susN = 0;
-        float pkV = -1e9f, pkVn = 1e9f, pkL = 0, maxRoll = 0.0f;
-        int susRunTag = -1, susRunLen = 0;
-        const float dt = 1.0f / 60.0f;
-        for (float u = 2.0f; u < n - 3; ) {
-            float ss  = fmaxf(t.speedScale(u), 1.0f);
-            float duw = Clamp(7.5f / ss, 0.35f, 1.1f);
-            Vector3 Tb = t.tangent(u - duw), Tf = t.tangent(u + duw);
-            float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 13.0f);
-            Vector3 N  = orthoUp(t.tangent(u), t.upAt(u));
-            Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
-            Vector3 felt  = Vector3Add(Vector3Scale(kappa, spd * spd), Vector3{ 0, GRAV, 0 });
-            Vector3 rRight = Vector3Normalize(Vector3CrossProduct(N, t.tangent(u)));
-            // ROLL / tilt: the pure bank of the seat about the track direction -- the angle between
-            // the seat up-vector N and the no-bank "level up" (world-up projected perpendicular to
-            // the tangent). Both are perpendicular to the tangent, so their angle is the roll alone
-            // (no pitch contamination). This is the "tilt" the user wants kept real-world.
-            float rollDeg = 0.0f;
-            {   Vector3 Tn = t.tangent(u);
-                Vector3 lvlUp = Vector3Subtract(Vector3{0,1,0}, Vector3Scale(Tn, Tn.y));
-                float ll = Vector3Length(lvlUp);
-                if (ll > 1e-4f) {
-                    lvlUp = Vector3Scale(lvlUp, 1.0f / ll);
-                    float rc = Clamp(Vector3DotProduct(N, lvlUp), -1.0f, 1.0f);
-                    rollDeg = acosf(rc) * 57.29578f;
-                }
-            }
-            float iv = Vector3DotProduct(felt, N) / GRAV;
-            float il = Vector3DotProduct(felt, rRight) / GRAV;
-            if (!(iv == iv)) iv = 1.0f;
-            if (!(il == il)) il = 0.0f;
-            float kk = 1.0f - expf(-dt * 3.0f);
-            gVh += (iv - gVh) * kk;
-            gLh += (il - gLh) * kk;
-            int kd = t.tagAt(u); if (kd < 0 || kd >= M_COUNT) kd = 0;
-            if (kd == susRunTag) susRunLen++; else { susRunTag = kd; susRunLen = 0; }
-            if (kd == elem && susRunLen >= 3) {
-                float comb = sqrtf((gVh - 1.0f) * (gVh - 1.0f) + gLh * gLh);
-                susV += gVh; susL += fabsf(gLh); susC += comb; susRoll += rollDeg; susN++;
-                if (rollDeg > maxRoll) maxRoll = rollDeg;
-                if (gVh > pkV) pkV = gVh;
-                if (gVh < pkVn) pkVn = gVh;
-                if (fabsf(gLh) > pkL) pkL = fabsf(gLh);
-            }
-            float du = spd * dt / fmaxf(t.speedScale(u), 0.5f);
-            if (!(du == du)) du = 0;
-            u += fminf(du, 1.5f);
-        }
-        printf("[elemsust] %s @ %.1f m/s (%.0f km/h)\n", argv[2], spd, spd * 3.6f);
-        if (susN < 5) { printf("  (element produced too few interior samples -- gate may have blocked it at this speed)\n"); return 0; }
-        printf("  SUSTAINED felt-g held through the element (interior arc-avg): vert %+.2f  lat %.2f  combined %.2f\n",
-               susV / susN, susL / susN, susC / susN);
-        printf("  interior felt-g range: vert %+.2f .. %+.2f   |peak lat| %.2f   (%ld samples)\n",
-               pkVn, pkV, pkL, susN);
-        printf("  ROLL / tilt (bank about track): mean %.0f deg   max %.0f deg\n", susRoll / susN, maxRoll);
-        // BUILT SIZE per instance: scan runs of consecutive control points tagged as this element
-        // and report the largest instance's height (max y - min y), horizontal footprint radius, and
-        // track length. This is what the 1.4x-WR size cap must bound.
-        {
-            float bestH = 0, bestLen = 0, bestRad = 0;
-            int k = 0;
-            while (k < n) {
-                if ((int)t.kind[k] != elem) { k++; continue; }
-                int j = k; float ymin = 1e9f, ymax = -1e9f, len = 0;
-                float cx = 0, cz = 0; int cnt = 0;
-                while (j < n && (int)t.kind[j] == elem) {
-                    ymin = fminf(ymin, t.cp[j].y); ymax = fmaxf(ymax, t.cp[j].y);
-                    cx += t.cp[j].x; cz += t.cp[j].z; cnt++;
-                    if (j > k) len += Vector3Distance(t.cp[j], t.cp[j-1]);
-                    j++;
-                }
-                cx /= fmaxf(cnt,1); cz /= fmaxf(cnt,1);
-                float rad = 0;
-                for (int q = k; q < j; q++) rad = fmaxf(rad, sqrtf((t.cp[q].x-cx)*(t.cp[q].x-cx)+(t.cp[q].z-cz)*(t.cp[q].z-cz)));
-                if (ymax - ymin > bestH) bestH = ymax - ymin;
-                if (len > bestLen) bestLen = len;
-                if (rad > bestRad) bestRad = rad;
-                k = j;
-            }
-            printf("  BUILT SIZE (largest instance): height %.1f m   horiz-radius %.1f m   track-length %.1f m\n",
-                   bestH, bestRad, bestLen);
-        }
-        return 0;
-    }
-
     // GEOMETRY GROUND-TRUTH: dump the actual built track's vertical profile per element instance
     // (vertical delta = how much the element ACTUALLY goes up/down, clearance above terrain, and
     // horizontal span) plus an SVG side-view. This is the "run a side view" check -- it measures
@@ -2296,7 +1984,7 @@ int main(int argc, char **argv) {
     // same streaming generator the live ride uses (genPoint + popFront window) for 3 laps x N seeds
     // and counts element-family OCCURRENCES (maximal same-kind runs) per lap: the >=1/lap quota
     // families, the 2-4/lap inversion budget by type, and the guaranteed cliffdive. This is the
-    // acceptance harness for the element-occurrence rework. Kept immediately before --gaudit.
+    // acceptance harness for the element-occurrence rework. Kept immediately before --audit.
     if (argc > 1 && TextIsEqual(argv[1], "--census")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 8;
         const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
@@ -2364,7 +2052,7 @@ int main(int argc, char **argv) {
     }
 
     if (argc > 1 && TextIsEqual(argv[1], "--rollingdump")) {
-        // ROLLING CP-STREAM DUMP. The static instruments (--gaudit's MC_DUMP_ELEM) build one frozen
+        // ROLLING CP-STREAM DUMP. The static instruments (--audit's MC_DUMP_ELEM) build one frozen
         // 470-cp window per seed, so they only ever see the ride's opening and NEVER the ~2/3-lap
         // signature CLIFFDIVE or any later-lap element. This drives the track exactly the way the live
         // game does -- reset(), then ensureAhead()/popFront() to roll a small window forward while the
@@ -2401,7 +2089,7 @@ int main(int argc, char **argv) {
                    k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f);
         };
 
-        // MC_ROLL_STATIC: reference mode -- dump the SAME static 470-cp window --gaudit builds (no
+        // MC_ROLL_STATIC: reference mode -- dump the SAME static 470-cp window --audit builds (no
         // station cycle, no popFront, base stays 0 so cpK == k). A downstream diff of this against the
         // rolling stream's leading cps proves the prefix is identical (same seed => same RNG stream).
         if (getenv("MC_ROLL_STATIC")) {
@@ -2499,337 +2187,6 @@ int main(int argc, char **argv) {
             printf("[dump] --- seed %d done: laps=%d frames=%d dumped=%ld %.2fs ---\n",
                    sd, lapCount, f, nextDump - 1, secs);
         }
-        return 0;
-    }
-
-    if (argc > 1 && TextIsEqual(argv[1], "--gaudit")) {
-        int seeds = (argc > 2) ? atoi(argv[2]) : 12;
-        if (argc > 3) DRAG       = (float)atof(argv[3]);
-        if (argc > 4) BOOST_TRIG = (float)atof(argv[4]);
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        const Vector3 WUP3 = {0,1,0};
-
-        float kMaxV[M_COUNT], kMinV[M_COUNT], kMaxL[M_COUNT], kMaxClr[M_COUNT];
-        for (int i=0;i<M_COUNT;i++){ kMaxV[i]=-1e9f; kMinV[i]=1e9f; kMaxL[i]=0; kMaxClr[i]=-1e9f; }
-        // In-game-accurate g: smooth-spline du-window curvature + the HUD's 6 Hz temporal
-        // lowpass (exactly what the rider's g-meter shows). The coarse 3-point arrays above
-        // read the raw control points, so they catch rail-joint kinks the smooth spline never
-        // exposes -- this second table is what the player actually feels.
-        float hMaxV[M_COUNT], hMinV[M_COUNT], hMaxL[M_COUNT];
-        // JERK metric: peak |d(felt g)/dt| per element (g/s). This is the REAL defect signal --
-        // a smooth sustained 6g arc has low jerk; only a C1 seam discontinuity / arc-collapse
-        // spikes it. Replaces the absolute-g "offender" count as the pass/fail gate, which was
-        // punishing exactly the high-but-smooth sustained g the mandate now wants.
-        float hJerkV[M_COUNT], hJerkL[M_COUNT];
-        for (int i=0;i<M_COUNT;i++){ hMaxV[i]=-1e9f; hMinV[i]=1e9f; hMaxL[i]=0; hJerkV[i]=0; hJerkL[i]=0; }
-        int jerkOffenders = 0;
-        // SUSTAINED intensity: arc-weighted average combined felt-g deviation
-        // sqrt((gVert-1)^2 + gLat^2) over the WHOLE ride -- this is the "sustained gs around 6"
-        // the mandate asks for (the per-element MAX above is the peak, not the sustained value).
-        // flatFrac = fraction of ride on FLAT/DROP/powered/station track (the dead, ~0-intensity
-        // sections that dilute the sustained average). Target: raise sustainedG toward ~5-6 and
-        // drop flatFrac by packing elements densely.
-        double sumComb = 0.0; long combN = 0, flatN = 0;
-        // SUSTAINED felt-g PER ELEMENT: the temporally-smoothed g the rider actually holds
-        // THROUGH an element (not the peak). Accumulated only on INTERIOR control points -- a
-        // point is interior when the element tag has been stable for >=3 frames, which trims the
-        // entry ramp AND (via the felt-g du-window) the seam contamination from the neighbouring
-        // element, so e.g. a FLAT abutting a HELIX doesn't get charged the helix's g. This is the
-        // "sustained gs in each element" measure.
-        double susV[M_COUNT] = {0}, susAbsL[M_COUNT] = {0}, susComb[M_COUNT] = {0};
-        long   susN[M_COUNT] = {0};
-        struct Off { float g; int seed,k,kind,pk,nk; float v,y,lat; };
-        std::vector<Off> offenders;
-        int totalPts = 0;
-        float gMinClear = 1e9f; long gMinClearK = 0; int gMinClearSeed = 0, gMinClearLocalK = 0;
-        for (int sd = 1; sd <= seeds; sd++) {
-            g_rng = (uint32_t)sd * 2654435761u | 1u;
-            Track t; t.reset();
-            while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
-            int n = (int)t.cp.size();
-
-            if (const char *tg2 = getenv("MC_DUMP_ELEM")) {
-                int wantKind = -1;
-                bool dumpAll = TextIsEqual(tg2, "ALL");
-                for (int ti = 0; ti < M_COUNT; ti++) if (TextIsEqual(tg2, NM[ti])) wantKind = ti;
-                if (wantKind >= 0 || dumpAll) {
-                    int dumpSeeds = 3;
-                    if (const char *ds = getenv("MC_DUMP_SEEDS")) dumpSeeds = atoi(ds);
-                    bool inRun = false;
-                    for (int k = 1; k < n; k++) {
-                        if (dumpAll || t.kind[k] == wantKind) {
-                            Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
-                            float dx = p1.x - p0.x, dz = p1.z - p0.z;
-                            float heading = atan2f(dx, dz) * 180.0f / PI;
-                            // Signed bank/roll: angle of up[k] away from the "flat" up in the
-                            // plane normal to the track tangent (0 = level, +right lean).
-                            float roll = 0.0f;
-                            if (k < n - 1) {
-                                Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
-                                Vector3 side = Vector3CrossProduct((Vector3){0,1,0}, tanv);
-                                float sl = Vector3Length(side);
-                                if (sl > 1e-4f) {
-                                    side = Vector3Scale(side, 1.0f/sl);
-                                    Vector3 flatUp = Vector3CrossProduct(tanv, side);
-                                    roll = atan2f(Vector3DotProduct(t.up[k], side),
-                                                  Vector3DotProduct(t.up[k], flatUp)) * 180.0f / PI;
-                                }
-                            }
-                            printf("[dump] seed%d cp%d kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f dy=%+.2f terr=%.1f roll=%+.1f v=%.1f\n",
-                                   sd, k, NM[t.kind[k]], p1.x, p1.y, p1.z, heading,
-                                   p1.y - p0.y, groundTopAt(p1.x, p1.z), roll,
-                                   k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f);
-                            inRun = true;
-                        } else if (inRun) { inRun = false; printf("[dump] --- run end ---\n"); }
-                    }
-                    if (sd >= dumpSeeds) return 0;
-                }
-            }
-
-            std::vector<float> vAt(n, 0.0f);
-            float u = 0.5f, v = LAUNCH_V;
-            int lastK = -1;
-            float gVh = 1.0f, gLh = 0.0f;   // temporally-smoothed felt g state (HUD meter), reset per seed
-            float ivPrev = 1.0f, ilPrev = 0.0f;   // prev-frame INSTANTANEOUS (pre-lowpass) felt g, for jerk
-            int susRunTag = -1, susRunLen = 0;    // element-run tracker for the sustained-g metric
-            for (int f = 0; f < 200000 && u < n - 4; f++) {
-                float dt = 1.0f / 60.0f;
-                float slope = t.tangent(u).y;
-                float acc = -GRAV * slope - DRAG * v * v - FRICTION;
-                v += acc * dt;
-                unsigned char tg = t.tagAt(u);
-                if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades to 0 near ~320 (no clamp)
-                else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
-                if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires (real coasters drive slow sections): only ever active under ~108 km/h, holds forced terrain climbs at ~30+ m/s
-                if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
-                // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
-                // numeric floor below keeps du/dt finite.
-                v = fmaxf(v, V_GUARD);
-                int ki = (int)u;
-                if (ki > lastK) { for (int q = lastK + 1; q <= ki && q < n; q++) vAt[q] = v; lastK = ki; }
-
-                // --- in-game-accurate felt g (mirrors the HUD meter, src/main.cpp ~1666) ---
-                {
-                    float ss  = fmaxf(t.speedScale(u), 1.0f);
-                    float duw = Clamp(7.5f / ss, 0.35f, 1.1f);
-                    Vector3 Tb = t.tangent(u - duw), Tf = t.tangent(u + duw);
-                    float arc = fmaxf(Vector3Distance(t.pos(u - duw), t.pos(u + duw)), 13.0f);
-                    Vector3 N  = orthoUp(t.tangent(u), t.upAt(u));
-                    Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
-                    Vector3 felt  = Vector3Add(Vector3Scale(kappa, v * v), Vector3{ 0, GRAV, 0 });
-                    Vector3 rRight = Vector3Normalize(Vector3CrossProduct(N, t.tangent(u)));
-                    float iv = Vector3DotProduct(felt, N) / GRAV;
-                    float il = Vector3DotProduct(felt, rRight) / GRAV;
-                    if (!(iv == iv)) iv = 1.0f;
-                    if (!(il == il)) il = 0.0f;
-                    float kk = 1.0f - expf(-dt * 3.0f);
-                    gVh += (iv - gVh) * kk;
-                    gLh += (il - gLh) * kk;
-                    // JERK metric on the INSTANTANEOUS (pre-lowpass) felt g. iv/il are already
-                    // spline+du-window smoothed spatially, so inside a well-formed element they
-                    // vary slowly (a smooth ramp to 6g over ~0.3s is ~20 g/s); only a C1 seam
-                    // kink / arc-collapse jumps multiple g in one 1/60s frame -> >100 g/s. The
-                    // 30 g/s threshold cleanly separates "sustained-but-smooth" from "discontinuity".
-                    if (f > 30) {
-                        float jV = fabsf(iv - ivPrev) / dt;
-                        float jL = fabsf(il - ilPrev) / dt;
-                        int kj = t.tagAt(u); if (kj < 0 || kj >= M_COUNT) kj = 0;
-                        if (jV > hJerkV[kj]) hJerkV[kj] = jV;
-                        if (jL > hJerkL[kj]) hJerkL[kj] = jL;
-                        if (jV > 200.0f || jL > 200.0f) jerkOffenders++;   // 200 g/s = a true C1 collapse; raw iv carries ~50-110 g/s du-window sampling noise even on smooth elements, so a lower gate is meaningless
-                    }
-                    ivPrev = iv; ilPrev = il;
-                    if (f > 30) {
-                        int kd = t.tagAt(u); if (kd < 0 || kd >= M_COUNT) kd = 0;
-                        if (gVh > hMaxV[kd]) hMaxV[kd] = gVh;
-                        if (gVh < hMinV[kd]) hMinV[kd] = gVh;
-                        if (fabsf(gLh) > hMaxL[kd]) hMaxL[kd] = fabsf(gLh);
-                        float comb = sqrtf((gVh-1.0f)*(gVh-1.0f) + gLh*gLh);
-                        sumComb += comb; combN++;
-                        // IDLE / "catch your breath" track: station, lift crawl, flat transitions,
-                        // launch and boost straights (the flat/boost sections the user groups together).
-                        // DROP and DIP stay OUT -- a drop is airtime + top speed, a dip is a
-                        // dive-and-recover; those are ride highlights, not idle.
-                        if (kd==M_FLAT||kd==M_STATION||kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST) flatN++;
-                        // SUSTAINED per-element: only accumulate on INTERIOR points (tag stable
-                        // >=3 frames) so the entry ramp + seam contamination are trimmed.
-                        if (kd == susRunTag) susRunLen++; else { susRunTag = kd; susRunLen = 0; }
-                        if (susRunLen >= 3) {
-                            susV[kd]    += gVh;
-                            susAbsL[kd] += fabsf(gLh);
-                            susComb[kd] += comb;
-                            susN[kd]++;
-                        }
-                    }
-                }
-
-                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
-                if (!(du == du)) du = 0;
-                u += fminf(du, 1.5f);
-            }
-
-            float seedMaxV = -1e9f; int seedMaxK = -1;
-            for (int k = 1; k < n - 1; k++) {
-                if (vAt[k] <= 0) continue;
-                Vector3 p0 = t.cp[k-1], p1 = t.cp[k], p2 = t.cp[k+1];
-                Vector3 a = Vector3Subtract(p1, p0), b = Vector3Subtract(p2, p1);
-                float la = Vector3Length(a), lb = Vector3Length(b);
-                if (la < 1e-4f || lb < 1e-4f) continue;
-                Vector3 kap = Vector3Scale(
-                    Vector3Subtract(Vector3Scale(b, 1.0f/lb), Vector3Scale(a, 1.0f/la)),
-                    1.0f / (0.5f * (la + lb)));
-                Vector3 up = Vector3Normalize(t.up[k]);
-                Vector3 tan = Vector3Normalize(Vector3Subtract(p2, p0));
-                Vector3 lat = Vector3CrossProduct(up, tan);
-                float ll = Vector3Length(lat); if (ll > 1e-4f) lat = Vector3Scale(lat, 1.0f/ll);
-                float vv = vAt[k] * vAt[k];
-                float gV = Vector3DotProduct(WUP3, up) + vv * Vector3DotProduct(kap, up) / GRAV;
-                float gL = vv * Vector3DotProduct(kap, lat) / GRAV;
-                int kd = t.kind[k]; if (kd < 0 || kd >= M_COUNT) kd = 0;
-                float clr = p1.y - groundTopAt(p1.x, p1.z);
-                // Skip the last ~16 cps: they never left the smoothing window so the terrain floor
-                // hasn't been applied to them yet. In live play the track generates continuously, so
-                // every cp the car reaches HAS been floored -- those tail cps are an audit-only artifact.
-                if (k < n - 16 && clr < gMinClear) { gMinClear = clr; gMinClearK = (int)t.base + k; gMinClearSeed = sd; gMinClearLocalK = k; }
-                if (k < n - 16 && clr > kMaxClr[kd]) kMaxClr[kd] = clr;
-                totalPts++;
-                if (gV > kMaxV[kd]) kMaxV[kd] = gV;
-                if (gV < kMinV[kd]) kMinV[kd] = gV;
-                if (fabsf(gL) > kMaxL[kd]) kMaxL[kd] = fabsf(gL);
-                if (gV > seedMaxV) { seedMaxV = gV; seedMaxK = k; }
-                // Threshold is the BROKEN-geometry line (>16 g vert / >13 g lat), well past the
-                // ~9-11 g design target for a helix -- what's left here is genuinely-broken
-                // geometry (an arc-collapse spike). The JERK metric above is the primary defect signal.
-                if (gV > 16.0f || gV < -6.5f || gL > 13.0f || gL < -6.5f)
-                    offenders.push_back({gV, sd, k, kd, (int)t.kind[k-1], (int)t.kind[k+1], vAt[k], p1.y, gL});
-            }
-            printf("seed %2d  worst vert g = %+6.1f at cp %d (%s)\n", sd, seedMaxV, seedMaxK,
-                   (seedMaxK>=0 && t.kind[seedMaxK]<M_COUNT) ? NM[t.kind[seedMaxK]] : "-");
-        }
-        printf("\n  MIN TRACK CLEARANCE above terrain = %+.1f m (at abs cp %ld) %s\n",
-               gMinClear, gMinClearK, gMinClear < -2.0f ? " <-- UNDER THE MAP" : "");
-        printf("  PER-ELEMENT FELT-G (across %d seeds, %d cps):\n", seeds, totalPts);
-        printf("  %-9s %8s %8s %8s %9s\n", "element", "maxVert", "minVert", "maxLat", "maxClrM");
-        for (int i = 0; i < M_COUNT; i++) {
-            if (kMaxV[i] < -1e8f) continue;
-            const char* flag = (kMaxV[i] > 9.8f || kMinV[i] < -6.0f || kMaxL[i] > 9.8f) ? "  <-- OVER" : "";
-            printf("  %-9s %+8.1f %+8.1f %8.1f %9.1f%s\n", NM[i], kMaxV[i], kMinV[i], kMaxL[i], kMaxClr[i], flag);
-        }
-        printf("\n  IN-GAME-ACCURATE FELT-G (HUD meter: smooth spline + 6 Hz lowpass, %d seeds):\n", seeds);
-        printf("  %-9s %8s %8s %8s\n", "element", "maxVert", "minVert", "maxLat");
-        for (int i = 0; i < M_COUNT; i++) {
-            if (hMaxV[i] < -1e8f) continue;
-            const char* flag = (hMaxV[i] > 9.8f || hMinV[i] < -6.0f || hMaxL[i] > 9.8f) ? "  <-- OVER" : "";
-            printf("  %-9s %+8.1f %+8.1f %8.1f%s\n", NM[i], hMaxV[i], hMinV[i], hMaxL[i], flag);
-        }
-        // SUSTAINED felt-g the rider HOLDS through each element (interior arc-average, not the
-        // peak). susVert is signed (>1 = pressed into seat, <1 = airtime, 0 = freefall); susLat
-        // is the average |lateral|; susComb = avg sqrt((vert-1)^2+lat^2) = the felt "intensity"
-        // held through the element. This is the "sustained gs in each element" number.
-        printf("\n  SUSTAINED FELT-G PER ELEMENT (interior arc-avg -- the g HELD through the element, not the peak):\n");
-        printf("  %-9s %10s %10s %10s %9s\n", "element", "susVert", "susLat", "susIntens", "samples");
-        for (int i = 0; i < M_COUNT; i++) {
-            if (susN[i] < 20) continue;   // too few interior samples to be meaningful
-            printf("  %-9s %+10.2f %10.2f %10.2f %9ld\n", NM[i],
-                   (float)(susV[i]/susN[i]), (float)(susAbsL[i]/susN[i]), (float)(susComb[i]/susN[i]), susN[i]);
-        }
-        // JERK table -- the PRIMARY pass/fail signal (see the metric's comment above). Success =
-        // sustained felt-g approaching target (~+6 vert, ~-6 airtime, ~+6 lat in the table above)
-        // WHILE every element's jerk stays < 30 g/s. A smooth sustained high-g arc passes; only a
-        // C1 discontinuity (seam kink / arc-collapse) trips it. This REPLACES the absolute-g
-        // offender count as the gate -- that count now legitimately rises as sustained g rises.
-        printf("\n  FELT-G JERK (peak |d(felt g)/dt|, g/s; the REAL defect, threshold 30):\n");
-        printf("  %-9s %10s %10s\n", "element", "jerkVert", "jerkLat");
-        for (int i = 0; i < M_COUNT; i++) {
-            if (hMaxV[i] < -1e8f) continue;
-            const char* jf = (hJerkV[i] > 200.0f || hJerkL[i] > 200.0f) ? "  <-- JERK" : "";
-            printf("  %-9s %10.1f %10.1f%s\n", NM[i], hJerkV[i], hJerkL[i], jf);
-        }
-        printf("  JERK OFFENDERS (|d felt g/dt| > 200 g/s = true collapse): %d frames\n", jerkOffenders);
-        printf("  SUSTAINED intensity (whole-ride arc-avg combined felt-g): %.2f g   |   IDLE track (station+lift+flat transitions, real coasters ~25-40%%): %.0f%%\n",
-               combN ? sumComb / combN : 0.0, combN ? 100.0 * flatN / combN : 0.0);
-
-        std::sort(offenders.begin(), offenders.end(), [](const Off&a,const Off&b){
-            return fabsf(a.g-1.0f) > fabsf(b.g-1.0f); });
-        printf("\n  BROKEN-geometry points (vert>16 / lat>13 / <-6.5 -- past even the 2x-WR target, i.e. arc-collapse): %d total. Worst 25:\n", (int)offenders.size());
-        for (int i = 0; i < (int)offenders.size() && i < (getenv("MC_ALLOFF")?100000:25); i++) {
-            Off& o = offenders[i];
-            printf("  seed%-2d cp%-3d  vertG=%+6.1f latG=%+5.1f  v=%4.0f (%3.0fkm/h) y=%6.1f  %s [%s->%s->%s]\n",
-                   o.seed, o.k, o.g, o.lat, o.v, o.v*3.6f, o.y, NM[o.kind],
-                   NM[o.pk], NM[o.kind], NM[o.nk]);
-        }
-
-        if (gMinClearSeed > 0) {
-            g_rng = (uint32_t)gMinClearSeed * 2654435761u | 1u;
-            Track t; t.reset();
-            while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
-            int kc = gMinClearLocalK;
-            printf("\n  MIN-CLEARANCE y-profile (seed%d cp%d, clear=%.1f):\n", gMinClearSeed, kc, gMinClear);
-            for (int k = kc - 24; k <= kc + 4; k++) {
-                if (k < 1 || k >= (int)t.cp.size()) continue;
-                float dyP = t.cp[k].y - t.cp[k-1].y;
-                float gtt = groundTopAt(t.cp[k].x, t.cp[k].z);
-                printf("   cp%-3d %-9s y=%7.1f  terr=%7.1f  clr=%+6.1f  dy=%+7.2f  genV=%4.0f%s\n", k, NM[t.kind[k]],
-                       t.cp[k].y, gtt, t.cp[k].y - gtt, dyP,
-                       k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f,
-                       k == kc ? "  <== under" : "");
-            }
-        }
-        return 0;
-    }
-
-    if (argc > 1 && TextIsEqual(argv[1], "--stationtest")) {
-        int totalBerths = 0, locks = 0;
-        for (uint32_t seed = 1; seed <= 8; seed++) {
-            g_rng = seed * 2654435761u | 1u;
-            Track t; t.reset();
-            float u = 0.5f, v = LAUNCH_V;
-            float sinceStation = 0; int berths = 0; bool dispatched = true;
-            int crawlFrames = 0;
-            for (int f = 0; f < 60000 && berths < 6; f++) {
-                float dt = 1.0f / 60.0f;
-                t.ensureAhead(u + 16);
-                float slope = t.tangent(u).y;
-                float acc = -GRAV * slope - DRAG * v * v - FRICTION;
-                v += acc * dt;
-                if (t.tagAt(u) == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
-                if (t.tagAt(u) == M_BOOST)  v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
-                if (v < 30.0f && t.tagAt(u) != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires -- see the simtest copy
-                v = fmaxf(v, V_GUARD);
-
-                sinceStation += dt;
-                if (sinceStation > 6.0f && !t.stationPending && !t.stationActive)
-                    t.stationPending = true;
-
-                if (t.stationActive && t.tagAt(u) == M_STATION) {
-                    Vector3 Tn = t.tangent(u);
-                    Vector3 Th2 = { Tn.x, 0, Tn.z };
-                    float Tl = sqrtf(Th2.x*Th2.x + Th2.z*Th2.z);
-                    if (Tl > 1e-3f) { Th2.x /= Tl; Th2.z /= Tl; }
-                    Vector3 Pp = t.pos(u);
-                    float d  = (t.stationStop.x-Pp.x)*Th2.x + (t.stationStop.z-Pp.z)*Th2.z;
-                    float d3 = Vector3Distance(t.stationStop, Pp);
-                    if (d > 2.0f && d3 > 2.0f) { float vm = sqrtf(2*22*d + 1); if (v > vm) v = vm; }
-                    else { v = 0; dispatched = false; berths++; totalBerths++;
-                           sinceStation = 0; t.stationActive = false;
-
-                           v = 12.0f; dispatched = true; }
-                }
-
-                if (dispatched && v < 3.0f) { if (++crawlFrames > 600) { locks++; break; } }
-                else crawlFrames = 0;
-
-                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
-                if (!(du == du)) du = 0;
-                u += fminf(du, 1.5f);
-                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
-            }
-            printf("seed %u  berths=%d  locked=%s\n", seed, berths,
-                   (crawlFrames > 600) ? "YES(BUG)" : "no");
-        }
-        printf("STATIONTEST DONE  totalBerths=%d  locks=%d  -> %s\n",
-               totalBerths, locks, locks == 0 ? "PASS" : "FAIL");
         return 0;
     }
 

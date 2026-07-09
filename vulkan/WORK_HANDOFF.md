@@ -102,7 +102,7 @@ after the shared generator's entry pre-braking was removed upstream).
   ride loop — before that sync the Vulkan build was generating a slower,
   inversion-starved ride from stale constants. Re-run `--ride` telemetry after any
   upstream physics/pacing change; the base game's own gates are
-  `opengl/minecoaster --simtest / --gaudit / --pacing`.
+  `opengl/minecoaster --audit / --census / --pacing`.
 - Known cosmetic nit: the HUD SCORE digits slightly overlap the "SCORE" label
   (pre-existing `Hud.h::buildGameHud` layout, was just hidden when score was always 0).
 

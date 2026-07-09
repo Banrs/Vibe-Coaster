@@ -1,272 +1,183 @@
 # Coaster generator — deferred / blocked work
 
-## TASK 1 — Top-hat symmetric 65deg CLIMB (BLOCKED, reverted to baseline)
+Pruned after the 2026-07-08/09 batch (hat crown latch/pin/bleed, hills arrest trough
+allowance + chain demotion, jitter smoothing, roll carry-through, cliff-dive ≥1/lap,
+dive-loop 180°, `--audit` + legacy-mode removal — see `opengl/COASTER_HANDOFF.md`). Removed
+from this file because DONE: the old TASK 1 (top-hat 65° crest-bulge investigation,
+superseded by the crown latch/pin/bleed fix), TASK 2 (hills 45° flanks investigation,
+superseded by the arrest trough allowance + chain demotion), TASK 4 (roll-to-roll transition
+smoothing, superseded by roll carry-through), ISSUE B (near-field terrain jitter, superseded
+by the genFloor/TURN-gtAvg/FLAT-prop-band/cap-vs-arrest/STENGEL-guard batch).
 
-**Asked:** Raise the launch top-hat CLIMB face to sustain ~65deg (63-67), symmetric
-with the DROP (which already reaches 65-68). Keep crestY<300 hard, dropH variety,
-broken<=~4, no stalls.
+## Type-share scheduler (real-life-weighted inversion mix) — REVERTED/DEFERRED
 
-**Baseline (verified good, current state):** rendered climb face peaks ~60.5deg
-(sim-path appliedDy ~24.8/step; SEG_LEN=14 so pitch=atan(24.8/14)). Dump-path (static
-470-cp generation) shows ~57-58deg on short hats, ~48-51 on the tall crest-capped hats.
-DROP reaches -65 to -68. simtest crestY 144-292 (all <300), gaudit broken=4.
+**Target** (real-anchor × multiplier, renormalized over the kept inversion types): ROLL ~40% /
+LOOP ~30% / IMMEL ~10% / DIVELOOP ~10% (all ≈1.0x their real installed-base share) / STALL
+~10% (~6x its ~1.5% real share — deliberate RMC-signature boost). `elemRarityWeight` already
+encodes these as STATIC pick weights (ROLL=4.0, LOOP=3.0, IMMEL=1.0, DIVELOOP=1.0, STALL=1.0),
+but the measured census (`--census 8`) still comes out IMMEL ~37% / ROLL ~18% / LOOP ~19% /
+DIVELOOP ~24% / STALL ~3% — the static weights alone don't dominate the outcome because entry-
+speed WINDOW OVERLAP (which inversions are even eligible at a given cruise speed) matters more
+than the rarity weight in practice.
 
-**Real limiter found (contra the prior agent's crest-lead hypothesis):** the binding
-constraint is NOT the crest-lead flattening. It is the post-hoc 2nd-difference vertical-g
-cap at `coaster_track.cpp:2181` (`Clamp(sd, -gCrestCap*k, 11.0f*k)`). The `+11*k` trough
-side caps the pull-up ramp's per-step rise to ~7.25 m/step (at vEffK=54), so the face
-ramps slowly (6.7->11->14->18->21->25 m/step) and the crest-lead fires (or the hat crests)
-at ~24.8/step (~60deg) before the ramp reaches the ~30/step (65deg) grade. Lowering
-`lagLead` (1.7) or the crest-lead crown prediction had ZERO effect on the sim-path peak,
-confirming the crest-lead is not the limiter.
+**What was tried:** a more active scheduler that tracked running per-lap/per-ride type tallies
+and pushed under-represented types into eligibility more aggressively toward the target share.
+It was built and measured, but it destabilized the layout generator and was reverted.
 
-**What worked locally:** raising the mega-climb trough cap 11->16 (a `gTroughCap`
-special-case at line 2181) makes the pull-up reach the 65deg grade over LESS height,
-leaving room for the crown. Measured: face peak 24.8->28.65/step (60.5->63.9deg), and
-gaudit broken actually IMPROVED to 1 with the trough change alone.
+**The lesson (read this before trying again):** the scheduler's active correction fights the
+SAME seam/attractor instability classes as the rest of this file — bypassing `eligibleSafety`
+to force an under-represented type in (ignoring the entry-speed/physics gate it exists to
+enforce) and the layout reshuffles that follow from an early generation change cascading
+downstream (the same popFront+regen cascade mechanism that made the old top-hat crest-bulge
+task a knife-edge — see the crown-latch/pin/bleed fix in HANDOFF for how that particular
+instance was resolved) BOTH explode a scheduler that assumes it can retarget a slot in
+isolation. **Fix the BROKEN seam/attractor classes first** (stabilize the specific instances
+where an early geometry change cascades unpredictably downstream) before attempting an active
+share scheduler again; a purely static weight retune (no eligibility bypass, no active
+tracking) is lower-risk but has not closed the gap between measured and target shares on its
+own.
 
-**Why it's blocked — two coupled walls:**
-1. *Spline-bulge / crest coupling.* The faster ramp makes a sharper crown; the
-   Catmull-Rom spline overshoots the peak cp by ~40 m (not just at capped hats — a
-   naturally-cresting hat, e.g. seed4 with cp~262, bulges the SAMPLED crestY to 301-302).
-   crestY is the sampled spline peak (main.cpp:1359), so it exceeds 300 even though every
-   cp is <=264. Capping cps low enough to contain the bulge (cp<=259) is the only fix.
-2. *Chaotic regen cascade on the crest-lead target (ceilNow).* Lowering ceilNow from 264
-   to contain the bulge reshuffles the ENTIRE downstream ride (the ride is generated by
-   popFront+regen, so an early geometry change cascades). There is a knife-edge
-   discontinuity: ceilNow=259.5 -> broken=0 (better than baseline!) but seed4 crestY=301;
-   ceilNow=259.0 -> crestY 272 (all <300, good) but broken=15 (a latent seed3 LOOP lands
-   at 51 m/s pulling +23g = arc-collapse, 10 busted points). No ceilNow value (swept
-   258.0..264.0 incl. fractional) satisfies BOTH crestY<300 AND broken<=4 simultaneously.
-   Lowering only ceilY (hard-clip) instead kinks the crest (broken 16-20) and does not
-   fix seed4's inter-cp bulge.
+## Hills seed7 rising-plateau residual (NOT investigated this batch)
 
-**Measured knife-edge (trough=16, ceilY=264):**
-- ceilNow 260-263: broken 0-1, maxCrestY 301-302 (FAIL crest by 1-2m, seed4 bulge)
-- ceilNow 259.5: broken 0, maxCrestY 301 (FAIL crest)
-- ceilNow 259.0: broken 15, maxCrestY 272 (FAIL broken — cascade loop)
-- ceilNow 258.0: broken 15, maxCrestY 273 (FAIL broken)
+A residual HILLS terrain-interaction issue observed on seed7: a rising plateau under a
+hill/chain interacts with the new arrest-trough-allowance (4-step lookahead, 12 m gap floor)
+differently than on other seeds. Not root-caused this batch — needs a `--rollingdump`/
+`MC_DUMP_ELEM=HILLS` capture on seed7 specifically to characterize before attempting a fix.
 
-**Proposed approach for later (needs more than knob-tuning):**
-- The right fix is a *crest-bulge compensator*: when placing the crest cp, cap it at
-  `300 - predictedBulge` where predictedBulge is estimated from the incoming tangent
-  steepness and neighbor cp spacing (the Catmull overshoot is a closed-form function of
-  the 4 control points). This contains the SAMPLED crest without lowering ceilNow into
-  the chaos band, so the downstream cascade stays put. Requires deriving the Catmull-Rom
-  local-max overshoot for the crest segment.
-- Alternatively, stabilize the latent seed3 tight-LOOP first (speed-scale the loop radius
-  so a 51 m/s entry can't collapse to +23g) so the cascade no longer has a bad attractor;
-  then ceilNow=259 becomes viable. This is out-of-scope loop work.
-- Left at baseline (broken=4, crestY<=292, face ~60.5deg) pending one of the above.
+## Seam g-step rounding (BLOCKED by the same regen cascade)
 
-**Follow-up — crown smoothness (ISSUE A, RESOLVED by revert):** the user flagged that an
-experimental build of this task had replaced the crown with TWO FLAT SHELVES. Cause: the
-experimental trough-cap 11->16 + crown gNegT -8->-12 + crest-lead -12->-16. Those were
-FULLY REVERTED. The baseline crown is a single continuous parabola — verified first-hat
-apex dy sequence: +5.3,+3.9,+2.5,+1.7,+0.8,-0.5,-1.9,-3.2,-4.6,-6.0,-7.3 (only a 1-cp
-near-zero vertex, no shelf; drop-side symmetric). Coordinator directive: **smooth crown
-wins over a strict 65deg face.** Because a 65 face needs a sharper crown that reintroduces
-the shelves (via the ceilY clip / spline bulge), the crown is intentionally LEFT at
-baseline (smooth, ~60deg face). Any future 65-face attempt MUST keep the crown one arc.
+A residual per-cp vertical-g rounding issue at element seams. Blocked on the same cascade
+that made the old top-hat 65° task a knife-edge: an early cp change (rounding a g-step at a
+seam) can reshuffle the entire downstream ride (the ride is generated by popFront+regen), so a
+local fix needs the same care TASK 1's crest-bulge compensator would have needed. Do not
+attempt with simple knob-tuning; a small, LOCAL correction (bounded so it can't perturb
+downstream generation) is the only safe shape for this fix.
 
----
+## First-hat faces ~46-52° vs the 55/58° targets (crest containment prioritized)
 
-## TASK 2 — HILLS flanks ~45deg (NOT DONE — investigated, not attempted; no edits made)
+Audit gate C measures climb-face best-3 pitch ~46-52° and drop-face ~-43 to -52° on first
+hats (target band [55, 58]/[-58, -55]). This batch's crown latch/pin/bleed fix prioritized
+CONTAINING the crest (<300 m, no apex shelf/bust) over hitting the steeper face angle — the
+two goals are coupled through the same crest-lead/crown-budget mechanism (a sharper face needs
+a sharper crown, which reintroduces the crest-bulge/regen-cascade knife-edge the old TASK 1
+hit). Gate C is a KNOWN-FAIL on `--audit` right now; do not chase the face angle without
+re-deriving the crest-bulge containment the crown fix depends on (see HANDOFF's crown latch/
+pin/bleed description for the current mechanism).
 
-**Asked:** raise big-camelback flanks from ~24up/27down to ~45deg both sides, no dead-flat
-shelves, no crest kinks/busts, no stalls. A deeper clothoid-ish flank+rounded-crest
-rewrite is permitted.
+## Audit gate H: static-window face measurement vs the (fixed) real dive
 
-**Current measured (baseline):** flanks peak ~20-32deg; several runs already show dead-flat
-shelves (dy~0 for 4-8 cps) between humps and at troughs — pre-existing in the cosine
-camelback. HILLS runs at v~76 m/s (275 km/h).
+Gate H measures the cliff-dive face/drop from `--audit`'s FIXED 470-cp static window, which
+only ever sees the ride's opening — it structurally cannot reach the real ~⅔-lap signature
+dive most seeds actually fire (a wall-climb-into-early-drop sometimes gets tagged CLIFFDIVE
+inside the static window instead, with a shorter/shallower face than the real thing). The
+`-88°` face + `≤8.5 m` wall-hug fix is verified via `--rollingdump` (which actually laps the
+ride), but gate H's own static measurement may be checking a DIFFERENT, earlier instance with
+looser bounds. Worth reconciling: either extend gate H to run its check against a
+`--rollingdump`-style rolling window, or explicitly document that gate H is a lower bar than
+the real per-lap dive.
 
-**Why ~45 is hard (physics derivation):** HILLS dy comes from a per-bump cosine
-(`coaster_track.cpp:1790-1806`, `hillY` lambda: `base + 0.5*amp*(1-cos(2*pi*bf))`, amp
-tapered 0.80^bf, descending baseline). Flank max slope = amp*pi*hillBumps/hillLen; hitting
-45deg (dy=14/step) needs ~3x the current amplitude-per-wavelength. But at 275 km/h the
-crest reversal (+14 -> -14 dy = a 90deg total turn) can only round at the HILLS budget
-`dlimNeg = (1-(-5.5))*196*9.81/v^2 ~= 2.2/step`, so the crest rounding needs ~12 cps.
-=> a rideable 45deg hill must be a BIG hump (~20+ cps, ~84 m tall) or it either busts the
-crest (+27g arc-collapse, what the prior agent hit) or over-rounds into a shelf.
+## Residual measurement notes
 
-**Proposed approach (the permitted deeper rewrite):** replace the cosine in `hillY` with a
-TRAPEZOIDAL/triangle target profile driven through the existing curvature+jerk budget
-block: set the HILLS dy TARGET to +14 (up-flank) / -14 (down-flank), switching at each
-hump apex, and let the budget block (line ~2034 gPosT/gNegT + the 2nd-diff cap at ~2181)
-automatically round the sharp triangle apex into a bounded-curvature crest and the trough
-into a bounded valley. This gives STRAIGHT 45deg flanks + a single rounded crest (clothoid
-character), decoupling flank steepness from crest curvature. Constraints to enforce: size
-`hillLen`/`hillBumps` in `initHills` so each hump is >= ~18 cps (enough for a flank + the
-~12-cp crest round) — otherwise the round eats the flank (shelf) or the crest busts. Keep
-the descending-baseline + amplitude taper so the chain still exits low into the next
-element. RISK: this is a real rewrite; verify no dy~0 run >=3 interior cps, broken<=4,
-simtest green, and that the hills still flow into the next element without a seam.
-File/function to touch: `coaster_track.cpp` M_HILLS dy case (~1783-1807) + `initHills`.
+- **DIVELOOP: FIXED.** Was ~67° heading reversal (a near-full-360 loop shape); now a genuine
+  reverse-Immelmann shape (climb + half-twist to inverted, half-loop down) that reverses
+  heading ~180°, antiparallel exit to entry. See REALISM.md's dive-loop row.
+- **STALL radius 306 m (still open):** 7.6x the real ~40 m RMC-class radius — the one radius
+  that violates the "no v² balloon" rule (STALL sizes its shape from entry speed with no
+  record-anchored radius cap the way LOOP/IMMEL/DIVELOOP do). Needs a record-anchored radius
+  cap analogous to `invRFor`'s WR-capped radii for the other inversions.
+- **SCURVE vertical terrain-follow (open):** SCURVE's vertical terrain-follow has not been
+  brought in line with the TURN/FLAT gtAvg-smoothing fix this batch — may show the same
+  raw-voxel-chasing wobble TURN had before its fix.
+- **LOOP top radius (open):** marginally over the 1.5x WR-radius cap at the crest on some
+  entries — not yet re-derived against the current `invRFor`/`recCapMul` taper.
+- **Gate F residual dead spots (open):** `--audit 8` still FAILs gate F on ~5 seeds
+  (banked→banked "dead spot": a held near-zero-roll run of ~8 cps bridging two |roll|>20
+  stretches, e.g. seed8 cp222-229/cp415-422). The roll carry-through fix (`bankHold`)
+  covers short FLAT/DROP/DIP gaps up to `bankHoldMax`; these residuals are LONGER gaps
+  (or gap kinds bankHold doesn't span) where the lean still fully unwinds mid-bridge.
+  Either extend `bankHoldMax`/the eligible gap kinds, or accept + downgrade gate F to
+  WARN for gaps past the hold window.
 
 ---
 
-## ISSUE B — Track shape priority over terrain (near-field jitter) (NOT DONE — no edits)
-
-**Asked:** the track is over-influenced by aggressive CLOSE-DISTANCE terrain corrections
-(clearance-floor / terrain-follow), causing per-cp hitches/jitter. Soften the near-field
-term (longer lookahead / lower gain / rate-limit) so planned arcs aren't yanked by local
-terrain bumps. KEEP the hard min-clearance floor as-is (do NOT lower it) — only reduce the
-aggressiveness/immediacy.
-
-**Where to look (not yet touched):**
-- `genFloorY` curvature-bounded terrain floor: `coaster_track.cpp:~2751-2779` — its
-  per-cp ramp (`genFloorVy += 1.8` accel cap, slope cap 10 m/cp) is the main near-field
-  lift. Softening = lower the accel cap and/or add a longer lookahead so it starts lifting
-  earlier and gentler instead of yanking per-cp.
-- `tunnelFloor = gt - 5` hard depth floor at `~2137` — this is the KEEP-AS-IS backstop.
-- Terrain-follow gains in the connective modes: M_FLAT `ferr*0.40` (~1779), M_TURN
-  `*0.50` (~1782). These 0.40/0.50 gains re-aim the deck at ground+offset each cp; lowering
-  them (e.g. 0.40->0.25) or dead-banding harder softens the follow.
-**Proposed:** rate-limit the genFloorY lift (reduce `genFloorVy` accel 1.8->~1.0) and drop
-the M_FLAT/M_TURN follow gains ~30-40%, keeping tunnelFloor untouched. Verify: dump shows
-smoother clearance (no per-cp jitter), min clearance still >= current floor, simtest
-stall=0f x8, broken<=4.
-
----
-
-## TASK 4 — Roll-to-roll / bank-to-bank transition smoothing (NOT DONE — no edits)
-
-**Asked:** when two banked/rolling elements are adjacent, the bank currently unwinds to a
-FLAT horizontal plane between them then re-banks (visible dead spot). Carry the roll angle
-THROUGH the seam with a shortest-path roll blend from A's exit bank to B's entry bank.
-Only insert the flat unwind where genuinely needed (before a truly flat LAUNCH/BOOST — that
-guard exists, keep it).
-
-**Where to look (not yet touched):** the bank/up-vector handoff at the nextMode seam.
-`coaster_track.cpp:2503-2531` (the `flatNow && wasElem` block) resets gyaw and starts
-`upEaseSteps` (the bank UNWIND) whenever a shaped element flows into FLAT/DROP. The
-up-vector ease is `upEase`/`easeUpVec` (~2586-2604) and `genPrevUp`. Note during TASK 3's
-helix verification I observed a helix(10)->SCURVE(13) seam where bankUp went to ~0.99
-(flat) mid-transition — a candidate dead-spot.
-**Proposed:** when lastGenMode AND mode are both banked (not FLAT/LAUNCH/BOOST/STATION),
-skip the unwind-to-level and instead slew genPrevUp directly toward the NEW element's
-target bank (shortest-path), so the lean never passes through horizontal. Keep the existing
-unwind for banked->flat. Verify: dump up-vector across a banked->banked seam shows no
-zero-bank plateau >=2-3 cps, no new busts, simtest green.
-
----
-
-## TASK 5 — General kink-flattening pass (NOT DONE — no edits; HIGH RISK, deliberately deferred)
+## TASK 5 — General kink-flattening pass (NOT DONE — no edits; lower priority post-jitter-fix)
 
 **Asked:** a post-generation smoothing pass that detects+rounds UNINTENDED C1 kinks (sharp
 heading/pitch 2nd-difference spikes at element joints) WITHOUT touching intended-sharp
 features (cliff-dive rim, top-hat crests, loop/inversion apexes, intended banked
 transitions). Bounded so it can't drift track into terrain or unwind an element.
 
-**Not attempted this session** (deliberately — flagged riskiest, and the session is
-wrapping up; a half-applied global relaxation pass is exactly the "risky edit" to avoid
-leaving in the tree).
-**Proposed approach:** after the cp stream is generated, run a localized pass over interior
-cps: compute the heading-2nd-difference and pitch-2nd-difference at each joint; where it
-exceeds a threshold AND the cp's `kind[]` tag is NOT in an intended-sharp set
-(M_CLIFFDIVE, M_CLIMB-crest/M_DROP-crest apex, M_LOOP/M_ROLL/M_IMMEL/M_DIVELOOP/M_STALL/
-M_COBRA apexes, and the first/last cp of banked elements), apply a single weighted-average
-relaxation `cp[i] = cp[i]*(1-w) + 0.5*(cp[i-1]+cp[i+1])*w` with small w (~0.15) and clamp
-the movement so `cp[i].y` stays >= tunnelFloor. Gate HARD: simtest stall=0f x8, broken must
-NOT increase, and dump-verify cliff-dive/top-hat/loop sharpness is intact (compare peak
-2nd-diff at those tagged cps before/after — must be unchanged). If broken rises or any
-intended-sharp feature softens, DO NOT ship. Touch: a new pass in the cp-finalization path
-(after `genPoint`/`ensureAhead`), reading `kind[]` to protect tagged features.
+**Status: lower priority now.** This batch's targeted jitter fixes (`genFloorY` ease,
+`M_TURN`'s `gtAvg` adoption, `M_FLAT`'s continuous proportional band, CAP-VS-ARREST, the
+STENGEL corridor guard) resolved the specific hitching sources that were driving most of the
+demand for a general pass. What's left (if anything, after a fresh `--rollingdump` capture) is
+likely a narrower set of genuinely-unintended seam kinks rather than the widespread jitter this
+task was originally scoped against — re-scope before attempting, since a half-applied global
+relaxation pass is exactly the "risky edit" to avoid leaving in the tree.
+
+**Proposed approach (unchanged, still the right shape if re-attempted):** after the cp stream
+is generated, run a localized pass over interior cps: compute the heading-2nd-difference and
+pitch-2nd-difference at each joint; where it exceeds a threshold AND the cp's `kind[]` tag is
+NOT in an intended-sharp set (M_CLIFFDIVE, M_CLIMB-crest/M_DROP-crest apex, M_LOOP/M_ROLL/
+M_IMMEL/M_DIVELOOP/M_STALL/M_COBRA apexes, and the first/last cp of banked elements), apply a
+single weighted-average relaxation `cp[i] = cp[i]*(1-w) + 0.5*(cp[i-1]+cp[i+1])*w` with small w
+(~0.15) and clamp the movement so `cp[i].y` stays >= tunnelFloor. Gate HARD: `--audit`'s gate A
+stall=0f x8, BROKEN/gate-D/F counts must NOT increase, and a `--rollingdump`/`MC_DUMP_ELEM`
+capture must show cliff-dive/top-hat/loop sharpness intact (compare peak 2nd-diff at those
+tagged cps before/after — must be unchanged). If any gate regresses or an intended-sharp
+feature softens, DO NOT ship. Touch: a new pass in the cp-finalization path (after
+`genPoint`/`ensureAhead`), reading `kind[]` to protect tagged features.
 
 ---
 
-## SHADOW near-train dark patch (+ 2 more shadow symptoms) — DIAGNOSED, NOT FIXED
+## SHADOW bugs (render_fx.cpp shaders + main.cpp ShadowSys) — 2 of 3 symptoms FIXED, 1 open
 
-All shadow code is in `render_fx.cpp` (SHADOW_FS string literal, the `shadowCascadeN`
-/`shadow` GLSL functions, ~lines 133-245) and the setup in `main.cpp`
-(`ShadowSys`/`computeLightVP` live in `render_fx.cpp` ~lines 460-556; the per-frame bind
-+ shadow-anchor clamp is `main.cpp` ~3462-3506). The system is 3 cascaded shadow maps
-(SHADOW_CASCADE_R = {32, 100, 256} m half-extents), all 2048^2, selected per-fragment by
-`d = length(shadowFocus - fragWorld)`: `d < band0(=27.2m) -> cascade0`, then cascade1
-(<85m), then cascade2. Sun dir `g_sunDir = normalize(-0.48, 0.60, 0.64)` (~37deg elevation).
-NOTE: `main.cpp` ~441-479 has a SECOND, single-map `struct ShadowSys` — it is DEAD CODE
-inside `#if 0` (line 368); the live system is the 3-cascade one in `render_fx.cpp`.
+All shadow code is in `render_fx.cpp` (SHADOW_FS string literal, the `shadowCascadeN`/`shadow`
+GLSL functions) and the setup in `main.cpp` (`ShadowSys`/`computeLightVP`). The system is 3
+cascaded shadow maps (`SHADOW_CASCADE_R = {32, 100, 256}` m half-extents), selected
+per-fragment by distance from the shadow focus. `main.cpp` has a SECOND, single-map `struct
+ShadowSys` inside `#if 0` — dead code; the live system is the 3-cascade one in `render_fx.cpp`.
 
-### Symptom 1 (PRIMARY) — dark disc/blob of ground centered on the train (~10-27 m radius)
+### Symptom 1 (dark disc/blob of ground centered on the train) — RESOLVED
 
-**Confirmed root cause: cascade0 (the nearest cascade) uniformly self-shadows flat ground
-within its band (d < band0 = 27.2 m of the focus).** Everything outside that radius uses
-cascade1/2 and renders correctly; inside, the entire ground surface gets a uniform PARTIAL
-shadow (not discrete object shadows — a smooth grey-green wash over open grass), which reads
-as a dark disc around the train because cascade selection is radial from the focus.
+Root cause: cascade0 (nearest, 0.031 m/texel) resolved dense sub-metre voxel micro-relief as
+PCSS occluders and smeared them into a uniform grey carpet within its ~27 m band. **Fixed**
+via `CASCADE0_BIAS_MULT = 16.0` (`render_fx.cpp` ~line 183) — cascade0's bias is multiplied so
+only occluders taller than ~6 m cast in the near cascade; cascade1/2 are unchanged. See
+`opengl/COASTER_HANDOFF.md` for the full mechanism writeup.
 
-**How verified (empirically, this session):** a top-down orbit capture with the train at
-low altitude (`--orbitshot`, `MC_ORBIT_FRAME=600 MC_CAMOFF="8,95,8" MC_CAMFOV=55`) shows an
-unmistakable dark disc of grass centered on the train. Editing `shadow()` line 230 from
-`if(d < band0) return shadowCascade0(N);` to `... return shadowCascade1(N);` (force the near
-band to use cascade1 instead of cascade0), rebuilding, and re-capturing the SAME frame makes
-the disc DISAPPEAR — the ground inside is then correctly lit and only discrete tree/block
-shadows remain. This isolates the fault to `shadowCascade0` specifically. Baseline vs
-forced-cascade1 crops were saved under the session scratchpad (`zoom_baseline.png` vs
-`zoom_fixed.png`, `baseline_disc.png`, `diag_cascade1forced.png`). Both edits have been
-REVERTED; tree builds clean.
+### Symptom 2 — shadow color INVERTED to WHITE on pillars against a dark mountainside — STILL OPEN (defensive mitigation only, NOT a verified fix)
 
-**Mechanism (partially understood — DO NOT ship a guessed constant without a frame capture):**
-cascade0 and cascade1 run identical GLSL; they differ only in per-cascade constants. Bias is
-computed in WORLD metres (`worldBias(NoL) = clamp(1.4 + 1.75*(1-NoL), 1.4, 3.2)`, ~line 150)
-and converted per-cascade via `*invRangeN`, so the world-space bias is the SAME across
-cascades. The observable difference is RESOLUTION: cascade0 = 2*32/2048 = 0.0312 m/texel vs
-cascade1 = 0.0977 m/texel (~3.1x finer). At 0.031 m/texel cascade0 resolves the blocky
-voxel micro-relief + dense sub-metre detail geometry (grass tufts / flower voxels) as
-occluders and, via the PCSS penumbra spread (PCSS_MAX_WORLD = 0.25 m, ~line 162), smears
-those micro-shadows into a continuous carpet; cascade1's coarser map misses them so its
-ground stays lit. A back-of-envelope bias trace says the nominal ~2.1 m ground bias (NoL~0.6)
-SHOULD clear 1-m voxel steps, so the carpet is NOT explained by a naive slope/step-bias
-argument alone — the PCSS blocker-search sensitivity to fine geometry at cascade0's texel
-density is the likely amplifier. This is why the exact fix constant needs a visual check.
+Reported; NOT yet reproduced/diagnosed against a live capture. A shadow reading as a bright/
+white patch (instead of darkening) points at the shadow term being ADDED or the sign flipped
+in a specific lighting path, most likely the metal/rail branch of the main lighting shader
+(`render_fx.cpp` main pass: `spec`, `aniso`, `rim`, and the metal-reflection term all multiply
+by `rawSh`/`sheen`) OR the `pcfTap` out-of-bounds early-out returning 1.0 (fully lit) so a
+pillar whose light-space sample lands off the shadow map reads fully lit and then a bright
+spec/reflection term paints it "whiter" than the shaded mountain behind it. Investigate: is
+the white patch on METAL (pillar = T_IRON) specifically, and does it vanish if the
+metal-reflection/`skyReflect` term is gated harder by `rawSh`? Check the `p.x/p.y` bounds
+early-outs in `shadowCascadeN` — a pillar past the cascade edge returns 1.0 (lit) and can look
+inverted against a correctly-shadowed backdrop.
 
-**Proposed fix (needs one frame-capture to tune, then verify far field unchanged):**
-options in rough order of surgical-ness —
-  (a) Add a small per-cascade bias multiplier to cascade0 only:
-      `render_fx.cpp` ~line 179, `float bias = worldBias(NoL)*invRange0;` ->
-      `... *invRange0*K;` with K in ~[2..4]. (A K=3 test was set up this session but NOT
-      visually verified — reverted.) Risk: too-large K peter-pans thin real shadows (rails).
-  (b) Normal-offset bias: offset the receiver world position along its normal by ~0.5-1 texel-
-      world before the `lightVP0*` transform in `shadowCascade0`, so the ground samples itself
-      from slightly above — kills the carpet without inflating depth bias for thin casters.
-  (c) Widen the PCSS blocker-search reject in cascade0 (raise the min blocker-depth delta),
-      or lower cascade0's effective penumbra `PCSS_MAX_WORLD` so micro-shadows don't merge.
-Whatever is chosen: cascade1/2 paths (lines 188-213) MUST stay byte-identical, and re-capture
-the far field to confirm the >27 m region is unchanged (it was verified correct in baseline).
+**DEFENSIVE-ONLY note (this batch):** the metal-reflection/`skyReflect` term is now gated by
+`mix(0.35, 1.0, rawSh)` (`render_fx.cpp` ~line 433, "Gate the sky-reflection weight by the
+shadow factor") so a mis-shadowed pillar's reflection is at least dampened in shadow rather
+than unconditionally bright. This is a HARDENING against the symptom, NOT a confirmed
+root-cause fix — it has not been re-verified with a fresh screenshot capture. Treat symptom 2
+as still open; the `pcfTap`/cascade-edge hypothesis above is still the leading unverified
+theory.
 
-### Symptom 2 — shadow color INVERTED to WHITE on pillars against the dark side of a mountain
+### Symptom 3 (shadows disappear when the caster is higher up) — RESOLVED
 
-Reported this session; NOT yet reproduced/diagnosed. A shadow reading as a bright/white
-patch (instead of darkening) points at the shadow term being ADDED or the sign flipped in a
-specific lighting path, most likely the metal/rail branch of the main lighting shader
-(`render_fx.cpp` main pass ~lines 358-390: `spec`, `aniso`, `rim`, and the metal-reflection
-term all multiply by `rawSh`/`sheen`) OR the `pcfTap` out-of-bounds early-out returning 1.0
-(`s += 1.0;`, line 118) so a pillar whose light-space sample lands off the shadow map reads
-fully lit and then a bright spec/reflection term paints it "whiter" than the shaded mountain
-behind it. Investigate: is the white patch on METAL (pillar = T_IRON) specifically, and does
-it vanish if the metal-reflection/`skyReflect` term is gated harder by `rawSh`? Check the
-`p.x/p.y` bounds early-outs in `shadowCascadeN` (lines 178/191/204) — a pillar past the
-cascade edge returns 1.0 (lit) and can look inverted against a correctly-shadowed backdrop.
+Root cause: the high-caster fade (`SHADOW_FADE_NEAR`/`SHADOW_FADE_FAR` + `worldZDiff` in each
+`shadowCascadeN`) faded shadows to fully-lit too early (`{40, 110}`). **Fixed** by pushing the
+thresholds to `SHADOW_FADE_NEAR = 120.0, SHADOW_FADE_FAR = 400.0` (`render_fx.cpp` ~lines
+171-172) — a train on a 100-200 m top-hat now keeps a visible (softened) ground shadow;
+near-ground shadows are unaffected.
 
-### Symptom 3 — shadows DISAPPEAR when the caster is higher up (should persist / fade much later)
-
-Root cause is the high-caster fade: `SHADOW_FADE_NEAR = 40.0`, `SHADOW_FADE_FAR = 110.0`
-(`render_fx.cpp` lines 171-172) used as
-`mix(1.0, sh, 1.0 - smoothstep(SHADOW_FADE_NEAR, SHADOW_FADE_FAR, worldZDiff))` at the end of
-each `shadowCascadeN` (lines 186/199/212), where `worldZDiff` is the world height of the
-blocker above the receiver. As a caster (train on a tall support/top-hat) rises, `worldZDiff`
-grows and the shadow is faded toward fully-lit, vanishing entirely past 110 m. The user wants
-the high-caster shadow RETAINED much longer / fading far later. **Fix:** push the far
-threshold way out — e.g. `SHADOW_FADE_NEAR ~= 120`, `SHADOW_FADE_FAR ~= 400` (tune) — so only
-extreme-altitude casters fade. This is a pure constant change on lines 171-172 shared by all
-3 cascades (consistent, no cascade-seam risk). Verify a train on a 100-200 m top-hat still
-casts a visible (softened) ground shadow and that near-ground shadows are unaffected (they
-have small `worldZDiff`, below NEAR, so already full strength).
-
-**Interaction note:** the `main.cpp` shadow-anchor clamp (`SHADOW_FOCUS_LIFT = 45`,
-~line 3463) caps `focus.y` at groundY+45 so the near cascades stay on the ground when the
-train flies high. That clamp bounds Symptom 1's disc radius but does not cause it, and it is
-orthogonal to Symptom 3's fade — leave it unless retuning the fade reintroduces the
-"shadow vanishes at tower base" case the clamp was added to fix.
-
+**Interaction note (still valid):** the `main.cpp` shadow-anchor clamp (`SHADOW_FOCUS_LIFT`)
+caps `focus.y` at groundY+45 so the near cascades stay on the ground when the train flies
+high. That clamp bounds symptom 1's disc radius but does not cause it, and it is orthogonal to
+symptom 3's fade — leave it unless retuning the fade reintroduces the "shadow vanishes at
+tower base" case the clamp was added to fix.

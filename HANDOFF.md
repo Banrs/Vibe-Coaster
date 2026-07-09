@@ -13,12 +13,13 @@ table and WR anchors; `RESEARCH.md` for the records behind them.
   → `opengl/minecoaster`. On Linux, GLFW needs the X11 dev packages
   (libxrandr/xinerama/xcursor/xi/libgl1-mesa-dev). macOS: `opengl/build.sh` or the
   `MINECOASTER.command` double-click wrapper.
-- Headless verification (primary): `--simtest` (stall=0f on ALL seeds is a hard gate; a
-  per-seed `^ stall inside ELEM` line prints when violated; `MC_STALLDBG=1` dumps the cp
-  neighbourhood), `--gaudit N` (raw + HUD + SUSTAINED + jerk tables), `--profile N`
-  (per-element vDelta/net/clr/hSpan + SVG side view), `--elemsust ELEM SPEED` (isolated
-  element), `--pacing` (per-mode time shares, transit seconds, flat share, element
-  density, genuine-splashdown count).
+- Headless verification (primary): `--audit N` (gates A-I; gate A stall=0f on ALL seeds
+  is a hard gate; per-seed SVG side profiles in `opengl/audit/`), `--census N` (per-lap
+  element occurrence; must be cliffMiss=0, invOutOfRange=0), `--rollingdump N` (laps the
+  ride for real), `--profile N` (per-element vDelta/net/clr/hSpan + SVG side view),
+  `--pacing` (per-mode time shares, transit seconds, flat share, element density,
+  genuine-splashdown count). Legacy `--simtest`/`--gaudit`/`--elemsust` etc. are REMOVED
+  — see `opengl/COASTER_HANDOFF.md`.
 - **A next agent should actually run the game** to visually confirm the carve-aware
   terrain culling (tunnel interiors) and a splashdown (banner + wheel spray over water)
   — everything else is verified headless.
@@ -97,7 +98,7 @@ sections left); many elements take too long; too many dead-flat powered straight
 Measured baseline via the NEW `--pacing` tool (per-mode time accounting on the simtest
 loop): banked elements ~4.7/min / 30% of ride time (BANKAIR mean 6.4 s, max 11 s; HILLS
 mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
-- **`--pacing` headless tool added** (main.cpp, after --simtest): per-tag instances/ride,
+- **`--pacing` headless tool added** (main.cpp): per-tag instances/ride,
   mean/max transit seconds, %time, flat-ish share, element density. Use it for any pacing work.
 - **Banked cadence `bankCool`**: after any banked element (TURN/HELIX/DIVE/SCURVE/BANKAIR/
   WAVE/STENGEL — `isBankedElem`), the next 2 element slots offer only low-tilt elements.
@@ -142,7 +143,7 @@ mean 9.1 s, max 18.8 s), 36 BOOST straights/ride (one every ~14 s).
   ≥55 m walls, offer-time footprint gates for closed-form elements, anti-stall kicker
   tires (60·(1−v/34) under 30 m/s) in ALL hand-duplicated physics copies.
 - **Roll cull per user** (disorienting): BANANA/HEARTLINE/WINGOVER/COBRA out of
-  generation (rarity 0, init/step code kept for --elemsust); zero-g STALL is the one
+  generation (rarity 0, init/step code kept for --gtest); zero-g STALL is the one
   inverting-crest roll kept. Roll-free thrills added instead: DOUBLE-DOWN two-stage
   drops (`ddKnuckle`), inclined LSM boosts (+4-8 deg, ~45%).
 - **Pacing grammar**: lap-phase energy arcs (~2.5/lap) in pickFromPool; once-per-lap

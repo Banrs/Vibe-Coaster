@@ -64,7 +64,7 @@ listed per element.
 - Code: M_WAVE/M_BANKAIR, bank ~35–40°, crest −3.2 felt.
 
 ### Overbanked turns — REMOVED from generation (user: roll overload)
-- Reference kept for the record: **Millennium Force**, Cedar Point, 2000, Intamin: three **122°** overbanks at 52/30/21 m crests, entered up to ~150 km/h, ride max 4.5 g [official]. WINGOVER's init/step code remains for `--elemsust`/`--elemgtest`.
+- Reference kept for the record: **Millennium Force**, Cedar Point, 2000, Intamin: three **122°** overbanks at 52/30/21 m crests, entered up to ~150 km/h, ride max 4.5 g [official]. WINGOVER's init/step code remains for `--gtest`.
 
 ### Helix
 - **Goliath**, Six Flags Magic Mountain, 2000, Giovanola: **585° descending helix, >4.5 g sustained ~6 s** [official/press] — the definitive sustained-g anchor.

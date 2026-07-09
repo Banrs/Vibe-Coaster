@@ -81,8 +81,9 @@ opengl/minecoaster
 ## Headless tools
 
 ```sh
-opengl/minecoaster --simtest     # ride 8 seeds, report avg speed / inversions / stalls
-opengl/minecoaster --gaudit      # audit per-element felt-g against the envelope
+opengl/minecoaster --audit 8     # acceptance gates A-I (stall/crest/crown/hills/continuity/census) + SVG profiles
+opengl/minecoaster --census 8    # per-lap element-occurrence census (inversions, cliff dive, quota families)
+opengl/minecoaster --rollingdump 2  # lap the ride for real (reaches the 2/3-lap cliff dive), dump every cp
 opengl/minecoaster --pacing      # per-element time shares / transit seconds / flat share / splashdowns
 opengl/minecoaster --profile N   # per-element built geometry (height delta / clearance / span) + SVG side view
 ```

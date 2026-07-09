@@ -40,7 +40,6 @@ struct Track {
     bool    cliffDone = false, signatureDive = false;
     int     cliffMode = 0;
     float   cliffTargetYaw = 0.0f;
-    int     forcedElem = -1;   // headless test hook (--elemsust): when >=0, chooseElement always emits this element so a single element can be measured in isolation at a controlled entry speed
     float   genPrevDy = 0;
     float   genPrevCurv = 0;
     float   genPrevDyaw = 0;
@@ -603,7 +602,7 @@ struct Track {
             //   driver) comes from a fixed-vRef ballistic-parabola formula -- gT here is dead code
             //   too. Real lever (vRef) tuned directly in initHeartline().
             case M_COBRA:    return { 9.0f, 14.0f, 16.0f, 1.0f, 2.2f};
-            case M_PRETZEL:  return {11.0f, 12.0f, 19.0f, 1.0f, 2.0f};   // PRETZEL REMOVED from generation (weight 0): its tight teardrop apex rang a +29 raw-g spline seam that the lossPerR cap made un-loosenable. Spec kept only for --elemsust PRETZEL testing.
+            case M_PRETZEL:  return {11.0f, 12.0f, 19.0f, 1.0f, 2.0f};   // PRETZEL REMOVED from generation (weight 0): its tight teardrop apex rang a +29 raw-g spline seam that the lossPerR cap made un-loosenable. Spec kept only for --gtest PRETZEL testing.
             case M_ROLL:     return { 9.5f,  6.0f,  6.0f, 1.0f, 1.6f};
             case M_HEARTLINE:return { 8.0f,  5.0f,  6.0f, 1.0f, 1.6f};
             default:         return {0.0f,  0.0f,  0.0f, 1.0f, 2.0f};
@@ -1377,7 +1376,7 @@ struct Track {
             // BANANA/HEARTLINE/WINGOVER removed (user: the pile of 60-120 deg roll elements is
             // disorienting -- of the three near-identical inverting-crest rolls only the zero-g
             // STALL stays, and the overbanked WINGOVER goes entirely). Their init/step code and
-            // gates remain for --elemsust/--gtest.
+            // gates remain for --gtest/--elementshot (gForceElem).
             M_LOOP, M_ROLL, M_IMMEL, M_STALL, M_DIVELOOP,
             M_HILLS, M_BANKAIR, M_DIP, M_STENGEL,
             M_HELIX, M_TURN, M_SCURVE, M_DIVE, M_WAVE
@@ -1404,12 +1403,12 @@ struct Track {
         // churn of tiny alternating FLAT/DROP stubs, the measured source of the "many micro-flat
         // sections". Match M_FLAT's own gPosT=10 budget so the window covers the real decay and the
         // label sticks until genPrevDy has actually leveled -- one continuous pullout, not stubs.
-        if (forcedElem < 0 && fabsf(genPrevDy) > 0.45f * SEG_LEN) {
+        if (fabsf(genPrevDy) > 0.45f * SEG_LEN) {
             float dlimPosFlat = 9.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 400.0f);
             int   settleSteps = (int)ceilf(fabsf(genPrevDy) / fmaxf(dlimPosFlat, 0.05f));
             mode = M_FLAT; remain = Clamp(settleSteps, MIN_CONN, 12); levelHold = 0; return;   // MIN_CONN floor: connective FLAT is one transition, never a 2-3 cp stub
         }
-        SegMode pick = (forcedElem >= 0) ? (SegMode)forcedElem : rollElementPick();
+        SegMode pick = rollElementPick();
 
         rememberElement(pick);
 
@@ -1428,7 +1427,7 @@ struct Track {
             case M_SCURVE:  initSCurve();  break;
             case M_DIVE:    initDive();    break;
             case M_BANKAIR: initBankAir(); break;
-            case M_HELIX:    if (forcedElem >= 0) initHelix(); else { queuedInv = 8; startBoost(); } break;
+            case M_HELIX:    queuedInv = 8; startBoost(); break;
             case M_TURN:    initTurn(true);break;
             case M_WINGOVER:initWingover();break;
             case M_DIP:     initDip();     break;
@@ -1461,15 +1460,6 @@ struct Track {
         crownLatched = false;   // an element ended: drop the crest-lead latch so it never leaks into the next element
         crownDrop = false;      // and the post-crest bled-speed latch (a short drop that ended before diving must not bleed the next element)
         float h = gpos.y - groundTopAt(gpos.x, gpos.z);
-
-        if (forcedElem >= 0) {
-            // Headless isolation (--elemsust): repeat exactly [forced element -> short leveling flat],
-            // ignoring the launch/station/inversion-queue machinery so one element can be measured
-            // over and over at a controlled entry speed. genV is pinned by the caller.
-            if (mode != M_FLAT) { mode = M_FLAT; remain = 3; return; }
-            chooseElement(h);
-            return;
-        }
 
         // ANTI-CHURN LATCH: a safety guard force-ended the previous element (or truncated a boost).
         // Hand to exactly ONE continuous FLAT transition (>= MIN_CONN cps, smoothed terrain-follow),

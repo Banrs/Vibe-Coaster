@@ -2351,6 +2351,145 @@ int main(int argc, char **argv) {
         return audit_mode::run(seeds);
     }
 
+    if (argc > 1 && TextIsEqual(argv[1], "--rollingdump")) {
+        // ROLLING CP-STREAM DUMP. The static instruments (--gaudit's MC_DUMP_ELEM) build one frozen
+        // 470-cp window per seed, so they only ever see the ride's opening and NEVER the ~2/3-lap
+        // signature CLIFFDIVE or any later-lap element. This drives the track exactly the way the live
+        // game does -- reset(), then ensureAhead()/popFront() to roll a small window forward while the
+        // physics integrator advances u -- and emits every control point EXACTLY ONCE, keyed by its
+        // GLOBAL running index (t.base + k), in the same [dump] line format. Because it actually laps
+        // the ride via the station cycle, the stream contains the CLIFFDIVE and every later-lap cp.
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
+        int seeds    = (argc > 2) ? atoi(argv[2]) : 2;
+        int rollLaps = getenv("MC_ROLL_LAPS") ? atoi(getenv("MC_ROLL_LAPS")) : 3;
+        float stationEvery = getenv("MC_ROLL_STATION_S") ? (float)atof(getenv("MC_ROLL_STATION_S")) : 205.0f;
+
+        // One control point -> one [dump] line, in the exact MC_DUMP_ELEM field layout (seedN cpK kind
+        // pos heading dy terr roll v). Computed at an INTERIOR local k (needs cp[k-1] and cp[k+1]) so
+        // heading/dy/roll are byte-identical to the static dump for any shared global index.
+        auto dumpCP = [&](Track& t, int sd, int k, long gidx) {
+            Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
+            float dx = p1.x - p0.x, dz = p1.z - p0.z;
+            float heading = atan2f(dx, dz) * 180.0f / PI;
+            float roll = 0.0f;
+            {
+                Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
+                Vector3 side = Vector3CrossProduct(Vector3{0,1,0}, tanv);
+                float sl = Vector3Length(side);
+                if (sl > 1e-4f) {
+                    side = Vector3Scale(side, 1.0f/sl);
+                    Vector3 flatUp = Vector3CrossProduct(tanv, side);
+                    roll = atan2f(Vector3DotProduct(t.up[k], side),
+                                  Vector3DotProduct(t.up[k], flatUp)) * 180.0f / PI;
+                }
+            }
+            printf("[dump] seed%d cp%ld kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f dy=%+.2f terr=%.1f roll=%+.1f v=%.1f\n",
+                   sd, gidx, NM[t.kind[k]], p1.x, p1.y, p1.z, heading,
+                   p1.y - p0.y, groundTopAt(p1.x, p1.z), roll,
+                   k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f);
+        };
+
+        // MC_ROLL_STATIC: reference mode -- dump the SAME static 470-cp window --gaudit builds (no
+        // station cycle, no popFront, base stays 0 so cpK == k). A downstream diff of this against the
+        // rolling stream's leading cps proves the prefix is identical (same seed => same RNG stream).
+        if (getenv("MC_ROLL_STATIC")) {
+            for (int sd = 1; sd <= seeds; sd++) {
+                g_rng = (uint32_t)sd * 2654435761u | 1u;
+                Track t; t.reset();
+                while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
+                int n = (int)t.cp.size();
+                for (int k = 1; k < n - 1; k++) dumpCP(t, sd, k, (long)k);
+                printf("[dump] --- seed %d static-window end ---\n", sd);
+            }
+            return 0;
+        }
+
+        for (int sd = 1; sd <= seeds; sd++) {
+            g_rng = (uint32_t)sd * 2654435761u | 1u;
+            Track t; t.reset();
+            clock_t t0 = clock();
+
+            float u = 0.5f, v = LAUNCH_V;
+            float sinceStation = 0.0f;
+            long  nextDump     = 1;   // next GLOBAL index to emit (skip cp0, the launch anchor, exactly as the static k=1 start)
+            int   lapCount     = 0;   // STN runs seen so far == laps completed
+            int   prevDumpKind = -1;  // kind of the previously emitted cp, for STN-run edge detection
+            const int FRAME_CAP = 500000;
+            // A cp is only SETTLED once the generator's trailing smoothing sweep (coaster_track.cpp
+            // ~2663: a 14-cp back-relative relaxation run every genPoint) can no longer touch it, i.e.
+            // once it is >14 cps behind the generation head. We emit at SETTLE=18 (>14, with margin) so
+            // every dumped y/up is the FINAL value the game renders -- identical to a fully-generated
+            // static window. The horizon is deepened to keep the window comfortably larger than SETTLE
+            // so a cp always settles before the front pop reaches it (the pop idiom itself is unchanged;
+            // deeper lookahead does not change generated values -- generation is horizon-invariant).
+            const long SETTLE = 18;
+            int f = 0;
+            for (; f < FRAME_CAP && lapCount < rollLaps; f++) {
+                float dt = 1.0f / 60.0f;
+                t.ensureAhead(u + 34);
+                float slope = t.tangent(u).y;
+                float acc = -GRAV * slope - DRAG * v * v - FRICTION;
+                v += acc * dt;
+                unsigned char tg = t.tagAt(u);
+                if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust -- see the simtest copy
+                else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
+                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;
+                if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires
+                if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
+                v = fmaxf(v, V_GUARD);
+
+                // Station cadence: request a platform stop every stationEvery seconds (live-loop
+                // behaviour). The generator lays the STN run at the next low-terrain flat; that starts
+                // a fresh lap, re-arming the once-per-lap CLIFFDIVE + inversion budget.
+                sinceStation += dt;
+                if (sinceStation > stationEvery && !t.stationPending && !t.stationActive)
+                    t.stationPending = true;
+
+                // Decelerate into the platform and re-dispatch (same idiom as --stationtest), so the
+                // ride actually laps instead of leaving stationActive latched forever.
+                if (t.stationActive && t.tagAt(u) == M_STATION) {
+                    Vector3 Tn = t.tangent(u);
+                    Vector3 Th2 = { Tn.x, 0, Tn.z };
+                    float Tl = sqrtf(Th2.x*Th2.x + Th2.z*Th2.z);
+                    if (Tl > 1e-3f) { Th2.x /= Tl; Th2.z /= Tl; }
+                    Vector3 Pp = t.pos(u);
+                    float d  = (t.stationStop.x-Pp.x)*Th2.x + (t.stationStop.z-Pp.z)*Th2.z;
+                    float d3 = Vector3Distance(t.stationStop, Pp);
+                    if (d > 2.0f && d3 > 2.0f) { float vm = sqrtf(2*22*d + 1); if (v > vm) v = vm; }
+                    else { v = 12.0f; sinceStation = 0.0f; t.stationActive = false; }
+                }
+
+                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
+                if (!(du == du)) du = 0;
+                u += fminf(du, 1.5f);
+
+                // Emit every SETTLED interior cp exactly once, in global-index order, BEFORE popping the
+                // front -- so nothing is popped undumped and each field matches the static dump. The
+                // SETTLE margin holds a cp back until the trailing smoothing sweep can no longer change
+                // it (also guarantees cp[k-1]/cp[k+1] exist for heading/dy/roll).
+                while (nextDump <= t.base + (long)t.cp.size() - 1 - SETTLE) {
+                    int k = (int)(nextDump - t.base);
+                    if (k < 1) { nextDump++; continue; }   // only ever cp0 (the anchor); never dumped
+                    int kd = t.kind[k];
+                    if (kd == M_STATION && prevDumpKind != M_STATION) {
+                        lapCount++;
+                        printf("[dump] --- lap %d end ---\n", lapCount);
+                        if (lapCount >= rollLaps) break;   // stop AT the Nth station run's first cp
+                    }
+                    dumpCP(t, sd, k, nextDump);
+                    prevDumpKind = kd;
+                    nextDump++;
+                }
+
+                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
+            }
+            double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
+            printf("[dump] --- seed %d done: laps=%d frames=%d dumped=%ld %.2fs ---\n",
+                   sd, lapCount, f, nextDump - 1, secs);
+        }
+        return 0;
+    }
+
     if (argc > 1 && TextIsEqual(argv[1], "--gaudit")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 12;
         if (argc > 3) DRAG       = (float)atof(argv[3]);

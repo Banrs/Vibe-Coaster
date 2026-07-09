@@ -72,6 +72,15 @@ struct Track {
     int     bankCool = 0;   // BANKED-ELEMENT CADENCE (user: bank/tilt elements too often + too long vs real): after any banked-up-vector element, the next 2 element slots must be low-tilt (straight hills/dips/drops/inversions), matching how real layouts alternate lateral and vertical force events instead of chaining banked shapes back-to-back across families. Decremented per non-banked pick in rememberElement; feel rule only -- eligibleSafety ignores it.
     int     boostCool = 0;   // RE-POWER CADENCE (user: too many dead-flat sections): a real coaster has 1-3 mid-course boosts, not one every ~14 s -- after a BOOST, skip re-powering for the next few element slots so the ride runs proper discharge arcs (long bleed, then one big recharge) instead of constant flat interruptions. Survival override at genV<58 in nextMode keeps forced climbs alive.
     int     levelHold = 0;
+    // ONE-TRANSITION-SEGMENT machinery (kills the 1-3 cp FLAT/BOOST stub class between elements).
+    // MIN_CONN is the minimum length of any CONNECTIVE (FLAT/BOOST) run: a real coaster stitches
+    // elements with ONE continuous transition, never a churn of 1-3 cp stubs. When a safety guard
+    // force-ends an element (remain->1) or a boost is truncated, connLatch is armed so nextMode hands
+    // to exactly ONE latched FLAT transition (>= MIN_CONN cps, smoothed terrain-follow) instead of
+    // re-entering the scheduler and flipping modes every 1-2 cps.
+    static const int MIN_CONN = 4;   // 4 cps ~= 56 m
+    int     connLatch = 0;   // >0: the NEXT nextMode() emits the single latched FLAT transition
+    int     flatRun = 0;     // consecutive committed M_FLAT cps so far (0-based): gates the FLAT->CLIMB wall reroute so a connective FLAT never converts before it has run MIN_CONN cps (no 1-3 cp FLAT stub)
     float   rollPh = 0.0f;   // phase of the gentle connective-track swell (M_FLAT/M_TURN undulation)
     int     queuedInv = 0;
     SegMode lastElem = M_FLAT, prevElem = M_FLAT;
@@ -181,7 +190,7 @@ struct Track {
         elemLimit = irnd(17, 24); queuedInv = 0; launchElem = M_CLIMB; mcbrDone = false;   // ~28% fewer elements per lap (see startLaunch): the WR-sized elements each run much longer track
         cliffDone = false; signatureDive = false; cliffMode = 0; hardInvCount = 0;
         invBudget = irnd(2, 4); quotaMet = 0; cliffFizzles = 0; cliffScanCool = 0;
-        bankCool = 0; boostCool = 0; bankHold = 0;
+        bankCool = 0; boostCool = 0; bankHold = 0; connLatch = 0; flatRun = 0;
         lastElem = M_FLAT; prevElem = M_FLAT; helixDrop = -3.4f; genV = LAUNCH_V;
         genPrevDy = 0; genPrevCurv = 0; genPrevDyaw = 0; genFloorY = -1e9f; genFloorVy = 0;
         crownLatched = false;
@@ -1389,7 +1398,7 @@ struct Track {
         if (forcedElem < 0 && fabsf(genPrevDy) > 0.45f * SEG_LEN) {
             float dlimPosFlat = 9.0f * SEG_LEN * SEG_LEN * GRAV / fmaxf(genV * genV, 400.0f);
             int   settleSteps = (int)ceilf(fabsf(genPrevDy) / fmaxf(dlimPosFlat, 0.05f));
-            mode = M_FLAT; remain = Clamp(settleSteps, 2, 12); levelHold = 0; return;
+            mode = M_FLAT; remain = Clamp(settleSteps, MIN_CONN, 12); levelHold = 0; return;   // MIN_CONN floor: connective FLAT is one transition, never a 2-3 cp stub
         }
         SegMode pick = (forcedElem >= 0) ? (SegMode)forcedElem : rollElementPick();
 
@@ -1429,6 +1438,7 @@ struct Track {
         bool powered = (mode == M_LAUNCH || mode == M_BOOST || mode == M_CLIMB);
         mode   = (powered || h > 20.0f) ? M_DROP : M_FLAT;
         remain = n;
+        if (mode == M_FLAT && remain < MIN_CONN) remain = MIN_CONN;   // a connective breather-flat is one transition (>= MIN_CONN), never a 2-3 cp stub; the DROP branch keeps its element-internal length
         dropRun = 0;
         dropTopY = gpos.y;   // max-drop cap: this drop run measures from here (latched at EVERY M_DROP entry site so the post-hoc cap floor, which can run in the SAME genPoint call as a mid-call mode switch, never reads a stale/unset crest)
         // DOUBLE-DOWN (new roll-free thrill, replacing some of the cut roll elements): a third
@@ -1448,6 +1458,32 @@ struct Track {
             // over and over at a controlled entry speed. genV is pinned by the caller.
             if (mode != M_FLAT) { mode = M_FLAT; remain = 3; return; }
             chooseElement(h);
+            return;
+        }
+
+        // ANTI-CHURN LATCH: a safety guard force-ended the previous element (or truncated a boost).
+        // Hand to exactly ONE continuous FLAT transition (>= MIN_CONN cps, smoothed terrain-follow),
+        // not back into the scheduler -- a re-firing guard used to flip modes every 1-2 cps here,
+        // stamping the 1-3 cp FLAT/BOOST stub churn. Station handoff (below) still wins on the next
+        // decision; connLatch is only ever armed by the banked/boost wall guards, never at a station.
+        if (connLatch > 0) {
+            connLatch = 0;
+            // Decide the ONE transition UP FRONT from the terrain ahead so we never emit a 1-cp
+            // connective FLAT that the M_FLAT wall guard would immediately re-convert to CLIMB (that
+            // stubbed the FLAT). A genuine wall (>55 m climb over the 6-step lookahead) gets a real
+            // powered CLIMB sized to the wall (apex just over the top, held < ~280 by the >40 crest
+            // cap); anything else gets the smoothed terrain-follow FLAT (>= MIN_CONN cps).
+            float gtHere = groundTopAt(gpos.x, gpos.z), gtW = gtHere;
+            for (int la = 1; la <= 6; la++)
+                gtW = fmaxf(gtW, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                             gpos.z + cosf(gyaw) * SEG_LEN * la));
+            if (gtW + 4.0f - gpos.y > 55.0f) {
+                mode = M_CLIMB; chainMode = false; mega = false;
+                climbTop = fmaxf(fminf(gtW + 4.0f - gtHere, 276.0f - gtHere), 14.0f);
+                remain = 40;   // apex handoff exits long before this runs out
+            } else {
+                mode = M_FLAT; remain = MIN_CONN; levelHold = 0;
+            }
             return;
         }
 
@@ -1543,7 +1579,7 @@ struct Track {
                 // occasionally, and a drop that capped out still elevated hands to the
                 // height-tolerant element families instead of shelf-then-drop-again.
                 if (h > 16.0f || rnd01() < 0.65f) chooseElement(h);
-                else { mode = M_FLAT; remain = irnd(2, 3); }   // >=2 so no degenerate single-cp (hSpan 0) flat
+                else { mode = M_FLAT; remain = irnd(MIN_CONN, 6); }   // one continuous breather transition (>= MIN_CONN cps), not a 1-3 cp stub
                 break;
             case M_LOOP:
             case M_ROLL:
@@ -1766,7 +1802,7 @@ struct Track {
                     gtAheadN = fmaxf(gtAheadN, groundTopAt(gpos.x + snA * lz, gpos.z + csA * lz));
                 float hAhead = gpos.y - gtAheadN;
                 if (!wantLaunch && hAhead > 16.0f) {
-                    mode = M_DROP; remain = irnd(3, 6); dropRun = 0;
+                    mode = M_DROP; remain = irnd(MIN_CONN, 6); dropRun = 0;   // sawtooth ground-hug drop: min 4 so it's a real dive, not a 3-cp stub
                     dropTopY = gpos.y;   // max-drop cap latch (see enterDrop)
                     if (wasBanked) { upEaseSteps = 3; upEaseInit = 3; }   // reset upEaseInit too, else the two-phase unwind reads a stale window from a prior element
                 }
@@ -1777,13 +1813,30 @@ struct Track {
                     // Skip the boost where the corridor ahead rises; the next low flat slot takes it.
                     float cs = cosf(gyaw), sn = sinf(gyaw);
                     float gtHere = gpos.y - h, rise = 0.0f;
-                    for (float lz = 10.0f; lz <= 110.0f; lz += 10.0f)
+                    // BOOST PRECONDITION: scan the WHOLE planned boost run (~160 m, the irnd(8,12)-cp
+                    // upper bound) up-front, not just the first 110 m -- a wall beyond 110 m used to let
+                    // the boost start and then get truncated mid-run (the 1-cp BOOST stub). Only start a
+                    // boost whose full length is corridor-viable; otherwise skip and let the next low
+                    // flat slot take it (boostCool unchanged, it just waits).
+                    for (float lz = 10.0f; lz <= 160.0f; lz += 10.0f)
                         rise = fmaxf(rise, groundTopAt(gpos.x + sn * lz, gpos.z + cs * lz) - gtHere);
+                    // NEAR-FIELD viability, measured with the SAME metric the mid-boost truncation guard
+                    // uses (terrain+2 above the DECK, not just above local ground): a boost whose deck
+                    // sits at/below terrain would be truncated on step 1-3 -> a 1-3 cp BOOST stub. Clear
+                    // the first MIN_CONN+4 steps so the truncation guard cannot fire until the boost has
+                    // already run >= MIN_CONN cps (its 5-step lookahead then only sees un-scanned terrain
+                    // at/after step MIN_CONN, and any late truncation converts the remainder to FLAT).
+                    float needNF = 0.0f;
+                    for (int la = 1; la <= MIN_CONN + 4; la++)
+                        needNF = fmaxf(needNF, groundTopAt(gpos.x + sn * SEG_LEN * la,
+                                                           gpos.z + cs * SEG_LEN * la) + 2.0f - gpos.y);
                     // Aesthetics yield to survival: with no ambient re-power floor in the ride sim,
                     // skipping the boost on a long climb stalls the train outright (measured: 4/8
-                    // seeds stalled). A genuinely slow train boosts even on a slope.
-                    if (rise <= 14.0f || genV < 66.0f) startBoost();
-                    else                               chooseElement(h);
+                    // seeds stalled). A genuinely slow train boosts even on a slope -- but never into a
+                    // near wall (needNF), which would just stub the boost; there the wall belongs to a
+                    // terrain-following mode (its own wall guard powers a real CLIMB over it).
+                    if (needNF <= 8.0f && (rise <= 14.0f || genV < 66.0f)) startBoost();
+                    else                                                   chooseElement(h);
                 }
                 // Flow straight into the next element. The exit taper (stepGeneric) already unwinds a
                 // banked element to near-flat over its last 2 steps, so banked->anything is smooth
@@ -1906,9 +1959,21 @@ struct Track {
                 // the train near the top (~170 m walls bled 60 m/s down to a crawl). Real coasters
                 // POWER forced climbs -- convert to a proper CLIMB: its tag-gated lift assist holds
                 // CLIMB_V through the ascent and its apex logic hands to DROP over the wall's top.
-                if (gtWallMax + 4.0f - gpos.y > 55.0f) {
+                // Hold the FLAT->CLIMB conversion until the connective FLAT has run MIN_CONN cps, so a
+                // wall entering the lookahead one cp into a fresh breather/settle flat doesn't stub it to
+                // a 1-3 cp FLAT (the FLAT terrain-follow climbs the average at up to +10/step meanwhile,
+                // well within a 55 m/6-step grade). A genuinely unfollowable cliff (>100 m over 6 steps)
+                // still converts at once to avoid the crawl-stall the reroute was built for.
+                if (gtWallMax + 4.0f - gpos.y > 55.0f &&
+                    (flatRun >= MIN_CONN - 1 || gtWallMax + 4.0f - gpos.y > 100.0f)) {
                     mode = M_CLIMB; chainMode = false; mega = false;
-                    climbTop = 14.0f;   // crest just over the wall top (next launch re-sets its own)
+                    // SIZE the climb to the WALL it was created for (the CLIMB/DROP churn root):
+                    // climbTop=14 put ceilNow = gt+14 ~= current y (local gt is still low at conversion),
+                    // so the crest-lead fired within 1-3 cps -> CLIMB(1-3)->DROP(3-4) loop while the wall
+                    // guard re-converted. Aim the apex just over the wall top (gtWallMax+4), clamped so
+                    // the crest cp stays < ~280 (the >40 branch's ceilNow/ceilY 264 cap then holds the
+                    // sampled spline crest under 300). One continuous climb, no spurious rim hat, no churn.
+                    climbTop = fmaxf(fminf(gtWallMax + 4.0f - gt, 276.0f - gt), 14.0f);
                     remain = 40;        // apex handoff exits long before this runs out
                     dy = genPrevDy;     // this step stays neutral; the climb takes over next step
                     break;
@@ -2039,7 +2104,10 @@ struct Track {
                                                            gpos.z + cosf(gyaw) * SEG_LEN * la));
                     if (gtWall + 4.0f - gpos.y > 55.0f) {
                         mode = M_CLIMB; chainMode = false; mega = false;
-                        climbTop = 14.0f; remain = 40;
+                        // Size the climb to the wall (same root fix as the M_FLAT reroute above): apex
+                        // just over the wall top, clamped < ~280 so the >40 crest cap keeps it under 300.
+                        climbTop = fmaxf(fminf(gtWall + 4.0f - gt, 276.0f - gt), 14.0f);
+                        remain = 40;
                         dy = genPrevDy;
                         break;
                     }
@@ -2115,7 +2183,21 @@ struct Track {
                              // rises faster than the boost can g-safely climb, END the boost here (the same
                              // wall-guard the HILLS cosine uses below) so a terrain-following mode takes the
                              // wall on a real curvature budget instead of the powered flat.
-                             if (need > 8.0f && remain > 1) remain = 1;
+                             // END the boost only on a genuine WALL the incline cannot REACH. The old
+                             // need>8 test read terrain 5 steps ahead against the current deck, so it
+                             // fired on every gentle 2-3 m/step sustained grade (need accumulates to >8
+                             // over 5 steps) and stubbed the boost to 1 cp -- the BOOST short-run class.
+                             // The incline climbs up to 15 m/step, so a step k ahead is reachable iff
+                             // terrain[k] <= deck + 15*k. Truncate only where some near step OUTRUNS that
+                             // (a sharp cliff the incline can't clear -> it would tunnel, the -18 g class),
+                             // handing to ONE latched FLAT transition (its own wall guard then powers a real
+                             // CLIMB), never a 1-cp BOOST stub on a followable grade.
+                             bool boostWall = false;
+                             for (int la = 1; la <= 5 && !boostWall; la++)
+                                 if (groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                                 gpos.z + cosf(gyaw) * SEG_LEN * la) > gpos.y + 15.0f * la + 5.0f)
+                                     boostWall = true;
+                             if (boostWall && remain > 1) { remain = 1; connLatch = MIN_CONN; }
                              // Every vertical g-budget in this generator is sized on the COASTING speed
                              // model (genV, and gvlog in the post-hoc safety nets) -- but a BOOST actively
                              // THRUSTS the train to its ~86 m/s cruise regardless of terrain. On a
@@ -2319,7 +2401,7 @@ struct Track {
             for (int la = 1; la <= 5; la++)
                 gtW = fmaxf(gtW, groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
                                              gpos.z + cosf(gyaw) * SEG_LEN * la));
-            if (gtW + 2.0f - gpos.y > 26.0f) remain = 1;   // steep wall ahead the floor would lift the coil into
+            if (gtW + 2.0f - gpos.y > 26.0f) { remain = 1; connLatch = MIN_CONN; }   // steep wall ahead the floor would lift the coil into; hand to ONE latched FLAT transition after the cut
         }
 
         if (mode != M_STATION && mode != M_LAUNCH) {
@@ -2331,12 +2413,12 @@ struct Track {
             if (gpos.y < tunnelFloor) {
                 float lift = tunnelFloor - gpos.y;
                 gpos.y = tunnelFloor;
-                if (mode == M_HELIX && remain > 1) remain = 1;
+                if (mode == M_HELIX && remain > 1) { remain = 1; connLatch = MIN_CONN; }
                 // A hill hump the floor is having to LIFT hard has met terrain its cosine can't
                 // see (a cliff face the offer-time scan missed, e.g. around a turn) -- end the
                 // element and let the terrain-following modes climb the wall on a real budget.
                 if (lift > 8.0f && remain > 1 &&
-                    (mode == M_HILLS || mode == M_BANKAIR || mode == M_WAVE)) remain = 1;
+                    (mode == M_HILLS || mode == M_BANKAIR || mode == M_WAVE)) { remain = 1; connLatch = MIN_CONN; }
             }
         }
         if (gpos.y > ceilY) {
@@ -2716,6 +2798,9 @@ struct Track {
     void genPoint() {
         unsigned char tag = (unsigned char)mode;
         unsigned char ch  = (mode == M_CLIMB && chainMode) ? 1 : 0;
+        // Track how many consecutive FLAT cps have committed (the M_FLAT wall reroute uses it to
+        // avoid converting a connective FLAT to CLIMB before it has run MIN_CONN cps -> no FLAT stub).
+        flatRun = (mode == M_FLAT && lastGenMode == (unsigned char)M_FLAT) ? flatRun + 1 : 0;
 
         {
             bool flatNow = (mode == M_DROP || mode == M_FLAT);

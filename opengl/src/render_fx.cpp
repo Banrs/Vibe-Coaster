@@ -168,15 +168,26 @@ static const char *SHADOW_FS =
     // hugely-diffused shadow, so fade the shadow to fully-lit as the caster
     // gets far above the receiver; near-ground shadows (small worldZDiff --
     // terrain, supports, a train low to the ground) are untouched.
-    "const float SHADOW_FADE_NEAR = 40.0;\n"
-    "const float SHADOW_FADE_FAR  = 110.0;\n"
+    "const float SHADOW_FADE_NEAR = 120.0;\n"
+    "const float SHADOW_FADE_FAR  = 400.0;\n"
+    // Cascade0 only: its 0.031 m/texel map resolves dense sub-metre detail
+    // (grass tufts, flower/decor voxels, blocky terrain micro-relief) that the
+    // coarser cascade1/2 maps physically cannot represent. At cascade0's texel
+    // density the PCSS blocker-search picks those up as occluders and smears
+    // their micro-shadows into a continuous grey carpet over open ground inside
+    // band0 -- the reported dark disc around the train. Raising cascade0's bias
+    // (which gates both the blocker-search and the PCF depth compare) so only
+    // occluders taller than ~6 m cast in the near cascade drops that carpet
+    // while keeping real tree/support/structure shadows, matching what forcing
+    // the near band onto cascade1 does. Cascade1/2 bias is unchanged.
+    "const float CASCADE0_BIAS_MULT = 16.0;\n"
     // Split per-cascade so every call site passes a compile-time-known cascade --
     // no runtime idx branch needed since callers always pass a literal 0/1/2.
     "float shadowCascade0(vec3 N){\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
     "  vec4 lp = lightVP0*vec4(fragWorld,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
     "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "  float bias = worldBias(NoL)*invRange0;\n"
+    "  float bias = worldBias(NoL)*invRange0*CASCADE0_BIAS_MULT;\n"
     "  int nB; float avgB;\n"
     "  blockerSearch(shadowMap0, shadowTexel0, p, bias, PCSS_SEARCH_WORLD/pcssTexelWorld0, nB, avgB);\n"
     "  if(nB == 0) return 1.0;\n"
@@ -413,7 +424,13 @@ static const char *SHADOW_FS =
     "    vec3 fresM = genuineMetal ? fresMetal : vec3(fresDielectric);\n"
     "    float strength = genuineMetal ? GENUINE_METAL_STRENGTH : METAL_REFLECT_STRENGTH;\n"
     "    float mask = genuineMetal ? 1.0 : sheen;\n"
-    "    col = mix(col, metalRefl, mask*fresM*strength);\n"
+    // Gate the sky-reflection weight by the shadow factor (same mix(0.35,1.0,rawSh)
+    // the rim term already uses): in full sun rawSh=1 so the reflection is unchanged,
+    // but a shadowed metal pillar keeps only a fraction of the bright sky reflection so
+    // it can never paint brighter than the shaded surface it sits against (the reported
+    // white/inverted pillar-shadow reads as the ungated reflection out-lighting the dark
+    // backdrop). Strictly darkening-only in shadow -- no change to lit surfaces.
+    "    col = mix(col, metalRefl, mask*fresM*strength*mix(0.35,1.0,rawSh));\n"
     "  }\n"
     "  if(legacyTonemap > 0.5){\n"
     "    col = aces(col*0.94);\n"

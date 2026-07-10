@@ -35,5 +35,8 @@ set_target_properties(minecoaster PROPERTIES
 
 # Standalone V2 acceptance harness (no window; exit 0 == pass). Run after
 # every track change: build, then ./v2track_tests from opengl/build.
+# -UNDEBUG: the emitters' consistency assertions must be LIVE in the harness
+# even though the game ships Release (-DNDEBUG).
 add_executable(v2track_tests src/track/track_tests.cpp ${V2_TRACK_SOURCES})
 target_link_libraries(v2track_tests raylib)
+target_compile_options(v2track_tests PRIVATE -UNDEBUG)

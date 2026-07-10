@@ -38,13 +38,15 @@ Route buildSmokeRoute(uint32_t seed) {
 // on one straight heading. Sizes are PROVISIONAL harness values (see
 // REALISM_SCALE.md "ask before locking in" — final planner targets are a user
 // decision); what this route proves is continuity and element acceptance,
-// which are size-independent.
-Route buildStep2Route(uint32_t seed) {
+// which are size-independent. `ds` is a parameter so the harness can also
+// validate at the acceptance sweep's finer 0.25-0.5 m resolution.
+Route buildStep2Route(uint32_t seed) { return buildStep2RouteDs(seed, 1.0f); }
+Route buildStep2RouteDs(uint32_t seed, float ds) {
     (void)seed;
     Route r;
     Pose p0;
     p0.pos = Vector3{0.0f, 80.0f, 0.0f};
-    startRoute(r, p0, 1.0f);
+    startRoute(r, p0, ds);
 
     emitLine(r, 30.0f, Tag::Station, false);
     emitLine(r, 120.0f, Tag::Launch, true);
@@ -81,12 +83,13 @@ Route buildStep2Route(uint32_t seed) {
 
 // Step-3 proof route: plan-view primitives (turn, s-curve, helix) between
 // straights. Same provisional-size caveat as buildStep2Route.
-Route buildStep3Route(uint32_t seed) {
+Route buildStep3Route(uint32_t seed) { return buildStep3RouteDs(seed, 1.0f); }
+Route buildStep3RouteDs(uint32_t seed, float ds) {
     (void)seed;
     Route r;
     Pose p0;
     p0.pos = Vector3{0.0f, 80.0f, 0.0f};
-    startRoute(r, p0, 1.0f);
+    startRoute(r, p0, ds);
 
     emitLine(r, 40.0f, Tag::Line, false);
 

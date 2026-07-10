@@ -272,8 +272,10 @@ Pose emitHelix(Route& r, const HelixSpec& spec);
 Route buildSmokeRoute(uint32_t seed);
 // buildStep2Route: all step-2 vertical primitives in sequence (harness only).
 Route buildStep2Route(uint32_t seed);
+Route buildStep2RouteDs(uint32_t seed, float ds);
 // buildStep3Route: plan-view primitives — turn, s-curve, helix (harness only).
 Route buildStep3Route(uint32_t seed);
+Route buildStep3RouteDs(uint32_t seed, float ds);
 
 // track_math / framing — one pass over a finished route: parallel-transport
 // the frame along the samples, then apply designed roll about the tangent.

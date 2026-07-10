@@ -373,6 +373,22 @@ static void testStep3Route() {
     }
 }
 
+// Acceptance sweep at the doc-specified fine resolution (0.25-0.5 m): the
+// emitters are deterministic in ds, so the same proof routes re-emitted at
+// 0.5 m must validate clean too.
+static void testFineResolutionSweep() {
+    for (int which = 2; which <= 3; which++) {
+        Route r = which == 2 ? buildStep2RouteDs(1, 0.5f) : buildStep3RouteDs(1, 0.5f);
+        ValidationReport rep = validateRoute(r, nullptr);
+        for (const Discontinuity& d : rep.discontinuities)
+            printf("  fine discontinuity: s=%.1f %s jump=%g tag=%s\n", d.s, d.quantity,
+                   d.jump, tagName(d.tag));
+        for (const std::string& e : rep.elementFailures) printf("  fine element: %s\n", e.c_str());
+        CHECK(rep.pass(), "step%d route at ds=0.5: %zu discont, %zu elem failures", which,
+              rep.discontinuities.size(), rep.elementFailures.size());
+    }
+}
+
 // ---------------------------------------------------------------------------
 int main() {
     testS5();
@@ -381,6 +397,7 @@ int main() {
     testSmokeRoute();
     testStep2Route();
     testStep3Route();
+    testFineResolutionSweep();
     testValidatorCatchesShelf();
     testAdapter();
     printf("%s: %d checks, %d failures\n", g_fails == 0 ? "PASS" : "FAIL", g_checks, g_fails);

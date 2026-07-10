@@ -92,9 +92,11 @@ static void sweepSamples(const Route& r, ValidationReport& rep) {
         float rollRate = (B.roll - A.roll) / ds;
         if (havePrevRollRate) {
             float jump = fabsf(rollRate - prevRollRate);
-            // S5 roll ramps bound |d2roll/ds2| well under 0.05 for any ramp
-            // this game uses; a genuine step lands far above this.
-            if (jump > 0.05f * ds && !isDeliberateJoint(A.tag, B.tag))
+            // Legit bound: an S5 roll ramp of dRoll over L has
+            // |d2roll/ds2| <= 5.78*dRoll/L^2 — under 0.0025 for every ramp
+            // this game uses (60 deg over 50 m). 0.01 gives 4x margin while
+            // still catching a ~0.6 deg bank kink at one sample.
+            if (jump > 0.01f * ds && !isDeliberateJoint(A.tag, B.tag))
                 rep.discontinuities.push_back(Discontinuity{B.s, "rollRate", jump, B.tag});
         }
         prevRollRate = rollRate;
@@ -270,6 +272,34 @@ void checkCamelback(const Route& r, const ElemRun& run, ValidationReport& rep) {
     for (int i = iMax + 1; i <= iMin; i++)
         if (r.samples[i].pitch > r.samples[i - 1].pitch + 1e-4f) {
             fail(rep, run, r, "mid-hill flattening (pitch not monotone over the hill)");
+            break;
+        }
+    // Mirror-image halves (SHAPES.md): pitch antisymmetric about the crest.
+    // The crest generally falls BETWEEN samples, so locate it as the
+    // interpolated pitch zero-crossing and compare interpolated pitch at
+    // +-d around it (a sample-anchored comparison would carry up to ~1.4 deg
+    // of legitimate sub-sample offset bias).
+    float sCrest = -1.0f;
+    for (int i = iMax; i < iMin; i++)
+        if (r.samples[i].pitch > 0.0f && r.samples[i + 1].pitch <= 0.0f) {
+            float p0 = r.samples[i].pitch, p1 = r.samples[i + 1].pitch;
+            sCrest = r.samples[i].s + r.ds * p0 / (p0 - p1);
+            break;
+        }
+    if (sCrest < 0.0f) {
+        fail(rep, run, r, "no pitch zero-crossing at crest");
+        return;
+    }
+    auto pitchAt = [&](float s) {
+        float fi = s / r.ds;
+        int i = (int)fi;
+        float f = fi - (float)i;
+        return r.samples[i].pitch * (1.0f - f) + r.samples[i + 1].pitch * f;
+    };
+    float reach = fminf(sCrest - r.samples[run.i0].s, r.samples[run.i1].s - sCrest) - r.ds;
+    for (float d = 2.0f; d < reach; d += 3.0f)
+        if (fabsf(pitchAt(sCrest + d) + pitchAt(sCrest - d)) > degToRad(1.0f)) {
+            fail(rep, run, r, "halves are not mirror images (pitch asymmetry > 1 deg)");
             break;
         }
 }

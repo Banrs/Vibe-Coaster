@@ -225,7 +225,17 @@ Run this before replacing the old generator:
 4. Add natural escarpment scan and cliff-dive primitive; no fallback tower.
 5. Add inversion primitives one at a time.
 6. Switch the OpenGL host to V2 after the fixed-seed visual and continuity suite passes.
-7. Port the renderer backends to the V2 adapter, then delete V1 generator code and diagnostics.
+7. Port the renderer backends to the V2 adapter, then retire the V1 generator + dead diagnostics.
+
+**Status: steps 1–7 DONE (2026-07-10).** The live OpenGL host runs only the V2 `TrackV2`
+generator. V1 (`coaster_track.cpp`, `coaster_elements_ext.cpp`, `audit_diagnostics.cpp`) was
+**archived to `opengl/legacy/` — kept unbuilt and byte-identical to its original, for reference,
+not deleted** (user decision, superseding "delete"). The V1-only CLI diagnostics were replaced by
+the headless `--v2audit N` (build+validate N seeds). The OpenGL renderer is the only host; the
+`vulkan/` + `win-rtx/` backend forks live quarantined in `../mythostest-forks/` and are still
+un-ported to the V2 adapter (out of scope until resumed). **Outstanding:** the fixed-seed VISUAL
+regression has not been run (this dev environment can't open a GL context — a human launch of
+`./opengl/minecoaster` is needed); and the unsupported-span follow-up (see below).
 
 ### Step-6 host requirements (user, 2026-07-10)
 

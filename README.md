@@ -5,11 +5,12 @@ in real coaster engineering," Minecraft-style voxel world with a modern shader-q
 
 ## Current direction
 
-The existing procedural-track implementation is V1 baseline code only. It is intentionally not
-the source of truth for future geometry work. The next implementation is a clean V2 route builder:
-continuous primitives first, dense arc-length samples second, and terrain validation last. The
-rendering/shader layer is a separate, partial-to-full rewrite target too — see
-`docs/REALISM_SCALE.md`'s "Core philosophy" section.
+The **V2 route builder is live** (2026-07-10): the OpenGL host generates every ride from the
+`opengl/src/track/` module — continuous primitives first, dense arc-length samples second, terrain
+validation last. The old V1 generator has been retired to `opengl/legacy/` (kept for reference,
+unbuilt). The **rendering/shader layer is the next rewrite target** — a separate, partial-to-full
+pass to hit the "shader Minecraft" look; see `docs/REALISM_SCALE.md`'s "Core philosophy" section
+and `opengl/COASTER_REWRITE.md` for status.
 
 Read these before touching track geometry, sizing, or pacing:
 
@@ -26,8 +27,9 @@ preserves them if needed; they are not valid requirements for V2.
 
 | Folder | Purpose |
 |---|---|
-| [`opengl/`](opengl/) | The only active code: playable raylib/OpenGL host and V1 baseline, target of the V2 rewrite. |
-| [`docs/`](docs/) | Current design docs for the track rewrite (`SHAPES.md`, `TERRAIN_CONTRACT.md`, `REALISM_SCALE.md`). |
+| [`opengl/`](opengl/) | The playable raylib/OpenGL host. `opengl/src/track/` is the live V2 generator; `opengl/src/` is the host (game loop, rendering, world). |
+| [`opengl/legacy/`](opengl/legacy/) | Retired V1 generator (`coaster_track.cpp`, `coaster_elements_ext.cpp`, `audit_diagnostics.cpp`), unbuilt, kept for reference — do not modify or re-include. |
+| [`docs/`](docs/) | Design docs (`SHAPES.md`, `TERRAIN_CONTRACT.md`, `REALISM_SCALE.md`). |
 
 The experimental Vulkan and Windows DXR renderer forks (each hard-depending on the V1
 generator internals) were moved out of this repo to `../mythostest-forks/` on 2026-07-09

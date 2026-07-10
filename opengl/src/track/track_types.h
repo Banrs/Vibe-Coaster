@@ -153,6 +153,7 @@ struct ValidationReport {
     std::vector<std::string> elementFailures;
     float cutLength = 0.0f;     // total cut length, meters — report explicitly:
     float tunnelLength = 0.0f;  // near-zero across seeds is a RED FLAG
+    float unsupportedLength = 0.0f; // rail higher above ground than supports reach
     bool  terrainMutated = false; // must stay false
     bool  pass() const {
         return discontinuities.empty() && elementFailures.empty() && !terrainMutated;
@@ -267,6 +268,30 @@ struct HelixSpec {
 };
 Pose emitHelix(Route& r, const HelixSpec& spec);
 
+// Cliff dive (SHAPES.md "Terrain and cliff dives", REALISM_SCALE.md — sole
+// real anchor is Falcon's Flight: LSM climb, outward-banked summit turn,
+// near-vertical dive down a NATURAL escarpment): powered climb for the extra
+// track height, outward-banked edge turn, push-over to the signature
+// near-vertical face, planned pull-out in the valley. Placement against a
+// scanned EscarpmentSite is the planner's job; the primitive is pure
+// geometry, and a ride with no qualifying site gets NO cliff dive.
+struct CliffDiveSpec {
+    float climbHeight = 70.0f;    // extra track height gained by the climb (m)
+    float climbAngle = 0.43633231f; // 25 deg
+    float climbRamp = 40.0f;
+    float edgeAngle = 1.30899694f; // 75 deg summit turn (signed)
+    float edgeRadius = 60.0f;
+    float edgeRamp = 35.0f;
+    float edgeBank = 0.61086524f;  // 35 deg OUTWARD (over the void), PROVISIONAL —
+                                   // no numeric bank is published for Falcon's
+                                   // Flight (REALISM_SCALE.md flags the gap)
+    float diveHeight = 220.0f;     // raw descent, edge to valley pull-out (m)
+    float thetaDive = 1.51843645f; // 87 deg near-vertical signature face
+    float diveRampIn = 30.0f;
+    float diveRampOut = 55.0f;
+};
+Pose emitCliffDive(Route& r, const CliffDiveSpec& spec);
+
 // track_planner.cpp — whole-ride beat planning (built out in steps 2+).
 // buildSmokeRoute: minimal deterministic route used by the step-1/2 harness.
 Route buildSmokeRoute(uint32_t seed);
@@ -284,9 +309,20 @@ void buildFrames(Route& r);
 // track_validate.cpp — continuity sweep at 0.25–0.5 m plus per-element checks.
 ValidationReport validateRoute(const Route& r, const TerrainQuery* terrain);
 
-// track_terrain.cpp — escarpment scan (step 4; declared for the skeleton).
+// track_terrain.cpp — escarpment scan + the planner's clearance policy.
 std::vector<EscarpmentSite> scanEscarpments(const TerrainQuery& terrain,
                                             Vector3 center, float radiusM);
+
+// Cut/tunnel is the DEFAULT response to encroachment; Reject only when the
+// bounded-cut limits are exceeded (TERRAIN_CONTRACT.md rule 3 + historical
+// note: near-zero cut usage across seeds is a red flag, not a success).
+enum class ClearanceDecision { Accept, AcceptWithCuts, Reject };
+struct ClearanceLimits {
+    float maxCutLen = 140.0f;     // longest contiguous cut/tunnel span (m), PROVISIONAL
+    float maxTunnelDepth = 30.0f; // deepest bore (m), PROVISIONAL
+};
+ClearanceDecision clearanceDecision(const ValidationReport& rep,
+                                    const ClearanceLimits& lim);
 
 } // namespace v2
 

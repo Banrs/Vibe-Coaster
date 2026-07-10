@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "../terrain_field.h" // real world heightfield for the step-4 tests
 #include "track_math.h"
 
 using namespace v2;
@@ -373,6 +374,146 @@ static void testStep3Route() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Step 4: escarpment scan + cliff dive against the REAL world terrain.
+// ---------------------------------------------------------------------------
+static Vector3 rotY(Vector3 v, float a) {
+    // Matches the module yaw convention: rotY(dirFromAngles(0,psi), a) ==
+    // dirFromAngles(0, psi+a).
+    float c = cosf(a), s = sinf(a);
+    return Vector3{v.x * c + v.z * s, v.y, v.z * c - v.x * s};
+}
+
+static void testStep4CliffDive() {
+    TerrainQuery terrain;
+    terrain.height = [](float x, float z) { return groundTopAt(x, z); };
+    terrain.waterY = kTerraWaterY;
+
+    // Terrain report (TERRAIN_CONTRACT.md validation: height distribution,
+    // dry-land vs water coverage).
+    {
+        int water = 0, total = 0;
+        float mn = 1e9f, mx = -1e9f;
+        double sum = 0.0;
+        for (int gz = -40; gz <= 40; gz++)
+            for (int gx = -40; gx <= 40; gx++) {
+                float g = terrain.height(gx * 12.5f, gz * 12.5f);
+                total++;
+                sum += g;
+                mn = fminf(mn, g);
+                mx = fmaxf(mx, g);
+                if (g <= kTerraWaterY + 0.01f) water++;
+            }
+        printf("  terrain: h[%.0f..%.0f] mean %.0f, water %.1f%%\n", mn, mx,
+               sum / total, 100.0 * water / total);
+        CHECK(water * 3 < total, "mostly dry land (water %d/%d)", water, total);
+    }
+
+    // Deterministic scan over spread-out centers; escarpments are rare by
+    // design, so several centers may come up empty — that is not a failure,
+    // it just means "no cliff dive at that location" (SHAPES.md).
+    std::vector<EscarpmentSite> sites;
+    int centersScanned = 0, centersWithSites = 0;
+    for (int j = -1; j <= 2 && sites.empty(); j++)
+        for (int i = -1; i <= 2; i++) {
+            Vector3 c{(float)i * 1150.0f, 0.0f, (float)j * 1150.0f};
+            auto found = scanEscarpments(terrain, c, 420.0f);
+            centersScanned++;
+            if (!found.empty()) {
+                centersWithSites++;
+                if (sites.empty()) sites = found;
+            }
+        }
+    printf("  scan: %d centers, first hit after %d, %zu sites at hit\n", centersScanned,
+           centersScanned - (centersWithSites > 0 ? 1 : 0), sites.size());
+    CHECK(!sites.empty(), "found a natural escarpment site");
+    if (sites.empty()) return;
+    const EscarpmentSite site = sites[0];
+    printf("  site: crest(%.0f,%.0f,%.0f) heading %.0f deg drop %.0f m (crest %.0f valley %.0f)\n",
+           site.crest.x, site.crest.y, site.crest.z, radToDeg(site.heading), site.dropHeight,
+           site.crestY, site.valleyY);
+    CHECK(site.dropHeight >= 55.0f, "site drop %.0f", site.dropHeight);
+
+    // Terrain immutability probe: identical heights before/after route build.
+    auto terrainProbe = [&]() {
+        double acc = 0.0;
+        for (int gz = -20; gz <= 20; gz++)
+            for (int gx = -20; gx <= 20; gx++)
+                acc += (double)terrain.height(site.crest.x + gx * 10.0f,
+                                              site.crest.z + gz * 10.0f) *
+                       (1.0 + 0.001 * gx + 0.002 * gz);
+        return acc;
+    };
+    double probeBefore = terrainProbe();
+
+    // Size the dive from the site: the climb supplies extra track height
+    // (never a terrain pillar); the dive descends to a pull-out ~3 m over
+    // the valley floor. The dive start is pushed outward to where the upper
+    // face has already fallen ~25 m, so the near-vertical track face runs
+    // just off the terrain face — remaining lip interference becomes a CUT,
+    // the preferred outcome, not something to dodge.
+    CliffDiveSpec spec;
+    float diveDirX = sinf(site.heading), diveDirZ = cosf(site.heading);
+    float lipOffset = 8.0f;
+    for (float w = 8.0f; w <= 60.0f; w += 4.0f) {
+        lipOffset = w;
+        if (terrain.height(site.crest.x + diveDirX * w, site.crest.z + diveDirZ * w) <
+            site.crestY - 25.0f)
+            break;
+    }
+    float diveStartY = site.crestY + 2.0f + spec.climbHeight;
+    spec.diveHeight = diveStartY - (site.valleyY + 3.0f);
+    Vector3 diveTarget{site.crest.x + diveDirX * lipOffset, diveStartY,
+                       site.crest.z + diveDirZ * lipOffset};
+
+    // Placement solve: probe route from the origin measures where the dive
+    // begins relative to the start pose; rotate/translate so it lands on the
+    // dive target with the site heading.
+    Route probe;
+    Pose origin;
+    startRoute(probe, origin, 1.0f);
+    emitLine(probe, 60.0f, Tag::Line, false);
+    emitCliffDive(probe, spec);
+    CHECK(probe.segs.size() == 10, "probe segs %zu", probe.segs.size());
+    const Pose diveProbe = probe.segs[probe.segs.size() - 3].entry;
+    float alpha = site.heading - diveProbe.yaw;
+    Vector3 dRot = rotY(diveProbe.pos, alpha);
+    Pose start;
+    start.pos = Vector3{diveTarget.x - dRot.x, diveTarget.y - dRot.y, diveTarget.z - dRot.z};
+    start.yaw = alpha;
+
+    Route r;
+    startRoute(r, start, 1.0f);
+    emitLine(r, 60.0f, Tag::Line, false);
+    emitCliffDive(r, spec);
+    emitLine(r, 80.0f, Tag::Line, false);
+    buildFrames(r);
+
+    const Pose diveReal = r.segs[r.segs.size() - 4].entry;
+    CHECK(Vector3Distance(diveReal.pos, diveTarget) < 1.0f, "dive start missed target by %g m",
+          Vector3Distance(diveReal.pos, diveTarget));
+    float dYaw = fabsf(diveReal.yaw - site.heading);
+    while (dYaw > kPi) dYaw = fabsf(dYaw - 2.0f * kPi);
+    CHECK(dYaw < 1e-3f, "dive heading off by %g deg", radToDeg(dYaw));
+
+    ValidationReport rep = validateRoute(r, &terrain);
+    for (const Discontinuity& d : rep.discontinuities)
+        printf("  discontinuity: s=%.1f %s jump=%g tag=%s\n", d.s, d.quantity, d.jump,
+               tagName(d.tag));
+    for (const std::string& e : rep.elementFailures) printf("  element: %s\n", e.c_str());
+    CHECK(rep.pass(), "cliff route validation: %zu discont, %zu elem failures",
+          rep.discontinuities.size(), rep.elementFailures.size());
+
+    printf("  clearance over %.0f m: cut %.0f m, tunnel %.0f m, unsupported %.0f m, spans %zu\n",
+           r.length(), rep.cutLength, rep.tunnelLength, rep.unsupportedLength,
+           rep.clearance.size());
+    ClearanceDecision dec = clearanceDecision(rep, ClearanceLimits{});
+    CHECK(dec != ClearanceDecision::Reject, "clearance decision rejected the dive");
+
+    CHECK(fabs(terrainProbe() - probeBefore) < 1e-9, "terrain mutated by route build");
+    CHECK(!rep.terrainMutated, "report flags terrain mutation");
+}
+
 // Acceptance sweep at the doc-specified fine resolution (0.25-0.5 m): the
 // emitters are deterministic in ds, so the same proof routes re-emitted at
 // 0.5 m must validate clean too.
@@ -397,6 +538,7 @@ int main() {
     testSmokeRoute();
     testStep2Route();
     testStep3Route();
+    testStep4CliffDive();
     testFineResolutionSweep();
     testValidatorCatchesShelf();
     testAdapter();

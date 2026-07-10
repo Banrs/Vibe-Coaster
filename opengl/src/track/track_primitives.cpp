@@ -274,6 +274,60 @@ Pose emitHelix(Route& r, const HelixSpec& h) {
 }
 
 // ---------------------------------------------------------------------------
+// Cliff dive — the signature composite (SHAPES.md "Terrain and cliff dives"):
+// LSM-powered climb (the TRACK supplies the extra height, never a terrain
+// pillar), outward-banked summit turn over the void, push-over to the
+// near-vertical face, planned pull-out. All segments carry Tag::CliffDive;
+// the climb is chain-powered.
+// ---------------------------------------------------------------------------
+Pose emitCliffDive(Route& r, const CliffDiveSpec& c) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kPitch) < 1e-4f && fabsf(e.kYaw) < 1e-4f && "cliff dive needs a straight entry");
+    assert(fabsf(e.pitch) < 1e-4f && fabsf(e.roll) < 1e-4f && "cliff dive needs a level entry");
+    Profile1D yawC = constantProfile(e.yaw);
+    Profile1D rollC = constantProfile(0.0f);
+
+    // Powered climb, height solved like the drop primitive's face.
+    {
+        Profile1D up = rampProfile(0.0f, c.climbAngle, c.climbRamp);
+        Profile1D dn = rampProfile(c.climbAngle, 0.0f, c.climbRamp);
+        float rise = profileRise(up, 0.0f, c.climbRamp) + profileRise(dn, 0.0f, c.climbRamp);
+        float face = (c.climbHeight - rise) / sinf(c.climbAngle);
+        assert(face > 4.0f && "climbHeight too small for its ramps");
+        emitSchedule(r, c.climbRamp, up, yawC, rollC, Tag::CliffDive, true);
+        emitSchedule(r, face, constantProfile(c.climbAngle), yawC, rollC, Tag::CliffDive, true);
+        emitSchedule(r, c.climbRamp, dn, yawC, rollC, Tag::CliffDive, true);
+    }
+
+    // Outward-banked summit turn: roll = +sgn*bank tips the rider AWAY from
+    // the turn centre (inward would be -sgn*bank; see the sign note above).
+    {
+        float sgn = c.edgeAngle >= 0.0f ? 1.0f : -1.0f;
+        float k = sgn / c.edgeRadius;
+        float rollOut = sgn * c.edgeBank;
+        float midAngle = fabsf(c.edgeAngle) - fabsf(k) * c.edgeRamp;
+        assert(midAngle > 0.01f && "edge turn too small for its ramps");
+        emitYawRampPhase(r, c.edgeRamp, 0.0f, k, 0.0f, rollOut, Tag::CliffDive);
+        emitYawArcPhase(r, midAngle * c.edgeRadius, k, Tag::CliffDive);
+        emitYawRampPhase(r, c.edgeRamp, k, 0.0f, rollOut, 0.0f, Tag::CliffDive);
+    }
+
+    // The dive itself: push-over, near-vertical face, planned pull-out.
+    {
+        Profile1D in = rampProfile(0.0f, -c.thetaDive, c.diveRampIn);
+        Profile1D out = rampProfile(-c.thetaDive, 0.0f, c.diveRampOut);
+        float dropIn = -profileRise(in, 0.0f, c.diveRampIn);
+        float dropOut = -profileRise(out, 0.0f, c.diveRampOut);
+        float face = (c.diveHeight - dropIn - dropOut) / sinf(c.thetaDive);
+        assert(face > 4.0f && "diveHeight too small for its transitions");
+        Profile1D yawD = constantProfile(r.endPose.yaw);
+        emitSchedule(r, c.diveRampIn, in, yawD, rollC, Tag::CliffDive, false);
+        emitSchedule(r, face, constantProfile(-c.thetaDive), yawD, rollC, Tag::CliffDive, false);
+        return emitSchedule(r, c.diveRampOut, out, yawD, rollC, Tag::CliffDive, false);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Drop — push-over, sustained face, planned pull-out (SHAPES.md "Drop and
 // valley"). The pull-out belongs to the primitive: a drop that cannot finish
 // is rejected by the planner, never cut short mid-face.

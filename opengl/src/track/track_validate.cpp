@@ -119,40 +119,76 @@ static void sweepSamples(const Route& r, ValidationReport& rep) {
 }
 
 static void sweepClearance(const Route& r, const TerrainQuery& t, ValidationReport& rep) {
-    // Measure-and-report only: the accept/cut/replan POLICY lives in the
-    // planner (TERRAIN_CONTRACT.md route-interaction rule 3). Near-zero
-    // cut/tunnel usage across seeds is a red flag the caller must surface.
-    const float kTunnelDepth = 6.0f; // deeper than this: tunnel, else open cut
+    // Measure-and-report only: the accept/cut/replan POLICY lives in
+    // clearanceDecision (TERRAIN_CONTRACT.md rule 3). Near-zero cut/tunnel
+    // usage across seeds is a red flag the caller must surface.
+    //
+    // Classification looks at the train envelope, not just the rail line:
+    // a below-ground sample whose LATERAL neighbours (+-3 m) are also buried
+    // is enclosed — a tunnel — even when shallow; an open trench is a cut.
+    const float kTunnelDepth = 6.0f;   // depth beyond which any bore is a tunnel
+    const float kEnvelope = 3.0f;      // lateral half-width + headroom probe
+    const float kUnsupported = 45.0f;  // tallest plausible support (PROVISIONAL)
+
     ClearanceSpan cur;
     bool open = false;
-    for (const Sample& smp : r.samples) {
-        float ground = t.height(smp.pos.x, smp.pos.z);
-        float depth = ground - smp.pos.y; // >0: rail below ground
-        bool below = depth > 0.0f;
-        if (below && !open) {
-            cur = ClearanceSpan{};
-            cur.s0 = smp.s;
-            open = true;
-        }
-        if (open) {
-            cur.maxDepth = fmaxf(cur.maxDepth, depth);
-            cur.s1 = smp.s;
-        }
-        if (!below && open) {
-            cur.kind = cur.maxDepth > kTunnelDepth ? ClearanceSpan::Kind::Tunnel
-                                                   : ClearanceSpan::Kind::Cut;
-            float len = cur.s1 - cur.s0;
-            (cur.kind == ClearanceSpan::Kind::Tunnel ? rep.tunnelLength : rep.cutLength) += len;
-            rep.clearance.push_back(cur);
-            open = false;
-        }
-    }
-    if (open) {
-        cur.kind = cur.maxDepth > kTunnelDepth ? ClearanceSpan::Kind::Tunnel
-                                               : ClearanceSpan::Kind::Cut;
+    int enclosedCount = 0, spanCount = 0;
+    auto closeSpan = [&]() {
+        bool enclosed = enclosedCount * 2 > spanCount;
+        cur.kind = (cur.maxDepth > kTunnelDepth || enclosed) ? ClearanceSpan::Kind::Tunnel
+                                                             : ClearanceSpan::Kind::Cut;
         float len = cur.s1 - cur.s0;
         (cur.kind == ClearanceSpan::Kind::Tunnel ? rep.tunnelLength : rep.cutLength) += len;
         rep.clearance.push_back(cur);
+        open = false;
+    };
+    ClearanceSpan sky;
+    bool skyOpen = false;
+    for (const Sample& smp : r.samples) {
+        float ground = t.height(smp.pos.x, smp.pos.z);
+        float depth = ground - smp.pos.y; // >0: rail below ground
+        if (depth > 0.0f) {
+            if (!open) {
+                cur = ClearanceSpan{};
+                cur.s0 = smp.s;
+                enclosedCount = spanCount = 0;
+                open = true;
+            }
+            cur.maxDepth = fmaxf(cur.maxDepth, depth);
+            cur.s1 = smp.s;
+            spanCount++;
+            // Lateral envelope probe (horizontal normal of the tangent).
+            float hx = smp.tan.z, hz = -smp.tan.x;
+            float hl = sqrtf(hx * hx + hz * hz);
+            if (hl > 1e-4f) {
+                hx /= hl; hz /= hl;
+                float gL = t.height(smp.pos.x + hx * kEnvelope, smp.pos.z + hz * kEnvelope);
+                float gR = t.height(smp.pos.x - hx * kEnvelope, smp.pos.z - hz * kEnvelope);
+                if (fminf(gL, gR) > smp.pos.y + kEnvelope) enclosedCount++;
+            }
+        } else if (open) {
+            closeSpan();
+        }
+        // Unsupported spans: rail farther above ground than supports reach.
+        if (-depth > kUnsupported) {
+            if (!skyOpen) {
+                sky = ClearanceSpan{};
+                sky.s0 = smp.s;
+                sky.kind = ClearanceSpan::Kind::UnsupportedSpan;
+                skyOpen = true;
+            }
+            sky.s1 = smp.s;
+            sky.maxDepth = fmaxf(sky.maxDepth, -depth);
+        } else if (skyOpen) {
+            rep.unsupportedLength += sky.s1 - sky.s0;
+            rep.clearance.push_back(sky);
+            skyOpen = false;
+        }
+    }
+    if (open) closeSpan();
+    if (skyOpen) {
+        rep.unsupportedLength += sky.s1 - sky.s0;
+        rep.clearance.push_back(sky);
     }
 }
 
@@ -304,6 +340,55 @@ void checkCamelback(const Route& r, const ElemRun& run, ValidationReport& rep) {
         }
 }
 
+void checkCliffDive(const Route& r, const ElemRun& run, ValidationReport& rep) {
+    // Signature element: powered climb present, ONE apex, outward bank at the
+    // summit turn, near-vertical sustained face, completed pull-out.
+    float peakUp = -10.0f, minPitch = 10.0f;
+    bool anyChain = false;
+    for (int i = run.i0; i <= run.i1; i++) {
+        peakUp = fmaxf(peakUp, r.samples[i].pitch);
+        minPitch = fminf(minPitch, r.samples[i].pitch);
+        anyChain |= r.samples[i].chain;
+    }
+    if (!anyChain) fail(rep, run, r, "no powered climb");
+    if (peakUp < degToRad(12.0f)) fail(rep, run, r, "climb face missing");
+    if (minPitch > degToRad(-80.0f)) fail(rep, run, r, "dive face not near-vertical");
+    if (longestPitchBand(r, run, minPitch - degToRad(1.0f), minPitch + degToRad(1.0f)) < 3)
+        fail(rep, run, r, "dive face not sustained");
+    // Height structure is rise -> flat summit turn -> fall (no strict apex),
+    // so instead require: once the dive has begun (5 m below the peak), the
+    // track never climbs again inside this element.
+    {
+        int iPeak = run.i0;
+        for (int i = run.i0; i <= run.i1; i++)
+            if (r.samples[i].pos.y > r.samples[iPeak].pos.y) iPeak = i;
+        bool fell = false;
+        float minSince = r.samples[iPeak].pos.y;
+        for (int i = iPeak; i <= run.i1; i++) {
+            float y = r.samples[i].pos.y;
+            minSince = fminf(minSince, y);
+            if (!fell && y < r.samples[iPeak].pos.y - 5.0f) fell = true;
+            if (fell && y > minSince + 0.5f) {
+                fail(rep, run, r, "track rises again inside the dive");
+                break;
+            }
+        }
+    }
+    // Outward bank: wherever the summit turn is banked, roll and kYaw agree
+    // in sign (inward banking would make them oppose; see the roll-sign note
+    // in track_primitives.cpp).
+    for (int i = run.i0; i <= run.i1; i++) {
+        const Sample& s = r.samples[i];
+        if (fabsf(s.roll) > degToRad(5.0f) && fabsf(s.kYaw) > 1e-4f && s.roll * s.kYaw < 0.0f) {
+            fail(rep, run, r, "summit turn banked inward, not outward");
+            break;
+        }
+    }
+    const Pose& planned = r.segs[run.lastSeg].exit;
+    if (fabsf(r.samples[run.i1].pitch - planned.pitch) > degToRad(1.5f))
+        fail(rep, run, r, "pull-out did not complete");
+}
+
 void checkDrop(const Route& r, const ElemRun& run, ValidationReport& rep) {
     // The drop must hold a sustained face and finish its planned pull-out
     // (exit pitch equals the segment record's plan — no early hand-off).
@@ -344,6 +429,7 @@ ValidationReport validateRoute(const Route& r, const TerrainQuery* terrain) {
             case Tag::TopHat:    checkTopHat(r, run, rep); break;
             case Tag::Camelback: checkCamelback(r, run, rep); break;
             case Tag::Drop:      checkDrop(r, run, rep); break;
+            case Tag::CliffDive: checkCliffDive(r, run, rep); break;
             default: break;
         }
     }

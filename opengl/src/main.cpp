@@ -4,6 +4,9 @@
 // game loop (main()) which is too stateful (dozens of [&]-capturing lambdas) to split
 // further without a larger restructure -- see opengl/COASTER_REWRITE.md.
 #include "game_state.cpp"
+// V2 track module (migration step 6). Included AFTER game_state.cpp so raylib.h
+// (which game_state.cpp includes first) defines Vector3 before raymath.h's guard.
+#include "track/track_types.h"
 #include "environment.cpp"
 #include "render_fx.cpp"
 #include "voxel_render.cpp"
@@ -13,6 +16,32 @@
 #include "presentation.cpp"
 #include "pathtrace.cpp"
 #include "audit_diagnostics.cpp"
+
+// Host-side v2::Tag -> SegMode map (migration step 6). track_v2.cpp is a separate
+// translation unit with no view of the host M_* enum, so the host installs this into
+// TrackV2::tagMap right after construction (build()/tagAt() route the v2::Tag byte
+// through it). Order matches v2::Tag; see STEP6_HOST_SWITCH.md mapping table.
+static const unsigned char kV2ToSeg[] = {
+    M_STATION,   // Station
+    M_STATION,   // Brake   — no M_BRAKE; folded onto the station decel path (benign)
+    M_LAUNCH,    // Launch
+    M_FLAT,      // Line
+    M_FLAT,      // Connector — NOT M_CLIMB (would trip the auto-lift path)
+    M_CLIMB,     // TopHat  — draws a lift-assist spine on the powered face (cosmetic, accepted)
+    M_HILLS,     // Camelback
+    M_DROP,      // Drop
+    M_TURN,      // Turn
+    M_SCURVE,    // SCurve
+    M_HELIX,     // Helix
+    M_CLIFFDIVE, // CliffDive
+    M_LOOP,      // Loop
+    M_IMMEL,     // Immelmann
+    M_DIVELOOP,  // DiveLoop
+    M_ROLL,      // Corkscrew
+    M_STALL,     // ZeroGStall
+};
+static_assert(sizeof(kV2ToSeg) == (size_t)v2::Tag::COUNT,
+              "kV2ToSeg must map every v2::Tag exactly once");
 
 int main(int argc, char **argv) {
     bool framesMode = (argc > 1 && TextIsEqual(argv[1], "--frames"));
@@ -442,7 +471,12 @@ int main(int argc, char **argv) {
         snprintf(elemShotPath, sizeof(elemShotPath), "%s/%s.png", outdir, elemShotName);
         printf("[elementshot] element=%s (mode %d) -> %s\n", elemShotName, elemShotElem, elemShotPath);
     }
-    g_rng = (shotMode || benchMode || rttestMode || cobraShot || elemShot) ? 1337u : ((uint32_t)time(NULL) | 1u);
+    const bool autoRun = (shotMode || benchMode || rttestMode || cobraShot || elemShot);
+    g_rng = autoRun ? 1337u : ((uint32_t)time(NULL) | 1u);
+    // V2: the track has its own deterministic seed; g_rng no longer drives generation
+    // (it still seeds decorations/car occupants). 1337 in the fixed-seed auto modes keeps
+    // shots pixel-stable (STEP6_HOST_SWITCH.md item 8); wall-clock otherwise.
+    uint32_t trackSeed = autoRun ? 1337u : ((uint32_t)time(NULL) | 1u);
 
     if (elemShot && elemShotElem == M_HELIX)
         g_rng = 1337u * 2654435761u | 1u;
@@ -522,8 +556,16 @@ int main(int argc, char **argv) {
     SetAudioStreamCallback(wind, windCallback);
     PlayAudioStream(wind);
 
-    Track trk;
-    trk.reset();
+    TrackV2 trk;
+    trk.terrain.height = groundTopAt;   // floored at WATER_Y — matches TerrainQuery contract
+    trk.terrain.waterY = WATER_Y;
+    for (int i = 0; i < (int)v2::Tag::COUNT; i++) trk.tagMap[i] = kV2ToSeg[i];
+    trk.build(trackSeed);   // ~0.1-0.3 s one-time (bounded layout retries); no loading gate needed
+
+    // Theme colors rehomed host-side (TrackV2 owns geometry only). Deterministic per track seed.
+    Theme trkTheme  = THEMES[trackSeed % THEME_N];
+    Color trkTrainBody = trkTheme.body, trkTrainAccent = trkTheme.accent;
+    Color trkSpineC = trkTheme.spine,   trkRailC = RAIL;
 
     const int   NCARS    = 2;
     const float CAR_GAP  = 4.2f;
@@ -580,16 +622,14 @@ int main(int argc, char **argv) {
         return uu < 0.06f ? 0.06f : uu;
     };
 
-    bool    onFoot    = !(shotMode || benchMode || rttestMode || cobraShot || elemShot);
-    bool    atStation = !(shotMode || benchMode || rttestMode || cobraShot || elemShot);
-    bool    midStation = false;
+    bool    onFoot    = !autoRun;
+    bool    atStation = !autoRun;
     Vector3 curPlatPos = trk.startPos;
     float   curPlatYaw = trk.startYaw;
     Vector3 walkPos = trk.startPos;
     float   walkYaw = trk.startYaw, walkPitch = 0;
     float   walkVY = 0, walkBob = 0;
     bool    walkMoving = false;
-    float   sinceStation = 0;
     bool    cursorHidden = false;
 
     auto deckFloor = [&](float wx, float wz) {
@@ -650,12 +690,16 @@ int main(int argc, char **argv) {
         if (IsKeyPressed(KEY_C) && !onFoot) { camMode = (camMode + 1) % 3; flYaw = flPitch = 0; }
         if (IsKeyPressed(KEY_F) && !onFoot) { freeLook = !freeLook; flYaw = flPitch = 0; }
         if (IsKeyPressed(KEY_R)) {
-            trk.reset();
+            trackSeed = (uint32_t)time(NULL) | 1u;
+            trk.build(trackSeed);   // atomic whole-ride rebuild (only shown once fully generated)
+            trkTheme = THEMES[trackSeed % THEME_N];
+            trkTrainBody = trkTheme.body; trkTrainAccent = trkTheme.accent;
+            trkSpineC = trkTheme.spine;   trkRailC = RAIL;
             u = 0.5f; v = 7.0f; boost = 40; score = 0; gVertMax = 1.0f; gVertMin = 1.0f;
             dispatched = false; simTime = 0;
-            atStation = true; midStation = false;
+            atStation = true;
             curPlatPos = trk.startPos; curPlatYaw = trk.startYaw;
-            sinceStation = 0; placeOnFoot();
+            placeOnFoot();
         }
 
         if (shotMode) {
@@ -713,8 +757,7 @@ int main(int argc, char **argv) {
 
         if ((cobraShot || elemShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
             !dispatched && atStation && !paused) {
-            dispatched = true; atStation = false; midStation = false; v = 12.0f; simTime = 0;
-            sinceStation = 0;
+            dispatched = true; atStation = false; v = 12.0f; simTime = 0;
         }
 
         bool boosting = dispatched && IsKeyDown(KEY_SPACE) && boost > 0;
@@ -744,14 +787,14 @@ int main(int argc, char **argv) {
 
             if (cobraShot) {
                 bool cobraNear = false;
-                for (float la = -1.0f; la <= 10.0f; la += 1.0f)
+                for (float la = -14.0f; la <= 140.0f; la += 7.0f)   // metres now (~14x the V1 u-window)
                     if (trk.tagAt(u + la) == M_COBRA) { cobraNear = true; break; }
                 if (cobraNear && v > 24.0f) v = 24.0f;
             }
 
             if (elemShot) {
                 bool near = false;
-                for (float la = -1.0f; la <= 10.0f; la += 1.0f)
+                for (float la = -14.0f; la <= 140.0f; la += 7.0f)   // metres now (~14x the V1 u-window)
                     if (trk.tagAt(u + la) == (unsigned char)elemShotElem) { near = true; break; }
                 float cap = 26.0f;
                 if (near && v > cap) v = cap;
@@ -794,37 +837,33 @@ int main(int argc, char **argv) {
                 }
             }
 
-            sinceStation += dt;
-            // Station cadence matched to the LONGEST real full-circuit rides (Falcon's Flight
-            // runs 3:25-3:35 over 4.25 km; The Beast's 4:10 is the all-time record): a platform
-            // stop every ~3.5-4 min instead of every ~1.7 (the pending flag still waits for a
-            // low flat spot, so the realized interval runs a little past this trigger).
-            if (!shotMode && !benchMode && sinceStation > 205.0f &&
-                !trk.stationPending && !trk.stationActive)
-                trk.stationPending = true;
-
-            if (trk.stationActive && trk.tagAt(u) == M_STATION) {
-                Vector3 Th2 = Vector3{ Tn.x, 0, Tn.z };
-                float Tl = sqrtf(Th2.x * Th2.x + Th2.z * Th2.z);
-                if (Tl > 1e-3f) { Th2.x /= Tl; Th2.z /= Tl; }
-                Vector3 Pp = trk.pos(u);
-                float d  = (trk.stationStop.x - Pp.x) * Th2.x + (trk.stationStop.z - Pp.z) * Th2.z;
-                float d3 = Vector3Distance(trk.stationStop, Pp);
-                if (d > 2.0f && d3 > 2.0f) {
-                    float vmax = sqrtf(2.0f * 22.0f * d + 1.0f);
-                    if (v > vmax) v = vmax;
-                } else {
-                    v = 0.0f; dispatched = false; atStation = true; midStation = true;
-                    trk.stationActive = false;
-                    curPlatPos = trk.stationPos; curPlatYaw = trk.stationYaw;
-                }
-            }
+            // Closed-lap station seam (migration step 6): the sole platform is the
+            // closed route's seam (startPos/startYaw), where the Brake run docks. Brake
+            // to a stop by the seam using distance-to-seam braking — this only bites in
+            // the last few hundred metres (distToSeam spans a whole lap early on, so the
+            // cap is inert then), so it needs no arming flag and never brakes just after
+            // dispatch. The +1 keeps vDock>0 for distToSeam>=0, so the train always
+            // creeps to the seam instead of stalling in the brake run before it.
+            float distToSeam = fmaxf((trk.maxU() - u) * trk.speedScale(u), 0.0f);
+            float vDock = sqrtf(2.0f * 7.0f * distToSeam + 1.0f);
+            if (v > vDock) v = vDock;
 
             float du = v * dt / fmaxf(trk.speedScale(u), 0.5f);
             if (!(du == du)) du = 0.0f;
-            u += fminf(du, 1.5f);
+            u += fminf(du, 6.0f);   // metres now (was 1.5 u-units ~= 21 m at V1 scale); safety cap only
 
-            while (u > 13.0f && (int)trk.cp.size() > 18) { trk.popFront(); u -= 1.0f; }
+            // U-WRAP replaces V1's popFront streaming idiom, which is a no-op on the
+            // finite, closed V2 route (leaving it would FREEZE the train). Lap complete:
+            // interactive rides dock at the seam platform; auto-run modes lap forever so
+            // benches/screenshots keep covering track.
+            float mu = trk.maxU();
+            if (mu > 0.0f && u >= mu) {
+                u -= mu;
+                if (!autoRun) {
+                    v = 0.0f; dispatched = false; atStation = true;
+                    curPlatPos = trk.startPos; curPlatYaw = trk.startYaw;
+                }
+            }
 
             score += v * dt * (1.0f + v / 25.0f);
 
@@ -855,7 +894,7 @@ int main(int argc, char **argv) {
         {
 
             float ss  = fmaxf(trk.speedScale(u), 1.0f);
-            float du  = Clamp(7.5f / ss, 0.35f, 1.1f);
+            float du  = Clamp(7.5f / ss, 0.35f, 9.0f);   // du in u-units==metres now (was ~14 m/unit); 1.1 clamped this to 1.1 m -> noisy g
             Vector3 Tb = trk.tangent(u - du), Tf = trk.tangent(u + du);
             float arc = fmaxf(Vector3Distance(trk.pos(u - du), trk.pos(u + du)), 13.0f);
             Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
@@ -1065,7 +1104,7 @@ int main(int argc, char **argv) {
         std::fill(forceTop.begin(), forceTop.end(), 1e9f);
 
         {
-            int hk0 = (int)fmaxf(1.0f, u - 14.0f), hk1 = (int)(u + 46);
+            int hk0 = (int)fmaxf(1.0f, u - 196.0f), hk1 = (int)(u + 644.0f);   // ~14x: metres now
             int hxSeed = -1;
             for (int i = hk0; i <= hk1 && i + 1 < (int)trk.cp.size(); i++)
                 if (trk.kind[i] == M_HELIX) { hxSeed = i; break; }
@@ -1124,16 +1163,14 @@ int main(int argc, char **argv) {
                         if (clampY < forceTop[ci]) forceTop[ci] = clampY;
                     }
             };
-            stampStation(trk.startPos, trk.startYaw);
-            if (trk.stationActive) stampStation(trk.stationPos, trk.stationYaw);
+            stampStation(trk.startPos, trk.startYaw);   // sole platform (closed-route seam)
         }
 
-        // Step big enough to still fully cover the DEEP_R=10.5 m corridor with no gaps
-        // (consecutive samples only need to stay under ~2*DEEP_R apart; at ~14 m of arc
-        // length per su unit, 0.17 was sampling every ~2.4 m -- ~8x more samples than the
-        // corridor needs, the single largest CPU cost of a terrain rebuild). 0.4 samples
-        // every ~5.6 m: same coverage, ~2.4x fewer iterations of the carve-corridor scan.
-        for (float su = fmaxf(u - 14.0f, 0.0f); su <= u + 64.0f; su += 0.4f) {   // reach +64u (~896 m arc) to match the track draw range (k1=u+64): winding track that is Euclidean-near (rendered) but arc-far used to render UNCARVED until the train arrived
+        // Cover the DEEP_R=10.5 m corridor with no gaps: consecutive samples only need to
+        // stay under ~2*DEEP_R apart, so a 5.6 m step is ample. u is metres now (V2 ds=1 m):
+        // reach u+896 to match the track draw range (k1=u+896), and start at u-196 (negative
+        // su wraps through the closed seam via trk.pos) so the pre-seam approach carves too.
+        for (float su = u - 196.0f; su <= u + 896.0f; su += 5.6f) {
             Vector3 ps = trk.pos(su);
             float lo = ps.y - 4.0f, hi = ps.y + 4.5f;
             int scx = (int)floorf(ps.x / CELL), scz = (int)floorf(ps.z / CELL);
@@ -1505,16 +1542,22 @@ int main(int argc, char **argv) {
         }
 
         if (!depthPass) {
-            drawStation(trk, trk.startPos, trk.startYaw, P, fogEnd);
-            if (trk.stationActive)
-                drawStation(trk, trk.stationPos, trk.stationYaw, P, fogEnd);
-            if (midStation)
-                drawStation(trk, curPlatPos, curPlatYaw, P, fogEnd);
+            // Sole platform: the closed route's seam (startPos/startYaw). Colours are
+            // host-owned now (TrackV2 carries geometry only).
+            drawStation(trk.startPos, trk.startYaw, trkSpineC, trkTrainAccent, P, fogEnd);
         }
         double dwT1 = diagWorld ? GetTime() : 0.0;
         if (diagWorld) dwTerrainAcc += (dwT1 - dwT0) * 1000.0;
 
-        int k0 = (int)fmaxf(1.0f, u - 14.0f), k1 = (int)(u + 64);
+        int k0 = (int)(u - 196.0f), k1 = (int)(u + 896.0f);   // metres now (~14x the V1 u-window)
+        // Closed-route seam wrap: the draw window straddles the seam near the station,
+        // so index cp[]/kind[]/up[]/arc[] through wrapIdx (float accessors already wrap).
+        const int NSMP = (int)trk.cp.size();
+        const bool wrapU = trk.route.closed && NSMP > 1;
+        auto wrapIdx = [&](int i) -> int {
+            if (wrapU) { i %= NSMP; if (i < 0) i += NSMP; return i; }
+            return (i < 0) ? 0 : (i >= NSMP ? NSMP - 1 : i);
+        };
 
         float trackFog = fogEnd * 1.9f;
 
@@ -1570,7 +1613,8 @@ int main(int argc, char **argv) {
             drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.56f, 0.56f, 1.0f, sc);
             popFrame();
         };
-        for (int i = k0; i <= k1 && i + 1 < (int)trk.cp.size(); i++) {
+        for (int iv = k0; iv <= k1; iv++) {
+            int i = wrapIdx(iv), prev = wrapIdx(iv - 1);
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
             bool tightShape = (tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
@@ -1593,14 +1637,13 @@ int main(int argc, char **argv) {
             // it doesn't stop a strut placed during the "upright" phase (up.y>=0.35) from clipping
             // through the SAME loop/roll/etc.'s own track at a nearby point along its length that
             // happens to pass through where the strut physically runs (straight down from p to the
-            // ground). Scan a local window (one full rotation of these elements is well under 48
-            // control points) and skip the support if another point of the same contiguous element
+            // ground). Scan a local window (one full rotation of these elements is well under ~300
+            // dense samples at 1 m ds) and skip the support if another point of the same element
             // sits close in XZ while between the ground and this point's height.
             if (tightShape) {
                 bool blocked = false;
-                int wStart = (i - 48 > 0) ? i - 48 : 0;
-                int wEnd   = (i + 48 < (int)trk.cp.size() - 1) ? i + 48 : (int)trk.cp.size() - 1;
-                for (int j = wStart; j <= wEnd; j++) {
+                for (int jv = iv - 300; jv <= iv + 300; jv++) {
+                    int j = wrapIdx(jv);
                     if (j == i || trk.kind[j] != tg) continue;
                     Vector3 q = trk.cp[j];
                     float qdx = q.x - p.x, qdz = q.z - p.z;
@@ -1608,7 +1651,7 @@ int main(int argc, char **argv) {
                 }
                 if (blocked) continue;
             }
-            Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
+            Vector3 t = trk.tangent((float)i);   // analytic, seam-safe (was cp[i+1]-cp[i-1])
             Vector3 lat = Vector3Normalize(Vector3CrossProduct(Vector3{ t.x, 0, t.z }, Vector3{ 0, 1, 0 }));
             Color sc = mixc(Color{ 118, 122, 130, 255 }, FOG, fog);
 
@@ -1616,12 +1659,17 @@ int main(int argc, char **argv) {
             float gC   = groundTopAt(p.x, p.z);
             float hgt  = topY - gC;
             const float SUP_SP = 9.0f;
-            bool placeHere = i > 0 &&
-                floorf(trk.arc[i] / SUP_SP) != floorf(trk.arc[i - 1] / SUP_SP);
+            // Support cadence keys off arc[] METRES (correct as-is): one V-bent every SUP_SP.
+            bool placeHere =
+                floorf(trk.arc[i] / SUP_SP) != floorf(trk.arc[prev] / SUP_SP);
             if (hgt > 0.5f && placeHere)
                 drawVBent(p, topY, gC, lat, t, trk.up[i], sc);
 
-            if (tg == M_LAUNCH || tg == M_BOOST) {
+            // LSM grate: gate to one SEG_LEN-long tile per SEG_LEN of arc so the 1 m dense
+            // samples don't stack ~14 grate boxes per metre. Stairs are coarser still.
+            bool grateHere = (tg == M_LAUNCH || tg == M_BOOST) &&
+                floorf(trk.arc[i] / SEG_LEN) != floorf(trk.arc[prev] / SEG_LEN);
+            if (grateHere) {
                 Vector3 fwd = Vector3Normalize(Vector3{ t.x, 0, t.z });
                 pushFrame(Vector3{ p.x, p.y, p.z }, fwd, WUP);
                 Color grate = mixc(Color{ 150, 154, 162, 255 }, FOG, fog);
@@ -1633,7 +1681,9 @@ int main(int argc, char **argv) {
                     drawCubeTex(T_IRON, Vector3{ 2.7f, 0.35f, pz2 }, 0.08f, 0.9f, 0.08f, rail2);
 
                 float g2 = groundTopAt(p.x, p.z);
-                if (p.y - g2 > 2.0f && (i & 3) == 0) {
+                bool stairsHere =
+                    floorf(trk.arc[i] / (SEG_LEN * 4.0f)) != floorf(trk.arc[prev] / (SEG_LEN * 4.0f));
+                if (p.y - g2 > 2.0f && stairsHere) {
                     int steps = (int)fminf((p.y - g2) / 0.8f, 14);
                     for (int s = 0; s < steps; s++)
                         drawCubeTex(T_IRON, Vector3{ 2.9f + s * 0.42f, p.y - 0.55f - s * 0.8f, 0 },
@@ -1643,20 +1693,17 @@ int main(int argc, char **argv) {
             }
         }
 
-        int kS = (int)fmaxf(u - 14.0f, 0.0f);
-        int kE = (int)(u + 46.0f);
-        if (kE > (int)trk.cp.size() - 2) kE = (int)trk.cp.size() - 2;
+        int kS = (int)(u - 196.0f), kE = (int)(u + 644.0f);   // metres now (~14x); float accessors wrap the seam
         float spineCull2 = (trackFog + SEG_LEN) * (trackFog + SEG_LEN);
         for (int k = kS; k <= kE; k++) {
 
             { Vector3 smid = trk.pos((float)k + 0.5f);
               float mdx = smid.x - P.x, mdz = smid.z - P.z;
               if (mdx * mdx + mdz * mdz > spineCull2) continue; }
-            float segLen = fmaxf(trk.speedScale(k + 0.5f), 0.01f);
+            float segLen = fmaxf(trk.speedScale((float)k + 0.5f), 0.01f);
             int nSmp = (int)ceilf(segLen / 0.85f);
             if (nSmp < 1) nSmp = 1; else if (nSmp > 80) nSmp = 80;
-            int   ki   = k < (int)trk.kind.size() ? k : (int)trk.kind.size() - 1;
-            bool  chain = trk.chainf[ki] != 0;
+            bool  chain = trk.chainAt((float)k + 0.5f);
             for (int j = 0; j < nSmp; j++) {
                 float uu = k + (j + 0.5f) / nSmp;
                 Vector3 p = trk.pos(uu);
@@ -1677,12 +1724,12 @@ int main(int argc, char **argv) {
                 // the train at CLIMB_V up the grade -- a chain-lift, not an LSM. Mark it with an amber
                 // chain-dog spine so it's VISIBLE where the lift assist is, distinct from the boosters.
                 bool liftSpine    = (segTag == M_CLIMB && !chain);
-                Color rc = mixc(trk.railC,  FOG, fog);
+                Color rc = mixc(trkRailC,  FOG, fog);
                 Color tie = mixc(Color{ 96, 99, 108, 255 }, FOG, fog);
                 pushFrame(p, t, uvec);
                 if (poweredSpine) {
-                    Color sc  = mixc(trk.spineC, FOG, fog);
-                    Color fin = mixc(trk.trainAccent, FOG, fog);
+                    Color sc  = mixc(trkSpineC, FOG, fog);
+                    Color fin = mixc(trkTrainAccent, FOG, fog);
                     drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.38f, 0.54f, rl, sc);
                     if ((j & 1) == 0)
 
@@ -1726,7 +1773,7 @@ int main(int argc, char **argv) {
                 Vector3 ct = trk.tangent(ui);
                 Vector3 cu = trk.upAt(ui);
                 pushFrame(cp, ct, cu);
-                drawCoasterCar(trk.trainBody, trk.trainAccent, trk.railC, i == 0, i);
+                drawCoasterCar(trkTrainBody, trkTrainAccent, trkRailC, i == 0, i);
                 popFrame();
             }
         }
@@ -2086,7 +2133,7 @@ int main(int argc, char **argv) {
             }
 
             if (!liveBaked) {
-                bakeVoxels(P, trk, u, ptBakeBuf);
+                bakeVoxels(P, trk, u, trkSpineC, trkRailC, trkTrainBody, ptBakeBuf);
                 liveBakeCtr = P; liveBaked = true;
                 gBaker.start();
             } else {
@@ -2096,7 +2143,7 @@ int main(int argc, char **argv) {
                     g_ptGridMin = gm;
                 }
                 if (Vector3Distance(P, liveBakeCtr) > REBAKE_DIST &&
-                    gBaker.request(P, trk, u)) liveBakeCtr = P;
+                    gBaker.request(P, trk, u, trkSpineC, trkRailC, trkTrainBody)) liveBakeCtr = P;
             }
 
             Vector3 cdir = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
@@ -2199,7 +2246,7 @@ int main(int argc, char **argv) {
             int rw = GetRenderWidth(), rh = GetRenderHeight();
             if (gPT.W != rw || gPT.H != rh) { gPT.initBuffers(rw, rh); }
 
-            bakeVoxels(P, trk, u, ptBakeBuf);
+            bakeVoxels(P, trk, u, trkSpineC, trkRailC, trkTrainBody, ptBakeBuf);
 
             Vector3 cdir = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
             Vector3 crt  = Vector3Normalize(Vector3CrossProduct(cdir, cam.up));
@@ -2326,7 +2373,7 @@ int main(int argc, char **argv) {
             float ax    = sw - aw * 0.5f - sw * 0.055f + sway;
             float baseY = shh + 10.0f + bobY;
             float sleeveH = shh * 0.26f, skinH = shh * 0.085f, dep = aw * 0.5f;
-            isoBox(ax, baseY, aw, sleeveH, dep, trk.trainBody);
+            isoBox(ax, baseY, aw, sleeveH, dep, trkTrainBody);
             isoBox(ax - aw * 0.08f, baseY - sleeveH, aw, skinH, dep,
                    Color{ 236, 198, 162, 255 });
 

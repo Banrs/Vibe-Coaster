@@ -53,7 +53,7 @@ static void drawCoasterCar(Color body, Color accent, Color rail, bool lead, int 
             drawCubeTex(T_IRON, Vector3{ sx, -0.02f, sz }, 0.22f, 0.30f, 0.5f, tyre);
 }
 
-static void drawStation(const Track &trk, Vector3 pos, float yaw, Vector3 camP, float fogEnd) {
+static void drawStation(Vector3 pos, float yaw, Color spineC, Color trainAccent, Vector3 camP, float fogEnd) {
     float ddx = pos.x - camP.x, ddz = pos.z - camP.z;
     float dist = sqrtf(ddx * ddx + ddz * ddz);
 
@@ -68,8 +68,8 @@ static void drawStation(const Track &trk, Vector3 pos, float yaw, Vector3 camP, 
     Color trimC  = mixc(Color{ 250, 252, 255, 255 }, FOG, fog);
     Color glassC = mixc(Color{ 130, 178, 206, 200 }, FOG, fog);
     Color mullC  = mixc(Color{ 62, 68, 80, 255 }, FOG, fog);
-    Color accent = mixc(trk.spineC, FOG, fog);
-    Color led    = mixc(trk.trainAccent, FOG, fog);
+    Color accent = mixc(spineC, FOG, fog);
+    Color led    = mixc(trainAccent, FOG, fog);
 
     float deckTopY = -1.3f;
     float deckBotLocal = deckTopY - 1.0f;

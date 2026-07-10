@@ -16,7 +16,7 @@ void TrackV2::build(uint32_t seed) {
         const v2::Sample& s = route.samples[i];
         cp[i] = s.pos;
         up[i] = s.up;
-        kind[i] = (unsigned char)s.tag;
+        kind[i] = tagMap[(int)s.tag];
         chainf[i] = s.chain ? 1 : 0;
         arc[i] = s.s;
     }
@@ -76,7 +76,7 @@ unsigned char TrackV2::tagAt(float u) const {
     }
     size_t i = (size_t)u;
     if (i >= n) i = n - 1;
-    return (unsigned char)route.samples[i].tag;
+    return tagMap[(int)route.samples[i].tag];
 }
 
 bool TrackV2::chainAt(float u) const {

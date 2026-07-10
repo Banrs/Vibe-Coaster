@@ -441,6 +441,14 @@ struct TrackV2 {
     // here; unbound builds fall back to the harness smoke route.
     v2::TerrainQuery terrain;
 
+    // Host-installable v2::Tag -> host tag byte map (migration step 6). track_v2.cpp
+    // is a SEPARATE translation unit with no knowledge of the host's M_* SegMode
+    // enum, so the host fills this from its own table right after constructing the
+    // adapter. Default identity keeps the standalone harness (which never installs a
+    // map) returning raw v2::Tag bytes. Applied in build() (kind[]) and tagAt().
+    unsigned char tagMap[(int)v2::Tag::COUNT];
+    TrackV2() { for (int i = 0; i < (int)v2::Tag::COUNT; ++i) tagMap[i] = (unsigned char)i; }
+
     // Mirrors of route.samples for host loops that index per-point data.
     std::vector<Vector3> cp, up;
     std::vector<unsigned char> kind, chainf;

@@ -33,6 +33,10 @@ static const int   TERRA_R   = 320;   // 20 chunks * 16 m/chunk (TERRAIN_BUCKET)
 static const float WATER_Y   = kTerraWaterY; // low basin water, not the default height of the entire world
 static const float TERRA_MAX  = kTerraMax;    // both owned by terrain_field.h since the 2026-07-10 extraction
 
+// Shared water predicate for host consumers. Rehomed here from coaster_track.cpp
+// (migration step 6) so it survives the V1 generator's step-7 deletion.
+static inline bool submergedGround(float groundTopY) { return groundTopY <= WATER_Y + 0.01f; }
+
 static const Vector3 WUP = { 0, 1, 0 };
 
 static const Color SKY    = {186, 205, 232, 255};

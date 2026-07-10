@@ -40,6 +40,13 @@ generates every ride from the V2 `opengl/src/track/` module; the V1 generator is
 
 ## 2. The reframe that changes the next phase
 
+> **SUPERSEDED IN PART (2026-07-10, later same day):** a deeper 6-subsystem audit confirmed the
+> user's report that the shader layer was broken by a prior agent — reflections gutted (SSR
+> plumbing bound every frame, shader never samples it), cascade0 rendered but never used, shadow
+> distance hardcoded ~256 m, frozen tree wind, tonemap divergence. See
+> **`docs/RENDER_REWRITE_INVENTORY.md`** — it is now the authoritative render-rewrite spec and
+> execution order; the survey text below stands only for what exists, not for what works.
+
 `docs/REALISM_SCALE.md` "Core philosophy" describes the renderer as "V1 rendering byte-for-byte…
 a starting point to rewrite from." **A full code survey found this is wrong about the starting
 point.** `render_fx.cpp` (1262 lines) is already a modern forward-HDR engine:

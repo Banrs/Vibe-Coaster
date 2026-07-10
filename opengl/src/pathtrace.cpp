@@ -51,8 +51,6 @@ static PTSys gPT;
 
 static inline float pt_srgb2lin(float c) { return powf(c, 2.2f); }
 
-static int   terrainH(float x, float z);
-
 static void bakeVoxels(Vector3 camCtr, const struct Track &trk, float u,
                        float trainU, int nCars);
 

@@ -26,11 +26,12 @@
 
 // V1 shared physics constants. V2 will own a renderer-neutral configuration.
 #include "ride_constants.h"
+#include "terrain_field.h"
 static const float CELL      = 1.0f;
 static const int   TERRA_R   = 320;   // 20 chunks * 16 m/chunk (TERRAIN_BUCKET) render distance
 
-static const float WATER_Y   = 18.0f;   // low basin water, not the default height of the entire world
-static const float TERRA_MAX  = 280.0f;
+static const float WATER_Y   = kTerraWaterY; // low basin water, not the default height of the entire world
+static const float TERRA_MAX  = kTerraMax;    // both owned by terrain_field.h since the 2026-07-10 extraction
 
 static const Vector3 WUP = { 0, 1, 0 };
 

@@ -117,6 +117,15 @@ user-given numbers are soft targets, not precise constants: within ±5% is good,
 acceptable, closer is better.** That tolerance philosophy applies to the user's other numeric
 targets in this doc too, unless one is explicitly marked as a hard cap.
 
+**Consequence for planner speed targets (user re-confirmed 2026-07-10: transit stays ~1x in BOTH
+directions — do not let it drift to ~1.25x through under-scaled entry speeds):** with sizes
+locked at ~1.4–1.5x WR, **`k_v ≈ k_r` per element** — each element's in-game entry speed is its
+real anchor entry speed × its size multiplier (flagship camelback anchored to Falcon's ~250 km/h
+entry wants ~100 m/s in-game, not 82). Where the live route arrives far above an element's
+matched entry, shed the excess with geometry (conditioning climbs, ride ordering) — climbs
+capped at a sane height, after which the entry may run up to ~1.7x real with size at the band
+top, per the standing "user accepts the higher g" position and the soft tolerances.
+
 ### The real physics of curve shape vs. g-force (peer-reviewed, use this for within-element curve design)
 
 The `k_r/k_v` ratio above governs how an element's *overall* size scales with entry speed — a

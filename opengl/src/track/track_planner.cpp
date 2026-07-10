@@ -96,13 +96,21 @@ void plannerClimb(Route& r, float dy, Tag tag, bool chain) {
     emitClimb(r, dy, theta, ramp, ramp, tag, chain);
 }
 
-// Geometric speed conditioning: climb (or descend) exactly the height that
-// brings v^2 to the target band. Returns the new v^2.
+// Geometric speed conditioning: climb (or descend) toward the height that
+// brings v^2 to the target band. Climbs are capped (a conditioning tower
+// taller than ~150 m stops being ride texture); when capped, the element
+// simply takes the residual higher entry speed — sizes sit at the band top
+// and the user accepts the higher g (REALISM_SCALE, 2026-07-10 note).
+// Returns the ACHIEVED v^2.
 float conditionSpeed(Route& r, float v2, float v2Target) {
     float dy = (v2 - v2Target) / (2.0f * kG);
     if (fabsf(dy) < 6.0f) return v2; // close enough — soft tolerances
-    if (dy > 0.0f) plannerClimb(r, dy, Tag::Line, false);
-    else plannerDrop(r, -dy);
+    if (dy > 0.0f) {
+        float climb = fminf(dy, 150.0f);
+        plannerClimb(r, climb, Tag::Line, false);
+        return v2After(v2, climb);
+    }
+    plannerDrop(r, -dy);
     return v2Target;
 }
 
@@ -328,9 +336,10 @@ static Route buildRideOnce(uint32_t seed, const TerrainQuery& terrain) {
         return out;
     };
 
-    // Main launch to near the game's top-speed band (~96 m/s = 346 km/h).
+    // Main launch: k_v ~ k_r (transit ~1x real) — Falcon-anchored entries
+    // at the locked 1.4-1.5x sizes want ~100 m/s (360 km/h) here.
     emitLine(r, 150.0f, Tag::Launch, true);
-    float v2 = 96.0f * 96.0f;
+    float v2 = 100.0f * 100.0f;
     sMark = r.endS;
 
     // Signature top hat (locked 230 m rise), exiting ~12 m above the entry.
@@ -516,9 +525,10 @@ static Route buildRideOnce(uint32_t seed, const TerrainQuery& terrain) {
         v2 = drag(v2);
     }
 
-    // Flagship camelback (locked ~240 m) off an LSM boost.
+    // Flagship camelback (locked ~240 m) off an LSM boost to its MATCHED
+    // entry (~1.45x Falcon's ~250 km/h -> ~100 m/s), keeping transit ~1x.
     emitLine(r, 110.0f, Tag::Launch, true);
-    v2 = fmaxf(v2, 82.0f * 82.0f);
+    v2 = fmaxf(v2, 100.0f * 100.0f);
     sMark = r.endS;
     {
         CamelbackSpec cb;

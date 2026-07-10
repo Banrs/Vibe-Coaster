@@ -226,3 +226,13 @@ Run this before replacing the old generator:
 5. Add inversion primitives one at a time.
 6. Switch the OpenGL host to V2 after the fixed-seed visual and continuity suite passes.
 7. Port the renderer backends to the V2 adapter, then delete V1 generator code and diagnostics.
+
+### Step-6 host requirements (user, 2026-07-10)
+
+- **The player never sees the track adjusting.** Generation (including all planner retries and
+  validation) completes BEFORE the world is shown; the game presents only the finished, fixed
+  ride. No incremental reveal, no visible re-planning, no V1-style streaming build-out.
+- **World terrain may be adjusted** (its generator parameters — mountain coverage/amplitude,
+  escarpment frequency — not per-ride mutation, which stays prohibited) so rides and relief
+  cooperate: bounded cuts/tunnels stay the norm, kilometer-scale bores and near-zero cut usage
+  are both failures. Terrain changes are global and seed-stable; verify the game visually after.

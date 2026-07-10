@@ -11,11 +11,13 @@
 #include "render_fx.cpp"
 #include "voxel_render.cpp"
 #include "spline.cpp"
-#include "coaster_track.cpp"
+// V1 generator (coaster_track.cpp) + its diagnostics (audit_diagnostics.cpp)
+// were archived to opengl/legacy/ at migration step 7 — the live host runs the
+// V2 TrackV2 generator (track/ module) only. The legacy files are kept
+// unbuilt for reference; do not re-include them.
 #include "coaster_car.cpp"
 #include "presentation.cpp"
 #include "pathtrace.cpp"
-#include "audit_diagnostics.cpp"
 
 // Host-side v2::Tag -> SegMode map (migration step 6). track_v2.cpp is a separate
 // translation unit with no view of the host M_* enum, so the host installs this into
@@ -57,385 +59,57 @@ int main(int argc, char **argv) {
     bool shotMode = framesMode || rasterShot || orbitShot || waterShot || (argc > 1 && TextIsEqual(argv[1], "--shot"));
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));
 
-    // PACING AUDIT: per-mode TIME accounting as ridden -- the numbers behind "too much flat"
-    // and "elements take too long". Runs the same physics loop as --simtest over 8 seeds and
-    // reports, per tag: instances/ride, mean/max transit seconds, and % of ride time; plus
-    // the aggregate flat share (FLAT+LAUNCH+BOOST+STATION) and element density (elements/min).
-    if (argc > 1 && TextIsEqual(argv[1], "--pacing")) {
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        long   tagFrames[M_COUNT] = {0};
-        long   tagInst[M_COUNT]   = {0};
-        double tagInstSec[M_COUNT] = {0};
-        float  tagInstMax[M_COUNT] = {0};
-        long   totFrames = 0;
-        long   splashF = 0, splashInst = 0;   // genuine water-skims (SPLASHDOWN label + spray active)
-        for (uint32_t seed = 1; seed <= 8; seed++) {
-            g_rng = seed * 2654435761u | 1u;
-            Track t; t.reset();
-            float u = 0.5f, v = LAUNCH_V;
-            unsigned char curTag = 255; long curRun = 0;
-            bool inSplash = false;
-            const float dt = 1.0f / 60.0f;
-            for (int f = 0; f < 30000; f++) {
-                t.ensureAhead(u + 16);
-                float slope = t.tangent(u).y;
-                float acc = -GRAV * slope - DRAG * v * v - FRICTION;
-                v += acc * dt;
-                unsigned char tg = t.tagAt(u);
-                if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;
-                else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;
-                if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires 
-                if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
-                v = fmaxf(v, V_GUARD);
-                if (f > 120) {
-                    if (tg < M_COUNT) tagFrames[tg]++;
-                    totFrames++;
-                    {   // same water-skim test as rideElemName's SPLASHDOWN + the wheel-spray window;
-                        // pos(u) is a catmull eval, so only run it on M_DIP frames (short-circuit)
-                        bool skim = false;
-                        if (tg == M_DIP) {
-                            Vector3 Pp = t.pos(u);
-                            skim = Pp.y - WATER_Y < 3.0f && submergedGround(groundTopAt(Pp.x, Pp.z));
-                        }
-                        if (skim) { splashF++; if (!inSplash) splashInst++; }
-                        inSplash = skim;
-                    }
-                    if (tg != curTag) {
-                        if (curTag < M_COUNT && curRun > 0) {
-                            tagInst[curTag]++; tagInstSec[curTag] += curRun * dt;
-                            tagInstMax[curTag] = fmaxf(tagInstMax[curTag], curRun * dt);
-                        }
-                        curTag = tg; curRun = 0;
-                    }
-                    curRun++;
-                }
-                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
-                if (!(du == du)) du = 0;
-                u += fminf(du, 1.5f);
-                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
-            }
-            if (curTag < M_COUNT && curRun > 0) {
-                tagInst[curTag]++; tagInstSec[curTag] += curRun * dt;
-                tagInstMax[curTag] = fmaxf(tagInstMax[curTag], curRun * dt);
-            }
-        }
-        double totSec = totFrames / 60.0;
-        printf("[pacing] 8 seeds, %.0f s ridden total (%.1f s/seed)\n", totSec, totSec / 8.0);
-        printf("  %-9s %8s %8s %8s %8s\n", "elem", "inst/rd", "mean s", "max s", "%time");
-        long elemInst = 0;
-        for (int m = 0; m < M_COUNT; m++) {
-            if (!tagFrames[m]) continue;
-            bool isElem = !(m == M_FLAT || m == M_CLIMB || m == M_DROP || m == M_LAUNCH ||
-                            m == M_BOOST || m == M_STATION);
-            if (isElem) elemInst += tagInst[m];
-            printf("  %-9s %8.1f %8.1f %8.1f %7.1f%%\n", NM[m], tagInst[m] / 8.0,
-                   tagInst[m] ? tagInstSec[m] / tagInst[m] : 0.0, tagInstMax[m],
-                   100.0 * tagFrames[m] / totFrames);
-        }
-        long flatF = tagFrames[M_FLAT] + tagFrames[M_LAUNCH] + tagFrames[M_BOOST] + tagFrames[M_STATION];
-        printf("  --- flat-ish (FLAT+LAUNCH+BOOST+STN): %.1f%% of time | elements: %.1f/ride, density %.1f/min ---\n",
-               100.0 * flatF / totFrames, elemInst / 8.0, elemInst / (totSec / 60.0));
-        printf("  --- genuine SPLASHDOWNs (DIP skimming water): %.1f/ride, %.1f s each ---\n",
-               splashInst / 8.0, splashInst ? (double)splashF / 60.0 / splashInst : 0.0);
-        return 0;
-    }
-
-    if (argc > 2 && TextIsEqual(argv[1], "--exporttrack")) {
-        if (argc > 3) g_rng = (uint32_t)atoi(argv[3]) * 2654435761u | 1u;
-        if (argc > 4) DRAG       = (float)atof(argv[4]);
-        if (argc > 5) BOOST_TRIG = (float)atof(argv[5]);
-        Track trk; trk.reset();
-        while ((int)trk.cp.size() < 480) trk.ensureAhead((float)trk.cp.size() + 8.0f);
-        FILE* fp = fopen(argv[2], "w");
-        if (!fp) { printf("EXPORTTRACK: cannot open %s\n", argv[2]); return 1; }
-        for (size_t i = 0; i < trk.cp.size(); i++) {
-            Vector3 p = trk.cp[i], u = trk.up[i];
-            fprintf(fp, "%.4f %.4f %.4f %.4f %.4f %.4f %d\n",
-                    p.x, p.y, p.z, u.x, u.y, u.z, (int)trk.kind[i]);
-        }
-        fclose(fp);
-        printf("EXPORTTRACK: wrote %zu points to %s\n", trk.cp.size(), argv[2]);
-        return 0;
-    }
-
-    // GEOMETRY GROUND-TRUTH: dump the actual built track's vertical profile per element instance
-    // (vertical delta = how much the element ACTUALLY goes up/down, clearance above terrain, and
-    // horizontal span) plus an SVG side-view. This is the "run a side view" check -- it measures
-    // the SHAPE, not the felt-g, so a flattened airtime hill or a 20 m ground float shows up plainly.
-    if (argc > 1 && TextIsEqual(argv[1], "--profile")) {
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        int seed = (argc > 2) ? atoi(argv[2]) : 1;
-        g_rng = (uint32_t)seed * 2654435761u | 1u;
-        Track t; t.reset();
-        for (int guard = 0; (int)t.cp.size() < 460 && guard < 4000; guard++) t.ensureAhead((float)t.cp.size() + 8.0f);
-        int n = (int)t.cp.size();
-        std::vector<float> dist(n, 0.0f), terr(n, 0.0f);
-        float maxY = -1e9f, minY = 1e9f, maxD = 0.0f;
-        for (int k = 0; k < n; k++) {
-            if (k) { float dx = t.cp[k].x - t.cp[k-1].x, dz = t.cp[k].z - t.cp[k-1].z; dist[k] = dist[k-1] + sqrtf(dx*dx+dz*dz); }
-            terr[k] = groundTopAt(t.cp[k].x, t.cp[k].z);
-            maxY = fmaxf(maxY, fmaxf(t.cp[k].y, terr[k])); minY = fminf(minY, fminf(t.cp[k].y, terr[k])); maxD = dist[k];
-        }
-        printf("[profile] seed %d: %d cps, %.0f m long\n", seed, n, maxD);
-        printf("  %-4s %-9s %6s %7s %7s %7s %7s %7s\n", "cp", "elem", "dist", "vDelta", "net", "clrMin", "clrMax", "hSpan");
-        int i = 0, tunnels = 0, onGround = 0;
-        while (i < n) {
-            int j = i; unsigned char kd = t.kind[i]; if (kd >= 25) kd = 0;
-            while (j < n && t.kind[j] == kd) j++;
-            float ymin = 1e9f, ymax = -1e9f, clrmin = 1e9f, clrmax = -1e9f;
-            for (int k = i; k < j; k++) { float clr = t.cp[k].y - terr[k]; ymin = fminf(ymin, t.cp[k].y); ymax = fmaxf(ymax, t.cp[k].y); clrmin = fminf(clrmin, clr); clrmax = fmaxf(clrmax, clr); }
-            if (clrmin < 0.0f) tunnels++;
-            if (clrmin < 6.0f) onGround++;
-            float net = t.cp[j-1].y - t.cp[i > 0 ? i-1 : i].y;
-            printf("  %-4d %-9s %6.0f %7.1f %7.1f %7.1f %7.1f %7.1f\n", i, NM[kd], dist[i], ymax - ymin, net, clrmin, clrmax, dist[j-1] - dist[i]);
-            i = j;
-        }
-        printf("  --- instances that touch near-ground (clr<6m): %d ;  that tunnel (clr<0): %d ---\n", onGround, tunnels);
-        // SVG side-view (equal X/Y scale so slopes read true): terrain filled + track colored by element.
-        float W = 1800.0f, H = 620.0f, pad = 30.0f;
-        float s = fminf((W - 2*pad) / fmaxf(maxD, 1.0f), (H - 2*pad) / fmaxf(maxY - minY, 1.0f));
-        char path[256]; snprintf(path, sizeof path, "/home/user/Claude-Coaster/opengl/profile_seed%d.svg", seed);
-        FILE* f = fopen(path, "w");
-        if (f) {
-            #define PX(d) (pad + (d) * s)
-            #define PY(y) (H - pad - ((y) - minY) * s)
-            fprintf(f, "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='620' viewBox='0 0 1800 620'>");
-            fprintf(f, "<rect width='1800' height='620' fill='#0b1020'/>");
-            fprintf(f, "<polygon fill='#2a3b1e' stroke='#4a6b30' stroke-width='1' points='");
-            for (int k = 0; k < n; k++) fprintf(f, "%.1f,%.1f ", PX(dist[k]), PY(terr[k]));
-            fprintf(f, "%.1f,%.1f %.1f,%.1f'/>", PX(maxD), (double)(H-pad), PX(0.0f), (double)(H-pad));
-            for (int k = 1; k < n; k++) {
-                unsigned char kd = t.kind[k]; if (kd >= 25) kd = 0;
-                const char* col = "#7fd0ff";
-                if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE) col="#ffd24a";
-                else if (kd==M_DROP||kd==M_DIP) col="#ff6b6b";
-                else if (kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST) col="#9aa0a6";
-                else if (kd==M_LOOP||kd==M_IMMEL||kd==M_COBRA||kd==M_DIVELOOP||kd==M_ROLL||kd==M_PRETZEL||kd==M_HEARTLINE) col="#c77dff";
-                else if (kd==M_HELIX) col="#4ade80";
-                else if (kd==M_TURN||kd==M_SCURVE||kd==M_DIVE||kd==M_WINGOVER) col="#ff9e64";
-                fprintf(f, "<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='%s' stroke-width='2.5'/>",
-                        PX(dist[k-1]), PY(t.cp[k-1].y), PX(dist[k]), PY(t.cp[k].y), col);
-            }
-            fprintf(f, "<text x='34' y='24' fill='#cfe' font-family='monospace' font-size='14'>seed %d  len %.0fm  band %.0f-%.0fm  scale 1:1  (yellow=airtime red=drop green=helix purple=inversion orange=turn grey=powered)</text>",
-                    seed, maxD, minY, maxY);
-            fprintf(f, "</svg>");
-            #undef PX
-            #undef PY
-            fclose(f);
-            printf("  wrote %s\n", path);
-        }
-        return 0;
-    }
-
-    // GENERATION-ONLY occurrence census (battery: NO physics sim, no felt-g pipeline). Rolls the
-    // same streaming generator the live ride uses (genPoint + popFront window) for 3 laps x N seeds
-    // and counts element-family OCCURRENCES (maximal same-kind runs) per lap: the >=1/lap quota
-    // families and V1 diagnostic counters. This is the
-    // acceptance harness for the element-occurrence rework. Kept immediately before --audit.
-    if (argc > 1 && TextIsEqual(argv[1], "--census")) {
+    // V2 headless correctness audit (migration step 7 — replaces the V1-only
+    // --pacing/--profile/--census/--audit/--rollingdump modes that were
+    // archived with the V1 generator). Builds N seeds through the real V2
+    // planner over the world terrain, validates each, and prints a per-seed +
+    // fleet summary. Exits 0 iff every seed is clean (zero continuity/element
+    // failures AND the clearance policy does not reject it). This is the
+    // headless equivalent of the v2track_tests step-6 ride suite.
+    if (argc > 1 && TextIsEqual(argv[1], "--v2audit")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 8;
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        long setInv[M_COUNT]; for (int i = 0; i < M_COUNT; i++) setInv[i] = 0;   // seed-set inversion totals for the no-type-over-50% gate
-        int  laps = 0, invRange = 0, cliffMiss = 0, quotaMiss = 0;
+        v2::TerrainQuery terrain;
+        terrain.height = [](float x, float z){ return groundTopAt(x, z); };
+        terrain.waterY = WATER_Y;
+        int clean = 0;
+        float cutTot = 0.0f, tunTot = 0.0f, unsupTot = 0.0f, lenTot = 0.0f;
+        int cliffs = 0, invTot = 0;
         for (int sd = 1; sd <= seeds; sd++) {
-            g_rng = (uint32_t)sd * 2654435761u | 1u;
-            Track t; t.reset();
-            const int keep = 64;
-            int cnt[M_COUNT]; for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;   // current-lap per-kind run counts
-            int lap = 0, prevKind = -1; long processed = 0, guard = 0;
-            clock_t lapClk = clock();
-            while (lap <= 3 && guard < 400000) {
-                guard++;
-                while (t.base + (long)t.cp.size() <= processed) t.genPoint();
-                int nk = t.kind[(int)(processed - t.base)];
-                if (nk != prevKind) {   // a maximal same-kind run = one element occurrence
-                    if (nk == M_LAUNCH) {   // a LAUNCH run opens a lap; flush the one that just closed
-                        if (lap >= 1) {
-                            int inv  = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
-                            int bank = cnt[M_WAVE]+cnt[M_BANKAIR]+cnt[M_STENGEL];   // banked-airtime group = one family
-                            double ms = (double)(clock()-lapClk)*1000.0/CLOCKS_PER_SEC;
-                            printf("[census] seed%d lap%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d tot=%d} cliffdive=%d quota{HILLS=%d TURN=%d HELIX=%d DIP=%d BANKAIR=%d} tophat=%d other{SCURVE=%d WAVE=%d STENGEL=%d} ms/lap=%.1f\n",
-                                   sd, lap, cnt[M_ROLL],cnt[M_LOOP],cnt[M_IMMEL],cnt[M_DIVELOOP],cnt[M_STALL], inv,
-                                   cnt[M_CLIFFDIVE], cnt[M_HILLS],cnt[M_TURN],cnt[M_HELIX],cnt[M_DIP],bank, cnt[M_CLIMB],
-                                   cnt[M_SCURVE],cnt[M_WAVE],cnt[M_STENGEL], ms);
-                            laps++;
-                            if (inv < 2 || inv > 4) { invRange++; printf("[census]   WARN seed%d lap%d inversions=%d OUT OF [2,4]\n", sd, lap, inv); }
-                            if (cnt[M_CLIFFDIVE] < 1) { cliffMiss++; printf("[census]   WARN seed%d lap%d NO cliffdive\n", sd, lap); }
-                            if (cnt[M_HILLS]<1||cnt[M_TURN]<1||cnt[M_HELIX]<1||cnt[M_DIP]<1||bank<1) {
-                                quotaMiss++;
-                                printf("[census]   WARN seed%d lap%d unmet quota:%s%s%s%s%s\n", sd, lap,
-                                       cnt[M_HILLS]<1?" HILLS":"", cnt[M_TURN]<1?" TURN":"", cnt[M_HELIX]<1?" HELIX":"",
-                                       cnt[M_DIP]<1?" DIP":"", bank<1?" BANKAIR":"");
-                            }
-                            setInv[M_LOOP]+=cnt[M_LOOP]; setInv[M_ROLL]+=cnt[M_ROLL]; setInv[M_IMMEL]+=cnt[M_IMMEL];
-                            setInv[M_DIVELOOP]+=cnt[M_DIVELOOP]; setInv[M_STALL]+=cnt[M_STALL];
-                            if (lap == 3) { prevKind = nk; break; }
-                        }
-                        lap++;
-                        for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;
-                        lapClk = clock();
-                    }
-                    if (lap >= 1) cnt[nk]++;
-                    prevKind = nk;
-                }
-                processed++;
-                while ((int)t.cp.size() > keep && t.base < processed) t.popFront();
+            v2::Route r = v2::buildRide((uint32_t)sd, terrain);
+            v2::ValidationReport rep = v2::validateRoute(r, &terrain);
+            bool ok = rep.pass() &&
+                      v2::clearanceDecision(rep, v2::ClearanceLimits{}) != v2::ClearanceDecision::Reject;
+            int nInv = 0; bool sawCliff = false, prevInv = false;
+            for (const v2::SegmentRec &s : r.segs) {
+                bool inv = s.tag == v2::Tag::Loop || s.tag == v2::Tag::Immelmann ||
+                           s.tag == v2::Tag::DiveLoop || s.tag == v2::Tag::Corkscrew ||
+                           s.tag == v2::Tag::ZeroGStall;
+                if (inv && !prevInv) nInv++;
+                prevInv = inv;
+                if (s.tag == v2::Tag::CliffDive) sawCliff = true;
+            }
+            if (ok) clean++;
+            if (sawCliff) cliffs++;
+            invTot += nInv;
+            cutTot += rep.cutLength; tunTot += rep.tunnelLength;
+            unsupTot += rep.unsupportedLength; lenTot += r.length();
+            printf("[v2audit] seed%d: %.0f m, %zu segs, %d inv, cliffdive=%d, "
+                   "cut %.0f m, tunnel %.0f m, unsupported %.0f m, %s\n",
+                   sd, r.length(), r.segs.size(), nInv, sawCliff ? 1 : 0,
+                   rep.cutLength, rep.tunnelLength, rep.unsupportedLength,
+                   ok ? "CLEAN" : "REJECT");
+            if (!ok) {
+                for (const v2::Discontinuity &d : rep.discontinuities)
+                    printf("[v2audit]   discontinuity s=%.1f %s jump=%g\n", d.s, d.quantity, d.jump);
+                for (const std::string &e : rep.elementFailures)
+                    printf("[v2audit]   element: %s\n", e.c_str());
             }
         }
-        long grand = setInv[M_LOOP]+setInv[M_ROLL]+setInv[M_IMMEL]+setInv[M_DIVELOOP]+setInv[M_STALL];
-        int  typ[5] = {M_ROLL,M_LOOP,M_IMMEL,M_DIVELOOP,M_STALL}; long invMax = 0; int invMaxT = -1;
-        for (int i = 0; i < 5; i++) if (setInv[typ[i]] > invMax) { invMax = setInv[typ[i]]; invMaxT = typ[i]; }
-        printf("[census] set inversion totals: ROLL=%ld LOOP=%ld IMMEL=%ld DIVELOOP=%ld STALL=%ld grand=%ld\n",
-               setInv[M_ROLL],setInv[M_LOOP],setInv[M_IMMEL],setInv[M_DIVELOOP],setInv[M_STALL], grand);
-        printf("[census] max-type %s = %.1f%% of set (gate <50%%); ROLL spawned=%s\n",
-               invMaxT>=0?NM[invMaxT]:"-", grand?100.0*(double)invMax/(double)grand:0.0, setInv[M_ROLL]>0?"yes":"NO");
-        printf("[census] laps=%d invOutOfRange=%d cliffMiss=%d quotaMiss=%d\n", laps, invRange, cliffMiss, quotaMiss);
-        return 0;
-    }
-
-    if (argc > 1 && TextIsEqual(argv[1], "--audit")) {
-        int seeds = (argc > 2) ? atoi(argv[2]) : 8;
-        return audit_mode::run(seeds);
-    }
-
-    if (argc > 1 && TextIsEqual(argv[1], "--rollingdump")) {
-        // ROLLING CP-STREAM DUMP. The static instruments (--audit's MC_DUMP_ELEM) build one frozen
-        // 470-cp window per seed, so they only ever see the ride's opening and NEVER the ~2/3-lap
-        // signature CLIFFDIVE or any later-lap element. This drives the track exactly the way the live
-        // game does -- reset(), then ensureAhead()/popFront() to roll a small window forward while the
-        // physics integrator advances u -- and emits every control point EXACTLY ONCE, keyed by its
-        // GLOBAL running index (t.base + k), in the same [dump] line format. Because it actually laps
-        // the ride via the station cycle, the stream contains the CLIFFDIVE and every later-lap cp.
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        int seeds    = (argc > 2) ? atoi(argv[2]) : 2;
-        int rollLaps = getenv("MC_ROLL_LAPS") ? atoi(getenv("MC_ROLL_LAPS")) : 3;
-        float stationEvery = getenv("MC_ROLL_STATION_S") ? (float)atof(getenv("MC_ROLL_STATION_S")) : 205.0f;
-
-        // One control point -> one [dump] line, in the exact MC_DUMP_ELEM field layout (seedN cpK kind
-        // pos heading dy terr roll v). Computed at an INTERIOR local k (needs cp[k-1] and cp[k+1]) so
-        // heading/dy/roll are byte-identical to the static dump for any shared global index.
-        auto dumpCP = [&](Track& t, int sd, int k, long gidx) {
-            Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
-            float dx = p1.x - p0.x, dz = p1.z - p0.z;
-            float heading = atan2f(dx, dz) * 180.0f / PI;
-            float roll = 0.0f;
-            {
-                Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
-                Vector3 side = Vector3CrossProduct(Vector3{0,1,0}, tanv);
-                float sl = Vector3Length(side);
-                if (sl > 1e-4f) {
-                    side = Vector3Scale(side, 1.0f/sl);
-                    Vector3 flatUp = Vector3CrossProduct(tanv, side);
-                    roll = atan2f(Vector3DotProduct(t.up[k], side),
-                                  Vector3DotProduct(t.up[k], flatUp)) * 180.0f / PI;
-                }
-            }
-            printf("[dump] seed%d cp%ld kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f dy=%+.2f terr=%.1f roll=%+.1f v=%.1f\n",
-                   sd, gidx, NM[t.kind[k]], p1.x, p1.y, p1.z, heading,
-                   p1.y - p0.y, groundTopAt(p1.x, p1.z), roll,
-                   k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f);
-        };
-
-        // MC_ROLL_STATIC: reference mode -- dump the SAME static 470-cp window --audit builds (no
-        // station cycle, no popFront, base stays 0 so cpK == k). A downstream diff of this against the
-        // rolling stream's leading cps proves the prefix is identical (same seed => same RNG stream).
-        if (getenv("MC_ROLL_STATIC")) {
-            for (int sd = 1; sd <= seeds; sd++) {
-                g_rng = (uint32_t)sd * 2654435761u | 1u;
-                Track t; t.reset();
-                while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
-                int n = (int)t.cp.size();
-                for (int k = 1; k < n - 1; k++) dumpCP(t, sd, k, (long)k);
-                printf("[dump] --- seed %d static-window end ---\n", sd);
-            }
-            return 0;
-        }
-
-        for (int sd = 1; sd <= seeds; sd++) {
-            g_rng = (uint32_t)sd * 2654435761u | 1u;
-            Track t; t.reset();
-            clock_t t0 = clock();
-
-            float u = 0.5f, v = LAUNCH_V;
-            float sinceStation = 0.0f;
-            long  nextDump     = 1;   // next GLOBAL index to emit (skip cp0, the launch anchor, exactly as the static k=1 start)
-            int   lapCount     = 0;   // STN runs seen so far == laps completed
-            int   prevDumpKind = -1;  // kind of the previously emitted cp, for STN-run edge detection
-            const int FRAME_CAP = 500000;
-            // A cp is only SETTLED once the generator's trailing smoothing sweep (coaster_track.cpp
-            // ~2663: a 14-cp back-relative relaxation run every genPoint) can no longer touch it, i.e.
-            // once it is >14 cps behind the generation head. We emit at SETTLE=18 (>14, with margin) so
-            // every dumped y/up is the FINAL value the game renders -- identical to a fully-generated
-            // static window. The horizon is deepened to keep the window comfortably larger than SETTLE
-            // so a cp always settles before the front pop reaches it (the pop idiom itself is unchanged;
-            // deeper lookahead does not change generated values -- generation is horizon-invariant).
-            const long SETTLE = 18;
-            int f = 0;
-            for (; f < FRAME_CAP && lapCount < rollLaps; f++) {
-                float dt = 1.0f / 60.0f;
-                t.ensureAhead(u + 34);
-                float slope = t.tangent(u).y;
-                float acc = -GRAV * slope - DRAG * v * v - FRICTION;
-                v += acc * dt;
-                unsigned char tg = t.tagAt(u);
-                if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust -- see the simtest copy
-                else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f * dt, CLIMB_V);
-                if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;
-                if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires
-                if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20 * dt, CHAIN_V);
-                v = fmaxf(v, V_GUARD);
-
-                // Station cadence: request a platform stop every stationEvery seconds (live-loop
-                // behaviour). The generator lays the STN run at the next low-terrain flat; that starts
-                // a fresh lap, re-arming the once-per-lap CLIFFDIVE + inversion budget.
-                sinceStation += dt;
-                if (sinceStation > stationEvery && !t.stationPending && !t.stationActive)
-                    t.stationPending = true;
-
-                // Decelerate into the platform and re-dispatch (same idiom as --stationtest), so the
-                // ride actually laps instead of leaving stationActive latched forever.
-                if (t.stationActive && t.tagAt(u) == M_STATION) {
-                    Vector3 Tn = t.tangent(u);
-                    Vector3 Th2 = { Tn.x, 0, Tn.z };
-                    float Tl = sqrtf(Th2.x*Th2.x + Th2.z*Th2.z);
-                    if (Tl > 1e-3f) { Th2.x /= Tl; Th2.z /= Tl; }
-                    Vector3 Pp = t.pos(u);
-                    float d  = (t.stationStop.x-Pp.x)*Th2.x + (t.stationStop.z-Pp.z)*Th2.z;
-                    float d3 = Vector3Distance(t.stationStop, Pp);
-                    if (d > 2.0f && d3 > 2.0f) { float vm = sqrtf(2*22*d + 1); if (v > vm) v = vm; }
-                    else { v = 12.0f; sinceStation = 0.0f; t.stationActive = false; }
-                }
-
-                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
-                if (!(du == du)) du = 0;
-                u += fminf(du, 1.5f);
-
-                // Emit every SETTLED interior cp exactly once, in global-index order, BEFORE popping the
-                // front -- so nothing is popped undumped and each field matches the static dump. The
-                // SETTLE margin holds a cp back until the trailing smoothing sweep can no longer change
-                // it (also guarantees cp[k-1]/cp[k+1] exist for heading/dy/roll).
-                while (nextDump <= t.base + (long)t.cp.size() - 1 - SETTLE) {
-                    int k = (int)(nextDump - t.base);
-                    if (k < 1) { nextDump++; continue; }   // only ever cp0 (the anchor); never dumped
-                    int kd = t.kind[k];
-                    if (kd == M_STATION && prevDumpKind != M_STATION) {
-                        lapCount++;
-                        printf("[dump] --- lap %d end ---\n", lapCount);
-                        if (lapCount >= rollLaps) break;   // stop AT the Nth station run's first cp
-                    }
-                    dumpCP(t, sd, k, nextDump);
-                    prevDumpKind = kd;
-                    nextDump++;
-                }
-
-                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
-            }
-            double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
-            printf("[dump] --- seed %d done: laps=%d frames=%d dumped=%ld %.2fs ---\n",
-                   sd, lapCount, f, nextDump - 1, secs);
-        }
-        return 0;
+        printf("[v2audit] fleet: %d/%d clean, cut %.0f m + tunnel %.0f m + unsupported %.0f m "
+               "over %.0f m, %d cliff dives, %.1f inversions/lap\n",
+               clean, seeds, cutTot, tunTot, unsupTot, lenTot, cliffs,
+               seeds ? (float)invTot / (float)seeds : 0.0f);
+        return clean == seeds ? 0 : 1;
     }
 
     bool benchMode = (argc > 1 && TextIsEqual(argv[1], "--bench"));

@@ -1,6 +1,7 @@
 // V1 baseline generator. V2 must use the modular route builder specified in
 // ../COASTER_REWRITE.md rather than extending this state machine.
-// (submergedGround rehomed to game_state.cpp at migration step 6.)
+// Shared water predicate for V1 consumers.
+static inline bool submergedGround(float groundTopY) { return groundTopY <= WATER_Y + 0.01f; }
 
 struct Track {
     std::deque<Vector3>       cp;
@@ -3525,5 +3526,52 @@ struct Track {
     #include "coaster_elements_ext.cpp"
 };
 
-// (rideElemName rehomed to presentation.cpp at migration step 6 — host banner
-// diagnosis, unchanged; survives the V1 generator's step-7 deletion.)
+// HONEST HUD ELEMENT NAMES -- the ONE shared diagnosis both renderers use (user: names are
+// often fake, e.g. SPLASHDOWN shown on non-low, non-water track). The generator's tag says
+// what an element was MEANT to be; terrain feedback can bend the built shape (a DIP held high
+// by its valley-guard floor, a DROP forced up a rising hillside), so the banner is diagnosed
+// from the ACTUAL local geometry: tag + pitch (tangent.y) + track height vs ground/water.
+//   - SPLASHDOWN only when genuinely SKIMMING WATER (over a water tile, within ~3 m of the
+//     surface -- just above the wheel-spray window, so the label and the spray particles
+//     appear together). A DIP over dry land is a DIP; one held high relabels by pitch.
+//   - M_TURN reads BANKED TURN: the overbanked variants were removed from generation
+//     (bankT=0, bank hard-clamped below vertical), so "OVERBANKED" was a fake name too.
+// groundY must be the caller's groundTopAt(x,z), which floors at WATER_Y -- over water it
+// returns exactly WATER_Y, which is the water test used here.
+static const char* rideElemName(unsigned char tag, float pitch, float trackY, float groundY,
+                                bool &special) {
+    special = false;
+    float alt = trackY - groundY;
+    bool overWater = submergedGround(groundY);
+    const char* byPitch = (pitch > 0.12f) ? "CLIMB" : (pitch < -0.12f) ? "DROP" : "AIRTIME";
+    switch (tag) {
+        case M_LAUNCH: return "LAUNCH";
+        case M_BOOST:  return "BOOSTER";
+        case M_CLIMB:  return (pitch < -0.12f) ? "DROP" : "TOP HAT";
+        case M_DROP:   return byPitch;   // the signature cliff dive now has its own tag (M_CLIFFDIVE), so a tall DROP is no longer relabelled
+        case M_HILLS:  return "AIRTIME HILL";
+        case M_TURN:   return "BANKED TURN";
+        case M_HELIX:  return "HELIX";
+        case M_SCURVE: return "S-CURVE";
+        case M_DIVE:   return (pitch > 0.12f) ? "CLIMB" : "DIVE TURN";
+        case M_BANKAIR:return "BANKED AIRTIME";
+        case M_WAVE:   return "WAVE TURN";
+        case M_DIP:
+            if (overWater && trackY - WATER_Y < 3.0f) return "SPLASHDOWN";
+            if (alt < 12.0f)                          return "DIP";
+            return byPitch;   // a dip its valley guard kept high isn't visibly a dip at all
+        case M_LOOP:     special = true; return "VERTICAL LOOP";
+        case M_ROLL:     special = true; return "CORKSCREW";
+        case M_IMMEL:    special = true; return "IMMELMANN";
+        case M_STALL:    special = true; return "ZERO-G STALL";
+        case M_DIVELOOP: special = true; return "DIVE LOOP";
+        case M_COBRA:    special = true; return "COBRA ROLL";
+        case M_HEARTLINE:special = true; return "HEARTLINE ROLL";
+        case M_WINGOVER: special = true; return "WING-OVER";
+        case M_PRETZEL:  special = true; return "PRETZEL LOOP";
+        case M_STENGEL:  special = true; return "STENGEL DIVE";
+        case M_BANANA:   special = true; return "BANANA ROLL";
+        case M_CLIFFDIVE:special = true; return "SIGNATURE CLIFF DIVE";
+        default: return nullptr;   // FLAT/STATION: no banner
+    }
+}

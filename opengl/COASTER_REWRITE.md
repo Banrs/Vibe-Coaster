@@ -150,8 +150,11 @@ face with zero curvature at both ends, and cannot create a horizontal shelf.
 - Terrain is generated once from world seed; it is never altered by a ride element.
 - Build natural escarpments as long, warped, erosion-varied noise ridges—not radial mesas—before
   the ride layout is planned.
-- Route clearance validates against terrain after a primitive is proposed. A shallow cut/tunnel is
-  allowed. Terrain may cause rejection or a redesigned connector, never a per-sample pitch edit.
+- Route clearance validates against terrain after a primitive is proposed. **A shallow cut/tunnel
+  is the default, preferred response to encroachment — not a last resort** (see `TERRAIN_CONTRACT.md`'s
+  historical note: an earlier version overcorrected from a -100 m clearance bug into being afraid
+  to ever carve terrain, which produced kinked, terrain-hugging track instead — don't repeat that).
+  Reject/replan only when a cut/tunnel can't resolve it. Never a per-sample pitch edit or kink.
 - The sea plane is independent of mountain relief. Keep most plains dry; water is for low basins.
 
 ### 4. Sampling, rendering, and camera

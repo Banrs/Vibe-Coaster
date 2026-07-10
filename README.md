@@ -1,17 +1,22 @@
 # MINECOASTER
 
-Voxel roller-coaster game with OpenGL, Vulkan, and Windows DXR renderer experiments.
+Voxel roller-coaster game: a raylib/OpenGL host, mid-rewrite. Style target: "arcadey but grounded
+in real coaster engineering," Minecraft-style voxel world with a modern shader-quality look.
 
 ## Current direction
 
 The existing procedural-track implementation is V1 baseline code only. It is intentionally not
 the source of truth for future geometry work. The next implementation is a clean V2 route builder:
-continuous primitives first, dense arc-length samples second, and terrain validation last.
+continuous primitives first, dense arc-length samples second, and terrain validation last. The
+rendering/shader layer is a separate, partial-to-full rewrite target too — see
+`docs/REALISM_SCALE.md`'s "Core philosophy" section.
 
-Read these before touching track geometry:
+Read these before touching track geometry, sizing, or pacing:
 
 1. [`docs/SHAPES.md`](docs/SHAPES.md) — cited geometry contract for track primitives.
-2. [`opengl/COASTER_REWRITE.md`](opengl/COASTER_REWRITE.md) — V2 architecture, file boundaries,
+2. [`docs/REALISM_SCALE.md`](docs/REALISM_SCALE.md) — how big/fast/long each element is, and the
+   real-world research (with sourcing and confidence flags) behind every number.
+3. [`opengl/COASTER_REWRITE.md`](opengl/COASTER_REWRITE.md) — V2 architecture, file boundaries,
    migration order, and acceptance checks.
 
 Historical generator tuning notes and stale audit targets were deliberately removed. Git history
@@ -22,7 +27,7 @@ preserves them if needed; they are not valid requirements for V2.
 | Folder | Purpose |
 |---|---|
 | [`opengl/`](opengl/) | The only active code: playable raylib/OpenGL host and V1 baseline, target of the V2 rewrite. |
-| [`docs/`](docs/) | Current design docs for the track rewrite (`SHAPES.md`, `TERRAIN_CONTRACT.md`). |
+| [`docs/`](docs/) | Current design docs for the track rewrite (`SHAPES.md`, `TERRAIN_CONTRACT.md`, `REALISM_SCALE.md`). |
 
 The experimental Vulkan and Windows DXR renderer forks (each hard-depending on the V1
 generator internals) were moved out of this repo to `../mythostest-forks/` on 2026-07-09

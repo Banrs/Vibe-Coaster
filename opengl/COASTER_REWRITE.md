@@ -5,8 +5,11 @@ generator. Preserve it only as a comparison baseline while V2 is built alongside
 
 ## Start here
 
-1. Read this file in full, then [`docs/SHAPES.md`](../docs/SHAPES.md) and
-   [`docs/TERRAIN_CONTRACT.md`](../docs/TERRAIN_CONTRACT.md).
+1. Read this file in full, then [`docs/SHAPES.md`](../docs/SHAPES.md),
+   [`docs/TERRAIN_CONTRACT.md`](../docs/TERRAIN_CONTRACT.md), and
+   [`docs/REALISM_SCALE.md`](../docs/REALISM_SCALE.md) (element sizing/speed/pacing rules and the
+   real-world research behind every number — read this before assigning any size, speed, or
+   duration target to an element).
 2. Do not open `coaster_track.cpp` planning to patch it. Any fix for a symptom described below
    goes into the new `opengl/src/track/` modules, not into the V1 state machine.
 3. First concrete step is Migration sequence item 1: create the `opengl/src/track/` module
@@ -16,6 +19,10 @@ generator. Preserve it only as a comparison baseline while V2 is built alongside
 4. If you find yourself writing a smoothing pass, a terrain-floor ratchet, or a per-sample pitch
    edit, stop — that is exactly the pattern this rewrite exists to remove (see "What to remove
    or quarantine" below).
+5. Before hardcoding any element's size/speed/duration target, follow `REALISM_SCALE.md`'s "ask
+   before locking in" rule — surface the researched WR data and confirm the target with the user,
+   especially for elements where no solid real-world anchor exists (turn radius, corkscrew roll
+   rate, and other gaps that doc lists explicitly).
 
 ## Why a rewrite is required
 

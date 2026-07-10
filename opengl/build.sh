@@ -1,7 +1,7 @@
 #!/bin/zsh
 cd "$(dirname "$0")"
 RLDIR=""
-for d in ../src/vendor/raylib/src src/vendor/raylib/src; do
+for d in src/vendor/raylib/src; do
   [[ -d "$d" ]] && RLDIR="$d" && break
 done
 if command -v cmake >/dev/null 2>&1; then

@@ -21,10 +21,13 @@ preserves them if needed; they are not valid requirements for V2.
 
 | Folder | Purpose |
 |---|---|
-| [`opengl/`](opengl/) | Current playable raylib/OpenGL host and V1 baseline. |
-| [`vulkan/`](vulkan/) | Experimental Vulkan renderer. It currently consumes V1 track code. |
-| [`win-rtx/`](win-rtx/) | Experimental Windows DXR renderer. |
-| [`docs/`](docs/) | Current design and backend-specific documentation. |
+| [`opengl/`](opengl/) | The only active code: playable raylib/OpenGL host and V1 baseline, target of the V2 rewrite. |
+| [`docs/`](docs/) | Current design docs for the track rewrite (`SHAPES.md`, `TERRAIN_CONTRACT.md`). |
+
+The experimental Vulkan and Windows DXR renderer forks (each hard-depending on the V1
+generator internals) were moved out of this repo to `../mythostest-forks/` on 2026-07-09
+and quarantined there — do not resume either until the V2 rewrite lands and they're
+ported to the new `Track` adapter. See `../mythostest-forks/README.md`.
 
 ## Build the OpenGL host
 

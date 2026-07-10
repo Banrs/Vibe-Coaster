@@ -77,9 +77,14 @@ inline int terrainH(float x, float z) {
     // is permitted to cut through this relief; terrain does not dictate each track tangent.
     float base = 31.0f + powf(c, 1.34f) * 94.0f;
     float mAmp = powf(1.0f - e, 1.52f);
-    float mtn  = powf(pv, 2.22f) * mAmp * (52.0f + 104.0f * mountainRegion);
+    // Mountain amplitude moderated (user sanctioned a terrain-generator change
+    // 2026-07-10): rides carve BOUNDED cuts through relief, so the rare tall
+    // peaks are shaved (~30%) and the extra-steep pv^4.5 spike halved. The
+    // dry-plains / valley / escarpment CHARACTER (below) is unchanged; only
+    // the peak amplitude drops, so km-scale bores stop being forced.
+    float mtn  = powf(pv, 2.22f) * mAmp * (36.0f + 66.0f * mountainRegion);
     float h = base + mtn + (det - 0.5f) * 13.0f + midHill * 21.0f;
-    h += powf(pv, 4.5f) * mountainRegion * 36.0f;
+    h += powf(pv, 4.5f) * mountainRegion * 16.0f;
 
     // Natural, world-seeded escarpments for cliff dives.  This is deliberately independent of
     // the coaster: warped low-frequency noise makes long irregular ridges, while finer erosion

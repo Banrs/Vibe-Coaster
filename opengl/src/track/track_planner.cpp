@@ -49,10 +49,22 @@ float v2Drag(float v2, float meters) {
     return fmaxf(u, 0.0f);
 }
 
-// Planner-side drop/climb with ramps PROPORTIONAL to the height, so any
-// terrain- or speed-derived dy keeps a real sustained face (fixed ramps eat
-// small heights whole and trip the primitive's solvability assert).
+// Level the route out (elements and lines need a level, straight entry).
+// Safe to call anywhere; a no-op when already level.
+void levelOut(Route& r) {
+    if (fabsf(r.endPose.pitch) > 0.012f)
+        emitGradeChange(r, 0.0f, fmaxf(18.0f, fabsf(r.endPose.pitch) * 70.0f), Tag::Line);
+}
+
+// Planner-side drop with ramps PROPORTIONAL to the height, so any terrain- or
+// speed-derived dy keeps a real sustained face (fixed ramps eat small heights
+// whole and trip the primitive's solvability assert). LEVELS the entry first:
+// emitDrop starts its push-over from the current pitch, so a positive (still
+// climbing) entry would make the drop RISE at its mouth — exactly the
+// "height rises inside drop" element failure. A drop is a pure vertical
+// element; the terrain-following grade lives in emitGroundLeg, not here.
 void plannerDrop(Route& r, float dy) {
+    levelOut(r);
     DropSpec d;
     d.height = dy;
     d.thetaDrop = 0.35f + fminf(0.87f, dy / 90.0f);
@@ -74,35 +86,44 @@ void plannerDrop(Route& r, float dy) {
     emitDrop(r, d);
 }
 
-void plannerClimb(Route& r, float dy, Tag tag, bool chain);
-
-// Terrain-following straight: long lines re-anchor to the ground every
-// ~140 m so route legs ride the relief with bounded cuts instead of boring
-// kilometers of tunnel below it (or flying above it).
-float emitLineSettled(Route& r, float v2, const TerrainQuery& terrain, float len) {
-    while (len > 0.0f) {
-        float chunk = fminf(len, 110.0f);
-        emitLine(r, chunk, Tag::Line, false);
-        len -= chunk;
-        if (len > 0.0f) {
-            float ground = terrain.height(r.endPose.pos.x, r.endPose.pos.z);
-            float dy = r.endPose.pos.y - (ground + 12.0f);
-            if (dy > 18.0f) {
-                plannerDrop(r, dy);
-                v2 = v2After(v2, -dy);
-            } else if (dy < -18.0f) {
-                plannerClimb(r, -dy, Tag::Line, false);
-                v2 = v2After(v2, -dy);
-            }
-        }
-    }
-    return v2;
-}
-
+// Planner-side climb (drop mirrored). Levels the entry for the same reason:
+// emitClimb's pull-up starts from the current pitch.
 void plannerClimb(Route& r, float dy, Tag tag, bool chain) {
+    levelOut(r);
     float theta = dy > 60.0f ? 0.61f : 0.42f; // 35 or 24 deg
     float ramp = fminf(40.0f, fmaxf(10.0f, dy * 0.5f));
     emitClimb(r, dy, theta, ramp, ramp, tag, chain);
+}
+
+// Continuous ground-hugging leg (COASTER_REWRITE.md "low terrain-hugging
+// turns/hills"; TERRAIN_CONTRACT.md: bounded cuts are the norm, km-scale
+// bores the failure). Walks the straight in short steps, grading the pitch
+// toward (ground ahead + clearance) each step with a capped slope, so the
+// rail tracks the relief the WHOLE way — the cut/unsupported excursion is
+// bounded per step, never a kilometre-deep bore. Grade ramps are S5 (C2);
+// levels out at the end so the next element gets a level, straight entry.
+// Errs slightly ABOVE ground (clearance): an unsupported span never trips the
+// clearance gate, a tunnel does. Returns v^2 after the net rise.
+float emitGroundLeg(Route& r, float v2, const TerrainQuery& terrain, float length,
+                    float clearance) {
+    const float step = 40.0f;
+    const float startY = r.endPose.pos.y;
+    float done = 0.0f;
+    while (length - done > 1.0f) {
+        float seg = fminf(step, length - done);
+        float dx = sinf(r.endPose.yaw), dz = cosf(r.endPose.yaw);
+        float gAhead = terrain.height(r.endPose.pos.x + dx * seg, r.endPose.pos.z + dz * seg);
+        float dy = (gAhead + clearance) - r.endPose.pos.y;
+        // Climb steeper than descend: keeping up with a rising flank avoids a
+        // tunnel; a fast descent just floats (unsupported, harmless).
+        float pitch = fmaxf(-0.42f, fminf(0.52f, atanf(dy / seg)));
+        float rampLen = fminf(seg, fmaxf(10.0f, fabsf(pitch - r.endPose.pitch) * 60.0f));
+        emitGradeChange(r, pitch, rampLen, Tag::Line);
+        if (seg - rampLen > 1.0f) emitLine(r, seg - rampLen, Tag::Line, false);
+        done += seg;
+    }
+    levelOut(r);
+    return fmaxf(v2After(v2, r.endPose.pos.y - startY), 100.0f);
 }
 
 // Geometric speed conditioning: climb (or descend) toward the height that
@@ -123,29 +144,57 @@ float conditionSpeed(Route& r, float v2, float v2Target) {
     return v2Target;
 }
 
-// Grade the upcoming turn toward the terrain at its (circle-geometry) exit
-// point, so long arcs ride the relief instead of boring level through it.
+// Grade the upcoming turn so its (constant-pitch) arc CLEARS every bit of
+// ground it sweeps over. A turn is a single-grade ramp — it cannot follow a
+// mid-arc hump — so instead of grading toward the exit alone, sample the whole
+// sweep and take the pitch that clears the HIGHEST point (+clearance). Ground
+// lower than that line passes beneath the arc as an unsupported span (harmless
+// to the clearance gate); only a hump steeper than the pitch cap leaves a
+// bounded cut, never a long bore from a level arc sitting under a rising flank.
 void gradeTurnToTerrain(Route& r, const TerrainQuery& terrain, const TurnSpec& t) {
     float s1 = t.totalAngle >= 0.0f ? 1.0f : -1.0f;
     float yaw = r.endPose.yaw;
-    float cx = r.endPose.pos.x + s1 * t.radius * cosf(yaw);
-    float cz = r.endPose.pos.z - s1 * t.radius * sinf(yaw);
-    float exitYaw = yaw + t.totalAngle;
-    float ex = cx - s1 * t.radius * cosf(exitYaw);
-    float ez = cz + s1 * t.radius * sinf(exitYaw);
-    float arcLen = t.radius * fabsf(t.totalAngle);
-    float g = terrain.height(ex, ez);
-    float pitch = atanf((g + 12.0f - r.endPose.pos.y) / fmaxf(arcLen, 40.0f));
-    pitch = fminf(0.30f, fmaxf(-0.30f, pitch));
+    float R = t.radius;
+    float cx = r.endPose.pos.x + s1 * R * cosf(yaw);
+    float cz = r.endPose.pos.z - s1 * R * sinf(yaw);
+    float y0 = r.endPose.pos.y;
+    float need = -1e9f;
+    const int N = 6;
+    for (int i = 1; i <= N; i++) {
+        float frac = (float)i / (float)N;
+        float ang = yaw + t.totalAngle * frac;
+        float px = cx - s1 * R * cosf(ang), pz = cz + s1 * R * sinf(ang);
+        float arcLen = R * fabsf(t.totalAngle) * frac;
+        float req = atanf((terrain.height(px, pz) + 12.0f - y0) / fmaxf(arcLen, 30.0f));
+        need = fmaxf(need, req);
+    }
+    float pitch = fminf(0.30f, fmaxf(-0.30f, need));
     if (fabsf(pitch - r.endPose.pitch) > 0.02f)
         emitGradeChange(r, pitch, fmaxf(18.0f, fabsf(pitch - r.endPose.pitch) * 70.0f),
                         Tag::Line);
 }
 
-// Level the route out after graded legs (elements need level entries).
-void levelOut(Route& r) {
-    if (fabsf(r.endPose.pitch) > 0.012f)
-        emitGradeChange(r, 0.0f, fmaxf(18.0f, fabsf(r.endPose.pitch) * 70.0f), Tag::Line);
+// Valley-following heading probe (COASTER_REWRITE.md's "choose another beat"
+// applied to headings): sample candidate bearings around `base` and keep the
+// one whose ground ahead climbs LEAST above the current rail altitude, so
+// long legs and big hills sit over low, along-contour or descending ground
+// instead of ramming a flank. Only above-rail ground is penalized — heading
+// downhill is free (an unsupported span, not a tunnel). Returns absolute yaw.
+float pickLowHeading(Route& r, const TerrainQuery& terrain, float base, float spread,
+                     float reach, int n) {
+    float bestH = base, bestDev = 1e18f;
+    for (int c = 0; c < n; c++) {
+        float hCand = base + (n <= 1 ? 0.0f
+                                     : spread * (2.0f * (float)c / (float)(n - 1) - 1.0f));
+        float dx = sinf(hCand), dz = cosf(hCand);
+        float dev = 0.0f;
+        for (float w = 60.0f; w <= reach; w += 60.0f)
+            dev += fmaxf(0.0f, terrain.height(r.endPose.pos.x + dx * w,
+                                              r.endPose.pos.z + dz * w) +
+                                   12.0f - r.endPose.pos.y);
+        if (dev < bestDev) { bestDev = dev; bestH = hCand; }
+    }
+    return bestH;
 }
 
 // Steer the heading toward a bearing with one banked turn (no-op when nearly
@@ -200,10 +249,17 @@ float settleToGround(Route& r, float v2, const TerrainQuery& terrain, float clea
 // approach and the station return alike.
 float dockTo(Route& r, Rng& rng, float v2, const TerrainQuery& terrain,
              const Pose& target, float standoffDist) {
-    const float gateBack = standoffDist + 260.0f;
+    // Gate sits just behind the target on its approach line; the final
+    // connector spans only this much (kept short so it stays near the
+    // target's ground and can't bore a long tunnel). The long haul to the
+    // gate is a ground-following leg between the two Dubins arcs.
+    const float gateBack = standoffDist + 40.0f;
     Vector3 gate = Vector3Subtract(target.pos,
                                    Vector3Scale(dirFromAngles(0.0f, target.yaw), gateBack));
-    const float R = 130.0f;
+    // Tighter docking circles than the ride's cruising turns: a shorter arc
+    // sweeps less terrain, so a big heading change docks without a long arc
+    // humping over relief.
+    const float R = 100.0f;
     float x0 = r.endPose.pos.x, z0 = r.endPose.pos.z, y0 = r.endPose.yaw;
     float gx = gate.x, gz = gate.z, gy = target.yaw;
     float dx0 = gx - x0, dz0 = gz - z0;
@@ -258,20 +314,10 @@ float dockTo(Route& r, Rng& rng, float v2, const TerrainQuery& terrain,
             emitTurn(r, t);
             levelOut(r);
         }
-        if (bestLine > 24.0f) {
-            float dy = (target.pos.y - r.endPose.pos.y);
-            if (fabsf(dy) > 20.0f && bestLine > 120.0f) {
-                float split = fminf(bestLine * 0.35f, 100.0f);
-                v2 = emitLineSettled(r, v2, terrain, split);
-                dy = (target.pos.y - r.endPose.pos.y);
-                if (dy < -6.0f) plannerDrop(r, -dy);
-                else if (dy > 6.0f) plannerClimb(r, dy, Tag::Line, false);
-                v2 = v2After(v2, dy);
-                emitLine(r, fmaxf(20.0f, bestLine - split), Tag::Line, false);
-            } else {
-                v2 = emitLineSettled(r, v2, terrain, bestLine);
-            }
-        }
+        // The long haul between the arcs rides the relief (bounded cuts),
+        // never a plain straight boring through it. The target's own
+        // elevation is reached by the short final connector, not here.
+        if (bestLine > 24.0f) v2 = emitGroundLeg(r, v2, terrain, bestLine, 11.0f);
         if (fabsf(bestA2) > 0.10f) {
             TurnSpec t;
             t.totalAngle = bestA2;
@@ -325,6 +371,13 @@ static Route buildRideOnce(uint32_t seed, const TerrainQuery& terrain) {
                 float g = terrain.height(cx + dx * w, cz + dz * w);
                 rough += fabsf(g - h0);
             }
+            // Score the RETURN approach too (behind the station along -yaw):
+            // the closure connector + brake dock in from there, so both sides
+            // must be low, flat plains or the closure bores a shallow tunnel.
+            for (float w = 60.0f; w <= 360.0f; w += 60.0f) {
+                float g = terrain.height(cx - dx * w, cz - dz * w);
+                rough += fmaxf(0.0f, g - h0); // only a rise behind matters
+            }
             float score = rough + 6.0f * high;
             if (score < bestScore) { bestScore = score; bx = cx; bz = cz; byaw = cyaw; }
         }
@@ -362,24 +415,12 @@ static Route buildRideOnce(uint32_t seed, const TerrainQuery& terrain) {
     v2 = settleToGround(r, v2, terrain, 10.0f);
     v2 = drag(v2);
 
-    // Low terrain leg: turn onto a VALLEY-FOLLOWING heading (probe several
-    // candidates, prefer the one whose ground ahead stays near the current
-    // altitude — the doc's "choose another beat" applied to headings), then
-    // mid camelback and s-curve (sizes speed-derived).
-    {
-        float bestH = stYaw, bestDev = 1e18f;
-        for (int c = 0; c < 5; c++) {
-            float hCand = stYaw + rng.range(-1.5f, 1.5f);
-            float dx = sinf(hCand), dz = cosf(hCand);
-            float dev = 0.0f;
-            for (float w = 80.0f; w <= 560.0f; w += 80.0f)
-                dev += fabsf(terrain.height(r.endPose.pos.x + dx * w,
-                                            r.endPose.pos.z + dz * w) +
-                             12.0f - r.endPose.pos.y);
-            if (dev < bestDev) { bestDev = dev; bestH = hCand; }
-        }
-        steerToward(r, rng, terrain, bestH, 170.0f, 1.0f, v2);
-    }
+    // Low terrain leg: turn onto a VALLEY-FOLLOWING heading (probe candidate
+    // bearings, prefer the one whose ground ahead climbs least above the rail
+    // — the doc's "choose another beat" applied to headings), then mid
+    // camelback and s-curve (sizes speed-derived).
+    steerToward(r, rng, terrain,
+                pickLowHeading(r, terrain, stYaw, 1.6f, 640.0f, 11), 170.0f, 1.0f, v2);
     v2 = drag(v2);
     v2 = settleToGround(r, v2, terrain, 12.0f);
     {
@@ -394,19 +435,24 @@ static Route buildRideOnce(uint32_t seed, const TerrainQuery& terrain) {
     v2 = drag(v2);
     emitLine(r, rng.range(20.0f, 50.0f), Tag::Line, false);
     {
-        // Beat rejection, doc-style: if the s-curve's footprint would bury
-        // itself in a hillside, choose a settled straight instead.
+        // Beat rejection, doc-style: the s-curve is a fixed-shape level plan
+        // element (it can't follow relief), so accept it only where the ground
+        // stays within a shallow band of the rail across its WHOLE footprint;
+        // otherwise ride a terrain-following leg instead of boring through.
         float dx = sinf(r.endPose.yaw), dz = cosf(r.endPose.yaw);
-        float gMid = terrain.height(r.endPose.pos.x + dx * 180.0f,
-                                    r.endPose.pos.z + dz * 180.0f);
-        if (fabsf(gMid + 12.0f - r.endPose.pos.y) < 45.0f) {
+        float worst = 0.0f;
+        for (float w = 40.0f; w <= 320.0f; w += 40.0f)
+            worst = fmaxf(worst, terrain.height(r.endPose.pos.x + dx * w,
+                                                r.endPose.pos.z + dz * w) +
+                                     12.0f - r.endPose.pos.y);
+        if (worst < 30.0f) {
             SCurveSpec sc;
             sc.radius = 140.0f;
             sc.angle = rng.range(0.5f, 0.8f);
             sc.rampLen = 45.0f;
             emitSCurve(r, sc);
         } else {
-            v2 = emitLineSettled(r, v2, terrain, 160.0f);
+            v2 = emitGroundLeg(r, v2, terrain, 160.0f, 12.0f);
         }
     }
     v2 = drag(v2);
@@ -536,6 +582,14 @@ static Route buildRideOnce(uint32_t seed, const TerrainQuery& terrain) {
 
     // Flagship camelback (locked ~240 m) off an LSM boost to its MATCHED
     // entry (~1.45x Falcon's ~250 km/h -> ~100 m/s), keeping transit ~1x.
+    // Orient it along low/descending ground first: a 240 m symmetric hill's
+    // far half must FLOAT over falling terrain (an unsupported span), not bury
+    // itself in a rising flank (a tunnel). Its own crest naturally clears any
+    // hump under the footprint.
+    v2 = settleToGround(r, v2, terrain, 12.0f);
+    steerToward(r, rng, terrain,
+                pickLowHeading(r, terrain, r.endPose.yaw, 1.4f, 700.0f, 11), 200.0f, 0.8f, v2);
+    v2 = settleToGround(r, v2, terrain, 12.0f);
     emitLine(r, 110.0f, Tag::Launch, true);
     v2 = fmaxf(v2, 100.0f * 100.0f);
     sMark = r.endS;
@@ -577,19 +631,48 @@ static Route buildRideOnce(uint32_t seed, const TerrainQuery& terrain) {
 }
 
 Route buildRide(uint32_t seed, const TerrainQuery& terrain) {
-    // Bounded layout retries: take the first variation that validates clean
-    // and whose terrain conflicts are resolvable by bounded cuts/tunnels
-    // (cut/tunnel is the preferred response — rejection is for genuinely
-    // unresolvable conflicts, TERRAIN_CONTRACT.md rule 3).
-    Route best;
+    // Bounded layout retries: whether a given seed's post-inversion position
+    // lands near a natural escarpment (rare by design) varies attempt to
+    // attempt, so among the clean+bounded variations PREFER one that found a
+    // real cliff-dive site — the signature element — falling back to the first
+    // clean variation without one. Cut/tunnel is the preferred encroachment
+    // response; rejection is only for genuinely unresolvable conflicts
+    // (TERRAIN_CONTRACT.md rule 3).
+    const ClearanceLimits lim;
+    auto hasCliff = [](const Route& r) {
+        for (const SegmentRec& s : r.segs)
+            if (s.tag == Tag::CliffDive) return true;
+        return false;
+    };
+    Route best, cleanNoCliff;
+    bool haveClean = false;
+    float bestScore = 1e30f;
     for (int attempt = 0; attempt < 8; attempt++) {
         Route r = buildRideOnce(seed + (uint32_t)attempt * 7919u, terrain);
         ValidationReport rep = validateRoute(r, &terrain);
-        if (rep.pass() && clearanceDecision(rep, ClearanceLimits{}) != ClearanceDecision::Reject)
-            return r;
-        if (attempt == 0) best = r; // keep the first for diagnostics
+        bool pass = rep.pass();
+        if (pass && clearanceDecision(rep, lim) != ClearanceDecision::Reject) {
+            if (hasCliff(r)) return r;        // clean, bounded AND a cliff dive
+            if (!haveClean) { cleanNoCliff = r; haveClean = true; } // keep as fallback
+            continue;
+        }
+        // Otherwise score by how far the worst cut/tunnel span overruns the
+        // bounded-cut limits (depth weighted to meters-equivalent) plus a big
+        // penalty for a failed continuity/element check, and keep the least
+        // bad so a marginal seed still returns its most honest layout.
+        float overage = 0.0f;
+        for (const ClearanceSpan& c : rep.clearance) {
+            if (c.kind == ClearanceSpan::Kind::LowClearance ||
+                c.kind == ClearanceSpan::Kind::UnsupportedSpan)
+                continue;
+            overage = fmaxf(overage, (c.s1 - c.s0) - lim.maxCutLen);
+            overage = fmaxf(overage, (c.maxDepth - lim.maxTunnelDepth) * 6.0f);
+        }
+        float score = (pass ? 0.0f : 1e6f) + overage;
+        if (score < bestScore) { bestScore = score; best = r; }
     }
-    // Every variation failed: return the first attempt — the caller's
+    if (haveClean) return cleanNoCliff; // a clean layout, just no natural cliff
+    // No variation was clean AND bounded: return the least-bad — the caller's
     // validation surfaces exactly what's wrong (fail loudly, never bend
     // geometry to pass).
     return best;

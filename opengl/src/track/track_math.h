@@ -20,6 +20,9 @@ namespace v2 {
 inline float s5(float u)   { return ((6.0f * u - 15.0f) * u + 10.0f) * u * u * u; }
 inline float s5d(float u)  { return ((30.0f * u - 60.0f) * u + 30.0f) * u * u; }
 inline float s5dd(float u) { return ((120.0f * u - 180.0f) * u + 60.0f) * u; }
+// Integral of S5 from 0 to u (s5i(1) = 1/2): the yaw swept by an S5
+// curvature ramp of peak k over length L is k*L*s5i(s/L).
+inline float s5i(float u)  { return ((u - 3.0f) * u + 2.5f) * u * u * u * u; }
 
 constexpr float kPi = 3.14159265358979323846f;
 inline float degToRad(float d) { return d * (kPi / 180.0f); }

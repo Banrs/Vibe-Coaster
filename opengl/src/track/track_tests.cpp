@@ -263,12 +263,124 @@ static void testValidatorCatchesShelf() {
 }
 
 // ---------------------------------------------------------------------------
+static void testStep3Route() {
+    Route r = buildStep3Route(1);
+    CHECK(r.samples.size() > 800, "step3 route has %zu samples", r.samples.size());
+
+    ValidationReport rep = validateRoute(r, nullptr);
+    for (const Discontinuity& d : rep.discontinuities)
+        printf("  discontinuity: s=%.1f %s jump=%g tag=%s\n", d.s, d.quantity, d.jump,
+               tagName(d.tag));
+    for (const std::string& e : rep.elementFailures) printf("  element: %s\n", e.c_str());
+    CHECK(rep.pass(), "step3 route validation: %zu discont, %zu elem failures",
+          rep.discontinuities.size(), rep.elementFailures.size());
+
+    // --- Turn: 90 deg net yaw, correct mid radius, banked toward centre.
+    size_t turnFirst = SIZE_MAX, turnLast = 0;
+    for (size_t k = 0; k < r.segs.size(); k++)
+        if (r.segs[k].tag == Tag::Turn) {
+            if (turnFirst == SIZE_MAX) turnFirst = k;
+            turnLast = k;
+        }
+    CHECK(turnFirst != SIZE_MAX, "turn segs exist");
+    float turnSweep = r.segs[turnLast].exit.yaw - r.segs[turnFirst].entry.yaw;
+    CHECK(fabsf(radToDeg(turnSweep) - 90.0f) < 0.1f, "turn sweep %g deg", radToDeg(turnSweep));
+    CHECK(fabsf(r.segs[turnLast].exit.roll) < 1e-3f, "turn exits unbanked");
+    // Mid-turn sample: curvature 1/110, pitch 0, bank tips up toward centre.
+    float sMid = 0.5f * (r.segs[turnFirst].s0 + r.segs[turnLast].s1);
+    const Sample* mid = nullptr;
+    for (const Sample& s : r.samples)
+        if (s.tag == Tag::Turn && fabsf(s.s - sMid) <= 0.5f) { mid = &s; break; }
+    CHECK(mid != nullptr, "mid-turn sample found");
+    if (mid) {
+        CHECK(fabsf(mid->kYaw - 1.0f / 110.0f) < 1e-4f, "mid-turn kYaw %g", mid->kYaw);
+        CHECK(fabsf(mid->pitch) < 1e-4f, "turn stays level");
+        CHECK(fabsf(fabsf(mid->roll) - degToRad(60.0f)) < 1e-3f, "mid-turn bank %g deg",
+              radToDeg(mid->roll));
+        // Centre direction = horizontal normal toward the turn centre:
+        // for +yaw turn heading T, centre is to the RIGHT: (T x up_world)... use
+        // acceleration direction: dTds = kYaw * Tyaw partial; project horizontal.
+        Vector3 ctrDir = Vector3Normalize(
+            Vector3{mid->tan.z, 0.0f, -mid->tan.x}); // right of heading
+        CHECK(Vector3DotProduct(mid->up, ctrDir) > 0.3f,
+              "banked toward turn centre (dot=%g)", Vector3DotProduct(mid->up, ctrDir));
+    }
+
+    // --- S-curve: net yaw back to pre-scurve heading; bank crosses zero at
+    // the curvature inflection.
+    size_t scFirst = SIZE_MAX, scLast = 0;
+    for (size_t k = 0; k < r.segs.size(); k++)
+        if (r.segs[k].tag == Tag::SCurve) {
+            if (scFirst == SIZE_MAX) scFirst = k;
+            scLast = k;
+        }
+    CHECK(scFirst != SIZE_MAX, "scurve segs exist");
+    float scSweep = r.segs[scLast].exit.yaw - r.segs[scFirst].entry.yaw;
+    CHECK(fabsf(radToDeg(scSweep)) < 0.1f, "scurve net sweep %g deg", radToDeg(scSweep));
+    // At every SCurve sample, roll and kYaw must agree in (negated) sign:
+    // bank crosses zero exactly with the curvature.
+    for (const Sample& s : r.samples)
+        if (s.tag == Tag::SCurve && fabsf(s.kYaw) > 1e-4f)
+            if (s.roll * s.kYaw > 1e-6f) {
+                CHECK(false, "scurve bank/curvature sign mismatch at s=%g (roll=%g kYaw=%g)",
+                      s.s, s.roll, s.kYaw);
+                break;
+            }
+
+    // --- Helix: total rotation 540 deg, body traces a true circle in plan.
+    size_t hxFirst = SIZE_MAX, hxLast = 0;
+    for (size_t k = 0; k < r.segs.size(); k++)
+        if (r.segs[k].tag == Tag::Helix) {
+            if (hxFirst == SIZE_MAX) hxFirst = k;
+            hxLast = k;
+        }
+    CHECK(hxFirst != SIZE_MAX, "helix segs exist");
+    float hxSweep = r.segs[hxLast].exit.yaw - r.segs[hxFirst].entry.yaw;
+    CHECK(fabsf(radToDeg(hxSweep) - 540.0f) < 0.1f, "helix sweep %g deg", radToDeg(hxSweep));
+    CHECK(r.segs[hxLast].exit.pos.y < r.segs[hxFirst].entry.pos.y - 10.0f,
+          "helix descends (%g -> %g)", r.segs[hxFirst].entry.pos.y, r.segs[hxLast].exit.pos.y);
+    // Body samples (middle seg): every point equidistant from the plan centre.
+    const SegmentRec& body = r.segs[hxFirst + 1];
+    CHECK(body.tag == Tag::Helix, "helix body seg");
+    // Centre = body-entry position + R * (horizontal normal toward centre).
+    {
+        Vector3 t0 = dirFromAngles(body.entry.pitch, body.entry.yaw);
+        Vector3 n = Vector3Normalize(Vector3{t0.z, 0.0f, -t0.x}); // right of heading
+        float R = 70.0f;
+        float cx = body.entry.pos.x + n.x * R;
+        float cz = body.entry.pos.z + n.z * R;
+        float maxErr = 0.0f;
+        for (const Sample& s : r.samples) {
+            if (s.s < body.s0 - 0.5f || s.s > body.s1 + 0.5f || s.tag != Tag::Helix) continue;
+            float dx = s.pos.x - cx, dz = s.pos.z - cz;
+            maxErr = fmaxf(maxErr, fabsf(sqrtf(dx * dx + dz * dz) - R));
+        }
+        CHECK(maxErr < 0.1f, "helix body plan-radius error %g m", maxErr);
+    }
+    // Body pitch constant at the spiral relation.
+    {
+        float circ = 2.0f * kPi * 70.0f;
+        float lRev = sqrtf(circ * circ + 12.0f * 12.0f);
+        float want = -asinf(12.0f / lRev);
+        for (const Sample& s : r.samples)
+            if (s.s > body.s0 + 0.5f && s.s < body.s1 - 0.5f && s.tag == Tag::Helix) {
+                if (fabsf(s.pitch - want) > 1e-3f) {
+                    CHECK(false, "helix body pitch %g (want %g) at s=%g", s.pitch, want, s.s);
+                    break;
+                }
+            }
+        CHECK(true, "helix body pitch swept");
+    }
+}
+
+// ---------------------------------------------------------------------------
 int main() {
     testS5();
     testQuinticProfile();
     testHermiteBasis();
     testSmokeRoute();
     testStep2Route();
+    testStep3Route();
     testValidatorCatchesShelf();
     testAdapter();
     printf("%s: %d checks, %d failures\n", g_fails == 0 ? "PASS" : "FAIL", g_checks, g_fails);

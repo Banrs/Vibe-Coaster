@@ -99,6 +99,20 @@ static void sweepSamples(const Route& r, ValidationReport& rep) {
         }
         prevRollRate = rollRate;
         havePrevRollRate = true;
+
+        // Frame sweep (after buildFrames): unit up, orthogonal to the
+        // tangent, and no frame flips — the twist between adjacent samples
+        // stays far below legitimate roll-rate + transport turning budgets.
+        float upLen = Vector3Length(B.up);
+        if (fabsf(upLen - 1.0f) > 1e-2f)
+            rep.discontinuities.push_back(Discontinuity{B.s, "frameUnit", upLen - 1.0f, B.tag});
+        float upDotTan = fabsf(Vector3DotProduct(B.up, B.tan));
+        if (upDotTan > 3e-2f)
+            rep.discontinuities.push_back(Discontinuity{B.s, "frameOrtho", upDotTan, B.tag});
+        float upTwistCos = Vector3DotProduct(A.up, B.up);
+        if (upTwistCos < cosf(0.15f))
+            rep.discontinuities.push_back(
+                Discontinuity{B.s, "frameTwist", acosf(fmaxf(-1.0f, fminf(1.0f, upTwistCos))), B.tag});
     }
 }
 

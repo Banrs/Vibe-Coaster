@@ -224,11 +224,56 @@ struct DropSpec {
 };
 Pose emitDrop(Route& r, const DropSpec& spec);
 
+// Turn (SHAPES.md plan-view table): S5 curvature ramp -> constant-radius
+// middle -> mirrored ramp; bank follows the SAME normalised schedule as the
+// curvature, so roll rate is continuous and bank peaks exactly where the
+// full radius holds. `bank` > 0 always banks INTO the turn (toward the
+// centre), whichever way `totalAngle` signs the turn.
+// NOTE: turn radius has NO published real-world anchor (REALISM_SCALE.md
+// gap list) — the default is a provisional physics-derived harness value
+// (tan(bank)=v^2/(r*g) at the game's average-speed target), pending the
+// "ask before locking in" pass with the user.
+struct TurnSpec {
+    float totalAngle = 1.57079633f; // signed rad; + turns right (yaw grows)
+    float radius = 110.0f;          // constant-middle radius (m), PROVISIONAL
+    float rampLen = 60.0f;          // curvature/bank transition length (m)
+    float bank = 1.04719755f;       // 60 deg inward, PROVISIONAL
+};
+Pose emitTurn(Route& r, const TurnSpec& spec);
+
+// S-curve (SHAPES.md): two mirrored lobes with ONE transversal curvature
+// ramp through zero in the middle — bank crosses zero at the same geometric
+// inflection, no straight dwell between the lobes.
+struct SCurveSpec {
+    float angle = 0.6981317f; // rad swept by the first lobe (second mirrors it)
+    float radius = 120.0f;    // PROVISIONAL (no WR anchor, see TurnSpec)
+    float rampLen = 50.0f;    // outer ramps; the centre ramp uses 2x this
+    float bank = 0.78539816f; // 45 deg, PROVISIONAL
+};
+Pose emitSCurve(Route& r, const SCurveSpec& spec);
+
+// Helix (COASTER_REWRITE.md primitive table): a true spiral — constant plan
+// radius, constant descent pitch, constant bank through the body (one
+// continuous schedule, NOT stacked turns), with S5 onset/exit blends on
+// curvature, pitch and bank together. Constant-bank body is the documented
+// default absent contrary real-world evidence (REALISM_SCALE.md helix entry).
+struct HelixSpec {
+    float radius = 70.0f;      // plan radius (m), PROVISIONAL (weak anchor only)
+    float revolutions = 1.5f;  // total rotation incl. blend sweep, in turns
+    float dropPerRev = 12.0f;  // sets the body pitch via the spiral relation
+    float rampLen = 55.0f;
+    float bank = 1.04719755f;  // 60 deg inward, PROVISIONAL
+    float dir = 1.0f;          // +1 right-hand spiral, -1 left
+};
+Pose emitHelix(Route& r, const HelixSpec& spec);
+
 // track_planner.cpp — whole-ride beat planning (built out in steps 2+).
 // buildSmokeRoute: minimal deterministic route used by the step-1/2 harness.
 Route buildSmokeRoute(uint32_t seed);
 // buildStep2Route: all step-2 vertical primitives in sequence (harness only).
 Route buildStep2Route(uint32_t seed);
+// buildStep3Route: plan-view primitives — turn, s-curve, helix (harness only).
+Route buildStep3Route(uint32_t seed);
 
 // track_math / framing — one pass over a finished route: parallel-transport
 // the frame along the samples, then apply designed roll about the tangent.

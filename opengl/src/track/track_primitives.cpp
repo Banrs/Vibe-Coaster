@@ -146,6 +146,134 @@ Pose emitCamelback(Route& r, const CamelbackSpec& cb) {
 }
 
 // ---------------------------------------------------------------------------
+// Plan-view phase helpers — one yaw/roll phase of a turn-family primitive.
+// Yaw follows the integral of an S5 curvature ramp (or a constant curvature);
+// roll follows the SAME normalised schedule as the curvature so bank and
+// turning intensity rise and fall together (SHAPES.md plan-view table).
+// Roll sign: positive designed roll tips the up vector toward -X when heading
+// +Z (left); banking INTO a positive-kYaw (rightward) turn therefore needs
+// roll = -bank. All phases keep pitch constant.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Curvature ramps k0 -> k1 over length L (S5); roll r0 -> r1 on the same clock.
+Pose emitYawRampPhase(Route& r, float L, float k0, float k1, float r0, float r1,
+                      Tag tag) {
+    const Pose e = r.endPose;
+    float y0 = e.yaw;
+    Profile1D yaw{
+        [=](float s) {
+            float u = s / L;
+            // integral of k0+(k1-k0)*S5: k0*s + (k1-k0)*L*s5i(u)
+            return y0 + k0 * s + (k1 - k0) * L * s5i(u);
+        },
+        [=](float s) { return k0 + (k1 - k0) * s5(s / L); }};
+    Profile1D roll{
+        [=](float s) { return r0 + (r1 - r0) * s5(s / L); },
+        [=](float s) { return (r1 - r0) * s5d(s / L) / L; }};
+    return emitSchedule(r, L, constantProfile(e.pitch), yaw, roll, tag, false);
+}
+
+Pose emitYawArcPhase(Route& r, float L, float k, Tag tag) {
+    const Pose e = r.endPose;
+    float y0 = e.yaw;
+    Profile1D yaw{[=](float s) { return y0 + k * s; }, [=](float) { return k; }};
+    return emitSchedule(r, L, constantProfile(e.pitch), yaw,
+                        constantProfile(e.roll), tag, false);
+}
+
+} // namespace
+
+Pose emitTurn(Route& r, const TurnSpec& t) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kYaw) < 1e-4f && fabsf(e.kPitch) < 1e-4f && "turn needs a straight entry");
+    assert(fabsf(e.roll) < 1e-4f && "turn needs an unbanked entry");
+    float sgn = t.totalAngle >= 0.0f ? 1.0f : -1.0f;
+    float k = sgn / t.radius;
+    float rollIn = -sgn * t.bank; // bank into the turn (see sign note above)
+    // Yaw swept by each S5 ramp is k*rampLen/2; the middle supplies the rest.
+    float midAngle = fabsf(t.totalAngle) - fabsf(k) * t.rampLen;
+    assert(midAngle > 0.01f && "turn angle too small for its ramps: shrink rampLen");
+    float midLen = midAngle * t.radius;
+
+    emitYawRampPhase(r, t.rampLen, 0.0f, k, e.roll, rollIn, Tag::Turn);
+    emitYawArcPhase(r, midLen, k, Tag::Turn);
+    return emitYawRampPhase(r, t.rampLen, k, 0.0f, rollIn, 0.0f, Tag::Turn);
+}
+
+Pose emitSCurve(Route& r, const SCurveSpec& sc) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kYaw) < 1e-4f && fabsf(e.kPitch) < 1e-4f && "s-curve needs a straight entry");
+    assert(fabsf(e.roll) < 1e-4f && "s-curve needs an unbanked entry");
+    float k = 1.0f / sc.radius;
+    float bank1 = -sc.bank;          // first lobe turns right (+yaw)
+    float centerLen = 2.0f * sc.rampLen; // one transversal ramp +k -> -k
+    // Arc length per lobe: total lobe sweep minus what its ramps consume.
+    float rampSweep = k * sc.rampLen * 0.5f;      // outer ramp (0 -> k)
+    float centerSweepHalf = k * centerLen * 0.25f; // half of the centre ramp
+    float arcAngle = sc.angle - rampSweep - centerSweepHalf;
+    assert(arcAngle > 0.01f && "s-curve angle too small for its ramps");
+    float arcLen = arcAngle / k;
+
+    emitYawRampPhase(r, sc.rampLen, 0.0f, k, 0.0f, bank1, Tag::SCurve);
+    emitYawArcPhase(r, arcLen, k, Tag::SCurve);
+    // Transversal sign change: curvature AND bank cross zero together at the
+    // geometric inflection (midpoint of this ramp).
+    emitYawRampPhase(r, centerLen, k, -k, bank1, -bank1, Tag::SCurve);
+    emitYawArcPhase(r, arcLen, -k, Tag::SCurve);
+    return emitYawRampPhase(r, sc.rampLen, -k, 0.0f, -bank1, 0.0f, Tag::SCurve);
+}
+
+Pose emitHelix(Route& r, const HelixSpec& h) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kYaw) < 1e-4f && fabsf(e.kPitch) < 1e-4f && "helix needs a straight entry");
+    assert(fabsf(e.roll) < 1e-4f && fabsf(e.pitch) < 0.35f && "helix needs a near-level entry");
+    // Spiral relations: arc per revolution L_rev = sqrt((2*pi*R)^2 + p^2);
+    // body pitch sin(th) = -p / L_rev; plan curvature 1/R = kYaw / cos(th).
+    float circ = 2.0f * kPi * h.radius;
+    float lRev = sqrtf(circ * circ + h.dropPerRev * h.dropPerRev);
+    float thBody = -asinf(h.dropPerRev / lRev);
+    float kBody = h.dir * cosf(thBody) / h.radius;
+    float rollBody = -h.dir * h.bank;
+
+    // Onset/exit blends ramp curvature, pitch and bank together (S5).
+    Profile1D pitchIn = rampProfile(e.pitch, thBody, h.rampLen);
+    Profile1D rollIn = rampProfile(e.roll, rollBody, h.rampLen);
+    float yaw0 = e.yaw;
+    Profile1D yawIn{
+        [=](float s) { return yaw0 + kBody * h.rampLen * s5i(s / h.rampLen); },
+        [=](float s) { return kBody * s5(s / h.rampLen); }};
+    emitSchedule(r, h.rampLen, pitchIn, yawIn, rollIn, Tag::Helix, false);
+
+    // Body: the exact spiral. Total rotation target includes the sweep the
+    // two blends contribute (kBody*rampLen/2 each).
+    float targetYaw = h.dir * h.revolutions * 2.0f * kPi;
+    float blendYaw = kBody * h.rampLen; // both blends together
+    float bodyYaw = targetYaw - blendYaw;
+    assert(fabsf(bodyYaw) > 0.5f && "helix too short for its blends");
+    float bodyLen = bodyYaw / kBody;
+    const Pose b = r.endPose;
+    float yawB = b.yaw;
+    Profile1D yawBody{[=](float s) { return yawB + kBody * s; },
+                      [=](float) { return kBody; }};
+    emitSchedule(r, bodyLen, constantProfile(thBody), yawBody,
+                 constantProfile(rollBody), Tag::Helix, false);
+
+    // Exit blend back to level, straight, unbanked.
+    const Pose x = r.endPose;
+    Profile1D pitchOut = rampProfile(thBody, 0.0f, h.rampLen);
+    Profile1D rollOut = rampProfile(rollBody, 0.0f, h.rampLen);
+    float yawX = x.yaw;
+    Profile1D yawOut{
+        [=](float s) {
+            float u = s / h.rampLen;
+            return yawX + kBody * (s - h.rampLen * s5i(u));
+        },
+        [=](float s) { return kBody * (1.0f - s5(s / h.rampLen)); }};
+    return emitSchedule(r, h.rampLen, pitchOut, yawOut, rollOut, Tag::Helix, false);
+}
+
+// ---------------------------------------------------------------------------
 // Drop — push-over, sustained face, planned pull-out (SHAPES.md "Drop and
 // valley"). The pull-out belongs to the primitive: a drop that cannot finish
 // is rejected by the planner, never cut short mid-face.

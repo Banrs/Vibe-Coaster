@@ -79,4 +79,34 @@ Route buildStep2Route(uint32_t seed) {
     return r;
 }
 
+// Step-3 proof route: plan-view primitives (turn, s-curve, helix) between
+// straights. Same provisional-size caveat as buildStep2Route.
+Route buildStep3Route(uint32_t seed) {
+    (void)seed;
+    Route r;
+    Pose p0;
+    p0.pos = Vector3{0.0f, 80.0f, 0.0f};
+    startRoute(r, p0, 1.0f);
+
+    emitLine(r, 40.0f, Tag::Line, false);
+
+    TurnSpec turn; // defaults: 90 deg right, R=110, 60 deg bank
+    emitTurn(r, turn);
+
+    emitLine(r, 30.0f, Tag::Line, false);
+
+    SCurveSpec sc; // defaults: 40 deg lobes, R=120
+    emitSCurve(r, sc);
+
+    emitLine(r, 30.0f, Tag::Line, false);
+
+    HelixSpec hx; // defaults: R=70, 1.5 revs, 12 m/rev
+    emitHelix(r, hx);
+
+    emitLine(r, 50.0f, Tag::Line, false);
+
+    buildFrames(r);
+    return r;
+}
+
 } // namespace v2

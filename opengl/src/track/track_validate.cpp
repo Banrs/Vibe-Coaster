@@ -25,6 +25,14 @@ static bool isDeliberateJoint(Tag a, Tag b) {
     return j(a) || j(b);
 }
 
+// Smallest angular difference modulo 2*pi.
+static float angDiff(float a, float b) {
+    float d = fmodf(a - b, 2.0f * kPi);
+    if (d > kPi) d -= 2.0f * kPi;
+    if (d < -kPi) d += 2.0f * kPi;
+    return fabsf(d);
+}
+
 static void checkJoin(const SegmentRec& a, const SegmentRec& b, float seamGap,
                       ValidationReport& rep) {
     // seamGap: expected position gap (0 for ordinary joins; closed-route seam
@@ -35,18 +43,30 @@ static void checkJoin(const SegmentRec& a, const SegmentRec& b, float seamGap,
     };
     float dPos = Vector3Distance(a.exit.pos, b.entry.pos);
     if (dPos > 1e-2f) flag("position", dPos);
-    float dPitch = fabsf(a.exit.pitch - b.entry.pitch);
+
+    // Two pose expressions are compared: raw, and the inversion-exit
+    // normalization (theta,psi,phi) == (pi-theta, psi+pi, phi+pi), which has
+    // the identical tangent and frame (kPitch flips sign under it). Angles
+    // always compare modulo 2*pi (a loop sweeps pitch through 2*pi).
+    Pose eb = b.entry;
+    float rawScore = angDiff(a.exit.pitch, eb.pitch) + angDiff(a.exit.yaw, eb.yaw);
+    Pose alt = eb;
+    alt.pitch = kPi - eb.pitch;
+    alt.yaw = eb.yaw + kPi;
+    alt.roll = eb.roll + kPi;
+    alt.kPitch = -eb.kPitch;
+    float altScore = angDiff(a.exit.pitch, alt.pitch) + angDiff(a.exit.yaw, alt.yaw);
+    const Pose& use = (altScore < rawScore) ? alt : eb;
+
+    float dPitch = angDiff(a.exit.pitch, use.pitch);
     if (dPitch > 1e-3f) flag("pitch", dPitch);
-    float dYaw = fabsf(a.exit.yaw - b.entry.yaw);
-    // Yaw is stored unwrapped; joins may legitimately differ by 2*pi*k.
-    dYaw = fmodf(dYaw, 2.0f * kPi);
-    if (dYaw > kPi) dYaw = 2.0f * kPi - dYaw;
+    float dYaw = angDiff(a.exit.yaw, use.yaw);
     if (dYaw > 1e-3f) flag("yaw", dYaw);
-    float dRoll = fabsf(a.exit.roll - b.entry.roll);
+    float dRoll = angDiff(a.exit.roll, use.roll);
     if (dRoll > 1e-3f) flag("roll", dRoll);
     if (!isDeliberateJoint(a.tag, b.tag)) {
-        float dkP = fabsf(a.exit.kPitch - b.entry.kPitch);
-        float dkY = fabsf(a.exit.kYaw - b.entry.kYaw);
+        float dkP = fabsf(a.exit.kPitch - use.kPitch);
+        float dkY = fabsf(a.exit.kYaw - use.kYaw);
         if (dkP > 1e-3f) flag("curvature", dkP);
         if (dkY > 1e-3f) flag("curvature", dkY);
     }
@@ -57,6 +77,7 @@ static void sweepSamples(const Route& r, ValidationReport& rep) {
     size_t n = r.samples.size();
     float prevRollRate = 0.0f;
     bool havePrevRollRate = false;
+    bool prevFlipPair = false;
 
     for (size_t i = 1; i < n; i++) {
         const Sample& A = r.samples[i - 1];
@@ -68,15 +89,28 @@ static void sweepSamples(const Route& r, ValidationReport& rep) {
         if (fabsf(chord - ds) > 0.02f * ds)
             rep.discontinuities.push_back(Discontinuity{B.s, "position", chord - ds, B.tag});
 
-        // Stored analytic angles must integrate consistently with themselves:
-        // the angle step should equal the trapezoidal integral of the stored
-        // curvature over the step.
-        float pitchResid = fabsf((B.pitch - A.pitch) - 0.5f * (A.kPitch + B.kPitch) * ds);
-        if (pitchResid > 4e-3f)
-            rep.discontinuities.push_back(Discontinuity{B.s, "pitch", pitchResid, B.tag});
-        float yawResid = fabsf((B.yaw - A.yaw) - 0.5f * (A.kYaw + B.kYaw) * ds);
-        if (yawResid > 4e-3f)
-            rep.discontinuities.push_back(Discontinuity{B.s, "yaw", yawResid, B.tag});
+        // Normalization joints (inversion exits re-express the same tangent
+        // as (pi-theta, psi+pi, phi+pi)) are geometrically continuous but
+        // step the raw bookkeeping angles; geometry checks still apply there.
+        bool flipPair = fabsf(B.pitch - A.pitch) > 2.0f;
+
+        // Stored schedule vs itself, in tangent space: rotate A's tangent
+        // through the stored curvature step (midpoint rule) and compare with
+        // B's tangent. Equivalent pose expressions predict identically, and
+        // a kinked join shows up as a residual the curvature can't explain.
+        if (!flipPair) {
+            float thM = 0.5f * (A.pitch + B.pitch), psM = 0.5f * (A.yaw + B.yaw);
+            float kP = 0.5f * (A.kPitch + B.kPitch), kY = 0.5f * (A.kYaw + B.kYaw);
+            Vector3 dT = Vector3Add(Vector3Scale(dirPitchPartial(thM, psM), kP),
+                                    Vector3Scale(dirYawPartial(thM, psM), kY));
+            Vector3 pred = Vector3Normalize(Vector3Add(A.tan, Vector3Scale(dT, ds)));
+            float cosResid = Vector3DotProduct(pred, B.tan);
+            float kMag2 = kP * kP + kY * kY;
+            float tol = 3e-3f + 0.75f * kMag2 * ds * ds;
+            if (cosResid < cosf(tol) - 1e-7f)
+                rep.discontinuities.push_back(Discontinuity{
+                    B.s, "schedule", acosf(fminf(fmaxf(cosResid, -1.0f), 1.0f)), B.tag});
+        }
 
         // Tangent must match the chord direction to within the turning budget.
         float cosT = Vector3DotProduct(B.tan, Vector3Scale(Vector3Subtract(B.pos, A.pos),
@@ -90,7 +124,7 @@ static void sweepSamples(const Route& r, ValidationReport& rep) {
         // Roll rate must be continuous everywhere outside deliberate joints
         // (the railway-transition constraint: no step in droll/ds).
         float rollRate = (B.roll - A.roll) / ds;
-        if (havePrevRollRate) {
+        if (havePrevRollRate && !flipPair && !prevFlipPair) {
             float jump = fabsf(rollRate - prevRollRate);
             // Legit bound: an S5 roll ramp of dRoll over L has
             // |d2roll/ds2| <= 5.78*dRoll/L^2 — under 0.0025 for every ramp
@@ -101,6 +135,7 @@ static void sweepSamples(const Route& r, ValidationReport& rep) {
         }
         prevRollRate = rollRate;
         havePrevRollRate = true;
+        prevFlipPair = flipPair;
 
         // Frame sweep (after buildFrames): unit up, orthogonal to the
         // tangent, and no frame flips — the twist between adjacent samples
@@ -389,6 +424,61 @@ void checkCliffDive(const Route& r, const ElemRun& run, ValidationReport& rep) {
         fail(rep, run, r, "pull-out did not complete");
 }
 
+void checkLoop(const Route& r, const ElemRun& run, ValidationReport& rep) {
+    // One full monotone 2*pi pitch sweep, inverted at the top, teardrop
+    // (curvature tightest at the top), closing back to the entry height.
+    float sweep = r.samples[run.i1].pitch - r.samples[run.i0].pitch;
+    if (fabsf(sweep - 2.0f * kPi) > degToRad(5.0f))
+        fail(rep, run, r, "pitch sweep is not one full revolution");
+    for (int i = run.i0 + 1; i <= run.i1; i++)
+        if (r.samples[i].pitch < r.samples[i - 1].pitch - 1e-5f) {
+            fail(rep, run, r, "pitch not monotone through the loop");
+            break;
+        }
+    int iTop = run.i0;
+    float minUpY = 1.0f;
+    for (int i = run.i0; i <= run.i1; i++) {
+        if (r.samples[i].pos.y > r.samples[iTop].pos.y) iTop = i;
+        minUpY = fminf(minUpY, r.samples[i].up.y);
+    }
+    if (minUpY > -0.9f) fail(rep, run, r, "never inverted at the top");
+    // Teardrop signature: top curvature well above the curvature at quarter
+    // height on the way up (a circle would be flat; V1-style generic
+    // smoothing would flatten it too).
+    float yEntry = r.samples[run.i0].pos.y;
+    float yTop = r.samples[iTop].pos.y;
+    int iQuarter = run.i0;
+    while (iQuarter < iTop && r.samples[iQuarter].pos.y < yEntry + 0.25f * (yTop - yEntry))
+        iQuarter++;
+    if (r.samples[iTop].kPitch < 1.15f * r.samples[iQuarter].kPitch)
+        fail(rep, run, r, "not a teardrop: top curvature not tighter than the flank");
+    float dh = fabsf(r.segs[run.lastSeg].exit.pos.y - r.segs[run.firstSeg].entry.pos.y);
+    if (dh > 2.0f) fail(rep, run, r, "loop does not close back to its entry height");
+}
+
+void checkImmelmann(const Route& r, const ElemRun& run, ValidationReport& rep) {
+    // Half-loop to inverted level flight, then a half-roll back upright,
+    // exiting high with the heading reversed.
+    float maxPitch = -10.0f, minUpY = 1.0f, rollLo = 100.0f, rollHi = -100.0f;
+    for (int i = run.i0; i <= run.i1; i++) {
+        maxPitch = fmaxf(maxPitch, r.samples[i].pitch);
+        minUpY = fminf(minUpY, r.samples[i].up.y);
+        rollLo = fminf(rollLo, r.samples[i].roll);
+        rollHi = fmaxf(rollHi, r.samples[i].roll);
+    }
+    if (fabsf(maxPitch - kPi) > degToRad(2.0f))
+        fail(rep, run, r, "half-loop does not reach inverted level flight");
+    if (minUpY > -0.9f) fail(rep, run, r, "never inverted");
+    if (fabsf((rollHi - rollLo) - kPi) > degToRad(2.0f))
+        fail(rep, run, r, "twist is not a half-roll");
+    if (r.samples[run.i0].up.y < 0.98f || r.samples[run.i1].up.y < 0.98f)
+        fail(rep, run, r, "entry/exit not upright");
+    float rise = r.segs[run.lastSeg].exit.pos.y - r.segs[run.firstSeg].entry.pos.y;
+    if (rise < 10.0f) fail(rep, run, r, "does not exit high");
+    float dTop = fabsf(r.segs[run.lastSeg].exit.pos.y - r.samples[run.i0 == 0 ? 0 : run.i0].pos.y - rise);
+    (void)dTop; // exit height == rise by definition; kept for clarity
+}
+
 void checkDrop(const Route& r, const ElemRun& run, ValidationReport& rep) {
     // The drop must hold a sustained face and finish its planned pull-out
     // (exit pitch equals the segment record's plan — no early hand-off).
@@ -430,6 +520,8 @@ ValidationReport validateRoute(const Route& r, const TerrainQuery* terrain) {
             case Tag::Camelback: checkCamelback(r, run, rep); break;
             case Tag::Drop:      checkDrop(r, run, rep); break;
             case Tag::CliffDive: checkCliffDive(r, run, rep); break;
+            case Tag::Loop:      checkLoop(r, run, rep); break;
+            case Tag::Immelmann: checkImmelmann(r, run, rep); break;
             default: break;
         }
     }

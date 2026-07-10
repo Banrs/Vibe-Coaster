@@ -2,6 +2,7 @@
 // turn, helix (built out over migration steps 2–5; see COASTER_REWRITE.md's
 // primitive table and docs/SHAPES.md for each shape's contract).
 #include <cassert>
+#include <memory>
 
 #include "track_math.h"
 
@@ -271,6 +272,170 @@ Pose emitHelix(Route& r, const HelixSpec& h) {
         },
         [=](float s) { return kBody * (1.0f - s5(s / h.rampLen)); }};
     return emitSchedule(r, h.rampLen, pitchOut, yawOut, rollOut, Tag::Helix, false);
+}
+
+// ---------------------------------------------------------------------------
+// Vertical loop / Immelmann — teardrop construction (REALISM_SCALE.md):
+// S5 curvature ramps around a constant-centripetal arc, kappa = aC / v^2(y)
+// with v^2(y) = vEntry^2 - 2g(y - yEntry) (energy conservation). Curvature is
+// therefore tightest at the top — the Stengel teardrop — and never circular.
+// The pitch schedule theta(s) is pre-integrated into a table (curvature
+// depends on state, not just arc position) and served as a Profile1D.
+// kappa0 (the ramp's peak curvature) is bisected so max height == spec.
+// Felt g in units of g: v^2*kappa/g + cos(theta) — reported by the harness,
+// bounded by construction (aC/g + 1 at the bottom, aC/g - 1 at the top).
+//
+// KNOWN planner-level TODO: a planar loop's entry/exit tracks cross at one
+// point in the loop plane; real Stengel loops mount slightly inclined so the
+// tracks pass beside each other. Tilt/offset is a placement concern for the
+// step-6 planner, not part of the primitive shape.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct PitchTable {
+    std::shared_ptr<std::vector<float>> th, k; // theta(s), kappa(s) at step h
+    float h = 0.1f, len = 0.0f;
+    Profile1D profile() const {
+        auto T = th; auto K = k; float hh = h; float L = len;
+        return Profile1D{
+            [T, hh, L](float s) {
+                if (s <= 0.0f) return (*T)[0];
+                if (s >= L) return T->back();
+                float fi = s / hh; int i = (int)fi; float f = fi - (float)i;
+                if (i + 1 >= (int)T->size()) return T->back();
+                return (*T)[i] * (1.0f - f) + (*T)[i + 1] * f;
+            },
+            [K, hh, L](float s) {
+                if (s <= 0.0f) return (*K)[0];
+                if (s >= L) return K->back();
+                float fi = s / hh; int i = (int)fi; float f = fi - (float)i;
+                if (i + 1 >= (int)K->size()) return K->back();
+                return (*K)[i] * (1.0f - f) + (*K)[i + 1] * f;
+            }};
+    }
+};
+
+constexpr float kGrav = 9.81f;
+
+// Integrate the teardrop for a given ramp peak curvature. sweep = total pitch
+// to traverse (2*pi for a loop, pi for an Immelmann half-loop). Returns the
+// table and reports max height + final speed^2; maxY > requested height means
+// kappa0 is too small (loop too big).
+PitchTable integrateTeardrop(float kappa0, float sweep, float rampLen, float v0,
+                             float theta0, float* maxYOut, float* aCOut) {
+    PitchTable t;
+    t.th = std::make_shared<std::vector<float>>();
+    t.k = std::make_shared<std::vector<float>>();
+    const float h = t.h;
+    float th = theta0, y = 0.0f, s = 0.0f, maxY = 0.0f;
+    float aC = 0.0f; // fixed once the entry ramp hands over
+    bool inArc = false;
+    auto v2 = [&](float yy) { return v0 * v0 - 2.0f * kGrav * yy; };
+    t.th->push_back(th);
+    t.k->push_back(0.0f);
+    const float sMax = 40.0f * sweep / fmaxf(kappa0, 1e-4f) + 4.0f * rampLen;
+    while (s < sMax) {
+        float kap;
+        if (s < rampLen) {
+            kap = kappa0 * s5(s / rampLen);
+        } else {
+            if (!inArc) { aC = kappa0 * v2(y); inArc = true; }
+            float vv = v2(y);
+            if (vv < 25.0f) { *maxYOut = 1e9f; *aCOut = aC; return t; } // stall: too slow
+            kap = aC / vv;
+        }
+        // Exit ramp: when the remaining sweep equals what a mirrored S5 ramp
+        // at the CURRENT curvature would consume (kap*rampLen/2), hand over.
+        // The ramp runs its FULL length so curvature lands exactly at zero;
+        // the sweep it delivers matches the handoff criterion to within one
+        // integration step (~0.2 deg), absorbed by the join tolerances.
+        float remain = (theta0 + sweep) - th;
+        if (inArc && remain <= kap * rampLen * 0.5f) {
+            float kExit = kap;
+            float sExitStart = s;
+            while (s < sMax) {
+                float u = (s - sExitStart) / rampLen;
+                if (u >= 1.0f) break;
+                kap = kExit * (1.0f - s5(u));
+                th += kap * h;
+                y += sinf(th) * h;
+                maxY = fmaxf(maxY, y);
+                s += h;
+                t.th->push_back(th);
+                t.k->push_back(kap);
+            }
+            break;
+        }
+        th += kap * h;
+        y += sinf(th) * h;
+        maxY = fmaxf(maxY, y);
+        s += h;
+        t.th->push_back(th);
+        t.k->push_back(kap);
+    }
+    t.len = ((float)t.th->size() - 1.0f) * h;
+    *maxYOut = maxY;
+    *aCOut = aC;
+    return t;
+}
+
+PitchTable solveTeardrop(float height, float sweep, float rampLen, float v0,
+                         float theta0, float* aCOut) {
+    // Bisect kappa0: larger kappa0 -> tighter loop -> lower max height.
+    float lo = 0.2f / height, hi = 24.0f / height;
+    PitchTable best;
+    float aC = 0.0f;
+    for (int i = 0; i < 40; i++) {
+        float mid = 0.5f * (lo + hi);
+        float maxY;
+        best = integrateTeardrop(mid, sweep, rampLen, v0, theta0, &maxY, &aC);
+        if (maxY > height) lo = mid; else hi = mid;
+    }
+    float maxY;
+    best = integrateTeardrop(0.5f * (lo + hi), sweep, rampLen, v0, theta0, &maxY, &aC);
+    assert(fabsf(maxY - height) < 0.75f && "teardrop failed to converge: vEntry too low for height?");
+    *aCOut = aC;
+    return best;
+}
+
+} // namespace
+
+Pose emitLoop(Route& r, const LoopSpec& sp) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kPitch) < 1e-4f && fabsf(e.kYaw) < 1e-4f && "loop needs a straight entry");
+    assert(fabsf(e.roll) < 1e-4f && fabsf(e.pitch) < 0.02f && "loop needs a level unbanked entry");
+    float aC;
+    PitchTable t = solveTeardrop(sp.height, 2.0f * kPi, sp.rampLen, sp.vEntry, e.pitch, &aC);
+    emitSchedule(r, t.len, t.profile(), constantProfile(e.yaw), constantProfile(0.0f),
+                 Tag::Loop, false);
+    // A full loop sweeps pitch through 2*pi; hand the next primitive the
+    // wrapped value so its profiles start from a conventional level pose.
+    // (Join validation compares angles modulo 2*pi.)
+    r.endPose.pitch -= 2.0f * kPi;
+    return r.endPose;
+}
+
+Pose emitImmelmann(Route& r, const ImmelmannSpec& sp) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kPitch) < 1e-4f && fabsf(e.kYaw) < 1e-4f && "immelmann needs a straight entry");
+    assert(fabsf(e.roll) < 1e-4f && fabsf(e.pitch) < 0.02f && "immelmann needs a level unbanked entry");
+    float aC;
+    PitchTable t = solveTeardrop(sp.height, kPi, sp.rampLen, sp.vEntry, e.pitch, &aC);
+    emitSchedule(r, t.len, t.profile(), constantProfile(e.yaw), constantProfile(0.0f),
+                 Tag::Immelmann, false);
+    // Half-roll run-out: inverted level flight, S5 roll 0 -> pi, then
+    // normalize the exit pose: (pi, psi, pi) == (0, psi+pi, 0) — identical
+    // tangent and frame, expressed the way downstream primitives expect.
+    float thTop = r.endPose.pitch; // ~pi
+    emitSchedule(r, sp.twistLen, constantProfile(thTop), constantProfile(e.yaw),
+                 rampProfile(0.0f, kPi, sp.twistLen), Tag::Immelmann, false);
+    Pose n = r.endPose;
+    n.pitch = kPi - n.pitch;              // ~0
+    n.yaw = n.yaw + kPi;                  // reversed heading
+    n.roll = n.roll - kPi;                // ~0
+    n.kPitch = -n.kPitch;
+    r.endPose = n;
+    return n;
 }
 
 // ---------------------------------------------------------------------------

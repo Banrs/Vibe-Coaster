@@ -514,12 +514,64 @@ static void testStep4CliffDive() {
     CHECK(!rep.terrainMutated, "report flags terrain mutation");
 }
 
+// ---------------------------------------------------------------------------
+static void testStep5Route() {
+    Route r = buildStep5Route(1);
+    ValidationReport rep = validateRoute(r, nullptr);
+    for (const Discontinuity& d : rep.discontinuities)
+        printf("  discontinuity: s=%.1f %s jump=%g tag=%s\n", d.s, d.quantity, d.jump,
+               tagName(d.tag));
+    for (const std::string& e : rep.elementFailures) printf("  element: %s\n", e.c_str());
+    CHECK(rep.pass(), "step5 route validation: %zu discont, %zu elem failures",
+          rep.discontinuities.size(), rep.elementFailures.size());
+
+    // Raw dimensions match the specs.
+    float rise, drop;
+    int runs;
+    elemHeights(r, Tag::Loop, rise, drop, runs);
+    CHECK(runs == 1, "one loop, got %d", runs);
+    CHECK(fabsf(rise - 70.0f) < 1.0f, "loop height %g (want 70)", rise);
+    CHECK(fabsf(drop - 70.0f) < 2.0f, "loop closes, drop %g", drop);
+
+    elemHeights(r, Tag::Immelmann, rise, drop, runs);
+    CHECK(runs == 1, "one immelmann, got %d", runs);
+    CHECK(fabsf(rise - 75.0f) < 1.0f, "immelmann rise %g (want 75)", rise);
+    CHECK(drop < 2.0f, "immelmann exits at its top, drop %g", drop);
+
+    // Exit heading reversed relative to the entry line.
+    float entryYaw = r.segs.front().entry.yaw;
+    float exitYaw = r.segs.back().exit.yaw;
+    float d = fmodf(fabsf(exitYaw - (entryYaw + kPi)), 2.0f * kPi);
+    if (d > kPi) d = 2.0f * kPi - d;
+    CHECK(d < 1e-3f, "immelmann reversed heading off by %g deg", radToDeg(d));
+
+    // Report felt g at loop top/bottom (diagnostic, not the authoring input).
+    for (const SegmentRec& s : r.segs)
+        if (s.tag == Tag::Loop) {
+            float v0 = 40.0f;
+            int iTop = 0;
+            float yTop = -1e9f, y0 = s.entry.pos.y;
+            for (size_t i = 0; i < r.samples.size(); i++)
+                if (r.samples[i].s >= s.s0 && r.samples[i].s <= s.s1 &&
+                    r.samples[i].pos.y > yTop) { yTop = r.samples[i].pos.y; iTop = (int)i; }
+            float v2Top = v0 * v0 - 2.0f * 9.81f * (yTop - y0);
+            float feltTop = (v2Top * r.samples[iTop].kPitch) / 9.81f - 1.0f;
+            printf("  loop: top felt %.2f g (v_top %.0f km/h), kappa_top %.4f\n", feltTop,
+                   sqrtf(v2Top) * 3.6f, r.samples[iTop].kPitch);
+            CHECK(feltTop > -0.5f && feltTop < 3.5f, "loop top felt g %g", feltTop);
+            break;
+        }
+}
+
 // Acceptance sweep at the doc-specified fine resolution (0.25-0.5 m): the
 // emitters are deterministic in ds, so the same proof routes re-emitted at
 // 0.5 m must validate clean too.
 static void testFineResolutionSweep() {
-    for (int which = 2; which <= 3; which++) {
-        Route r = which == 2 ? buildStep2RouteDs(1, 0.5f) : buildStep3RouteDs(1, 0.5f);
+    for (int which = 2; which <= 5; which++) {
+        if (which == 4) continue; // step-4 route is placement-solved, covered above
+        Route r = which == 2   ? buildStep2RouteDs(1, 0.5f)
+                  : which == 3 ? buildStep3RouteDs(1, 0.5f)
+                               : buildStep5RouteDs(1, 0.5f);
         ValidationReport rep = validateRoute(r, nullptr);
         for (const Discontinuity& d : rep.discontinuities)
             printf("  fine discontinuity: s=%.1f %s jump=%g tag=%s\n", d.s, d.quantity,
@@ -539,6 +591,7 @@ int main() {
     testStep2Route();
     testStep3Route();
     testStep4CliffDive();
+    testStep5Route();
     testFineResolutionSweep();
     testValidatorCatchesShelf();
     testAdapter();

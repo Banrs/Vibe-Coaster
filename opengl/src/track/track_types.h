@@ -292,6 +292,34 @@ struct CliffDiveSpec {
 };
 Pose emitCliffDive(Route& r, const CliffDiveSpec& spec);
 
+// Vertical loop (REALISM_SCALE.md "Vertical loop"): clothoid/teardrop, never
+// circular — S5 curvature ramps at entry/exit around a constant-CENTRIPETAL
+// arc (kappa = aC / v^2(y), v from energy conservation), which is tightest at
+// the top exactly as the Stengel teardrop is. aC is solved so the loop's raw
+// height equals `height`. Current WR anchor: Tormenta Rampaging Run 54.6 m
+// (opened 2026-07-09) -> game band 55-82 m; the default below is PROVISIONAL
+// pending the ask-before-locking-in pass.
+struct LoopSpec {
+    float height = 70.0f;   // raw vertical diameter, entry rail to top rail (m)
+    float vEntry = 40.0f;   // design entry speed (m/s) — shapes the teardrop
+    float rampLen = 25.0f;  // entry/exit clothoid length
+};
+Pose emitLoop(Route& r, const LoopSpec& spec);
+
+// Immelmann (REALISM_SCALE.md: half-loop + half-twist; WR anchor Tormenta
+// 66.4 m): the loop construction to theta=pi (inverted, heading reversed),
+// then an S5 half-roll over `twistLen` exiting upright, level and high. The
+// exit pose is re-expressed in normalized form ((theta,psi,phi) ==
+// (pi-theta, psi+pi, phi+pi) — identical tangent and frame) so downstream
+// primitives see a standard level pose.
+struct ImmelmannSpec {
+    float height = 75.0f;   // raw rise, entry to the inverted exit rail (m), PROVISIONAL
+    float vEntry = 42.0f;
+    float rampLen = 25.0f;
+    float twistLen = 70.0f; // half-roll run-out length
+};
+Pose emitImmelmann(Route& r, const ImmelmannSpec& spec);
+
 // track_planner.cpp — whole-ride beat planning (built out in steps 2+).
 // buildSmokeRoute: minimal deterministic route used by the step-1/2 harness.
 Route buildSmokeRoute(uint32_t seed);
@@ -301,6 +329,9 @@ Route buildStep2RouteDs(uint32_t seed, float ds);
 // buildStep3Route: plan-view primitives — turn, s-curve, helix (harness only).
 Route buildStep3Route(uint32_t seed);
 Route buildStep3RouteDs(uint32_t seed, float ds);
+// buildStep5Route: inversions — vertical loop, Immelmann (harness only).
+Route buildStep5Route(uint32_t seed);
+Route buildStep5RouteDs(uint32_t seed, float ds);
 
 // track_math / framing — one pass over a finished route: parallel-transport
 // the frame along the samples, then apply designed roll about the tangent.

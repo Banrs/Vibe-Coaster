@@ -361,58 +361,55 @@ static Vector3 rotateAbout(Vector3 v, Vector3 axis, float angle) {
     return Vector3Add(Vector3Add(term1, term2), term3);
 }
 
+// Transport v from tangent ta to tangent tb (minimal rotation), then
+// re-orthonormalize against tb.
+static Vector3 transportStep(Vector3 v, Vector3 ta, Vector3 tb) {
+    Vector3 axis = Vector3CrossProduct(ta, tb);
+    float axLen = Vector3Length(axis);
+    if (axLen > 1e-8f) {
+        float ang = atan2f(axLen, Vector3DotProduct(ta, tb));
+        v = rotateAbout(v, Vector3Scale(axis, 1.0f / axLen), ang);
+    }
+    v = Vector3Subtract(v, Vector3Scale(tb, Vector3DotProduct(v, tb)));
+    return Vector3Normalize(v);
+}
+
 void buildFrames(Route& r) {
     size_t n = r.samples.size();
     if (n == 0) return;
 
-    // Pass 1: parallel transport an up vector along the tangents.
-    std::vector<Vector3> ptUp(n);
+    // Twist-rate integration: transport the ACTUAL frame (designed roll
+    // included) along the tangents and apply the per-sample roll INCREMENT
+    // about the tangent. This — rather than "transport an unrolled frame,
+    // then rotate by absolute roll" — keeps the frame physical across
+    // inversion-exit normalization joints, where the bookkeeping angles jump
+    // to an equivalent expression ((pi-theta, psi+pi, phi+pi) — same tangent
+    // and same frame) but the PHYSICAL twist across the pair is zero.
     Vector3 t0 = r.samples[0].tan;
     Vector3 u = Vector3Subtract(Vector3{0, 1, 0}, Vector3Scale(t0, t0.y));
     if (Vector3Length(u) < 1e-4f) u = Vector3{0, 0, 1}; // vertical start tangent (not expected)
-    ptUp[0] = Vector3Normalize(u);
+    u = Vector3Normalize(u);
+    r.samples[0].up = rotateAbout(u, t0, r.samples[0].roll);
     for (size_t i = 1; i < n; i++) {
-        Vector3 ta = r.samples[i - 1].tan;
-        Vector3 tb = r.samples[i].tan;
-        Vector3 axis = Vector3CrossProduct(ta, tb);
-        float axLen = Vector3Length(axis);
-        Vector3 v = ptUp[i - 1];
-        if (axLen > 1e-8f) {
-            float ang = atan2f(axLen, Vector3DotProduct(ta, tb));
-            v = rotateAbout(v, Vector3Scale(axis, 1.0f / axLen), ang);
-        }
-        // Re-orthonormalize against drift.
-        v = Vector3Subtract(v, Vector3Scale(tb, Vector3DotProduct(v, tb)));
-        ptUp[i] = Vector3Normalize(v);
+        const Sample& A = r.samples[i - 1];
+        Sample& B = r.samples[i];
+        Vector3 v = transportStep(A.up, A.tan, B.tan);
+        float dRoll = B.roll - A.roll;
+        if (fabsf(B.pitch - A.pitch) > 2.0f) dRoll = 0.0f; // normalization joint
+        B.up = rotateAbout(v, B.tan, dRoll);
     }
 
-    // Closed routes: transport across the seam and measure holonomy, then
-    // distribute the correction linearly in s so the seam frame matches
-    // (zero for planar routes; small for 3D-twisted ones).
-    float holonomy = 0.0f;
+    // Closed routes: measure the seam mismatch and distribute it linearly in
+    // s so the seam frame matches (zero for planar routes; small otherwise).
     if (r.closed && n > 2) {
-        Vector3 ta = r.samples[n - 1].tan;
-        Vector3 tb = r.samples[0].tan;
-        Vector3 axis = Vector3CrossProduct(ta, tb);
-        float axLen = Vector3Length(axis);
-        Vector3 v = ptUp[n - 1];
-        if (axLen > 1e-8f) {
-            float ang = atan2f(axLen, Vector3DotProduct(ta, tb));
-            v = rotateAbout(v, Vector3Scale(axis, 1.0f / axLen), ang);
-        }
-        v = Vector3Subtract(v, Vector3Scale(tb, Vector3DotProduct(v, tb)));
-        v = Vector3Normalize(v);
-        // Signed angle from transported v back to ptUp[0] about tan[0].
-        float cosA = Vector3DotProduct(v, ptUp[0]);
-        float sinA = Vector3DotProduct(Vector3CrossProduct(v, ptUp[0]), tb);
-        holonomy = atan2f(sinA, cosA);
-    }
-
-    // Pass 2: designed roll (plus holonomy share) about the tangent.
-    float total = r.length() > 0.0f ? r.length() : 1.0f;
-    for (size_t i = 0; i < n; i++) {
-        float corr = r.closed ? holonomy * (r.samples[i].s / total) : 0.0f;
-        r.samples[i].up = rotateAbout(ptUp[i], r.samples[i].tan, r.samples[i].roll + corr);
+        Vector3 v = transportStep(r.samples[n - 1].up, r.samples[n - 1].tan, r.samples[0].tan);
+        float cosA = Vector3DotProduct(v, r.samples[0].up);
+        float sinA = Vector3DotProduct(Vector3CrossProduct(v, r.samples[0].up), r.samples[0].tan);
+        float holonomy = atan2f(sinA, cosA);
+        float total = r.length() > 0.0f ? r.length() : 1.0f;
+        for (size_t i = 0; i < n; i++)
+            r.samples[i].up = rotateAbout(r.samples[i].up, r.samples[i].tan,
+                                          holonomy * (r.samples[i].s / total));
     }
 }
 

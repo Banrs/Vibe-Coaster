@@ -112,4 +112,33 @@ Route buildStep3RouteDs(uint32_t seed, float ds) {
     return r;
 }
 
+// Step-5 proof route: the first two inversions — vertical loop and
+// Immelmann. Same provisional-size caveat; loop 70 m and Immelmann 75 m sit
+// inside the 1.0-1.5x band of their Tormenta Rampaging Run anchors
+// (54.6 m / 66.4 m, REALISM_SCALE.md) pending the ask-before-locking-in pass.
+Route buildStep5Route(uint32_t seed) { return buildStep5RouteDs(seed, 1.0f); }
+Route buildStep5RouteDs(uint32_t seed, float ds) {
+    (void)seed;
+    Route r;
+    Pose p0;
+    p0.pos = Vector3{0.0f, 30.0f, 0.0f};
+    startRoute(r, p0, ds);
+
+    emitLine(r, 50.0f, Tag::Line, false);
+
+    LoopSpec loop; // 70 m teardrop @ 40 m/s entry
+    emitLoop(r, loop);
+
+    emitLine(r, 50.0f, Tag::Line, false);
+
+    ImmelmannSpec imm; // 75 m half-loop + half-roll @ 42 m/s
+    emitImmelmann(r, imm);
+
+    // Exits reversed, 75 m above the entry line — run back over the route.
+    emitLine(r, 80.0f, Tag::Line, false);
+
+    buildFrames(r);
+    return r;
+}
+
 } // namespace v2

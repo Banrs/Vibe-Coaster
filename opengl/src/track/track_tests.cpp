@@ -2,6 +2,7 @@
 // no window). Exit code 0 == all checks pass; the build plus this binary is
 // the verification gate for every migration step (COASTER_REWRITE.md
 // "Acceptance harness").
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -620,6 +621,83 @@ static void testFineResolutionSweep() {
 }
 
 // ---------------------------------------------------------------------------
+// Step 6: full planned rides over the real terrain, multiple seeds. This is
+// the continuity suite the host switch is gated on.
+static void testStep6Rides() {
+    TerrainQuery terrain;
+    terrain.height = [](float x, float z) { return groundTopAt(x, z); };
+    terrain.waterY = kTerraWaterY;
+
+    int clean = 0;
+    float cutTotal = 0.0f, tunnelTotal = 0.0f, lenTotal = 0.0f;
+    int cliffDives = 0, inversions = 0;
+    const int kSeeds = 6;
+    for (uint32_t seed = 1; seed <= kSeeds; seed++) {
+        Route r = buildRide(seed, terrain);
+        ValidationReport rep = validateRoute(r, &terrain);
+        for (const Discontinuity& d : rep.discontinuities)
+            printf("  seed%u discontinuity: s=%.1f %s jump=%g tag=%s\n", seed, d.s, d.quantity,
+                   d.jump, tagName(d.tag));
+        for (const std::string& e : rep.elementFailures)
+            printf("  seed%u element: %s\n", seed, e.c_str());
+        bool ok = rep.pass() &&
+                  clearanceDecision(rep, ClearanceLimits{}) != ClearanceDecision::Reject;
+        CHECK(ok, "seed %u ride invalid", seed);
+        if (ok) clean++;
+        CHECK(r.closed, "seed %u ride is closed", seed);
+        CHECK(r.length() > 1500.0f, "seed %u ride length %g", seed, r.length());
+
+        // Closure seam: last sample is one step from the first.
+        float seamGap = Vector3Distance(r.samples.back().pos, r.samples.front().pos);
+        CHECK(seamGap < 2.5f * r.ds, "seed %u seam gap %g", seed, seamGap);
+
+        cutTotal += rep.cutLength;
+        tunnelTotal += rep.tunnelLength;
+        lenTotal += r.length();
+        int nInv = 0;
+        bool sawCliff = false, prevInv = false;
+        for (const SegmentRec& s : r.segs) {
+            bool inv = s.tag == Tag::Loop || s.tag == Tag::Immelmann ||
+                       s.tag == Tag::DiveLoop || s.tag == Tag::Corkscrew ||
+                       s.tag == Tag::ZeroGStall;
+            if (inv && !prevInv) nInv++;
+            prevInv = inv;
+            if (s.tag == Tag::CliffDive) sawCliff = true;
+        }
+        if (sawCliff) cliffDives++;
+        inversions += nInv;
+        CHECK(nInv >= 1 && nInv <= 3, "seed %u has %d inversions", seed, nInv);
+        printf("  seed%u: %.0f m, %zu segs, %d inversions, cliffdive=%d, cut %.0f m, tunnel %.0f m, unsupported %.0f m\n",
+               seed, r.length(), r.segs.size(), nInv, sawCliff ? 1 : 0, rep.cutLength,
+               rep.tunnelLength, rep.unsupportedLength);
+        // Where do the big bores live? (diagnostic for placement tuning)
+        {
+            std::vector<const ClearanceSpan*> tunnels;
+            for (const ClearanceSpan& c : rep.clearance)
+                if (c.kind == ClearanceSpan::Kind::Tunnel) tunnels.push_back(&c);
+            std::sort(tunnels.begin(), tunnels.end(),
+                      [](const ClearanceSpan* a, const ClearanceSpan* b) {
+                          return (a->s1 - a->s0) > (b->s1 - b->s0);
+                      });
+            for (size_t k = 0; k < tunnels.size() && k < 3; k++) {
+                float mid = 0.5f * (tunnels[k]->s0 + tunnels[k]->s1);
+                int im = (int)(mid / r.ds);
+                if (im >= (int)r.samples.size()) im = (int)r.samples.size() - 1;
+                printf("    tunnel %.0f m (depth %.0f) at s=%.0f..%.0f in %s\n",
+                       tunnels[k]->s1 - tunnels[k]->s0, tunnels[k]->maxDepth, tunnels[k]->s0,
+                       tunnels[k]->s1, tagName(r.samples[im].tag));
+            }
+        }
+    }
+    // Cut/tunnel usage across seeds: near-zero is the historical red flag
+    // (TERRAIN_CONTRACT.md) — the generator must carve, not dodge.
+    printf("  fleet: %d/%d clean, cut %.0f m + tunnel %.0f m over %.0f m track, %d cliff dives, %.1f inversions/lap\n",
+           clean, kSeeds, cutTotal, tunnelTotal, lenTotal, cliffDives,
+           (float)inversions / (float)kSeeds);
+    CHECK(cutTotal + tunnelTotal > 10.0f, "near-zero cut/tunnel usage across seeds (red flag)");
+}
+
+// ---------------------------------------------------------------------------
 int main() {
     testS5();
     testQuinticProfile();
@@ -629,6 +707,7 @@ int main() {
     testStep3Route();
     testStep4CliffDive();
     testStep5Route();
+    testStep6Rides();
     testFineResolutionSweep();
     testValidatorCatchesShelf();
     testAdapter();

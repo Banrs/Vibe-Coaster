@@ -87,6 +87,11 @@ Pose emitSchedule(Route& r, float length,
     assert(!r.samples.empty() && "call startRoute first");
     assert(length > 0.0f);
     // The profiles are absolute; they must take over exactly where the route ends.
+#ifndef NDEBUG
+    if (fabsf(pitch.f(0.0f) - r.endPose.pitch) >= 1e-3f)
+        fprintf(stderr, "profile-start mismatch: pitch.f(0)=%g endPose.pitch=%g seg#%zu tag=%d len=%g\n",
+                pitch.f(0.0f), r.endPose.pitch, r.segs.size(), (int)tag, length);
+#endif
     assert(fabsf(pitch.f(0.0f) - r.endPose.pitch) < 1e-3f && "pitch profile must start at end pose");
     assert(fabsf(yaw.f(0.0f) - r.endPose.yaw) < 1e-3f && "yaw profile must start at end pose");
     assert(fabsf(roll.f(0.0f) - r.endPose.roll) < 1e-3f && "roll profile must start at end pose");
@@ -406,15 +411,22 @@ void buildFrames(Route& r) {
 
     // Closed routes: measure the seam mismatch and distribute it linearly in
     // s so the seam frame matches (zero for planar routes; small otherwise).
+    // Any genuinely 3D closed circuit accumulates transport holonomy (graded
+    // banked turns, inversions) — distributing it is the standard fix and
+    // stays invisible (worst case ~0.03 deg/m). Only a near-pi mismatch is
+    // ambiguous/degenerate; leave that at the seam for the validator (broken
+    // closure GEOMETRY is separately prevented by the connector cusp guard).
     if (r.closed && n > 2) {
         Vector3 v = transportStep(r.samples[n - 1].up, r.samples[n - 1].tan, r.samples[0].tan);
         float cosA = Vector3DotProduct(v, r.samples[0].up);
         float sinA = Vector3DotProduct(Vector3CrossProduct(v, r.samples[0].up), r.samples[0].tan);
         float holonomy = atan2f(sinA, cosA);
-        float total = r.length() > 0.0f ? r.length() : 1.0f;
-        for (size_t i = 0; i < n; i++)
-            r.samples[i].up = rotateAbout(r.samples[i].up, r.samples[i].tan,
-                                          holonomy * (r.samples[i].s / total));
+        if (fabsf(holonomy) < 2.9f) {
+            float total = r.length() > 0.0f ? r.length() : 1.0f;
+            for (size_t i = 0; i < n; i++)
+                r.samples[i].up = rotateAbout(r.samples[i].up, r.samples[i].tan,
+                                              holonomy * (r.samples[i].s / total));
+        }
     }
 }
 

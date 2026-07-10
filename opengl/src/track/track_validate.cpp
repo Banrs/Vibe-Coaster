@@ -600,6 +600,17 @@ ValidationReport validateRoute(const Route& r, const TerrainQuery* terrain) {
     if (r.closed && r.segs.size() > 1)
         checkJoin(r.segs.back(), r.segs.front(), 0.0f, rep);
 
+    // Closed-route seam frame: after buildFrames' (bounded) holonomy
+    // distribution, the wrap must be twist-free like any other pair.
+    if (r.closed && r.samples.size() > 2) {
+        const Sample& A = r.samples.back();
+        const Sample& B = r.samples.front();
+        float tw = Vector3DotProduct(A.up, B.up);
+        if (tw < cosf(0.15f))
+            rep.discontinuities.push_back(Discontinuity{
+                A.s, "seamFrame", acosf(fminf(fmaxf(tw, -1.0f), 1.0f)), A.tag});
+    }
+
     sweepSamples(r, rep);
     if (terrain && terrain->height) sweepClearance(r, *terrain, rep);
 

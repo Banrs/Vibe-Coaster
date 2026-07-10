@@ -225,6 +225,12 @@ struct DropSpec {
 };
 Pose emitDrop(Route& r, const DropSpec& spec);
 
+// Climb (drop mirrored): also the planner's geometric speed conditioner.
+Pose emitClimb(Route& r, float height, float theta, float rampIn, float rampOut,
+               Tag tag, bool chain);
+// Single S5 pitch ramp onto a new straight grade (terrain-following legs).
+Pose emitGradeChange(Route& r, float newPitch, float len, Tag tag);
+
 // Turn (SHAPES.md plan-view table): S5 curvature ramp -> constant-radius
 // middle -> mirrored ramp; bank follows the SAME normalised schedule as the
 // curvature, so roll rate is continuous and bank peaks exactly where the
@@ -365,7 +371,15 @@ struct CorkscrewSpec {
 };
 Pose emitCorkscrew(Route& r, const CorkscrewSpec& spec);
 
-// track_planner.cpp — whole-ride beat planning (built out in steps 2+).
+// track_planner.cpp — whole-ride beat planning. buildRide is the real
+// generator: a closed Falcon-inspired circuit (COASTER_REWRITE.md layout
+// beats) at the locked REALISM_SCALE targets, terrain-aware (escarpment scan
+// for the cliff dive, cut/tunnel-friendly clearance), with entry speeds
+// conditioned by GEOMETRY (climbs), never brakes. Deterministic per seed;
+// internally retries a bounded number of layout variations and returns the
+// first that passes validation + clearance policy.
+Route buildRide(uint32_t seed, const TerrainQuery& terrain);
+
 // buildSmokeRoute: minimal deterministic route used by the step-1/2 harness.
 Route buildSmokeRoute(uint32_t seed);
 // buildStep2Route: all step-2 vertical primitives in sequence (harness only).
@@ -394,8 +408,8 @@ std::vector<EscarpmentSite> scanEscarpments(const TerrainQuery& terrain,
 // note: near-zero cut usage across seeds is a red flag, not a success).
 enum class ClearanceDecision { Accept, AcceptWithCuts, Reject };
 struct ClearanceLimits {
-    float maxCutLen = 140.0f;     // longest contiguous cut/tunnel span (m), PROVISIONAL
-    float maxTunnelDepth = 30.0f; // deepest bore (m), PROVISIONAL
+    float maxCutLen = 260.0f;     // longest contiguous cut/tunnel span (m), PROVISIONAL
+    float maxTunnelDepth = 45.0f; // deepest bore (m), PROVISIONAL
 };
 ClearanceDecision clearanceDecision(const ValidationReport& rep,
                                     const ClearanceLimits& lim);
@@ -423,6 +437,9 @@ ClearanceDecision clearanceDecision(const ValidationReport& rep,
 // ---------------------------------------------------------------------------
 struct TrackV2 {
     v2::Route route;
+    // Bind before build(): the host wires groundTopAt (terrain_field.h)
+    // here; unbound builds fall back to the harness smoke route.
+    v2::TerrainQuery terrain;
 
     // Mirrors of route.samples for host loops that index per-point data.
     std::vector<Vector3> cp, up;

@@ -4,8 +4,8 @@
 #include "track_math.h"
 
 void TrackV2::build(uint32_t seed) {
-    route = v2::buildSmokeRoute(seed); // placeholder producer until the beat
-                                       // planner lands (migration steps 2+)
+    route = terrain.height ? v2::buildRide(seed, terrain)
+                           : v2::buildSmokeRoute(seed); // harness fallback
     size_t n = route.samples.size();
     cp.resize(n);
     up.resize(n);

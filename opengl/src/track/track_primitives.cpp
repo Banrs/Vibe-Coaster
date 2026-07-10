@@ -49,6 +49,23 @@ Pose emitConnector(Route& r, const Pose& target, Tag tag, bool chain) {
     assert(chord > 1e-3f && "connector endpoints coincide");
     float lt = 1.2f * chord;
     QuinticHermite h = hermiteFromPoses(r.endPose, target, lt);
+#ifndef NDEBUG
+    // Cusp guard: a target pose fighting the travel direction makes the
+    // quintic's speed collapse mid-curve — the arc-length reparameterization
+    // then concentrates curvature into a near-kink. That is a PLANNER
+    // staging bug (dock first, then connect); fail loudly.
+    for (int i = 1; i < 32; i++) {
+        float sp = Vector3Length(h.vel((float)i / 32.0f));
+        if (sp <= 0.22f * lt) {
+            fprintf(stderr,
+                    "connector cusp: chord=%.0f from(y=%.0f yaw=%.2f pitch=%.2f) "
+                    "to(y=%.0f yaw=%.2f pitch=%.2f) minSpeed=%.2f*lt at t=%.2f\n",
+                    chord, r.endPose.pos.y, r.endPose.yaw, r.endPose.pitch, target.pos.y,
+                    target.yaw, target.pitch, sp / lt, (float)i / 32.0f);
+            assert(false && "connector cusp: endpoints unsolvable as posed — stage the approach");
+        }
+    }
+#endif
     return emitHermite(r, h, target.roll, tag, chain);
 }
 
@@ -539,10 +556,11 @@ Pose emitCorkscrew(Route& r, const CorkscrewSpec& sp) {
     assert(sinA < 0.85f && "corkscrew too tight: radius vs roll rate/speed");
     float alpha = asinf(sinA);
 
-    // Entry pitch ramp 0 -> alpha (the cone tangent starts climbing at
-    // alpha); C2 because the cone path is curvature-free at phi=0 (phi'=0).
+    // Entry pitch ramp to EXACTLY alpha — the cone table starts at
+    // asin(sin(alpha)) — absorbing any sub-tolerance entry-pitch residual;
+    // C2 because the cone path is curvature-free at phi=0 (phi'=0).
     Profile1D yawC = constantProfile(e.yaw);
-    emitSchedule(r, sp.pitchRamp, rampProfile(e.pitch, e.pitch + alpha, sp.pitchRamp), yawC,
+    emitSchedule(r, sp.pitchRamp, rampProfile(e.pitch, alpha, sp.pitchRamp), yawC,
                  constantProfile(0.0f), Tag::Corkscrew, false);
 
     // Tabulate the cone-precession schedule: phi runs 0 -> 2*pi as
@@ -626,7 +644,7 @@ Pose emitCorkscrew(Route& r, const CorkscrewSpec& sp) {
 
     // Exit pitch ramp alpha -> level.
     Pose x = r.endPose;
-    Pose out = emitSchedule(r, sp.pitchRamp, rampProfile(x.pitch, e.pitch, sp.pitchRamp), yawC,
+    Pose out = emitSchedule(r, sp.pitchRamp, rampProfile(x.pitch, 0.0f, sp.pitchRamp), yawC,
                             constantProfile(x.roll), Tag::Corkscrew, false);
     return out;
 }
@@ -683,6 +701,40 @@ Pose emitCliffDive(Route& r, const CliffDiveSpec& c) {
         emitSchedule(r, face, constantProfile(-c.thetaDive), yawD, rollC, Tag::CliffDive, false);
         return emitSchedule(r, c.diveRampOut, out, yawD, rollC, Tag::CliffDive, false);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Climb — the drop mirrored upward: pull-up, sustained ascent, ease-over to
+// level. Used by the planner both as ride texture and as SPEED CONDITIONING:
+// entry speed into an element is set by climbing/descending the exact height
+// difference (g is a geometry output — never managed by braking,
+// REALISM_SCALE.md hard rule).
+// ---------------------------------------------------------------------------
+// Grade change — a single S5 pitch ramp onto a new straight grade (no
+// return to level; pair with a second call to level out). Lets turns and
+// long legs run at a terrain-following grade.
+Pose emitGradeChange(Route& r, float newPitch, float len, Tag tag) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kPitch) < 1e-4f && fabsf(e.kYaw) < 1e-4f && "grade change needs a straight entry");
+    return emitSchedule(r, len, rampProfile(e.pitch, newPitch, len),
+                        constantProfile(e.yaw), constantProfile(e.roll), tag, false);
+}
+
+Pose emitClimb(Route& r, float height, float theta, float rampIn, float rampOut,
+               Tag tag, bool chain) {
+    const Pose e = r.endPose;
+    assert(fabsf(e.kPitch) < 1e-4f && fabsf(e.kYaw) < 1e-4f && "climb needs a straight entry");
+    Profile1D in = rampProfile(e.pitch, theta, rampIn);
+    Profile1D out = rampProfile(theta, 0.0f, rampOut);
+    float riseIn = profileRise(in, 0.0f, rampIn);
+    float riseOut = profileRise(out, 0.0f, rampOut);
+    float face = (height - riseIn - riseOut) / sinf(theta);
+    assert(face > 2.0f && "climb height too small for its ramps");
+    Profile1D yawC = constantProfile(e.yaw);
+    Profile1D rollC = constantProfile(e.roll);
+    emitSchedule(r, rampIn, in, yawC, rollC, tag, chain);
+    emitSchedule(r, face, constantProfile(theta), yawC, rollC, tag, chain);
+    return emitSchedule(r, rampOut, out, yawC, rollC, tag, chain);
 }
 
 // ---------------------------------------------------------------------------

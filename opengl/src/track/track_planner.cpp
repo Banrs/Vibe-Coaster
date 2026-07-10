@@ -30,15 +30,24 @@ struct Rng {
 
 constexpr float kG = 9.81f;
 
-// Energy bookkeeping: v^2 after a height change plus a simple aggregate
-// drag/rolling loss per meter of track. The loss constant is a DESIGN MODEL
-// (flagged: calibrate against the host's actual friction at the step-6
-// switch); without it a frictionless plan keeps launch speed forever and
-// every inversion needs an absurd conditioning tower.
-constexpr float kDragPerM = 6e-4f; // fractional v^2 loss per meter
+// Energy bookkeeping: v^2 after a height change plus an aggregate loss model
+// for an EXTREMELY EFFICIENT modern steel coaster (Intamin-giga class), per
+// REALISM_SCALE.md "Speed-loss model" (researched 2026-07-10):
+//   a_loss(v) = kRollG*g + cAero*v^2   ->
+//   v^2(s) = (v0^2 + kRollG*g/cAero) * exp(-2*cAero*s) - kRollG*g/cAero
+// Two terms matter: rolling resistance dominates below ~28 m/s, aero above.
+// Cross-checked against Millennium Force retaining ~96.5% of ideal kinetic
+// energy over its first drop. Calibrate the HOST physics to match at the
+// step-6 switch.
+constexpr float kRollG = 0.008f;  // rolling decel in g (efficient polyurethane)
+constexpr float cAero = 1.0e-4f;  // 0.5*rho*Cd*A/m per meter (heavy giga train)
 
 float v2After(float v2, float dy) { return v2 - 2.0f * kG * dy; }
-float v2Drag(float v2, float meters) { return v2 * expf(-kDragPerM * meters); }
+float v2Drag(float v2, float meters) {
+    float ug = kRollG * kG;
+    float u = (v2 + ug / cAero) * expf(-2.0f * cAero * meters) - ug / cAero;
+    return fmaxf(u, 0.0f);
+}
 
 // Planner-side drop/climb with ramps PROPORTIONAL to the height, so any
 // terrain- or speed-derived dy keeps a real sustained face (fixed ramps eat

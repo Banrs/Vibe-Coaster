@@ -222,6 +222,32 @@ number, the *mechanism* for hitting any g target at a given point is not a gap �
 than tuning by feel. **Never manage g by braking** (carried forward from the prior REALISM.md's
 hard rule, still correct) — g is a geometry output, not a speed input.
 
+## Speed-loss model (friction + air drag — researched 2026-07-10, user-directed "extremely efficient metal coaster")
+
+The planner (and, after the step-6 switch, the host physics it must match) uses a two-term
+aggregate loss: `a_loss(v) = μ·g + c_aero·v²` with **μ = 0.008** (rolling, constant) and
+**c_aero = 1.0e-4 /m** (air drag), i.e. `v²(s) = (v₀² + μg/c)·e^(−2cs) − μg/c`. Two terms because
+the mechanisms live in different regimes: rolling dominates below the **~28 m/s crossover**, drag
+above — a single exponential under-predicts low-speed losses ~2x. Sourced anchors, per this doc's
+conventions:
+
+- Polyurethane-on-steel rolling resistance **~0.009–0.018 g** (enthusiast/engineering tier, no
+  peer-reviewed coaster value exists): [Coasterpedia, wheel assembly](https://coasterpedia.net/wiki/Wheel_assembly),
+  [Coaster101 wheel design](https://www.coaster101.com/2011/10/24/coasters-101-wheel-design/).
+  μ=0.008 sits at the efficient end per the user's directive.
+- Drag law standard (`½ρC_dA v²`), coaster **C_d ≈ 0.8–1.2, A ≈ 3–5 m²**, train mass ~20–27 t
+  loaded (forum tier): [Coaster101 physics calcs](https://www.coaster101.com/2010/11/16/coasters101-coaster-physics-calculations/),
+  [CoasterForce train-weight thread](https://coasterforce.com/forums/threads/train-weight.42224/).
+  c_aero = 1.0e-4 ≈ ½·1.2·0.9·3/16000.
+- **Hard cross-check (derived from official stats)**: Millennium Force's 41.6 m/s at the bottom of
+  its 91.4 m first drop = **96.5% of ideal KE retained** ([Wikipedia](https://en.wikipedia.org/wiki/Millennium_Force),
+  [RCDB](https://rcdb.com/594.htm)); Pendrill's peer-reviewed telemetry work calls coaster losses
+  "surprisingly small" (qualitative only — **gap**: no peer-reviewed numeric % exists).
+- Behavior: 96 m/s → 86.0 m/s after 1 km, 68.6 after 3 km; 30 m/s → 24.4 after 1 km.
+- Scale note: at the game's 1.4–1.5x sizes, mass ∝ L³ vs area ∝ L² means c_aero could drop
+  ~30% (to ~0.7e-4) if the flagship train should feel even more efficient — left at 1.0e-4
+  (mildly conservative) for now.
+
 ## Element occurrence & density
 
 - Falcon's Flight and Formula Rossa — this project's two primary real-world anchors — both have

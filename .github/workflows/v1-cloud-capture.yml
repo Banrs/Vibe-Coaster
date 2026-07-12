@@ -51,11 +51,15 @@ jobs:
           MC_CAPTURE_H: "540"
           MC_DT: "0.05"
         run: |
-          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --elementshot TOPHAT captures
-          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --elementshot HILLS captures
-          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --elementshot LOOP captures
-          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --jointshot ANY FLAT captures
-          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --jointshot FLAT ANY captures
+          pids=()
+          timeout 360 xvfb-run -a -s "-screen 0 960x540x24" ./minecoaster --elementshot TOPHAT captures & pids+=("$!")
+          timeout 360 xvfb-run -a -s "-screen 0 960x540x24" ./minecoaster --elementshot HILLS captures & pids+=("$!")
+          timeout 360 xvfb-run -a -s "-screen 0 960x540x24" ./minecoaster --elementshot LOOP captures & pids+=("$!")
+          timeout 360 xvfb-run -a -s "-screen 0 960x540x24" ./minecoaster --jointshot ANY FLAT captures & pids+=("$!")
+          timeout 360 xvfb-run -a -s "-screen 0 960x540x24" ./minecoaster --jointshot FLAT ANY captures & pids+=("$!")
+          status=0
+          for pid in "${pids[@]}"; do wait "$pid" || status=1; done
+          exit "$status"
 
       - name: Upload audit and in-game screenshots
         if: always()

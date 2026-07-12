@@ -1210,9 +1210,14 @@ int main(int argc, char **argv) {
             auto armJointCamera = [&](Vector3 jp, Vector3 jt) {
                 Vector3 js = Vector3Normalize(Vector3CrossProduct(jt, WUP));
                 if (Vector3Length(js) < 1e-4f) js = Vector3{1, 0, 0};
-                jointCam.position = Vector3Add(jp, Vector3Add(
-                    Vector3Add(Vector3Scale(js, 76.0f), Vector3Scale(jt, -18.0f)),
-                    Vector3{0, 36.0f, 0}));
+                Vector3 fore = Vector3Scale(jt, -18.0f);
+                Vector3 plus = Vector3Add(jp, Vector3Add(Vector3Scale(js, 76.0f), fore));
+                Vector3 minus = Vector3Add(jp, Vector3Add(Vector3Scale(js, -76.0f), fore));
+                float plusGround = groundTopAt(plus.x, plus.z);
+                float minusGround = groundTopAt(minus.x, minus.z);
+                jointCam.position = plusGround <= minusGround ? plus : minus;
+                jointCam.position.y = fmaxf(jp.y + 36.0f,
+                                            groundTopAt(jointCam.position.x, jointCam.position.z) + 20.0f);
                 jointCam.target = Vector3Add(jp, Vector3{0, 2.0f, 0});
                 jointCam.up = WUP;
                 jointCam.fovy = 62.0f;

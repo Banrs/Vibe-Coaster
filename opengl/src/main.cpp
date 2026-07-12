@@ -614,7 +614,8 @@ int main(int argc, char **argv) {
     Track trk;
     trk.reset();
     float captureStartU = 0.5f;
-    float captureJointU = -1.0f;
+    bool captureJointPreset = false;
+    Vector3 captureJointPos{}, captureJointTangent{};
     if (captureShot && getenv("MC_CAPTURE_FAST")) {
         trk.ensureFinalizedAhead(520.0f);
         if (elemShot) {
@@ -651,7 +652,9 @@ int main(int argc, char **argv) {
                     if (clearance > bestClearance) {
                         bestClearance = clearance;
                         captureStartU = fmaxf(0.5f, q - 1.0f);
-                        captureJointU = q + 0.125f;
+                        captureJointPos = jp;
+                        captureJointTangent = trk.tangent(q + 0.125f);
+                        captureJointPreset = true;
                     }
                 }
             }
@@ -1194,27 +1197,31 @@ int main(int argc, char **argv) {
             if (elemArmed) cam = elemBestCam;
         }
         if (jointShot) {
-            bool fastJoint = getenv("MC_CAPTURE_FAST") && captureJointU >= 0.0f;
-            float searchFirst = fastJoint ? captureJointU - 0.125f : u - 1.0f;
-            float searchLast  = fastJoint ? searchFirst : u + 8.0f;
-            for (float q = searchFirst; !jointArmed && q <= searchLast; q += 0.25f) {
+            auto armJointCamera = [&](Vector3 jp, Vector3 jt) {
+                Vector3 js = Vector3Normalize(Vector3CrossProduct(jt, WUP));
+                if (Vector3Length(js) < 1e-4f) js = Vector3{1, 0, 0};
+                jointCam.position = Vector3Add(jp, Vector3Add(
+                    Vector3Add(Vector3Scale(js, 76.0f), Vector3Scale(jt, -18.0f)),
+                    Vector3{0, 36.0f, 0}));
+                jointCam.target = Vector3Add(jp, Vector3{0, 2.0f, 0});
+                jointCam.up = WUP;
+                jointCam.fovy = 62.0f;
+                jointArmed = true;
+            };
+            int warmupFrames = getenv("MC_CAPTURE_FAST") ? 4 : 120;
+            if (getenv("MC_CAPTURE_FAST") && captureJointPreset && frame > warmupFrames) {
+                armJointCamera(captureJointPos, captureJointTangent);
+                printf("jointshot using finalized preset pose\n");
+            }
+            for (float q = u - 1.0f; !jointArmed && q <= u + 8.0f; q += 0.25f) {
                 unsigned char a = trk.tagAt(q), b = trk.tagAt(q + 0.25f);
                 bool fromMatch = jointFrom == -2 || a == (unsigned char)jointFrom;
                 bool toMatch   = jointTo   == -2 || b == (unsigned char)jointTo;
-                int warmupFrames = getenv("MC_CAPTURE_FAST") ? 4 : 120;
                 if (frame > warmupFrames && a != b && fromMatch && toMatch) {
                     float ju = q + 0.125f;
                     Vector3 jp = trk.pos(ju);
                     Vector3 jt = trk.tangent(ju);
-                    Vector3 js = Vector3Normalize(Vector3CrossProduct(jt, WUP));
-                    if (Vector3Length(js) < 1e-4f) js = Vector3{1, 0, 0};
-                    jointCam.position = Vector3Add(jp, Vector3Add(
-                        Vector3Add(Vector3Scale(js, 76.0f), Vector3Scale(jt, -18.0f)),
-                        Vector3{0, 36.0f, 0}));
-                    jointCam.target = Vector3Add(jp, Vector3{0, 2.0f, 0});
-                    jointCam.up = WUP;
-                    jointCam.fovy = 62.0f;
-                    jointArmed = true;
+                    armJointCamera(jp, jt);
                     printf("jointshot found mode %d -> %d at u=%.2f\n", (int)a, (int)b, ju);
                 }
             }

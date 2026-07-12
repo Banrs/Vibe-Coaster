@@ -2,6 +2,9 @@ name: V1 cloud capture
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "codex/v1-legacy-fix"
   pull_request:
     paths:
       - "opengl/**"

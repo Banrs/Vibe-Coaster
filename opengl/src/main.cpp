@@ -639,13 +639,18 @@ int main(int argc, char **argv) {
                 }
             }
         } else if (jointShot) {
+            float bestClearance = -1e30f;
             for (float q = 0.5f; q + 0.25f <= trk.maxFinalU(); q += 0.25f) {
                 unsigned char a = trk.tagAt(q), b = trk.tagAt(q + 0.25f);
                 bool fromMatch = jointFrom == -2 || a == (unsigned char)jointFrom;
                 bool toMatch   = jointTo   == -2 || b == (unsigned char)jointTo;
                 if (a != b && fromMatch && toMatch) {
-                    captureStartU = fmaxf(0.5f, q - 1.0f);
-                    break;
+                    Vector3 jp = trk.pos(q + 0.125f);
+                    float clearance = jp.y - groundTopAt(jp.x, jp.z);
+                    if (clearance > bestClearance) {
+                        bestClearance = clearance;
+                        captureStartU = fmaxf(0.5f, q - 1.0f);
+                    }
                 }
             }
         }
@@ -1199,8 +1204,8 @@ int main(int argc, char **argv) {
                     Vector3 js = Vector3Normalize(Vector3CrossProduct(jt, WUP));
                     if (Vector3Length(js) < 1e-4f) js = Vector3{1, 0, 0};
                     jointCam.position = Vector3Add(jp, Vector3Add(
-                        Vector3Add(Vector3Scale(js, 64.0f), Vector3Scale(jt, -12.0f)),
-                        Vector3{0, 14.0f, 0}));
+                        Vector3Add(Vector3Scale(js, 76.0f), Vector3Scale(jt, -18.0f)),
+                        Vector3{0, 36.0f, 0}));
                     jointCam.target = Vector3Add(jp, Vector3{0, 2.0f, 0});
                     jointCam.up = WUP;
                     jointCam.fovy = 62.0f;

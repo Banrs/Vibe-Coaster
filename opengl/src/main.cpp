@@ -4,46 +4,17 @@
 // game loop (main()) which is too stateful (dozens of [&]-capturing lambdas) to split
 // further without a larger restructure -- see opengl/COASTER_REWRITE.md.
 #include "game_state.cpp"
-// V2 track module (migration step 6). Included AFTER game_state.cpp so raylib.h
-// (which game_state.cpp includes first) defines Vector3 before raymath.h's guard.
-#include "track/track_types.h"
 #include "environment.cpp"
 #include "render_fx.cpp"
 #include "voxel_render.cpp"
 #include "spline.cpp"
-// V1 generator (coaster_track.cpp) + its diagnostics (audit_diagnostics.cpp)
-// were archived to opengl/legacy/ at migration step 7 — the live host runs the
-// V2 TrackV2 generator (track/ module) only. The legacy files are kept
-// unbuilt for reference; do not re-include them.
+#include "../legacy/coaster_track.cpp"
+#include "track_render_cache.cpp"
 #include "coaster_car.cpp"
 #include "presentation.cpp"
 #include "pathtrace.cpp"
-
-// Host-side v2::Tag -> SegMode map (migration step 6). track_v2.cpp is a separate
-// translation unit with no view of the host M_* enum, so the host installs this into
-// TrackV2::tagMap right after construction (build()/tagAt() route the v2::Tag byte
-// through it). Order matches v2::Tag; see STEP6_HOST_SWITCH.md mapping table.
-static const unsigned char kV2ToSeg[] = {
-    M_STATION,   // Station
-    M_STATION,   // Brake   — no M_BRAKE; folded onto the station decel path (benign)
-    M_LAUNCH,    // Launch
-    M_FLAT,      // Line
-    M_FLAT,      // Connector — NOT M_CLIMB (would trip the auto-lift path)
-    M_CLIMB,     // TopHat  — draws a lift-assist spine on the powered face (cosmetic, accepted)
-    M_HILLS,     // Camelback
-    M_DROP,      // Drop
-    M_TURN,      // Turn
-    M_SCURVE,    // SCurve
-    M_HELIX,     // Helix
-    M_CLIFFDIVE, // CliffDive
-    M_LOOP,      // Loop
-    M_IMMEL,     // Immelmann
-    M_DIVELOOP,  // DiveLoop
-    M_ROLL,      // Corkscrew
-    M_STALL,     // ZeroGStall
-};
-static_assert(sizeof(kV2ToSeg) == (size_t)v2::Tag::COUNT,
-              "kV2ToSeg must map every v2::Tag exactly once");
+#include "../legacy/audit_diagnostics.cpp"
+#include "v1_geometry_audit.cpp"
 
 int main(int argc, char **argv) {
     bool framesMode = (argc > 1 && TextIsEqual(argv[1], "--frames"));
@@ -53,115 +24,455 @@ int main(int argc, char **argv) {
     bool cobraShot  = (argc > 1 && TextIsEqual(argv[1], "--cobrashot"));
 
     bool elemShot   = (argc > 2 && TextIsEqual(argv[1], "--elementshot"));
+    bool jointShot  = (argc > 3 && TextIsEqual(argv[1], "--jointshot"));
     int  elemShotElem = -1;
     const char *elemShotName = "";
     char elemShotPath[1024] = {0};
-    bool shotMode = framesMode || rasterShot || orbitShot || waterShot || (argc > 1 && TextIsEqual(argv[1], "--shot"));
+    int  jointFrom = -1, jointTo = -1;
+    const char *jointFromName = "", *jointToName = "";
+    char jointShotPath[1024] = {0};
+    bool shotMode = framesMode || rasterShot || orbitShot || waterShot || elemShot || jointShot ||
+                    (argc > 1 && TextIsEqual(argv[1], "--shot"));
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));
 
-    // V2 headless correctness audit (migration step 7 — replaces the V1-only
-    // --pacing/--profile/--census/--audit/--rollingdump modes that were
-    // archived with the V1 generator). Builds N seeds through the real V2
-    // planner over the world terrain, validates each, and prints a per-seed +
-    // fleet summary. Exits 0 iff every seed is clean (zero continuity/element
-    // failures AND the clearance policy does not reject it). This is the
-    // headless equivalent of the v2track_tests step-6 ride suite.
-    if (argc > 1 && TextIsEqual(argv[1], "--v2audit")) {
-        int seeds = (argc > 2) ? atoi(argv[2]) : 8;
-        v2::TerrainQuery terrain;
-        terrain.height = [](float x, float z){ return groundTopAt(x, z); };
-        terrain.waterY = WATER_Y;
-        int clean = 0;
-        float cutTot = 0.0f, tunTot = 0.0f, unsupTot = 0.0f, lenTot = 0.0f;
-        int cliffs = 0, invTot = 0;
-        for (int sd = 1; sd <= seeds; sd++) {
-            v2::Route r = v2::buildRide((uint32_t)sd, terrain);
-            v2::ValidationReport rep = v2::validateRoute(r, &terrain);
-            bool ok = rep.pass() &&
-                      v2::clearanceDecision(rep, v2::ClearanceLimits{}) != v2::ClearanceDecision::Reject;
-            int nInv = 0; bool sawCliff = false, prevInv = false;
-            for (const v2::SegmentRec &s : r.segs) {
-                bool inv = s.tag == v2::Tag::Loop || s.tag == v2::Tag::Immelmann ||
-                           s.tag == v2::Tag::DiveLoop || s.tag == v2::Tag::Corkscrew ||
-                           s.tag == v2::Tag::ZeroGStall;
-                if (inv && !prevInv) nInv++;
-                prevInv = inv;
-                if (s.tag == v2::Tag::CliffDive) sawCliff = true;
-            }
-            if (ok) clean++;
-            if (sawCliff) cliffs++;
-            invTot += nInv;
-            cutTot += rep.cutLength; tunTot += rep.tunnelLength;
-            unsupTot += rep.unsupportedLength; lenTot += r.length();
-            printf("[v2audit] seed%d: %.0f m, %zu segs, %d inv, cliffdive=%d, "
-                   "cut %.0f m, tunnel %.0f m, unsupported %.0f m, %s\n",
-                   sd, r.length(), r.segs.size(), nInv, sawCliff ? 1 : 0,
-                   rep.cutLength, rep.tunnelLength, rep.unsupportedLength,
-                   ok ? "CLEAN" : "REJECT");
-            if (!ok) {
-                for (const v2::Discontinuity &d : rep.discontinuities)
-                    printf("[v2audit]   discontinuity s=%.1f %s jump=%g\n", d.s, d.quantity, d.jump);
-                for (const std::string &e : rep.elementFailures)
-                    printf("[v2audit]   element: %s\n", e.c_str());
-                for (const v2::OverlapHit &o : rep.overlaps)
-                    printf("[v2audit]   overlap s=%.0f vs s=%.0f dist=%.1f m\n", o.sA, o.sB, o.dist);
-            }
-            // Per-element metrics (user round 2: "track it to see how much
-            // needs to be done") — height, minimum vertical curvature radius
-            // (the smoothing radius), and pull-out share of the descent.
-            {
-                size_t k = 0;
-                while (k < r.segs.size()) {
-                    size_t k1 = k;
-                    v2::Tag tg2 = r.segs[k].tag;
-                    while (k1 + 1 < r.segs.size() && r.segs[k1 + 1].tag == tg2) k1++;
-                    bool named = tg2 != v2::Tag::Line && tg2 != v2::Tag::Connector &&
-                                 tg2 != v2::Tag::Station && tg2 != v2::Tag::Brake &&
-                                 tg2 != v2::Tag::Launch;
-                    if (named) {
-                        int i0 = (int)ceilf(r.segs[k].s0 / r.ds - 1e-4f);
-                        int i1 = (int)floorf(r.segs[k1].s1 / r.ds + 1e-4f);
-                        if (i1 >= (int)r.samples.size()) i1 = (int)r.samples.size() - 1;
-                        float topY = -1e9f, minPitch = 10.0f, maxK = 0.0f;
-                        for (int q = i0; q <= i1; q++) {
-                            topY = fmaxf(topY, r.samples[q].pos.y);
-                            minPitch = fminf(minPitch, r.samples[q].pitch);
-                            maxK = fmaxf(maxK, fabsf(r.samples[q].kPitch));
-                        }
-                        int lastFace = -1;
-                        for (int q = i0; q <= i1; q++)
-                            if (r.samples[q].pitch < minPitch + 0.0175f) lastFace = q;
-                        float exitY = r.samples[i1].pos.y;
-                        float entryY = r.samples[i0].pos.y;
-                        float desc = topY - exitY;
-                        float pull = (lastFace >= 0 && desc > 20.0f)
-                                         ? 100.0f * (r.samples[lastFace].pos.y - exitY) / desc
-                                         : -1.0f;
-                        printf("[v2audit]   %-10s rise=%.0f m  drop=%.0f m  minR=%.0f m  pullout=%.0f%%\n",
-                               v2::tagName(tg2), topY - entryY, desc,
-                               maxK > 1e-5f ? 1.0f / maxK : 9999.0f, pull);
+    if (argc > 1 && TextIsEqual(argv[1], "--terrainaudit")) {
+        float bestDrop = -1.0f, bestX = 0.0f, bestZ = 0.0f, bestYaw = 0.0f;
+        float minH = 1e9f, maxH = -1e9f;
+        int qualified = 0;
+        for (float z = -1800.0f; z <= 1800.0f; z += 30.0f)
+            for (float x = -1800.0f; x <= 1800.0f; x += 30.0f) {
+                float h0 = groundTopAt(x, z);
+                minH = fminf(minH, h0); maxH = fmaxf(maxH, h0);
+                for (int a = 0; a < 24; ++a) {
+                    float yaw = a * (2.0f * PI / 24.0f);
+                    float h1 = groundTopAt(x + sinf(yaw) * 75.0f,
+                                           z + cosf(yaw) * 75.0f);
+                    float drop = h0 - h1;
+                    if (drop >= 42.0f && h0 >= 70.0f && h0 <= 220.0f) qualified++;
+                    if (drop > bestDrop) {
+                        bestDrop = drop; bestX = x; bestZ = z; bestYaw = yaw;
                     }
-                    k = k1 + 1;
                 }
             }
-            // Per-seed SVG profile "photo" (elevation/pitch/roll incl. the
-            // MEASURED frame roll) — the visual half of the audit.
-            {
-                char svgPath[256];
-                snprintf(svgPath, sizeof svgPath, "opengl/audit/seed%d.svg", sd);
-                bool wrote = v2::writeRouteSVG(r, &terrain, rep, svgPath);
-                if (!wrote) { // cwd == opengl/
-                    snprintf(svgPath, sizeof svgPath, "audit/seed%d.svg", sd);
-                    wrote = v2::writeRouteSVG(r, &terrain, rep, svgPath);
+        printf("[terrainaudit] range %.0f..%.0f m, qualified=%d, best drop %.1f m at (%.0f,%.0f) yaw %.1f deg\n",
+               minH, maxH, qualified, bestDrop, bestX, bestZ, bestYaw / DEG2RAD);
+        return qualified > 0 ? 0 : 1;
+    }
+
+    if (argc > 1 && TextIsEqual(argv[1], "--launchaudit")) {
+        struct LaunchProbe {
+            const char *name;
+            unsigned char tag;
+            float startV;
+            float targetV;
+            float netAccel;
+            float tangentY;
+            unsigned char drive;
+        } probes[] = {
+            {"hydraulic-main", M_LAUNCH, 12.0f, LAUNCH_V, LAUNCH_ACCEL, 0.0f, 0},
+            {"lsm-booster",    M_BOOST,  40.0f, BOOST_V,  BOOST_ACCEL,  0.0f, 0},
+            {"lsm-cliff",      M_CLIMB,  40.0f, CLIFF_LSM_V, BOOST_ACCEL, sinf(5.0f*DEG2RAD), 2},
+        };
+        bool ok = true;
+        printf("=== launch pacing audit ===\n");
+        printf("reference hydraulic: Formula Rossa 0-240 km/h in 4.90 s\n");
+        printf("reference LSM:       Red Force 0-180 km/h in 5.00 s\n");
+        printf("multipliers: speed=%.2fx net-acceleration=%.2fx\n",
+               LAUNCH_SPEED_MUL, LAUNCH_ACCEL_MUL);
+        for (const LaunchProbe &p : probes) {
+            const float dt = 1.0f / 600.0f;
+            float v = p.startV, t = 0.0f, distance = 0.0f;
+            while (v < p.targetV - 0.001f && t < 20.0f) {
+                float oldV = v;
+                v = integrateRideSpeed(v, p.tangentY, p.tag, p.drive, dt);
+                distance += 0.5f * (oldV + v) * dt;
+                t += dt;
+            }
+            float expected = (p.targetV - p.startV) / p.netAccel;
+            float measuredAccel = (v - p.startV) / fmaxf(t, dt);
+            bool pass = fabsf(t - expected) <= 0.03f && fabsf(v - p.targetV) <= 0.02f;
+            printf("%-15s %5.0f->%5.0f km/h  time %.2fs (derived %.2fs)  distance %.0fm  net %.2fg  %s\n",
+                   p.name, p.startV*3.6f, p.targetV*3.6f, t, expected, distance,
+                   measuredAccel/GRAV, pass ? "PASS" : "FAIL");
+            ok = ok && pass;
+        }
+        return ok ? 0 : 1;
+    }
+
+    // PACING AUDIT: per-mode TIME accounting as ridden -- the numbers behind "too much flat"
+    // and "elements take too long". Runs the same physics loop as --simtest over 8 seeds and
+    // reports, per tag: instances/ride, mean/max transit seconds, and % of ride time; plus
+    // the aggregate flat share (FLAT+LAUNCH+BOOST+STATION) and element density (elements/min).
+    if (argc > 1 && TextIsEqual(argv[1], "--pacing")) {
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
+        long   tagFrames[M_COUNT] = {0};
+        long   tagInst[M_COUNT]   = {0};
+        double tagInstSec[M_COUNT] = {0};
+        float  tagInstMax[M_COUNT] = {0};
+        long   totFrames = 0;
+        long   splashF = 0, splashInst = 0;   // genuine water-skims (SPLASHDOWN label + spray active)
+        for (uint32_t seed = 1; seed <= 8; seed++) {
+            g_rng = seed * 2654435761u | 1u;
+            Track t; t.reset();
+            float u = 0.5f, v = 12.0f;
+            unsigned char curTag = 255; long curRun = 0;
+            bool inSplash = false;
+            const float dt = 1.0f / 60.0f;
+            for (int f = 0; f < 30000; f++) {
+                t.ensureFinalizedAhead(u + 16);
+                float slope = t.tangent(u).y;
+                unsigned char tg = t.tagAt(u);
+                v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
+                if (f > 120) {
+                    if (tg < M_COUNT) tagFrames[tg]++;
+                    totFrames++;
+                    {   // same water-skim test as rideElemName's SPLASHDOWN + the wheel-spray window;
+                        // pos(u) is a catmull eval, so only run it on M_DIP frames (short-circuit)
+                        bool skim = false;
+                        if (tg == M_DIP) {
+                            Vector3 Pp = t.pos(u);
+                            skim = Pp.y - WATER_Y < 3.0f && submergedGround(groundTopAt(Pp.x, Pp.z));
+                        }
+                        if (skim) { splashF++; if (!inSplash) splashInst++; }
+                        inSplash = skim;
+                    }
+                    if (tg != curTag) {
+                        if (curTag < M_COUNT && curRun > 0) {
+                            tagInst[curTag]++; tagInstSec[curTag] += curRun * dt;
+                            tagInstMax[curTag] = fmaxf(tagInstMax[curTag], curRun * dt);
+                        }
+                        curTag = tg; curRun = 0;
+                    }
+                    curRun++;
                 }
-                if (wrote) printf("[v2audit]   profile -> %s\n", svgPath);
+                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
+                if (!(du == du)) du = 0;
+                u += fminf(du, 1.5f);
+                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
+            }
+            if (curTag < M_COUNT && curRun > 0) {
+                tagInst[curTag]++; tagInstSec[curTag] += curRun * dt;
+                tagInstMax[curTag] = fmaxf(tagInstMax[curTag], curRun * dt);
             }
         }
-        printf("[v2audit] fleet: %d/%d clean, cut %.0f m + tunnel %.0f m + unsupported %.0f m "
-               "over %.0f m, %d cliff dives, %.1f inversions/lap\n",
-               clean, seeds, cutTot, tunTot, unsupTot, lenTot, cliffs,
-               seeds ? (float)invTot / (float)seeds : 0.0f);
-        return clean == seeds ? 0 : 1;
+        double totSec = totFrames / 60.0;
+        printf("[pacing] 8 seeds, %.0f s ridden total (%.1f s/seed)\n", totSec, totSec / 8.0);
+        printf("  %-9s %8s %8s %8s %8s\n", "elem", "inst/rd", "mean s", "max s", "%time");
+        long elemInst = 0;
+        for (int m = 0; m < M_COUNT; m++) {
+            if (!tagFrames[m]) continue;
+            bool isElem = !(m == M_FLAT || m == M_CLIMB || m == M_DROP || m == M_LAUNCH ||
+                            m == M_BOOST || m == M_STATION);
+            if (isElem) elemInst += tagInst[m];
+            printf("  %-9s %8.1f %8.1f %8.1f %7.1f%%\n", NM[m], tagInst[m] / 8.0,
+                   tagInst[m] ? tagInstSec[m] / tagInst[m] : 0.0, tagInstMax[m],
+                   100.0 * tagFrames[m] / totFrames);
+        }
+        long flatF = tagFrames[M_FLAT] + tagFrames[M_LAUNCH] + tagFrames[M_BOOST] + tagFrames[M_STATION];
+        printf("  --- flat-ish (FLAT+LAUNCH+BOOST+STN): %.1f%% of time | elements: %.1f/ride, density %.1f/min ---\n",
+               100.0 * flatF / totFrames, elemInst / 8.0, elemInst / (totSec / 60.0));
+        printf("  --- genuine SPLASHDOWNs (DIP skimming water): %.1f/ride, %.1f s each ---\n",
+               splashInst / 8.0, splashInst ? (double)splashF / 60.0 / splashInst : 0.0);
+        return 0;
+    }
+
+    if (argc > 2 && TextIsEqual(argv[1], "--exporttrack")) {
+        if (argc > 3) g_rng = (uint32_t)atoi(argv[3]) * 2654435761u | 1u;
+        if (argc > 4) DRAG       = (float)atof(argv[4]);
+        if (argc > 5) BOOST_TRIG = (float)atof(argv[5]);
+        Track trk; trk.reset();
+        trk.ensureFinalizedAhead(479.0f);
+        int finalN = trk.finalizedPointCount();
+        FILE* fp = fopen(argv[2], "w");
+        if (!fp) { printf("EXPORTTRACK: cannot open %s\n", argv[2]); return 1; }
+        for (int i = 0; i < finalN; i++) {
+            Vector3 p = trk.cp[i], u = trk.up[i];
+            fprintf(fp, "%.4f %.4f %.4f %.4f %.4f %.4f %d\n",
+                    p.x, p.y, p.z, u.x, u.y, u.z, (int)trk.kind[i]);
+        }
+        fclose(fp);
+        printf("EXPORTTRACK: wrote %d finalized points to %s\n", finalN, argv[2]);
+        return 0;
+    }
+
+    // GEOMETRY GROUND-TRUTH: dump the actual built track's vertical profile per element instance
+    // (vertical delta = how much the element ACTUALLY goes up/down, clearance above terrain, and
+    // horizontal span) plus an SVG side-view. This is the "run a side view" check -- it measures
+    // the SHAPE, not the felt-g, so a flattened airtime hill or a 20 m ground float shows up plainly.
+    if (argc > 1 && TextIsEqual(argv[1], "--profile")) {
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
+        int seed = (argc > 2) ? atoi(argv[2]) : 1;
+        g_rng = (uint32_t)seed * 2654435761u | 1u;
+        Track t; t.reset();
+        t.ensureFinalizedAhead(459.0f);
+        int n = t.finalizedPointCount();
+        std::vector<float> dist(n, 0.0f), terr(n, 0.0f);
+        float maxY = -1e9f, minY = 1e9f, maxD = 0.0f;
+        for (int k = 0; k < n; k++) {
+            if (k) { float dx = t.cp[k].x - t.cp[k-1].x, dz = t.cp[k].z - t.cp[k-1].z; dist[k] = dist[k-1] + sqrtf(dx*dx+dz*dz); }
+            terr[k] = groundTopAt(t.cp[k].x, t.cp[k].z);
+            maxY = fmaxf(maxY, fmaxf(t.cp[k].y, terr[k])); minY = fminf(minY, fminf(t.cp[k].y, terr[k])); maxD = dist[k];
+        }
+        printf("[profile] seed %d: %d cps, %.0f m long\n", seed, n, maxD);
+        printf("  %-4s %-9s %6s %7s %7s %7s %7s %7s\n", "cp", "elem", "dist", "vDelta", "net", "clrMin", "clrMax", "hSpan");
+        int i = 0, tunnels = 0, onGround = 0;
+        while (i < n) {
+            int j = i; unsigned char kd = t.kind[i]; if (kd >= 25) kd = 0;
+            while (j < n && t.kind[j] == kd) j++;
+            float ymin = 1e9f, ymax = -1e9f, clrmin = 1e9f, clrmax = -1e9f;
+            for (int k = i; k < j; k++) { float clr = t.cp[k].y - terr[k]; ymin = fminf(ymin, t.cp[k].y); ymax = fmaxf(ymax, t.cp[k].y); clrmin = fminf(clrmin, clr); clrmax = fmaxf(clrmax, clr); }
+            if (clrmin < 0.0f) tunnels++;
+            if (clrmin < 6.0f) onGround++;
+            float net = t.cp[j-1].y - t.cp[i > 0 ? i-1 : i].y;
+            printf("  %-4d %-9s %6.0f %7.1f %7.1f %7.1f %7.1f %7.1f\n", i, NM[kd], dist[i], ymax - ymin, net, clrmin, clrmax, dist[j-1] - dist[i]);
+            i = j;
+        }
+        printf("  --- instances that touch near-ground (clr<6m): %d ;  that tunnel (clr<0): %d ---\n", onGround, tunnels);
+        // SVG side-view (equal X/Y scale so slopes read true): terrain filled + track colored by element.
+        float W = 1800.0f, H = 620.0f, pad = 30.0f;
+        float s = fminf((W - 2*pad) / fmaxf(maxD, 1.0f), (H - 2*pad) / fmaxf(maxY - minY, 1.0f));
+        char path[256]; snprintf(path, sizeof path, "profile_seed%d.svg", seed);
+        FILE* f = fopen(path, "w");
+        if (f) {
+            #define PX(d) (pad + (d) * s)
+            #define PY(y) (H - pad - ((y) - minY) * s)
+            fprintf(f, "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='620' viewBox='0 0 1800 620'>");
+            fprintf(f, "<rect width='1800' height='620' fill='#0b1020'/>");
+            fprintf(f, "<polygon fill='#2a3b1e' stroke='#4a6b30' stroke-width='1' points='");
+            for (int k = 0; k < n; k++) fprintf(f, "%.1f,%.1f ", PX(dist[k]), PY(terr[k]));
+            fprintf(f, "%.1f,%.1f %.1f,%.1f'/>", PX(maxD), (double)(H-pad), PX(0.0f), (double)(H-pad));
+            for (int k = 1; k < n; k++) {
+                unsigned char kd = t.kind[k]; if (kd >= 25) kd = 0;
+                const char* col = "#7fd0ff";
+                if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE) col="#ffd24a";
+                else if (kd==M_DROP||kd==M_DIP) col="#ff6b6b";
+                else if (kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST) col="#9aa0a6";
+                else if (kd==M_LOOP||kd==M_IMMEL||kd==M_COBRA||kd==M_DIVELOOP||kd==M_ROLL||kd==M_PRETZEL||kd==M_HEARTLINE) col="#c77dff";
+                else if (kd==M_HELIX) col="#4ade80";
+                else if (kd==M_TURN||kd==M_SCURVE||kd==M_DIVE||kd==M_WINGOVER) col="#ff9e64";
+                fprintf(f, "<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='%s' stroke-width='2.5'/>",
+                        PX(dist[k-1]), PY(t.cp[k-1].y), PX(dist[k]), PY(t.cp[k].y), col);
+            }
+            fprintf(f, "<text x='34' y='24' fill='#cfe' font-family='monospace' font-size='14'>seed %d  len %.0fm  band %.0f-%.0fm  scale 1:1  (yellow=airtime red=drop green=helix purple=inversion orange=turn grey=powered)</text>",
+                    seed, maxD, minY, maxY);
+            fprintf(f, "</svg>");
+            #undef PX
+            #undef PY
+            fclose(f);
+            printf("  wrote %s\n", path);
+        }
+        return 0;
+    }
+
+    // GENERATION-ONLY occurrence census (battery: NO physics sim, no felt-g pipeline). Rolls the
+    // same streaming generator the live ride uses (genPoint + popFront window) for 3 laps x N seeds
+    // and counts element-family OCCURRENCES (maximal same-kind runs) per lap: the >=1/lap quota
+    // families and V1 diagnostic counters. This is the
+    // acceptance harness for the element-occurrence rework. Kept immediately before --audit.
+    if (argc > 1 && TextIsEqual(argv[1], "--census")) {
+        int seeds = (argc > 2) ? atoi(argv[2]) : 8;
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
+        long setInv[M_COUNT]; for (int i = 0; i < M_COUNT; i++) setInv[i] = 0;   // seed-set inversion totals for the no-type-over-50% gate
+        int  laps = 0, invRange = 0, cliffMiss = 0;
+        int  hardQuotaMiss = 0, terrainQuotaMiss = 0;
+        for (int sd = 1; sd <= seeds; sd++) {
+            g_rng = (uint32_t)sd * 2654435761u | 1u;
+            Track t; t.reset();
+            const int keep = 64;
+            int cnt[M_COUNT]; for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;   // current-lap per-kind run counts
+            int lap = 0, prevKind = -1; long processed = 0, guard = 0;
+            clock_t lapClk = clock();
+            while (lap <= 3 && guard < 400000) {
+                guard++;
+                while (t.base + (long)t.cp.size() <= processed) t.genPoint();
+                int nk = t.kind[(int)(processed - t.base)];
+                if (nk != prevKind) {   // a maximal same-kind run = one element occurrence
+                    if (nk == M_LAUNCH) {   // a LAUNCH run opens a lap; flush the one that just closed
+                        if (lap >= 1) {
+                            int inv  = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
+                            int bank = cnt[M_WAVE]+cnt[M_BANKAIR]+cnt[M_STENGEL];   // banked-airtime group = one family
+                            double ms = (double)(clock()-lapClk)*1000.0/CLOCKS_PER_SEC;
+                            printf("[census] seed%d lap%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d tot=%d} cliffdive=%d quota{HILLS=%d TURN=%d HELIX=%d DIP=%d BANKAIR=%d} tophat=%d other{SCURVE=%d WAVE=%d STENGEL=%d} ms/lap=%.1f\n",
+                                   sd, lap, cnt[M_ROLL],cnt[M_LOOP],cnt[M_IMMEL],cnt[M_DIVELOOP],cnt[M_STALL], inv,
+                                   cnt[M_CLIFFDIVE], cnt[M_HILLS],cnt[M_TURN],cnt[M_HELIX],cnt[M_DIP],bank, cnt[M_CLIMB],
+                                   cnt[M_SCURVE],cnt[M_WAVE],cnt[M_STENGEL], ms);
+                            laps++;
+                            if (inv < 2 || inv > 4) { invRange++; printf("[census]   WARN seed%d lap%d inversions=%d OUT OF [2,4]\n", sd, lap, inv); }
+                            if (cnt[M_CLIFFDIVE] < 1) { cliffMiss++; printf("[census]   WARN seed%d lap%d NO cliffdive\n", sd, lap); }
+                            bool hardMiss = cnt[M_HILLS] < 1 || cnt[M_TURN] < 1;
+                            bool terrainMiss = cnt[M_HELIX] < 1 || cnt[M_DIP] < 1 || bank < 1;
+                            if (hardMiss) hardQuotaMiss++;
+                            if (terrainMiss) terrainQuotaMiss++;
+                            if (hardMiss || terrainMiss)
+                                printf("[census]   %s seed%d lap%d unmet quota:%s%s%s%s%s\n",
+                                       hardMiss ? "FAIL" : "WARN", sd, lap,
+                                       cnt[M_HILLS]<1?" HILLS":"", cnt[M_TURN]<1?" TURN":"", cnt[M_HELIX]<1?" HELIX":"",
+                                       cnt[M_DIP]<1?" DIP":"", bank<1?" BANKAIR":"");
+                            setInv[M_LOOP]+=cnt[M_LOOP]; setInv[M_ROLL]+=cnt[M_ROLL]; setInv[M_IMMEL]+=cnt[M_IMMEL];
+                            setInv[M_DIVELOOP]+=cnt[M_DIVELOOP]; setInv[M_STALL]+=cnt[M_STALL];
+                            if (lap == 3) { prevKind = nk; break; }
+                        }
+                        lap++;
+                        for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;
+                        lapClk = clock();
+                    }
+                    if (lap >= 1) cnt[nk]++;
+                    prevKind = nk;
+                }
+                processed++;
+                while ((int)t.cp.size() > keep && t.base < processed) t.popFront();
+            }
+        }
+        long grand = setInv[M_LOOP]+setInv[M_ROLL]+setInv[M_IMMEL]+setInv[M_DIVELOOP]+setInv[M_STALL];
+        int  typ[5] = {M_ROLL,M_LOOP,M_IMMEL,M_DIVELOOP,M_STALL}; long invMax = 0; int invMaxT = -1;
+        for (int i = 0; i < 5; i++) if (setInv[typ[i]] > invMax) { invMax = setInv[typ[i]]; invMaxT = typ[i]; }
+        printf("[census] set inversion totals: ROLL=%ld LOOP=%ld IMMEL=%ld DIVELOOP=%ld STALL=%ld grand=%ld\n",
+               setInv[M_ROLL],setInv[M_LOOP],setInv[M_IMMEL],setInv[M_DIVELOOP],setInv[M_STALL], grand);
+        printf("[census] max-type %s = %.1f%% of set (gate <50%%); ROLL spawned=%s\n",
+               invMaxT>=0?NM[invMaxT]:"-", grand?100.0*(double)invMax/(double)grand:0.0, setInv[M_ROLL]>0?"yes":"NO");
+        bool dominance = grand > 0 && invMax * 2 >= grand;
+        bool complete = laps == seeds * 3;
+        printf("[census] laps=%d invOutOfRange=%d cliffMiss=%d hardQuotaMiss=%d terrainQuotaWarn=%d complete=%s\n",
+               laps, invRange, cliffMiss, hardQuotaMiss, terrainQuotaMiss, complete ? "yes" : "NO");
+        return (invRange || cliffMiss || hardQuotaMiss || dominance || setInv[M_ROLL] == 0 || !complete) ? 1 : 0;
+    }
+
+    if (argc > 1 && TextIsEqual(argv[1], "--audit")) {
+        int seeds = (argc > 2) ? atoi(argv[2]) : 8;
+        return audit_mode::run(seeds);
+    }
+
+    if (argc > 1 && TextIsEqual(argv[1], "--v1issues")) {
+        int seeds = (argc > 2) ? atoi(argv[2]) : 8;
+        return v1_geometry_audit::run(seeds);
+    }
+
+    if (argc > 1 && TextIsEqual(argv[1], "--rollingdump")) {
+        // ROLLING CP-STREAM DUMP. The static instruments (--audit's MC_DUMP_ELEM) build one frozen
+        // 470-cp window per seed, so they only ever see the ride's opening and NEVER the ~2/3-lap
+        // signature CLIFFDIVE or any later-lap element. This drives the track exactly the way the live
+        // game does -- reset(), then ensureAhead()/popFront() to roll a small window forward while the
+        // physics integrator advances u -- and emits every control point EXACTLY ONCE, keyed by its
+        // GLOBAL running index (t.base + k), in the same [dump] line format. Because it actually laps
+        // the ride via the station cycle, the stream contains the CLIFFDIVE and every later-lap cp.
+        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
+        int seeds    = (argc > 2) ? atoi(argv[2]) : 2;
+        int rollLaps = getenv("MC_ROLL_LAPS") ? atoi(getenv("MC_ROLL_LAPS")) : 3;
+        float stationEvery = getenv("MC_ROLL_STATION_S") ? (float)atof(getenv("MC_ROLL_STATION_S")) : 205.0f;
+
+        // One control point -> one [dump] line, in the exact MC_DUMP_ELEM field layout (seedN cpK kind
+        // pos heading dy terr roll v). Computed at an INTERIOR local k (needs cp[k-1] and cp[k+1]) so
+        // heading/dy/roll are byte-identical to the static dump for any shared global index.
+        auto dumpCP = [&](Track& t, int sd, int k, long gidx) {
+            Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
+            float dx = p1.x - p0.x, dz = p1.z - p0.z;
+            float heading = atan2f(dx, dz) * 180.0f / PI;
+            float roll = 0.0f;
+            {
+                Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
+                Vector3 side = Vector3CrossProduct(Vector3{0,1,0}, tanv);
+                float sl = Vector3Length(side);
+                if (sl > 1e-4f) {
+                    side = Vector3Scale(side, 1.0f/sl);
+                    Vector3 flatUp = Vector3CrossProduct(tanv, side);
+                    roll = atan2f(Vector3DotProduct(t.up[k], side),
+                                  Vector3DotProduct(t.up[k], flatUp)) * 180.0f / PI;
+                }
+            }
+            printf("[dump] seed%d cp%ld kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f dy=%+.2f terr=%.1f roll=%+.1f v=%.1f\n",
+                   sd, gidx, NM[t.kind[k]], p1.x, p1.y, p1.z, heading,
+                   p1.y - p0.y, groundTopAt(p1.x, p1.z), roll,
+                   k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f);
+        };
+
+        // MC_ROLL_STATIC: reference mode -- dump the SAME static 470-cp window --audit builds (no
+        // station cycle, no popFront, base stays 0 so cpK == k). A downstream diff of this against the
+        // rolling stream's leading cps proves the prefix is identical (same seed => same RNG stream).
+        if (getenv("MC_ROLL_STATIC")) {
+            for (int sd = 1; sd <= seeds; sd++) {
+                g_rng = (uint32_t)sd * 2654435761u | 1u;
+                Track t; t.reset();
+                while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
+                int n = (int)t.cp.size();
+                for (int k = 1; k < n - 1; k++) dumpCP(t, sd, k, (long)k);
+                printf("[dump] --- seed %d static-window end ---\n", sd);
+            }
+            return 0;
+        }
+
+        for (int sd = 1; sd <= seeds; sd++) {
+            g_rng = (uint32_t)sd * 2654435761u | 1u;
+            Track t; t.reset();
+            clock_t t0 = clock();
+
+            float u = 0.5f, v = 12.0f;
+            float sinceStation = 0.0f;
+            long  nextDump     = 1;   // next GLOBAL index to emit (skip cp0, the launch anchor, exactly as the static k=1 start)
+            int   lapCount     = 0;   // STN runs seen so far == laps completed
+            int   prevDumpKind = -1;  // kind of the previously emitted cp, for STN-run edge detection
+            const int FRAME_CAP = 500000;
+            // Number of newer points required before a control point crosses
+            // Track's authoritative publication fence (the delayed terrain
+            // floor, not the shorter relaxation window, is the last writer).
+            const long SETTLE = Track::ADAPTIVE_LAG - 1;
+            int f = 0;
+            for (; f < FRAME_CAP && lapCount < rollLaps; f++) {
+                float dt = 1.0f / 60.0f;
+                t.ensureFinalizedAhead(u + 34);
+                float slope = t.tangent(u).y;
+                unsigned char tg = t.tagAt(u);
+                v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
+
+                // Station cadence: request a platform stop every stationEvery seconds (live-loop
+                // behaviour). The generator lays the STN run at the next low-terrain flat; that starts
+                // a fresh lap, re-arming the once-per-lap CLIFFDIVE + inversion budget.
+                sinceStation += dt;
+                if (sinceStation > stationEvery && !t.stationPending && !t.stationActive)
+                    t.stationPending = true;
+
+                // Decelerate into the platform and re-dispatch (same idiom as --stationtest), so the
+                // ride actually laps instead of leaving stationActive latched forever.
+                if (t.stationActive && t.tagAt(u) == M_STATION) {
+                    Vector3 Tn = t.tangent(u);
+                    Vector3 Th2 = { Tn.x, 0, Tn.z };
+                    float Tl = sqrtf(Th2.x*Th2.x + Th2.z*Th2.z);
+                    if (Tl > 1e-3f) { Th2.x /= Tl; Th2.z /= Tl; }
+                    Vector3 Pp = t.pos(u);
+                    float d  = (t.stationStop.x-Pp.x)*Th2.x + (t.stationStop.z-Pp.z)*Th2.z;
+                    float d3 = Vector3Distance(t.stationStop, Pp);
+                    if (d > 2.0f && d3 > 2.0f) { float vm = sqrtf(2*22*d + 1); if (v > vm) v = vm; }
+                    else { v = 12.0f; sinceStation = 0.0f; t.stationActive = false; }
+                }
+
+                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
+                if (!(du == du)) du = 0;
+                u += fminf(du, 1.5f);
+
+                // Emit every SETTLED interior cp exactly once, in global-index order, BEFORE popping the
+                // front -- so nothing is popped undumped and each field matches the static dump. The
+                // SETTLE margin holds a cp back until the trailing smoothing sweep can no longer change
+                // it (also guarantees cp[k-1]/cp[k+1] exist for heading/dy/roll).
+                while (nextDump <= t.base + (long)t.cp.size() - 1 - SETTLE) {
+                    int k = (int)(nextDump - t.base);
+                    if (k < 1) { nextDump++; continue; }   // only ever cp0 (the anchor); never dumped
+                    int kd = t.kind[k];
+                    if (kd == M_STATION && prevDumpKind != M_STATION) {
+                        lapCount++;
+                        printf("[dump] --- lap %d end ---\n", lapCount);
+                        if (lapCount >= rollLaps) break;   // stop AT the Nth station run's first cp
+                    }
+                    dumpCP(t, sd, k, nextDump);
+                    prevDumpKind = kd;
+                    nextDump++;
+                }
+
+                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
+            }
+            double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
+            printf("[dump] --- seed %d done: laps=%d frames=%d dumped=%ld %.2fs ---\n",
+                   sd, lapCount, f, nextDump - 1, secs);
+        }
+        return 0;
     }
 
     bool benchMode = (argc > 1 && TextIsEqual(argv[1], "--bench"));
@@ -197,12 +508,30 @@ int main(int argc, char **argv) {
         snprintf(elemShotPath, sizeof(elemShotPath), "%s/%s.png", outdir, elemShotName);
         printf("[elementshot] element=%s (mode %d) -> %s\n", elemShotName, elemShotElem, elemShotPath);
     }
-    const bool autoRun = (shotMode || benchMode || rttestMode || cobraShot || elemShot);
-    g_rng = autoRun ? 1337u : ((uint32_t)time(NULL) | 1u);
-    // V2: the track has its own deterministic seed; g_rng no longer drives generation
-    // (it still seeds decorations/car occupants). 1337 in the fixed-seed auto modes keeps
-    // shots pixel-stable (STEP6_HOST_SWITCH.md item 8); wall-clock otherwise.
-    uint32_t trackSeed = autoRun ? 1337u : ((uint32_t)time(NULL) | 1u);
+    if (jointShot) {
+        struct { const char *name; int mode; } JM[] = {
+            {"ANY", -2}, {"FLAT", M_FLAT}, {"CLIMB", M_CLIMB}, {"DROP", M_DROP},
+            {"HILLS", M_HILLS}, {"TURN", M_TURN}, {"LOOP", M_LOOP}, {"ROLL", M_ROLL},
+            {"DIP", M_DIP}, {"LAUNCH", M_LAUNCH}, {"HELIX", M_HELIX}, {"BOOST", M_BOOST},
+            {"IMMEL", M_IMMEL}, {"SCURVE", M_SCURVE}, {"DIVE", M_DIVE},
+            {"BANKAIR", M_BANKAIR}, {"STALL", M_STALL}, {"DIVELOOP", M_DIVELOOP},
+            {"STENGEL", M_STENGEL}, {"CLIFFDIVE", M_CLIFFDIVE},
+        };
+        for (auto &e : JM) {
+            if (TextIsEqual(argv[2], e.name)) { jointFrom = e.mode; jointFromName = e.name; }
+            if (TextIsEqual(argv[3], e.name)) { jointTo = e.mode; jointToName = e.name; }
+        }
+        if (jointFrom < -2 || jointTo < -2 || jointFrom == -1 || jointTo == -1) {
+            printf("jointshot: unknown transition '%s' -> '%s'\n", argv[2], argv[3]);
+            return 1;
+        }
+        const char *outdir = (argc > 4) ? argv[4] : ".";
+        snprintf(jointShotPath, sizeof(jointShotPath), "%s/JOINT_%s_TO_%s.png",
+                 outdir, jointFromName, jointToName);
+        printf("[jointshot] %s -> %s -> %s\n", jointFromName, jointToName, jointShotPath);
+    }
+    const bool captureShot = elemShot || jointShot;
+    g_rng = (shotMode || benchMode || rttestMode || cobraShot || captureShot) ? 1337u : ((uint32_t)time(NULL) | 1u);
 
     if (elemShot && elemShotElem == M_HELIX)
         g_rng = 1337u * 2654435761u | 1u;
@@ -220,7 +549,7 @@ int main(int argc, char **argv) {
     // ratio spent almost all the 24-bit depth precision in the first few cm, leaving metre-scale
     // resolution at ~300 m -- so the terraced/skirted distant terrain z-fought/shimmered. 0.2 m is
     // still closer than the coaster/free cam ever gets to geometry. MUST match AO_CAM_NEAR/FAR
-    // (render_fx.cpp) or the SSAO/SSR depth reconstruction misaligns.
+    // (render_fx.cpp) or the SSAO depth reconstruction misaligns.
     rlSetClipPlanes(0.2, 1200.0);
     InitAudioDevice();
     SetMasterVolume(getenv("MC_MUTE") ? 0.0f : 0.55f);
@@ -274,7 +603,6 @@ int main(int argc, char **argv) {
     bool    liveBaked   = false;
     const float REBAKE_DIST = 22.0f;
 
-    Sound sndCoin   = makeCoinSound();
     Sound sndClack  = makeClackSound();
     Sound sndWhoosh = makeWhooshSound();
 
@@ -282,16 +610,10 @@ int main(int argc, char **argv) {
     SetAudioStreamCallback(wind, windCallback);
     PlayAudioStream(wind);
 
-    TrackV2 trk;
-    trk.terrain.height = groundTopAt;   // floored at WATER_Y — matches TerrainQuery contract
-    trk.terrain.waterY = WATER_Y;
-    for (int i = 0; i < (int)v2::Tag::COUNT; i++) trk.tagMap[i] = kV2ToSeg[i];
-    trk.build(trackSeed);   // ~0.1-0.3 s one-time (bounded layout retries); no loading gate needed
-
-    // Theme colors rehomed host-side (TrackV2 owns geometry only). Deterministic per track seed.
-    Theme trkTheme  = THEMES[trackSeed % THEME_N];
-    Color trkTrainBody = trkTheme.body, trkTrainAccent = trkTheme.accent;
-    Color trkSpineC = trkTheme.spine,   trkRailC = RAIL;
+    Track trk;
+    trk.reset();
+    v1_track_render::V1TrackRenderCache trackRenderCache;
+    trackRenderCache.update(trk, 0);
 
     const int   NCARS    = 2;
     const float CAR_GAP  = 4.2f;
@@ -305,6 +627,7 @@ int main(int argc, char **argv) {
     std::vector<float> forceTop(carveW * carveW);
     std::vector<Vector3> waterCells;
     waterCells.reserve((2 * TERRA_R + 1) * (2 * TERRA_R + 1) / 3);
+    std::shared_ptr<std::vector<Vector3>> pendingWaterCells;
 
     float u = 0.5f, v = 7.0f;
     float boost = 40.0f, score = 0;
@@ -317,7 +640,7 @@ int main(int argc, char **argv) {
     double gEvAcc[M_COUNT] = {0};
     double gEEdgePk[M_COUNT] = {0}; double gEIntPk[M_COUNT] = {0};
     bool  paused = false;
-    bool  dispatched = (shotMode || benchMode || rttestMode || cobraShot || elemShot);
+    bool  dispatched = (shotMode || benchMode || rttestMode || cobraShot || captureShot);
     int   camMode = 0;
     Vector3 camSmooth = { 0, 10, -10 };
     bool  freeLook = false;
@@ -331,6 +654,9 @@ int main(int argc, char **argv) {
     float elemBest    = -1e9f;
     int   elemBestAge = 0;
     Camera3D elemBestCam{};
+    bool jointArmed = false;
+    bool jointCaptureFailed = false;
+    Camera3D jointCam{};
 
     Camera3D cam{};
     cam.up = { 0, 1, 0 };
@@ -348,14 +674,16 @@ int main(int argc, char **argv) {
         return uu < 0.06f ? 0.06f : uu;
     };
 
-    bool    onFoot    = !autoRun;
-    bool    atStation = !autoRun;
+    bool    onFoot    = !(shotMode || benchMode || rttestMode || cobraShot || captureShot);
+    bool    atStation = !(shotMode || benchMode || rttestMode || cobraShot || captureShot);
+    bool    midStation = false;
     Vector3 curPlatPos = trk.startPos;
     float   curPlatYaw = trk.startYaw;
     Vector3 walkPos = trk.startPos;
     float   walkYaw = trk.startYaw, walkPitch = 0;
     float   walkVY = 0, walkBob = 0;
     bool    walkMoving = false;
+    float   sinceStation = 0;
     bool    cursorHidden = false;
 
     auto deckFloor = [&](float wx, float wz) {
@@ -389,8 +717,12 @@ int main(int argc, char **argv) {
 
         // Poll in play + bench (no stall); block only in single-frame screenshot modes that
         // need a fully built mesh at capture time.
-        gTerrainMesh.finish(shotMode || rttestMode || cobraShot || elemShot);
-        float rawDt = (shotMode || benchMode || rttestMode || cobraShot || elemShot) ? (1.0f / 60.0f) : GetFrameTime();
+        gTerrainMesh.finish(shotMode || rttestMode || cobraShot || captureShot);
+        if (!gTerrainMesh.building && pendingWaterCells) {
+            waterCells.swap(*pendingWaterCells);
+            pendingWaterCells.reset();
+        }
+        float rawDt = (shotMode || benchMode || rttestMode || cobraShot || captureShot) ? (1.0f / 60.0f) : GetFrameTime();
         static float dtOverride = getenv("MC_DT") ? (float)atof(getenv("MC_DT")) : 0.0f;
         if (dtOverride > 0.0f) rawDt = dtOverride;  // streaming stress/verify: force per-frame sim step
         float dt = fminf(rawDt, 0.05f);
@@ -416,16 +748,21 @@ int main(int argc, char **argv) {
         if (IsKeyPressed(KEY_C) && !onFoot) { camMode = (camMode + 1) % 3; flYaw = flPitch = 0; }
         if (IsKeyPressed(KEY_F) && !onFoot) { freeLook = !freeLook; flYaw = flPitch = 0; }
         if (IsKeyPressed(KEY_R)) {
-            trackSeed = (uint32_t)time(NULL) | 1u;
-            trk.build(trackSeed);   // atomic whole-ride rebuild (only shown once fully generated)
-            trkTheme = THEMES[trackSeed % THEME_N];
-            trkTrainBody = trkTheme.body; trkTrainAccent = trkTheme.accent;
-            trkSpineC = trkTheme.spine;   trkRailC = RAIL;
+            // The terrain emitter owns copies of the old route, but its result must not
+            // be allowed to finish uploading (or swap its water list) after this reset.
+            // Join and discard it before mutating the route inputs, then force the new
+            // route's terrain to become the next complete mesh.
+            gTerrainMesh.reset();
+            pendingWaterCells.reset();
+            waterCells.clear();
+            trk.reset();
+            trackRenderCache.reset();
+            trackRenderCache.update(trk, 0);
             u = 0.5f; v = 7.0f; boost = 40; score = 0; gVertMax = 1.0f; gVertMin = 1.0f;
             dispatched = false; simTime = 0;
-            atStation = true;
+            atStation = true; midStation = false;
             curPlatPos = trk.startPos; curPlatYaw = trk.startYaw;
-            placeOnFoot();
+            sinceStation = 0; placeOnFoot();
         }
 
         if (shotMode) {
@@ -481,9 +818,10 @@ int main(int argc, char **argv) {
             }
         }
 
-        if ((cobraShot || elemShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
+        if ((cobraShot || captureShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
             !dispatched && atStation && !paused) {
-            dispatched = true; atStation = false; v = 12.0f; simTime = 0;
+            dispatched = true; atStation = false; midStation = false; v = 12.0f; simTime = 0;
+            sinceStation = 0;
         }
 
         bool boosting = dispatched && IsKeyDown(KEY_SPACE) && boost > 0;
@@ -495,17 +833,17 @@ int main(int argc, char **argv) {
         bool chain = false;
         if (!paused && !dispatched) {
             simTime += dt;
-            trk.ensureAhead(u + 22);
+            trk.ensureFinalizedAhead(u + 64);
             v = 0.0f;
         }
         if (!paused && dispatched) {
             simTime += dt;
-            trk.ensureAhead(u + 22);
+            trk.ensureFinalizedAhead(u + 64);
 
             Vector3 Tn = trk.tangent(u);
             float slope = Tn.y;
 
-            float acc = -GRAV * slope - DRAG * v * v - FRICTION;
+            float acc = coastAcceleration(v, slope);
             if (boosting) { acc += 10.0f; boost = fmaxf(0, boost - 30.0f * dt); }
             else            boost = fminf(100, boost + 4.0f * dt);
             if (braking)    acc -= 16.0f;
@@ -513,37 +851,27 @@ int main(int argc, char **argv) {
 
             if (cobraShot) {
                 bool cobraNear = false;
-                for (float la = -14.0f; la <= 140.0f; la += 7.0f)   // metres now (~14x the V1 u-window)
+                for (float la = -1.0f; la <= 10.0f; la += 1.0f)
                     if (trk.tagAt(u + la) == M_COBRA) { cobraNear = true; break; }
                 if (cobraNear && v > 24.0f) v = 24.0f;
             }
 
             if (elemShot) {
                 bool near = false;
-                for (float la = -14.0f; la <= 140.0f; la += 7.0f)   // metres now (~14x the V1 u-window)
+                for (float la = -1.0f; la <= 10.0f; la += 1.0f)
                     if (trk.tagAt(u + la) == (unsigned char)elemShotElem) { near = true; break; }
                 float cap = 26.0f;
                 if (near && v > cap) v = cap;
             }
 
             unsigned char tg = trk.tagAt(u);
-            if      (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v / LAUNCH_V) * dt;   // punchy LSM thrust, fades near ~320 (no clamp)
-            else if (tg == M_CLIMB && !trk.chainAt(u) && v < CLIMB_V)
-                v = fminf(v + 44.0f * dt, CLIMB_V);
-
-            if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v / 86.0f) * dt;   // Do-Dodonpa-class boost punch (0-200 km/h ~0.7 s), asymptote ~310 km/h
-            if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v / 34.0f) * dt;   // anti-stall kicker tires 
-
-            bool onLift = trk.chainAt(u);
-            if (onLift && slope > 0.05f) {
-                chain = true;
-                float liftV = (slope > 0.55f) ? 27.0f : CHAIN_V;
-                if (v < liftV) v = fminf(v + 20.0f * dt, liftV);
-            }
+            unsigned char drive = trk.driveAt(u);
+            bool onLift = drive == 1;
+            chain = onLift && slope > 0.05f;
+            v = applyTrackDrive(v, tg, drive, slope, dt);
 
             // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
             // numeric floor keeps du/dt finite.
-            v = fmaxf(v, V_GUARD);
             if (gForceSpeed > 0.0f) v = gForceSpeed;
 
             if (benchMode) {   // launch top-hat drop, measured on the REAL physics path (== live ride)
@@ -563,33 +891,37 @@ int main(int argc, char **argv) {
                 }
             }
 
-            // Closed-lap station seam (migration step 6): the sole platform is the
-            // closed route's seam (startPos/startYaw), where the Brake run docks. Brake
-            // to a stop by the seam using distance-to-seam braking — this only bites in
-            // the last few hundred metres (distToSeam spans a whole lap early on, so the
-            // cap is inert then), so it needs no arming flag and never brakes just after
-            // dispatch. The +1 keeps vDock>0 for distToSeam>=0, so the train always
-            // creeps to the seam instead of stalling in the brake run before it.
-            float distToSeam = fmaxf((trk.maxU() - u) * trk.speedScale(u), 0.0f);
-            float vDock = sqrtf(2.0f * 7.0f * distToSeam + 1.0f);
-            if (v > vDock) v = vDock;
+            sinceStation += dt;
+            // Station cadence matched to the LONGEST real full-circuit rides (Falcon's Flight
+            // runs 3:25-3:35 over 4.25 km; The Beast's 4:10 is the all-time record): a platform
+            // stop every ~3.5-4 min instead of every ~1.7 (the pending flag still waits for a
+            // low flat spot, so the realized interval runs a little past this trigger).
+            if (!shotMode && !benchMode && sinceStation > 205.0f &&
+                !trk.stationPending && !trk.stationActive)
+                trk.stationPending = true;
+
+            if (trk.stationActive && trk.tagAt(u) == M_STATION) {
+                Vector3 Th2 = Vector3{ Tn.x, 0, Tn.z };
+                float Tl = sqrtf(Th2.x * Th2.x + Th2.z * Th2.z);
+                if (Tl > 1e-3f) { Th2.x /= Tl; Th2.z /= Tl; }
+                Vector3 Pp = trk.pos(u);
+                float d  = (trk.stationStop.x - Pp.x) * Th2.x + (trk.stationStop.z - Pp.z) * Th2.z;
+                float d3 = Vector3Distance(trk.stationStop, Pp);
+                if (d > 2.0f && d3 > 2.0f) {
+                    float vmax = sqrtf(2.0f * 22.0f * d + 1.0f);
+                    if (v > vmax) v = vmax;
+                } else {
+                    v = 0.0f; dispatched = false; atStation = true; midStation = true;
+                    trk.stationActive = false;
+                    curPlatPos = trk.stationPos; curPlatYaw = trk.stationYaw;
+                }
+            }
 
             float du = v * dt / fmaxf(trk.speedScale(u), 0.5f);
             if (!(du == du)) du = 0.0f;
-            u += fminf(du, 6.0f);   // metres now (was 1.5 u-units ~= 21 m at V1 scale); safety cap only
+            u += fminf(du, 1.5f);
 
-            // U-WRAP replaces V1's popFront streaming idiom, which is a no-op on the
-            // finite, closed V2 route (leaving it would FREEZE the train). Lap complete:
-            // interactive rides dock at the seam platform; auto-run modes lap forever so
-            // benches/screenshots keep covering track.
-            float mu = trk.maxU();
-            if (mu > 0.0f && u >= mu) {
-                u -= mu;
-                if (!autoRun) {
-                    v = 0.0f; dispatched = false; atStation = true;
-                    curPlatPos = trk.startPos; curPlatYaw = trk.startYaw;
-                }
-            }
+            while (u > 13.0f && (int)trk.cp.size() > 18) { trk.popFront(); u -= 1.0f; }
 
             score += v * dt * (1.0f + v / 25.0f);
 
@@ -620,7 +952,7 @@ int main(int argc, char **argv) {
         {
 
             float ss  = fmaxf(trk.speedScale(u), 1.0f);
-            float du  = Clamp(7.5f / ss, 0.35f, 9.0f);   // du in u-units==metres now (was ~14 m/unit); 1.1 clamped this to 1.1 m -> noisy g
+            float du  = Clamp(7.5f / ss, 0.35f, 1.1f);
             Vector3 Tb = trk.tangent(u - du), Tf = trk.tangent(u + du);
             float arc = fmaxf(Vector3Distance(trk.pos(u - du), trk.pos(u + du)), 13.0f);
             Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arc);
@@ -812,15 +1144,56 @@ int main(int argc, char **argv) {
             if (frame >= 4000) { elemArmed = true; if (elemBest <= -1e8f) elemBestCam = cam; }
             if (elemArmed) cam = elemBestCam;
         }
+        if (jointShot) {
+            for (float q = u - 1.0f; !jointArmed && q <= u + 8.0f; q += 0.25f) {
+                unsigned char a = trk.tagAt(q), b = trk.tagAt(q + 0.25f);
+                bool fromMatch = jointFrom == -2 || a == (unsigned char)jointFrom;
+                bool toMatch   = jointTo   == -2 || b == (unsigned char)jointTo;
+                if (frame > 120 && a != b && fromMatch && toMatch) {
+                    float ju = q + 0.125f;
+                    Vector3 jp = trk.pos(ju);
+                    Vector3 jt = trk.tangent(ju);
+                    Vector3 js = Vector3Normalize(Vector3CrossProduct(jt, WUP));
+                    if (Vector3Length(js) < 1e-4f) js = Vector3{1, 0, 0};
+                    jointCam.position = Vector3Add(jp, Vector3Add(
+                        Vector3Add(Vector3Scale(js, 64.0f), Vector3Scale(jt, -12.0f)),
+                        Vector3{0, 14.0f, 0}));
+                    jointCam.target = Vector3Add(jp, Vector3{0, 2.0f, 0});
+                    jointCam.up = WUP;
+                    jointCam.fovy = 62.0f;
+                    jointArmed = true;
+                    printf("jointshot found mode %d -> %d at u=%.2f\n", (int)a, (int)b, ju);
+                }
+            }
+            if (!jointArmed && frame >= 4000) {
+                jointCaptureFailed = true;
+                jointArmed = true;
+                jointCam = cam;
+                printf("jointshot: transition %s -> %s not found\n", jointFromName, jointToName);
+            }
+            if (jointArmed) cam = jointCam;
+        }
 
         int ccx = (int)floorf(P.x / CELL), ccz = (int)floorf(P.z / CELL);
         float fogEnd = TERRA_R * CELL;
+        trackRenderCache.update(trk, 2);
+        const int finalN = trk.finalizedPointCount();
+        const float finalMaxU = trk.maxFinalU();
+        long cacheNeed0 = trk.base + (long)fmaxf(u - 14.0f, 0.0f);
+        long cacheNeed1 = trk.base + (long)fminf(u + 47.0f, (float)(finalN - 3));
+        if (!trackRenderCache.covers(cacheNeed0, cacheNeed1))
+            trackRenderCache.update(trk, 0);
 
         // The height prefill + track carve is the worker's INPUT and an O(TERRA_R^2) per-frame
         // cost. Only refresh it on a rebuild frame: cheap on the ~99% of frames that just redraw
         // the cached mesh, and it stays stable while the async worker consumes it (rebuilds are
         // gated until the in-flight build finishes, so the inputs aren't overwritten mid-build).
         bool wantRebuild = gTerrainMesh.needsRebuild(ccx, ccz, (int)u);
+        std::shared_ptr<std::vector<Vector3>> nextWaterCells;
+        if (wantRebuild) {
+            nextWaterCells = std::make_shared<std::vector<Vector3>>();
+            nextWaterCells->reserve((2 * TERRA_R + 1) * (2 * TERRA_R + 1) / 3);
+        }
         if (wantRebuild) {
         prefillTerrain(ccx, ccz, TERRA_R);
 
@@ -830,14 +1203,14 @@ int main(int argc, char **argv) {
         std::fill(forceTop.begin(), forceTop.end(), 1e9f);
 
         {
-            int hk0 = (int)fmaxf(1.0f, u - 196.0f), hk1 = (int)(u + 644.0f);   // ~14x: metres now
+            int hk0 = (int)fmaxf(1.0f, u - 14.0f), hk1 = (int)(u + 46);
             int hxSeed = -1;
-            for (int i = hk0; i <= hk1 && i + 1 < (int)trk.cp.size(); i++)
+            for (int i = hk0; i <= hk1 && i + 1 < finalN; i++)
                 if (trk.kind[i] == M_HELIX) { hxSeed = i; break; }
             if (hxSeed >= 0) {
                 int a = hxSeed, b = hxSeed;
                 while (a > 1 && trk.kind[a - 1] == M_HELIX) a--;
-                while (b + 2 < (int)trk.cp.size() && trk.kind[b + 1] == M_HELIX) b++;
+                while (b + 2 < finalN && trk.kind[b + 1] == M_HELIX) b++;
                 Vector3 ax = { 0, 0, 0 }; int n = 0; float loY = 1e9f, radMax = 0.0f;
                 for (int i = a; i <= b; i++) { ax.x += trk.cp[i].x; ax.z += trk.cp[i].z; n++;
                     if (trk.cp[i].y < loY) loY = trk.cp[i].y; }
@@ -889,14 +1262,16 @@ int main(int argc, char **argv) {
                         if (clampY < forceTop[ci]) forceTop[ci] = clampY;
                     }
             };
-            stampStation(trk.startPos, trk.startYaw);   // sole platform (closed-route seam)
+            stampStation(trk.startPos, trk.startYaw);
+            if (trk.stationActive) stampStation(trk.stationPos, trk.stationYaw);
         }
 
-        // Cover the DEEP_R=10.5 m corridor with no gaps: consecutive samples only need to
-        // stay under ~2*DEEP_R apart, so a 5.6 m step is ample. u is metres now (V2 ds=1 m):
-        // reach u+896 to match the track draw range (k1=u+896), and start at u-196 (negative
-        // su wraps through the closed seam via trk.pos) so the pre-seam approach carves too.
-        for (float su = u - 196.0f; su <= u + 896.0f; su += 5.6f) {
+        // Step big enough to still fully cover the DEEP_R=10.5 m corridor with no gaps
+        // (consecutive samples only need to stay under ~2*DEEP_R apart; at ~14 m of arc
+        // length per su unit, 0.17 was sampling every ~2.4 m -- ~8x more samples than the
+        // corridor needs, the single largest CPU cost of a terrain rebuild). 0.4 samples
+        // every ~5.6 m: same coverage, ~2.4x fewer iterations of the carve-corridor scan.
+        for (float su = fmaxf(u - 14.0f, 0.0f); su <= fminf(u + 64.0f, finalMaxU); su += 0.4f) {   // finalized track only: draft adaptive points never carve terrain
             Vector3 ps = trk.pos(su);
             float lo = ps.y - 4.0f, hi = ps.y + 4.5f;
             int scx = (int)floorf(ps.x / CELL), scz = (int)floorf(ps.z / CELL);
@@ -923,10 +1298,15 @@ int main(int argc, char **argv) {
         }
         }   // end if (wantRebuild) — prep only on rebuild frames
 
-        auto buildTerrainMesh = [&, ccx, ccz, u, fogEnd]() {
+        // The job owns an immutable Track copy and a private water result. The
+        // previous worker captured both by reference while the main thread
+        // streamed/popped the deques and rendered waterCells: two data races.
+        auto buildTerrainMesh = [&, ccx, ccz, u, fogEnd, finalN,
+                                 trk = Track(trk), simTime = simTime,
+                                 nextWaterCells]() mutable {
         {
         const bool depthPass = false;
-        waterCells.clear();
+        nextWaterCells->clear();
 
         // Carve-aware neighbour probe for the thin-skin face culling below. Returns the
         // neighbour column's EFFECTIVE solid profile so we can wall MY column wherever it
@@ -1087,7 +1467,7 @@ int main(int argc, char **argv) {
                     }
                 }
 
-                if (top < WATER_Y && !depthPass) waterCells.push_back(Vector3{ wx, cellSz, wz });
+                if (top < WATER_Y && !depthPass) nextWaterCells->push_back(Vector3{ wx, cellSz, wz });
 
                 if (cHi > cLo && cHi > colBot && cLo < top) treeType = -1;  // no floating decorations over bored tunnels
 
@@ -1101,7 +1481,7 @@ int main(int argc, char **argv) {
 	                if (treeType >= 0 && gateFog < 0.85f && (cx % TG == 0) && (cz % TG == 0) && th < nodeDen) {
 	                    if (treeType == 1 && th > nodeDen * 0.5f) treeType = 0;
 	                    auto treeHitsTrackClearance = [&](int tt) -> bool {
-	                        if ((int)trk.cp.size() < 4) return false;
+	                        if (finalN < 4) return false;
 	                        float treeR = 2.4f, treeHi = top + 11.0f;
 	                        switch (tt) {
 	                            case 0: treeR = 2.2f; treeHi = top + 10.5f; break;
@@ -1114,7 +1494,7 @@ int main(int argc, char **argv) {
 	                        float hitR2 = hitR * hitR;
 	                        int kS = (int)fmaxf(u - 16.0f, 0.0f);   // widen the tree-clearance window to cover the carve corridor (u-14..) + margin, so every carved track segment is also tree-tested
 	                        int kE = (int)(u + 30.0f);
-	                        int maxK = (int)trk.cp.size() - 4;
+	                        int maxK = finalN - 4;
 	                        if (kE > maxK) kE = maxK;
 	                        for (int k = kS; k <= kE; k++) {
 	                            float segLen = fmaxf(trk.speedScale(k + 0.5f), 0.01f);
@@ -1214,9 +1594,12 @@ int main(int argc, char **argv) {
             mat.shader = depthPass ? gShadow.depth : gShadow.lit;
             if (!depthPass) {
                 float fe = fogEnd;
+                float fs = fogEnd * 0.55f, fr = fogEnd * 0.40f;
                 float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
                 float fcl[3] = { FOG_LINEAR.x, FOG_LINEAR.y, FOG_LINEAR.z };
                 SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gShadow.lit, gShadow.locFogStart, &fs, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gShadow.lit, gShadow.locFogRange, &fr, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
             }
@@ -1268,30 +1651,22 @@ int main(int argc, char **argv) {
         }
 
         if (!depthPass) {
-            // Sole platform: the closed route's seam (startPos/startYaw). Colours are
-            // host-owned now (TrackV2 carries geometry only).
-            drawStation(trk.startPos, trk.startYaw, trkSpineC, trkTrainAccent, P, fogEnd);
+            drawStation(trk, trk.startPos, trk.startYaw, P, fogEnd);
+            if (trk.stationActive)
+                drawStation(trk, trk.stationPos, trk.stationYaw, P, fogEnd);
+            if (midStation)
+                drawStation(trk, curPlatPos, curPlatYaw, P, fogEnd);
         }
         double dwT1 = diagWorld ? GetTime() : 0.0;
         if (diagWorld) dwTerrainAcc += (dwT1 - dwT0) * 1000.0;
 
-        // Track render range (user round 2: "the coaster track does not
-        // de-render unless the entire chunk does"): iterate the WHOLE route
-        // and let the per-item distance/fog culls decide — the old ±u sample
-        // window popped distant track out while its terrain chunk was still
-        // visible. trackFog (fogEnd*1.9) is beyond the terrain cull radius,
-        // so track now outlives every chunk it crosses.
-        const int NSMP = (int)trk.cp.size();
-        int k0 = 0, k1 = NSMP - 1;
-        const bool wrapU = trk.route.closed && NSMP > 1;
-        auto wrapIdx = [&](int i) -> int {
-            if (wrapU) { i %= NSMP; if (i < 0) i += NSMP; return i; }
-            return (i < 0) ? 0 : (i >= NSMP ? NSMP - 1 : i);
-        };
+        int k0 = (int)fmaxf(1.0f, u - 14.0f), k1 = (int)(u + 64);
 
         float trackFog = fogEnd * 1.9f;
+        const float trackCull = depthPass ? (cullR + SEG_LEN) : (trackFog + SEG_LEN);
+        const float trackCull2 = trackCull * trackCull;
 
-        auto drawVBent = [&](Vector3 p, float topY, float gC, Vector3 lat, Vector3 tang, Vector3 railUp, Color sc) {
+        auto drawVBent = [&](Vector3 p, float topY, float gC, Vector3 tang, Vector3 railUp, Color sc) {
             float hgt = topY - gC;
             if (hgt < 1.0f) return;
 
@@ -1343,107 +1718,58 @@ int main(int argc, char **argv) {
             drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.56f, 0.56f, 1.0f, sc);
             popFrame();
         };
-        // ---- support plan: computed ONCE per built track, not per frame ----
-        // (rewritten 2026-07-10, user: "support pillars are too close"). The
-        // old rule placed a V-bent every 9 ARC-meters, so tight curves
-        // (helix, loop flanks, crests) bunched pillars in space; and its
-        // anti-clip scan only checked the SAME element's track. Now:
-        //  - spacing is a real XZ distance between consecutive FEET, scaled
-        //    with rail height (tall track = wider bays, 12..30 m), matching
-        //    COASTER_REWRITE.md's "separate support-spacing pass (18-30 m)";
-        //  - a strut is skipped when its vertical corridor passes within 3 m
-        //    of ANY other track sample below the rail — cross-element clips
-        //    (a pillar through a camelback under a turn) included.
-        static std::vector<unsigned char> supPlan;
-        static size_t supPlanN = 0;
-        static float supPlanX0 = 1e30f;
-        if (supPlanN != trk.cp.size() ||
-            (NSMP > 0 && supPlanX0 != trk.cp[0].x)) {
-            supPlanN = trk.cp.size();
-            supPlanX0 = NSMP > 0 ? trk.cp[0].x : 1e30f;
-            supPlan.assign(supPlanN, 0);
-            // Spatial hash of all samples for the corridor check.
-            const float cell = 4.0f;
-            std::unordered_map<uint64_t, std::vector<int>> grid;
-            auto keyOf = [&](float x, float z) {
-                int gx = (int)floorf(x / cell), gz = (int)floorf(z / cell);
-                return ((uint64_t)(uint32_t)gx << 32) | (uint32_t)gz;
-            };
-            grid.reserve(supPlanN);
-            for (int j = 0; j < (int)supPlanN; j++)
-                grid[keyOf(trk.cp[j].x, trk.cp[j].z)].push_back(j);
-            float lastFx = 1e30f, lastFz = 1e30f;
-            for (int i2 = 0; i2 < (int)supPlanN; i2++) {
-                Vector3 p2 = trk.cp[i2];
-                unsigned char tg2 = trk.kind[i2];
-                bool tightShape = (tg2 == M_LOOP || tg2 == M_ROLL || tg2 == M_IMMEL ||
-                                   tg2 == M_STALL || tg2 == M_DIVELOOP);
-                if (tightShape && trk.up[i2].y < 0.35f) continue;
-                float g2 = groundTopAt(p2.x, p2.z);
-                float hgt2 = (p2.y - 0.5f) - g2;
-                if (hgt2 < 0.5f || p2.y - g2 < 1.5f) continue;
-                // Height-scaled bay spacing between consecutive FEET (XZ),
-                // densified through curves: turning track loads its supports
-                // laterally, so real bents bunch up in curves and stretch
-                // out on straights. Local plan curvature from tangents +-6 m.
-                float spacing = Clamp(hgt2 * 0.34f, 12.0f, 30.0f);
-                {
-                    int ia = i2 >= 6 ? i2 - 6 : 0;
-                    int ib = i2 + 6 < (int)supPlanN ? i2 + 6 : (int)supPlanN - 1;
-                    Vector3 ta = trk.tangent((float)ia), tb = trk.tangent((float)ib);
-                    float ha = atan2f(ta.x, ta.z), hb = atan2f(tb.x, tb.z);
-                    float dh = fabsf(hb - ha);
-                    if (dh > PI) dh = 2.0f * PI - dh;
-                    float curv = dh / (float)(ib - ia > 0 ? ib - ia : 1);
-                    spacing *= Clamp(1.0f / (1.0f + 35.0f * curv), 0.5f, 1.0f);
-                }
-                float fdx = p2.x - lastFx, fdz = p2.z - lastFz;
-                if (fdx * fdx + fdz * fdz < spacing * spacing) continue;
-                // Corridor check vs ANY nearby track below this rail point.
-                bool blocked = false;
-                int gx = (int)floorf(p2.x / cell), gz = (int)floorf(p2.z / cell);
-                for (int dxc = -1; dxc <= 1 && !blocked; dxc++)
-                    for (int dzc = -1; dzc <= 1 && !blocked; dzc++) {
-                        uint64_t k = ((uint64_t)(uint32_t)(gx + dxc) << 32) |
-                                     (uint32_t)(gz + dzc);
-                        auto it = grid.find(k);
-                        if (it == grid.end()) continue;
-                        for (int j : it->second) {
-                            if (abs(j - i2) < 8) continue; // own stretch
-                            Vector3 q = trk.cp[j];
-                            float qdx = q.x - p2.x, qdz = q.z - p2.z;
-                            if (qdx * qdx + qdz * qdz < 9.0f && q.y > g2 + 1.0f &&
-                                q.y < p2.y - 1.0f) { blocked = true; break; }
-                        }
-                    }
-                if (blocked) continue;
-                supPlan[i2] = 1;
-                lastFx = p2.x;
-                lastFz = p2.z;
-            }
-        }
-        for (int iv = k0; iv <= k1; iv++) {
-            int i = wrapIdx(iv), prev = wrapIdx(iv - 1);
+        for (int i = k0; i <= k1 && i + 1 < finalN; i++) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
+            bool tightShape = (tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
+                                tg == M_STALL || tg == M_DIVELOOP || tg == M_COBRA ||
+                                tg == M_HEARTLINE || tg == M_PRETZEL);
+            // BANANA and WINGOVER are deliberately NOT in this exclusion list: unlike the tight,
+            // self-contained loop-shaped elements below (whose top/bottom sit at nearly the same
+            // X/Z), both travel forward continuously across their whole length while banking/
+            // inverting, so the inverted midpoint is tens of meters from every other point of the
+            // same element -- a straight-down support there can't clip through its own track, and
+            // excluding them left a large unsupported gap during the tallest, most inverted part.
+            if (tightShape && trk.up[i].y < 0.35f) continue;
             float ddx = p.x - P.x, ddz = p.z - P.z;
+            if (ddx * ddx + ddz * ddz > trackCull2) continue;
             float dist = sqrtf(ddx * ddx + ddz * ddz);
             float fog = Clamp((dist - trackFog * 0.70f) / (trackFog * 0.27f), 0.0f, 1.0f);
             if (fog > 0.97f) continue;
-            Vector3 t = trk.tangent((float)i);   // analytic, seam-safe (was cp[i+1]-cp[i-1])
-            Vector3 lat = Vector3Normalize(Vector3CrossProduct(Vector3{ t.x, 0, t.z }, Vector3{ 0, 1, 0 }));
+            float g = groundTopAt(p.x, p.z);
+            if (p.y - g < 1.5f) continue;
+            // The up.y check above only excludes the bottom of THIS point's own rotation phase --
+            // it doesn't stop a strut placed during the "upright" phase (up.y>=0.35) from clipping
+            // through the SAME loop/roll/etc.'s own track at a nearby point along its length that
+            // happens to pass through where the strut physically runs (straight down from p to the
+            // ground). Scan a local window (one full rotation of these elements is well under 48
+            // control points) and skip the support if another point of the same contiguous element
+            // sits close in XZ while between the ground and this point's height.
+            if (tightShape) {
+                bool blocked = false;
+                int wStart = (i - 48 > 0) ? i - 48 : 0;
+                int wEnd   = (i + 48 < finalN - 1) ? i + 48 : finalN - 1;
+                for (int j = wStart; j <= wEnd; j++) {
+                    if (j == i || trk.kind[j] != tg) continue;
+                    Vector3 q = trk.cp[j];
+                    float qdx = q.x - p.x, qdz = q.z - p.z;
+                    if (qdx*qdx + qdz*qdz < 9.0f && q.y > g + 1.0f && q.y < p.y - 1.0f) { blocked = true; break; }
+                }
+                if (blocked) continue;
+            }
+            Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
             Color sc = mixc(Color{ 118, 122, 130, 255 }, FOG, fog);
 
             float topY = p.y - 0.5f;
             float gC   = groundTopAt(p.x, p.z);
-            if (supPlan[(size_t)i])
-                drawVBent(p, topY, gC, lat, t, trk.up[i], sc);
+            float hgt  = topY - gC;
+            const float SUP_SP = 9.0f;
+            bool placeHere = i > 0 &&
+                floorf(trk.arc[i] / SUP_SP) != floorf(trk.arc[i - 1] / SUP_SP);
+            if (hgt > 0.5f && placeHere)
+                drawVBent(p, topY, gC, t, trk.up[i], sc);
 
-            // LSM grate: gate to one SEG_LEN-long tile per SEG_LEN of arc so the 1 m dense
-            // samples don't stack ~14 grate boxes per metre. Stairs are coarser still.
-            bool grateHere = (tg == M_LAUNCH || tg == M_BOOST) &&
-                floorf(trk.arc[i] / SEG_LEN) != floorf(trk.arc[prev] / SEG_LEN);
-            if (grateHere) {
+            if (tg == M_LAUNCH || tg == M_BOOST) {
                 Vector3 fwd = Vector3Normalize(Vector3{ t.x, 0, t.z });
                 pushFrame(Vector3{ p.x, p.y, p.z }, fwd, WUP);
                 Color grate = mixc(Color{ 150, 154, 162, 255 }, FOG, fog);
@@ -1455,9 +1781,7 @@ int main(int argc, char **argv) {
                     drawCubeTex(T_IRON, Vector3{ 2.7f, 0.35f, pz2 }, 0.08f, 0.9f, 0.08f, rail2);
 
                 float g2 = groundTopAt(p.x, p.z);
-                bool stairsHere =
-                    floorf(trk.arc[i] / (SEG_LEN * 4.0f)) != floorf(trk.arc[prev] / (SEG_LEN * 4.0f));
-                if (p.y - g2 > 2.0f && stairsHere) {
+                if (p.y - g2 > 2.0f && (i & 3) == 0) {
                     int steps = (int)fminf((p.y - g2) / 0.8f, 14);
                     for (int s = 0; s < steps; s++)
                         drawCubeTex(T_IRON, Vector3{ 2.9f + s * 0.42f, p.y - 0.55f - s * 0.8f, 0 },
@@ -1467,75 +1791,25 @@ int main(int argc, char **argv) {
             }
         }
 
-        int kS = 0, kE = NSMP - 1;   // full route; per-segment distance cull below decides
-        float spineCull2 = (trackFog + SEG_LEN) * (trackFog + SEG_LEN);
-        for (int k = kS; k <= kE; k++) {
-
-            { Vector3 smid = trk.pos((float)k + 0.5f);
-              float mdx = smid.x - P.x, mdz = smid.z - P.z;
-              if (mdx * mdx + mdz * mdz > spineCull2) continue; }
-            float segLen = fmaxf(trk.speedScale((float)k + 0.5f), 0.01f);
-            int nSmp = (int)ceilf(segLen / 0.85f);
-            if (nSmp < 1) nSmp = 1; else if (nSmp > 80) nSmp = 80;
-            bool  chain = trk.chainAt((float)k + 0.5f);
-            for (int j = 0; j < nSmp; j++) {
-                float uu = k + (j + 0.5f) / nSmp;
-                Vector3 p = trk.pos(uu);
-                Vector3 t = trk.tangent(uu);
-                Vector3 uvec = trk.upAt(uu);
-                float ddx = p.x - P.x, ddz = p.z - P.z;
-                float dist = sqrtf(ddx * ddx + ddz * ddz);
-                float fog = Clamp((dist - trackFog * 0.70f) / (trackFog * 0.27f), 0.0f, 1.0f);
-                if (fog > 0.97f) continue;
-                float rl = segLen / nSmp + 0.18f;
-                unsigned char segTag = trk.tagAt(uu);
-
-                // LSM boosters ONLY on LAUNCH/BOOST -- the sections that ACTUALLY thrust the train.
-                // The top-hat climb used to get these accent "booster" fins too (M_CLIMB && !chain),
-                // which read as boosters that don't boost (user); it now gets the lift-assist look below.
-                bool poweredSpine = (segTag == M_LAUNCH || segTag == M_BOOST);
-                // LIFT ASSIST: the powered CLIMB (top-hat / forced climb / signature cliff back) holds
-                // the train at CLIMB_V up the grade -- a chain-lift, not an LSM. Mark it with an amber
-                // chain-dog spine so it's VISIBLE where the lift assist is, distinct from the boosters.
-                bool liftSpine    = (segTag == M_CLIMB && !chain);
-                Color rc = mixc(trkRailC,  FOG, fog);
-                Color tie = mixc(Color{ 96, 99, 108, 255 }, FOG, fog);
-                pushFrame(p, t, uvec);
-                if (poweredSpine) {
-                    Color sc  = mixc(trkSpineC, FOG, fog);
-                    Color fin = mixc(trkTrainAccent, FOG, fog);
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.38f, 0.54f, rl, sc);
-                    if ((j & 1) == 0)
-
-                        drawCubeTex(T_IRON, Vector3{ 0, -0.18f, 0 }, 0.62f, 0.22f, rl * 0.6f, fin);
-                } else if (liftSpine) {
-                    Color sc  = mixc(Color{ 58, 60, 68, 255 }, FOG, fog);
-                    Color dog = mixc(Color{ 232, 168, 60, 255 }, FOG, fog);   // amber chain-lift dogs down the centre
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.34f, 0.50f, rl, sc);
-                    if ((j & 1) == 0)
-                        drawCubeTex(T_IRON, Vector3{ 0, -0.08f, 0 }, 0.24f, 0.24f, rl * 0.5f, dog);
-                } else if (fog < 0.85f) {
-
-                    Color sc  = mixc(Color{ 44, 47, 55, 255 }, FOG, fog);
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.30f, 0 }, 0.30f, 0.46f, rl, sc);
-                }
-                {
-                    // The rail's world-space tangent for the anisotropic highlight: safe to
-                    // update every sample with a plain uniform (no batch-flush needed) since
-                    // *which fragments* it applies to is decided per-vertex in the shader via
-                    // the T_RAIL texcoord range, not by this uniform's on/off timing.
-                    float tanv[3] = { t.x, t.y, t.z };
-                    SetShaderValue(gShadow.lit, gShadow.locRailTangent, tanv, SHADER_UNIFORM_VEC3);
-                    drawCubeTex(T_RAIL, Vector3{ -0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
-                    drawCubeTex(T_RAIL, Vector3{  0.55f, 0, 0 }, 0.18f, 0.18f, rl, rc);
-                }
-                if ((j & 1) == 0)
-
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.17f, 0 }, 1.35f, 0.14f, 0.45f, tie);
-                if (chain)
-                    drawCubeTex(T_IRON, Vector3{ 0, -0.05f, 0 }, 0.14f, 0.14f, rl, mixc(CHAINC, FOG, fog));
-                popFrame();
-            }
+        int kS = (int)fmaxf(u - 14.0f, 0.0f);
+        int kE = (int)(u + 46.0f);
+        if (kE > finalN - 4) kE = finalN - 4;
+        long g0 = trk.base + kS, g1 = trk.base + kE + 1;
+        if (!depthPass) {
+            float fe = trackFog, fs = trackFog * 0.70f, fr = trackFog * 0.27f;
+            float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
+            float fcl[3] = { FOG_LINEAR.x, FOG_LINEAR.y, FOG_LINEAR.z };
+            SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(gShadow.lit, gShadow.locFogStart, &fs, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(gShadow.lit, gShadow.locFogRange, &fr, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
+            SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
+        }
+        trackRenderCache.draw(depthPass, P,
+            depthPass ? cullR + 8.0f : trackFog + SEG_LEN, g0, g1);
+        if (!depthPass) {
+            float off = 0.0f;
+            SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);
         }
 
         {
@@ -1547,7 +1821,7 @@ int main(int argc, char **argv) {
                 Vector3 ct = trk.tangent(ui);
                 Vector3 cu = trk.upAt(ui);
                 pushFrame(cp, ct, cu);
-                drawCoasterCar(trkTrainBody, trkTrainAccent, trkRailC, i == 0, i);
+                drawCoasterCar(trk.trainBody, trk.trainAccent, i == 0, i);
                 popFrame();
             }
         }
@@ -1559,6 +1833,7 @@ int main(int argc, char **argv) {
         };
 
         if (wantRebuild) {
+            pendingWaterCells = nextWaterCells;
             gTerrainMesh.dispatch(buildTerrainMesh, ccx, ccz, (int)u);
             if (!gTerrainMesh.live) gTerrainMesh.finish(true);   // first build: must have a mesh to draw
         }
@@ -1593,7 +1868,7 @@ int main(int argc, char **argv) {
         static double dShadowAcc = 0.0, dMainAcc = 0.0; static int dN = 0;
         double tShadow0 = diagTiming ? GetTime() : 0.0;
         rlDrawRenderBatchActive();
-        for (int ci = 0; ci < SHADOW_CASCADES; ci++) {
+        for (int ci = FIRST_SHADOW_CASCADE; ci < SHADOW_CASCADES; ci++) {
             rlEnableFramebuffer(gShadow.fbo[ci]);
             rlViewport(0, 0, gShadow.SM[ci], gShadow.SM[ci]);
             rlClearScreenBuffers();
@@ -1612,63 +1887,29 @@ int main(int argc, char **argv) {
         rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
         if (diagTiming) dShadowAcc += (GetTime() - tShadow0) * 1000.0;
 
-        // Bind all 3 cascade matrices/textures once per frame; every gShadow.lit
+        // Bind both active cascade matrices/textures once per frame; every gShadow.lit
         // draw call below (main pass, water, path-trace overlays) shares them.
         auto bindShadowUniforms = [&]() {
-            for (int i = 0; i < SHADOW_CASCADES; i++) {
+            for (int i = FIRST_SHADOW_CASCADE; i < SHADOW_CASCADES; i++) {
                 SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP[i], gShadow.lightVP[i]);
                 float texel[2] = { 1.0f / gShadow.SM[i], 1.0f / gShadow.SM[i] };
                 SetShaderValue(gShadow.lit, gShadow.locShadowTexel[i], texel, SHADER_UNIFORM_VEC2);
                 SetShaderValue(gShadow.lit, gShadow.locInvRange[i], &gShadow.invRange[i], SHADER_UNIFORM_FLOAT);
             }
-            SetShaderValue(gShadow.lit, gShadow.locCascadeSplit0, &SHADOW_CASCADE_R[0], SHADER_UNIFORM_FLOAT);
             SetShaderValue(gShadow.lit, gShadow.locCascadeSplit1, &SHADOW_CASCADE_R[1], SHADER_UNIFORM_FLOAT);
             float sf[3] = { gShadow.focus.x, gShadow.focus.y, gShadow.focus.z };
             SetShaderValue(gShadow.lit, gShadow.locShadowFocus, sf, SHADER_UNIFORM_VEC3);
         };
         static const int SHADOW_TEX_UNITS[SHADOW_CASCADES] = { 10, 13, 14 };
         auto bindShadowTextures = [&]() {
-            for (int i = 0; i < SHADOW_CASCADES; i++) {
+            for (int i = FIRST_SHADOW_CASCADE; i < SHADOW_CASCADES; i++) {
                 SetShaderValue(gShadow.lit, gShadow.locShadowMap[i], &SHADOW_TEX_UNITS[i], SHADER_UNIFORM_INT);
                 rlActiveTextureSlot(SHADOW_TEX_UNITS[i]); rlEnableTexture(gShadow.depthTex[i]);
             }
             rlActiveTextureSlot(0);
         };
         auto unbindShadowTextures = [&]() {
-            for (int i = 0; i < SHADOW_CASCADES; i++) { rlActiveTextureSlot(SHADOW_TEX_UNITS[i]); rlDisableTexture(); }
-            rlActiveTextureSlot(0);
-        };
-
-        // SSR (metal reflections, see SHADOW_FS's ssrTrace()) reprojection matrix
-        // + previous-frame color/depth texture units. ssrThisFrameVP is built
-        // from the SAME camera the main pass renders with this frame, mirroring
-        // exactly what BeginMode3D builds internally (MatrixPerspective with
-        // rlgl's default near/far -- reused here via AO_CAM_NEAR/FAR, the same
-        // constants SSAO already assumes for this same "never overridden"
-        // reason) -- it's recorded via gPostFX.endFrame() below and read back
-        // NEXT frame as prevVP, once the buffer it describes has become "the
-        // previous frame". Only meaningful for the main (!liveRT) gPostFX path;
-        // the KEY_T live/offline path-trace overlay draws never bind these, and
-        // SHADOW_FS's legacyTonemap>0.5 gate skips sampling them there.
-        int rwSSR = GetRenderWidth(), rhSSR = GetRenderHeight();
-        float aspSSR = (rhSSR > 0) ? (float)rwSSR / (float)rhSSR : 1.0f;
-        Matrix ssrView = MatrixLookAt(cam.position, cam.target, cam.up);
-        Matrix ssrProj = MatrixPerspective(cam.fovy * DEG2RAD, aspSSR, AO_CAM_NEAR, AO_CAM_FAR);
-        Matrix ssrThisFrameVP = MatrixMultiply(ssrView, ssrProj);
-        static const int PREV_SCENE_COLOR_UNIT = 20, PREV_SCENE_DEPTH_UNIT = 21;
-        auto bindPrevScene = [&]() {
-            Matrix prevVP = gPostFX.lastFrameVP;
-            SetShaderValueMatrix(gShadow.lit, gShadow.locPrevVP, prevVP);
-            SetShaderValue(gShadow.lit, gShadow.locPrevSceneColor, &PREV_SCENE_COLOR_UNIT, SHADER_UNIFORM_INT);
-            SetShaderValue(gShadow.lit, gShadow.locPrevSceneDepth, &PREV_SCENE_DEPTH_UNIT, SHADER_UNIFORM_INT);
-            RenderTexture2D &prevRT = gPostFX.prevScene();
-            rlActiveTextureSlot(PREV_SCENE_COLOR_UNIT); rlEnableTexture(prevRT.texture.id);
-            rlActiveTextureSlot(PREV_SCENE_DEPTH_UNIT); rlEnableTexture(prevRT.depth.id);
-            rlActiveTextureSlot(0);
-        };
-        auto unbindPrevScene = [&]() {
-            rlActiveTextureSlot(PREV_SCENE_COLOR_UNIT); rlDisableTexture();
-            rlActiveTextureSlot(PREV_SCENE_DEPTH_UNIT); rlDisableTexture();
+            for (int i = FIRST_SHADOW_CASCADE; i < SHADOW_CASCADES; i++) { rlActiveTextureSlot(SHADOW_TEX_UNITS[i]); rlDisableTexture(); }
             rlActiveTextureSlot(0);
         };
 
@@ -1734,16 +1975,14 @@ int main(int argc, char **argv) {
         double tMain0 = diagTiming ? GetTime() : 0.0;
         BeginShaderMode(gShadow.lit);
         bindShadowTextures();
-        bindPrevScene();
         drawWorld(false);
         EndShaderMode();
         unbindShadowTextures();
-        unbindPrevScene();
         if (diagTiming) {
             rlDrawRenderBatchActive();
             dMainAcc += (GetTime() - tMain0) * 1000.0;
             dN++;
-            if (dN % 20 == 0) printf("[diag] n=%d shadow3x_avg=%.2fms main_avg=%.2fms\n", dN, dShadowAcc/dN, dMainAcc/dN);
+            if (dN % 20 == 0) printf("[diag] n=%d shadow2x_avg=%.2fms main_avg=%.2fms\n", dN, dShadowAcc/dN, dMainAcc/dN);
         }
 
         {
@@ -1843,9 +2082,12 @@ int main(int argc, char **argv) {
             float wt = simTime;
             SetShaderValue(gShadow.lit, gShadow.locTime, &wt, SHADER_UNIFORM_FLOAT);
             float fe = fogEnd;
+            float fs = fogEnd * 0.55f, fr = fogEnd * 0.40f;
             float fc[3] = { FOG.r / 255.0f, FOG.g / 255.0f, FOG.b / 255.0f };
             float fcl[3] = { FOG_LINEAR.x, FOG_LINEAR.y, FOG_LINEAR.z };
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fe, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(gShadow.lit, gShadow.locFogStart, &fs, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(gShadow.lit, gShadow.locFogRange, &fr, SHADER_UNIFORM_FLOAT);
             SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
             SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
 
@@ -1894,20 +2136,17 @@ int main(int argc, char **argv) {
             float asp = (float)rw / (float)rh;
             gPostFX.resolve(rw, rh, (float)GetTime(), th, asp);
         }
-        // Record this frame's scene (and the VP that produced it) as "previous"
-        // for next frame's SSR trace, then flip the ping-pong -- see
-        // PostFX::endFrame()/prevScene() and SHADOW_FS's ssrTrace().
-        gPostFX.endFrame(ssrThisFrameVP);
         } else {
 
             int rw = GetRenderWidth(), rh = GetRenderHeight();
-            if (gPT.rtW != rw / PT_LIVE_DIV || gPT.rtH != rh / PT_LIVE_DIV) {
-                UnloadRenderTexture(gPT.rtBuf);
+            int wantRtW = std::max(1, rw / PT_LIVE_DIV);
+            int wantRtH = std::max(1, rh / PT_LIVE_DIV);
+            if (gPT.rtW != wantRtW || gPT.rtH != wantRtH) {
                 gPT.initLive(rw, rh);
             }
 
             if (!liveBaked) {
-                bakeVoxels(P, trk, u, trkSpineC, trkRailC, trkTrainBody, ptBakeBuf);
+                bakeVoxels(P, trk, u, ptBakeBuf);
                 liveBakeCtr = P; liveBaked = true;
                 gBaker.start();
             } else {
@@ -1917,7 +2156,7 @@ int main(int argc, char **argv) {
                     g_ptGridMin = gm;
                 }
                 if (Vector3Distance(P, liveBakeCtr) > REBAKE_DIST &&
-                    gBaker.request(P, trk, u, trkSpineC, trkRailC, trkTrainBody)) liveBakeCtr = P;
+                    gBaker.request(P, trk, u)) liveBakeCtr = P;
             }
 
             Vector3 cdir = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
@@ -2020,7 +2259,7 @@ int main(int argc, char **argv) {
             int rw = GetRenderWidth(), rh = GetRenderHeight();
             if (gPT.W != rw || gPT.H != rh) { gPT.initBuffers(rw, rh); }
 
-            bakeVoxels(P, trk, u, trkSpineC, trkRailC, trkTrainBody, ptBakeBuf);
+            bakeVoxels(P, trk, u, ptBakeBuf);
 
             Vector3 cdir = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
             Vector3 crt  = Vector3Normalize(Vector3CrossProduct(cdir, cam.up));
@@ -2147,7 +2386,7 @@ int main(int argc, char **argv) {
             float ax    = sw - aw * 0.5f - sw * 0.055f + sway;
             float baseY = shh + 10.0f + bobY;
             float sleeveH = shh * 0.26f, skinH = shh * 0.085f, dep = aw * 0.5f;
-            isoBox(ax, baseY, aw, sleeveH, dep, trkTrainBody);
+            isoBox(ax, baseY, aw, sleeveH, dep, trk.trainBody);
             isoBox(ax - aw * 0.08f, baseY - sleeveH, aw, skinH, dep,
                    Color{ 236, 198, 162, 255 });
 
@@ -2185,32 +2424,13 @@ int main(int argc, char **argv) {
         }
 
         if (dispatched && !paused) {
-            // Shared honest-name diagnosis (rideElemName in presentation.cpp): tag + actual local
+            // Shared honest-name diagnosis (rideElemName in coaster_track.cpp): tag + actual local
             // geometry (pitch, height over ground/water), so SPLASHDOWN only shows when genuinely
             // skimming water, a valley-guarded high DIP relabels by pitch, a DROP forced up a
             // rising hillside reads CLIMB, etc. The Vulkan HUD calls the SAME function.
-            //
-            // Banner HYSTERESIS (user 2026-07-10: "element names forget to be shown"): the
-            // planner brackets named elements with short unnamed glue (connectors, conditioning
-            // lines), so the raw per-sample name flickers off right at element entries/exits.
-            // Hold the last name ~1.2 s through unnamed gaps; a NEW name replaces it instantly.
             bool special = false;
             const char *en = rideElemName(trk.tagAt(u), trk.tangent(u).y,
                                           P.y, gY, special);
-            static const char *bannerName = nullptr;
-            static bool bannerSpecial = false;
-            static double bannerUntil = 0.0;
-            double nowT = GetTime();
-            if (en) {
-                bannerName = en;
-                bannerSpecial = special;
-                bannerUntil = nowT + 1.2;
-            } else if (bannerName && nowT < bannerUntil) {
-                en = bannerName;
-                special = bannerSpecial;
-            } else {
-                bannerName = nullptr;
-            }
             if (en) {
                 int fs = 18;
                 int tw = MeasureText(en, fs);
@@ -2366,6 +2586,18 @@ int main(int argc, char **argv) {
             fflush(stdout);
             lastShot = true;
         }
+        if (jointShot && jointArmed) {
+            if (!jointCaptureFailed) {
+                rlDrawRenderBatchActive();
+                Image img = LoadImageFromScreen();
+                ExportImage(img, jointShotPath);
+                UnloadImage(img);
+                printf("jointshot %s -> %s -> %s\n",
+                       jointFromName, jointToName, jointShotPath);
+                fflush(stdout);
+            }
+            lastShot = true;
+        }
 
         EndDrawing();
         if (lastShot) break;
@@ -2392,8 +2624,6 @@ int main(int argc, char **argv) {
             fflush(stdout);
         }
     }
-    gTerrainMesh.finish(true);   // shutdown: join the worker before teardown
-
     if (benchMode && !gBenchFrameMs.empty()) {
         std::vector<float> sortedMs = gBenchFrameMs;
         std::sort(sortedMs.begin(), sortedMs.end());
@@ -2497,14 +2727,25 @@ int main(int argc, char **argv) {
     }
 
     gBaker.shutdown();
-    UnloadShader(gShadow.lit); UnloadShader(gShadow.depth);
-    for (int ci = 0; ci < SHADOW_CASCADES; ci++) rlUnloadFramebuffer(gShadow.fbo[ci]);
+    gPT.shutdown();
+    gTerrainMesh.shutdown();
+    trackRenderCache.unload();
+    gPostFX.shutdown();
+    gSky.shutdown();
+    gShadow.shutdown();
+    // gTerrainMat borrows gAtlas. Restore the default texture before freeing
+    // the material map array so UnloadMaterial cannot delete the atlas too.
+    if (gTerrainMat.maps) {
+        gTerrainMat.maps[MATERIAL_MAP_DIFFUSE].texture.id = rlGetTextureIdDefault();
+        UnloadMaterial(gTerrainMat);
+        gTerrainMat = {};
+    }
     UnloadTexture(gAtlas);
+    gAtlas = {};
     UnloadAudioStream(wind);
-    UnloadSound(sndCoin);
     UnloadSound(sndClack);
     UnloadSound(sndWhoosh);
     CloseAudioDevice();
     CloseWindow();
-    return 0;
+    return jointCaptureFailed ? 1 : 0;
 }

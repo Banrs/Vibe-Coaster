@@ -121,22 +121,15 @@ static void writeSVG(int seed, int n, const std::vector<int>& KD, const std::vec
 static void rollingSim(int seed, int& stallOut, bool& cliffFired) {
     g_rng = (uint32_t)seed * 2654435761u | 1u;
     Track t; t.reset();
-    float u = 0.5f, v = LAUNCH_V, dt = 1.0f/60.0f;
+    float u = 0.5f, v = 12.0f, dt = 1.0f/60.0f;
     int run = 0, maxRun = 0;
     cliffFired = false; int framesSinceCliff = 0;
     float sinceStation = 0; bool dispatched = true;
     for (int fr = 0; fr < 120000; fr++) {
-        t.ensureAhead(u + 16);
+        t.ensureFinalizedAhead(u + 16);
         float slope = t.tangent(u).y;
-        float acc = -GRAV*slope - DRAG*v*v - FRICTION;
-        v += acc*dt;
         unsigned char tg = t.tagAt(u);
-        if (tg == M_LAUNCH) v += 112.0f * fmaxf(0.0f, 1.0f - v/LAUNCH_V) * dt;
-        else if (tg == M_CLIMB && !t.chainAt(u) && v < CLIMB_V) v = fminf(v + 44.0f*dt, CLIMB_V);
-        if (tg == M_BOOST) v += 160.0f * fmaxf(0.0f, 1.0f - v/86.0f) * dt;
-        if (v < 30.0f && tg != M_STATION) v += 60.0f * fmaxf(0.0f, 1.0f - v/34.0f) * dt;   // anti-stall kicker tires (see simtest)
-        if (t.chainAt(u) && slope > 0.05f && v < CHAIN_V) v = fminf(v + 20*dt, CHAIN_V);
-        v = fmaxf(v, V_GUARD);
+        v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
 
         // stall = a genuinely stuck car mid-ride. Exclude station track / the braking approach into
         // a berth (v is deliberately ramped to 0 there) -- the legacy simtest never stations, so its
@@ -221,8 +214,8 @@ static SeedRes auditSeed(int seed) {
     // ---- STATIC WINDOW: 470 cps + per-cp derived arrays + sampled Catmull spline ----
     g_rng = (uint32_t)seed * 2654435761u | 1u;
     Track t; t.reset();
-    while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
-    int n = (int)t.cp.size();
+    t.ensureFinalizedAhead(469.0f);
+    int n = t.finalizedPointCount();
 
     // MC_DUMP_ELEM/MC_DUMP_SEEDS test instrument, REHOMED from the legacy --gaudit's identical
     // static 470-cp window (same env-var interface, same [dump] line format). Invocation:
@@ -245,7 +238,7 @@ static SeedRes auditSeed(int seed) {
                     float roll = 0.0f;
                     if (k < n - 1) {
                         Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
-                        Vector3 side = Vector3CrossProduct((Vector3){0,1,0}, tanv);
+                        Vector3 side = Vector3CrossProduct(Vector3{0, 1, 0}, tanv);
                         float sl = Vector3Length(side);
                         if (sl > 1e-4f) {
                             side = Vector3Scale(side, 1.0f/sl);
@@ -289,11 +282,21 @@ static SeedRes auditSeed(int seed) {
         int a = k; while (k < n && KD[k]==M_CLIMB) k++;
         int b = k-1;                              // climb run [a,b]
         int e = b, j = b+1, ggap = 0;             // extend through the following DROP/CLIFFDIVE crown
+        bool cliffApproach = false;
+        for (int q = a; q <= b && q < (int)t.spanRun.size(); ++q)
+            if (const Track::AnalyticRun *run = t.analyticRun(t.spanRun[q]))
+                if (run->kind == Track::MACRO_CLIFF_APPROACH) { cliffApproach = true; break; }
         while (j < n) {
-            if (KD[j]==M_DROP || KD[j]==M_CLIFFDIVE) { e = j; ggap = 0; j++; }
+            if (KD[j]==M_DROP || KD[j]==M_CLIFFDIVE) {
+                if (KD[j] == M_CLIFFDIVE) cliffApproach = true;
+                e = j; ggap = 0; j++;
+            }
             else if (ggap < 2 && KD[j]!=M_CLIMB)     { ggap++; j++; }
             else break;
         }
+        // The powered natural-ridge approach and its near-vertical dive are one
+        // planned cliff composite, not a launched top hat. Gate H owns it.
+        if (cliffApproach) continue;
         int w0 = a>0 ? a-1 : 0, w1 = e;
         int ap = w0; for (int q=w0;q<=w1;q++) if (Y[q] > Y[ap]) ap = q;
         float apexY = Y[ap], rise = apexY - Y[w0];
@@ -391,7 +394,18 @@ static SeedRes auditSeed(int seed) {
             int b=q-1;
             if (b-a+1 < 2 || b-a+1 > F_MAX_RUN) continue;
             bool exclude=false;
-            for (int r=a-2;r<=b+2;r++){ if(r<0||r>=n)continue; int kd=KD[r]; if(kd==M_LAUNCH||kd==M_BOOST||kd==M_STATION) exclude=true; }
+            for (int r=a-2;r<=b+2;r++){
+                if(r<0||r>=n)continue; int kd=KD[r];
+                if(kd==M_LAUNCH||kd==M_BOOST||kd==M_STATION||kd==M_DIP||
+                   kd==M_LOOP||kd==M_ROLL||kd==M_IMMEL||kd==M_STALL||
+                   kd==M_DIVELOOP||kd==M_COBRA||kd==M_HEARTLINE||
+                   kd==M_PRETZEL||kd==M_STENGEL||kd==M_BANANA||kd==M_CLIFFDIVE)
+                    exclude=true;
+                if (r < (int)t.spanRun.size())
+                    if (const Track::AnalyticRun *run = t.analyticRun(t.spanRun[r]))
+                        if (run->kind == Track::MACRO_DROP || run->kind == Track::MACRO_HILLS ||
+                            run->kind == Track::MACRO_TOP_HAT) exclude = true;
+            }
             if (exclude) continue;
             bool bankBefore=false, bankAfter=false;
             for (int r=a-5;r<a;r++){ if(r>=0 && valid[r] && fabsf(ROL[r])>20.0f) bankBefore=true; }
@@ -406,10 +420,17 @@ static SeedRes auditSeed(int seed) {
     // ===== Gate H: cliff dive (static geometry; census/sim fire folded in below) =====
     bool sawCliff=false;
     {
-        int a=-1,b=-1;
-        for (int q=0;q<n;q++) if (KD[q]==M_CLIFFDIVE){ if(a<0)a=q; b=q; }
-        if (a>=0) {
+        int q = 0;
+        while (q < n) {
+            if (KD[q] != M_CLIFFDIVE) { ++q; continue; }
+            int a = q;
+            while (q < n && KD[q] == M_CLIFFDIVE) ++q;
+            int b = q - 1;
             sawCliff=true;
+            // The fixed audit window can end in the middle of a streamed
+            // cliff. Census still verifies that it fires; shape metrics are
+            // meaningful only once the contiguous run has a real exit.
+            if (b == n - 1) continue;
             float crest=-1e9f, valley=1e9f;
             for (int q=(a>4?a-4:0);q<=b;q++) crest=fmaxf(crest,Y[q]);
             for (int q=a;q<=b;q++) valley=fminf(valley,Y[q]);

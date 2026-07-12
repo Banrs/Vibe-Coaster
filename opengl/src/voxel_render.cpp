@@ -384,7 +384,12 @@ struct TerrainMesh {
         ready = false;
         gCapBuckets.clear();
 
-        worker = std::thread([this, emit]() { gCapture = true; emit(); gCapture = false; ready = true; });
+        worker = std::thread([this, emit = std::forward<EmitFn>(emit)]() mutable {
+            gCapture = true;
+            emit();
+            gCapture = false;
+            ready = true;
+        });
     }
 
     void uploadOne(CapBucket &b) {
@@ -415,8 +420,9 @@ struct TerrainMesh {
     // block=false: poll — once the worker's CPU build is done, upload a handful of chunks
     // per call (spread across frames) so the main thread never stalls on hundreds of
     // UploadMesh calls at once; the previous chunks stay visible the whole time. block=true:
-    // finish everything synchronously now (first build / screenshot modes / shutdown, where
-    // complete chunks must exist immediately).
+    // finish everything synchronously now (first build / screenshot modes, where complete
+    // chunks must exist immediately). Shutdown/reset use discardPending() and never upload
+    // work that is about to be thrown away.
     void finish(bool block = false) {
         if (!building) return;
         if (uploadCursor == 0 && pendingBuckets.empty()) {
@@ -452,6 +458,37 @@ struct TerrainMesh {
         pendingBuckets.clear(); pendingChunks.clear(); uploadCursor = 0;
         keyCx = pendCx; keyCz = pendCz; keyU = pendU;
         building = false;
+    }
+
+    void discardPending() {
+        // The CPU emitter cannot be abandoned while it still writes gCapBuckets or
+        // references its captured build inputs. Join it, then discard its result without
+        // spending any time or VRAM on UploadMesh().
+        if (worker.joinable()) worker.join();
+        ready = false;
+        gCapBuckets.clear();
+        for (TerrainChunk &chunk : pendingChunks) UnloadMesh(chunk.mesh);
+        pendingChunks.clear();
+        pendingBuckets.clear();
+        uploadCursor = 0;
+        building = false;
+        pendCx = pendCz = pendU = 0;
+        keyCx = keyCz = keyU = INT_MIN;
+    }
+
+    void reset() {
+        discardPending();
+        for (TerrainChunk &chunk : chunks) UnloadMesh(chunk.mesh);
+        chunks.clear();
+        live = false;
+    }
+
+    void shutdown() {
+        reset();
+        // Release retained CPU capacity as well; unlike a ride reset, shutdown cannot
+        // benefit from reusing it.
+        std::vector<CapBucket>().swap(pendingBuckets);
+        std::vector<TerrainChunk>().swap(pendingChunks);
     }
 };
 static TerrainMesh gTerrainMesh;
@@ -590,4 +627,3 @@ static void drawTiledBox(int tile, Vector3 p, float w, float h, float l, Color c
                 drawCubeTex(tile, Vector3{ x0 + ix * sx, y0 + iy * sy, z0 + iz * sz },
                             sx, sy, sz, c);
 }
-

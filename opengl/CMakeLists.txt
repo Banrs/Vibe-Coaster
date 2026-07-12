@@ -17,26 +17,22 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(raylib)
 
-# Track V2 rewrite modules (opengl/COASTER_REWRITE.md). Separate translation
-# units on purpose: V2 escapes the V1 unity build and depends only on raymath.
-set(V2_TRACK_SOURCES
-  src/track/track_math.cpp
-  src/track/track_primitives.cpp
-  src/track/track_planner.cpp
-  src/track/track_terrain.cpp
-  src/track/track_validate.cpp
-  src/track/track_v2.cpp)
-
-add_executable(minecoaster src/main.cpp ${V2_TRACK_SOURCES})
+add_executable(minecoaster src/main.cpp)
 target_link_libraries(minecoaster raylib)
 
 set_target_properties(minecoaster PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR})
 
-# Standalone V2 acceptance harness (no window; exit 0 == pass). Run after
-# every track change: build, then ./v2track_tests from opengl/build.
-# -UNDEBUG: the emitters' consistency assertions must be LIVE in the harness
-# even though the game ships Release (-DNDEBUG).
-add_executable(v2track_tests src/track/track_tests.cpp ${V2_TRACK_SOURCES})
-target_link_libraries(v2track_tests raylib)
-target_compile_options(v2track_tests PRIVATE -UNDEBUG)
+include(CTest)
+if(BUILD_TESTING)
+  add_test(NAME v1_geometry_issues COMMAND minecoaster --v1issues 64)
+  add_test(NAME v1_legacy_audit COMMAND minecoaster --audit 64)
+  add_test(NAME v1_element_census COMMAND minecoaster --census 64)
+  add_test(NAME v1_launch_pacing COMMAND minecoaster --launchaudit)
+  add_test(
+    NAME v1_deterministic_export
+    COMMAND ${CMAKE_COMMAND}
+      -DEXE=$<TARGET_FILE:minecoaster>
+      -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/V1Determinism.cmake)
+endif()

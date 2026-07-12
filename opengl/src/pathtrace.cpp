@@ -45,14 +45,15 @@ struct PTSys {
     void initBuffers(int w, int h);
     void allocAtlas();
     void initLive(int rw, int rh);
+    void releaseLiveTarget();
     void setCoarseUniforms();
+    void shutdown();
 };
 static PTSys gPT;
 
 static inline float pt_srgb2lin(float c) { return powf(c, 2.2f); }
 
-static void bakeVoxels(Vector3 camCtr, const struct Track &trk, float u,
-                       float trainU, int nCars);
+static int   terrainH(float x, float z);
 
 void PTSys::initShaders() {
 
@@ -614,6 +615,10 @@ void PTSys::initShaders() {
 }
 
 void PTSys::initBuffers(int w, int h) {
+    if (accum.id) UnloadRenderTexture(accum);
+    if (ping.id) UnloadRenderTexture(ping);
+    accum = {};
+    ping = {};
     W = w; H = h;
 
     auto makeHDR = [&](RenderTexture2D &rt){
@@ -680,7 +685,14 @@ void PTSys::setCoarseUniforms() {
 
 static int PT_LIVE_DIV = 1;
 
+void PTSys::releaseLiveTarget() {
+    if (rtBuf.id) UnloadRenderTexture(rtBuf);
+    rtBuf = {};
+    rtW = rtH = 0;
+}
+
 void PTSys::initLive(int rw, int rh) {
+    releaseLiveTarget();
     allocAtlas();
     rtW = rw / PT_LIVE_DIV; rtH = rh / PT_LIVE_DIV;
     if (rtW < 1) rtW = 1; if (rtH < 1) rtH = 1;
@@ -699,6 +711,20 @@ void PTSys::initLive(int rw, int rh) {
     rlDisableFramebuffer();
     SetTextureFilter(rtBuf.texture, TEXTURE_FILTER_BILINEAR);
     setCoarseUniforms();
+}
+
+void PTSys::shutdown() {
+    if (accum.id) UnloadRenderTexture(accum);
+    if (ping.id) UnloadRenderTexture(ping);
+    releaseLiveTarget();
+    if (vox.id) UnloadTexture(vox);
+    if (trace.id) UnloadShader(trace);
+    if (resolve.id) UnloadShader(resolve);
+    if (rt.id) UnloadShader(rt);
+    if (rtBlit.id) UnloadShader(rtBlit);
+    accum = {}; ping = {}; rtBuf = {}; vox = {};
+    trace = {}; resolve = {}; rt = {}; rtBlit = {};
+    W = H = 0;
 }
 
 static Vector3 g_ptGridMin;
@@ -729,9 +755,11 @@ static void pt_biomeColor(float wx, float wz, int h, Color &capC, Color &bodyC) 
     capC = shade(capC, s); bodyC = shade(bodyC, s * 0.95f);
 }
 
-static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
-                          Color spineC, Color railC, Color trainBody,
+static void bakeVoxelsCPU(Vector3 camCtr, const Track &trk, float u,
                           std::vector<float> &buf, Vector3 &outGridMin) {
+
+    const int finalN = trk.finalizedPointCount();
+    const float finalMaxU = trk.maxFinalU();
 
     int baseY = (int)floorf(WATER_Y - 8.0f);
     outGridMin = Vector3{
@@ -742,16 +770,6 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
     Vector3 &g_ptGridMin = outGridMin;
 
     buf.assign((size_t)PT_ATLAS_W * PT_ATLAS_H * 4, 0.0f);
-
-    // Closed-route seam wrap (migration step 6): the bake window straddles the seam
-    // when the camera is near the station. Float accessors (pos/tangent/tag/chain)
-    // already wrap; index cp[]/kind[]/up[] through wrapIdx.
-    const int NSMP = (int)trk.cp.size();
-    const bool wrapU = trk.route.closed && NSMP > 1;
-    auto wrapIdx = [&](int i) -> int {
-        if (wrapU) { i %= NSMP; if (i < 0) i += NSMP; return i; }
-        return (i < 0) ? 0 : (i >= NSMP ? NSMP - 1 : i);
-    };
 
     auto putMat = [&](int gx, int gy, int gz, float r, float g, float b, float mat) {
         if (gx < 0 || gy < 0 || gz < 0 || gx >= PT_NX || gy >= PT_NY || gz >= PT_NZ) return;
@@ -783,7 +801,7 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
         const float BORE = 4.5f;
         const float DEEPR = BORE + 6.0f;
         int brad = (int)ceilf(DEEPR / PT_VOX) + 1;
-        for (float su = u - 112.0f; su <= u + 224.0f; su += 2.1f) {   // metres now (~14x); pos() wraps the seam
+        for (float su = fmaxf(u - 8.0f, 0.0f); su <= fminf(u + 16.0f, finalMaxU); su += 0.15f) {
             Vector3 ps = trk.pos(su);
             float lo = ps.y - 4.0f, hi = ps.y + 4.5f;
             int sgx = (int)floorf((ps.x - g_ptGridMin.x) / PT_VOX);
@@ -852,7 +870,7 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
     int ccx = (int)floorf(camCtr.x / CELL), ccz = (int)floorf(camCtr.z / CELL);
     auto treeOverlapsTrack = [&](float wx, float wz, float y0, float y1, float radius) {
         float r2 = radius * radius;
-        for (float su = u - 112.0f; su <= u + 224.0f; su += 2.52f) {   // metres now (~14x); pos() wraps the seam
+        for (float su = fmaxf(u - 8.0f, 0.0f); su <= fminf(u + 16.0f, finalMaxU); su += 0.18f) {
             Vector3 ps = trk.pos(su);
             float dx = ps.x - wx, dz = ps.z - wz;
             if (dx * dx + dz * dz > r2) continue;
@@ -889,8 +907,7 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
         if (hashf(cx * 9 + 7, cz * 9 + 3) >= treeDen) continue;
 
         bool clear = true;
-        for (int qv = (int)(u - 28); qv <= (int)(u + 168); qv++) {   // metres now (~14x); wrap the seam
-            int q = wrapIdx(qv);
+        for (int q = (int)fmaxf(u - 2, 0); q <= (int)(u + 12) && q < finalN; q++) {
             float tx = trk.cp[q].x - wx, tz = trk.cp[q].z - wz;
             if (tx*tx + tz*tz < 56) { clear = false; break; }
         }
@@ -898,7 +915,8 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
         if (treeType == 1 && hashf(cx*9+7,cz*9+3) > treeDen*0.5f) treeType = 0;
         if (treeOverlapsTrack(wx, wz, top, top + 6.0f, 8.0f)) continue;
 
-        if (treeInPlatform(wx, wz, trk.startPos, trk.startYaw)) continue;   // sole platform = seam
+        if (treeInPlatform(wx, wz, trk.startPos, trk.startYaw)) continue;
+        if (trk.stationActive && treeInPlatform(wx, wz, trk.stationPos, trk.stationYaw)) continue;
         Color trunk, leaf;
         switch (treeType) {
             case 0: trunk = WOOD; leaf = LEAF; break;
@@ -944,13 +962,15 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
         right = (rl < 1e-3f) ? Vector3{1,0,0} : Vector3Scale(right, 1.0f / rl);
     };
 
-    int sk = (int)(u - 112.0f), ek = (int)(u + 196.0f);   // metres now (~14x); float accessors wrap the seam
+    int sk = (int)fmaxf(u - 8.0f, 0.0f);
+    int ek = (int)fminf(u + 14.0f, finalMaxU);
     for (int k = sk; k <= ek; k++) {
-        float segLen = fmaxf(trk.speedScale((float)k + 0.5f), 0.01f);
+        float segLen = fmaxf(trk.speedScale(k + 0.5f), 0.01f);
         int nSmp = (int)ceilf(segLen / 1.2f);
         if (nSmp < 1) nSmp = 1; else if (nSmp > 64) nSmp = 64;
-        bool chain = trk.chainAt((float)k + 0.5f);
-        unsigned char segTag = trk.tagAt((float)k + 0.5f);
+        int ki = k < finalN ? k : finalN - 1;
+        bool chain = ki >= 0 && trk.chainf[ki] != 0;
+        unsigned char segTag = (ki >= 0 && ki < (int)trk.kind.size()) ? trk.kind[ki] : 0;
         bool poweredSpine = (segTag == M_LAUNCH || segTag == M_BOOST);
         for (int j = 0; j < nSmp; j++) {
             float uu = k + (j + 0.5f) / (float)nSmp;
@@ -958,9 +978,9 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
             float rl = segLen / nSmp + 0.22f;
             if (poweredSpine)
                 stampBox(Vector3Add(p, Vector3Scale(up, -0.30f)), right, up, f,
-                         0.42f, 0.58f, rl, spineC);
-            stampBox(Vector3Add(p, Vector3Scale(right, -0.55f)), right, up, f, 0.24f, 0.24f, rl, railC);
-            stampBox(Vector3Add(p, Vector3Scale(right,  0.55f)), right, up, f, 0.24f, 0.24f, rl, railC);
+                         0.42f, 0.58f, rl, trk.spineC);
+            stampBox(Vector3Add(p, Vector3Scale(right, -0.55f)), right, up, f, 0.24f, 0.24f, rl, trk.railC);
+            stampBox(Vector3Add(p, Vector3Scale(right,  0.55f)), right, up, f, 0.24f, 0.24f, rl, trk.railC);
             if ((j & 1) == 0)
                 stampBox(Vector3Add(p, Vector3Scale(up, -0.13f)), right, up, f,
                          1.36f, 0.18f, 0.46f, Color{ 96, 99, 108, 255 });
@@ -970,15 +990,14 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
         }
     }
 
-    int i0 = (int)(u - 112.0f), i1 = (int)(u + 196.0f);   // metres now (~14x); wrap the seam
-    for (int iv = i0; iv <= i1; iv++) {
-        int i = wrapIdx(iv);
+    int i0 = (int)fmaxf(1.0f, u - 8.0f), i1 = (int)(u + 14.0f);
+    for (int i = i0; i <= i1 && i + 1 < finalN; i++) {
         Vector3 p = trk.cp[i];
         unsigned char tg = trk.kind[i];
         if ((tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL) && trk.up[i].y < 0.35f) continue;
         float g = groundTopAt(p.x, p.z);
         if (p.y - g < 1.5f) continue;
-        Vector3 t = trk.tangent((float)i);   // analytic, seam-safe
+        Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
         Vector3 lat = Vector3CrossProduct(Vector3{ t.x, 0, t.z }, Vector3{ 0, 1, 0 });
         float ll = Vector3Length(lat);
         lat = (ll < 1e-3f) ? Vector3{1,0,0} : Vector3Scale(lat, 1.0f / ll);
@@ -1016,7 +1035,7 @@ static void bakeVoxelsCPU(Vector3 camCtr, const TrackV2 &trk, float u,
         float ui = (i == 0) ? u : backUProxy(u, i * 4.2f);
         Vector3 p, f, up, right; frameAt(ui, p, f, up, right);
         stampBox(Vector3Add(p, Vector3Scale(up, 0.55f)), right, up, f,
-                 2.0f, 1.2f, 3.4f, trainBody);
+                 2.0f, 1.2f, 3.4f, trk.trainBody);
         stampBox(Vector3Add(p, Vector3Scale(up, 1.25f)), right, up, f,
                  1.5f, 0.7f, 2.0f, Color{ 32, 34, 40, 255 });
     }
@@ -1055,10 +1074,9 @@ static inline void uploadVoxels(const std::vector<float> &buf) {
                     RL_PIXELFORMAT_UNCOMPRESSED_R32G32B32A32, buf.data());
 }
 
-static void bakeVoxels(Vector3 camCtr, const TrackV2 &trk, float u,
-                       Color spineC, Color railC, Color trainBody,
+static void bakeVoxels(Vector3 camCtr, const Track &trk, float u,
                        std::vector<float> &buf) {
-    bakeVoxelsCPU(camCtr, trk, u, spineC, railC, trainBody, buf, g_ptGridMin);
+    bakeVoxelsCPU(camCtr, trk, u, buf, g_ptGridMin);
     uploadVoxels(buf);
 }
 
@@ -1070,12 +1088,7 @@ struct AsyncBaker {
     bool   stop      = false;
     bool   hasJob    = false;
     bool   ready     = false;
-    // NOTE: jobTrk is a whole-TrackV2 copy per request (the finished dense route:
-    // ~10 k Samples + geometry mirrors, a few hundred KB). Requests fire only when
-    // the camera has moved REBAKE_DIST, on a background thread, so the copy is off
-    // the frame path — acceptable, but a windowed snapshot is the lever if it grows.
-    Vector3 jobCtr{}; TrackV2 jobTrk; float jobU = 0;
-    Color jobSpineC{}, jobRailC{}, jobTrainBody{};
+    Vector3 jobCtr{}; Track jobTrk; float jobU = 0;
     std::vector<float> back; Vector3 backGridMin{};
 
     void start() {
@@ -1083,15 +1096,14 @@ struct AsyncBaker {
         worker = std::thread([this]{
             std::vector<float> local;
             for (;;) {
-                Vector3 ctr; TrackV2 trk; float u; Color spineC, railC, trainBody;
+                Vector3 ctr; Track trk; float u;
                 {
                     std::unique_lock<std::mutex> lk(m);
                     cv.wait(lk, [this]{ return hasJob || stop; });
                     if (stop) return;
                     ctr = jobCtr; trk = jobTrk; u = jobU;
-                    spineC = jobSpineC; railC = jobRailC; trainBody = jobTrainBody;
                 }
-                Vector3 gm; bakeVoxelsCPU(ctr, trk, u, spineC, railC, trainBody, local, gm);
+                Vector3 gm; bakeVoxelsCPU(ctr, trk, u, local, gm);
                 {
                     std::unique_lock<std::mutex> lk(m);
                     back.swap(local); backGridMin = gm;
@@ -1101,13 +1113,10 @@ struct AsyncBaker {
         });
     }
 
-    bool request(Vector3 ctr, const TrackV2 &trk, float u,
-                 Color spineC, Color railC, Color trainBody) {
+    bool request(Vector3 ctr, const Track &trk, float u) {
         std::unique_lock<std::mutex> lk(m);
         if (hasJob) return false;
-        jobCtr = ctr; jobTrk = trk; jobU = u;
-        jobSpineC = spineC; jobRailC = railC; jobTrainBody = trainBody;
-        hasJob = true;
+        jobCtr = ctr; jobTrk = trk; jobU = u; hasJob = true;
         cv.notify_one();
         return true;
     }

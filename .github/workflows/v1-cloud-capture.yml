@@ -1,0 +1,61 @@
+name: V1 cloud capture
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "opengl/**"
+      - ".github/workflows/v1-cloud-capture.yml"
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install software-rendering dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libasound2-dev libgl1-mesa-dev \
+            libx11-dev libxrandr-dev libxi-dev libxinerama-dev libxcursor-dev \
+            xvfb mesa-utils librsvg2-bin
+
+      - name: Build restored legacy V1
+        run: |
+          cmake -S opengl -B opengl/build-cloud -DCMAKE_BUILD_TYPE=Release
+          cmake --build opengl/build-cloud --parallel 4
+
+      - name: Run V1 audits
+        working-directory: opengl
+        run: |
+          mkdir -p audit captures
+          ctest --test-dir build-cloud --output-on-failure
+          ./minecoaster --audit 8
+          ./minecoaster --launchaudit > captures/launch-pacing.txt
+          ./minecoaster --pacing > captures/ride-pacing.txt
+          rsvg-convert audit/seed1.svg -o captures/audit-seed1.png
+          rsvg-convert audit/seed2.svg -o captures/audit-seed2.png
+
+      - name: Capture elements and transition joints
+        working-directory: opengl
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          MESA_GL_VERSION_OVERRIDE: "3.3"
+          MESA_GLSL_VERSION_OVERRIDE: "330"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --elementshot TOPHAT captures
+          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --elementshot HILLS captures
+          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --elementshot LOOP captures
+          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --jointshot ANY FLAT captures
+          xvfb-run -a -s "-screen 0 1280x720x24" ./minecoaster --jointshot FLAT ANY captures
+
+      - name: Upload audit and in-game screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1-audit-and-element-screenshots
+          path: |
+            opengl/captures/**
+            opengl/audit/*.svg
+          if-no-files-found: error

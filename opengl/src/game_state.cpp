@@ -23,19 +23,16 @@
 #include <thread>
 #include <atomic>
 #include <climits>
+#include <memory>
+#include <utility>
 
 // V1 shared physics constants. V2 will own a renderer-neutral configuration.
 #include "ride_constants.h"
-#include "terrain_field.h"
 static const float CELL      = 1.0f;
 static const int   TERRA_R   = 320;   // 20 chunks * 16 m/chunk (TERRAIN_BUCKET) render distance
 
-static const float WATER_Y   = kTerraWaterY; // low basin water, not the default height of the entire world
-static const float TERRA_MAX  = kTerraMax;    // both owned by terrain_field.h since the 2026-07-10 extraction
-
-// Shared water predicate for host consumers. Rehomed here from coaster_track.cpp
-// (migration step 6) so it survives the V1 generator's step-7 deletion.
-static inline bool submergedGround(float groundTopY) { return groundTopY <= WATER_Y + 0.01f; }
+static const float WATER_Y   = 18.0f;   // low basin water, not the default height of the entire world
+static const float TERRA_MAX  = 280.0f;
 
 static const Vector3 WUP = { 0, 1, 0 };
 
@@ -105,6 +102,53 @@ enum SegMode { M_FLAT, M_CLIMB, M_DROP, M_HILLS, M_TURN, M_LOOP, M_ROLL,
                M_PRETZEL, M_STENGEL, M_BANANA,
                M_CLIFFDIVE,
                M_COUNT };
+
+// One propulsion/energy law shared by live simulation, generator prediction,
+// and headless audits. Geometry chooses where powered track exists; this code
+// alone determines what that track does to speed.
+static float coastAcceleration(float speed, float tangentY) {
+    return -GRAV * tangentY - DRAG * speed * speed - FRICTION;
+}
+
+static float applyTrackDrive(float speed, unsigned char tag, unsigned char drive,
+                             float tangentY, float dt) {
+    if (tag == M_LAUNCH && speed < LAUNCH_V) {
+        // LAUNCH_ACCEL is a measured-profile NET acceleration. Cancel the
+        // coasting loss already integrated this frame so grade/drag do not
+        // silently change the hydraulic reference time.
+        float thrust = LAUNCH_ACCEL - coastAcceleration(speed, tangentY);
+        speed = fminf(speed + thrust * dt, LAUNCH_V);
+    } else if (tag == M_CLIMB && drive == 2 && speed < CLIFF_LSM_V) {
+        float thrust = BOOST_ACCEL - coastAcceleration(speed, tangentY);
+        speed = fminf(speed + thrust * dt, CLIFF_LSM_V);
+    } else if (tag == M_CLIMB && drive == 0 && speed < CLIMB_V) {
+        speed = fminf(speed + 44.0f * dt, CLIMB_V);
+    }
+
+    if (tag == M_BOOST) {
+        // Uphill authored BOOST track is the Falcon-style 150 km/h cliff LSM;
+        // ordinary near-level boosters use Red Force's 180 km/h LSM profile.
+        float target = tangentY > 0.05f ? CLIFF_LSM_V : BOOST_V;
+        if (speed < target) {
+            float thrust = BOOST_ACCEL - coastAcceleration(speed, tangentY);
+            speed = fminf(speed + thrust * dt, target);
+        }
+    }
+    if (speed < 30.0f && tag != M_STATION && tag != M_LAUNCH && tag != M_BOOST)
+        speed += 60.0f * fmaxf(0.0f, 1.0f - speed / 34.0f) * dt;
+
+    if (drive == 1 && tangentY > 0.05f) {
+        float liftV = tangentY > 0.55f ? 27.0f : CHAIN_V;
+        if (speed < liftV) speed = fminf(speed + 20.0f * dt, liftV);
+    }
+    return fmaxf(speed, V_GUARD);
+}
+
+static float integrateRideSpeed(float speed, float tangentY, unsigned char tag,
+                                unsigned char drive, float dt) {
+    speed += coastAcceleration(speed, tangentY) * dt;
+    return applyTrackDrive(speed, tag, drive, tangentY, dt);
+}
 
 static int   gForceElem  = -1;
 static float gForceSpeed = 0.0f;

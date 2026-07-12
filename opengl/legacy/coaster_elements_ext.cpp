@@ -1,4 +1,4 @@
-    void initPretzel() {
+void initPretzel() {
         mode = M_PRETZEL;
         pzF    = headingVec();
         pzSide = Vector3Normalize(Vector3CrossProduct(WUP, pzF));
@@ -28,7 +28,7 @@
                  pzBase.z + pzF.z * fwd + pzSide.z * lat };
 
         Vector3 upv = Vector3Normalize(Vector3{ pzF.x * (-sinf(ang)), cosf(ang), pzF.z * (-sinf(ang)) });
-        if (--remain <= 0) { gyaw = atan2f(pzF.x, pzF.z); enterDrop(irnd(2, 4)); }
+        if (--remain <= 0) { gyaw = atan2f(pzF.x, pzF.z); enterDrop(); }
         return upv;
     }
 
@@ -137,7 +137,7 @@
                      Vector3CrossProduct(H, WUP).z * sdSide.z) >= 0 ? 1.0f : -1.0f;
         Vector3 upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(beta)),
                                                   Vector3Scale(latAx, sinf(beta) * sgn)));
-        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); enterDrop(irnd(2, 3)); }
+        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); enterDrop(); }
         return upv;
     }
 
@@ -212,6 +212,6 @@
         Vector3 latAx = Vector3Normalize(Vector3CrossProduct(H, WUP));
         Vector3 upv = Vector3Normalize(Vector3Add(Vector3Scale(WUP, cosf(beta)),
                                                   Vector3Scale(latAx, sinf(beta))));
-        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); enterDrop(irnd(2, 3)); }
+        if (--remain <= 0) { gyaw = atan2f(H.x, H.z); enterDrop(); }
         return upv;
     }

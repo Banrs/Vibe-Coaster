@@ -618,10 +618,25 @@ int main(int argc, char **argv) {
     if (captureShot && getenv("MC_CAPTURE_FAST")) {
         trk.ensureFinalizedAhead(520.0f);
         if (elemShot) {
+            float bestMetric = -1e30f;
             for (float q = 0.5f; q <= trk.maxFinalU(); q += 0.25f) {
                 if (trk.tagAt(q) == (unsigned char)elemShotElem) {
-                    captureStartU = fmaxf(0.5f, q - 2.0f);
-                    break;
+                    Vector3 qp = trk.pos(q);
+                    float alt = qp.y - groundTopAt(qp.x, qp.z);
+                    float metric = alt;
+                    switch (elemShotElem) {
+                        case M_LOOP: case M_ROLL: case M_IMMEL: case M_DIVELOOP:
+                        case M_COBRA: case M_PRETZEL: case M_WINGOVER:
+                        case M_HEARTLINE: case M_BANANA: case M_STALL:
+                            metric = -trk.upAt(q).y; break;
+                        case M_DIP: case M_HELIX:
+                            metric = -alt; break;
+                        default: break;
+                    }
+                    if (metric > bestMetric) {
+                        bestMetric = metric;
+                        captureStartU = q;
+                    }
                 }
             }
         } else if (jointShot) {
@@ -1157,7 +1172,11 @@ int main(int argc, char **argv) {
                 default:
                     score =  alt;   break;
             }
-            if (onElem && frame > 90) {
+            if (getenv("MC_CAPTURE_FAST") && onElem && frame > 4) {
+                elemBest = score;
+                elemBestCam = cam;
+                elemArmed = true;
+            } else if (onElem && frame > 90) {
                 if (score > elemBest) { elemBest = score; elemBestAge = 0; elemBestCam = cam; }
                 else                  { elemBestAge++; }
 
@@ -1173,7 +1192,8 @@ int main(int argc, char **argv) {
                 unsigned char a = trk.tagAt(q), b = trk.tagAt(q + 0.25f);
                 bool fromMatch = jointFrom == -2 || a == (unsigned char)jointFrom;
                 bool toMatch   = jointTo   == -2 || b == (unsigned char)jointTo;
-                if (frame > 120 && a != b && fromMatch && toMatch) {
+                int warmupFrames = getenv("MC_CAPTURE_FAST") ? 4 : 120;
+                if (frame > warmupFrames && a != b && fromMatch && toMatch) {
                     float ju = q + 0.125f;
                     Vector3 jp = trk.pos(ju);
                     Vector3 jt = trk.tangent(ju);

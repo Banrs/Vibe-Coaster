@@ -12,8 +12,8 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES    OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   raylib
-  GIT_REPOSITORY https://github.com/raysan5/raylib.git
-  GIT_TAG 5.5
+  URL https://github.com/raysan5/raylib/archive/refs/tags/5.5.tar.gz
+  DOWNLOAD_EXTRACT_TIMESTAMP FALSE
 )
 FetchContent_MakeAvailable(raylib)
 
@@ -26,7 +26,7 @@ set_target_properties(minecoaster PROPERTIES
 include(CTest)
 if(BUILD_TESTING)
   add_test(NAME v1_geometry_issues COMMAND minecoaster --v1issues 64)
-  add_test(NAME v1_legacy_audit COMMAND minecoaster --audit 64)
+  add_test(NAME v1_audit COMMAND minecoaster --audit 64)
   add_test(NAME v1_element_census COMMAND minecoaster --census 64)
   add_test(NAME v1_launch_pacing COMMAND minecoaster --launchaudit)
   add_test(NAME v1_force_envelope COMMAND minecoaster --forceaudit 64)

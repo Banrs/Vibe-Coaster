@@ -1,4 +1,4 @@
-# Legacy V1 coaster
+# V1 Coaster
 
 These files are the later **July 9–10 V1 procedural-track generator**. This is the active V1
 target and is compiled directly by `src/main.cpp`.

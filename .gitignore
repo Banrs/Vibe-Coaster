@@ -4,8 +4,8 @@ minecoaster
 *.png
 *.o
 .DS_Store
-legacy/profile_seed*.svg
-legacy/audit/
+profile_seed*.svg
+audit/
 
 # Stray local coaster binaries.
-legacy/minecoaster_*
+minecoaster_*

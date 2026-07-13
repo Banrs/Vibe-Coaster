@@ -21,8 +21,8 @@ namespace v1profile {
 constexpr double kPi = 3.14159265358979323846264338327950288;
 constexpr double kDegreesToRadians = kPi / 180.0;
 constexpr double kRadiansToDegrees = 180.0 / kPi;
-constexpr double kTopHatMinFaceDegrees = 80.0;
-constexpr double kTopHatMaxFaceDegrees = 85.0;
+constexpr double kTopHatMinFaceDegrees = 60.0;
+constexpr double kTopHatMaxFaceDegrees = 65.0;
 constexpr std::size_t kMaxSegments = 24;
 constexpr std::size_t kMaxChainHills = 4;
 
@@ -539,10 +539,10 @@ inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
     if (!(ascentRise > 0.0) || !(descentDrop > 0.0)) return result;
 
     // FVD-style geometry: integrate a continuous grade program instead of
-    // inserting constant-grade lines.  Allocate 65% of each rise to the
-    // pull-up and 35% to the crown; the analytical raised-cosine integrals
+    // inserting constant-grade lines.  Allocate 75% of each rise to the
+    // pull-up and 25% to the crown; the analytical raised-cosine integrals
     // solve the element without a positional correction or an overshoot.
-    constexpr double crownRiseFraction = 0.35;
+    constexpr double crownRiseFraction = 0.25;
     const double entryLength = 2.0 * (1.0 - crownRiseFraction) * ascentRise / faceGrade;
     const double crownLength = crownRiseFraction * ascentRise /
                                ((1.0 / kPi) * faceGrade);

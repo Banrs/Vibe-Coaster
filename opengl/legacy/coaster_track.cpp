@@ -232,7 +232,9 @@ struct Track {
         v1profile::TopHatSpec spec;
         spec.startHeight = gpos.y;
         spec.endHeight = gpos.y;
-        spec.faceDegrees = frnd(81.0f, 84.0f);
+        // Ordinary launch top hats stay at or below 65 degrees.  The near-
+        // vertical face is reserved for the signature cliff dive.
+        spec.faceDegrees = frnd(62.0f, 65.0f);
         spec.entryTransitionLength = major ? 42.0 : 34.0;
         spec.crownLength = major ? 54.0 : 44.0;
         spec.exitTransitionLength = major ? 44.0 : 36.0;
@@ -1281,7 +1283,9 @@ struct Track {
         prevElem = lastElem;
         lastElem = m;
         lastUsedAt[m] = ++elemSeq;
-        if (isBudgetInversion(m)) hardInvCount++;   // count toward the per-lap inversion budget invBudget (eligibleElem)
+        // Inversion quota is committed by genPoint() when the first authored
+        // sample is emitted.  Counting a scheduler pick here let a deferred or
+        // replaced pick satisfy the floor without ever appearing in kind[].
         quotaMet |= quotaBit(m);                    // mark the >=1/lap family this pick satisfies
         if (m == M_HELIX)    helixLap = true;
         if (m == M_WINGOVER) wingLap  = true;
@@ -2938,6 +2942,8 @@ struct Track {
             if (!beginDropProfile()) { mode = M_FLAT; remain = MIN_CONN; }
         }
         unsigned char tag = (unsigned char)mode;
+        if (isBudgetInversion((SegMode)tag) && tag != lastGenMode)
+            hardInvCount++;
         unsigned char ch  = 0;
         const bool macroSample = macroKind != MACRO_NONE;
         const MacroProfileKind sampledMacroKind = macroKind;

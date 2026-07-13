@@ -62,16 +62,22 @@ static void writeSVG(int seed, int n, const std::vector<int>& KD, const std::vec
                      const std::vector<float>& TR, const std::vector<float>& PIT,
                      const std::vector<float>& ROL, const std::vector<std::pair<int,int>>& fails) {
     const float W = 1600, pad = 48, legendH = 34;
-    const float ph = 200, gap = 26;   // panel height / gap
-    float p1y = legendH + 6, p2y = p1y + ph + gap, p3y = p2y + ph + gap;
+    const float ph = 200, terrainPh = 72, gap = 26;   // panel height / gap
+    float p1y = legendH + 6, pTy = p1y + ph + gap;
+    float p2y = pTy + terrainPh + gap, p3y = p2y + ph + gap;
     float H = p3y + ph + 20;
-    float ymin = 1e9f, ymax = -1e9f;
-    for (int k=0;k<n;k++){ ymin=fminf(ymin,fminf(Y[k],TR[k])); ymax=fmaxf(ymax,fmaxf(Y[k],TR[k])); }
+    float ymin = 1e9f, ymax = -1e9f, trmin = 1e9f, trmax = -1e9f;
+    for (int k=0;k<n;k++){
+        ymin=fminf(ymin,fminf(Y[k],TR[k])); ymax=fmaxf(ymax,fmaxf(Y[k],TR[k]));
+        trmin=fminf(trmin,TR[k]); trmax=fmaxf(trmax,TR[k]);
+    }
     if (ymax-ymin < 1) ymax = ymin + 1;
+    if (trmax-trmin < 1) trmax = trmin + 1;
     char path[256]; snprintf(path,sizeof path,"audit/seed%d.svg",seed);
     FILE* f = fopen(path,"w"); if (!f) return;
     auto X = [&](float k){ return pad + k*(W-2*pad)/fmaxf((float)(n-1),1.0f); };
     auto Y1 = [&](float y){ return p1y+ph - (y-ymin)/(ymax-ymin)*ph; };
+    auto YT = [&](float y){ return pTy+terrainPh - (y-trmin)/(trmax-trmin)*terrainPh; };
     auto Y2 = [&](float d){ return p2y+ph*0.5f - Clamp(d,-95.0f,95.0f)/95.0f*(ph*0.5f); };   // pitch panel
     auto Y3 = [&](float d){ return p3y+ph*0.5f - Clamp(d,-185.0f,185.0f)/185.0f*(ph*0.5f); }; // roll panel
     fprintf(f,"<svg xmlns='http://www.w3.org/2000/svg' width='%.0f' height='%.0f' viewBox='0 0 %.0f %.0f'>",W,H,W,H);
@@ -89,6 +95,12 @@ static void writeSVG(int seed, int n, const std::vector<int>& KD, const std::vec
     for (int k=1;k<n;k++)
         fprintf(f,"<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='%s' stroke-width='2.2'/>",
                 X((float)(k-1)),Y1(Y[k-1]),X((float)k),Y1(Y[k]),kcol(KD[k]));
+    // Terrain-only relief uses its own honest min/max.  The physical overlay
+    // above keeps the common scale, while this strip prevents a 240 m top hat
+    // from visually crushing 70-120 m terrain into an apparently flat floor.
+    fprintf(f,"<polygon fill='#2a3b1e' stroke='#6f9448' stroke-width='1.4' points='");
+    for (int k=0;k<n;k++) fprintf(f,"%.1f,%.1f ",X((float)k),YT(TR[k]));
+    fprintf(f,"%.1f,%.1f %.1f,%.1f'/>",X((float)(n-1)),pTy+terrainPh,X(0),pTy+terrainPh);
     // panel 2: pitch with +-65 and 0 reference lines
     for (float ref : {-65.0f,0.0f,65.0f})
         fprintf(f,"<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='%s' stroke-width='1' stroke-dasharray='4 4'/>",
@@ -104,6 +116,7 @@ static void writeSVG(int seed, int n, const std::vector<int>& KD, const std::vec
     fprintf(f,"'/>");
     // panel labels + legend
     fprintf(f,"<text x='%.0f' y='%.0f' fill='#cfe' font-family='monospace' font-size='12'>seed %d  elevation %.0f-%.0f m  (red band = failed-gate cp range)</text>",pad,p1y-4,seed,ymin,ymax);
+    fprintf(f,"<text x='%.0f' y='%.0f' fill='#adcf85' font-family='monospace' font-size='11'>terrain-only relief %.0f-%.0f m (independent scale; elevation overlay above remains 1:1)</text>",pad,pTy-4,trmin,trmax);
     fprintf(f,"<text x='%.0f' y='%.0f' fill='#9df' font-family='monospace' font-size='11'>pitch deg (+-65 ref)</text>",pad,p2y-4);
     fprintf(f,"<text x='%.0f' y='%.0f' fill='#d9f' font-family='monospace' font-size='11'>roll deg (0 ref)</text>",pad,p3y-4);
     struct { const char* n; int k; } LG[] = {{"powered",M_CLIMB},{"drop/dip",M_DROP},{"airtime",M_HILLS},

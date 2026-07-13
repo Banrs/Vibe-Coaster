@@ -65,6 +65,7 @@ struct HatMetric {
     float apex = 0.0f, rise = 0.0f, drop = 0.0f;
     float climbFace = 0.0f, dropFace = 0.0f;
     float wrongWay = 0.0f;
+    float straightFace = 0.0f;
     int reversals = 0;
 };
 
@@ -387,6 +388,13 @@ static void inspectTopHats(const std::vector<Sample> &v, const std::vector<Extre
         h.climbFace = strongFace(v, left, e, 1);
         h.dropFace = -strongFace(v, e, right, -1);
         h.reversals = reversalCount(v, left, right);
+        float straight = 0.0f;
+        for (int i = left + 1; i <= right; ++i) {
+            bool tiltedLine = fabsf(v[i].pitch) > 10.0f * PI / 180.0f &&
+                               fabsf(v[i].kVert) < 0.00005f;
+            straight = tiltedLine ? straight + (v[i].s - v[i - 1].s) : 0.0f;
+            h.straightFace = fmaxf(h.straightFace, straight);
+        }
         for (int i = left + 1; i <= e; ++i) if (v[i].pitch < -2.0f*PI/180.0f)
             h.wrongWay += v[i].s - v[i-1].s;
         for (int i = e + 1; i <= right; ++i) if (v[i].pitch > 2.0f*PI/180.0f)
@@ -397,7 +405,8 @@ static void inspectTopHats(const std::vector<Sample> &v, const std::vector<Extre
         // These are V1's explicit top-hat invariants: sub-300 m crest, real steep faces, one
         // monotone rise/drop, and no more than the expected pull-up/crown/pull-out sign sequence.
         if (h.apex >= 300.0f || h.climbFace < 50.0f || h.dropFace > -50.0f ||
-            h.wrongWay > 12.0f || h.reversals > 4) ++m.badHats;
+            h.wrongWay > 12.0f || h.reversals > 4 || h.straightFace > 32.0f)
+            ++m.badHats;
     }
 }
 
@@ -520,12 +529,13 @@ int run(int seeds) {
         const HatMetric &h = m.primaryHat;
         printf("[v1-geo] seed%d final=%d len=%.0fm immutable=%s "
                "shelf=%d/%d incline=%d rev=%d/%d(%d/%d) stub=%d/%d bankgap=%d "
-               "hat=%d bad=%d drop=%.0fm face=%.0f/%+.0f wrong=%.0fm hrev=%d hard=%d",
+               "hat=%d bad=%d drop=%.0fm face=%.0f/%+.0f line=%.0fm wrong=%.0fm hrev=%d hard=%d",
                seed, m.finalPoints, m.length, m.immutable ? "yes" : "NO",
                m.crestShelves, m.valleyShelves, m.inclinedTroughs,
                m.verticalBursts, m.planBursts, m.maxVerticalFlips, m.maxPlanFlips,
                m.shortFlats, m.shortDrops, m.bankGaps, m.hats, m.badHats,
-               h.drop, h.climbFace, h.dropFace, h.wrongWay, h.reversals, m.hard);
+               h.drop, h.climbFace, h.dropFace, h.straightFace,
+               h.wrongWay, h.reversals, m.hard);
         printLoci(m);
         printf("\n");
         if (m.hard) { ++failedSeeds; defects += m.hard; }

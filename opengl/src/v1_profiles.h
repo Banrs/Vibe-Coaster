@@ -21,8 +21,8 @@ namespace v1profile {
 constexpr double kPi = 3.14159265358979323846264338327950288;
 constexpr double kDegreesToRadians = kPi / 180.0;
 constexpr double kRadiansToDegrees = 180.0 / kPi;
-constexpr double kTopHatMinFaceDegrees = 65.0;
-constexpr double kTopHatMaxFaceDegrees = 70.0;
+constexpr double kTopHatMinFaceDegrees = 80.0;
+constexpr double kTopHatMaxFaceDegrees = 85.0;
 constexpr std::size_t kMaxSegments = 24;
 constexpr std::size_t kMaxChainHills = 4;
 
@@ -96,6 +96,10 @@ struct Segment {
 
     double length = 0.0;
     std::array<double, kDegree + 1> coefficient{};
+    bool cosineGrade = false;
+    double cosineStartHeight = 0.0;
+    double cosineStartGrade = 0.0;
+    double cosineEndGrade = 0.0;
 
     static Segment line(double startHeight, double grade, double segmentLength) {
         assert(segmentLength > 0.0);
@@ -121,6 +125,22 @@ struct Segment {
         result.coefficient[4] = 2.5 * delta * segmentLength;
         result.coefficient[5] = -3.0 * delta * segmentLength;
         result.coefficient[6] = delta * segmentLength;
+        return result;
+    }
+
+    // Integrate a raised-cosine grade transition.  Unlike smootherstep, its
+    // curvature is distributed across the whole section instead of dwelling
+    // near a constant endpoint grade; position, grade and curvature still
+    // match neighboring sections exactly (C2).
+    static Segment slopeCosine(double startHeight, double startGrade,
+                               double endGrade, double segmentLength) {
+        assert(segmentLength > 0.0);
+        Segment result;
+        result.length = segmentLength;
+        result.cosineGrade = true;
+        result.cosineStartHeight = startHeight;
+        result.cosineStartGrade = startGrade;
+        result.cosineEndGrade = endGrade;
         return result;
     }
 
@@ -165,6 +185,19 @@ struct Segment {
     double derivativeNormalized(double u, int order) const {
         assert(order >= 0 && order <= 3);
         u = clamp01(u);
+        if (cosineGrade) {
+            const double delta = cosineEndGrade - cosineStartGrade;
+            if (order == 0)
+                return cosineStartHeight + length *
+                    (cosineStartGrade * u + delta *
+                     (0.5 * u - std::sin(kPi * u) / (2.0 * kPi)));
+            if (order == 1)
+                return length * (cosineStartGrade +
+                    0.5 * delta * (1.0 - std::cos(kPi * u)));
+            if (order == 2)
+                return length * 0.5 * delta * kPi * std::sin(kPi * u);
+            return length * 0.5 * delta * kPi * kPi * std::cos(kPi * u);
+        }
         double result = 0.0;
         for (int index = kDegree; index >= order; --index) {
             double factor = 1.0;
@@ -207,6 +240,11 @@ public:
     bool append(const Segment& segment) {
         if (segmentCount_ >= segment_.size() || !(segment.length > 0.0) ||
             !finite(segment.length))
+            return false;
+        if (segment.cosineGrade &&
+            (!finite(segment.cosineStartHeight) ||
+             !finite(segment.cosineStartGrade) ||
+             !finite(segment.cosineEndGrade)))
             return false;
         for (double coefficient : segment.coefficient)
             if (!finite(coefficient)) return false;
@@ -299,6 +337,15 @@ public:
             return fail();
         return appendChecked(
             Segment::slopeBlend(cursor_.height, cursor_.grade, endGrade, segmentLength));
+    }
+
+    bool appendSlopeCosine(double endGrade, double segmentLength) {
+        if (!good_ || !(segmentLength > 0.0) || !finite(segmentLength) ||
+            !finite(endGrade) || !finiteBoundary(cursor_) ||
+            std::abs(cursor_.curvature) > 1.0e-10)
+            return fail();
+        return appendChecked(
+            Segment::slopeCosine(cursor_.height, cursor_.grade, endGrade, segmentLength));
     }
 
     bool appendQuintic(const Boundary& end, double segmentLength) {
@@ -487,34 +534,31 @@ inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
         return result;
 
     const double faceGrade = std::tan(spec.faceDegrees * kDegreesToRadians);
-    const double crownRise =
-        kSymmetricBlendExtremumRise * faceGrade * spec.crownLength;
-    const double crownShoulderHeight = spec.crestHeight - crownRise;
-    const double ascentBlendEndHeight =
-        spec.startHeight + 0.5 * faceGrade * spec.entryTransitionLength;
-    const double descentBlendStartHeight =
-        spec.endHeight + 0.5 * faceGrade * spec.exitTransitionLength;
-    double ascentFaceLength =
-        (crownShoulderHeight - ascentBlendEndHeight) / faceGrade;
-    double descentFaceLength =
-        (crownShoulderHeight - descentBlendStartHeight) / faceGrade;
-    constexpr double kLengthTolerance = 1.0e-9;
-    // Reaching 65--70 degrees only at a tangent point is not a top-hat face.
-    // Require a nonzero constant-grade run on both sides of the crown.
-    if (ascentFaceLength <= kLengthTolerance ||
-        descentFaceLength <= kLengthTolerance)
+    const double ascentRise = spec.crestHeight - spec.startHeight;
+    const double descentDrop = spec.crestHeight - spec.endHeight;
+    if (!(ascentRise > 0.0) || !(descentDrop > 0.0)) return result;
+
+    // FVD-style geometry: integrate a continuous grade program instead of
+    // inserting constant-grade lines.  Allocate 65% of each rise to the
+    // pull-up and 35% to the crown; the analytical raised-cosine integrals
+    // solve the element without a positional correction or an overshoot.
+    constexpr double crownRiseFraction = 0.35;
+    const double entryLength = 2.0 * (1.0 - crownRiseFraction) * ascentRise / faceGrade;
+    const double crownLength = crownRiseFraction * ascentRise /
+                               ((1.0 / kPi) * faceGrade);
+    const double exitLength = entryLength -
+                              2.0 * (spec.endHeight - spec.startHeight) / faceGrade;
+    if (!(entryLength > 0.0) || !(crownLength > 0.0) || !(exitLength > 0.0))
         return result;
 
     ProfileBuilder builder({spec.startHeight, 0.0, 0.0});
-    if (!builder.appendSlopeBlend(faceGrade, spec.entryTransitionLength)) return result;
+    if (!builder.appendSlopeCosine(faceGrade, entryLength)) return result;
     result.ascentFaceStartDistance = builder.profile().length();
-    if (!builder.appendLine(ascentFaceLength)) return result;
     const double crownStartDistance = builder.profile().length();
-    if (!builder.appendSlopeBlend(-faceGrade, spec.crownLength)) return result;
-    result.apexDistance = crownStartDistance + 0.5 * spec.crownLength;
-    if (!builder.appendLine(descentFaceLength)) return result;
+    if (!builder.appendSlopeCosine(-faceGrade, crownLength)) return result;
+    result.apexDistance = crownStartDistance + 0.5 * crownLength;
     result.descentFaceEndDistance = builder.profile().length();
-    if (!builder.appendSlopeBlend(0.0, spec.exitTransitionLength)) return result;
+    if (!builder.appendSlopeCosine(0.0, exitLength)) return result;
 
     result.profile = builder.profile();
     result.valid = builder.good() && validateTopHat(result);
@@ -614,61 +658,52 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
         return result;
 
     const double faceGrade = std::tan(spec.faceDegrees * kDegreesToRadians);
-    constexpr double kLengthTolerance = 1.0e-9;
-    ProfileBuilder builder({spec.startHeight, 0.0, 0.0});
-    if (!builder.appendSlopeBlend(faceGrade, spec.entryTransitionLength)) return result;
-
+    const std::size_t extremaCount = 2 * spec.hillCount + 1;
+    std::array<double, 2 * kMaxChainHills + 1> height{};
+    std::array<double, 2 * kMaxChainHills> span{};
+    std::array<double, 2 * kMaxChainHills + 1> curvature{};
+    height[0] = spec.startHeight;
     for (std::size_t i = 0; i < spec.hillCount; ++i) {
-        const double index = static_cast<double>(i);
-        const double crestHeight =
-            spec.startHeight + spec.firstCrestRise *
-            std::pow(spec.crestHeightDecay, index);
-        const double crownLength =
-            spec.crownLength * std::pow(spec.crownLengthDecay, index);
-        const double crownShoulder = crestHeight -
-            kSymmetricBlendExtremumRise * faceGrade * crownLength;
-        double ascentLength = (crownShoulder - builder.cursor().height) / faceGrade;
-        if (ascentLength < -kLengthTolerance) return result;
-        ascentLength = std::max(0.0, ascentLength);
-        if (ascentLength > kLengthTolerance && !builder.appendLine(ascentLength))
+        height[2 * i + 1] = spec.startHeight + spec.firstCrestRise *
+                            std::pow(spec.crestHeightDecay, static_cast<double>(i));
+        height[2 * i + 2] = spec.startHeight - spec.troughDropPerHill *
+                            static_cast<double>(i + 1);
+    }
+    // A sinusoidal camelback is best understood as a sequence of smooth
+    // extrema, not straight faces plus crown fillets.  Quintic Hermite spans
+    // approximate those half-waves while allowing curvature to match across
+    // unequal, descending hills (something independent cosine pieces cannot).
+    for (std::size_t i = 0; i + 1 < extremaCount; ++i) {
+        const double delta = std::abs(height[i + 1] - height[i]);
+        // A half-cosine of height delta reaches max grade pi*delta/(2L).
+        // Use that exact sizing, then reproduce its endpoint curvature below.
+        span[i] = std::max(18.0, 0.5 * kPi * delta / faceGrade);
+    }
+    curvature[0] = curvature[extremaCount - 1] = 0.0;
+    for (std::size_t i = 1; i + 1 < extremaCount; ++i) {
+        const double left = std::abs(height[i] - height[i - 1]) / (span[i - 1] * span[i - 1]);
+        const double right = std::abs(height[i + 1] - height[i]) / (span[i] * span[i]);
+        const double sign = (i & 1u) ? -1.0 : 1.0;
+        // Half-cosine endpoint curvature is pi^2*delta/(2L^2).
+        curvature[i] = sign * 6.0 * std::min(left, right);
+    }
+
+    ProfileBuilder builder({height[0], 0.0, curvature[0]});
+    for (std::size_t i = 0; i + 1 < extremaCount; ++i) {
+        if (!builder.appendQuintic({height[i + 1], 0.0, curvature[i + 1]}, span[i]))
             return result;
-
-        const double crownStart = builder.profile().length();
-        if (!builder.appendSlopeBlend(-faceGrade, crownLength)) return result;
-        result.crestDistance[i] = crownStart + 0.5 * crownLength;
-        result.crestHeight[i] = crestHeight;
-
-        if (i + 1 < spec.hillCount) {
-            const double troughHeight = spec.startHeight -
-                spec.troughDropPerHill * static_cast<double>(i + 1);
-            const double troughShoulder = troughHeight +
-                kSymmetricBlendExtremumRise * faceGrade * spec.troughLength;
-            double descentLength =
-                (builder.cursor().height - troughShoulder) / faceGrade;
-            if (descentLength < -kLengthTolerance) return result;
-            descentLength = std::max(0.0, descentLength);
-            if (descentLength > kLengthTolerance && !builder.appendLine(descentLength))
-                return result;
-            const double troughStart = builder.profile().length();
-            if (!builder.appendSlopeBlend(faceGrade, spec.troughLength)) return result;
-            result.troughDistance[i] = troughStart + 0.5 * spec.troughLength;
-            result.troughHeight[i] = troughHeight;
+        if ((i & 1u) == 0u) {
+            std::size_t hill = i / 2;
+            result.crestDistance[hill] = builder.profile().length();
+            result.crestHeight[hill] = height[i + 1];
         } else {
-            const double endHeight = spec.startHeight -
-                spec.troughDropPerHill * static_cast<double>(spec.hillCount);
-            const double exitBlendStart =
-                endHeight + 0.5 * faceGrade * spec.exitTransitionLength;
-            double descentLength =
-                (builder.cursor().height - exitBlendStart) / faceGrade;
-            if (descentLength < -kLengthTolerance) return result;
-            descentLength = std::max(0.0, descentLength);
-            if (descentLength > kLengthTolerance && !builder.appendLine(descentLength))
-                return result;
-            if (!builder.appendSlopeBlend(0.0, spec.exitTransitionLength)) return result;
-            result.troughDistance[i] = builder.profile().length();
-            result.troughHeight[i] = endHeight;
+            std::size_t hill = i / 2;
+            result.troughDistance[hill] = builder.profile().length();
+            result.troughHeight[hill] = height[i + 1];
         }
     }
+    result.troughDistance[spec.hillCount - 1] = builder.profile().length();
+    result.troughHeight[spec.hillCount - 1] = height[extremaCount - 1];
 
     result.profile = builder.profile();
     result.valid = builder.good() && validateHillChain(result);

@@ -232,10 +232,10 @@ struct Track {
         v1profile::TopHatSpec spec;
         spec.startHeight = gpos.y;
         spec.endHeight = gpos.y;
-        spec.faceDegrees = frnd(66.0f, 69.0f);
-        spec.entryTransitionLength = major ? 35.0 : 28.0;
-        spec.crownLength = major ? 38.0 : 32.0;
-        spec.exitTransitionLength = major ? 35.0 : 28.0;
+        spec.faceDegrees = frnd(81.0f, 84.0f);
+        spec.entryTransitionLength = major ? 42.0 : 34.0;
+        spec.crownLength = major ? 54.0 : 44.0;
+        spec.exitTransitionLength = major ? 44.0 : 36.0;
         const float wantedRise = major ? frnd(225.0f, 255.0f) : frnd(125.0f, 175.0f);
         spec.crestHeight = fminf(286.0f, gpos.y + wantedRise);
 
@@ -306,20 +306,21 @@ struct Track {
             const double drop = fmaxf(startHeight - targetHeight, 1.0f);
             const double faceDegrees = Clamp(48.0 + drop * 0.11, 50.0, 67.0);
             const double faceGrade = -tan(faceDegrees * DEG2RAD);
-            const double entryLength = 30.0;
-            const double exitLength = 46.0;
-            const double blendDelta = 0.5 * (startGrade + faceGrade) * entryLength +
-                                      0.5 * faceGrade * exitLength;
-            const double lineLength = (targetHeight - startHeight - blendDelta) / faceGrade;
             v1profile::ProfileBuilder builder({startHeight, startGrade, 0.0});
-            if (lineLength >= 4.0) {
+            // Continuous FVD-style pitch program: ramp into the maximum pitch
+            // and immediately ramp out.  The old middle appendLine() was the
+            // visible tilted slab between two small curve pieces.
+            const double entryDelta = -0.45 * drop;
+            const double exitDelta = -0.55 * drop;
+            const double entryDenom = startGrade + faceGrade;
+            const double entryLength = (entryDenom < -1.0e-4)
+                ? 2.0 * entryDelta / entryDenom : 0.0;
+            const double exitLength = 2.0 * exitDelta / faceGrade;
+            if (entryLength > 4.0 && exitLength > 4.0 && entryLength + exitLength >= 90.0) {
                 builder.appendSlopeBlend(faceGrade, entryLength);
-                builder.appendLine(lineLength);
                 builder.appendSlopeBlend(0.0, exitLength);
             } else {
-                // A short elevation recovery is one continuous valley, not a
-                // miniature face followed by a scheduler drop stub.
-                double length = fmaxf(70.0f, 46.0f + sqrtf((float)drop) * 7.0f);
+                double length = fmaxf(96.0f, 56.0f + sqrtf((float)drop) * 7.0f);
                 builder.appendQuintic({targetHeight, 0.0, 0.0}, length);
             }
             return builder.good() ? builder.profile() : v1profile::Profile{};
@@ -534,8 +535,8 @@ struct Track {
         lside  = Vector3Normalize(Vector3CrossProduct(WUP, lf));
         lcenter = { gpos.x, gpos.y + lR, gpos.z };
         ltheta = 0; lsteps = irnd(40, 48);
-        ldrift = lR * frnd(0.9f, 1.4f);
-        llat   = lR * frnd(0.6f, 1.2f) * (rnd01() < 0.5f ? -1.0f : 1.0f);
+        ldrift = lR * frnd(0.9f, 1.2f);
+        llat   = 0.0f;   // a vertical loop is planar; lateral drift made the silhouette read as a bent ring
         remain = lsteps;
     }
 
@@ -1166,7 +1167,8 @@ struct Track {
         turnMag = turnMagFor(7.0f, 0.018f, 0.58f);   // slightly tighter diving turn (user: increase curves); ~2x-real sustained after slew/ramp dilution, within the 4x-real peak
         bankT   = 0.05f;   // a whisper of over-bank for the diving lean; the sub-vertical clamp keeps it upright
         bankBase = 1.0f;   // full heartline base
-        remain  = irnd(7, 10);   // holds the plateau ~1x a real diving turn's ~2 s without the lean outstaying it
+        remain  = irnd(7, 10);
+        turnLen = remain;
     }
     void initBankAir() {
         mode = M_BANKAIR;
@@ -2070,15 +2072,35 @@ struct Track {
                 break;
             case M_DROP:  dyaw = 0.0f; break;
             case M_HILLS: dyaw = hillTurn; break;
-            case M_TURN:  dyaw = turnDir * turnMag;   break;
-            case M_HELIX: dyaw = turnDir * turnMag;   break;
-            case M_DIVE:  dyaw = turnDir * turnMag;   break;
-            case M_WINGOVER: dyaw = turnDir * turnMag; break;
-            case M_BANKAIR: dyaw = hillTurn; break;
-            case M_WAVE:  dyaw = hillTurn; break;
-            case M_SCURVE:
-                dyaw = ((scurveLen - remain) < scurveLen / 2 - scurveHalf ? turnDir : -turnDir) * turnMag;
+            case M_TURN: {
+                float n = fmaxf((float)turnLen, 1.0f);
+                float t = ((float)(turnLen - remain) + 2.0f) / (n + 3.0f);
+                float w = (2.0f*n/(n+1.0f)) * sinf(PI*t) * sinf(PI*t);
+                dyaw = turnDir * turnMag * w;
                 break;
+            }
+            case M_HELIX: dyaw = turnDir * turnMag;   break;
+            case M_DIVE: {
+                float n = fmaxf((float)turnLen, 1.0f);
+                float t = ((float)(turnLen - remain) + 2.0f) / (n + 3.0f);
+                float w = (2.0f*n/(n+1.0f)) * sinf(PI*t) * sinf(PI*t);
+                dyaw = turnDir * turnMag * w;
+                break;
+            }
+            case M_WINGOVER:
+            case M_BANKAIR:
+            case M_WAVE: {
+                float n = fmaxf((float)hillLen, 1.0f);
+                float t = ((float)(hillLen - remain) + 2.0f) / (n + 3.0f);
+                float w = (2.0f*n/(n+1.0f)) * sinf(PI*t) * sinf(PI*t);
+                dyaw = (mode == M_BANKAIR || mode == M_WAVE) ? hillTurn * w : turnDir * turnMag * w;
+                break;
+            }
+            case M_SCURVE: {
+                float t = ((float)(scurveLen - remain) + 0.5f) / fmaxf((float)scurveLen, 1.0f);
+                dyaw = turnDir * turnMag * (0.5f * PI) * sinf(2.0f * PI * t);
+                break;
+            }
             case M_STATION: dyaw = 0; break;
             case M_LAUNCH:  dyaw = 0; break;
             case M_BOOST:   dyaw = 0; break;
@@ -2687,7 +2709,11 @@ struct Track {
 
         float dphi = (2.0f * PI) / lsteps;
         ltheta += dphi;
-        float R = lR * (1.0f + 0.6f * 0.5f * (1.0f + cosf(ltheta)));
+        // KexEdit/FVD-style geometric integration: curvature varies with the
+        // path angle instead of extruding a circular ring.  The bottom radius
+        // is ~2.25x the crown radius, producing the real teardrop/clothoid
+        // silhouette and easing force in/out at the rail-level joints.
+        float R = lR * (1.0f + 1.25f * 0.5f * (1.0f + cosf(ltheta)));
         Vector3 tang = { lf.x * cosf(ltheta), sinf(ltheta), lf.z * cosf(ltheta) };
         gpos = { gpos.x + tang.x * R * dphi + (lf.x * ldrift + lside.x * llat) / lsteps,
                  gpos.y + tang.y * R * dphi,

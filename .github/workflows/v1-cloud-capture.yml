@@ -37,8 +37,8 @@ jobs:
           ./minecoaster --audit 8
           ./minecoaster --launchaudit > captures/launch-pacing.txt
           ./minecoaster --pacing > captures/ride-pacing.txt
-          rsvg-convert audit/seed1.svg -o captures/audit-seed1.png
-          rsvg-convert audit/seed2.svg -o captures/audit-seed2.png
+          rsvg-convert -w 2400 audit/seed1.svg -o captures/audit-seed1.png
+          rsvg-convert -w 2400 audit/seed2.svg -o captures/audit-seed2.png
 
       - name: Upload audit screenshots and pacing reports
         if: always()
@@ -88,13 +88,13 @@ jobs:
           MESA_GL_VERSION_OVERRIDE: "3.3"
           MESA_GLSL_VERSION_OVERRIDE: "330"
           MC_CAPTURE_FAST: "1"
-          MC_CAPTURE_W: "960"
-          MC_CAPTURE_H: "540"
+          MC_CAPTURE_W: "1920"
+          MC_CAPTURE_H: "1080"
           MC_DT: "0.05"
           MC_MUTE: "1"
         run: |
           mkdir -p captures
-          timeout 360 xvfb-run -a -s "-screen 0 960x540x24" ./minecoaster ${{ matrix.args }} captures
+          timeout 360 xvfb-run -a -s "-screen 0 1920x1080x24" ./minecoaster ${{ matrix.args }} captures
 
       - name: Upload ${{ matrix.id }} screenshot
         if: always()

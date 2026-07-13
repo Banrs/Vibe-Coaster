@@ -43,6 +43,7 @@ struct Track {
     float   turnEntryDy = 0.0f;
     float   turnRise = 0.0f;
     float   turnExitDelta = 0.0f;
+    bool    terrainAvoidanceTurn = false;
     float   bankT   = 0.6f;
     float   bankBase = 1.0f;   // FRACTION of the full heartline lean this element actually banks: 1.0 = fully heartlined (all lateral load rotates into the seat -- hard turns/helix); <1 = deliberately UNDER-banked so the rider keeps some felt-lateral (airtime hills ~0.2, S-curve ~0.4). bankT then adds OVER-bank past that toward inversion for signature elements.
     float   hillTurn = 0;
@@ -58,6 +59,7 @@ struct Track {
     float   genPrevCurv = 0;
     float   genPrevDyaw = 0;
     float   boostGrade = 0.0f;
+    bool    boostQueued = false;
     float   genV      = LAUNCH_V;
     float   genFloorY = -1e9f;
     float   genFloorVy = 0.0f;
@@ -130,7 +132,7 @@ struct Track {
     int     hillBumps = 1;
 
     int     dipLen = 6;
-    float   dipEntryY = 0;
+    float   dipEntryY = 0, dipExitY = 0;
     float   dipTargetY = 0;
     bool    dipSplash = false;   // water-aimed dip (see initDip): flattens the sine's bottom into a held surface skim
 
@@ -176,7 +178,10 @@ struct Track {
     int     cdFaceN = 0;                 // guarantees the signature face remains visible at high launch speeds
     int     cdPulloutN = 0;             // steps taken in the pullout arc -- ramps the curvature in (clothoid) so the straight-face->arc junction is not an instant 1/Rp step
     static constexpr float CD_FACE_P = -88.0f * DEG2RAD;
-    static constexpr float CD_HANDOFF_P = -35.0f * DEG2RAD;
+    // The signature dive owns its full pullout. Handing control back at -35 degrees let the
+    // scheduler place a nominally level TURN on the following sample: a real tangent teleport and
+    // the source of the late-lap 90-degree snap. Finish within one degree of level first.
+    static constexpr float CD_HANDOFF_P = -1.0f * DEG2RAD;
     float   cdYaw = 0.0f, cdPitch = 0.0f;
     float   cdPulloutStartY = 0.0f, cdValleyY = 0.0f;
     float   cdRc = 30.0f, cdRp = 48.0f;  // crest/pullout arc radii, sized from the ACTUAL entry/bottom speed at init (felt-g bounded) -- a fixed radius rang -47 g when a lap's dive happened to crest fast
@@ -238,24 +243,48 @@ struct Track {
         spec.entryTransitionLength = major ? 42.0 : 34.0;
         spec.crownLength = major ? 54.0 : 44.0;
         spec.exitTransitionLength = major ? 44.0 : 36.0;
-        const float wantedRise = major ? frnd(225.0f, 255.0f) : frnd(125.0f, 175.0f);
+        const float wantedRise = major ? frnd(210.0f, 240.0f) : frnd(125.0f, 175.0f);
         spec.crestHeight = fminf(286.0f, gpos.y + wantedRise);
 
         // The route is still mutable here. Qualify the landing against immutable
         // terrain, then solve the complete top hat once; no later terrain clamp is
         // allowed to reshape its face or crown.
-        v1profile::TopHatProfile built = v1profile::makeTopHat(spec);
-        if (!built) return false;
-        for (int pass = 0; pass < 2; ++pass) {
+        v1profile::TopHatProfile built;
+        for (int pass = 0; pass < 6; ++pass) {
+            built = v1profile::makeTopHat(spec);
+            if (!built) return false;
             float endX = gpos.x + sinf(gyaw) * (float)built.profile.length();
             float endZ = gpos.z + cosf(gyaw) * (float)built.profile.length();
             float landing = groundTopAt(endX, endZ) + 8.0f;
             spec.endHeight = fmaxf(WATER_Y + 4.0f, landing);
-            // Preserve a real descent even if the selected corridor lands high.
-            spec.crestHeight = fminf(286.0f,
-                fmaxf(spec.crestHeight, spec.endHeight + (major ? 150.0f : 105.0f)));
-            built = v1profile::makeTopHat(spec);
-            if (!built) return false;
+
+            // Cap both meanings of "250 m top hat": crest-to-landing drop and
+            // rail height over the immutable terrain beneath every part of the
+            // element.  Iterating is necessary because lowering the crest also
+            // shortens the analytical profile and moves its terrain samples.
+            float maxClearance = -1.0e9f;
+            for (float s = 0.0f; s <= (float)built.profile.length(); s += 3.5f) {
+                float y = (float)built.profile.sampleDistance(s).height;
+                float terrain = groundTopAt(gpos.x + sinf(gyaw) * s,
+                                            gpos.z + cosf(gyaw) * s);
+                maxClearance = fmaxf(maxClearance, y - terrain);
+            }
+            float maxCrest = fminf(286.0f, spec.endHeight + 250.0f);
+            if (maxClearance > 249.5f)
+                maxCrest = fminf(maxCrest, spec.crestHeight - (maxClearance - 249.5f));
+            float minCrest = fmaxf(spec.startHeight, spec.endHeight) +
+                             (major ? 150.0f : 105.0f);
+            if (minCrest > maxCrest) return false;
+            spec.crestHeight = Clamp(spec.crestHeight, minCrest, maxCrest);
+        }
+        built = v1profile::makeTopHat(spec);
+        if (!built || built.profile.heightDistance(built.apexDistance) - spec.endHeight > 250.01)
+            return false;
+        for (float s = 0.0f; s <= (float)built.profile.length(); s += 3.5f) {
+            float y = (float)built.profile.sampleDistance(s).height;
+            float terrain = groundTopAt(gpos.x + sinf(gyaw) * s,
+                                        gpos.z + cosf(gyaw) * s);
+            if (y < terrain + 3.5f || y - terrain > 250.01f) return false;
         }
 
         macroProfile = built.profile;
@@ -272,19 +301,37 @@ struct Track {
 
     bool beginHillChain() {
         v1profile::HillChainSpec spec;
-        spec.hillCount = (rnd01() < 0.72f) ? 3u : 4u;
+        spec.hillCount = (rnd01() < 0.72f) ? 2u : 3u;
         spec.startHeight = gpos.y;
-        spec.firstCrestRise = frnd(27.0f, 38.0f);
+        spec.firstCrestRise = frnd(25.0f, 34.0f);
         spec.crestHeightDecay = frnd(0.78f, 0.86f);
         spec.troughDropPerHill = frnd(1.5f, 3.5f);
-        spec.faceDegrees = frnd(31.0f, 38.0f);
+        spec.faceDegrees = frnd(36.0f, 42.0f);
         spec.entryTransitionLength = 7.0;
         spec.crownLength = 22.0;
         spec.crownLengthDecay = 0.90;
         spec.troughLength = 14.0;
         spec.exitTransitionLength = 10.0;
-        v1profile::HillChainProfile built = v1profile::makeDescendingHillChain(spec);
-        if (!built) return false;
+        v1profile::HillChainProfile built;
+        bool clear = false;
+        for (int pass = 0; pass < 7; ++pass) {
+            built = v1profile::makeDescendingHillChain(spec);
+            if (!built) return false;
+            float deficiency = 0.0f;
+            for (float s = 0.0f; s <= (float)built.profile.length(); s += 3.5f) {
+                float y = (float)built.profile.sampleDistance(s).height;
+                float terrain = groundTopAt(gpos.x + sinf(gyaw) * s,
+                                            gpos.z + cosf(gyaw) * s);
+                deficiency = fmaxf(deficiency, terrain + 5.0f - y);
+            }
+            if (deficiency <= 0.05f) { clear = true; break; }
+            // Lift the baseline with zero grade at both ends. The hills remain
+            // sinusoidal relative to that baseline; they simply climb toward
+            // the terrain height required by the next section.
+            spec.terrainRise += deficiency * 1.35f;
+            if (spec.terrainRise > 150.0f) return false;
+        }
+        if (!clear) return false;
 
         macroProfile = built.profile;
         macroKind = MACRO_HILLS;
@@ -328,15 +375,36 @@ struct Track {
             return builder.good() ? builder.profile() : v1profile::Profile{};
         };
 
-        for (int pass = 0; pass < 3; ++pass) {
+        bool corridorClear = false;
+        for (int pass = 0; pass < 7; ++pass) {
             built = solve(endHeight);
             if (built.empty()) return false;
             float d = (float)built.length();
             float landing = groundTopAt(gpos.x + sinf(gyaw) * d,
                                         gpos.z + cosf(gyaw) * d) + 8.0f;
-            endHeight = fmaxf(WATER_Y + 4.0f, fmaxf(startHeight - 150.0f, landing));
+            float nextHeight = fmaxf(WATER_Y + 4.0f,
+                                     fmaxf(startHeight - 150.0f, landing));
+            endHeight = fmaxf(endHeight, nextHeight);
             endHeight = fminf(endHeight, startHeight - 8.0f);
+
+            // Solve to the next section's terrain-relative height before any
+            // samples are published.  A midpoint ridge may sit above both the
+            // entry and landing; raising the analytical endpoint lifts the
+            // whole pullout smoothly instead of letting a later floor create
+            // an underground dip followed by a bounce.
+            built = solve(endHeight);
+            if (built.empty()) return false;
+            float deficiency = 0.0f;
+            for (float s = 0.0f; s <= (float)built.length(); s += 3.5f) {
+                float y = (float)built.sampleDistance(s).height;
+                float terrain = groundTopAt(gpos.x + sinf(gyaw) * s,
+                                            gpos.z + cosf(gyaw) * s);
+                deficiency = fmaxf(deficiency, terrain + 4.0f - y);
+            }
+            if (deficiency <= 0.05f) { corridorClear = true; break; }
+            endHeight = fminf(startHeight - 8.0f, endHeight + deficiency * 1.35f);
         }
+        if (!corridorClear) return false;
         built = solve(endHeight);
         if (built.empty()) return false;
 
@@ -369,6 +437,10 @@ struct Track {
             float turn = yaw - gyaw;
             while (turn > PI) turn -= 2.0f * PI;
             while (turn < -PI) turn += 2.0f * PI;
+            // The approach is emitted as one straight analytical alignment;
+            // accepting an arbitrary search bearing created an instantaneous
+            // 90-degree seam at its first sample. Search only the forward cone.
+            if (fabsf(turn) > 18.0f * DEG2RAD) continue;
             for (float d = 210.0f; d <= 1800.0f; d += 35.0f) {
                 float rimX = gpos.x + sn*d, rimZ = gpos.z + cs*d;
                 float rim = groundTopAt(rimX, rimZ);
@@ -488,7 +560,7 @@ struct Track {
         startPos = gpos; startYaw = gyaw;
         mode = M_FLAT; remain = 3; turnDir = 1; turnMag = 0.4f; elems = 0;
         elemLimit = irnd(17, 24); queuedInv = 0; launchElem = M_CLIMB; mcbrDone = false;   // ~28% fewer elements per lap (see startLaunch): the WR-sized elements each run much longer track
-        cliffDone = false; hardInvCount = 0;
+        cliffDone = true; hardInvCount = 0;   // cliff dive disabled until terrain can qualify a real site
         invBudget = irnd(2, 4); quotaMet = 0;
         bankCool = 0; boostCool = 0; bankHold = 0; connLatch = 0; flatRun = 0;
         levelHold = 0; upEaseSteps = 0; seamEaseN = 0; seamEaseTot = 0;
@@ -812,7 +884,7 @@ struct Track {
 
     void startLaunch() {
         elems = 0; elemLimit = irnd(17, 24); launchElem = pickLaunchExit(); mcbrDone = false; helixLap = false; wingLap = false;   // ~28% fewer elements per lap than the old 24-34: the WR-sized elements run 2-3x longer each, so the lap stays ~2-3 min without filler
-        cliffDone = false; hardInvCount = 0;   // signature dive + inversion budget re-arm each lap
+        cliffDone = true; hardInvCount = 0;   // cliff dive disabled; do not block lap completion on it
         invBudget = irnd(2, 4); quotaMet = 0;   // spec occurrence rules: 2-4 inversions/lap, quota families unmet
         setClearance(10.0f, 36.0f);
         mode = M_LAUNCH; remain = irnd(6, 8);  // 84-112 m: rolling 43->360 km/h needs about 77 m at 2x Do-Dodonpa acceleration
@@ -845,24 +917,26 @@ struct Track {
     }
 
     void startBoost() {
+        // A 360 km/h LSM run must begin on a settled tangent. Queue one ordinary transition when
+        // entering from a shaped/graded element; powering the old inherited slope produced the
+        // BOOST seam's double-digit force spike even though the boost deck itself was almost flat.
+        if (fabsf(genPrevDy) > 0.30f) {
+            boostQueued = true;
+            mode = M_FLAT;
+            remain = Clamp((int)ceilf(fabsf(genPrevDy) / 1.5f) + 3, MIN_CONN, 12);
+            levelHold = 0;
+            connLen = 0;
+            return;
+        }
+        boostQueued = false;
         mode = M_BOOST;
         invSlotUsed = 0;   // re-powered: the next run-down window may go to inversions again
         boostCool = 3;   // no re-power for the next 3 element slots (see nextMode): the ride runs a real discharge arc between boosts instead of a dead-flat straight every ~14 s (measured 36 boosts/ride -> ~1/2 of that; real coasters have 1-3 mid-course boosts total)
         remain = irnd(4, 6);  // 56-84 m: rolling 144->360 km/h needs about 53 m at 2x Do-Dodonpa acceleration
-        // INCLINED LSM (~45% of boosts): grade follows the terrain rise over the boost's own
-        // footprint (clamped +4-8 deg). No thrust-model change is needed anywhere: both the ride
-        // sim and genV integrate the real geometry, so the climb's energy cost stays consistent
-        // across all four hand-duplicated physics copies by construction. LAUNCH stays dead flat
-        // (real hydraulic/main LSM launches are).
+        // Keep the 360 km/h powered deck truly level. Inclined random boost slabs were visually
+        // indistinguishable from tilted flat blocks and their entry curvature scales disastrously
+        // at this speed; terrain-aware eligibility already rejects a blocked level corridor.
         boostGrade = 0.0f;
-        if (rnd01() < 0.45f) {
-            float fx = sinf(gyaw), fz = cosf(gyaw);
-            float gt0 = groundTopAt(gpos.x, gpos.z), rise = 0.0f;
-            for (int la = 1; la <= remain; la++)
-                rise = fmaxf(rise, groundTopAt(gpos.x + fx * SEG_LEN * la, gpos.z + fz * SEG_LEN * la) - gt0);
-            boostGrade = Clamp(rise / (float)remain, 1.0f, 2.0f);
-            if (rise < 3.0f && rnd01() < 0.5f) boostGrade = 0.0f;   // flat ground: half stay classic flat straights
-        }
         // A boost rides DEAD FLAT, and the element->FLAT/DROP seam-ease block in genPoint never
         // fires for it (flatNow excludes BOOST) -- entering straight off a shaped element snapped
         // the spline (measured: a DIP->BOOST seam read -12.1 felt crest g, BOOST jerk 132 g/s).
@@ -1042,6 +1116,7 @@ struct Track {
         }
     }
     void initTurn(bool big) {
+        terrainAvoidanceTurn = false;
         mode = M_TURN;
         setClearance(big ? 12.0f : 6.0f, big ? 48.0f : 30.0f);
         turnDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
@@ -1068,6 +1143,7 @@ struct Track {
     }
     void initTerrainAvoidanceTurn() {
         initTurn(true);
+        terrainAvoidanceTurn = true;
         float score[2] = {0.0f, 0.0f};
         for (int side = 0; side < 2; ++side) {
             float yaw = gyaw + (side == 0 ? 0.42f : -0.42f);
@@ -1219,15 +1295,47 @@ struct Track {
         // water-aimed dips ever stretch this long -- the extra length is a shallow approach
         // into the skim, like a real splashdown's run-in.
         int dw = waterAheadDist();
+        // Do not dive from a high ridge merely because a pond happens to be nearby in plan view.
+        // The old 2*distance sizing could ask a six-cp dip to shed 80 m, creating 40 m control-point
+        // gaps and an apparent teleport. A splashdown is offered again once the route is in its
+        // normal ground band; elevated track gets an adaptive connector instead.
+        if (gpos.y - WATER_Y > 35.0f) dw = 0;
         dipSplash = dw > 0;
         if (dw > 0) dipLen = Clamp(2 * dw, 6, 32);
         dipEntryY = gpos.y;
+        float exitX = gpos.x + sinf(gyaw) * SEG_LEN * dipLen;
+        float exitZ = gpos.z + cosf(gyaw) * SEG_LEN * dipLen;
+        dipExitY = fmaxf(gpos.y, groundTopAt(exitX, exitZ) + 8.0f);
         float midX = gpos.x + sinf(gyaw) * SEG_LEN * (0.5f * dipLen);
         float midZ = gpos.z + cosf(gyaw) * SEG_LEN * (0.5f * dipLen);
         dipTargetY = dipSplash ? WATER_Y + 0.9f
                               : fmaxf(groundTopAt(midX, midZ) + 2.0f, gpos.y - 24.0f);
         dipTargetY = fminf(dipTargetY, gpos.y - 8.0f);
         remain = dipLen;
+
+        // A dry dip owns one coherent sinusoidal valley; it must not be clipped into several bumps
+        // by an intervening terrain ridge. Validate its entire centerline before publishing any of
+        // it. Unsuitable ground gets an ordinary adaptive connector and the scheduler can offer the
+        // dip again later. Water dips are the explicit low-clearance exception.
+        if (!dipSplash) {
+            bool viable = true;
+            for (int k = 1; k <= dipLen && viable; ++k) {
+                float t = (float)k / (float)dipLen;
+                float wave = fmaxf(sinf(PI * t), 0.0f);
+                float s = t*t*t*(t*(t*6.0f - 15.0f) + 10.0f);
+                float baseline = dipEntryY + (dipExitY - dipEntryY) * s;
+                float midBase = 0.5f * (dipEntryY + dipExitY);
+                float y = baseline + (dipTargetY - midBase) * wave * wave;
+                float x = gpos.x + sinf(gyaw) * SEG_LEN * k;
+                float z = gpos.z + cosf(gyaw) * SEG_LEN * k;
+                if (y < groundTopAt(x, z) + 4.0f) viable = false;
+            }
+            if (!viable) {
+                mode = M_FLAT;
+                remain = MIN_CONN + 4;
+                levelHold = 0;
+            }
+        }
     }
     // Water within the next few steps of corridor? groundTopAt floors at WATER_Y, so a sample
     // AT water level means the tile is submerged. Used to water-seek the DIP pick (real
@@ -1709,7 +1817,17 @@ struct Track {
     }
 
     void chooseElement(float h) {
-        (void)h;
+        // Never schedule a shaped element from an already buried/near-buried
+        // state.  Recover on the terrain-aware connector first; otherwise the
+        // authored element preserves the bad altitude for hundreds of metres.
+        if (h < 8.0f) {
+            mode = M_FLAT;
+            remain = MIN_CONN + 4;
+            levelHold = 0;
+            pendingPick = M_COUNT;
+            connLen = 0;
+            return;
+        }
 
         // Steep-entry guard: only defer element choice on a genuinely steep face (>~24 deg),
         // and let the deferring FLAT terrain-follow (no levelHold) so it undulates instead of
@@ -1795,6 +1913,8 @@ struct Track {
     void nextMode() {
         float h = gpos.y - groundTopAt(gpos.x, gpos.z);
 
+        if (boostQueued) { startBoost(); return; }
+
         // ANTI-CHURN LATCH: a safety guard force-ended the previous element (or truncated a boost).
         // Hand to exactly ONE continuous FLAT transition (>= MIN_CONN cps, smoothed terrain-follow),
         // not back into the scheduler -- a re-firing guard used to flip modes every 1-2 cps here,
@@ -1855,7 +1975,9 @@ struct Track {
                 else if (launchElem == M_BANKAIR) { rememberElement(M_BANKAIR); initBankAir(); }
                 else {
                     bool major = (rnd01() < 0.60f);
-                    if (!beginTopHat(major)) { mode = M_FLAT; remain = MIN_CONN; }
+                    if (!beginTopHat(major) && !beginTopHat(!major)) {
+                        mode = M_FLAT; remain = MIN_CONN;
+                    }
                 }
                 launchElem = M_CLIMB;
                 break;
@@ -1912,7 +2034,7 @@ struct Track {
                 // near-straight, force a banked speed turn -- unless we're about to launch or a turn
                 // isn't affordable (steep rising terrain). This alone keeps straight runs well under
                 // the ~1.5 mi the user wants as the ceiling.
-                if (straightRun > 900.0f && elems < elemLimit && h < 40.0f && !wasBanked &&
+                if (straightRun > 320.0f && elems < elemLimit && h < 40.0f && !wasBanked &&
                     eligibleSafety(M_TURN)) {
                     straightRun = 0.0f;
                     rememberElement(M_TURN);
@@ -1922,7 +2044,7 @@ struct Track {
                 // HARD CAP (user: max straight <= 2 km): if the soft trigger's quality guards (low,
                 // unbanked) never lined up, force the turn once the run nears the ceiling -- keeping
                 // ONLY the physics safety gate. Bounds the straight to ~1.5 km + one element (< 2 km).
-                if (straightRun > 1500.0f && elems < elemLimit && eligibleSafety(M_TURN)) {
+                if (straightRun > 520.0f && elems < elemLimit && eligibleSafety(M_TURN)) {
                     straightRun = 0.0f;
                     rememberElement(M_TURN);
                     initTurn(rnd01() < 0.5f);
@@ -2065,6 +2187,28 @@ struct Track {
     }
 
     Vector3 stepGeneric() {
+        // Preflight non-terrain-following shapes against the forward corridor.
+        // If the ground rises faster than a smooth connector can climb, end
+        // the element while it is still clear and let FLAT route around/up it.
+        bool terrainVulnerable = mode == M_TURN || mode == M_HELIX ||
+            mode == M_DIVE || mode == M_SCURVE || mode == M_BANKAIR ||
+            mode == M_WAVE || mode == M_HILLS || mode == M_WINGOVER ||
+            (mode == M_DIP && !dipSplash);
+        if (terrainVulnerable && !terrainAvoidanceTurn) {
+            bool blocked = false;
+            for (int la = 2; la <= 10 && !blocked; la += 2) {
+                float terrain = groundTopAt(gpos.x + sinf(gyaw) * SEG_LEN * la,
+                                            gpos.z + cosf(gyaw) * SEG_LEN * la);
+                if (terrain + 8.0f > gpos.y + 4.0f * la) blocked = true;
+            }
+            if (blocked) {
+                mode = M_FLAT;
+                remain = MIN_CONN + 4;
+                levelHold = 0;
+                pendingPick = M_COUNT;
+                connLen = 0;
+            }
+        }
         float dyaw = 0;
         switch (mode) {
             case M_FLAT: {
@@ -2207,7 +2351,9 @@ struct Track {
                 // the track down into a sequence of tiny terrain-matching hinges.  This matches
                 // long launch-coaster connectors: the civil earthwork follows the alignment, not
                 // the other way around.
-                float ferr = fmaxf((gtAvg + 10.0f) - gpos.y, 0.0f);
+                float targetGround = (gpos.y - gt < 20.0f || gtWallMax > gt + 12.0f)
+                    ? gtWallMax : gtAvg;
+                float ferr = fmaxf((targetGround + 10.0f) - gpos.y, 0.0f);
                 // CONTINUOUS proportional band (no dead-band step): the old hard <2 m dead-band snapped dy
                 // between 0 and ~0.8 at the edge, a micro-jitter of its own. Ramp the gain 0 at ferr=0 to
                 // the full 0.40 by |ferr|~4 m, so near-level terrain noise makes near-zero dy smoothly.
@@ -2403,13 +2549,16 @@ struct Track {
                 int   i  = dipLen - remain;
                 float t1 = (float)(i + 1) / dipLen;
                 float wave = fmaxf(sinf(PI * t1), 0.0f);
-                // One fixed sin^2 target owns the whole valley: zero-grade
-                // ends and nonzero trough curvature. Splashdowns get their
-                // broader run from dipLen's water-distance sizing, not from a
-                // flat-bottom exponent or a moving shoreline sample.
-                float q = wave * wave;
-                float depth = q;
-                dy = (dipEntryY + (dipTargetY - dipEntryY) * depth) - gpos.y;
+                // Smoothly solve to the NEXT terrain-relative height.  The old
+                // symmetric formula always returned to entryY, so a rising far
+                // shore left the dip underground and the following FLAT had to
+                // snap upward.  A smootherstep baseline owns the endpoints;
+                // the sin^2 valley term still hits dipTargetY exactly at midspan.
+                float s = t1*t1*t1*(t1*(t1*6.0f - 15.0f) + 10.0f);
+                float baseline = dipEntryY + (dipExitY - dipEntryY) * s;
+                float midBase = 0.5f * (dipEntryY + dipExitY);
+                float y = baseline + (dipTargetY - midBase) * wave * wave;
+                dy = y - gpos.y;
                 break;
             }
             default: break;
@@ -2572,14 +2721,21 @@ struct Track {
         }
 
         if (mode != M_STATION && mode != M_LAUNCH) {
-            // Allow the track to TUNNEL. Instead of lifting to a fixed clearance, only cap the
-            // DEPTH -- the terrain-follow targets keep the track mostly above ground, so a tunnel
-            // happens naturally where terrain rises into a diving/flat section (a real terrain
-            // coaster carving through a hill after a top-hat).
-            float tunnelFloor = gt - 18.0f;
-            if (gpos.y < tunnelFloor) {
-                float lift = tunnelFloor - gpos.y;
-                gpos.y = tunnelFloor;
+            // Ordinary track is never implicitly converted into a tunnel.  The
+            // old gt-18 floor let a drop aim through a ridge and then bounce up
+            // when the post-pass caught it.  Only a water-targeted DIP has an
+            // explicit below-bank reason; every other mode clears terrain here.
+            float routeGround = gt;
+            for (float ds : {-0.5f * SEG_LEN, -0.25f * SEG_LEN,
+                              0.25f * SEG_LEN,  0.5f * SEG_LEN})
+                routeGround = fmaxf(routeGround,
+                    groundTopAt(gpos.x + sinf(gyaw) * ds,
+                                gpos.z + cosf(gyaw) * ds));
+            float routeFloor = (mode == M_DIP && dipFloorGuard > -1.0e8f)
+                ? dipFloorGuard : routeGround + 4.0f;
+            if (gpos.y < routeFloor) {
+                float lift = routeFloor - gpos.y;
+                gpos.y = routeFloor;
                 if (mode == M_HELIX && remain > 1) { remain = 1; connLatch = MIN_CONN; }
                 // A hill hump the floor is having to LIFT hard has met terrain its cosine can't
                 // see (a cliff face the offer-time scan missed, e.g. around a turn) -- end the
@@ -2643,7 +2799,7 @@ struct Track {
             // flatten the exact coil it exists to produce.
             if (mode != M_HELIX) {
                 float floorHere = (mode == M_DIP) ? dipFloorGuard
-                                                  : groundTopAt(gpos.x, gpos.z) - 5.0f;   // only stop the g-cap correction from burying deeper than the tunnel-depth cap
+                                                  : groundTopAt(gpos.x, gpos.z) + 4.0f;
                 if (gpos.y + delta < floorHere) delta = fmaxf(floorHere - gpos.y, 0.0f);
             }
             gpos.y += delta;
@@ -2811,10 +2967,10 @@ struct Track {
         // the entire 275 m drop before leaving any straight cliff face. Preserve the
         // authored signature within its height envelope; this is intentionally a
         // game-scale element paired with the intentionally super-real launch.
-        cdRc    = Clamp(genV * genV / (GRAV * 6.3f), 30.0f, 92.0f);
-        // Valley target: natural ground ~85 m ahead (clear of the near-vertical face + the pullout footprint).
-        float fx = gpos.x + sinf(cdYaw) * 85.0f, fz = gpos.z + cosf(cdYaw) * 85.0f;
-        cdValleyY = groundTopAt(fx, fz) + 4.0f;
+        // Geometry must fit both the crest arc and pullout inside the 250 m total drop. The live
+        // curvature-aware trim owns speed where necessary; radii larger than this made the two arcs
+        // alone consume more height than the entire permitted cliff.
+        cdRc    = Clamp(genV * genV / (GRAV * 5.5f), 50.0f, 80.0f);
         // SPEED-ADAPTIVE ARCS: cdRc (crest, bounded at ~6.3 negative g) is set above with the rim
         // placement; the pullout's positive g is bounded at ~11 felt AT THE ACTUAL SPEEDS below --
         // a lap that arrives fast (measured 75 m/s once) needs a wider sweep or a fixed radius rings -47 g.
@@ -2824,9 +2980,38 @@ struct Track {
         // still ascending while the entry pitch (+~57 deg) sweeps through zero, so the cap is
         // measured from the dive's true high point.
         float apexY = gpos.y + cdRc * (1.0f - cosf(cdPitch));
-        cdValleyY = fmaxf(cdValleyY, apexY - 275.0f);   // MAX total dive drop ~275 m (user: crest-to-valley 250-275, keep the >=150 floor + 85 deg face); start the pullout higher where a deeper valley would exceed it
-        float vb2 = genV * genV + 2.0f * GRAV * fmaxf(apexY - cdValleyY, 0.0f);   // bottom-of-face speed^2 (drag ignored: conservative)
-        cdRp = Clamp(vb2 / (GRAV * 11.0f), 48.0f, 100.0f);
+        // Solve radius and landing terrain together. The old probe was fixed at 85 m even though a
+        // speed-sized crest plus pullout can end 250-400 m forward; on rising far terrain that left
+        // the completed cliff element underground and made the following FLAT teleport upward.
+        cdValleyY = apexY - 200.0f;
+        cdRp = 120.0f;
+        for (int pass = 0; pass < 6; ++pass) {
+            float landingS = cdRc + cdRp + 8.0f;
+            float landingGround = -1.0e9f;
+            for (float s = landingS - 35.0f; s <= landingS + 70.0f; s += 7.0f)
+                landingGround = fmaxf(landingGround,
+                    groundTopAt(gpos.x + sinf(cdYaw) * s,
+                                gpos.z + cosf(cdYaw) * s));
+            cdValleyY = fmaxf(landingGround + 8.0f, apexY - 250.0f);
+            float vb2 = genV * genV + 2.0f * GRAV * fmaxf(apexY - cdValleyY, 0.0f);
+            cdRp = Clamp(vb2 / (GRAV * 9.0f), 50.0f, 100.0f);
+        }
+        // The pullout must begin only after the minimum five-sample cliff face and still finish at
+        // the terrain-qualified landing. If the far side is too high for even the minimum radius,
+        // this rim is not a valid cliff-dive site; keep the already-built level approach and let the
+        // scheduler search again instead of integrating a pullout hundreds of metres below ground.
+        const float pullFactor = 1.0f - cosf(CD_FACE_P);
+        const float faceDrop = 5.0f * SEG_LEN * -sinf(CD_FACE_P);
+        const float availableDrop = apexY - cdValleyY;
+        const float maxRadiusThatFits =
+            (availableDrop - faceDrop - cdRc * pullFactor) / pullFactor;
+        if (maxRadiusThatFits < 50.0f) {
+            mode = M_FLAT;
+            remain = MIN_CONN + 4;
+            levelHold = 0;
+            return;
+        }
+        cdRp = fminf(cdRp, maxRadiusThatFits);
         cdPulloutStartY = cdValleyY + cdRp * (1.0f - cosf(CD_FACE_P));   // start the pullout this high so its arc (from the ~88 deg face) bottoms out right at valleyY
         remain = 200;                      // generous guard; the phase machine ends the element via enterDrop
         if (getenv("MC_CLIFFDBG"))
@@ -2869,7 +3054,10 @@ struct Track {
         // one sample early; local terrain becomes an emergency bound only
         // after the pullout has actually begun.
         bool  nearGnd = (cdPhase == 2 && gpos.y <= floorHere + 6.0f);
-        bool  done = arced || (cdPhase == 2 && cdPitch >= 0.0f) || nearGnd;
+        // `nearGnd` is diagnostic only. Ending the element merely because the first pullout sample
+        // touched the slope used to bypass the entire pullout at roughly -88 degrees. The cliff dive
+        // is the explicit terrain-cut element, so it continues through its planned arc to level.
+        bool  done = arced || (cdPhase == 2 && cdPitch >= 0.0f);
         if (getenv("MC_CLIFFSTEP"))
             fprintf(stderr, "[cliffstep] ph=%d pitch=%.1f y=%.1f floorHere=%.1f valleyY=%.1f Rp=%.1f done=%d\n",
                     cdPhase, cdPitch*RAD2DEG, gpos.y, floorHere, cdValleyY, cdRp, (int)done);
@@ -3023,19 +3211,40 @@ struct Track {
             }
         }
 
-        // Shared min-clearance floor. The closed-form elements (loop/immel/stall/diveloop/cobra/
-        // pretzel/stengel/banana/heartline) set gpos.y directly in their own step*() and never pass
-        // through stepGeneric's per-cp floor, so they clip through terrain that rises during the
-        // element. Apply the same floor to EVERY generated point here (stepGeneric modes already had
-        // it, so this is a harmless no-op for them and the missing guard for the closed-form ones).
-        if (!authoredSample && mode != M_STATION && mode != M_LAUNCH && mode != M_BOOST) {
+        // Connective track gets a final point floor here. Authored elements must never be hard-clamped
+        // point-by-point: doing that turns a smooth loop or dive into a terrain-shaped shelf and can
+        // produce a visible 90-degree tangent snap.
+        if (!authoredSample && sampledMacroKind != MACRO_CLIFF_APPROACH &&
+            mode != M_STATION && mode != M_LAUNCH && mode != M_BOOST) {
             float gtN = groundTopAt(gpos.x, gpos.z);
-            // Inversions stay above ground (a buried loop looks broken); carving/transition modes may
-            // TUNNEL -- only depth-cap them so terrain can rise into them for the tunnel look.
-            bool inv = (mode==M_LOOP||mode==M_IMMEL||mode==M_ROLL||mode==M_COBRA||mode==M_DIVELOOP||
-                        mode==M_PRETZEL||mode==M_HEARTLINE||mode==M_BANANA||mode==M_STENGEL||mode==M_WINGOVER);
-            float mc  = inv ? 3.0f : -18.0f;
+            float mc = (mode == M_DIP && dipSplash) ? 0.5f : 4.0f;
             if (gpos.y < gtN + mc) gpos.y = gtN + mc;
+        }
+
+        // Closed-form elements bypass stepGeneric's terrain-aware planner. If one meets rising ground,
+        // solve the clearance correction across the still-draft tail instead of teleporting only the
+        // current point upward. Twelve cps are inside ADAPTIVE_LAG and give a raised-cosine transition
+        // of roughly 170 m at V1 spacing. Repeated small corrections naturally form one smooth terrain
+        // baseline while leaving the authored local shape intact.
+        bool explicitTerrainCut = (tag == M_DIP && dipSplash) || tag == M_CLIFFDIVE;
+        if (authoredSample && !macroSample && !explicitTerrainCut) {
+            float floorY = groundTopAt(gpos.x, gpos.z) + 4.0f;
+            float lift = floorY - gpos.y;
+            if (lift > 0.0f) {
+                const int maxTail = 12;
+                int tail = 0;
+                for (int j = (int)cp.size() - 1; j >= 0 && tail < maxTail; --j) {
+                    if (!authoredf[j] || kind[j] != tag) break;
+                    ++tail;
+                }
+                for (int n = 0; n < tail; ++n) {
+                    int j = (int)cp.size() - tail + n;
+                    float t = (float)(n + 1) / (float)(tail + 1);
+                    float w = 0.5f - 0.5f * cosf(PI * t);
+                    cp[j].y += lift * w;
+                }
+                gpos.y += lift;
+            }
         }
 
         // Up-vector easing. `target` is stepGeneric's raw up (a bank for the banked elements, WUP for
@@ -3156,7 +3365,7 @@ struct Track {
             // Set just OUTSIDE the stepGeneric design targets (+12/-3.5 felt) so this pass only
             // catches busts the per-step clamps couldn't see (spline overshoot, seam interactions),
             // never reshapes an on-budget element. Hard ceiling ~= 4x real-world peaks.
-            const float Gmax = 14.0f, Gmin = -4.5f;
+            const float Gmax = 12.0f, Gmin = -6.0f;
             int n = (int)cp.size();
             // NOTE: this window intentionally stays short (14): LOOP/DIVELOOP/etc run 40-48 steps of
             // their own dedicated closed-form geometry, and a window that reaches that far back would
@@ -3178,12 +3387,12 @@ struct Track {
                     float k    = span * span * GRAV / v2;
                     float target = Clamp(sd, (Gmin - 1.0f) * k, (Gmax - 1.0f) * k);
                     float newY   = 0.5f * (cp[i + 1].y + cp[i - 1].y - target);
-                    // Never DIG a cp underground that wasn't already there: with the envelope
-                    // active again this pass pulls valley floors down hard enough to punch
-                    // through the per-cp terrain clamp (measured -17 m). Deep cps it inherited
-                    // stay (the terrain-floor pass below owns lifting those smoothly).
-                    float fl = groundTopAt(cp[i].x, cp[i].z) - 18.0f;
-                    if (newY < fl && cp[i].y >= fl) newY = fl;
+                    // This pass is still inside the draft window, so preserve the same visible
+                    // terrain corridor the planner established. Letting relaxation dig first and
+                    // relying on a delayed publication-time lift was the source of the old ratchet.
+                    float fl = groundTopAt(cp[i].x, cp[i].z) +
+                               ((ki == M_DIP && dipSplash) ? 0.5f : 4.0f);
+                    if (newY < fl) newY = fl;
                     cp[i].y = newY;
                 }
         }
@@ -3221,15 +3430,19 @@ struct Track {
                     // 3-D busts -- the kinks only this pass can see -- get trimmed. Ceiling ~= 4x
                     // real-world peaks (vert ~4.5, lat ~1.6): the safety net of the "no more than
                     // 4x real life" rule.
-                    if (gV > 16.0f || gV < -7.0f || fabsf(gL) > 7.0f) {
+                    if (gV > 12.0f || gV < -6.0f || fabsf(gL) > 6.0f) {
                         Vector3 mid = Vector3Scale(Vector3Add(cp[i - 1], cp[i + 1]), 0.5f);
-                        cp[i] = Vector3Lerp(cp[i], mid, 0.5f);
+                        Vector3 relaxed = Vector3Lerp(cp[i], mid, 0.5f);
+                        float fl = groundTopAt(relaxed.x, relaxed.z) +
+                                   ((kind[i] == M_DIP && dipSplash) ? 0.5f : 4.0f);
+                        relaxed.y = fmaxf(relaxed.y, fl);
+                        cp[i] = relaxed;
                     }
                 }
         }
 
-        // Curvature-bounded terrain floor: the smoothing/relaxation passes above pull cps below the
-        // per-cp terrain clamp, so the track rides under the ground. Lift the just-frozen cp (index
+        // Curvature-bounded terrain floor: the smoothing/relaxation passes above can pull cps below the
+        // per-cp terrain clearance. Lift the just-frozen cp (index
         // n-23: out of the smoothing window above and not read by the genV step below) onto the
         // terrain -- but the floor climbs as a SMOOTH ramp (bounded slope AND bounded acceleration)
         // so it never creates the convex kink that a hard rate-limited lift did (+30 g spikes). Where
@@ -3250,8 +3463,25 @@ struct Track {
             if (ki != M_STATION && !authoredf[i]) {
                 bool invI = (ki==M_LOOP||ki==M_IMMEL||ki==M_ROLL||ki==M_COBRA||ki==M_DIVELOOP||
                              ki==M_PRETZEL||ki==M_HEARTLINE||ki==M_BANANA||ki==M_STENGEL||ki==M_WINGOVER);
-                float clr = invI ? 4.0f : -18.0f;  // ordinary track may make a purposeful shallow cut; inversions stay above ground
-                float tf  = groundTopAt(cp[i].x, cp[i].z) + clr;
+                // A water DIP is the one explicit low-clearance section. There
+                // is no implicit tunnel mode: ordinary track and inversions
+                // both remain visibly above the terrain surface.
+                float clr = (ki == M_DIP) ? 0.5f : 4.0f;
+                // Protect the continuous spline, not just the control point:
+                // include terrain under both adjacent half-spans so a voxel
+                // ridge between cps cannot pierce an otherwise clear chord.
+                float surface = groundTopAt(cp[i].x, cp[i].z);
+                for (int side : {-1, 1}) {
+                    int j = i + side;
+                    if (j < 0 || j >= (int)cp.size()) continue;
+                    for (int q = 1; q <= 4; ++q) {
+                        float t = 0.5f * (float)q / 4.0f;
+                        float x = cp[i].x + (cp[j].x - cp[i].x) * t;
+                        float z = cp[i].z + (cp[j].z - cp[i].z) * t;
+                        surface = fmaxf(surface, groundTopAt(x, z));
+                    }
+                }
+                float tf  = surface + clr;
                 if (tf <= genFloorY) {            // terrain at/below the floor: follow it down, reset the climb
                     genFloorY = tf; genFloorVy = 0.0f;
                 } else {                           // terrain above: climb toward it, easing the slope in (bounded g)
@@ -3272,13 +3502,10 @@ struct Track {
                     cp[i].y = fminf(genFloorY, maxLiftY);
                     if (cp[i].y < cp[i - 1].y) cp[i].y = cp[i - 1].y;   // never lift backwards past the last frozen cp
                 }
-                // Backstop against CATASTROPHIC tunneling only. The smooth ramp above lags a little
-                // underground where terrain rises faster than the curvature budget allows -- rare
-                // shallow tunnels are wanted (a real tunnel-through-the-hill moment), so allow the
-                // track to run a bounded amount under a fast-rising hill while still capping any
-                // pathological deep underground dive.
-                float hardFloor = groundTopAt(cp[i].x, cp[i].z) - 20.0f;
-                if (cp[i].y < hardFloor) cp[i].y = hardFloor;
+                // No publication-time hard snap. The planner and both draft relaxation passes
+                // already preserve clearance; forcing this settled point directly to a new ridge
+                // was the remaining 40 m FLAT control-point gap. Any regression is now exposed by
+                // the finalized subterranean audit instead of being hidden as a vertical teleport.
 
                 // ROUND JUST THE TUNNEL-ENTRY LIP. Where a carving mode dives under terrain and the
                 // floor clamps it, a sharp vertical kink forms (the FLAT/DROP tunnel jerk). Detect that
@@ -3532,6 +3759,54 @@ struct Track {
     }
     #include "coaster_elements_ext.cpp"
 };
+
+// Curvature-aware block/trim controller. Powered sections are allowed to complete their advertised
+// 360 km/h target; immediately afterward this looks far enough ahead to brake into the next shape's
+// +12/-6 vertical-g and +/-6 lateral-g speed envelope. The backward braking envelope avoids an
+// instantaneous speed clamp and behaves like a modern launch coaster's magnetic trim strategy.
+static float applyForceEnvelope(Track &track, float u, float speed, float dt) {
+    constexpr float BRAKE = 24.0f;
+    constexpr float LOOK_U = 48.0f;
+    constexpr float STEP_U = 0.5f;
+    float allowedNow = 1.0e9f;
+    float distance = 0.0f;
+    Vector3 previous = track.pos(u);
+    for (float ahead = 0.0f; ahead <= LOOK_U; ahead += STEP_U) {
+        float q = u + ahead;
+        Vector3 p = track.pos(q);
+        if (ahead > 0.0f) distance += Vector3Distance(previous, p);
+        previous = p;
+
+        Vector3 tangent = track.tangent(q);
+        Vector3 normal = orthoUp(tangent, track.upAt(q));
+        float scale = fmaxf(track.speedScale(q), 1.0f);
+        float du = Clamp(7.5f / scale, 0.35f, 1.1f);
+        Vector3 tb = track.tangent(q - du), tf = track.tangent(q + du);
+        float chord = fmaxf(Vector3Distance(track.pos(q - du), track.pos(q + du)), 13.0f);
+        Vector3 kappa = Vector3Scale(Vector3Subtract(tf, tb), 1.0f / chord);
+        float gravityG = Vector3DotProduct(WUP, normal);
+        float normalK = Vector3DotProduct(kappa, normal);
+        Vector3 right = Vector3Normalize(Vector3CrossProduct(normal, tangent));
+        float lateralK = fabsf(Vector3DotProduct(kappa, right));
+
+        float localLimit2 = 1.0e9f;
+        if (normalK > 1.0e-7f)
+            localLimit2 = fminf(localLimit2, fmaxf((11.5f - gravityG) * GRAV / normalK, 64.0f));
+        else if (normalK < -1.0e-7f)
+            localLimit2 = fminf(localLimit2, fmaxf((-5.5f - gravityG) * GRAV / normalK, 64.0f));
+        if (lateralK > 1.0e-7f)
+            localLimit2 = fminf(localLimit2, fmaxf(5.5f * GRAV / lateralK, 64.0f));
+
+        float backwardLimit = sqrtf(fmaxf(localLimit2 + 2.0f * BRAKE * distance, 64.0f));
+        allowedNow = fminf(allowedNow, backwardLimit);
+    }
+    if (speed <= allowedNow) return speed;
+    // The look-ahead normally makes this a gradual trim. The cap is authoritative if a powered
+    // section or a newly streamed signature element leaves less braking distance than expected;
+    // preserving the rider-force envelope is preferable to carrying impossible speed into a kink.
+    (void)dt;
+    return allowedNow;
+}
 
 // HONEST HUD ELEMENT NAMES -- the ONE shared diagnosis both renderers use (user: names are
 // often fake, e.g. SPLASHDOWN shown on non-low, non-water track). The generator's tag says

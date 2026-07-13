@@ -29,6 +29,7 @@ if(BUILD_TESTING)
   add_test(NAME v1_legacy_audit COMMAND minecoaster --audit 64)
   add_test(NAME v1_element_census COMMAND minecoaster --census 64)
   add_test(NAME v1_launch_pacing COMMAND minecoaster --launchaudit)
+  add_test(NAME v1_force_envelope COMMAND minecoaster --forceaudit 64)
   add_test(
     NAME v1_deterministic_export
     COMMAND ${CMAKE_COMMAND}

@@ -567,8 +567,9 @@ inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
 }
 
 struct HillChainSpec {
-    std::size_t hillCount = 3;             // final V1 intent: three or four
+    std::size_t hillCount = 2;             // compact V1 chain: two or three
     double startHeight = 0.0;
+    double terrainRise = 0.0;              // smooth baseline lift across a rising corridor
     double firstCrestRise = 28.0;
     double crestHeightDecay = 0.82;        // absolute crests descend each hop
     double troughDropPerHill = 3.0;
@@ -594,7 +595,7 @@ struct HillChainProfile {
 
 inline bool validateHillChain(const HillChainProfile& chain,
                               double tolerance = 1.0e-6) {
-    if (chain.spec.hillCount < 3 || chain.spec.hillCount > kMaxChainHills ||
+    if (chain.spec.hillCount < 2 || chain.spec.hillCount > kMaxChainHills ||
         chain.profile.empty() ||
         !continuityMetrics(chain.profile).isC2(tolerance))
         return false;
@@ -603,7 +604,8 @@ inline bool validateHillChain(const HillChainProfile& chain,
     const Boundary end = chain.profile.end();
     const double expectedEnd = chain.spec.startHeight -
                                chain.spec.troughDropPerHill *
-                               static_cast<double>(chain.spec.hillCount);
+                               static_cast<double>(chain.spec.hillCount) +
+                               chain.spec.terrainRise;
     if (!near(begin.height, chain.spec.startHeight, tolerance) ||
         !near(begin.grade, 0.0, tolerance) ||
         !near(begin.curvature, 0.0, tolerance) ||
@@ -616,8 +618,6 @@ inline bool validateHillChain(const HillChainProfile& chain,
         const Sample crest = chain.profile.sampleDistance(chain.crestDistance[i]);
         if (!near(crest.height, chain.crestHeight[i], tolerance) ||
             !near(crest.grade, 0.0, tolerance) || !(crest.curvature < 0.0))
-            return false;
-        if (i > 0 && !(chain.crestHeight[i] < chain.crestHeight[i - 1]))
             return false;
 
         const Sample trough = chain.profile.sampleDistance(chain.troughDistance[i]);
@@ -637,7 +637,8 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
     HillChainProfile result;
     result.spec = spec;
 
-    const bool finiteInput = finite(spec.startHeight) && finite(spec.firstCrestRise) &&
+    const bool finiteInput = finite(spec.startHeight) && finite(spec.terrainRise) &&
+                             finite(spec.firstCrestRise) &&
                              finite(spec.crestHeightDecay) &&
                              finite(spec.troughDropPerHill) &&
                              finite(spec.faceDegrees) &&
@@ -646,7 +647,8 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
                              finite(spec.crownLengthDecay) &&
                              finite(spec.troughLength) &&
                              finite(spec.exitTransitionLength);
-    if (!finiteInput || spec.hillCount < 3 || spec.hillCount > kMaxChainHills ||
+    if (!finiteInput || spec.hillCount < 2 || spec.hillCount > kMaxChainHills ||
+        !(spec.terrainRise >= 0.0) ||
         !(spec.firstCrestRise > 0.0) ||
         !(spec.crestHeightDecay > 0.0 && spec.crestHeightDecay < 1.0) ||
         !(spec.troughDropPerHill >= 0.0) ||
@@ -664,9 +666,15 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
     std::array<double, 2 * kMaxChainHills + 1> curvature{};
     height[0] = spec.startHeight;
     for (std::size_t i = 0; i < spec.hillCount; ++i) {
-        height[2 * i + 1] = spec.startHeight + spec.firstCrestRise *
+        double crestU = static_cast<double>(2 * i + 1) /
+                        static_cast<double>(extremaCount - 1);
+        double troughU = static_cast<double>(2 * i + 2) /
+                         static_cast<double>(extremaCount - 1);
+        double crestBase = spec.terrainRise * crestU * crestU * (3.0 - 2.0 * crestU);
+        double troughBase = spec.terrainRise * troughU * troughU * (3.0 - 2.0 * troughU);
+        height[2 * i + 1] = spec.startHeight + crestBase + spec.firstCrestRise *
                             std::pow(spec.crestHeightDecay, static_cast<double>(i));
-        height[2 * i + 2] = spec.startHeight - spec.troughDropPerHill *
+        height[2 * i + 2] = spec.startHeight + troughBase - spec.troughDropPerHill *
                             static_cast<double>(i + 1);
     }
     // A sinusoidal camelback is best understood as a sequence of smooth

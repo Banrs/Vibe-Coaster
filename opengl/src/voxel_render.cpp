@@ -329,14 +329,8 @@ static inline unsigned short capVert(float x, float y, float z, float u, float v
     if (z < b.bmin.z) b.bmin.z = z; if (z > b.bmax.z) b.bmax.z = z;
     return (unsigned short)(b.pos.size() / 3 - 1);
 }
-// Emits ONE quad (corners a,b,c,d in fan order, same winding CAPQ used to feed two
-// standalone triangles a-b-c / a-c-d) as 4 unique vertices + 6 indices instead of 6
-// duplicated vertices -- corners a and c are shared by both triangles of the quad, and
-// every caller already passes identical position/uv/color for a shape corner each time
-// it appears (see emitCubeTex's CAPQ invocations), so this is a lossless 6->4 vertex
-// dedup per quad (33% fewer vertices through the vertex pipeline for terrain, which is
-// by far the largest source of geometry in the scene and gets rasterized up to 4x per
-// frame -- once per shadow cascade plus the main pass).
+// Emit two independent voxel triangles. The former four-corner indexed optimization
+// corrupted atlas interpolation on several drivers and made track/terrain faces look joined.
 static inline void capQuad(float nx, float ny, float nz,
                            float ax, float ay, float az, float au, float av, Color ac,
                            float bx, float by, float bz, float bu, float bv, Color bc,
@@ -346,9 +340,11 @@ static inline void capQuad(float nx, float ny, float nz,
     unsigned short i0 = capVert(ax, ay, az, au, av, nx, ny, nz, ac);
     unsigned short i1 = capVert(bx, by, bz, bu, bv, nx, ny, nz, bc);
     unsigned short i2 = capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
-    unsigned short i3 = capVert(dx, dy, dz, du, dv, nx, ny, nz, dc);
+    unsigned short i3 = capVert(ax, ay, az, au, av, nx, ny, nz, ac);
+    unsigned short i4 = capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
+    unsigned short i5 = capVert(dx, dy, dz, du, dv, nx, ny, nz, dc);
     b.idx.push_back(i0); b.idx.push_back(i1); b.idx.push_back(i2);
-    b.idx.push_back(i0); b.idx.push_back(i2); b.idx.push_back(i3);
+    b.idx.push_back(i3); b.idx.push_back(i4); b.idx.push_back(i5);
 }
 
 struct TerrainChunk { Mesh mesh{}; Vector3 center{}; float radius = 0.0f; };

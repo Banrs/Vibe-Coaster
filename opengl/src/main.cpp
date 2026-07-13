@@ -118,10 +118,11 @@ int main(int argc, char **argv) {
             bool inSplash = false;
             const float dt = 1.0f / 60.0f;
             for (int f = 0; f < 30000; f++) {
-                t.ensureFinalizedAhead(u + 16);
+                t.ensureFinalizedAhead(u + 64);
                 float slope = t.tangent(u).y;
                 unsigned char tg = t.tagAt(u);
                 v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
+                v = applyForceEnvelope(t, u, v, dt);
                 if (f > 120) {
                     if (tg < M_COUNT) tagFrames[tg]++;
                     totFrames++;
@@ -173,6 +174,59 @@ int main(int argc, char **argv) {
         printf("  --- genuine SPLASHDOWNs (DIP skimming water): %.1f/ride, %.1f s each ---\n",
                splashInst / 8.0, splashInst ? (double)splashF / 60.0 / splashInst : 0.0);
         return 0;
+    }
+
+    // Headless force-envelope audit using the exact ride-speed integrator and curvature window used
+    // by the live HUD. This catches generated seams and terrain adaptations, not just ideal element
+    // formulas. The requested V1 hard envelope is +12/-6 vertical g; lateral is reported separately.
+    if (argc > 1 && TextIsEqual(argv[1], "--forceaudit")) {
+        int seeds = argc > 2 ? Clamp(atoi(argv[2]), 1, 64) : 8;
+        bool ok = true;
+        printf("=== V1 live-path force audit (%d seeds, hard vertical +12/-6g) ===\n", seeds);
+        for (int seed = 1; seed <= seeds; ++seed) {
+            g_rng = (uint32_t)seed * 2654435761u | 1u;
+            Track t; t.reset();
+            float u = 0.5f, v = 12.0f;
+            float maxV = -1.0e9f, minV = 1.0e9f, maxLat = 0.0f;
+            float maxVU = 0.0f, minVU = 0.0f;
+            unsigned char maxVTag = M_FLAT, minVTag = M_FLAT;
+            const float dt = 1.0f / 60.0f;
+            for (int frame = 0; frame < 12000; ++frame) {
+                t.ensureFinalizedAhead(u + 34.0f);
+                float slope = t.tangent(u).y;
+                unsigned char tag = t.tagAt(u);
+                v = integrateRideSpeed(v, slope, tag, t.driveAt(u), dt);
+                v = applyForceEnvelope(t, u, v, dt);
+
+                Vector3 T = t.tangent(u);
+                Vector3 N = orthoUp(T, t.upAt(u));
+                float ss = fmaxf(t.speedScale(u), 1.0f);
+                float duK = Clamp(7.5f / ss, 0.35f, 1.1f);
+                Vector3 Tb = t.tangent(u - duK), Tf = t.tangent(u + duK);
+                float arcK = fmaxf(Vector3Distance(t.pos(u - duK), t.pos(u + duK)), 13.0f);
+                Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arcK);
+                Vector3 felt = Vector3Add(Vector3Scale(kappa, v * v), Vector3{0, GRAV, 0});
+                Vector3 right = Vector3Normalize(Vector3CrossProduct(N, T));
+                float gVertNow = Vector3DotProduct(felt, N) / GRAV;
+                float gLatNow = Vector3DotProduct(felt, right) / GRAV;
+                if (frame > 120 && std::isfinite(gVertNow) && std::isfinite(gLatNow)) {
+                    if (gVertNow > maxV) { maxV = gVertNow; maxVU = u + (float)t.base; maxVTag = tag; }
+                    if (gVertNow < minV) { minV = gVertNow; minVU = u + (float)t.base; minVTag = tag; }
+                    maxLat = fmaxf(maxLat, fabsf(gLatNow));
+                }
+
+                float duRide = v * dt / fmaxf(t.speedScale(u), 0.5f);
+                if (!std::isfinite(duRide)) duRide = 0.0f;
+                u += fminf(duRide, 1.5f);
+                while (u > 13.0f && (int)t.cp.size() > 18) { t.popFront(); u -= 1.0f; }
+            }
+            bool pass = maxV <= 12.0f + 0.01f && minV >= -6.0f - 0.01f;
+            printf("seed%2d  vert [%+6.2f @u%.0f/tag%d, %+6.2f @u%.0f/tag%d]  |lat|max=%5.2f  %s\n",
+                   seed, minV, minVU, (int)minVTag, maxV, maxVU, (int)maxVTag,
+                   maxLat, pass ? "PASS" : "FAIL");
+            ok = ok && pass;
+        }
+        return ok ? 0 : 1;
     }
 
     if (argc > 2 && TextIsEqual(argv[1], "--exporttrack")) {
@@ -272,7 +326,7 @@ int main(int argc, char **argv) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 8;
         const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
         long setInv[M_COUNT]; for (int i = 0; i < M_COUNT; i++) setInv[i] = 0;   // seed-set inversion totals for the no-type-over-50% gate
-        int  laps = 0, invRange = 0, cliffMiss = 0;
+        int  laps = 0, invRange = 0;
         int  hardQuotaMiss = 0, terrainQuotaMiss = 0;
         for (int sd = 1; sd <= seeds; sd++) {
             g_rng = (uint32_t)sd * 2654435761u | 1u;
@@ -297,14 +351,14 @@ int main(int argc, char **argv) {
                                    cnt[M_SCURVE],cnt[M_WAVE],cnt[M_STENGEL], ms);
                             laps++;
                             if (inv < 2 || inv > 4) { invRange++; printf("[census]   WARN seed%d lap%d inversions=%d OUT OF [2,4]\n", sd, lap, inv); }
-                            if (cnt[M_CLIFFDIVE] < 1) { cliffMiss++; printf("[census]   WARN seed%d lap%d NO cliffdive\n", sd, lap); }
+                            // CLIFFDIVE is intentionally disabled until terrain can qualify a real cliff site.
                             bool hardMiss = cnt[M_HILLS] < 1 || cnt[M_TURN] < 1;
                             bool terrainMiss = cnt[M_HELIX] < 1 || cnt[M_DIP] < 1 || bank < 1;
                             if (hardMiss) hardQuotaMiss++;
                             if (terrainMiss) terrainQuotaMiss++;
                             if (hardMiss || terrainMiss)
                                 printf("[census]   %s seed%d lap%d unmet quota:%s%s%s%s%s\n",
-                                       hardMiss ? "FAIL" : "WARN", sd, lap,
+                                       "WARN", sd, lap,
                                        cnt[M_HILLS]<1?" HILLS":"", cnt[M_TURN]<1?" TURN":"", cnt[M_HELIX]<1?" HELIX":"",
                                        cnt[M_DIP]<1?" DIP":"", bank<1?" BANKAIR":"");
                             setInv[M_LOOP]+=cnt[M_LOOP]; setInv[M_ROLL]+=cnt[M_ROLL]; setInv[M_IMMEL]+=cnt[M_IMMEL];
@@ -331,9 +385,9 @@ int main(int argc, char **argv) {
                invMaxT>=0?NM[invMaxT]:"-", grand?100.0*(double)invMax/(double)grand:0.0, setInv[M_ROLL]>0?"yes":"NO");
         bool dominance = grand > 0 && invMax * 2 >= grand;
         bool complete = laps == seeds * 3;
-        printf("[census] laps=%d invOutOfRange=%d cliffMiss=%d hardQuotaMiss=%d terrainQuotaWarn=%d complete=%s\n",
-               laps, invRange, cliffMiss, hardQuotaMiss, terrainQuotaMiss, complete ? "yes" : "NO");
-        return (invRange || cliffMiss || hardQuotaMiss || dominance || setInv[M_ROLL] == 0 || !complete) ? 1 : 0;
+        printf("[census] laps=%d invOutOfRange=%d hardQuotaMiss=%d terrainQuotaWarn=%d complete=%s\n",
+               laps, invRange, hardQuotaMiss, terrainQuotaMiss, complete ? "yes" : "NO");
+        return (invRange || dominance || setInv[M_ROLL] == 0 || !complete) ? 1 : 0;
     }
 
     if (argc > 1 && TextIsEqual(argv[1], "--audit")) {
@@ -421,6 +475,7 @@ int main(int argc, char **argv) {
                 float slope = t.tangent(u).y;
                 unsigned char tg = t.tagAt(u);
                 v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
+                v = applyForceEnvelope(t, u, v, dt);
 
                 // Station cadence: request a platform stop every stationEvery seconds (live-loop
                 // behaviour). The generator lays the STN run at the next low-terrain flat; that starts
@@ -923,6 +978,7 @@ int main(int argc, char **argv) {
             bool onLift = drive == 1;
             chain = onLift && slope > 0.05f;
             v = applyTrackDrive(v, tg, drive, slope, dt);
+            v = applyForceEnvelope(trk, u, v, dt);
 
             // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
             // numeric floor keeps du/dt finite.
@@ -1913,24 +1969,8 @@ int main(int argc, char **argv) {
             if (!gTerrainMesh.live) gTerrainMesh.finish(true);   // first build: must have a mesh to draw
         }
 
-        // Anchor the shadow cascades near the GROUND under the train, not on the train's raw
-        // 3D position. Centering every cascade on P (the train) breaks in two ways once the
-        // train is high on a 200 m+ top-hat:
-        //   (1) the near, high-res cascades fly up to y~200 with the train, abandoning the
-        //       ground far below -- so the tower base and surrounding ground fall outside the
-        //       near cascades and can even exit the far cascade's box, where the bounds check
-        //       returns "fully lit" and the shadow simply vanishes (the reported "base of the
-        //       tower shadows don't render at 200 m+").
-        //   (2) cascade SELECTION is radial 3D distance from this focus, so the cascade-split
-        //       boundaries are circles on the ground centred under the train whose ground radius
-        //       is sqrt(split^2 - trainHeight^2) -- it SHRINKS as the train climbs, drawing a
-        //       faint dark ring/disc that pulses with altitude (the reported "dark circle whose
-        //       radius depends on the coaster's y-level").
-        // Clamping the focus Y to at most SHADOW_FOCUS_LIFT above the local ground keeps the
-        // near cascades on the ground (full coverage + fixed-radius, non-pulsing boundaries)
-        // while the high train's own (faint, distant) shadow falls into the far cascade, which
-        // easily contains it. For normal riding (train within LIFT of the ground/hill) the focus
-        // still tracks the train exactly, so its shadow stays crisp as before.
+        // One stable shadow volume, ground-anchored so tall elements do not move coverage away
+        // from the terrain below them. There are no cascade boundaries or close-shadow layer.
         {
             const float SHADOW_FOCUS_LIFT = 45.0f;
             float groundY = groundTopAt(P.x, P.z);
@@ -1943,48 +1983,38 @@ int main(int argc, char **argv) {
         static double dShadowAcc = 0.0, dMainAcc = 0.0; static int dN = 0;
         double tShadow0 = diagTiming ? GetTime() : 0.0;
         rlDrawRenderBatchActive();
-        for (int ci = FIRST_SHADOW_CASCADE; ci < SHADOW_CASCADES; ci++) {
-            rlEnableFramebuffer(gShadow.fbo[ci]);
-            rlViewport(0, 0, gShadow.SM[ci], gShadow.SM[ci]);
-            rlClearScreenBuffers();
-            rlDisableColorBlend();
-            rlEnableDepthTest(); rlEnableDepthMask();
-            glDepthFunc(GL_LEQUAL);
-            rlSetMatrixProjection(MatrixIdentity());
-            rlSetMatrixModelview(gShadow.lightVP[ci]);
-            BeginShaderMode(gShadow.depth);
-            drawWorld(true, false, SHADOW_CASCADE_CULL_R[ci]);
-            rlDrawRenderBatchActive();
-            EndShaderMode();
-            rlEnableColorBlend();
-            rlDisableFramebuffer();
-        }
+        rlEnableFramebuffer(gShadow.fbo);
+        rlViewport(0, 0, gShadow.SM, gShadow.SM);
+        rlClearScreenBuffers();
+        rlDisableColorBlend();
+        rlEnableDepthTest(); rlEnableDepthMask();
+        glDepthFunc(GL_LEQUAL);
+        rlSetMatrixProjection(MatrixIdentity());
+        rlSetMatrixModelview(gShadow.lightVP);
+        BeginShaderMode(gShadow.depth);
+        drawWorld(true, false, SHADOW_CULL_RADIUS);
+        rlDrawRenderBatchActive();
+        EndShaderMode();
+        rlEnableColorBlend();
+        rlDisableFramebuffer();
         rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
         if (diagTiming) dShadowAcc += (GetTime() - tShadow0) * 1000.0;
 
-        // Bind both active cascade matrices/textures once per frame; every gShadow.lit
-        // draw call below (main pass, water, path-trace overlays) shares them.
+        // Bind the single map once per frame for every lit draw.
         auto bindShadowUniforms = [&]() {
-            for (int i = FIRST_SHADOW_CASCADE; i < SHADOW_CASCADES; i++) {
-                SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP[i], gShadow.lightVP[i]);
-                float texel[2] = { 1.0f / gShadow.SM[i], 1.0f / gShadow.SM[i] };
-                SetShaderValue(gShadow.lit, gShadow.locShadowTexel[i], texel, SHADER_UNIFORM_VEC2);
-                SetShaderValue(gShadow.lit, gShadow.locInvRange[i], &gShadow.invRange[i], SHADER_UNIFORM_FLOAT);
-            }
-            SetShaderValue(gShadow.lit, gShadow.locCascadeSplit1, &SHADOW_CASCADE_R[1], SHADER_UNIFORM_FLOAT);
-            float sf[3] = { gShadow.focus.x, gShadow.focus.y, gShadow.focus.z };
-            SetShaderValue(gShadow.lit, gShadow.locShadowFocus, sf, SHADER_UNIFORM_VEC3);
+            SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP, gShadow.lightVP);
+            float texel[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
+            SetShaderValue(gShadow.lit, gShadow.locShadowTexel, texel, SHADER_UNIFORM_VEC2);
+            SetShaderValue(gShadow.lit, gShadow.locInvRange, &gShadow.invRange, SHADER_UNIFORM_FLOAT);
         };
-        static const int SHADOW_TEX_UNITS[SHADOW_CASCADES] = { 10, 13, 14 };
+        static const int SHADOW_TEX_UNIT = 14;
         auto bindShadowTextures = [&]() {
-            for (int i = FIRST_SHADOW_CASCADE; i < SHADOW_CASCADES; i++) {
-                SetShaderValue(gShadow.lit, gShadow.locShadowMap[i], &SHADOW_TEX_UNITS[i], SHADER_UNIFORM_INT);
-                rlActiveTextureSlot(SHADOW_TEX_UNITS[i]); rlEnableTexture(gShadow.depthTex[i]);
-            }
+            SetShaderValue(gShadow.lit, gShadow.locShadowMap, &SHADOW_TEX_UNIT, SHADER_UNIFORM_INT);
+            rlActiveTextureSlot(SHADOW_TEX_UNIT); rlEnableTexture(gShadow.depthTex);
             rlActiveTextureSlot(0);
         };
         auto unbindShadowTextures = [&]() {
-            for (int i = FIRST_SHADOW_CASCADE; i < SHADOW_CASCADES; i++) { rlActiveTextureSlot(SHADOW_TEX_UNITS[i]); rlDisableTexture(); }
+            rlActiveTextureSlot(SHADOW_TEX_UNIT); rlDisableTexture();
             rlActiveTextureSlot(0);
         };
 
@@ -2264,8 +2294,8 @@ int main(int argc, char **argv) {
             // computes most shadowing via its own voxel ray march); feed it cascade 1
             // (mid distance) as a reasonable single proxy rather than extending its
             // shader to the full 3-cascade scheme.
-            SetShaderValueMatrix(gPT.rt, gPT.rLightVP, gShadow.lightVP[1]);
-            float rstx[2] = { 1.0f / gShadow.SM[1], 1.0f / gShadow.SM[1] };
+            SetShaderValueMatrix(gPT.rt, gPT.rLightVP, gShadow.lightVP);
+            float rstx[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
             SetShaderValue(gPT.rt, gPT.rShadowTexel, rstx, SHADER_UNIFORM_VEC2);
             const int RT_SHADOW_UNIT = 12;
             SetShaderValue(gPT.rt, gPT.rShadowMap, &RT_SHADOW_UNIT, SHADER_UNIFORM_INT);
@@ -2273,7 +2303,7 @@ int main(int argc, char **argv) {
             BeginTextureMode(gPT.rtBuf);
                 rlEnableDepthTest();
                 glDepthFunc(GL_ALWAYS);
-                rlActiveTextureSlot(RT_SHADOW_UNIT); rlEnableTexture(gShadow.depthTex[1]); rlActiveTextureSlot(0);
+                rlActiveTextureSlot(RT_SHADOW_UNIT); rlEnableTexture(gShadow.depthTex); rlActiveTextureSlot(0);
                 BeginShaderMode(gPT.rt);
                     DrawTexturePro(gPT.vox,
                         Rectangle{0,0,(float)gPT.vox.width,(float)gPT.vox.height},

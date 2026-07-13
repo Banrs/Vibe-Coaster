@@ -99,7 +99,7 @@ struct CpuMeshBuilder {
 
     void reserveCubes(int cubeCount) {
         if (cubeCount < 1) return;
-        const size_t vertices = (size_t)cubeCount * 24u;
+        const size_t vertices = (size_t)cubeCount * 36u;
         positions.reserve(vertices * 3u);
         texcoords.reserve(vertices * 2u);
         normals.reserve(vertices * 3u);
@@ -136,18 +136,23 @@ struct CpuMeshBuilder {
                     Vector3 b, Vector2 buv, Color bc,
                     Vector3 c, Vector2 cuv, Color cc,
                     Vector3 d, Vector2 duv, Color dc) {
-        if (overflowed || vertexCount() > 65531) {
+        if (overflowed || vertexCount() > 65529) {
             overflowed = true;
             return;
         }
         const Vector3 normal = frameDirection(frame, localNormal);
+        // Match the voxel emitter exactly: two independent textured triangles (six vertices).
+        // Sharing four corners across the diagonal caused atlas interpolation/face corruption on
+        // the cached track path even though the index topology was mathematically equivalent.
         const unsigned short i0 = appendVertex(framePoint(frame, a), normal, auv, ac);
         const unsigned short i1 = appendVertex(framePoint(frame, b), normal, buv, bc);
         const unsigned short i2 = appendVertex(framePoint(frame, c), normal, cuv, cc);
-        const unsigned short i3 = appendVertex(framePoint(frame, d), normal, duv, dc);
+        const unsigned short i3 = appendVertex(framePoint(frame, a), normal, auv, ac);
+        const unsigned short i4 = appendVertex(framePoint(frame, c), normal, cuv, cc);
+        const unsigned short i5 = appendVertex(framePoint(frame, d), normal, duv, dc);
         if (overflowed) return;
         indices.push_back(i0); indices.push_back(i1); indices.push_back(i2);
-        indices.push_back(i0); indices.push_back(i2); indices.push_back(i3);
+        indices.push_back(i3); indices.push_back(i4); indices.push_back(i5);
     }
 
     void appendBox(int tile, const RenderFrame &frame, Vector3 centre,

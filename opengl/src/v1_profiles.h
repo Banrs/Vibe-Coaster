@@ -472,6 +472,7 @@ inline void assertC2(const Profile& profile) {
 // The integral of a +grade to -grade crown at u=1/2 is 11/32 of
 // grade*length.  This exact constant is useful both for sizing and validation.
 constexpr double kSymmetricBlendExtremumRise = 11.0 / 32.0;
+constexpr double kSymmetricCosineExtremumRise = 1.0 / kPi;
 
 struct TopHatSpec {
     double startHeight = 0.0;
@@ -481,6 +482,7 @@ struct TopHatSpec {
     double entryTransitionLength = 28.0;
     double crownLength = 34.0;
     double exitTransitionLength = 30.0;
+    double horizontalDilation = 1.30;
 };
 
 struct TopHatProfile {
@@ -503,6 +505,9 @@ inline bool validateTopHat(const TopHatProfile& topHat,
     const Boundary end = topHat.profile.end();
     const Sample apex = topHat.profile.sampleDistance(topHat.apexDistance);
     const ShapeMetrics shape = shapeMetrics(topHat.profile);
+    const double dilatedPitch = std::atan(
+        std::tan(topHat.spec.faceDegrees * kDegreesToRadians) /
+        topHat.spec.horizontalDilation) * kRadiansToDegrees;
     return topHat.spec.faceDegrees >= kTopHatMinFaceDegrees - tolerance &&
            topHat.spec.faceDegrees <= kTopHatMaxFaceDegrees + tolerance &&
            near(begin.height, topHat.spec.startHeight, tolerance) &&
@@ -514,7 +519,7 @@ inline bool validateTopHat(const TopHatProfile& topHat,
            near(apex.height, topHat.spec.crestHeight, tolerance) &&
            near(apex.grade, 0.0, tolerance) && apex.curvature < 0.0 &&
            shape.localMaxima == 1 &&
-           near(shape.maximumPitchDegrees(), topHat.spec.faceDegrees, 2.0e-5);
+           near(shape.maximumPitchDegrees(), dilatedPitch, 2.0e-5);
 }
 
 inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
@@ -525,12 +530,13 @@ inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
                              finite(spec.endHeight) && finite(spec.faceDegrees) &&
                              finite(spec.entryTransitionLength) &&
                              finite(spec.crownLength) &&
-                             finite(spec.exitTransitionLength);
+                             finite(spec.exitTransitionLength) &&
+                             finite(spec.horizontalDilation);
     if (!finiteInput ||
         spec.faceDegrees < kTopHatMinFaceDegrees ||
         spec.faceDegrees > kTopHatMaxFaceDegrees ||
         !(spec.entryTransitionLength > 0.0) || !(spec.crownLength > 0.0) ||
-        !(spec.exitTransitionLength > 0.0))
+        !(spec.exitTransitionLength > 0.0) || !(spec.horizontalDilation >= 1.0))
         return result;
 
     const double faceGrade = std::tan(spec.faceDegrees * kDegreesToRadians);
@@ -538,14 +544,14 @@ inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
     const double descentDrop = spec.crestHeight - spec.endHeight;
     if (!(ascentRise > 0.0) || !(descentDrop > 0.0)) return result;
 
-    // FVD-style geometry: integrate a continuous grade program instead of
-    // inserting constant-grade lines.  Allocate 75% of each rise to the
-    // pull-up and 25% to the crown; the analytical raised-cosine integrals
-    // solve the element without a positional correction or an overshoot.
-    constexpr double crownRiseFraction = 0.25;
+    // One continuous camelback: the crown curve begins one third of the way
+    // up and remains active until two thirds of the way down.  Raised-cosine
+    // grade keeps pitch changing across each whole section instead of
+    // dwelling at a constant face angle.  There is still exactly one apex.
+    constexpr double crownRiseFraction = 2.0 / 3.0;
     const double entryLength = 2.0 * (1.0 - crownRiseFraction) * ascentRise / faceGrade;
     const double crownLength = crownRiseFraction * ascentRise /
-                               ((1.0 / kPi) * faceGrade);
+                               (kSymmetricCosineExtremumRise * faceGrade);
     const double exitLength = entryLength -
                               2.0 * (spec.endHeight - spec.startHeight) / faceGrade;
     if (!(entryLength > 0.0) || !(crownLength > 0.0) || !(exitLength > 0.0))
@@ -560,7 +566,20 @@ inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
     result.descentFaceEndDistance = builder.profile().length();
     if (!builder.appendSlopeCosine(0.0, exitLength)) return result;
 
-    result.profile = builder.profile();
+    Profile dilated;
+    for (std::size_t i = 0; i < builder.profile().segmentCount(); ++i) {
+        Segment segment = builder.profile().segment(i);
+        segment.length *= spec.horizontalDilation;
+        if (segment.cosineGrade) {
+            segment.cosineStartGrade /= spec.horizontalDilation;
+            segment.cosineEndGrade /= spec.horizontalDilation;
+        }
+        if (!dilated.append(segment)) return result;
+    }
+    result.ascentFaceStartDistance *= spec.horizontalDilation;
+    result.apexDistance *= spec.horizontalDilation;
+    result.descentFaceEndDistance *= spec.horizontalDilation;
+    result.profile = dilated;
     result.valid = builder.good() && validateTopHat(result);
     if (result.valid) assertC2(result.profile);
     return result;
@@ -579,6 +598,7 @@ struct HillChainSpec {
     double crownLengthDecay = 0.90;
     double troughLength = 12.0;            // deliberately shorter than a crown
     double exitTransitionLength = 10.0;
+    double designSpeed = 60.0;              // m/s; sizes curvature, not propulsion
 };
 
 struct HillChainProfile {
@@ -646,7 +666,8 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
                              finite(spec.crownLength) &&
                              finite(spec.crownLengthDecay) &&
                              finite(spec.troughLength) &&
-                             finite(spec.exitTransitionLength);
+                             finite(spec.exitTransitionLength) &&
+                             finite(spec.designSpeed);
     if (!finiteInput || spec.hillCount < 2 || spec.hillCount > kMaxChainHills ||
         !(spec.terrainRise >= 0.0) ||
         !(spec.firstCrestRise > 0.0) ||
@@ -656,7 +677,7 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
         !(spec.entryTransitionLength > 0.0) || !(spec.crownLength > 0.0) ||
         !(spec.crownLengthDecay > 0.0 && spec.crownLengthDecay <= 1.0) ||
         !(spec.troughLength > 0.0 && spec.troughLength <= spec.crownLength) ||
-        !(spec.exitTransitionLength > 0.0))
+        !(spec.exitTransitionLength > 0.0) || !(spec.designSpeed > 0.0))
         return result;
 
     const double faceGrade = std::tan(spec.faceDegrees * kDegreesToRadians);
@@ -685,7 +706,13 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
         const double delta = std::abs(height[i + 1] - height[i]);
         // A half-cosine of height delta reaches max grade pi*delta/(2L).
         // Use that exact sizing, then reproduce its endpoint curvature below.
-        span[i] = std::max(18.0, 0.5 * kPi * delta / faceGrade);
+        const double gradeLength = 0.5 * kPi * delta / faceGrade;
+        // Endpoint curvature of this Hermite half-wave is approximately
+        // 6*delta/L^2.  Size it for a -5 g crest at the actual planned ride
+        // speed; pitch alone made 30 m hills dangerously short at 240 km/h.
+        const double forceLength = spec.designSpeed *
+            std::sqrt(delta / (0.92 * 9.81));
+        span[i] = std::max(18.0, std::max(gradeLength, forceLength));
     }
     curvature[0] = curvature[extremaCount - 1] = 0.0;
     for (std::size_t i = 1; i + 1 < extremaCount; ++i) {

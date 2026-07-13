@@ -282,8 +282,8 @@ static SeedRes auditSeed(int seed) {
         PIT[k] = k ? pitchDeg(t.cp[k-1], t.cp[k]) : 0.0f;
         ROL[k] = rollDeg(tanv, t.up[k]);
     }
-    std::vector<float> sU, sY;   // sampled spline: ~4 samples/segment -- what the rider actually rides
-    for (float u = 0.5f; u < n-3; u += 0.25f) { sU.push_back(u); sY.push_back(t.pos(u).y); }
+    std::vector<float> sU, sY;   // sampled spline: 12 samples/control span -- what the rider rides
+    for (float u = 0.5f; u < n-3; u += 1.0f/12.0f) { sU.push_back(u); sY.push_back(t.pos(u).y); }
     std::vector<std::pair<int,int>> fails;
 
     printf("\nSEED %d  (%d cps)\n", seed, n);
@@ -294,6 +294,13 @@ static SeedRes auditSeed(int seed) {
         if (KD[k] != M_CLIMB) { k++; continue; }
         int a = k; while (k < n && KD[k]==M_CLIMB) k++;
         int b = k-1;                              // climb run [a,b]
+        bool energyAlignment = false;
+        for (int q = a; q <= b && q < (int)t.alignmentf.size(); ++q)
+            energyAlignment = energyAlignment || t.alignmentf[q] != 0;
+        // Post-booster energy rises are monotone bank/altitude management
+        // alignments, not launched top hats or terrain wall-climbs.  Their
+        // geometry is covered by continuity/force gates instead.
+        if (energyAlignment) continue;
         int e = b, j = b+1, ggap = 0;             // extend through the following DROP/CLIFFDIVE crown
         bool cliffApproach = false;
         for (int q = a; q <= b && q < (int)t.spanRun.size(); ++q)

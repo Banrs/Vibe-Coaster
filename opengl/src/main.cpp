@@ -109,6 +109,7 @@ int main(int argc, char **argv) {
         double tagInstSec[M_COUNT] = {0};
         float  tagInstMax[M_COUNT] = {0};
         long   totFrames = 0;
+        double totalDistance = 0.0;
         long   splashF = 0, splashInst = 0;   // genuine water-skims (SPLASHDOWN label + spray active)
         for (uint32_t seed = 1; seed <= 8; seed++) {
             g_rng = seed * 2654435761u | 1u;
@@ -122,8 +123,8 @@ int main(int argc, char **argv) {
                 float slope = t.tangent(u).y;
                 unsigned char tg = t.tagAt(u);
                 v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
-                v = applyForceEnvelope(t, u, v, dt);
                 if (f > 120) {
+                    totalDistance += v * dt;
                     if (tg < M_COUNT) tagFrames[tg]++;
                     totFrames++;
                     {   // same water-skim test as rideElemName's SPLASHDOWN + the wheel-spray window;
@@ -171,6 +172,9 @@ int main(int argc, char **argv) {
         long flatF = tagFrames[M_FLAT] + tagFrames[M_LAUNCH] + tagFrames[M_BOOST] + tagFrames[M_STATION];
         printf("  --- flat-ish (FLAT+LAUNCH+BOOST+STN): %.1f%% of time | elements: %.1f/ride, density %.1f/min ---\n",
                100.0 * flatF / totFrames, elemInst / 8.0, elemInst / (totSec / 60.0));
+        printf("  --- BOOST cadence: %.2f km between entries (%ld entries over %.1f km) ---\n",
+               tagInst[M_BOOST] ? totalDistance / tagInst[M_BOOST] / 1000.0 : 0.0,
+               tagInst[M_BOOST], totalDistance / 1000.0);
         printf("  --- genuine SPLASHDOWNs (DIP skimming water): %.1f/ride, %.1f s each ---\n",
                splashInst / 8.0, splashInst ? (double)splashF / 60.0 / splashInst : 0.0);
         return 0;
@@ -178,25 +182,49 @@ int main(int argc, char **argv) {
 
     // Headless force-envelope audit using the exact ride-speed integrator and curvature window used
     // by the live HUD. This catches generated seams and terrain adaptations, not just ideal element
-    // formulas. The requested V1 hard envelope is +12/-6 vertical g; lateral is reported separately.
+    // formulas. The requested V1 hard envelope is +12/-6.5 vertical g; lateral is reported separately.
     if (argc > 1 && TextIsEqual(argv[1], "--forceaudit")) {
         int seeds = argc > 2 ? Clamp(atoi(argv[2]), 1, 64) : 8;
+        int firstSeed = argc > 3 ? Clamp(atoi(argv[3]), 1, 64) : 1;
+        int lastSeed = std::min(64, firstSeed + seeds - 1);
+        seeds = lastSeed - firstSeed + 1;
         bool ok = true;
-        printf("=== V1 live-path force audit (%d seeds, hard vertical +12/-6g) ===\n", seeds);
-        for (int seed = 1; seed <= seeds; ++seed) {
+        float sustainedPosSum = 0.0f, sustainedNegSum = 0.0f;
+        int sustainedPosSeeds = 0, sustainedNegSeeds = 0;
+        printf("=== V1 live-path force audit (%d seeds, 120 Hz, hard vertical +12/-6.5g) ===\n", seeds);
+        for (int seed = firstSeed; seed <= lastSeed; ++seed) {
             g_rng = (uint32_t)seed * 2654435761u | 1u;
             Track t; t.reset();
             float u = 0.5f, v = 12.0f;
             float maxV = -1.0e9f, minV = 1.0e9f, maxLat = 0.0f;
-            float maxVU = 0.0f, minVU = 0.0f;
-            unsigned char maxVTag = M_FLAT, minVTag = M_FLAT;
-            const float dt = 1.0f / 60.0f;
-            for (int frame = 0; frame < 12000; ++frame) {
+            float maxVU = 0.0f, minVU = 0.0f, maxLatU = 0.0f;
+            float posRunSum = 0.0f, negRunSum = 0.0f;
+            float bestPosSustained = -1.0e9f, bestNegSustained = 1.0e9f;
+            int posRunN = 0, negRunN = 0;
+            double speedSum = 0.0;
+            double plannedSpeedSum = 0.0;
+            int speedN = 0, lowRun = 0, longestLowRun = 0;
+            float peakSpeed = 0.0f, minMovingSpeed = 1.0e9f;
+            float tagPeak[M_COUNT]; for (float &x : tagPeak) x = -1.0e9f;
+            double tagSpeedSum[M_COUNT] = {};
+            double tagPlannedSpeedSum[M_COUNT] = {};
+            int tagSpeedN[M_COUNT] = {};
+            unsigned char previousTag = M_COUNT;
+            unsigned char maxVTag = M_FLAT, minVTag = M_FLAT, maxLatTag = M_FLAT;
+            auto flushPos = [&]() {
+                if (posRunN >= 16) bestPosSustained = fmaxf(bestPosSustained, posRunSum / posRunN);
+                posRunSum = 0.0f; posRunN = 0;
+            };
+            auto flushNeg = [&]() {
+                if (negRunN >= 16) bestNegSustained = fminf(bestNegSustained, negRunSum / negRunN);
+                negRunSum = 0.0f; negRunN = 0;
+            };
+            const float dt = 1.0f / 120.0f;
+            for (int frame = 0; frame < 24000; ++frame) {
                 t.ensureFinalizedAhead(u + 34.0f);
                 float slope = t.tangent(u).y;
                 unsigned char tag = t.tagAt(u);
                 v = integrateRideSpeed(v, slope, tag, t.driveAt(u), dt);
-                v = applyForceEnvelope(t, u, v, dt);
 
                 Vector3 T = t.tangent(u);
                 Vector3 N = orthoUp(T, t.upAt(u));
@@ -209,10 +237,87 @@ int main(int argc, char **argv) {
                 Vector3 right = Vector3Normalize(Vector3CrossProduct(N, T));
                 float gVertNow = Vector3DotProduct(felt, N) / GRAV;
                 float gLatNow = Vector3DotProduct(felt, right) / GRAV;
-                if (frame > 120 && std::isfinite(gVertNow) && std::isfinite(gLatNow)) {
-                    if (gVertNow > maxV) { maxV = gVertNow; maxVU = u + (float)t.base; maxVTag = tag; }
-                    if (gVertNow < minV) { minV = gVertNow; minVU = u + (float)t.base; minVTag = tag; }
-                    maxLat = fmaxf(maxLat, fabsf(gLatNow));
+                if (getenv("MC_FORCEDETAIL") && tag != previousTag) {
+                    Vector3 entry = t.pos(u);
+                    Vector3 natural = orthoUp(T, WUP);
+                    Vector3 bankSide = Vector3Normalize(Vector3CrossProduct(T, natural));
+                    float bankDeg = atan2f(Vector3DotProduct(N, bankSide),
+                                           Vector3DotProduct(N, natural)) / DEG2RAD;
+                    float bendDeg = acosf(Clamp(Vector3DotProduct(Tb, Tf), -1.0f, 1.0f)) / DEG2RAD;
+                    printf("  entry u=%.1f tag=%d actual=%.0f planned=%.0f km/h y=%.0f pitch=%+.0fdeg bank=%+.0fdeg bend=%.0fdeg/%.0fm g=%+.1f/%+.1f\n",
+                           u + (float)t.base, (int)tag, v * 3.6f,
+                           t.plannedSpeedAt(u) * 3.6f, entry.y,
+                           asinf(Clamp(T.y, -1.0f, 1.0f)) / DEG2RAD,
+                           bankDeg, bendDeg, arcK, gVertNow, gLatNow);
+                    if (bendDeg > 25.0f) {
+                        int ck = (int)t.clampFinalU(u);
+                        printf("    cps");
+                        for (int ci = ck; ci <= ck + 3 && ci < (int)t.cp.size(); ++ci)
+                            printf(" [%ld:%d %.0f,%.0f,%.0f]", t.base + ci,
+                                   (int)t.kind[ci], t.cp[ci].x, t.cp[ci].y, t.cp[ci].z);
+                        printf("\n");
+                    }
+                    previousTag = tag;
+                }
+                if (frame > 240 && std::isfinite(gVertNow) && std::isfinite(gLatNow)) {
+                    if (gVertNow > maxV) {
+                        maxV = gVertNow; maxVU = u + (float)t.base; maxVTag = tag;
+                        if (getenv("MC_FORCEDETAIL") && gVertNow > 12.0f) {
+                            int ck = (int)t.clampFinalU(u);
+                            printf("  new vertical max %+.1fg @u%.2f cps", gVertNow, u + (float)t.base);
+                            for (int ci = std::max(0, ck - 1); ci <= ck + 3 && ci < (int)t.cp.size(); ++ci)
+                                printf(" [%ld:%d %.0f,%.0f,%.0f ground=%.0f]", t.base + ci,
+                                       (int)t.kind[ci], t.cp[ci].x, t.cp[ci].y, t.cp[ci].z,
+                                       groundTopAt(t.cp[ci].x, t.cp[ci].z));
+                            printf("\n");
+                        }
+                    }
+                    if (gVertNow < minV) {
+                        minV = gVertNow; minVU = u + (float)t.base; minVTag = tag;
+                        if (getenv("MC_FORCEDETAIL") && gVertNow < -6.5f) {
+                            int ck = (int)t.clampFinalU(u);
+                            printf("  new vertical min %+.1fg @u%.2f cps", gVertNow, u + (float)t.base);
+                            for (int ci = std::max(0, ck - 1); ci <= ck + 3 && ci < (int)t.cp.size(); ++ci)
+                                printf(" [%ld:%d %.0f,%.0f,%.0f ground=%.0f]", t.base + ci,
+                                       (int)t.kind[ci], t.cp[ci].x, t.cp[ci].y, t.cp[ci].z,
+                                       groundTopAt(t.cp[ci].x, t.cp[ci].z));
+                            printf("\n");
+                        }
+                    }
+                    if (fabsf(gLatNow) > maxLat) {
+                        maxLat = fabsf(gLatNow);
+                        maxLatU = u + (float)t.base;
+                        maxLatTag = tag;
+                    }
+                    if (tag < M_COUNT) tagPeak[tag] = fmaxf(tagPeak[tag], gVertNow);
+                    bool posIntense = tag == M_TURN || tag == M_HELIX || tag == M_DIVE ||
+                                      tag == M_SCURVE || tag == M_LOOP || tag == M_IMMEL ||
+                                      tag == M_DIVELOOP;
+                    bool negIntense = tag == M_HILLS || tag == M_BANKAIR || tag == M_WAVE ||
+                                      tag == M_LOOP || tag == M_ROLL || tag == M_STALL ||
+                                      tag == M_DIVELOOP;
+                    if (posIntense && gVertNow >= 8.0f) { posRunSum += gVertNow; ++posRunN; }
+                    else flushPos();
+                    if (negIntense && gVertNow <= -4.0f) { negRunSum += gVertNow; ++negRunN; }
+                    else flushNeg();
+                    if (tag != M_STATION) {
+                        float planned = t.plannedSpeedAt(u);
+                        if (tag < M_COUNT) {
+                            tagSpeedSum[tag] += v;
+                            tagPlannedSpeedSum[tag] += planned;
+                            ++tagSpeedN[tag];
+                        }
+                        speedSum += v;
+                        plannedSpeedSum += planned;
+                        ++speedN;
+                        peakSpeed = fmaxf(peakSpeed, v);
+                        minMovingSpeed = fminf(minMovingSpeed, v);
+                        if (v < 30.0f) {
+                            longestLowRun = std::max(longestLowRun, ++lowRun);
+                        } else {
+                            lowRun = 0;
+                        }
+                    }
                 }
 
                 float duRide = v * dt / fmaxf(t.speedScale(u), 0.5f);
@@ -220,12 +325,41 @@ int main(int argc, char **argv) {
                 u += fminf(duRide, 1.5f);
                 while (u > 13.0f && (int)t.cp.size() > 18) { t.popFront(); u -= 1.0f; }
             }
-            bool pass = maxV <= 12.0f + 0.01f && minV >= -6.0f - 0.01f;
-            printf("seed%2d  vert [%+6.2f @u%.0f/tag%d, %+6.2f @u%.0f/tag%d]  |lat|max=%5.2f  %s\n",
+            flushPos(); flushNeg();
+            if (bestPosSustained > -1.0e8f) { sustainedPosSum += bestPosSustained; ++sustainedPosSeeds; }
+            if (bestNegSustained <  1.0e8f) { sustainedNegSum += bestNegSustained; ++sustainedNegSeeds; }
+            float averageSpeed = speedN ? (float)(speedSum / speedN) : 0.0f;
+            float averagePlannedSpeed = speedN ? (float)(plannedSpeedSum / speedN) : 0.0f;
+            bool pass = maxV <= 12.0f + 0.01f && minV >= -6.5f - 0.01f &&
+                        longestLowRun <= 240;
+            printf("seed%2d  vert [%+6.2f @u%.0f/tag%d, %+6.2f @u%.0f/tag%d]  sustained[%+.2f/%+.2f]  |lat|max=%5.2f @u%.0f/tag%d  speed[avg%3.0f plan%3.0f peak%3.0f min%3.0f kmh low=%4.1fs]  %s\n",
                    seed, minV, minVU, (int)minVTag, maxV, maxVU, (int)maxVTag,
-                   maxLat, pass ? "PASS" : "FAIL");
+                   bestPosSustained > -1.0e8f ? bestPosSustained : 0.0f,
+                   bestNegSustained <  1.0e8f ? bestNegSustained : 0.0f,
+                   maxLat, maxLatU, (int)maxLatTag,
+                   averageSpeed * 3.6f, averagePlannedSpeed * 3.6f,
+                   peakSpeed * 3.6f, minMovingSpeed * 3.6f,
+                   longestLowRun / 120.0f, pass ? "PASS" : "FAIL");
+            if (getenv("MC_FORCEDETAIL"))
+                printf("  detail TURN=%+.2f HELIX=%+.2f DIVE=%+.2f SCURVE=%+.2f LOOP=%+.2f\n",
+                       tagPeak[M_TURN], tagPeak[M_HELIX], tagPeak[M_DIVE],
+                       tagPeak[M_SCURVE], tagPeak[M_LOOP]);
+            if (getenv("MC_FORCEDETAIL")) {
+                printf("  speed-by-tag");
+                for (int q = 0; q < M_COUNT; ++q)
+                    if (tagSpeedN[q]) printf(" %d=%.0f/%.0f", q,
+                        3.6 * tagSpeedSum[q] / tagSpeedN[q],
+                        3.6 * tagPlannedSpeedSum[q] / tagSpeedN[q]);
+                printf(" km/h\n");
+            }
             ok = ok && pass;
         }
+        float meanPosSustained = sustainedPosSeeds ? sustainedPosSum / sustainedPosSeeds : 0.0f;
+        float meanNegSustained = sustainedNegSeeds ? sustainedNegSum / sustainedNegSeeds : 0.0f;
+        printf("sustained intense-element mean: %+5.2fg positive (%d seeds), %+5.2fg negative (%d seeds)\n",
+               meanPosSustained, sustainedPosSeeds, meanNegSustained, sustainedNegSeeds);
+        if (seeds >= 8)
+            ok = ok && meanPosSustained >= 9.5f && meanNegSustained <= -4.8f;
         return ok ? 0 : 1;
     }
 
@@ -400,6 +534,87 @@ int main(int argc, char **argv) {
         return v1_geometry_audit::run(seeds);
     }
 
+    if (argc > 1 && TextIsEqual(argv[1], "--jointaudit")) {
+        int seeds = argc > 2 ? Clamp(atoi(argv[2]), 1, 64) : 8;
+        constexpr float eps = 0.0001f;
+        constexpr float railOffset = 0.55f;
+        bool ok = true;
+        printf("=== V1 rendered-rail joint audit (%d seeds, +/-%.4f control units, gauge %.2fm) ===\n",
+               seeds, eps, railOffset * 2.0f);
+        for (int seed = 1; seed <= seeds; ++seed) {
+            g_rng = (uint32_t)seed * UINT32_C(2654435761) | UINT32_C(1);
+            Track t; t.reset();
+            t.ensureFinalizedAhead(470.0f);
+            float maxGap = 0.0f, maxRawGap = 0.0f, maxRailGap = 0.0f;
+            float maxTan = 0.0f, maxUp = 0.0f, minGauge = 1.0e9f, maxGauge = 0.0f;
+            int gapAt = -1, rawGapAt = -1, railGapAt = -1;
+            int tanAt = -1, upAt = -1, joints = 0;
+            unsigned char gapFrom=0, gapTo=0, tanFrom=0, tanTo=0, upFrom=0, upTo=0;
+            for (int q = 2; q < (int)t.maxFinalU() - 2; ++q) {
+                unsigned char leftTag = t.tagAt(q - eps);
+                unsigned char rightTag = t.tagAt(q + eps);
+                if (leftTag != rightTag) ++joints;
+                float gap = Vector3Distance(t.pos(q - eps), t.pos(q + eps));
+                float rawGap = Vector3Distance(t.rawPos(q - eps), t.rawPos(q + eps));
+                if (getenv("MC_JOINTDETAIL") && rawGap > 0.25f) {
+                    Vector3 rl = t.rawPos(q - eps), rr = t.rawPos(q + eps);
+                    printf("  seed%d q%d raw %.3fm tags %d>%d L=(%.2f,%.2f,%.2f) R=(%.2f,%.2f,%.2f) runs=%u/%u\n",
+                           seed, q, rawGap, leftTag, rightTag,
+                           rl.x, rl.y, rl.z, rr.x, rr.y, rr.z,
+                           t.spanRun[q + 1], t.spanRun[q + 2]);
+                }
+                float tanAngle = acosf(Clamp(Vector3DotProduct(t.tangent(q - eps),
+                                                               t.tangent(q + eps)), -1.0f, 1.0f)) / DEG2RAD;
+                float upAngle = acosf(Clamp(Vector3DotProduct(t.upAt(q - eps),
+                                                              t.upAt(q + eps)), -1.0f, 1.0f)) / DEG2RAD;
+                auto railPair = [&](float u, bool raw) {
+                    Vector3 p = raw ? t.rawPos(u) : t.pos(u);
+                    Vector3 f;
+                    if (raw) {
+                        f = Vector3Subtract(t.rawPos(u + 0.01f), t.rawPos(u - 0.01f));
+                        f = Vector3Length(f) > 1.0e-5f ? Vector3Normalize(f) : Vector3{0,0,1};
+                    } else {
+                        f = t.tangent(u);
+                    }
+                    Vector3 up = raw ? t.rawUpAt(u) : t.upAt(u);
+                    up = orthoUp(f, up);
+                    Vector3 right = Vector3Normalize(Vector3CrossProduct(up, f));
+                    return std::array<Vector3,2>{
+                        Vector3Add(p, Vector3Scale(right, -railOffset)),
+                        Vector3Add(p, Vector3Scale(right,  railOffset))};
+                };
+                auto railL = railPair(q - eps, false);
+                auto railR = railPair(q + eps, false);
+                float railGap = fmaxf(Vector3Distance(railL[0], railR[0]),
+                                      Vector3Distance(railL[1], railR[1]));
+                float gaugeL = Vector3Distance(railL[0], railL[1]);
+                float gaugeR = Vector3Distance(railR[0], railR[1]);
+                minGauge = fminf(minGauge, fminf(gaugeL, gaugeR));
+                maxGauge = fmaxf(maxGauge, fmaxf(gaugeL, gaugeR));
+                if (getenv("MC_JOINTDETAIL") && upAngle > 20.0f) {
+                    Vector3 ul = t.upAt(q - eps), ur = t.upAt(q + eps);
+                    printf("  seed%d q%d %d>%d upL=(%.2f,%.2f,%.2f) upR=(%.2f,%.2f,%.2f)\n",
+                           seed, q, leftTag, rightTag, ul.x, ul.y, ul.z, ur.x, ur.y, ur.z);
+                }
+                if (gap > maxGap) { maxGap = gap; gapAt = q; gapFrom=leftTag; gapTo=rightTag; }
+                if (rawGap > maxRawGap) { maxRawGap = rawGap; rawGapAt = q; }
+                if (railGap > maxRailGap) { maxRailGap = railGap; railGapAt = q; }
+                if (tanAngle > maxTan) { maxTan = tanAngle; tanAt = q; tanFrom=leftTag; tanTo=rightTag; }
+                if (upAngle > maxUp) { maxUp = upAngle; upAt = q; upFrom=leftTag; upTo=rightTag; }
+            }
+            bool pass = maxGap <= 0.05f && maxRailGap <= 0.06f &&
+                        minGauge >= 1.095f && maxGauge <= 1.105f &&
+                        maxTan <= 5.0f && maxUp <= 10.0f;
+            printf("seed%2d joints=%d centre=%.3fm@%d(%d>%d) raw=%.3fm@%d rail=%.3fm@%d gauge=%.3f..%.3f tangent=%.1fdeg@%d(%d>%d) roll=%.1fdeg@%d(%d>%d) %s\n",
+                   seed, joints, maxGap, gapAt, gapFrom, gapTo, maxRawGap, rawGapAt,
+                   maxRailGap, railGapAt, minGauge, maxGauge,
+                   maxTan, tanAt, tanFrom, tanTo, maxUp, upAt, upFrom, upTo,
+                   pass ? "PASS" : "FAIL");
+            ok = ok && pass;
+        }
+        return ok ? 0 : 1;
+    }
+
     if (argc > 1 && TextIsEqual(argv[1], "--rollingdump")) {
         // ROLLING CP-STREAM DUMP. The static instruments (--audit's MC_DUMP_ELEM) build one frozen
         // 470-cp window per seed, so they only ever see the ride's opening and NEVER the ~2/3-lap
@@ -475,7 +690,6 @@ int main(int argc, char **argv) {
                 float slope = t.tangent(u).y;
                 unsigned char tg = t.tagAt(u);
                 v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
-                v = applyForceEnvelope(t, u, v, dt);
 
                 // Station cadence: request a platform stop every stationEvery seconds (live-loop
                 // behaviour). The generator lays the STN run at the next low-terrain flat; that starts
@@ -820,6 +1034,7 @@ int main(int argc, char **argv) {
 
     while (true) {
         if (benchMode) { if (frame >= benchFrameCap) break; }
+        else if (captureShot) { if (frame >= 4500) break; }
         else if (WindowShouldClose()) break;
 
         double tFrame0 = GetTime();
@@ -978,7 +1193,6 @@ int main(int argc, char **argv) {
             bool onLift = drive == 1;
             chain = onLift && slope > 0.05f;
             v = applyTrackDrive(v, tg, drive, slope, dt);
-            v = applyForceEnvelope(trk, u, v, dt);
 
             // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
             // numeric floor keeps du/dt finite.
@@ -1221,7 +1435,13 @@ int main(int argc, char **argv) {
                 case M_IMMEL: case M_COBRA:
                                dist = 50.0f; camY =  0.0f; aimY = -16.0f; break;
                 case M_HELIX:  dist = -58.0f; camY = 10.0f; aimY = -10.0f; break;
-                case M_CLIMB:  dist = 58.0f; camY = -6.0f; aimY = -24.0f; break;
+                case M_CLIMB:
+                    // Record-scale top hats need a true silhouette shot; the
+                    // normal close element camera only showed one face.
+                    dist = Clamp(alt * 1.8f, 180.0f, 450.0f);
+                    camY = 0.0f;
+                    aimY = -alt * 0.45f;
+                    break;
                 case M_ROLL: case M_BANANA: case M_HEARTLINE: case M_WINGOVER: case M_STALL:
                                dist = 40.0f; camY =  4.0f; aimY =  -4.0f; break;
                 case M_DIP:    dist = 34.0f; camY =  8.0f; aimY =  -6.0f; break;

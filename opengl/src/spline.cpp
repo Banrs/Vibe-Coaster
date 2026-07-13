@@ -105,7 +105,12 @@ static float quinticC2(float p0, float p1, float p2, float p3, float t) {
 
 static Vector3 trackSpline(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, float t,
                            bool useC2 = true) {
-    Vector3 p = catmull(p0, p1, p2, p3, t);
+    // Parameterize the plan curve from horizontal chord lengths only.  Using
+    // full 3-D distances couples a pitch change into x/z Catmull timing; at a
+    // steep helix/drop exit that produced a one-span 70--90 degree plan snap.
+    Vector3 q0 = {p0.x, 0.0f, p0.z}, q1 = {p1.x, 0.0f, p1.z};
+    Vector3 q2 = {p2.x, 0.0f, p2.z}, q3 = {p3.x, 0.0f, p3.z};
+    Vector3 p = catmull(q0, q1, q2, q3, t);
     if (useC2) {
         // Preserve some centripetal character in plan view while taking most of the C2 curve;
         // this avoids widening tight, deliberately authored elements but removes segmented

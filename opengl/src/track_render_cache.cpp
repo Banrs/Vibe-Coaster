@@ -155,6 +155,54 @@ struct CpuMeshBuilder {
         indices.push_back(i3); indices.push_back(i4); indices.push_back(i5);
     }
 
+    void appendWorldQuad(Vector3 normal,
+                         Vector3 a, Vector2 auv, Color ac,
+                         Vector3 b, Vector2 buv, Color bc,
+                         Vector3 c, Vector2 cuv, Color cc,
+                         Vector3 d, Vector2 duv, Color dc) {
+        if (overflowed || vertexCount() > 65529) { overflowed = true; return; }
+        normal = Vector3Normalize(normal);
+        const unsigned short i0 = appendVertex(a, normal, auv, ac);
+        const unsigned short i1 = appendVertex(b, normal, buv, bc);
+        const unsigned short i2 = appendVertex(c, normal, cuv, cc);
+        const unsigned short i3 = appendVertex(a, normal, auv, ac);
+        const unsigned short i4 = appendVertex(c, normal, cuv, cc);
+        const unsigned short i5 = appendVertex(d, normal, duv, dc);
+        if (overflowed) return;
+        indices.push_back(i0); indices.push_back(i1); indices.push_back(i2);
+        indices.push_back(i3); indices.push_back(i4); indices.push_back(i5);
+    }
+
+    // Continuous swept voxel prism. Adjacent samples share the exact same endpoint
+    // cross-section, so bank/roll changes twist one coherent rail instead of rotating a row of
+    // overlapping boxes and exposing a stitched joint at every sample.
+    void appendSweep(int tile, const RenderFrame &a, const RenderFrame &b,
+                     float centreX, float centreY, float width, float height, Color color) {
+        if (overflowed || width <= 0.0f || height <= 0.0f) return;
+        const float u0 = (tile * 16.0f + 0.5f) / (float)(TILE_N * 16);
+        const float u1 = (tile * 16.0f + 15.5f) / (float)(TILE_N * 16);
+        const float v0 = 0.5f / 16.0f, v1 = 15.5f / 16.0f;
+        const float xl = centreX - width * 0.5f, xr = centreX + width * 0.5f;
+        const float yb = centreY - height * 0.5f, yt = centreY + height * 0.5f;
+        const Color bottom = height > 1.2f ? scaleColor(color, 196.0f / 255.0f) : color;
+
+        Vector3 alt = framePoint(a, Vector3{xl,yt,0}), art = framePoint(a, Vector3{xr,yt,0});
+        Vector3 alb = framePoint(a, Vector3{xl,yb,0}), arb = framePoint(a, Vector3{xr,yb,0});
+        Vector3 blt = framePoint(b, Vector3{xl,yt,0}), brt = framePoint(b, Vector3{xr,yt,0});
+        Vector3 blb = framePoint(b, Vector3{xl,yb,0}), brb = framePoint(b, Vector3{xr,yb,0});
+        Vector3 upN = Vector3Add(a.up, b.up);
+        Vector3 rightN = Vector3Add(a.right, b.right);
+
+        appendWorldQuad(upN, alt,{u0,v0},color, blt,{u0,v1},color,
+                        brt,{u1,v1},color, art,{u1,v0},color);
+        appendWorldQuad(Vector3Scale(upN,-1), alb,{u1,v0},bottom, arb,{u0,v0},bottom,
+                        brb,{u0,v1},bottom, blb,{u1,v1},bottom);
+        appendWorldQuad(rightN, arb,{u1,v1},bottom, art,{u1,v0},color,
+                        brt,{u0,v0},color, brb,{u0,v1},bottom);
+        appendWorldQuad(Vector3Scale(rightN,-1), alb,{u0,v1},bottom, blb,{u1,v1},bottom,
+                        blt,{u1,v0},color, alt,{u0,v0},color);
+    }
+
     void appendBox(int tile, const RenderFrame &frame, Vector3 centre,
                    float width, float height, float length, Color color) {
         if (overflowed || width <= 0.0f || height <= 0.0f || length <= 0.0f) return;
@@ -502,11 +550,15 @@ private:
             const bool chain = track.chainf[kindIndex] != 0;
 
             for (int j = 0; j < sampleCount; j++) {
-                const float sampleU = (float)k + ((float)j + 0.5f) / (float)sampleCount;
+                const float u0 = (float)k + (float)j / (float)sampleCount;
+                const float u1 = (float)k + (float)(j + 1) / (float)sampleCount;
+                const float sampleU = 0.5f * (u0 + u1);
                 const Vector3 p = track.pos(sampleU);
                 const Vector3 tangent = track.tangent(sampleU);
                 const Vector3 up = track.upAt(sampleU);
                 const RenderFrame frame = makeRenderFrame(p, tangent, up);
+                const RenderFrame frame0 = makeRenderFrame(track.pos(u0), track.tangent(u0), track.upAt(u0));
+                const RenderFrame frame1 = makeRenderFrame(track.pos(u1), track.tangent(u1), track.upAt(u1));
                 const float pieceLength = segmentLength / (float)sampleCount + 0.18f;
                 const unsigned char tag = track.tagAt(sampleU);
                 const bool poweredSpine = tag == M_LAUNCH || tag == M_BOOST;
@@ -515,36 +567,35 @@ private:
                 sourceSamples++;
 
                 if (poweredSpine) {
-                    iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.30f, 0.0f },
-                                   0.38f, 0.54f, pieceLength, track.spineC);
+                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.30f,
+                                     0.38f, 0.54f, track.spineC);
                     if ((j & 1) == 0)
                         iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.18f, 0.0f },
                                        0.62f, 0.22f, pieceLength * 0.6f,
                                        track.trainAccent);
                 } else if (liftSpine) {
-                    iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.30f, 0.0f },
-                                   0.34f, 0.50f, pieceLength, liftSpineColor);
+                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.30f,
+                                     0.34f, 0.50f, liftSpineColor);
                     if ((j & 1) == 0)
                         iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.08f, 0.0f },
                                        0.24f, 0.24f, pieceLength * 0.5f,
                                        liftDogColor);
                 } else {
-                    iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.30f, 0.0f },
-                                   0.30f, 0.46f, pieceLength,
-                                   ordinarySpineColor);
+                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.30f, 0.30f, 0.46f,
+                                     ordinarySpineColor);
                 }
 
-                railSpan.appendBox(T_RAIL, frame, Vector3{ -0.55f, 0.0f, 0.0f },
-                                   0.18f, 0.18f, pieceLength, track.railC);
-                railSpan.appendBox(T_RAIL, frame, Vector3{ 0.55f, 0.0f, 0.0f },
-                                   0.18f, 0.18f, pieceLength, track.railC);
+                railSpan.appendSweep(T_RAIL, frame0, frame1, -0.55f, 0.0f,
+                                     0.18f, 0.18f, track.railC);
+                railSpan.appendSweep(T_RAIL, frame0, frame1, 0.55f, 0.0f,
+                                     0.18f, 0.18f, track.railC);
 
                 if ((j & 1) == 0)
                     iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.17f, 0.0f },
                                    1.35f, 0.14f, 0.45f, tieColor);
                 if (chain)
-                    iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.05f, 0.0f },
-                                   0.14f, 0.14f, pieceLength, CHAINC);
+                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.05f,
+                                     0.14f, 0.14f, CHAINC);
             }
         }
 

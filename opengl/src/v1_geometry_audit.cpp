@@ -11,10 +11,10 @@ namespace v1_geometry_audit {
 
 namespace {
 
-// The curve is sampled at roughly 3.5 m (0.25 of V1's nominal 14 m control-point spacing).
-// Pitch and curvature use overlapping ~14 m chords, deliberately ignoring sub-metre noise.
-constexpr float SAMPLE_DU       = 0.25f;
-constexpr int   DERIV_HALF      = 2;
+// Twelve samples per control span expose short shelves, roll discontinuities, and macro seams.
+// Pitch and curvature retain overlapping ~14 m chords, deliberately ignoring mesh-scale noise.
+constexpr float SAMPLE_DU       = 1.0f / 12.0f;
+constexpr int   DERIV_HALF      = 6;
 constexpr float EXTREMUM_DEG    = 1.25f;
 
 // A shelf is not merely level: it is a near-extremum interval whose vertical radius exceeds

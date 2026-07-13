@@ -79,7 +79,10 @@ void initPretzel() {
         float D   = sdH + sdDrop;                  // total vertical drop from crest apex to the bottom
         sdBendDrop = D * fracBend;
         float LdBend = PI * v * sqrtf(sdBendDrop / ((gBot - 1.0f) * GRAV));
-        int   bendSteps = Clamp((int)(LdBend / SEG_LEN), 3, 9);
+        // Sample each bend densely enough that its analytic zero-slope ends
+        // survive Catmull-Rom evaluation as a curve, not a three-point hinge.
+        // This changes tessellation only; it does not smooth across elements.
+        int   bendSteps = Clamp((int)ceilf(LdBend / SEG_LEN), 8, 14);
         sdStraightDrop = D - 2.0f * sdBendDrop;      // zero-curvature, no g cost regardless of steepness
         // Target steepness for the straight run: 58 degrees (tan~1.6) -- dramatically steeper than
         // the old ~12 degree average, still shy of literally vertical so the corridor scan above

@@ -10,6 +10,7 @@ endif()
 include(FetchContent)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES    OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   raylib
   URL https://github.com/raysan5/raylib/archive/refs/tags/5.5.tar.gz
@@ -30,6 +31,7 @@ if(BUILD_TESTING)
   add_test(NAME v1_element_census COMMAND minecoaster --census 64)
   add_test(NAME v1_launch_pacing COMMAND minecoaster --launchaudit)
   add_test(NAME v1_force_envelope COMMAND minecoaster --forceaudit 64)
+  add_test(NAME terrain_incremental_reuse COMMAND minecoaster --terrainaudit)
   add_test(
     NAME v1_deterministic_export
     COMMAND ${CMAKE_COMMAND}

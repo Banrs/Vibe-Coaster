@@ -135,51 +135,143 @@ static int terrainH(float x, float z) {
     float warpZ = (vnoise(x * 0.0011f + 53.0f, z * 0.0011f + 11.5f) - 0.5f) * 220.0f;
     float wx = x + warpX, wz = z + warpZ;
 
-    float c   = fbm(wx * 0.0015f + 0.5f,  wz * 0.0015f + 0.5f, 3);
-    float e   = fbm(wx * 0.0040f + 31.7f, wz * 0.0040f + 12.3f, 2);
+    // Minecraft-style large-scale fields: continentalness decides ocean vs
+    // land, erosion suppresses mountains, and peaks/valleys adds inland relief.
+    float continentalness = fbm(wx * 0.00125f + 0.5f, wz * 0.00125f + 0.5f, 4) * 2.0f - 1.0f;
+    float erosion = fbm(wx * 0.0032f + 31.7f, wz * 0.0032f + 12.3f, 3);
     float pv  = ridgef(wx * 0.0048f + 5.0f, wz * 0.0048f + 9.0f, 3);
     float det = fbm(wx * 0.020f, wz * 0.020f, 2);
-    float basin    = smooth01(0.72f, 0.94f, 1.0f - ridgef(wx * 0.0022f + 3.7f, wz * 0.0022f + 8.1f, 2));
-    float mountainRegion = smooth01(0.58f, 0.86f, fbm(wx * 0.00085f + 9.0f, wz * 0.00085f + 73.0f, 2));
-    float valleyMask = smooth01(0.62f, 0.90f, ridgef(wx * 0.0017f + 61.0f, wz * 0.0017f + 19.0f, 2));
+    float inland = smooth01(-0.18f, 0.30f, continentalness);
+    float base = WATER_Y + 2.0f + continentalness * 28.0f;
+    float mountains = inland * powf(pv, 2.35f) * powf(1.0f - erosion, 1.45f) * 92.0f;
+    float rolling = inland * (fbm(wx * 0.008f + 32.0f, wz * 0.008f + 77.0f, 3) - 0.5f) * 18.0f;
+    float h = base + mountains + rolling + (det - 0.5f) * 8.0f;
 
-    float midHill = fbm(wx * 0.008f + 32.0f, wz * 0.008f + 77.0f, 3) - 0.5f;
-    // Minecraft-like rolling terrain: a dry, high plain interrupted by varied ridges and
-    // valleys, rather than low ocean everywhere or a field of cylindrical mesas.  The coaster
-    // is permitted to cut through this relief; terrain does not dictate each track tangent.
-    float base = 31.0f + powf(c, 1.34f) * 94.0f;
-    float mAmp = powf(1.0f - e, 1.52f);
-    float mtn  = powf(pv, 2.22f) * mAmp * (52.0f + 104.0f * mountainRegion);
-    float h = base + mtn + (det - 0.5f) * 13.0f + midHill * 21.0f;
-    h += powf(pv, 4.5f) * mountainRegion * 36.0f;
-
-    // Natural, world-seeded escarpments for cliff dives.  This is deliberately independent of
-    // the coaster: warped low-frequency noise makes long irregular ridges, while finer erosion
-    // varies the crest and face.  It is never positioned, raised, or reshaped by the track.
-    float escarpField = fbm(wx * 0.00075f + 141.0f, wz * 0.00075f + 67.0f, 3);
-    float escarpEdge  = smooth01(0.710f, 0.735f, escarpField);
-    float escarpH     = 58.0f + 48.0f * fbm(wx * 0.0035f + 9.0f, wz * 0.0035f + 54.0f, 2);
-    float faceRough   = (fbm(wx * 0.018f + 72.0f, wz * 0.018f + 18.0f, 2) - 0.5f) *
-                        12.0f * (1.0f - fabsf(2.0f * escarpEdge - 1.0f));
-    h += escarpEdge * escarpH + faceRough;
-
-    h -= basin * (18.0f + 42.0f * (1.0f - c));
-    h -= valleyMask * (10.0f + 24.0f * (1.0f - c));
-    // Gentle 4-7 m voxel terraces retain the block-world character without turning every high
-    // region into a cylindrical mesa.  Natural escarpments are a rare, modest 70-120 m ridge;
-    // the coaster supplies the rest of the signature dive's elevation with its powered climb.
+    // Gentle voxel terraces retain the block-world character without lifting
+    // the entire map above sea level. Low continentalness now forms broad,
+    // connected oceans/lakes instead of a few unreachable one-cell basins.
     float terraceStep = 4.0f + 3.0f * vnoise(wx * 0.0018f + 211.0f, wz * 0.0018f + 37.0f);
     h = h * 0.72f + floorf(h / terraceStep) * terraceStep * 0.28f;
 
     if (h < 1) h = 1; if (h > TERRA_MAX) h = TERRA_MAX;
     return (int)h;
 }
+
+struct TerrainColumn {
+    int height = 0;
+    float biome = 0.0f;
+    float humidity = 0.0f;
+    float temperature = 0.0f;
+};
+
+// Track planning, terrain meshing and audits share immutable 16x16 column
+// tiles.  A terrain prefill visits hundreds of thousands of cells; storing one
+// unordered-map node and taking one lock per cell made the cache itself almost
+// as expensive as the noise.  Tile granularity keeps the exact same column
+// formula and lookup semantics while amortising the map/lock work over 256
+// cells.  Shared const ownership also makes bounded eviction safe while another
+// thread is reading a tile.
+struct TerrainColumnStore {
+    static constexpr int TILE_SHIFT = 4;
+    static constexpr int TILE_SIZE = 1 << TILE_SHIFT;
+    static constexpr size_t SHARDS = 64;
+    static constexpr size_t MAX_TILES_PER_SHARD = 128;
+
+    struct Tile {
+        int tx = 0, tz = 0;
+        TerrainColumn columns[TILE_SIZE * TILE_SIZE];
+
+        const TerrainColumn &at(int cx,int cz) const {
+            const int lx=cx-tx*TILE_SIZE;
+            const int lz=cz-tz*TILE_SIZE;
+            return columns[lz*TILE_SIZE+lx];
+        }
+    };
+    using TilePtr=std::shared_ptr<const Tile>;
+
+    struct Shard {
+        std::mutex mutex;
+        std::unordered_map<uint64_t,TilePtr> tiles;
+    } shard[SHARDS];
+
+    TerrainColumnStore() {
+        for(Shard &s:shard) s.tiles.reserve(MAX_TILES_PER_SHARD);
+    }
+
+    static int tileCoord(int cell) {
+        int q=cell/TILE_SIZE;
+        if(cell%TILE_SIZE<0) --q;
+        return q;
+    }
+    static uint64_t key(int tx,int tz) {
+        return (uint64_t)(uint32_t)tx<<32 | (uint32_t)tz;
+    }
+    static TerrainColumn generateColumn(int cx,int cz) {
+        const float wx=cx*CELL+CELL*0.5f, wz=cz*CELL+CELL*0.5f;
+        return {terrainH(wx,wz),
+                vnoise(wx*0.0045f+91.3f,wz*0.0045f+23.1f),
+                fbm(wx*0.0028f+44.0f,wz*0.0028f+108.0f,2),
+                fbm(wx*0.0019f+12.0f,wz*0.0019f+204.0f,2)};
+    }
+    static std::shared_ptr<Tile> generateTile(int tx,int tz) {
+        auto tile=std::make_shared<Tile>();
+        tile->tx=tx; tile->tz=tz;
+        const int cx0=tx*TILE_SIZE, cz0=tz*TILE_SIZE;
+        for(int lz=0;lz<TILE_SIZE;++lz)
+            for(int lx=0;lx<TILE_SIZE;++lx)
+                tile->columns[lz*TILE_SIZE+lx]=generateColumn(cx0+lx,cz0+lz);
+        return tile;
+    }
+    TilePtr getTile(int tx,int tz) {
+        const uint64_t k=key(tx,tz);
+        Shard &s=shard[(k^(k>>33)^(k>>17))&(SHARDS-1)];
+        std::lock_guard<std::mutex> lock(s.mutex);
+        auto found=s.tiles.find(k);
+        if(found!=s.tiles.end()) return found->second;
+
+        // Generate while holding this shard only.  Prefill workers commonly
+        // reach different rows of the same cold tile together; publishing
+        // outside the lock allowed every worker to repeat all 256 noise solves.
+        TilePtr made=generateTile(tx,tz);
+        if(s.tiles.size()>=MAX_TILES_PER_SHARD && !s.tiles.empty())
+            s.tiles.erase(s.tiles.begin());
+        s.tiles.emplace(k,made);
+        return made;
+    }
+    TerrainColumn get(int cx,int cz) {
+        const int tx=tileCoord(cx), tz=tileCoord(cz);
+        return getTile(tx,tz)->at(cx,cz);
+    }
+};
+static TerrainColumnStore gTerrainColumns;
+
+// Natural water belongs to the generated terrain column, not to later render-
+// only modifications such as station/helix forceTop clamps or track carving.
+// Keep the shoreline rule in one place; equality is water so every consumer
+// agrees at the voxel boundary where the solid top meets sea level exactly.
+static bool isNaturalWaterTop(float rawSolidTop) {
+    return rawSolidTop <= WATER_Y;
+}
+
+struct TerrainSurface {
+    float solidTop = 0.0f;
+    float waterSurface = WATER_Y;
+    bool water = false;
+    float visibleTop() const { return water ? waterSurface : solidTop; }
+};
+static TerrainSurface terrainSurfaceAt(float x,float z) {
+    const int cx=(int)floorf(x/CELL), cz=(int)floorf(z/CELL);
+    const float solid=(float)gTerrainColumns.get(cx,cz).height+1.0f;
+    return {solid,WATER_Y,isNaturalWaterTop(solid)};
+}
+
 static float groundTopAt(float x, float z) {
-    return fmaxf((float)terrainH(x, z) + 1.0f, WATER_Y);
+    return terrainSurfaceAt(x,z).visibleTop();
 }
 
 struct TerrainCache {
     int W = 0;
+    uint64_t fills = 0;   // prefill work counter; updated once after worker joins
     std::vector<int> h, tx, tz;
     // Biome noise (bio/humid/temp) is a pure function of (cx,cz) that never changes, yet the mesh
     // loop used to recompute it (3 fbm/vnoise = ~24 hashf) for every one of ~322k cells EVERY
@@ -194,12 +286,27 @@ struct TerrainCache {
         return iz * W + ix;
     }
     inline void fill(int i, int cx, int cz) {
-        float wx = cx * CELL + CELL * 0.5f, wz = cz * CELL + CELL * 0.5f;
-        h[i]     = terrainH(wx, wz);
-        bio[i]   = vnoise(wx * 0.0045f + 91.3f, wz * 0.0045f + 23.1f);
-        humid[i] = fbm(wx * 0.0028f + 44.0f, wz * 0.0028f + 108.0f, 2);
-        temp[i]  = fbm(wx * 0.0019f + 12.0f, wz * 0.0019f + 204.0f, 2);
+        const TerrainColumn column=gTerrainColumns.get(cx,cz);
+        h[i]=column.height;
+        bio[i]=column.biome;
+        humid[i]=column.humidity;
+        temp[i]=column.temperature;
         tx[i] = cx; tz[i] = cz;
+    }
+    inline void fillFromTile(const TerrainColumnStore::Tile &tile,
+                             int cx0,int cx1,int cz0,int cz1,
+                             uint64_t &count) {
+        for(int cz=cz0;cz<=cz1;++cz)
+            for(int cx=cx0;cx<=cx1;++cx) {
+                const int i=slot(cx,cz);
+                const TerrainColumn &column=tile.at(cx,cz);
+                h[i]=column.height;
+                bio[i]=column.biome;
+                humid[i]=column.humidity;
+                temp[i]=column.temperature;
+                tx[i]=cx; tz[i]=cz;
+                ++count;
+            }
     }
     inline int get(int cx, int cz) {
         int i = slot(cx, cz);
@@ -217,21 +324,82 @@ static TerrainCache gHCache;
 
 static void prefillTerrain(int ccx, int ccz, int R) {
     if (gHCache.W < 2 * R + 1) gHCache.resize(2 * R + 1);
+    static int lastCx = INT_MIN, lastCz = INT_MIN, lastR = -1;
+    const int x0=ccx-R, x1=ccx+R, z0=ccz-R, z1=ccz+R;
+    const bool full = lastR != R || lastCx == INT_MIN ||
+                      abs(ccx-lastCx)>=2*R+1 || abs(ccz-lastCz)>=2*R+1;
+
+    struct Rect { int x0,x1,z0,z1; } rects[4];
+    int rectCount=0;
+    auto addRect=[&](int rx0,int rx1,int rz0,int rz1) {
+        if(rx0<=rx1 && rz0<=rz1) rects[rectCount++]={rx0,rx1,rz0,rz1};
+    };
+    if(full) {
+        addRect(x0,x1,z0,z1);
+    } else {
+        const int ox0=lastCx-R, ox1=lastCx+R;
+        const int oz0=lastCz-R, oz1=lastCz+R;
+        const int ix0=std::max(x0,ox0), ix1=std::min(x1,ox1);
+        const int iz0=std::max(z0,oz0), iz1=std::min(z1,oz1);
+        if(ix0>ix1 || iz0>iz1) {
+            addRect(x0,x1,z0,z1);
+        } else {
+            // Exact new-square minus old-square decomposition.  The top and
+            // bottom own their full width; left/right own only the overlapping
+            // z band, so no cell is scanned or filled twice.
+            addRect(x0,x1,z0,iz0-1);
+            addRect(x0,x1,iz1+1,z1);
+            addRect(x0,ix0-1,iz0,iz1);
+            addRect(ix1+1,x1,iz0,iz1);
+        }
+    }
+
+    struct TileJob { int tx,tz,x0,x1,z0,z1; };
+    std::vector<TileJob> jobs;
+    for(int r=0;r<rectCount;++r) {
+        const Rect &q=rects[r];
+        const int tx0=TerrainColumnStore::tileCoord(q.x0);
+        const int tx1=TerrainColumnStore::tileCoord(q.x1);
+        const int tz0=TerrainColumnStore::tileCoord(q.z0);
+        const int tz1=TerrainColumnStore::tileCoord(q.z1);
+        jobs.reserve(jobs.size()+(tx1-tx0+1)*(tz1-tz0+1));
+        for(int tz=tz0;tz<=tz1;++tz)
+            for(int tx=tx0;tx<=tx1;++tx) {
+                const int tileX0=tx*TerrainColumnStore::TILE_SIZE;
+                const int tileZ0=tz*TerrainColumnStore::TILE_SIZE;
+                jobs.push_back({tx,tz,
+                    std::max(q.x0,tileX0),
+                    std::min(q.x1,tileX0+TerrainColumnStore::TILE_SIZE-1),
+                    std::max(q.z0,tileZ0),
+                    std::min(q.z1,tileZ0+TerrainColumnStore::TILE_SIZE-1)});
+            }
+    }
+
+    if(jobs.empty()) {
+        lastCx=ccx; lastCz=ccz; lastR=R;
+        return;
+    }
+
     unsigned hw = std::thread::hardware_concurrency();
-    int nT = (int)(hw ? (hw < 8u ? hw : 8u) : 4u);
-    int rows = 2 * R + 1, band = (rows + nT - 1) / nT;
-    auto work = [&](int dz0, int dz1) {
-        for (int dz = dz0; dz < dz1; dz++)
-            for (int dx = -R; dx <= R; dx++)
-                gHCache.get(ccx + dx, ccz + dz);
+    int nT=(int)(hw ? std::min(hw,8u) : 4u);
+    nT=std::min(nT,std::max(1,(int)jobs.size()));
+    std::atomic<size_t> nextJob{0};
+    auto work = [&](uint64_t *count) {
+        uint64_t local = 0;
+        for(;;) {
+            const size_t ji=nextJob.fetch_add(1,std::memory_order_relaxed);
+            if(ji>=jobs.size()) break;
+            const TileJob &job=jobs[ji];
+            auto tile=gTerrainColumns.getTile(job.tx,job.tz);
+            gHCache.fillFromTile(*tile,job.x0,job.x1,job.z0,job.z1,local);
+        }
+        *count = local;
     };
     std::vector<std::thread> pool;
-    for (int t = 0; t < nT; t++) {
-        int dz0 = -R + t * band, dz1 = -R + (t + 1) * band;
-        if (dz1 > R + 1) dz1 = R + 1;
-        if (dz0 >= dz1) break;
-        pool.emplace_back(work, dz0, dz1);
-    }
+    std::vector<uint64_t> counts(nT, 0);
+    pool.reserve(nT);
+    for (int t = 0; t < nT; t++) pool.emplace_back(work,&counts[t]);
     for (auto &th : pool) th.join();
+    for (uint64_t count : counts) gHCache.fills += count;
+    lastCx = ccx; lastCz = ccz; lastR = R;
 }
-

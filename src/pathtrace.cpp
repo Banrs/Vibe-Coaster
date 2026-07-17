@@ -860,7 +860,7 @@ static void bakeVoxelsCPU(Vector3 camCtr, const Track &trk, float u,
                 if (topG >= 0 && topG < PT_NY) put(gx, topG, gz, cap.r/255.0f, cap.g/255.0f, cap.b/255.0f);
             }
 
-            if (h + 1.0f < WATER_Y) {
+            if (isNaturalWaterTop(h + 1.0f)) {
                 int wG = (int)floorf((WATER_Y - g_ptGridMin.y) / PT_VOX);
                 if (wG >= 0 && wG < PT_NY) putMat(gx, wG, gz, 0.10f, 0.20f, 0.26f, 0.6f);
             }

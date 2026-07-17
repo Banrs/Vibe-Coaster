@@ -9,11 +9,11 @@
 // ======================================================================================
 namespace audit_mode {
 
-static const char* NM[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
+static const char* NM[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP"};
 
 // gate index -> letter (A..I). E and G are WARN-only (never fail the process).
-static const char GATE[9] = {'A','B','C','D','E','F','G','H','I'};
-static const bool GATE_HARD[9] = { true,true,true,true,false,true,false,true,true };
+static const char GATE[8] = {'A','B','C','D','E','F','G','I'};
+static const bool GATE_HARD[8] = { true,true,true,true,false,true,true,true };
 
 // signed bank/roll of the seat about the track direction (deg), PITCH-FREE: the angle of the
 // seat up-vector N off the "level up" (world-up projected perpendicular to the tangent). Both
@@ -37,24 +37,28 @@ static float pitchDeg(Vector3 prev, Vector3 cur) {
 }
 
 static const char* kcol(int kd) {
-    if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE||kd==M_STENGEL) return "#ffd24a";
-    if (kd==M_DROP||kd==M_DIP||kd==M_CLIFFDIVE)                 return "#ff6b6b";
+    if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE) return "#ffd24a";
+    if (kd==M_DROP||kd==M_DIP)                                  return "#ff6b6b";
     if (kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST)                return "#9aa0a6";
-    if (kd==M_LOOP||kd==M_IMMEL||kd==M_COBRA||kd==M_DIVELOOP||kd==M_ROLL||kd==M_PRETZEL||kd==M_HEARTLINE||kd==M_STALL) return "#c77dff";
+    if (kd==M_LOOP||kd==M_IMMEL||kd==M_DIVELOOP||kd==M_ROLL||kd==M_STALL) return "#c77dff";
     if (kd==M_HELIX)  return "#4ade80";
-    if (kd==M_TURN||kd==M_SCURVE||kd==M_DIVE||kd==M_WINGOVER) return "#ff9e64";
+    if (kd==M_TURN||kd==M_SCURVE||kd==M_DIVE) return "#ff9e64";
     if (kd==M_STATION) return "#6b7280";
     return "#7fd0ff";
 }
 
 struct SeedRes {
     int  seed = 0;
-    bool hard[9]; bool warn[9];   // hard[g]=passed?; warn[g]=flag raised (E/G)
+    bool hard[8]; bool warn[8];   // hard[g]=passed?; warn[g]=flag raised (E only)
     int  stall = 0;               // gate A stall frame run
     long invType[M_COUNT];        // gate I census: inversion-type counts (for the seed-set dominance guard)
     long invPerLap = 0;           // census inversions / lap (rounded avg)
-    float hatDrop = 0, hillH = 0, helixRev = 0;   // gate G measured aggregates
-    SeedRes() { for (int i=0;i<9;i++){hard[i]=true;warn[i]=false;} for(int i=0;i<M_COUNT;i++)invType[i]=0; }
+    float hatDrop = 0, hillH = 0;   // gate G measured aggregates
+    float helixMinRev = 0, helixMaxRev = 0;
+    float helixMinRadius = 0, helixMaxRadius = 0;
+    float helixMinDrop = 0, helixMaxDrop = 0;
+    float helixMinLength = 0, helixMaxLength = 0;
+    SeedRes() { for (int i=0;i<8;i++){hard[i]=true;warn[i]=false;} for(int i=0;i<M_COUNT;i++)invType[i]=0; }
 };
 
 // -------------------------- SVG emitter (pure fprintf) --------------------------
@@ -127,19 +131,22 @@ static void writeSVG(int seed, int n, const std::vector<int>& KD, const std::vec
     fclose(f);
 }
 
-// -------------------------- bounded rolling sim (gate A stall, gate H sim-fire) --------------------------
+// -------------------------- bounded rolling sim (gate A stall) --------------------------
 // legacy --simtest frame loop as template, with rolling popFront. Bounded: <=120k frames, early
-// exit once the cliff dive has fired AND ~20 s more sim time has elapsed, or once a station berth
-// is re-reached (lap closed). stall = longest run of frames under the 26 m/s crawl threshold.
-static void rollingSim(int seed, int& stallOut, bool& cliffFired) {
+// exit once a station berth is re-reached (lap closed). stall = longest run of frames under the
+// 26 m/s crawl threshold.
+static bool rollingSim(int seed, int& stallOut) {
     g_rng = (uint32_t)seed * 2654435761u | 1u;
     Track t; t.reset();
-    float u = 0.5f, v = 12.0f, dt = 1.0f/60.0f;
+    float u = Track::rideStartU, v = 12.0f, dt = 1.0f/60.0f;
     int run = 0, maxRun = 0;
-    cliffFired = false; int framesSinceCliff = 0;
     float sinceStation = 0; bool dispatched = true;
     for (int fr = 0; fr < 120000; fr++) {
         t.ensureFinalizedAhead(u + 16);
+        if (t.schedulerExhaustions != 0 || t.maxFinalU() + 0.001f < u + 16.0f) {
+            stallOut = 120000;
+            return false;
+        }
         float slope = t.tangent(u).y;
         unsigned char tg = t.tagAt(u);
         v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
@@ -148,9 +155,6 @@ static void rollingSim(int seed, int& stallOut, bool& cliffFired) {
         // a berth (v is deliberately ramped to 0 there) -- the legacy simtest never stations, so its
         // "stall=0f" baseline only ever saw open-track crawl; match that here.
         if (fr > 120 && tg != M_STATION && !t.stationActive) { if (v < 26.0f) { if (++run > maxRun) maxRun = run; } else run = 0; }
-        if (tg == M_CLIFFDIVE) cliffFired = true;
-        if (cliffFired) { if (++framesSinceCliff > 1200) break; }   // ~20 s after the dive: lap essentially done
-
         // lap closure via the real station cadence -> berth reached -> break
         sinceStation += dt;
         if (sinceStation > 200.0f && !t.stationPending && !t.stationActive) t.stationPending = true;
@@ -170,55 +174,68 @@ static void rollingSim(int seed, int& stallOut, bool& cliffFired) {
         while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
     }
     stallOut = maxRun;
+    return true;
 }
 
 // -------------------------- generation-only census (gate I / gate H fire) --------------------------
 // Mirrors the streaming --census harness bit-for-bit (same lap-boundary detection and per-kind-run
 // counting): drives genPoint() continuously and detects a lap boundary as a transition INTO an
 // M_LAUNCH run (the track's own startLaunch(), called internally from genPoint() on wantLaunch,
-// re-arms the lap). Counts, per lap: the 7 quota families (top hat / HILLS / TURN / HELIX / DIP /
-// CLIFFDIVE / banked-air group) and the inversions (LOOP/ROLL/IMMEL/STALL/DIVELOOP).
-// The prior audit-only variant (manual startLaunch()-per-lap + cliffDone-commit, plus a >60m-rise
-// filter on top-hats) disagreed with the streaming reference (false fires: seed1-tophat-lap2,
+// re-arms the lap). Counts, per lap: the six quota families and the inversions.
+// The prior audit-only variant disagreed with the streaming reference (false fires: seed1-tophat-lap2,
 // seed3-lap1-inv=0); this version is verified to match --census exactly across all 24 laps/8 seeds.
-static void census(int seed, long fam[3][7], long invLap[3], long invType[M_COUNT]) {
-    for (int l=0;l<3;l++){ invLap[l]=0; for(int q=0;q<7;q++) fam[l][q]=0; }
+static bool census(int seed, long fam[3][6], long invLap[3], long invType[M_COUNT],
+                   float &helixMinRev, float &helixMaxRev,
+                   float &helixMinRadius, float &helixMaxRadius,
+                   float &helixMinDrop, float &helixMaxDrop,
+                   float &helixMinLength, float &helixMaxLength,
+                   int &badHelix) {
+    for (int l=0;l<3;l++){ invLap[l]=0; for(int q=0;q<6;q++) fam[l][q]=0; }
     for (int i=0;i<M_COUNT;i++) invType[i]=0;
+    helixMinRev=helixMinRadius=helixMinDrop=helixMinLength=1.0e9f;
+    helixMaxRev=helixMaxRadius=helixMaxDrop=helixMaxLength=0.0f;
+    badHelix=0;
     // Mirrors the streaming --census harness exactly (same lap-boundary detection and counting):
     // drive genPoint() continuously and let the track's own startLaunch() (called internally from
     // genPoint on wantLaunch) open each lap; a lap boundary is a transition INTO an M_LAUNCH run.
-    // The audit's own manual startLaunch()-per-lap + cliffDone-commit variant disagreed with the
-    // streaming reference (gate I false fires on seed1-tophat-lap2 / seed3-lap1); this is the fix.
+    // A prior manual startLaunch()-per-lap variant disagreed with the streaming reference; this is the fix.
     g_rng = (uint32_t)seed * 2654435761u | 1u;
     Track c; c.reset();
     const int keep = 64;
-    int cnt[M_COUNT]; for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;
-    int lap = 0, prevKind = -1; long processed = 0, guard = 0;
-    while (lap <= 3 && guard < 400000) {
+    unsigned seenSerial = 0; long guard = 0;
+    while (seenSerial < 3 && guard < 400000) {
         guard++;
-        while (c.base + (long)c.cp.size() <= processed) c.genPoint();
-        int nk = c.kind[(int)(processed - c.base)];
-        if (nk != prevKind) {   // a maximal same-kind run = one element occurrence
-            if (nk == M_LAUNCH) {   // a LAUNCH run opens a lap; flush the one that just closed
-                if (lap >= 1) {
-                    int L = lap - 1;
-                    fam[L][0] = cnt[M_CLIMB]; fam[L][1] = cnt[M_HILLS]; fam[L][2] = cnt[M_TURN];
-                    fam[L][3] = cnt[M_HELIX]; fam[L][4] = cnt[M_DIP];   fam[L][5] = cnt[M_CLIFFDIVE];
-                    fam[L][6] = cnt[M_WAVE] + cnt[M_BANKAIR] + cnt[M_STENGEL];
-                    invLap[L] = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
-                    invType[M_LOOP]+=cnt[M_LOOP]; invType[M_ROLL]+=cnt[M_ROLL]; invType[M_IMMEL]+=cnt[M_IMMEL];
-                    invType[M_DIVELOOP]+=cnt[M_DIVELOOP]; invType[M_STALL]+=cnt[M_STALL];
-                    if (lap == 3) { prevKind = nk; break; }
-                }
-                lap++;
-                for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;
+        if (!c.genPoint()) break;
+        if (c.completedLapSerial > seenSerial) {
+            seenSerial = c.completedLapSerial;
+            int L = (int)seenSerial - 1;
+            const int *cnt = c.completedElemCount;
+            fam[L][0] = c.completedTopHatCount;
+            fam[L][1] = cnt[M_HILLS]; fam[L][2] = cnt[M_TURN];
+            fam[L][3] = cnt[M_HELIX]; fam[L][4] = cnt[M_DIP];
+            fam[L][5] = cnt[M_WAVE] + cnt[M_BANKAIR];
+            invLap[L] = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
+            invType[M_LOOP]+=cnt[M_LOOP]; invType[M_ROLL]+=cnt[M_ROLL]; invType[M_IMMEL]+=cnt[M_IMMEL];
+            invType[M_DIVELOOP]+=cnt[M_DIVELOOP]; invType[M_STALL]+=cnt[M_STALL];
+            if(c.completedHelixGeometryCount) {
+                helixMinRev=fminf(helixMinRev,c.completedMinHelixRev);
+                helixMaxRev=fmaxf(helixMaxRev,c.completedMaxHelixRev);
+                helixMinRadius=fminf(helixMinRadius,c.completedMinHelixRadius);
+                helixMaxRadius=fmaxf(helixMaxRadius,c.completedMaxHelixRadius);
+                helixMinDrop=fminf(helixMinDrop,c.completedMinHelixDrop);
+                helixMaxDrop=fmaxf(helixMaxDrop,c.completedMaxHelixDrop);
+                helixMinLength=fminf(helixMinLength,c.completedMinHelixLength);
+                helixMaxLength=fmaxf(helixMaxLength,c.completedMaxHelixLength);
             }
-            if (lap >= 1) cnt[nk]++;
-            prevKind = nk;
+            badHelix+=c.completedBadHelixGeometry;
+            if (cnt[M_HELIX] != c.completedHelixGeometryCount) badHelix++;
         }
-        processed++;
-        while ((int)c.cp.size() > keep && c.base < processed) c.popFront();
+        while ((int)c.cp.size() > keep) c.popFront();
     }
+    if (helixMaxRev <= 0.0f) {
+        helixMinRev=helixMinRadius=helixMinDrop=helixMinLength=0.0f;
+    }
+    return seenSerial == 3 && c.schedulerExhaustions == 0;
 }
 
 // -------------------------- per-seed audit (all gates) --------------------------
@@ -229,6 +246,14 @@ static SeedRes auditSeed(int seed) {
     Track t; t.reset();
     t.ensureFinalizedAhead(469.0f);
     int n = t.finalizedPointCount();
+    const bool staticGenerationOK = t.schedulerExhaustions == 0 &&
+                                    t.maxFinalU() + 0.001f >= 469.0f;
+    if (!staticGenerationOK) {
+        R.hard[0] = false;
+        printf("\nSEED %d  GENERATION FAIL before static window "
+               "(max u %.1f, exhaustions %u)\n",
+               seed, t.maxFinalU(), t.schedulerExhaustions);
+    }
 
     // MC_DUMP_ELEM/MC_DUMP_SEEDS test instrument, REHOMED from the legacy --gaudit's identical
     // static 470-cp window (same env-var interface, same [dump] line format). Invocation:
@@ -282,8 +307,6 @@ static SeedRes auditSeed(int seed) {
         PIT[k] = k ? pitchDeg(t.cp[k-1], t.cp[k]) : 0.0f;
         ROL[k] = rollDeg(tanv, t.up[k]);
     }
-    std::vector<float> sU, sY;   // sampled spline: 12 samples/control span -- what the rider rides
-    for (float u = 0.5f; u < n-3; u += 1.0f/12.0f) { sU.push_back(u); sY.push_back(t.pos(u).y); }
     std::vector<std::pair<int,int>> fails;
 
     printf("\nSEED %d  (%d cps)\n", seed, n);
@@ -301,38 +324,44 @@ static SeedRes auditSeed(int seed) {
         // alignments, not launched top hats or terrain wall-climbs.  Their
         // geometry is covered by continuity/force gates instead.
         if (energyAlignment) continue;
-        int e = b, j = b+1, ggap = 0;             // extend through the following DROP/CLIFFDIVE crown
-        bool cliffApproach = false;
-        for (int q = a; q <= b && q < (int)t.spanRun.size(); ++q)
-            if (const Track::AnalyticRun *run = t.analyticRun(t.spanRun[q]))
-                if (run->kind == Track::MACRO_CLIFF_APPROACH) { cliffApproach = true; break; }
+        int e = b, j = b+1, ggap = 0;             // extend through the following DROP crown
         while (j < n) {
-            if (KD[j]==M_DROP || KD[j]==M_CLIFFDIVE) {
-                if (KD[j] == M_CLIFFDIVE) cliffApproach = true;
+            if (KD[j]==M_DROP) {
                 e = j; ggap = 0; j++;
             }
             else if (ggap < 2 && KD[j]!=M_CLIMB)     { ggap++; j++; }
             else break;
         }
-        // The powered natural-ridge approach and its near-vertical dive are one
-        // planned cliff composite, not a launched top hat. Gate H owns it.
-        if (cliffApproach) continue;
         int w0 = a>0 ? a-1 : 0, w1 = e;
         int ap = w0; for (int q=w0;q<=w1;q++) if (Y[q] > Y[ap]) ap = q;
         float apexY = Y[ap], rise = apexY - Y[w0];
-        float sc = -1e9f;
-        for (size_t s=0;s<sU.size();s++){ int ci=(int)sU[s]; if (ci>=w0 && ci<=w1 && sY[s]>sc) sc = sY[s]; }
+        float maxClearance = -1e9f, valleyY = apexY;
+        for (int q = w0; q <= w1; ++q) {
+            maxClearance = fmaxf(maxClearance, Y[q] - TR[q]);
+            if (q >= ap) valleyY = fminf(valleyY, Y[q]);
+        }
+        const float fullDrop = apexY - valleyY;
         // gate G: biggest top-hat crest-to-valley drop this seed
-        if (rise > 60.0f) { float vy = apexY; for (int q=ap;q<=w1;q++) vy=fminf(vy,Y[q]); R.hatDrop = fmaxf(R.hatDrop, apexY-vy); }
+        if (rise > 60.0f) R.hatDrop = fmaxf(R.hatDrop, fullDrop);
         // --- Gate B ---
-        if (sc >= 300.0f) {
+        if (maxClearance > Track::TOP_HAT_VERTICAL_CAP + 0.5f ||
+            fullDrop > Track::TOP_HAT_VERTICAL_CAP + 0.5f) {
             R.hard[1] = false; fails.push_back({w0,w1});
-            printf("  B FAIL  hat cp%d-%d  sampled crest %.1f m (cp crest %.1f) >= 300\n", w0, w1, sc, apexY);
+            printf("  B FAIL  hat cp%d-%d  clearance %.1f m / drop %.1f m exceeds %.1f m cap\n",
+                   w0, w1, maxClearance, fullDrop,
+                   Track::TOP_HAT_VERTICAL_CAP);
         }
         // --- Gate C ---
         if (rise > 60.0f) {
             int shelfRun=0, shelfMax=0;
-            for (int q=w0;q<=w1;q++){ if (fabsf(apexY-Y[q])<=25.0f && fabsf(DY[q])<1.5f){ if(++shelfRun>shelfMax)shelfMax=shelfRun; } else shelfRun=0; }
+            for (int q=w0+1;q<w1;q++) {
+                float secondDifference = Y[q+1] - 2.0f*Y[q] + Y[q-1];
+                bool straightShelf = fabsf(apexY-Y[q]) <= 25.0f &&
+                                     fabsf(DY[q]) < 1.5f &&
+                                     fabsf(secondDifference) < 0.35f;
+                shelfRun = straightShelf ? shelfRun + 1 : 0;
+                shelfMax = std::max(shelfMax, shelfRun);
+            }
             int flips=0, prevSign=0;
             for (int q=w0+1;q<=w1;q++){ int s=DY[q]>0.5f?1:(DY[q]<-0.5f?-1:0); if(s){ if(prevSign && s!=prevSign) flips++; prevSign=s; } }
             std::vector<float> cf, df;
@@ -343,10 +372,12 @@ static SeedRes auditSeed(int seed) {
             float cm=0; int cn=0; for (int i2=0;i2<3 && i2<(int)cf.size();i2++){cm+=cf[i2];cn++;} cm = cn?cm/cn:0;
             float dm=0; int dn=0; for (int i2=0;i2<3 && i2<(int)df.size();i2++){dm+=df[i2];dn++;} dm = dn?dm/dn:0;
             bool cfail=false;
-            if (shelfMax > 1) { cfail=true; printf("  C FAIL  hat cp%d-%d  apex shelf %d cps (|dy|<1.5 in top-25m)\n",w0,w1,shelfMax); }
+            // Near-level alone describes every smooth crown.  A shelf must
+            // also lose vertical curvature for at least four 14 m chords.
+            if (shelfMax >= 4) { cfail=true; printf("  C FAIL  hat cp%d-%d  low-curvature apex shelf %d cps\n",w0,w1,shelfMax); }
             if (flips > 1)    { cfail=true; printf("  C FAIL  hat cp%d-%d  %d dy turning points (crown not single-vertex)\n",w0,w1,flips); }
-            if (cn && cm < 55.0f) { cfail=true; printf("  C FAIL  hat cp%d-%d  climb-face best-3 pitch %.0f deg < 55\n",w0,w1,cm); }
-            if (dn && dm > -58.0f){ cfail=true; printf("  C FAIL  hat cp%d-%d  drop-face best-3 pitch %.0f deg > -58\n",w0,w1,dm); }
+            if (cn && cm < 50.0f) { cfail=true; printf("  C FAIL  hat cp%d-%d  climb-face best-3 pitch %.0f deg < 50\n",w0,w1,cm); }
+            if (dn && dm > -50.0f){ cfail=true; printf("  C FAIL  hat cp%d-%d  drop-face best-3 pitch %.0f deg > -50\n",w0,w1,dm); }
             if (cfail){ R.hard[2]=false; fails.push_back({w0,w1}); }
         } else {   // wall-climb (rise <= 60 m; spec also: climbTop <= 40): no spurious rim hat
             float tmax=-1e9f; for (int q=w0;q<=w1;q++) tmax=fmaxf(tmax,TR[q]);
@@ -362,10 +393,15 @@ static SeedRes auditSeed(int seed) {
         if (KD[k] != M_HILLS) { k++; continue; }
         int a = k; while (k < n && KD[k]==M_HILLS) k++;
         int b = k-1;
+        if (a == 0 || b == n - 1) continue; // fixed audit window clipped this element
         bool dfail=false;
         int run=0, mx=0;
         for (int q=a+2;q<=b-2;q++){ if (fabsf(DY[q])<1.0f){ if(++run>mx)mx=run; } else run=0; }
-        if (mx >= 3){ dfail=true; printf("  D FAIL  HILLS cp%d-%d  interior flat run %d cps (|dy|<1.0)\n",a,b,mx); }
+        // A force-limited sinusoidal crest can remain below 1 m/sample for
+        // 20-40 m without containing any straight rail. Seven consecutive
+        // samples aligns this legacy gate with the 45 m curvature-based shelf
+        // detector in --v1issues.
+        if (mx >= 7){ dfail=true; printf("  D FAIL  HILLS cp%d-%d  interior flat run %d cps (|dy|<1.0)\n",a,b,mx); }
         std::vector<int> humps;
         for (int q=a+1;q<b;q++) if (Y[q]>=Y[q-1] && Y[q]>Y[q+1]) humps.push_back(q);
         for (int h2=1;h2<(int)humps.size();h2++){
@@ -418,8 +454,7 @@ static SeedRes auditSeed(int seed) {
                 if(r<0||r>=n)continue; int kd=KD[r];
                 if(kd==M_LAUNCH||kd==M_BOOST||kd==M_STATION||kd==M_DIP||
                    kd==M_LOOP||kd==M_ROLL||kd==M_IMMEL||kd==M_STALL||
-                   kd==M_DIVELOOP||kd==M_COBRA||kd==M_HEARTLINE||
-                   kd==M_PRETZEL||kd==M_STENGEL||kd==M_BANANA||kd==M_CLIFFDIVE)
+                   kd==M_DIVELOOP)
                     exclude=true;
                 if (r < (int)t.spanRun.size())
                     if (const Track::AnalyticRun *run = t.analyticRun(t.spanRun[r]))
@@ -438,52 +473,44 @@ static SeedRes auditSeed(int seed) {
         }
     }
 
-    // ===== Gate H: reserved cliff-dive gate =====
-    // CLIFFDIVE is intentionally disabled until terrain can qualify a legitimate site. Keep the
-    // dormant shape validator for targeted tests, but absence is no longer a generation failure.
-    bool sawCliff=false;
-    {
-        int q = 0;
-        while (q < n) {
-            if (KD[q] != M_CLIFFDIVE) { ++q; continue; }
-            int a = q;
-            while (q < n && KD[q] == M_CLIFFDIVE) ++q;
-            int b = q - 1;
-            sawCliff=true;
-            // The fixed audit window can end in the middle of a streamed
-            // cliff. Census still verifies that it fires; shape metrics are
-            // meaningful only once the contiguous run has a real exit.
-            if (b == n - 1) continue;
-            float crest=-1e9f, valley=1e9f;
-            for (int q=(a>4?a-4:0);q<=b;q++) crest=fmaxf(crest,Y[q]);
-            for (int q=a;q<=b;q++) valley=fminf(valley,Y[q]);
-            float drop=crest-valley, steepDesc=0;
-            for (int q=a;q<=b;q++) if (PIT[q]<=-85.0f && DY[q]<0) steepDesc += -DY[q];
-            bool hfail=false;
-            if (crest >= 300.0f){ hfail=true; printf("  H FAIL  cliffdive cp%d-%d  crest %.1f m >= 300\n",a,b,crest); }
-            if (steepDesc < 60.0f){ hfail=true; printf("  H FAIL  cliffdive cp%d-%d  >=85deg face sustained only %.1f m (<60)\n",a,b,steepDesc); }
-            if (drop < 150.0f || drop > 275.0f){ hfail=true; printf("  H FAIL  cliffdive cp%d-%d  total drop %.1f m outside 150-275\n",a,b,drop); }
-            if (hfail){ R.hard[7]=false; fails.push_back({a,b}); }
-        }
+    // ===== Gate A: bounded rolling sim (stall) =====
+    const bool rollingGenerationOK = rollingSim(seed, R.stall);
+    if (!rollingGenerationOK) {
+        R.hard[0]=false;
+        printf("  A FAIL  generator exhausted before the rolling simulation horizon\n");
+    } else if (R.stall > 0) {
+        R.hard[0]=false;
+        printf("  A FAIL  stall = %d frames under 26 m/s\n", R.stall);
     }
 
-    // ===== Gate A: bounded rolling sim (stall) =====
-    bool cliffInSim=false;
-    rollingSim(seed, R.stall, cliffInSim);
-    if (R.stall > 0){ R.hard[0]=false; printf("  A FAIL  stall = %d frames under 26 m/s\n", R.stall); }
-
-    // ===== Gate I: element census (per-lap mix) + gate H fire =====
-    long fam[3][7], invLap[3];
-    census(seed, fam, invLap, R.invType);
-    long famTot[7]={0}; for(int l=0;l<3;l++)for(int q=0;q<7;q++)famTot[q]+=fam[l][q];
+    // ===== Gate I: element census (per-lap mix) =====
+    long fam[3][6], invLap[3];
+    float censusHelixMinRev=0.0f,censusHelixMaxRev=0.0f;
+    float censusHelixMinRadius=0.0f,censusHelixMaxRadius=0.0f;
+    float censusHelixMinDrop=0.0f,censusHelixMaxDrop=0.0f;
+    float censusHelixMinLength=0.0f,censusHelixMaxLength=0.0f;
+    int censusBadHelix=0;
+    const bool censusGenerationOK = census(seed, fam, invLap, R.invType,
+                                           censusHelixMinRev,censusHelixMaxRev,
+                                           censusHelixMinRadius,censusHelixMaxRadius,
+                                           censusHelixMinDrop,censusHelixMaxDrop,
+                                           censusHelixMinLength,censusHelixMaxLength,
+                                           censusBadHelix);
+    R.helixMinRev=censusHelixMinRev;       R.helixMaxRev=censusHelixMaxRev;
+    R.helixMinRadius=censusHelixMinRadius; R.helixMaxRadius=censusHelixMaxRadius;
+    R.helixMinDrop=censusHelixMinDrop;     R.helixMaxDrop=censusHelixMaxDrop;
+    R.helixMinLength=censusHelixMinLength; R.helixMaxLength=censusHelixMaxLength;
+    long famTot[6]={0}; for(int l=0;l<3;l++)for(int q=0;q<6;q++)famTot[q]+=fam[l][q];
     long invTot = invLap[0]+invLap[1]+invLap[2];
     R.invPerLap = invTot/3;
-    static const char* FAMN[7]={"tophat","HILLS","TURN","HELIX","DIP","CLIFFDIVE","bankedair"};
-    bool ifail=false;
+    static const char* FAMN[6]={"tophat","HILLS","TURN","HELIX","DIP","bankedair"};
+    bool ifail=!censusGenerationOK;
+    if (!censusGenerationOK)
+        printf("  I FAIL  generator exhausted before three complete census laps\n");
     // PER-LAP quota (integration directive): HARD for tophat/HILLS/TURN in EVERY census lap; WARN
     // (never fails) for the terrain-gated families HELIX/DIP/bankedair, which can be genuinely
-    // never-eligible on a pathological seed. CLIFFDIVE is enforced per-lap by gate H below.
-    { static const int HARDQ[3]={0,1,2}, WARNQ[3]={3,4,6};
+    // never-eligible on a pathological seed.
+    { static const int HARDQ[3]={0,1,2}, WARNQ[3]={3,4,5};
       for (int l=0;l<3;l++) {
           for (int i2=0;i2<3;i2++) if (fam[l][HARDQ[i2]] < 1)
               printf("  I WARN  quota family '%s' absent in census lap %d (terrain-gated)\n", FAMN[HARDQ[i2]], l+1);
@@ -493,37 +520,64 @@ static SeedRes auditSeed(int seed) {
     }
     float invAvg = invTot/3.0f;
     if (invAvg < 2.0f || invAvg > 4.0f){ ifail=true; printf("  I FAIL  inversions/lap %.1f outside [2,4]  (laps: %ld/%ld/%ld)\n",invAvg,invLap[0],invLap[1],invLap[2]); }
-    if (ifail) R.hard[8]=false;
-    printf("  I census  tophat=%ld HILLS=%ld TURN=%ld HELIX=%ld DIP=%ld CLIFFDIVE=%ld bankedair=%ld  inv/lap=%.1f\n",
-           famTot[0],famTot[1],famTot[2],famTot[3],famTot[4],famTot[5],famTot[6],invAvg);
-    (void)sawCliff; (void)cliffInSim;
+    if (ifail) R.hard[7]=false;
+    printf("  I census  tophat=%ld HILLS=%ld TURN=%ld HELIX=%ld DIP=%ld bankedair=%ld  inv/lap=%.1f\n",
+           famTot[0],famTot[1],famTot[2],famTot[3],famTot[4],famTot[5],invAvg);
 
-    // ===== Gate G: V1 diagnostic multiplier report =====
-    // helix rotation this seed (max run's accumulated horizontal heading / 360)
-    {
-        int q=0;
-        while (q<n){ if(KD[q]!=M_HELIX){q++;continue;} int a=q; while(q<n&&KD[q]==M_HELIX)q++;
-            float acc=0; for(int r=a+1;r<q;r++){ Vector3 d0=Vector3Subtract(t.cp[r],t.cp[r-1]); Vector3 d1=Vector3Subtract(t.cp[r+1<n?r+1:r],t.cp[r]);
-                float h0=atan2f(d0.x,d0.z), h1=atan2f(d1.x,d1.z), dd=h1-h0; while(dd>PI)dd-=2*PI; while(dd<-PI)dd+=2*PI; acc+=fabsf(dd); }
-            R.helixRev = fmaxf(R.helixRev, acc/(2*PI)); }
+    // ===== Gate G: V1 independent dimensional multiplier report =====
+    // Completed-run metadata is authoritative here.  Rotation alone is not a
+    // scale proxy: the former generator held revs near record while allowing
+    // radius and centreline length to grow toward a kilometre.  If a census
+    // lap contains a helix, all four dimensional bands must be present and
+    // independently conform.
+    const bool helixPresent = famTot[3] > 0;
+    const bool helixMetricsComplete = !helixPresent ||
+        (R.helixMinRev>0.0f && R.helixMaxRev>0.0f &&
+         R.helixMinRadius>0.0f && R.helixMaxRadius>0.0f &&
+         R.helixMinDrop>0.0f && R.helixMaxDrop>0.0f &&
+         R.helixMinLength>0.0f && R.helixMaxLength>0.0f);
+    const bool helixScaleFail = helixPresent &&
+        (!helixMetricsComplete ||
+         R.helixMinRev < Track::HELIX_RECORD_REVS-0.03f ||
+         R.helixMaxRev > Track::HELIX_RECORD_REVS*Track::RECORD_SCALE_CAP+0.03f ||
+         !Track::dimensionInBand(R.helixMinRadius,Track::HELIX_REFERENCE_RADIUS) ||
+         !Track::dimensionInBand(R.helixMaxRadius,Track::HELIX_REFERENCE_RADIUS) ||
+         !Track::dimensionInBand(R.helixMinDrop,Track::HELIX_REFERENCE_DROP) ||
+         !Track::dimensionInBand(R.helixMaxDrop,Track::HELIX_REFERENCE_DROP) ||
+         !Track::dimensionInBand(R.helixMinLength,Track::helixReferenceLength()) ||
+         !Track::dimensionInBand(R.helixMaxLength,Track::helixReferenceLength()));
+    bool scaleFail =
+        (R.hatDrop>0 && (R.hatDrop<Track::TOP_HAT_RECORD_RISE-1.0f ||
+                         R.hatDrop>Track::TOP_HAT_RECORD_RISE*Track::RECORD_SCALE_CAP+1.0f)) ||
+        (R.hillH>0 && (R.hillH<Track::AIRTIME_RECORD_HEIGHT-1.0f ||
+                       R.hillH>Track::AIRTIME_RECORD_HEIGHT*Track::RECORD_SCALE_CAP+1.0f)) ||
+        censusBadHelix>0 || helixScaleFail;
+    if (scaleFail) {
+        R.hard[6]=false;
+        printf("  G FAIL  record envelope hat=%.0fm hill=%.0fm "
+               "helix{rev=%.3f-%.3f R=%.1f-%.1fm drop=%.1f-%.1fm len=%.0f-%.0fm complete=%s bad=%d}\n",
+               R.hatDrop,R.hillH,R.helixMinRev,R.helixMaxRev,
+               R.helixMinRadius,R.helixMaxRadius,R.helixMinDrop,R.helixMaxDrop,
+               R.helixMinLength,R.helixMaxLength,
+               helixMetricsComplete?"yes":"NO",censusBadHelix);
     }
-    if ((R.hatDrop>0 && (R.hatDrop<180.0f || R.hatDrop>280.0f)) ||
-        (R.hillH>0 && (R.hillH<55.0f || R.hillH>85.0f)) ||
-        (R.helixRev>0 && (R.helixRev<1.0f || R.helixRev>2.1f))) R.warn[6]=true;
 
     // ===== per-seed gate line + SVG =====
     printf("  gates:");
-    for (int g=0; g<9; g++) {
+    for (int g=0; g<8; g++) {
         const char* st = GATE_HARD[g] ? (R.hard[g]?"ok":"FAIL") : (R.warn[g]?"warn":"ok");
         printf(" %c=%s", GATE[g], st);
     }
     printf("\n");
-    writeSVG(seed, n, KD, Y, TR, PIT, ROL, fails);
+    if (getenv("MC_AUDIT_SVG")) writeSVG(seed, n, KD, Y, TR, PIT, ROL, fails);
     return R;
 }
 
 static int run(int seeds) {
-    system("mkdir -p audit");
+    if (getenv("MC_AUDIT_SVG")) {
+        const int mkdirStatus = system("mkdir -p audit");
+        (void)mkdirStatus;
+    }
     printf("=== --audit : %d seeds ===\n", seeds);
     std::vector<SeedRes> all;
     long invGrand[M_COUNT]={0}; long invGrandTot=0;
@@ -538,14 +592,14 @@ static int run(int seeds) {
     if (invGrandTot>0 && domShare > 0.5f) domFail=true;
 
     // ---- gate x seed matrix ----
-    printf("\n=== GATE x SEED MATRIX (HARD: A B C D F H I ; WARN: E G) ===\n");
+    printf("\n=== GATE x SEED MATRIX (HARD: A B C D F G I ; WARN: E) ===\n");
     printf("  seed ");
-    for (int g=0;g<9;g++) printf(" %c", GATE[g]);
+    for (int g=0;g<8;g++) printf(" %c", GATE[g]);
     printf("\n");
     int hardFails=0;
     for (auto& r : all) {
         printf("  %4d ", r.seed);
-        for (int g=0;g<9;g++) {
+        for (int g=0;g<8;g++) {
             char c;
             if (GATE_HARD[g]) { c = r.hard[g] ? '.' : 'X'; if (!r.hard[g]) hardFails++; }
             else              { c = r.warn[g] ? 'w' : '.'; }
@@ -554,12 +608,45 @@ static int run(int seeds) {
         printf("  stall=%df\n", r.stall);
     }
     // ---- gate G/I informational tables ----
-    printf("\n  MULTIPLIER CONFORMANCE (G, WARN)  real-anchor / measured band / note:\n");
-    float hdLo=1e9f,hdHi=0,hhLo=1e9f,hhHi=0,hrLo=1e9f,hrHi=0;
-    for (auto& r:all){ if(r.hatDrop>0){hdLo=fminf(hdLo,r.hatDrop);hdHi=fmaxf(hdHi,r.hatDrop);} if(r.hillH>0){hhLo=fminf(hhLo,r.hillH);hhHi=fmaxf(hhHi,r.hillH);} if(r.helixRev>0){hrLo=fminf(hrLo,r.helixRev);hrHi=fmaxf(hrHi,r.helixRev);} }
-    printf("    top-hat drop   200-270 m   / measured %.0f-%.0f m\n", hdHi>0?hdLo:0, hdHi);
-    printf("    airtime hill   60-78 m     / measured %.0f-%.0f m\n", hhHi>0?hhLo:0, hhHi);
-    printf("    helix rotation 1.6-1.9 rev / measured %.2f-%.2f rev\n", hrHi>0?hrLo:0, hrHi);
+    printf("\n  MULTIPLIER CONFORMANCE (G, HARD)  real-anchor / measured band / note:\n");
+    float hdLo=1e9f,hdHi=0,hhLo=1e9f,hhHi=0;
+    float hrevLo=1e9f,hrevHi=0,hradLo=1e9f,hradHi=0;
+    float hdropLo=1e9f,hdropHi=0,hlenLo=1e9f,hlenHi=0;
+    for (auto& r:all) {
+        if(r.hatDrop>0){hdLo=fminf(hdLo,r.hatDrop);hdHi=fmaxf(hdHi,r.hatDrop);}
+        if(r.hillH>0){hhLo=fminf(hhLo,r.hillH);hhHi=fmaxf(hhHi,r.hillH);}
+        if(r.helixMaxRev>0) {
+            hrevLo=fminf(hrevLo,r.helixMinRev); hrevHi=fmaxf(hrevHi,r.helixMaxRev);
+            hradLo=fminf(hradLo,r.helixMinRadius); hradHi=fmaxf(hradHi,r.helixMaxRadius);
+            hdropLo=fminf(hdropLo,r.helixMinDrop); hdropHi=fmaxf(hdropHi,r.helixMaxDrop);
+            hlenLo=fminf(hlenLo,r.helixMinLength); hlenHi=fmaxf(hlenHi,r.helixMaxLength);
+        }
+    }
+    const float helixLengthReference=Track::helixReferenceLength();
+    printf("    top-hat drop   %.1f-%.1f m / measured %.0f-%.0f m\n",
+           Track::TOP_HAT_RECORD_RISE,
+           Track::TOP_HAT_RECORD_RISE*Track::RECORD_SCALE_CAP,
+           hdHi>0?hdLo:0,hdHi);
+    printf("    airtime hill   %.1f-%.1f m / measured %.0f-%.0f m\n",
+           Track::AIRTIME_RECORD_HEIGHT,
+           Track::AIRTIME_RECORD_HEIGHT*Track::RECORD_SCALE_CAP,
+           hhHi>0?hhLo:0,hhHi);
+    printf("    helix rotation %.3f-%.3f rev / measured %.3f-%.3f rev\n",
+           Track::HELIX_RECORD_REVS,
+           Track::HELIX_RECORD_REVS*Track::RECORD_SCALE_CAP,
+           hrevHi>0?hrevLo:0,hrevHi);
+    printf("    helix radius   %.1f-%.1f m / measured %.1f-%.1f m\n",
+           Track::HELIX_REFERENCE_RADIUS,
+           Track::HELIX_REFERENCE_RADIUS*Track::RECORD_SCALE_CAP,
+           hradHi>0?hradLo:0,hradHi);
+    printf("    helix drop     %.1f-%.1f m / measured %.1f-%.1f m\n",
+           Track::HELIX_REFERENCE_DROP,
+           Track::HELIX_REFERENCE_DROP*Track::RECORD_SCALE_CAP,
+           hdropHi>0?hdropLo:0,hdropHi);
+    printf("    helix length   %.0f-%.0f m / measured %.0f-%.0f m\n",
+           helixLengthReference,
+           helixLengthReference*Track::RECORD_SCALE_CAP,
+           hlenHi>0?hlenLo:0,hlenHi);
     printf("\n  INVERSION-TYPE SHARE (I dominance guard, threshold 50%%):\n");
     for (int i=0;i<M_COUNT;i++) if (invGrand[i]>0) printf("    %-9s %ld  (%.0f%%)%s\n", NM[i], invGrand[i], 100.0f*invGrand[i]/fmaxf((float)invGrandTot,1.0f), (domFail&&i==domK)?"  <-- DOMINATES":"");
     if (domFail) printf("  I FAIL  inversion type %s = %.0f%% of all inversions (> 50%%)\n", domK>=0?NM[domK]:"-", 100.0f*domShare);

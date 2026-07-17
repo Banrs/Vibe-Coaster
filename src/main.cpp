@@ -16,16 +16,102 @@
 #include "../v1/audit_diagnostics.cpp"
 #include "v1_geometry_audit.cpp"
 
+struct V1RiderAuditSample {
+    Vector3 p{}, tangent{}, up{}, curvature{};
+    Vector3 windowBefore{}, windowAfter{};
+    float speedScale = 1.0f;
+    float curvatureWindow = 0.0f;
+    float gVertical = 1.0f;
+    float gLateral = 0.0f;
+};
+
+// One rider-space force sample shared by the occurrence and force audits.
+// Geometry is evaluated on the finalized rail at the ridden u; only the
+// speed integrator remains outside so both callers retain their own pacing
+// accounting without duplicating curvature/frame projection code.
+static V1RiderAuditSample v1RiderAuditSample(const Track &track,
+                                              float u, float speed) {
+    V1RiderAuditSample sample;
+    sample.p = track.pos(u);
+    sample.tangent = track.tangent(u);
+    sample.up = orthoUp(sample.tangent, track.upAt(u));
+    sample.speedScale = fmaxf(track.speedScale(u), 1.0f);
+    const float du = Clamp(7.5f / sample.speedScale, 0.35f, 1.1f);
+    // At the physical ride origin there is no public negative-u rail. Asking
+    // tangent(u-du) there made both points clamp to u=0, invoking tangent's
+    // +Z degeneracy fallback and comparing it with the real arbitrary launch
+    // heading. Use the available one-sided rail window at either domain edge.
+    const float beforeU = fmaxf(Track::rideStartU, u - du);
+    const float afterU = fminf(track.maxFinalU(), u + du);
+    sample.windowBefore = track.tangent(beforeU);
+    sample.windowAfter = track.tangent(afterU);
+    // Curvature is dT/ds, so use sampled rail arc rather than the endpoint
+    // chord. The former fixed 13 m denominator also mismatched this one-sided
+    // 7.5 m origin window and overstated tight-curve force elsewhere.
+    constexpr int ARC_SUBDIVISIONS = 8;
+    Vector3 previous = track.pos(beforeU);
+    for (int i = 1; i <= ARC_SUBDIVISIONS; ++i) {
+        const float q = beforeU + (afterU - beforeU) * i / ARC_SUBDIVISIONS;
+        const Vector3 current = track.pos(q);
+        sample.curvatureWindow += Vector3Distance(previous, current);
+        previous = current;
+    }
+    sample.curvatureWindow = fmaxf(sample.curvatureWindow, 1.0e-3f);
+    sample.curvature = Vector3Scale(
+        Vector3Subtract(sample.windowAfter, sample.windowBefore),
+        1.0f / sample.curvatureWindow);
+    const Vector3 felt = Vector3Add(Vector3Scale(sample.curvature, speed * speed),
+                                    Vector3{0.0f, GRAV, 0.0f});
+    Vector3 right = Vector3CrossProduct(sample.up, sample.tangent);
+    right = Vector3Length(right) > 1.0e-5f ? Vector3Normalize(right)
+                                            : Vector3{1.0f, 0.0f, 0.0f};
+    sample.gVertical = Vector3DotProduct(felt, sample.up) / GRAV;
+    sample.gLateral = Vector3DotProduct(felt, right) / GRAV;
+    return sample;
+}
+
+static Vector3 v1AuditTransportUp(Vector3 up, Vector3 fromTangent,
+                                  Vector3 toTangent) {
+    Vector3 axis = Vector3CrossProduct(fromTangent, toTangent);
+    const float sine = Vector3Length(axis);
+    const float cosine = Clamp(Vector3DotProduct(fromTangent, toTangent),
+                               -1.0f, 1.0f);
+    if (sine > 1.0e-6f) {
+        axis = Vector3Scale(axis, 1.0f / sine);
+        up = Vector3Add(
+            Vector3Add(Vector3Scale(up, cosine),
+                       Vector3Scale(Vector3CrossProduct(axis, up), sine)),
+            Vector3Scale(axis, Vector3DotProduct(axis, up) * (1.0f - cosine)));
+    }
+    return orthoUp(toTangent, up);
+}
+
+static float v1AuditMaterialRollDelta(Vector3 fromTangent, Vector3 fromUp,
+                                      Vector3 toTangent, Vector3 toUp) {
+    const Vector3 transported = v1AuditTransportUp(
+        orthoUp(fromTangent, fromUp), fromTangent, toTangent);
+    const Vector3 actual = orthoUp(toTangent, toUp);
+    return atan2f(Vector3DotProduct(Vector3CrossProduct(transported, actual),
+                                    toTangent),
+                  Clamp(Vector3DotProduct(transported, actual), -1.0f, 1.0f)) /
+           DEG2RAD;
+}
+
+static constexpr float V1_AUDIT_TANGENT_STEP_MAX_DEG = 9.0f;
+static constexpr float V1_AUDIT_CURVATURE_JERK_MAX = 0.18f; // 1/m^2
+static constexpr float V1_AUDIT_ROLL_RATE_MAX = 24.0f;      // degrees/m
+static constexpr float V1_AUDIT_ROLL_ACCEL_MAX = 5.5f;     // degrees/m^2
+
 int main(int argc, char **argv) {
     bool framesMode = (argc > 1 && TextIsEqual(argv[1], "--frames"));
     bool rasterShot = (argc > 1 && TextIsEqual(argv[1], "--rastershot"));
     bool orbitShot  = (argc > 1 && TextIsEqual(argv[1], "--orbitshot"));
     bool waterShot  = (argc > 1 && TextIsEqual(argv[1], "--watershot"));
-    bool cobraShot  = (argc > 1 && TextIsEqual(argv[1], "--cobrashot"));
 
     bool elemShot   = (argc > 2 && TextIsEqual(argv[1], "--elementshot"));
     bool jointShot  = (argc > 3 && TextIsEqual(argv[1], "--jointshot"));
     int  elemShotElem = -1;
+    int  elemShotFocus = 0; // 1 = hill valley, 2 = banked-turn interior
     const char *elemShotName = "";
     char elemShotPath[1024] = {0};
     int  jointFrom = -1, jointTo = -1;
@@ -36,6 +122,40 @@ int main(int argc, char **argv) {
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));
 
     if (argc > 1 && TextIsEqual(argv[1], "--terrainaudit")) {
+        uint64_t f0 = gHCache.fills;
+        prefillTerrain(0, 0, TERRA_R);
+        uint64_t coldFills = gHCache.fills - f0;
+        f0 = gHCache.fills;
+        prefillTerrain(TerrainMesh::REBUILD_CELLS, 0, TERRA_R);
+        uint64_t shiftFills = gHCache.fills - f0;
+        uint64_t expectedStrip = (uint64_t)TerrainMesh::REBUILD_CELLS * (2 * TERRA_R + 1);
+        if (coldFills != (uint64_t)(2 * TERRA_R + 1) * (2 * TERRA_R + 1) ||
+            shiftFills != expectedStrip) {
+            fprintf(stderr,"[terrainaudit] cache reuse FAIL cold=%llu shift=%llu expected=%llu\n",
+                    (unsigned long long)coldFills,(unsigned long long)shiftFills,
+                    (unsigned long long)expectedStrip);
+            return 1;
+        }
+        printf("[terrainaudit] cache cold=%llu cells, 56m recenter=%llu cells (%.1fx less)\n",
+               (unsigned long long)coldFills,(unsigned long long)shiftFills,
+               (double)coldFills/fmax((double)shiftFills,1.0));
+        TerrainMesh reuseProbe;
+        const std::unordered_set<int64_t> noCarve;
+        reuseProbe.prepareIncrementalKeys(0,0,noCarve);
+        size_t coldBuckets=reuseProbe.pendingBuildKeys.size();
+        for(int64_t key:reuseProbe.pendingDesiredKeys) {
+            TerrainChunk chunk{}; chunk.key=key; reuseProbe.chunks.push_back(chunk);
+        }
+        reuseProbe.live=true; reuseProbe.keyCx=0; reuseProbe.keyCz=0;
+        reuseProbe.prepareIncrementalKeys(TerrainMesh::REBUILD_CELLS,0,noCarve);
+        size_t shiftBuckets=reuseProbe.pendingBuildKeys.size();
+        if(coldBuckets==0 || shiftBuckets>=coldBuckets/2) {
+            fprintf(stderr,"[terrainaudit] chunk reuse FAIL cold=%zu shift=%zu\n",
+                    coldBuckets,shiftBuckets);
+            return 1;
+        }
+        printf("[terrainaudit] mesh cold=%zu buckets, recenter rebuild=%zu (%.1fx less)\n",
+               coldBuckets,shiftBuckets,(double)coldBuckets/fmax((double)shiftBuckets,1.0));
         float bestDrop = -1.0f, bestX = 0.0f, bestZ = 0.0f, bestYaw = 0.0f;
         float minH = 1e9f, maxH = -1e9f;
         int qualified = 0;
@@ -69,15 +189,17 @@ int main(int argc, char **argv) {
             float tangentY;
             unsigned char drive;
         } probes[] = {
-            {"hydraulic-main", M_LAUNCH, 12.0f, LAUNCH_V, LAUNCH_ACCEL, 0.0f, 0},
-            {"lsm-booster",    M_BOOST,  40.0f, BOOST_V,  BOOST_ACCEL,  0.0f, 0},
-            {"lsm-cliff",      M_CLIMB,  40.0f, CLIFF_LSM_V, BOOST_ACCEL, sinf(5.0f*DEG2RAD), 2},
+            {"hydraulic-main", M_LAUNCH, 12.0f, V1_PROPULSION.targetSpeed,
+             V1_PROPULSION.netAcceleration, 0.0f, 2},
+            {"lsm-booster", M_BOOST, 40.0f, V1_PROPULSION.targetSpeed,
+             V1_PROPULSION.netAcceleration, 0.0f, 2},
         };
         bool ok = true;
         printf("=== launch pacing audit ===\n");
         printf("acceleration reference: Do-Dodonpa 0-180 km/h in 1.56 s\n");
         printf("game target: all powered launches converge on 360 km/h\n");
-        printf("fastest-launch net-acceleration multiplier: %.2fx\n", LAUNCH_ACCEL_MUL);
+        printf("fastest-launch net-acceleration multiplier: %.2fx\n",
+               V1_PROPULSION.accelerationMultiplier);
         for (const LaunchProbe &p : probes) {
             const float dt = 1.0f / 600.0f;
             float v = p.startV, t = 0.0f, distance = 0.0f;
@@ -98,86 +220,206 @@ int main(int argc, char **argv) {
         return ok ? 0 : 1;
     }
 
-    // PACING AUDIT: per-mode TIME accounting as ridden -- the numbers behind "too much flat"
-    // and "elements take too long". Runs the same physics loop as --simtest over 8 seeds and
-    // reports, per tag: instances/ride, mean/max transit seconds, and % of ride time; plus
-    // the aggregate flat share (FLAT+LAUNCH+BOOST+STATION) and element density (elements/min).
-    if (argc > 1 && TextIsEqual(argv[1], "--pacing")) {
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        long   tagFrames[M_COUNT] = {0};
-        long   tagInst[M_COUNT]   = {0};
-        double tagInstSec[M_COUNT] = {0};
-        float  tagInstMax[M_COUNT] = {0};
-        long   totFrames = 0;
-        double totalDistance = 0.0;
-        long   splashF = 0, splashInst = 0;   // genuine water-skims (SPLASHDOWN label + spray active)
-        for (uint32_t seed = 1; seed <= 8; seed++) {
-            g_rng = seed * 2654435761u | 1u;
+    // Bounded, headless per-occurrence audit. Sampling deliberately matches --forceaudit and the
+    // live HUD: the same 120 Hz speed integrator and the same 7.5 m curvature window.
+    if (argc > 1 && TextIsEqual(argv[1], "--elementaudit")) {
+        const int seeds = argc > 2 ? Clamp(atoi(argv[2]), 1, 64) : 8;
+        const int firstSeed = argc > 3 ? Clamp(atoi(argv[3]), 1, 64) : 1;
+        const int lastSeed = std::min(64, firstSeed + seeds - 1);
+        static const char *NM[M_COUNT] = {
+            "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION","DIP","LAUNCH",
+            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP" };
+        auto named = [](int tag) {
+            return tag >= 0 && tag < M_COUNT && tag != M_FLAT && tag != M_CLIMB &&
+                   tag != M_DROP && tag != M_STATION && tag != M_LAUNCH && tag != M_BOOST;
+        };
+        struct TypeAudit {
+            long count = 0, speedN = 0;
+            double entrySum = 0.0, exitSum = 0.0, speedSum = 0.0;
+            double middleVertSum = 0.0, middleLatAbsSum = 0.0;
+            double distanceSum = 0.0, timeSum = 0.0;
+            float entryMin = 1.0e9f, entryMax = -1.0e9f;
+            float exitMin = 1.0e9f, exitMax = -1.0e9f;
+            float speedMin = 1.0e9f, speedMax = -1.0e9f;
+            float middleVertMin = 1.0e9f, middleVertMax = -1.0e9f;
+            float middleLatAbsMin = 1.0e9f, middleLatAbsMax = -1.0e9f;
+            float hardVertMin = 1.0e9f, hardVertMax = -1.0e9f;
+            float hardLatMin = 1.0e9f, hardLatMax = -1.0e9f;
+        } out[M_COUNT];
+        long hillGateMisses = 0;
+        int generationFailures = 0;
+        for (int seed = firstSeed; seed <= lastSeed; ++seed) {
+            g_rng = (uint32_t)seed * 2654435761u | 1u;
             Track t; t.reset();
-            float u = 0.5f, v = 12.0f;
-            unsigned char curTag = 255; long curRun = 0;
-            bool inSplash = false;
-            const float dt = 1.0f / 60.0f;
-            for (int f = 0; f < 30000; f++) {
-                t.ensureFinalizedAhead(u + 64);
-                float slope = t.tangent(u).y;
-                unsigned char tg = t.tagAt(u);
-                v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
-                if (f > 120) {
-                    totalDistance += v * dt;
-                    if (tg < M_COUNT) tagFrames[tg]++;
-                    totFrames++;
-                    {   // same water-skim test as rideElemName's SPLASHDOWN + the wheel-spray window;
-                        // pos(u) is a catmull eval, so only run it on M_DIP frames (short-circuit)
-                        bool skim = false;
-                        if (tg == M_DIP) {
-                            Vector3 Pp = t.pos(u);
-                            skim = Pp.y - WATER_Y < 3.0f && submergedGround(groundTopAt(Pp.x, Pp.z));
-                        }
-                        if (skim) { splashF++; if (!inSplash) splashInst++; }
-                        inSplash = skim;
-                    }
-                    if (tg != curTag) {
-                        if (curTag < M_COUNT && curRun > 0) {
-                            tagInst[curTag]++; tagInstSec[curTag] += curRun * dt;
-                            tagInstMax[curTag] = fmaxf(tagInstMax[curTag], curRun * dt);
-                        }
-                        curTag = tg; curRun = 0;
-                    }
-                    curRun++;
+            TypeAudit beforeSeed[M_COUNT];
+            for (int tag = 0; tag < M_COUNT; ++tag) beforeSeed[tag] = out[tag];
+            const long hillGateMissesBeforeSeed = hillGateMisses;
+            float u = Track::rideStartU, v = 12.0f, occurrenceEntry = 0.0f;
+            float occurrenceExit = 0.0f;
+            float occurrenceSpeedMin = 1.0e9f, occurrenceSpeedMax = -1.0e9f;
+            int occurrenceTag = M_COUNT;
+            double occurrenceSpeedSum = 0.0;
+            long occurrenceSpeedN = 0;
+            double occurrenceDistance = 0.0, occurrenceTime = 0.0;
+            std::vector<float> occurrenceVertG, occurrenceLatG;
+            auto flush = [&]() {
+                if (!named(occurrenceTag) || occurrenceVertG.empty()) return;
+                TypeAudit &a = out[occurrenceTag];
+                const size_t lo = occurrenceVertG.size() / 4;
+                const size_t hi = occurrenceVertG.size() - occurrenceVertG.size() / 4;
+                double middleVertSum = 0.0, middleLatAbsSum = 0.0;
+                for (size_t i = lo; i < hi; ++i) {
+                    middleVertSum += occurrenceVertG[i];
+                    middleLatAbsSum += fabsf(occurrenceLatG[i]);
                 }
-                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
-                if (!(du == du)) du = 0;
-                u += fminf(du, 1.5f);
-                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
+                const double middleN = (double)std::max<size_t>(1, hi - lo);
+                const float middleVert = (float)(middleVertSum / middleN);
+                const float middleLatAbs = (float)(middleLatAbsSum / middleN);
+                a.count++;
+                a.entrySum += occurrenceEntry;
+                a.entryMin = fminf(a.entryMin, occurrenceEntry);
+                a.entryMax = fmaxf(a.entryMax, occurrenceEntry);
+                a.exitSum += occurrenceExit;
+                a.exitMin = fminf(a.exitMin, occurrenceExit);
+                a.exitMax = fmaxf(a.exitMax, occurrenceExit);
+                a.speedSum += occurrenceSpeedSum;
+                a.speedN += occurrenceSpeedN;
+                a.speedMin = fminf(a.speedMin, occurrenceSpeedMin);
+                a.speedMax = fmaxf(a.speedMax, occurrenceSpeedMax);
+                a.middleVertSum += middleVert;
+                a.middleVertMin = fminf(a.middleVertMin, middleVert);
+                a.middleVertMax = fmaxf(a.middleVertMax, middleVert);
+                a.middleLatAbsSum += middleLatAbs;
+                a.middleLatAbsMin = fminf(a.middleLatAbsMin, middleLatAbs);
+                a.middleLatAbsMax = fmaxf(a.middleLatAbsMax, middleLatAbs);
+                a.distanceSum += occurrenceDistance;
+                a.timeSum += occurrenceTime;
+                for (size_t i = 0; i < occurrenceVertG.size(); ++i) {
+                    a.hardVertMin = fminf(a.hardVertMin, occurrenceVertG[i]);
+                    a.hardVertMax = fmaxf(a.hardVertMax, occurrenceVertG[i]);
+                    a.hardLatMin = fminf(a.hardLatMin, occurrenceLatG[i]);
+                    a.hardLatMax = fmaxf(a.hardLatMax, occurrenceLatG[i]);
+                }
+                if (occurrenceTag == M_HILLS &&
+                    (occurrenceEntry < Track::HILL_ENTRY_MIN ||
+                     occurrenceEntry > Track::HILL_ENTRY_MAX))
+                    hillGateMisses++;
+                if (getenv("MC_ELEMENTDETAIL"))
+                    printf("seed=%d %-11s #%ld span=%.1fm/%.2fs "
+                           "speed=%.1f/%.1f/%.1f/%.1f km/h "
+                           "middle50=%+.2fG vert/%.2fG |lat| hard=%+.2f..%+.2fG vert/%+.2f..%+.2fG lat\n",
+                           seed, NM[occurrenceTag], a.count,
+                           occurrenceDistance, occurrenceTime,
+                           occurrenceEntry * 3.6f, occurrenceSpeedMin * 3.6f,
+                           occurrenceSpeedMax * 3.6f, occurrenceExit * 3.6f,
+                           middleVert, middleLatAbs,
+                           *std::min_element(occurrenceVertG.begin(), occurrenceVertG.end()),
+                           *std::max_element(occurrenceVertG.begin(), occurrenceVertG.end()),
+                           *std::min_element(occurrenceLatG.begin(), occurrenceLatG.end()),
+                           *std::max_element(occurrenceLatG.begin(), occurrenceLatG.end()));
+            };
+            const float dt = 1.0f / 120.0f;
+            bool generationOK = true;
+            for (int frame = 0; frame < 24000; ++frame) {
+                t.ensureFinalizedAhead(u + 34.0f);
+                // A bounded scheduler failure is a geometry failure, not track
+                // on which the train can continue coasting.  pos() deliberately
+                // clamps to finalized data for renderer safety; continuing this
+                // audit after the clamp used to turn the last point into minutes
+                // of fake low-speed FLAT samples.
+                if (t.schedulerExhaustions != 0 ||
+                    t.maxFinalU() + 0.001f < u + 34.0f) {
+                    generationOK = false;
+                    ++generationFailures;
+                    printf("seed=%d GENERATION FAIL frame=%d u=%.2f finalized=%.2f exhaustions=%u\n",
+                           seed, frame, u + (float)t.base,
+                           t.maxFinalU() + (float)t.base,
+                           t.schedulerExhaustions);
+                    break;
+                }
+                float slope = t.tangent(u).y;
+                unsigned char tag = t.tagAt(u);
+                unsigned char drive = t.driveAt(u);
+                v = integrateRideSpeed(v, slope, tag, drive, dt);
+
+                const V1RiderAuditSample rider = v1RiderAuditSample(t, u, v);
+                const float gVertNow = rider.gVertical;
+                const float gLatNow = rider.gLateral;
+
+                if ((int)tag != occurrenceTag) {
+                    flush();
+                    occurrenceTag = (int)tag;
+                    occurrenceEntry = v;
+                    occurrenceExit = v;
+                    occurrenceSpeedMin = 1.0e9f;
+                    occurrenceSpeedMax = -1.0e9f;
+                    occurrenceSpeedSum = 0.0;
+                    occurrenceSpeedN = 0;
+                    occurrenceDistance = occurrenceTime = 0.0;
+                    occurrenceVertG.clear();
+                    occurrenceLatG.clear();
+                }
+                if (named(occurrenceTag) && std::isfinite(v) &&
+                    std::isfinite(gVertNow) && std::isfinite(gLatNow)) {
+                    occurrenceExit = v;
+                    occurrenceSpeedMin = fminf(occurrenceSpeedMin, v);
+                    occurrenceSpeedMax = fmaxf(occurrenceSpeedMax, v);
+                    occurrenceSpeedSum += v;
+                    occurrenceSpeedN++;
+                    occurrenceDistance += v * dt;
+                    occurrenceTime += dt;
+                    occurrenceVertG.push_back(gVertNow);
+                    occurrenceLatG.push_back(gLatNow);
+                }
+
+                float duRide = v * dt / fmaxf(rider.speedScale, 0.5f);
+                if (!std::isfinite(duRide)) duRide = 0.0f;
+                u += fminf(duRide, 1.5f);
+                while (u > 13.0f && (int)t.cp.size() > 18) { t.popFront(); u -= 1.0f; }
             }
-            if (curTag < M_COUNT && curRun > 0) {
-                tagInst[curTag]++; tagInstSec[curTag] += curRun * dt;
-                tagInstMax[curTag] = fmaxf(tagInstMax[curTag], curRun * dt);
+            // Do not publish the truncated occurrence at a failed boundary.
+            if (generationOK) {
+                flush();
+            } else {
+                for (int tag = 0; tag < M_COUNT; ++tag) out[tag] = beforeSeed[tag];
+                hillGateMisses = hillGateMissesBeforeSeed;
             }
         }
-        double totSec = totFrames / 60.0;
-        printf("[pacing] 8 seeds, %.0f s ridden total (%.1f s/seed)\n", totSec, totSec / 8.0);
-        printf("  %-9s %8s %8s %8s %8s\n", "elem", "inst/rd", "mean s", "max s", "%time");
-        long elemInst = 0;
-        for (int m = 0; m < M_COUNT; m++) {
-            if (!tagFrames[m]) continue;
-            bool isElem = !(m == M_FLAT || m == M_CLIMB || m == M_DROP || m == M_LAUNCH ||
-                            m == M_BOOST || m == M_STATION);
-            if (isElem) elemInst += tagInst[m];
-            printf("  %-9s %8.1f %8.1f %8.1f %7.1f%%\n", NM[m], tagInst[m] / 8.0,
-                   tagInst[m] ? tagInstSec[m] / tagInst[m] : 0.0, tagInstMax[m],
-                   100.0 * tagFrames[m] / totFrames);
+        printf("=== element occurrence audit (seeds %d..%d, 120 Hz, 200 s/seed) ===\n",
+               firstSeed, lastSeed);
+        printf("%-11s %6s  %-25s  %-25s  %-27s  %-19s\n", "type", "count",
+               "entry km/h min/mean/max", "exit km/h min/mean/max",
+               "speed km/h min/mean/max", "mean span m/s");
+        for (int tag = 0; tag < M_COUNT; ++tag) {
+            if (!named(tag)) continue;
+            const TypeAudit &a = out[tag];
+            if (!a.count) {
+                printf("%-11s %6ld  NO DATA\n", NM[tag], a.count);
+                continue;
+            }
+            printf("%-11s %6ld  %7.1f/%7.1f/%7.1f  %7.1f/%7.1f/%7.1f  "
+                   "%7.1f/%7.1f/%7.1f  %7.1fm/%5.2fs\n",
+                   NM[tag], a.count, a.entryMin * 3.6f,
+                   (float)(a.entrySum / a.count) * 3.6f, a.entryMax * 3.6f,
+                   a.exitMin * 3.6f, (float)(a.exitSum / a.count) * 3.6f,
+                   a.exitMax * 3.6f, a.speedMin * 3.6f,
+                   a.speedN ? (float)(a.speedSum / a.speedN) * 3.6f : 0.0f,
+                   a.speedMax * 3.6f, (float)(a.distanceSum / a.count),
+                   (float)(a.timeSum / a.count));
+            printf("%18s middle50 vert=%+6.2f/%+6.2f/%+6.2fG  |lat|=%5.2f/%5.2f/%5.2fG  "
+                   "hard vert=%+6.2f..%+6.2fG lat=%+6.2f..%+6.2fG\n", "",
+                   a.middleVertMin, (float)(a.middleVertSum / a.count),
+                   a.middleVertMax, a.middleLatAbsMin,
+                   (float)(a.middleLatAbsSum / a.count), a.middleLatAbsMax,
+                   a.hardVertMin, a.hardVertMax, a.hardLatMin, a.hardLatMax);
         }
-        long flatF = tagFrames[M_FLAT] + tagFrames[M_LAUNCH] + tagFrames[M_BOOST] + tagFrames[M_STATION];
-        printf("  --- flat-ish (FLAT+LAUNCH+BOOST+STN): %.1f%% of time | elements: %.1f/ride, density %.1f/min ---\n",
-               100.0 * flatF / totFrames, elemInst / 8.0, elemInst / (totSec / 60.0));
-        printf("  --- BOOST cadence: %.2f km between entries (%ld entries over %.1f km) ---\n",
-               tagInst[M_BOOST] ? totalDistance / tagInst[M_BOOST] / 1000.0 : 0.0,
-               tagInst[M_BOOST], totalDistance / 1000.0);
-        printf("  --- genuine SPLASHDOWNs (DIP skimming water): %.1f/ride, %.1f s each ---\n",
-               splashInst / 8.0, splashInst ? (double)splashF / 60.0 / splashInst : 0.0);
-        return 0;
+        bool hillGateOK = out[M_HILLS].count > 0 && hillGateMisses == 0;
+        printf("HILLS entry gate %.1f..%.1f km/h: observed=%ld outside=%ld  %s\n",
+               Track::HILL_ENTRY_MIN * 3.6f, Track::HILL_ENTRY_MAX * 3.6f,
+               out[M_HILLS].count, hillGateMisses, hillGateOK ? "PASS" : "FAIL");
+        printf("generation continuity: failures=%d  %s\n", generationFailures,
+               generationFailures == 0 ? "PASS" : "FAIL");
+        return hillGateOK && generationFailures == 0 ? 0 : 1;
     }
 
     // Headless force-envelope audit using the exact ride-speed integrator and curvature window used
@@ -190,65 +432,230 @@ int main(int argc, char **argv) {
         seeds = lastSeed - firstSeed + 1;
         bool ok = true;
         float sustainedPosSum = 0.0f, sustainedNegSum = 0.0f;
-        int sustainedPosSeeds = 0, sustainedNegSeeds = 0;
+        int sustainedPosRuns = 0, sustainedNegRuns = 0;
+        float tamePosSum = 0.0f, tameNegSum = 0.0f;
+        int tamePosRuns = 0, tameNegRuns = 0;
+        float sustainedPosByTag[M_COUNT] = {}, sustainedNegByTag[M_COUNT] = {};
+        int sustainedPosTagRuns[M_COUNT] = {}, sustainedNegTagRuns[M_COUNT] = {};
+        double allSpeedSum = 0.0;
+        long long allSpeedN = 0;
+        std::vector<float> seedAverageKmh, cadenceKm;
+        int emergencyBoosts = 0;
+        int generationFailures = 0;
         printf("=== V1 live-path force audit (%d seeds, 120 Hz, hard vertical +12/-6.5g) ===\n", seeds);
         for (int seed = firstSeed; seed <= lastSeed; ++seed) {
             g_rng = (uint32_t)seed * 2654435761u | 1u;
             Track t; t.reset();
-            float u = 0.5f, v = 12.0f;
+            const float sustainedPosSumBeforeSeed = sustainedPosSum;
+            const float sustainedNegSumBeforeSeed = sustainedNegSum;
+            const int sustainedPosRunsBeforeSeed = sustainedPosRuns;
+            const int sustainedNegRunsBeforeSeed = sustainedNegRuns;
+            const float tamePosSumBeforeSeed = tamePosSum;
+            const float tameNegSumBeforeSeed = tameNegSum;
+            const int tamePosRunsBeforeSeed = tamePosRuns;
+            const int tameNegRunsBeforeSeed = tameNegRuns;
+            float sustainedPosByTagBeforeSeed[M_COUNT];
+            float sustainedNegByTagBeforeSeed[M_COUNT];
+            int sustainedPosTagRunsBeforeSeed[M_COUNT];
+            int sustainedNegTagRunsBeforeSeed[M_COUNT];
+            for (int tag = 0; tag < M_COUNT; ++tag) {
+                sustainedPosByTagBeforeSeed[tag] = sustainedPosByTag[tag];
+                sustainedNegByTagBeforeSeed[tag] = sustainedNegByTag[tag];
+                sustainedPosTagRunsBeforeSeed[tag] = sustainedPosTagRuns[tag];
+                sustainedNegTagRunsBeforeSeed[tag] = sustainedNegTagRuns[tag];
+            }
+            const size_t cadenceCountBeforeSeed = cadenceKm.size();
+            const int emergencyBoostsBeforeSeed = emergencyBoosts;
+            float u = Track::rideStartU, v = 12.0f;
             float maxV = -1.0e9f, minV = 1.0e9f, maxLat = 0.0f;
             float maxVU = 0.0f, minVU = 0.0f, maxLatU = 0.0f;
-            float posRunSum = 0.0f, negRunSum = 0.0f;
+            float maxTangentStep = 0.0f, maxCurvatureJerk = 0.0f;
+            float maxRollRate = 0.0f, maxRollAccel = 0.0f;
+            float maxTangentU = 0.0f, maxCurvatureU = 0.0f;
+            float maxRollRateU = 0.0f, maxRollAccelU = 0.0f;
+            bool havePriorRider = false, havePriorCurvature = false;
+            bool havePriorRollRate = false;
+            V1RiderAuditSample priorRider{};
+            Vector3 priorInstantCurvature{};
+            float priorMotionDistance = 0.0f, priorRollRate = 0.0f;
             float bestPosSustained = -1.0e9f, bestNegSustained = 1.0e9f;
-            int posRunN = 0, negRunN = 0;
+            std::vector<float> sustainedRun;
+            unsigned char sustainedTag = M_COUNT;
+            bool sustainedAlignment = false;
             double speedSum = 0.0;
             double plannedSpeedSum = 0.0;
             int speedN = 0, lowRun = 0, longestLowRun = 0;
             float peakSpeed = 0.0f, minMovingSpeed = 1.0e9f;
+            float minHillEntry = 1.0e9f, maxHillEntry = -1.0e9f;
+            float minHillEntryU = 0.0f;
             float tagPeak[M_COUNT]; for (float &x : tagPeak) x = -1.0e9f;
+            float tagMin[M_COUNT]; for (float &x : tagMin) x = 1.0e9f;
             double tagSpeedSum[M_COUNT] = {};
             double tagPlannedSpeedSum[M_COUNT] = {};
             int tagSpeedN[M_COUNT] = {};
             unsigned char previousTag = M_COUNT;
+            unsigned char entryTag = M_COUNT;
             unsigned char maxVTag = M_FLAT, minVTag = M_FLAT, maxLatTag = M_FLAT;
-            auto flushPos = [&]() {
-                if (posRunN >= 16) bestPosSustained = fmaxf(bestPosSustained, posRunSum / posRunN);
-                posRunSum = 0.0f; posRunN = 0;
-            };
-            auto flushNeg = [&]() {
-                if (negRunN >= 16) bestNegSustained = fminf(bestNegSustained, negRunSum / negRunN);
-                negRunSum = 0.0f; negRunN = 0;
+            double riddenDistance = 0.0, lastPowerDistance = -1.0;
+            bool wasPowered = false;
+            auto flushSustained = [&]() {
+                if (sustainedRun.size() >= 16) {
+                    bool posIntense = !sustainedAlignment &&
+                                      (sustainedTag == M_TURN || sustainedTag == M_HELIX ||
+                                       sustainedTag == M_DIVE || sustainedTag == M_LOOP ||
+                                       sustainedTag == M_DIVELOOP);
+                    bool negIntense = sustainedTag == M_HILLS || sustainedTag == M_LOOP ||
+                                      sustainedTag == M_ROLL || sustainedTag == M_STALL ||
+                                      sustainedTag == M_DIVELOOP;
+                    bool posTame = sustainedTag == M_SCURVE || sustainedTag == M_IMMEL;
+                    bool negTame = sustainedTag == M_BANKAIR || sustainedTag == M_WAVE;
+                    auto recordLobes = [&](bool positive, bool intense) {
+                        size_t p=0;
+                        while(p<sustainedRun.size()) {
+                            auto inside = [&](float g) {
+                                return positive ? g > 1.5f : g < -0.5f;
+                            };
+                            while(p<sustainedRun.size()&&!inside(sustainedRun[p])) ++p;
+                            size_t q=p;
+                            while(q<sustainedRun.size()&&inside(sustainedRun[q])) ++q;
+                            if(q-p>=12) {
+                                size_t la=p+(q-p)/4, lb=q-(q-p)/4;
+                                float lsum=0.0f;
+                                for(size_t z=la;z<lb;++z) lsum+=sustainedRun[z];
+                                float lmid=lsum/fmaxf((float)(lb-la),1.0f);
+                                if (positive) {
+                                    if (intense) bestPosSustained=fmaxf(bestPosSustained,lmid);
+                                    sustainedPosByTag[sustainedTag]+=lmid;
+                                    sustainedPosTagRuns[sustainedTag]++;
+                                    if (intense) {
+                                        sustainedPosSum+=lmid; sustainedPosRuns++;
+                                    } else {
+                                        tamePosSum+=lmid; tamePosRuns++;
+                                    }
+                                } else {
+                                    if (intense) bestNegSustained=fminf(bestNegSustained,lmid);
+                                    sustainedNegByTag[sustainedTag]+=lmid;
+                                    sustainedNegTagRuns[sustainedTag]++;
+                                    if (intense) {
+                                        sustainedNegSum+=lmid; sustainedNegRuns++;
+                                    } else {
+                                        tameNegSum+=lmid; tameNegRuns++;
+                                    }
+                                }
+                            }
+                            p=q;
+                        }
+                    };
+                    if (posIntense || posTame) recordLobes(true, posIntense);
+                    if (negIntense || negTame) recordLobes(false, negIntense);
+                }
+                sustainedRun.clear();
             };
             const float dt = 1.0f / 120.0f;
+            bool generationOK = true;
             for (int frame = 0; frame < 24000; ++frame) {
                 t.ensureFinalizedAhead(u + 34.0f);
+                if (t.schedulerExhaustions != 0 ||
+                    t.maxFinalU() + 0.001f < u + 34.0f) {
+                    generationOK = false;
+                    ++generationFailures;
+                    printf("seed%2d  GENERATION FAIL frame=%d u=%.2f finalized=%.2f exhaustions=%u\n",
+                           seed, frame, u + (float)t.base,
+                           t.maxFinalU() + (float)t.base,
+                           t.schedulerExhaustions);
+                    break;
+                }
                 float slope = t.tangent(u).y;
                 unsigned char tag = t.tagAt(u);
-                v = integrateRideSpeed(v, slope, tag, t.driveAt(u), dt);
+                unsigned char drive = t.driveAt(u);
+                float powerEntrySpeed = v;
+                v = integrateRideSpeed(v, slope, tag, drive, dt);
+                bool powered = drive == 2 && (tag == M_LAUNCH || tag == M_BOOST);
+                if (powered && !wasPowered) {
+                    if (tag == M_BOOST && lastPowerDistance >= 0.0) {
+                        float gapKm = (float)((riddenDistance - lastPowerDistance) / 1000.0);
+                        if (powerEntrySpeed < 46.0f) emergencyBoosts++;
+                        else cadenceKm.push_back(gapKm);
+                    }
+                    lastPowerDistance = riddenDistance;
+                }
+                wasPowered = powered;
+                if (tag != entryTag) {
+                    if (tag == M_HILLS && v < minHillEntry) {
+                        minHillEntry = v;
+                        minHillEntryU = u + (float)t.base;
+                    }
+                    if (tag == M_HILLS) maxHillEntry=fmaxf(maxHillEntry,v);
+                    entryTag = tag;
+                }
 
-                Vector3 T = t.tangent(u);
-                Vector3 N = orthoUp(T, t.upAt(u));
-                float ss = fmaxf(t.speedScale(u), 1.0f);
-                float duK = Clamp(7.5f / ss, 0.35f, 1.1f);
-                Vector3 Tb = t.tangent(u - duK), Tf = t.tangent(u + duK);
-                float arcK = fmaxf(Vector3Distance(t.pos(u - duK), t.pos(u + duK)), 13.0f);
-                Vector3 kappa = Vector3Scale(Vector3Subtract(Tf, Tb), 1.0f / arcK);
-                Vector3 felt = Vector3Add(Vector3Scale(kappa, v * v), Vector3{0, GRAV, 0});
-                Vector3 right = Vector3Normalize(Vector3CrossProduct(N, T));
-                float gVertNow = Vector3DotProduct(felt, N) / GRAV;
-                float gLatNow = Vector3DotProduct(felt, right) / GRAV;
+                const V1RiderAuditSample rider = v1RiderAuditSample(t, u, v);
+                const Vector3 T = rider.tangent;
+                const Vector3 N = rider.up;
+                const float gVertNow = rider.gVertical;
+                const float gLatNow = rider.gLateral;
+                if (havePriorRider) {
+                    const float ds = Vector3Distance(priorRider.p, rider.p);
+                    if (ds > 1.0e-4f) {
+                        const float tangentStep = acosf(Clamp(Vector3DotProduct(
+                            priorRider.tangent, rider.tangent), -1.0f, 1.0f)) /
+                            DEG2RAD;
+                        const Vector3 instantCurvature = Vector3Scale(
+                            Vector3Subtract(rider.tangent, priorRider.tangent),
+                            1.0f / ds);
+                        const float rollRate = v1AuditMaterialRollDelta(
+                            priorRider.tangent, priorRider.up,
+                            rider.tangent, rider.up) / ds;
+                        if (frame > 240 && tangentStep > maxTangentStep) {
+                            maxTangentStep = tangentStep;
+                            maxTangentU = u + (float)t.base;
+                        }
+                        if (havePriorCurvature) {
+                            const float centreDistance = fmaxf(
+                                0.5f * (priorMotionDistance + ds), 1.0e-4f);
+                            const float curvatureJerk = Vector3Length(Vector3Subtract(
+                                instantCurvature, priorInstantCurvature)) / centreDistance;
+                            if (frame > 240 && curvatureJerk > maxCurvatureJerk) {
+                                maxCurvatureJerk = curvatureJerk;
+                                maxCurvatureU = u + (float)t.base;
+                            }
+                        }
+                        if (frame > 240 && fabsf(rollRate) > maxRollRate) {
+                            maxRollRate = fabsf(rollRate);
+                            maxRollRateU = u + (float)t.base;
+                        }
+                        if (havePriorRollRate) {
+                            const float centreDistance = fmaxf(
+                                0.5f * (priorMotionDistance + ds), 1.0e-4f);
+                            const float rollAccel = fabsf(rollRate - priorRollRate) /
+                                                    centreDistance;
+                            if (frame > 240 && rollAccel > maxRollAccel) {
+                                maxRollAccel = rollAccel;
+                                maxRollAccelU = u + (float)t.base;
+                            }
+                        }
+                        priorInstantCurvature = instantCurvature;
+                        priorMotionDistance = ds;
+                        priorRollRate = rollRate;
+                        havePriorCurvature = true;
+                        havePriorRollRate = true;
+                    }
+                }
+                priorRider = rider;
+                havePriorRider = true;
                 if (getenv("MC_FORCEDETAIL") && tag != previousTag) {
                     Vector3 entry = t.pos(u);
                     Vector3 natural = orthoUp(T, WUP);
                     Vector3 bankSide = Vector3Normalize(Vector3CrossProduct(T, natural));
                     float bankDeg = atan2f(Vector3DotProduct(N, bankSide),
                                            Vector3DotProduct(N, natural)) / DEG2RAD;
-                    float bendDeg = acosf(Clamp(Vector3DotProduct(Tb, Tf), -1.0f, 1.0f)) / DEG2RAD;
+                    float bendDeg = acosf(Clamp(Vector3DotProduct(
+                        rider.windowBefore, rider.windowAfter), -1.0f, 1.0f)) / DEG2RAD;
                     printf("  entry u=%.1f tag=%d actual=%.0f planned=%.0f km/h y=%.0f pitch=%+.0fdeg bank=%+.0fdeg bend=%.0fdeg/%.0fm g=%+.1f/%+.1f\n",
                            u + (float)t.base, (int)tag, v * 3.6f,
                            t.plannedSpeedAt(u) * 3.6f, entry.y,
                            asinf(Clamp(T.y, -1.0f, 1.0f)) / DEG2RAD,
-                           bankDeg, bendDeg, arcK, gVertNow, gLatNow);
+                           bankDeg, bendDeg, rider.curvatureWindow, gVertNow, gLatNow);
                     if (bendDeg > 25.0f) {
                         int ck = (int)t.clampFinalU(u);
                         printf("    cps");
@@ -289,17 +696,17 @@ int main(int argc, char **argv) {
                         maxLatU = u + (float)t.base;
                         maxLatTag = tag;
                     }
-                    if (tag < M_COUNT) tagPeak[tag] = fmaxf(tagPeak[tag], gVertNow);
-                    bool posIntense = tag == M_TURN || tag == M_HELIX || tag == M_DIVE ||
-                                      tag == M_SCURVE || tag == M_LOOP || tag == M_IMMEL ||
-                                      tag == M_DIVELOOP;
-                    bool negIntense = tag == M_HILLS || tag == M_BANKAIR || tag == M_WAVE ||
-                                      tag == M_LOOP || tag == M_ROLL || tag == M_STALL ||
-                                      tag == M_DIVELOOP;
-                    if (posIntense && gVertNow >= 8.0f) { posRunSum += gVertNow; ++posRunN; }
-                    else flushPos();
-                    if (negIntense && gVertNow <= -4.0f) { negRunSum += gVertNow; ++negRunN; }
-                    else flushNeg();
+                    if (tag < M_COUNT) {
+                        tagPeak[tag] = fmaxf(tagPeak[tag], gVertNow);
+                        tagMin[tag] = fminf(tagMin[tag], gVertNow);
+                    }
+                    bool alignment = t.alignmentAt(u);
+                    if (tag != sustainedTag || alignment != sustainedAlignment) {
+                        flushSustained();
+                        sustainedTag = tag;
+                        sustainedAlignment = alignment;
+                    }
+                    sustainedRun.push_back(gVertNow);
                     if (tag != M_STATION) {
                         float planned = t.plannedSpeedAt(u);
                         if (tag < M_COUNT) {
@@ -320,30 +727,72 @@ int main(int argc, char **argv) {
                     }
                 }
 
-                float duRide = v * dt / fmaxf(t.speedScale(u), 0.5f);
+                float duRide = v * dt / fmaxf(rider.speedScale, 0.5f);
                 if (!std::isfinite(duRide)) duRide = 0.0f;
+                riddenDistance += v * dt;
                 u += fminf(duRide, 1.5f);
                 while (u > 13.0f && (int)t.cp.size() > 18) { t.popFront(); u -= 1.0f; }
             }
-            flushPos(); flushNeg();
-            if (bestPosSustained > -1.0e8f) { sustainedPosSum += bestPosSustained; ++sustainedPosSeeds; }
-            if (bestNegSustained <  1.0e8f) { sustainedNegSum += bestNegSustained; ++sustainedNegSeeds; }
+            // The current force lobe is incomplete when generation failed.
+            if (generationOK) flushSustained();
             float averageSpeed = speedN ? (float)(speedSum / speedN) : 0.0f;
             float averagePlannedSpeed = speedN ? (float)(plannedSpeedSum / speedN) : 0.0f;
-            bool pass = maxV <= 12.0f + 0.01f && minV >= -6.5f - 0.01f &&
-                        longestLowRun <= 240;
-            printf("seed%2d  vert [%+6.2f @u%.0f/tag%d, %+6.2f @u%.0f/tag%d]  sustained[%+.2f/%+.2f]  |lat|max=%5.2f @u%.0f/tag%d  speed[avg%3.0f plan%3.0f peak%3.0f min%3.0f kmh low=%4.1fs]  %s\n",
+            if (generationOK) {
+                seedAverageKmh.push_back(averageSpeed * 3.6f);
+                allSpeedSum += speedSum;
+                allSpeedN += speedN;
+            } else {
+                sustainedPosSum = sustainedPosSumBeforeSeed;
+                sustainedNegSum = sustainedNegSumBeforeSeed;
+                sustainedPosRuns = sustainedPosRunsBeforeSeed;
+                sustainedNegRuns = sustainedNegRunsBeforeSeed;
+                tamePosSum = tamePosSumBeforeSeed;
+                tameNegSum = tameNegSumBeforeSeed;
+                tamePosRuns = tamePosRunsBeforeSeed;
+                tameNegRuns = tameNegRunsBeforeSeed;
+                for (int tag = 0; tag < M_COUNT; ++tag) {
+                    sustainedPosByTag[tag] = sustainedPosByTagBeforeSeed[tag];
+                    sustainedNegByTag[tag] = sustainedNegByTagBeforeSeed[tag];
+                    sustainedPosTagRuns[tag] = sustainedPosTagRunsBeforeSeed[tag];
+                    sustainedNegTagRuns[tag] = sustainedNegTagRunsBeforeSeed[tag];
+                }
+                cadenceKm.resize(cadenceCountBeforeSeed);
+                emergencyBoosts = emergencyBoostsBeforeSeed;
+            }
+            bool hillEntryOK = minHillEntry >= Track::HILL_ENTRY_MIN &&
+                               maxHillEntry <= Track::HILL_ENTRY_MAX;
+            const bool continuityOK =
+                maxTangentStep <= V1_AUDIT_TANGENT_STEP_MAX_DEG + 0.001f &&
+                maxCurvatureJerk <= V1_AUDIT_CURVATURE_JERK_MAX + 0.0001f &&
+                maxRollRate <= V1_AUDIT_ROLL_RATE_MAX + 0.001f &&
+                maxRollAccel <= V1_AUDIT_ROLL_ACCEL_MAX + 0.001f;
+            bool pass = generationOK &&
+                        maxV <= 12.0f + 0.01f && minV >= -6.5f - 0.01f &&
+                        longestLowRun <= 240 && hillEntryOK && continuityOK;
+            printf("seed%2d  vert [%+6.2f @u%.0f/tag%d, %+6.2f @u%.0f/tag%d]  sustained[%+.2f/%+.2f]  |lat|max=%5.2f @u%.0f/tag%d  speed[avg%3.0f plan%3.0f peak%3.0f min%3.0f hill-entry>=%3.0f kmh low=%4.1fs]  %s\n",
                    seed, minV, minVU, (int)minVTag, maxV, maxVU, (int)maxVTag,
                    bestPosSustained > -1.0e8f ? bestPosSustained : 0.0f,
                    bestNegSustained <  1.0e8f ? bestNegSustained : 0.0f,
                    maxLat, maxLatU, (int)maxLatTag,
                    averageSpeed * 3.6f, averagePlannedSpeed * 3.6f,
                    peakSpeed * 3.6f, minMovingSpeed * 3.6f,
+                   minHillEntry < 1.0e8f ? minHillEntry * 3.6f : 0.0f,
                    longestLowRun / 120.0f, pass ? "PASS" : "FAIL");
+            printf("         continuity tangent=%.2fdeg@u%.0f curvature-jerk=%.4f/m2@u%.0f "
+                   "roll-rate=%.2fdeg/m@u%.0f roll-accel=%.2fdeg/m2@u%.0f  %s\n",
+                   maxTangentStep, maxTangentU, maxCurvatureJerk, maxCurvatureU,
+                   maxRollRate, maxRollRateU, maxRollAccel, maxRollAccelU,
+                   continuityOK ? "PASS" : "FAIL");
+            if (!hillEntryOK)
+                printf("  FAIL airtime-hill entry %.0f..%.0f km/h (contract %.0f..%.0f; first low at u%.0f)\n",
+                       minHillEntry * 3.6f, maxHillEntry * 3.6f,
+                       Track::HILL_ENTRY_MIN * 3.6f, Track::HILL_ENTRY_MAX * 3.6f,
+                       minHillEntryU);
             if (getenv("MC_FORCEDETAIL"))
-                printf("  detail TURN=%+.2f HELIX=%+.2f DIVE=%+.2f SCURVE=%+.2f LOOP=%+.2f\n",
+                printf("  detail TURN=%+.2f HELIX=%+.2f DIVE=%+.2f SCURVE=%+.2f LOOP=%+.2f HILLS=%+.2f..%+.2f BANKAIR=%+.2f..%+.2f\n",
                        tagPeak[M_TURN], tagPeak[M_HELIX], tagPeak[M_DIVE],
-                       tagPeak[M_SCURVE], tagPeak[M_LOOP]);
+                       tagPeak[M_SCURVE], tagPeak[M_LOOP], tagMin[M_HILLS],
+                       tagPeak[M_HILLS], tagMin[M_BANKAIR], tagPeak[M_BANKAIR]);
             if (getenv("MC_FORCEDETAIL")) {
                 printf("  speed-by-tag");
                 for (int q = 0; q < M_COUNT; ++q)
@@ -354,21 +803,97 @@ int main(int argc, char **argv) {
             }
             ok = ok && pass;
         }
-        float meanPosSustained = sustainedPosSeeds ? sustainedPosSum / sustainedPosSeeds : 0.0f;
-        float meanNegSustained = sustainedNegSeeds ? sustainedNegSum / sustainedNegSeeds : 0.0f;
-        printf("sustained intense-element mean: %+5.2fg positive (%d seeds), %+5.2fg negative (%d seeds)\n",
-               meanPosSustained, sustainedPosSeeds, meanNegSustained, sustainedNegSeeds);
-        if (seeds >= 8)
-            ok = ok && meanPosSustained >= 9.5f && meanNegSustained <= -4.8f;
+        float meanPosSustained = sustainedPosRuns ? sustainedPosSum / sustainedPosRuns : 0.0f;
+        float meanNegSustained = sustainedNegRuns ? sustainedNegSum / sustainedNegRuns : 0.0f;
+        printf("middle-50%% sustained intense-lobe mean: %+5.2fg positive (%d runs), %+5.2fg negative (%d runs)\n",
+               meanPosSustained, sustainedPosRuns, meanNegSustained, sustainedNegRuns);
+        printf("middle-50%% proportional tame-lobe mean: %+5.2fg positive (%d runs), %+5.2fg negative (%d runs)\n",
+               tamePosRuns ? tamePosSum / tamePosRuns : 0.0f, tamePosRuns,
+               tameNegRuns ? tameNegSum / tameNegRuns : 0.0f, tameNegRuns);
+        printf("sustained by tag:");
+        for (int tag = 0; tag < M_COUNT; ++tag) {
+            if (sustainedPosTagRuns[tag])
+                printf(" +%d=%.2f/%d", tag, sustainedPosByTag[tag] / sustainedPosTagRuns[tag],
+                       sustainedPosTagRuns[tag]);
+            if (sustainedNegTagRuns[tag])
+                printf(" -%d=%.2f/%d", tag, sustainedNegByTag[tag] / sustainedNegTagRuns[tag],
+                       sustainedNegTagRuns[tag]);
+        }
+        printf("\n");
+        printf("sustained target: approximately +10/-5g (acceptance band +9.4/-4.5g)\n");
+        std::sort(seedAverageKmh.begin(), seedAverageKmh.end());
+        float aggregateKmh = allSpeedN ? (float)(3.6 * allSpeedSum / allSpeedN) : 0.0f;
+        size_t p95Index = seedAverageKmh.empty() ? 0 :
+            std::min(seedAverageKmh.size() - 1,
+                     (size_t)ceilf(0.95f * seedAverageKmh.size()) - 1);
+        float p95Kmh = seedAverageKmh.empty() ? 0.0f : seedAverageKmh[p95Index];
+        float cadenceMean = 0.0f;
+        for (float gap : cadenceKm) cadenceMean += gap;
+        if (!cadenceKm.empty()) cadenceMean /= cadenceKm.size();
+        printf("pacing aggregate: avg %.0f km/h, seed p95 %.0f km/h; normal boost cadence %.2f km (%zu gaps), emergency=%d\n",
+               aggregateKmh, p95Kmh, cadenceMean, cadenceKm.size(), emergencyBoosts);
+        printf("generation continuity: failures=%d  %s\n", generationFailures,
+               generationFailures == 0 ? "PASS" : "FAIL");
+        ok = ok && generationFailures == 0;
+        if (seeds >= 8) {
+            ok = ok && meanPosSustained >= 9.4f && meanNegSustained <= -4.5f;
+            ok = ok && aggregateKmh >= 230.0f && aggregateKmh <= 255.0f &&
+                 p95Kmh <= 275.0f;
+            if (!cadenceKm.empty())
+                ok = ok && cadenceMean >= 1.75f && cadenceMean <= 2.35f;
+        }
         return ok ? 0 : 1;
     }
 
+    static const char *const GEN_NM[M_COUNT] = {
+        "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP",
+        "LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE",
+        "STALL","DIVELOOP"
+    };
+    auto printGenerationFailure = [](const char *scope, int seed, unsigned lap,
+                                     const Track& t) {
+        const auto nameOf = [](int mode) {
+            return mode >= 0 && mode < M_COUNT ? GEN_NM[mode] : "NONE";
+        };
+        const float ground = groundTopAt(t.gpos.x,t.gpos.z);
+        printf("%s seed%d lap%u maxU=%.1f exhaustions=%u mode=%s remain=%d "
+               "pending=%d/%s route=%d attempt=%u genV=%.1fkm/h "
+               "pos=(%.1f,%.1f,%.1f) ground=%.1f clearance=%.1f "
+               "last=%s prev=%s slots=%d/%d inv=%d/%d\n",
+               scope,seed,lap,t.maxFinalU(),t.schedulerExhaustions,nameOf(t.mode),
+               t.remain,(int)t.pending.kind,nameOf(t.pending.element),
+               t.consecutiveRoutingRuns,(unsigned)t.pending.routeAttempts,t.genV*3.6f,
+               t.gpos.x,t.gpos.y,t.gpos.z,ground,t.gpos.y-ground,
+               nameOf(t.lastElem),nameOf(t.prevElem),t.elems,t.elemLimit,
+               t.hardInvCount,Track::INVERSION_BUDGET);
+        const SegMode candidate[] = {M_HILLS,M_TURN,M_DIP,M_SCURVE,M_DIVE,
+            M_BANKAIR,M_WAVE,M_HELIX,M_LOOP,M_ROLL,M_IMMEL,M_DIVELOOP,M_STALL};
+        printf("%s lap candidates count/soft[eligible]:",scope);
+        for (SegMode m : candidate) {
+            const bool inv = Track::isBudgetInversion(m);
+            if (inv)
+                printf(" %s=%d[%c]",nameOf(m),t.lapAuthoredCount[m],
+                       t.eligibleNoVariety(m)?'+':'-');
+            else
+                printf(" %s=%d/%d[%c]",nameOf(m),t.lapAuthoredCount[m],
+                       Track::elementRule(m).softMax,t.eligibleNoVariety(m)?'+':'-');
+        }
+        printf("\n");
+    };
+
     if (argc > 2 && TextIsEqual(argv[1], "--exporttrack")) {
-        if (argc > 3) g_rng = (uint32_t)atoi(argv[3]) * 2654435761u | 1u;
+        int exportSeed = argc > 3 ? atoi(argv[3]) : 0;
+        if (argc > 3) g_rng = (uint32_t)exportSeed * 2654435761u | 1u;
         if (argc > 4) DRAG       = (float)atof(argv[4]);
         if (argc > 5) BOOST_TRIG = (float)atof(argv[5]);
         Track trk; trk.reset();
         trk.ensureFinalizedAhead(479.0f);
+        if (trk.schedulerExhaustions != 0 || trk.maxFinalU() + 0.001f < 479.0f) {
+            printGenerationFailure("EXPORTTRACK: GENERATION FAIL",exportSeed,
+                                   trk.completedLapSerial+1,trk);
+            printf("EXPORTTRACK: refusing to write a partial route\n");
+            return 1;
+        }
         int finalN = trk.finalizedPointCount();
         FILE* fp = fopen(argv[2], "w");
         if (!fp) { printf("EXPORTTRACK: cannot open %s\n", argv[2]); return 1; }
@@ -378,150 +903,132 @@ int main(int argc, char **argv) {
                     p.x, p.y, p.z, u.x, u.y, u.z, (int)trk.kind[i]);
         }
         fclose(fp);
-        printf("EXPORTTRACK: wrote %d finalized points to %s\n", finalN, argv[2]);
+        printf("EXPORTTRACK: wrote %d finalized points to %s; mode=%d remain=%d "
+               "elems=%d/%d pending=%d/%d conn=%d pos=(%.1f,%.1f,%.1f) "
+               "dy=%.3f curv=%.3f next=%d\n",
+               finalN, argv[2], (int)trk.mode, trk.remain, trk.elems,
+               trk.elemLimit, (int)trk.pending.kind, (int)trk.pending.element,
+               trk.connLen,
+               trk.gpos.x, trk.gpos.y, trk.gpos.z, trk.genPrevDy,
+               trk.genPrevCurv, trk.nextModePending ? 1 : 0);
         return 0;
     }
 
-    // GEOMETRY GROUND-TRUTH: dump the actual built track's vertical profile per element instance
-    // (vertical delta = how much the element ACTUALLY goes up/down, clearance above terrain, and
-    // horizontal span) plus an SVG side-view. This is the "run a side view" check -- it measures
-    // the SHAPE, not the felt-g, so a flattened airtime hill or a 20 m ground float shows up plainly.
-    if (argc > 1 && TextIsEqual(argv[1], "--profile")) {
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        int seed = (argc > 2) ? atoi(argv[2]) : 1;
-        g_rng = (uint32_t)seed * 2654435761u | 1u;
-        Track t; t.reset();
-        t.ensureFinalizedAhead(459.0f);
-        int n = t.finalizedPointCount();
-        std::vector<float> dist(n, 0.0f), terr(n, 0.0f);
-        float maxY = -1e9f, minY = 1e9f, maxD = 0.0f;
-        for (int k = 0; k < n; k++) {
-            if (k) { float dx = t.cp[k].x - t.cp[k-1].x, dz = t.cp[k].z - t.cp[k-1].z; dist[k] = dist[k-1] + sqrtf(dx*dx+dz*dz); }
-            terr[k] = groundTopAt(t.cp[k].x, t.cp[k].z);
-            maxY = fmaxf(maxY, fmaxf(t.cp[k].y, terr[k])); minY = fminf(minY, fminf(t.cp[k].y, terr[k])); maxD = dist[k];
-        }
-        printf("[profile] seed %d: %d cps, %.0f m long\n", seed, n, maxD);
-        printf("  %-4s %-9s %6s %7s %7s %7s %7s %7s\n", "cp", "elem", "dist", "vDelta", "net", "clrMin", "clrMax", "hSpan");
-        int i = 0, tunnels = 0, onGround = 0;
-        while (i < n) {
-            int j = i; unsigned char kd = t.kind[i]; if (kd >= 25) kd = 0;
-            while (j < n && t.kind[j] == kd) j++;
-            float ymin = 1e9f, ymax = -1e9f, clrmin = 1e9f, clrmax = -1e9f;
-            for (int k = i; k < j; k++) { float clr = t.cp[k].y - terr[k]; ymin = fminf(ymin, t.cp[k].y); ymax = fmaxf(ymax, t.cp[k].y); clrmin = fminf(clrmin, clr); clrmax = fmaxf(clrmax, clr); }
-            if (clrmin < 0.0f) tunnels++;
-            if (clrmin < 6.0f) onGround++;
-            float net = t.cp[j-1].y - t.cp[i > 0 ? i-1 : i].y;
-            printf("  %-4d %-9s %6.0f %7.1f %7.1f %7.1f %7.1f %7.1f\n", i, NM[kd], dist[i], ymax - ymin, net, clrmin, clrmax, dist[j-1] - dist[i]);
-            i = j;
-        }
-        printf("  --- instances that touch near-ground (clr<6m): %d ;  that tunnel (clr<0): %d ---\n", onGround, tunnels);
-        // SVG side-view (equal X/Y scale so slopes read true): terrain filled + track colored by element.
-        float W = 1800.0f, H = 620.0f, pad = 30.0f;
-        float s = fminf((W - 2*pad) / fmaxf(maxD, 1.0f), (H - 2*pad) / fmaxf(maxY - minY, 1.0f));
-        char path[256]; snprintf(path, sizeof path, "profile_seed%d.svg", seed);
-        FILE* f = fopen(path, "w");
-        if (f) {
-            #define PX(d) (pad + (d) * s)
-            #define PY(y) (H - pad - ((y) - minY) * s)
-            fprintf(f, "<svg xmlns='http://www.w3.org/2000/svg' width='1800' height='620' viewBox='0 0 1800 620'>");
-            fprintf(f, "<rect width='1800' height='620' fill='#0b1020'/>");
-            fprintf(f, "<polygon fill='#2a3b1e' stroke='#4a6b30' stroke-width='1' points='");
-            for (int k = 0; k < n; k++) fprintf(f, "%.1f,%.1f ", PX(dist[k]), PY(terr[k]));
-            fprintf(f, "%.1f,%.1f %.1f,%.1f'/>", PX(maxD), (double)(H-pad), PX(0.0f), (double)(H-pad));
-            for (int k = 1; k < n; k++) {
-                unsigned char kd = t.kind[k]; if (kd >= 25) kd = 0;
-                const char* col = "#7fd0ff";
-                if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE) col="#ffd24a";
-                else if (kd==M_DROP||kd==M_DIP) col="#ff6b6b";
-                else if (kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST) col="#9aa0a6";
-                else if (kd==M_LOOP||kd==M_IMMEL||kd==M_COBRA||kd==M_DIVELOOP||kd==M_ROLL||kd==M_PRETZEL||kd==M_HEARTLINE) col="#c77dff";
-                else if (kd==M_HELIX) col="#4ade80";
-                else if (kd==M_TURN||kd==M_SCURVE||kd==M_DIVE||kd==M_WINGOVER) col="#ff9e64";
-                fprintf(f, "<line x1='%.1f' y1='%.1f' x2='%.1f' y2='%.1f' stroke='%s' stroke-width='2.5'/>",
-                        PX(dist[k-1]), PY(t.cp[k-1].y), PX(dist[k]), PY(t.cp[k].y), col);
-            }
-            fprintf(f, "<text x='34' y='24' fill='#cfe' font-family='monospace' font-size='14'>seed %d  len %.0fm  band %.0f-%.0fm  scale 1:1  (yellow=airtime red=drop green=helix purple=inversion orange=turn grey=powered)</text>",
-                    seed, maxD, minY, maxY);
-            fprintf(f, "</svg>");
-            #undef PX
-            #undef PY
-            fclose(f);
-            printf("  wrote %s\n", path);
-        }
-        return 0;
-    }
-
-    // GENERATION-ONLY occurrence census (battery: NO physics sim, no felt-g pipeline). Rolls the
-    // same streaming generator the live ride uses (genPoint + popFront window) for 3 laps x N seeds
-    // and counts element-family OCCURRENCES (maximal same-kind runs) per lap: the >=1/lap quota
-    // families and V1 diagnostic counters. This is the
-    // acceptance harness for the element-occurrence rework. Kept immediately before --audit.
+    // Three generated laps per seed. Mix is report-only; physical validity
+    // and dead element implementations are gates.
     if (argc > 1 && TextIsEqual(argv[1], "--census")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 8;
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        long setInv[M_COUNT]; for (int i = 0; i < M_COUNT; i++) setInv[i] = 0;   // seed-set inversion totals for the no-type-over-50% gate
-        int  laps = 0, invRange = 0;
-        int  hardQuotaMiss = 0, terrainQuotaMiss = 0;
+        const int invType[] = {M_ROLL,M_LOOP,M_IMMEL,M_DIVELOOP,M_STALL};
+        long setType[M_COUNT] = {};
+        int laps = 0, invBudgetMiss = 0, subtypeRepeat = 0;
+        int inversionSpacingMiss = 0, helixGeometryMiss = 0;
         for (int sd = 1; sd <= seeds; sd++) {
             g_rng = (uint32_t)sd * 2654435761u | 1u;
             Track t; t.reset();
             const int keep = 64;
-            int cnt[M_COUNT]; for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;   // current-lap per-kind run counts
-            int lap = 0, prevKind = -1; long processed = 0, guard = 0;
+            unsigned seenSerial = 0; long guard = 0;
+            int observed[M_COUNT];
+            for (int i = 0; i < M_COUNT; ++i) observed[i] = t.lapElemCount[i];
+            bool sawInversion = false, lapSpacingBad = false;
+            int nonInvAtLastInversion = 0;
             clock_t lapClk = clock();
-            while (lap <= 3 && guard < 400000) {
+            while (seenSerial < 3 && guard < 400000) {
                 guard++;
-                while (t.base + (long)t.cp.size() <= processed) t.genPoint();
-                int nk = t.kind[(int)(processed - t.base)];
-                if (nk != prevKind) {   // a maximal same-kind run = one element occurrence
-                    if (nk == M_LAUNCH) {   // a LAUNCH run opens a lap; flush the one that just closed
-                        if (lap >= 1) {
-                            int inv  = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
-                            int bank = cnt[M_WAVE]+cnt[M_BANKAIR]+cnt[M_STENGEL];   // banked-airtime group = one family
-                            double ms = (double)(clock()-lapClk)*1000.0/CLOCKS_PER_SEC;
-                            printf("[census] seed%d lap%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d tot=%d} cliffdive=%d quota{HILLS=%d TURN=%d HELIX=%d DIP=%d BANKAIR=%d} tophat=%d other{SCURVE=%d WAVE=%d STENGEL=%d} ms/lap=%.1f\n",
-                                   sd, lap, cnt[M_ROLL],cnt[M_LOOP],cnt[M_IMMEL],cnt[M_DIVELOOP],cnt[M_STALL], inv,
-                                   cnt[M_CLIFFDIVE], cnt[M_HILLS],cnt[M_TURN],cnt[M_HELIX],cnt[M_DIP],bank, cnt[M_CLIMB],
-                                   cnt[M_SCURVE],cnt[M_WAVE],cnt[M_STENGEL], ms);
-                            laps++;
-                            if (inv < 2 || inv > 4) { invRange++; printf("[census]   WARN seed%d lap%d inversions=%d OUT OF [2,4]\n", sd, lap, inv); }
-                            // CLIFFDIVE is intentionally disabled until terrain can qualify a real cliff site.
-                            bool hardMiss = cnt[M_HILLS] < 1 || cnt[M_TURN] < 1;
-                            bool terrainMiss = cnt[M_HELIX] < 1 || cnt[M_DIP] < 1 || bank < 1;
-                            if (hardMiss) hardQuotaMiss++;
-                            if (terrainMiss) terrainQuotaMiss++;
-                            if (hardMiss || terrainMiss)
-                                printf("[census]   %s seed%d lap%d unmet quota:%s%s%s%s%s\n",
-                                       "WARN", sd, lap,
-                                       cnt[M_HILLS]<1?" HILLS":"", cnt[M_TURN]<1?" TURN":"", cnt[M_HELIX]<1?" HELIX":"",
-                                       cnt[M_DIP]<1?" DIP":"", bank<1?" BANKAIR":"");
-                            setInv[M_LOOP]+=cnt[M_LOOP]; setInv[M_ROLL]+=cnt[M_ROLL]; setInv[M_IMMEL]+=cnt[M_IMMEL];
-                            setInv[M_DIVELOOP]+=cnt[M_DIVELOOP]; setInv[M_STALL]+=cnt[M_STALL];
-                            if (lap == 3) { prevKind = nk; break; }
-                        }
-                        lap++;
-                        for (int i = 0; i < M_COUNT; i++) cnt[i] = 0;
-                        lapClk = clock();
-                    }
-                    if (lap >= 1) cnt[nk]++;
-                    prevKind = nk;
+                if (!t.genPoint()) {
+                    printGenerationFailure("[census] GENERATION FAIL",sd,
+                                           seenSerial+1,t);
+                    break;
                 }
-                processed++;
-                while ((int)t.cp.size() > keep && t.base < processed) t.popFront();
+
+                const bool lapClosed = t.completedLapSerial > seenSerial;
+                if (!lapClosed) {
+                    int invBefore = 0, invNow = 0, nonInvBefore = 0, nonInvNow = 0;
+                    for (int i = 0; i < M_COUNT; ++i) {
+                        if (Track::isBudgetInversion((SegMode)i)) {
+                            invBefore += observed[i]; invNow += t.lapElemCount[i];
+                        } else {
+                            nonInvBefore += observed[i]; nonInvNow += t.lapElemCount[i];
+                        }
+                    }
+                    const int newInv = invNow - invBefore;
+                    const int newNonInv = nonInvNow - nonInvBefore;
+                    if (newInv > 0) {
+                        // A zero-change interval proves adjacency. If both
+                        // classes changed in one generator call, their order is
+                        // not observable here and this audit does not guess.
+                        if (sawInversion && nonInvBefore <= nonInvAtLastInversion &&
+                            newNonInv == 0)
+                            lapSpacingBad = true;
+                        if (newInv > 1 && newNonInv == 0) lapSpacingBad = true;
+                        sawInversion = true;
+                        nonInvAtLastInversion = nonInvNow;
+                    }
+                    for (int i = 0; i < M_COUNT; ++i) observed[i] = t.lapElemCount[i];
+                }
+
+                if (lapClosed) {
+                    seenSerial = t.completedLapSerial;
+                    const int *cnt = t.completedElemCount;
+                    int inv = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
+                    int total = 0; for (int i=0;i<M_COUNT;i++) total += cnt[i];
+                    double ms = (double)(clock()-lapClk)*1000.0/CLOCKS_PER_SEC;
+                    printf("[census] seed%d lap%u features=%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d total=%d spacing=%s} helix=%d/%d@%.1fm/rev tophat=%d ms/lap=%.1f\n",
+                           sd,seenSerial,total,cnt[M_ROLL],cnt[M_LOOP],cnt[M_IMMEL],
+                           cnt[M_DIVELOOP],cnt[M_STALL],inv,
+                           lapSpacingBad?"FAIL":"ok",cnt[M_HELIX],
+                           t.completedHelixGeometryCount,t.completedMinHelixDropPerRev,
+                           t.completedTopHatCount,ms);
+                    laps++;
+                    if (inv > 4) invBudgetMiss++;
+                    for (int i : invType)
+                        if (cnt[i] > 1) subtypeRepeat++;
+                    if (lapSpacingBad) inversionSpacingMiss++;
+                    if(t.completedBadHelixGeometry||
+                       cnt[M_HELIX]!=t.completedHelixGeometryCount) helixGeometryMiss++;
+                    for(int i=0;i<M_COUNT;i++) setType[i]+=cnt[i];
+                    for (int i = 0; i < M_COUNT; ++i) observed[i] = t.lapElemCount[i];
+                    sawInversion = lapSpacingBad = false;
+                    nonInvAtLastInversion = 0;
+                    lapClk=clock();
+                }
+                while ((int)t.cp.size() > keep) t.popFront();
+            }
+            if (seenSerial < 3) {
+                printf("[census] STUCK seed%d lap%u mode=%d remain=%d elems=%d/%d "
+                       "pos=(%.1f,%.1f,%.1f) dy=%.2f curv=%.2f conn=%d pending=%d\n",
+                       sd, seenSerial + 1, (int)t.mode, t.remain, t.elems, t.elemLimit,
+                       t.gpos.x, t.gpos.y, t.gpos.z, t.genPrevDy, t.genPrevCurv,
+                       t.connLen, (int)t.pending.element);
             }
         }
-        long grand = setInv[M_LOOP]+setInv[M_ROLL]+setInv[M_IMMEL]+setInv[M_DIVELOOP]+setInv[M_STALL];
-        int  typ[5] = {M_ROLL,M_LOOP,M_IMMEL,M_DIVELOOP,M_STALL}; long invMax = 0; int invMaxT = -1;
-        for (int i = 0; i < 5; i++) if (setInv[typ[i]] > invMax) { invMax = setInv[typ[i]]; invMaxT = typ[i]; }
+        long grand = setType[M_LOOP]+setType[M_ROLL]+setType[M_IMMEL]+
+                     setType[M_DIVELOOP]+setType[M_STALL];
         printf("[census] set inversion totals: ROLL=%ld LOOP=%ld IMMEL=%ld DIVELOOP=%ld STALL=%ld grand=%ld\n",
-               setInv[M_ROLL],setInv[M_LOOP],setInv[M_IMMEL],setInv[M_DIVELOOP],setInv[M_STALL], grand);
-        printf("[census] max-type %s = %.1f%% of set (gate <50%%); ROLL spawned=%s\n",
-               invMaxT>=0?NM[invMaxT]:"-", grand?100.0*(double)invMax/(double)grand:0.0, setInv[M_ROLL]>0?"yes":"NO");
-        bool dominance = grand > 0 && invMax * 2 >= grand;
+               setType[M_ROLL],setType[M_LOOP],setType[M_IMMEL],
+               setType[M_DIVELOOP],setType[M_STALL],grand);
         bool complete = laps == seeds * 3;
-        printf("[census] laps=%d invOutOfRange=%d hardQuotaMiss=%d terrainQuotaWarn=%d complete=%s\n",
-               laps, invRange, hardQuotaMiss, terrainQuotaMiss, complete ? "yes" : "NO");
-        return (invRange || dominance || setInv[M_ROLL] == 0 || !complete) ? 1 : 0;
+        long totalFeatures=0,bankedFeatures=0,airFeatures=0;
+        for(int i=0;i<M_COUNT;i++) totalFeatures+=setType[i];
+        for(int i:{M_TURN,M_HELIX,M_SCURVE,M_DIVE,M_BANKAIR,M_WAVE}) bankedFeatures+=setType[i];
+        for(int i:{M_HILLS,M_BANKAIR,M_WAVE}) airFeatures+=setType[i];
+        printf("[census] family share: banked=%.1f%% airtime=%.1f%% features=%ld\n",
+               totalFeatures?100.0*bankedFeatures/totalFeatures:0.0,
+               totalFeatures?100.0*airFeatures/totalFeatures:0.0,totalFeatures);
+        printf("[census] observed mix (report only):");
+        for (int i=0;i<M_COUNT;i++) if (setType[i])
+            printf(" %s=%ld(%.1f%%)",GEN_NM[i],setType[i],
+                   totalFeatures?100.0*setType[i]/totalFeatures:0.0);
+        printf("\n");
+        int deadSubtype = 0;
+        if (seeds > 1) for (int i : invType) if (setType[i] == 0) {
+            printf("[census] DEAD enabled inversion subtype: %s\n", GEN_NM[i]);
+            deadSubtype++;
+        }
+        printf("[census] laps=%d invOver4=%d subtypeRepeat=%d inversionSpacing=%d helixGeometryMiss=%d deadSubtype=%d complete=%s\n",
+               laps,invBudgetMiss,subtypeRepeat,inversionSpacingMiss,
+               helixGeometryMiss,deadSubtype,complete?"yes":"NO");
+        return (invBudgetMiss||subtypeRepeat||inversionSpacingMiss||helixGeometryMiss||
+                deadSubtype||!complete)?1:0;
     }
 
     if (argc > 1 && TextIsEqual(argv[1], "--audit")) {
@@ -537,6 +1044,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && TextIsEqual(argv[1], "--jointaudit")) {
         int seeds = argc > 2 ? Clamp(atoi(argv[2]), 1, 64) : 8;
         constexpr float eps = 0.0001f;
+        constexpr float derivativeProbe = 0.05f;
         constexpr float railOffset = 0.55f;
         bool ok = true;
         printf("=== V1 rendered-rail joint audit (%d seeds, +/-%.4f control units, gauge %.2fm) ===\n",
@@ -545,10 +1053,18 @@ int main(int argc, char **argv) {
             g_rng = (uint32_t)seed * UINT32_C(2654435761) | UINT32_C(1);
             Track t; t.reset();
             t.ensureFinalizedAhead(470.0f);
+            if (t.schedulerExhaustions != 0 || t.maxFinalU() + 0.001f < 470.0f) {
+                printf("seed%2d GENERATION FAIL maxU=%.1f exhaustions=%u\n",
+                       seed, t.maxFinalU(), t.schedulerExhaustions);
+                ok = false;
+                continue;
+            }
             float maxGap = 0.0f, maxRawGap = 0.0f, maxRailGap = 0.0f;
             float maxTan = 0.0f, maxUp = 0.0f, minGauge = 1.0e9f, maxGauge = 0.0f;
+            float maxCurvatureJerk = 0.0f, maxRollRate = 0.0f, maxRollAccel = 0.0f;
             int gapAt = -1, rawGapAt = -1, railGapAt = -1;
             int tanAt = -1, upAt = -1, joints = 0;
+            int curvatureAt = -1, rollRateAt = -1, rollAccelAt = -1;
             unsigned char gapFrom=0, gapTo=0, tanFrom=0, tanTo=0, upFrom=0, upTo=0;
             for (int q = 2; q < (int)t.maxFinalU() - 2; ++q) {
                 unsigned char leftTag = t.tagAt(q - eps);
@@ -567,6 +1083,30 @@ int main(int argc, char **argv) {
                                                                t.tangent(q + eps)), -1.0f, 1.0f)) / DEG2RAD;
                 float upAngle = acosf(Clamp(Vector3DotProduct(t.upAt(q - eps),
                                                               t.upAt(q + eps)), -1.0f, 1.0f)) / DEG2RAD;
+                const float left0U = q - derivativeProbe;
+                const float left1U = q - eps;
+                const float right0U = q + eps;
+                const float right1U = q + derivativeProbe;
+                const Vector3 leftT0 = t.tangent(left0U), leftT1 = t.tangent(left1U);
+                const Vector3 rightT0 = t.tangent(right0U), rightT1 = t.tangent(right1U);
+                const float leftDs = fmaxf(Vector3Distance(t.pos(left0U), t.pos(left1U)),
+                                           1.0e-4f);
+                const float rightDs = fmaxf(Vector3Distance(t.pos(right0U), t.pos(right1U)),
+                                            1.0e-4f);
+                const Vector3 leftCurvature = Vector3Scale(
+                    Vector3Subtract(leftT1, leftT0), 1.0f / leftDs);
+                const Vector3 rightCurvature = Vector3Scale(
+                    Vector3Subtract(rightT1, rightT0), 1.0f / rightDs);
+                const float centreDistance = fmaxf(0.5f * (leftDs + rightDs), 1.0e-4f);
+                const float curvatureJerk = Vector3Length(Vector3Subtract(
+                    rightCurvature, leftCurvature)) / centreDistance;
+                const float leftRollRate = v1AuditMaterialRollDelta(
+                    leftT0, t.upAt(left0U), leftT1, t.upAt(left1U)) / leftDs;
+                const float rightRollRate = v1AuditMaterialRollDelta(
+                    rightT0, t.upAt(right0U), rightT1, t.upAt(right1U)) / rightDs;
+                const float rollRate = fmaxf(fabsf(leftRollRate), fabsf(rightRollRate));
+                const float rollAccel = fabsf(rightRollRate - leftRollRate) /
+                                        centreDistance;
                 auto railPair = [&](float u, bool raw) {
                     Vector3 p = raw ? t.rawPos(u) : t.pos(u);
                     Vector3 f;
@@ -601,156 +1141,49 @@ int main(int argc, char **argv) {
                 if (railGap > maxRailGap) { maxRailGap = railGap; railGapAt = q; }
                 if (tanAngle > maxTan) { maxTan = tanAngle; tanAt = q; tanFrom=leftTag; tanTo=rightTag; }
                 if (upAngle > maxUp) { maxUp = upAngle; upAt = q; upFrom=leftTag; upTo=rightTag; }
+                if (curvatureJerk > maxCurvatureJerk) {
+                    maxCurvatureJerk = curvatureJerk; curvatureAt = q;
+                }
+                if (rollRate > maxRollRate) { maxRollRate = rollRate; rollRateAt = q; }
+                if (rollAccel > maxRollAccel) { maxRollAccel = rollAccel; rollAccelAt = q; }
             }
             bool pass = maxGap <= 0.05f && maxRailGap <= 0.06f &&
                         minGauge >= 1.095f && maxGauge <= 1.105f &&
-                        maxTan <= 5.0f && maxUp <= 10.0f;
-            printf("seed%2d joints=%d centre=%.3fm@%d(%d>%d) raw=%.3fm@%d rail=%.3fm@%d gauge=%.3f..%.3f tangent=%.1fdeg@%d(%d>%d) roll=%.1fdeg@%d(%d>%d) %s\n",
+                        maxTan <= 5.0f && maxUp <= 10.0f &&
+                        maxCurvatureJerk <= V1_AUDIT_CURVATURE_JERK_MAX &&
+                        maxRollRate <= V1_AUDIT_ROLL_RATE_MAX &&
+                        maxRollAccel <= V1_AUDIT_ROLL_ACCEL_MAX;
+            printf("seed%2d joints=%d centre=%.3fm@%d(%d>%d) raw=%.3fm@%d rail=%.3fm@%d "
+                   "gauge=%.3f..%.3f tangent=%.1fdeg@%d(%d>%d) roll=%.1fdeg@%d(%d>%d) "
+                   "curvature-jerk=%.4f/m2@%d roll-rate=%.2fdeg/m@%d "
+                   "roll-accel=%.2fdeg/m2@%d %s\n",
                    seed, joints, maxGap, gapAt, gapFrom, gapTo, maxRawGap, rawGapAt,
                    maxRailGap, railGapAt, minGauge, maxGauge,
                    maxTan, tanAt, tanFrom, tanTo, maxUp, upAt, upFrom, upTo,
+                   maxCurvatureJerk, curvatureAt, maxRollRate, rollRateAt,
+                   maxRollAccel, rollAccelAt,
                    pass ? "PASS" : "FAIL");
             ok = ok && pass;
         }
         return ok ? 0 : 1;
     }
 
-    if (argc > 1 && TextIsEqual(argv[1], "--rollingdump")) {
-        // ROLLING CP-STREAM DUMP. The static instruments (--audit's MC_DUMP_ELEM) build one frozen
-        // 470-cp window per seed, so they only ever see the ride's opening and NEVER the ~2/3-lap
-        // signature CLIFFDIVE or any later-lap element. This drives the track exactly the way the live
-        // game does -- reset(), then ensureAhead()/popFront() to roll a small window forward while the
-        // physics integrator advances u -- and emits every control point EXACTLY ONCE, keyed by its
-        // GLOBAL running index (t.base + k), in the same [dump] line format. Because it actually laps
-        // the ride via the station cycle, the stream contains the CLIFFDIVE and every later-lap cp.
-        const char* NM[] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA","WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE"};
-        int seeds    = (argc > 2) ? atoi(argv[2]) : 2;
-        int rollLaps = getenv("MC_ROLL_LAPS") ? atoi(getenv("MC_ROLL_LAPS")) : 3;
-        float stationEvery = getenv("MC_ROLL_STATION_S") ? (float)atof(getenv("MC_ROLL_STATION_S")) : 205.0f;
-
-        // One control point -> one [dump] line, in the exact MC_DUMP_ELEM field layout (seedN cpK kind
-        // pos heading dy terr roll v). Computed at an INTERIOR local k (needs cp[k-1] and cp[k+1]) so
-        // heading/dy/roll are byte-identical to the static dump for any shared global index.
-        auto dumpCP = [&](Track& t, int sd, int k, long gidx) {
-            Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
-            float dx = p1.x - p0.x, dz = p1.z - p0.z;
-            float heading = atan2f(dx, dz) * 180.0f / PI;
-            float roll = 0.0f;
-            {
-                Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
-                Vector3 side = Vector3CrossProduct(Vector3{0,1,0}, tanv);
-                float sl = Vector3Length(side);
-                if (sl > 1e-4f) {
-                    side = Vector3Scale(side, 1.0f/sl);
-                    Vector3 flatUp = Vector3CrossProduct(tanv, side);
-                    roll = atan2f(Vector3DotProduct(t.up[k], side),
-                                  Vector3DotProduct(t.up[k], flatUp)) * 180.0f / PI;
-                }
-            }
-            printf("[dump] seed%d cp%ld kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f dy=%+.2f terr=%.1f roll=%+.1f v=%.1f\n",
-                   sd, gidx, NM[t.kind[k]], p1.x, p1.y, p1.z, heading,
-                   p1.y - p0.y, groundTopAt(p1.x, p1.z), roll,
-                   k < (int)t.gvlog.size() ? t.gvlog[k] : 0.0f);
-        };
-
-        // MC_ROLL_STATIC: reference mode -- dump the SAME static 470-cp window --audit builds (no
-        // station cycle, no popFront, base stays 0 so cpK == k). A downstream diff of this against the
-        // rolling stream's leading cps proves the prefix is identical (same seed => same RNG stream).
-        if (getenv("MC_ROLL_STATIC")) {
-            for (int sd = 1; sd <= seeds; sd++) {
-                g_rng = (uint32_t)sd * 2654435761u | 1u;
-                Track t; t.reset();
-                while ((int)t.cp.size() < 470) t.ensureAhead((float)t.cp.size() + 8.0f);
-                int n = (int)t.cp.size();
-                for (int k = 1; k < n - 1; k++) dumpCP(t, sd, k, (long)k);
-                printf("[dump] --- seed %d static-window end ---\n", sd);
-            }
-            return 0;
-        }
-
-        for (int sd = 1; sd <= seeds; sd++) {
-            g_rng = (uint32_t)sd * 2654435761u | 1u;
-            Track t; t.reset();
-            clock_t t0 = clock();
-
-            float u = 0.5f, v = 12.0f;
-            float sinceStation = 0.0f;
-            long  nextDump     = 1;   // next GLOBAL index to emit (skip cp0, the launch anchor, exactly as the static k=1 start)
-            int   lapCount     = 0;   // STN runs seen so far == laps completed
-            int   prevDumpKind = -1;  // kind of the previously emitted cp, for STN-run edge detection
-            const int FRAME_CAP = 500000;
-            // Number of newer points required before a control point crosses
-            // Track's authoritative publication fence (the delayed terrain
-            // floor, not the shorter relaxation window, is the last writer).
-            const long SETTLE = Track::ADAPTIVE_LAG - 1;
-            int f = 0;
-            for (; f < FRAME_CAP && lapCount < rollLaps; f++) {
-                float dt = 1.0f / 60.0f;
-                t.ensureFinalizedAhead(u + 34);
-                float slope = t.tangent(u).y;
-                unsigned char tg = t.tagAt(u);
-                v = integrateRideSpeed(v, slope, tg, t.driveAt(u), dt);
-
-                // Station cadence: request a platform stop every stationEvery seconds (live-loop
-                // behaviour). The generator lays the STN run at the next low-terrain flat; that starts
-                // a fresh lap, re-arming the once-per-lap CLIFFDIVE + inversion budget.
-                sinceStation += dt;
-                if (sinceStation > stationEvery && !t.stationPending && !t.stationActive)
-                    t.stationPending = true;
-
-                // Decelerate into the platform and re-dispatch (same idiom as --stationtest), so the
-                // ride actually laps instead of leaving stationActive latched forever.
-                if (t.stationActive && t.tagAt(u) == M_STATION) {
-                    Vector3 Tn = t.tangent(u);
-                    Vector3 Th2 = { Tn.x, 0, Tn.z };
-                    float Tl = sqrtf(Th2.x*Th2.x + Th2.z*Th2.z);
-                    if (Tl > 1e-3f) { Th2.x /= Tl; Th2.z /= Tl; }
-                    Vector3 Pp = t.pos(u);
-                    float d  = (t.stationStop.x-Pp.x)*Th2.x + (t.stationStop.z-Pp.z)*Th2.z;
-                    float d3 = Vector3Distance(t.stationStop, Pp);
-                    if (d > 2.0f && d3 > 2.0f) { float vm = sqrtf(2*22*d + 1); if (v > vm) v = vm; }
-                    else { v = 12.0f; sinceStation = 0.0f; t.stationActive = false; }
-                }
-
-                float du = v * dt / fmaxf(t.speedScale(u), 0.5f);
-                if (!(du == du)) du = 0;
-                u += fminf(du, 1.5f);
-
-                // Emit every SETTLED interior cp exactly once, in global-index order, BEFORE popping the
-                // front -- so nothing is popped undumped and each field matches the static dump. The
-                // SETTLE margin holds a cp back until the trailing smoothing sweep can no longer change
-                // it (also guarantees cp[k-1]/cp[k+1] exist for heading/dy/roll).
-                while (nextDump <= t.base + (long)t.cp.size() - 1 - SETTLE) {
-                    int k = (int)(nextDump - t.base);
-                    if (k < 1) { nextDump++; continue; }   // only ever cp0 (the anchor); never dumped
-                    int kd = t.kind[k];
-                    if (kd == M_STATION && prevDumpKind != M_STATION) {
-                        lapCount++;
-                        printf("[dump] --- lap %d end ---\n", lapCount);
-                        if (lapCount >= rollLaps) break;   // stop AT the Nth station run's first cp
-                    }
-                    dumpCP(t, sd, k, nextDump);
-                    prevDumpKind = kd;
-                    nextDump++;
-                }
-
-                while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
-            }
-            double secs = (double)(clock() - t0) / CLOCKS_PER_SEC;
-            printf("[dump] --- seed %d done: laps=%d frames=%d dumped=%ld %.2fs ---\n",
-                   sd, lapCount, f, nextDump - 1, secs);
-        }
-        return 0;
-    }
-
     bool benchMode = (argc > 1 && TextIsEqual(argv[1], "--bench"));
 
     if (argc > 2 && TextIsEqual(argv[1], "--gtest")) {
-        static const char *GN[M_COUNT] = {
-            "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION","DIP","LAUNCH",
-            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA",
-            "WINGOVER","HEARTLINE","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
-        for (int t = 0; t < M_COUNT; t++) if (TextIsEqual(argv[2], GN[t])) gForceElem = t;
+        struct { const char *name; SegMode mode; } forceable[] = {
+            {"HILLS",M_HILLS}, {"TURN",M_TURN}, {"LOOP",M_LOOP},
+            {"ROLL",M_ROLL}, {"DIP",M_DIP}, {"HELIX",M_HELIX},
+            {"IMMEL",M_IMMEL}, {"SCURVE",M_SCURVE}, {"DIVE",M_DIVE},
+            {"BANKAIR",M_BANKAIR}, {"WAVE",M_WAVE}, {"STALL",M_STALL},
+            {"DIVELOOP",M_DIVELOOP}
+        };
+        for (const auto &entry : forceable)
+            if (TextIsEqual(argv[2], entry.name)) gForceElem = entry.mode;
+        if (gForceElem < 0) {
+            fprintf(stderr, "gtest: unsupported production element '%s'\n", argv[2]);
+            return 1;
+        }
         if (argc > 3) gForceSpeed = (float)atof(argv[3]);
         benchMode = true;
         printf("[gtest] forcing element=%s (%d) speed=%s\n",
@@ -763,12 +1196,17 @@ int main(int argc, char **argv) {
     if (elemShot) {
         struct { const char *name; int mode; } EM[] = {
             { "LOOP", M_LOOP }, { "ROLL", M_ROLL }, { "IMMEL", M_IMMEL }, { "STALL", M_STALL },
-            { "DIVELOOP", M_DIVELOOP }, { "COBRA", M_COBRA }, { "HEARTLINE", M_HEARTLINE },
-            { "HILLS", M_HILLS }, { "BANKAIR", M_BANKAIR }, { "DIP", M_DIP }, { "PRETZEL", M_PRETZEL },
-            { "STENGEL", M_STENGEL }, { "BANANA", M_BANANA }, { "HELIX", M_HELIX }, { "WINGOVER", M_WINGOVER },
+            { "DIVELOOP", M_DIVELOOP }, { "HILLS", M_HILLS },
+            { "BANKAIR", M_BANKAIR }, { "DIP", M_DIP }, { "HELIX", M_HELIX },
             { "TOPHAT", M_CLIMB }, { "TOP-HAT", M_CLIMB }, { "LAUNCH", M_CLIMB }, { "CLIMB", M_CLIMB },
             { "SPLASHDOWN", M_DIP },
+            { "TURN", M_TURN },
         };
+        if (TextIsEqual(argv[2], "HILLS-VALLEY")) {
+            elemShotElem = M_HILLS; elemShotName = "HILLS-VALLEY"; elemShotFocus = 1;
+        } else if (TextIsEqual(argv[2], "TURN-MID")) {
+            elemShotElem = M_TURN; elemShotName = "TURN-MID"; elemShotFocus = 2;
+        }
         for (auto &e : EM) if (TextIsEqual(argv[2], e.name)) { elemShotElem = e.mode; elemShotName = e.name; break; }
         if (elemShotElem < 0) { printf("elementshot: unknown element '%s'\n", argv[2]); return 1; }
         gForceElem = elemShotElem;
@@ -783,7 +1221,6 @@ int main(int argc, char **argv) {
             {"DIP", M_DIP}, {"LAUNCH", M_LAUNCH}, {"HELIX", M_HELIX}, {"BOOST", M_BOOST},
             {"IMMEL", M_IMMEL}, {"SCURVE", M_SCURVE}, {"DIVE", M_DIVE},
             {"BANKAIR", M_BANKAIR}, {"STALL", M_STALL}, {"DIVELOOP", M_DIVELOOP},
-            {"STENGEL", M_STENGEL}, {"CLIFFDIVE", M_CLIFFDIVE},
         };
         for (auto &e : JM) {
             if (TextIsEqual(argv[2], e.name)) { jointFrom = e.mode; jointFromName = e.name; }
@@ -799,19 +1236,31 @@ int main(int argc, char **argv) {
         printf("[jointshot] %s -> %s -> %s\n", jointFromName, jointToName, jointShotPath);
     }
     const bool captureShot = elemShot || jointShot;
-    g_rng = (shotMode || benchMode || rttestMode || cobraShot || captureShot) ? 1337u : ((uint32_t)time(NULL) | 1u);
+    g_rng = (shotMode || benchMode || rttestMode || captureShot)
+        ? 1337u : ((uint32_t)time(NULL) | 1u);
 
     if (elemShot && elemShotElem == M_HELIX)
         g_rng = 1337u * 2654435761u | 1u;
-    if (cobraShot && argc > 2) g_rng = (uint32_t)strtoul(argv[2], nullptr, 10);
 
     SetTraceLogLevel(LOG_WARNING);
 
+    // Audit captures use logical pixels.  Enabling macOS HiDPI here silently
+    // doubled a requested 3200x1800 image to a 6400x3600 4x-MSAA framebuffer,
+    // turning a diagnostic frame into seconds of GPU work and producing an
+    // image larger than the display.  The live game keeps Retina + MSAA;
+    // captures are bounded, native-resolution, and intentionally single-sample.
     SetConfigFlags(benchMode ? FLAG_WINDOW_HIDDEN
+                 : captureShot ? 0
                  : rttestMode ? (FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT)
-                             : (FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT));
-    int windowW = getenv("MC_CAPTURE_W") ? atoi(getenv("MC_CAPTURE_W")) : 1280;
-    int windowH = getenv("MC_CAPTURE_H") ? atoi(getenv("MC_CAPTURE_H")) : 720;
+                              : (FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT));
+    int windowW = getenv("MC_CAPTURE_W") ? atoi(getenv("MC_CAPTURE_W"))
+                                         : (captureShot ? 1600 : 1280);
+    int windowH = getenv("MC_CAPTURE_H") ? atoi(getenv("MC_CAPTURE_H"))
+                                         : (captureShot ? 900 : 720);
+    if (captureShot) {
+        windowW = Clamp(windowW, 960, 1920);
+        windowH = Clamp(windowH, 540, 1080);
+    }
     InitWindow(windowW, windowH, "VOXELCOASTER");
     SetExitKey(KEY_NULL);
     SetTargetFPS(120);
@@ -882,29 +1331,48 @@ int main(int argc, char **argv) {
 
     Track trk;
     trk.reset();
-    float captureStartU = 0.5f;
+    float captureStartU = Track::rideStartU;
     bool captureElemPreset = false;
     Vector3 captureElemPos{}, captureElemTangent{}, captureElemUp{};
     bool captureJointPreset = false;
     Vector3 captureJointPos{}, captureJointTangent{};
     if (captureShot && getenv("MC_CAPTURE_FAST")) {
         trk.ensureFinalizedAhead(520.0f);
+        if (trk.schedulerExhaustions != 0 || trk.maxFinalU() + 0.001f < 520.0f) {
+            printf("capture pre-generation failed at u=%.1f (exhaustions=%u)\n",
+                   trk.maxFinalU(), trk.schedulerExhaustions);
+            CloseAudioDevice();
+            CloseWindow();
+            return 1;
+        }
         if (elemShot) {
             float bestMetric = -1e30f;
-            for (float q = 0.5f; q <= trk.maxFinalU(); q += 0.25f) {
+            for (float q = Track::rideStartU; q <= trk.maxFinalU(); q += 0.25f) {
                 if (trk.tagAt(q) == (unsigned char)elemShotElem) {
+                    if (elemShotFocus &&
+                        (trk.tagAt(q - 0.75f) != (unsigned char)elemShotElem ||
+                         trk.tagAt(q + 0.75f) != (unsigned char)elemShotElem))
+                        continue;
                     Vector3 qp = trk.pos(q);
                     float alt = qp.y - groundTopAt(qp.x, qp.z);
                     float metric = alt;
+                    if (elemShotFocus == 1) {
+                        Vector3 before = trk.pos(q - 0.5f), after = trk.pos(q + 0.5f);
+                        if (qp.y > before.y || qp.y > after.y) continue;
+                        metric = -qp.y;
+                    } else if (elemShotFocus == 2) {
+                        metric = 1.0f - trk.upAt(q).y;
+                    }
                     switch (elemShotElem) {
-                        case M_LOOP: case M_ROLL: case M_IMMEL: case M_DIVELOOP:
-                        case M_COBRA: case M_PRETZEL: case M_WINGOVER:
-                        case M_HEARTLINE: case M_BANANA: case M_STALL:
+                        case M_LOOP: case M_ROLL: case M_IMMEL:
+                        case M_DIVELOOP: case M_STALL:
                             metric = -trk.upAt(q).y; break;
                         case M_DIP: case M_HELIX:
                             metric = -alt; break;
                         default: break;
                     }
+                    if (elemShotFocus == 1) metric = -qp.y;
+                    if (elemShotFocus == 2) metric = 1.0f - trk.upAt(q).y;
                     if (metric > bestMetric) {
                         bestMetric = metric;
                         captureStartU = q;
@@ -917,7 +1385,7 @@ int main(int argc, char **argv) {
             }
         } else if (jointShot) {
             float bestClearance = -1e30f;
-            for (float q = 0.5f; q + 0.25f <= trk.maxFinalU(); q += 0.25f) {
+            for (float q = Track::rideStartU; q + 0.25f <= trk.maxFinalU(); q += 0.25f) {
                 unsigned char a = trk.tagAt(q), b = trk.tagAt(q + 0.25f);
                 bool fromMatch = jointFrom == -2 || a == (unsigned char)jointFrom;
                 bool toMatch   = jointTo   == -2 || b == (unsigned char)jointTo;
@@ -926,7 +1394,7 @@ int main(int argc, char **argv) {
                     float clearance = jp.y - groundTopAt(jp.x, jp.z);
                     if (clearance > bestClearance) {
                         bestClearance = clearance;
-                        captureStartU = fmaxf(0.5f, q - 1.0f);
+                        captureStartU = fmaxf(Track::rideStartU, q - 1.0f);
                         captureJointPos = jp;
                         captureJointTangent = trk.tangent(q + 0.125f);
                         captureJointPreset = true;
@@ -948,31 +1416,26 @@ int main(int argc, char **argv) {
     std::vector<float> carveLo(carveW * carveW), carveHi(carveW * carveW), carveDeep(carveW * carveW);
 
     std::vector<float> forceTop(carveW * carveW);
-    std::vector<Vector3> waterCells;
-    waterCells.reserve((2 * TERRA_R + 1) * (2 * TERRA_R + 1) / 3);
-    std::shared_ptr<std::vector<Vector3>> pendingWaterCells;
-
     float u = captureStartU, v = 7.0f;
     float boost = 40.0f, score = 0;
     float simTime = 0, clackTimer = 0, whooshCD = 0, prevSlope = 0;
     unsigned char prevTag = 255;
 
-    float gVert = 1.0f, gLat = 0.0f, gVertMax = 1.0f, gVertMin = 1.0f;
+    float gVert = 1.0f, gLat = 0.0f, gLong = 0.0f;
+    float gVertMax = 1.0f, gVertMin = 1.0f;
 
     double gEAcc[M_COUNT] = {0}; double gEPk[M_COUNT] = {0}; long gECnt[M_COUNT] = {0};
     double gEvAcc[M_COUNT] = {0};
     double gEEdgePk[M_COUNT] = {0}; double gEIntPk[M_COUNT] = {0};
     bool  paused = false;
-    bool  dispatched = (shotMode || benchMode || rttestMode || cobraShot || captureShot);
+    bool  generationFault = false;
+    bool  dispatched = (shotMode || benchMode || rttestMode || captureShot);
     int   camMode = 0;
     Vector3 camSmooth = { 0, 10, -10 };
     bool  freeLook = false;
     float flYaw = 0, flPitch = 0;
     float fov = 78;
     int   frame = 0;
-    bool  cobraArmed = false;
-    float cobraPrevG = 1.0f;
-
     bool  elemArmed   = false;
     float elemBest    = -1e9f;
     int   elemBestAge = 0;
@@ -997,8 +1460,8 @@ int main(int argc, char **argv) {
         return uu < 0.06f ? 0.06f : uu;
     };
 
-    bool    onFoot    = !(shotMode || benchMode || rttestMode || cobraShot || captureShot);
-    bool    atStation = !(shotMode || benchMode || rttestMode || cobraShot || captureShot);
+    bool    onFoot    = !(shotMode || benchMode || rttestMode || captureShot);
+    bool    atStation = !(shotMode || benchMode || rttestMode || captureShot);
     bool    midStation = false;
     Vector3 curPlatPos = trk.startPos;
     float   curPlatYaw = trk.startYaw;
@@ -1039,14 +1502,13 @@ int main(int argc, char **argv) {
 
         double tFrame0 = GetTime();
 
-        // Poll in play + bench (no stall); block only in single-frame screenshot modes that
-        // need a fully built mesh at capture time.
-        gTerrainMesh.finish(shotMode || rttestMode || cobraShot || captureShot);
-        if (!gTerrainMesh.building && pendingWaterCells) {
-            waterCells.swap(*pendingWaterCells);
-            pendingWaterCells.reset();
-        }
-        float rawDt = (shotMode || benchMode || rttestMode || cobraShot || captureShot) ? (1.0f / 60.0f) : GetFrameTime();
+        // Always poll here. Screenshot/audit cameras used to synchronously join
+        // every recenter build at the top of the frame, turning audit playback
+        // into seconds per frame. The previous complete ring stays visible; the
+        // exact capture frame performs the one required blocking finish below.
+        gTerrainMesh.finish(false);
+        float rawDt = (shotMode || benchMode || rttestMode || captureShot)
+            ? (1.0f / 60.0f) : GetFrameTime();
         static float dtOverride = getenv("MC_DT") ? (float)atof(getenv("MC_DT")) : 0.0f;
         if (dtOverride > 0.0f) rawDt = dtOverride;  // streaming stress/verify: force per-frame sim step
         float dt = fminf(rawDt, 0.05f);
@@ -1077,12 +1539,13 @@ int main(int argc, char **argv) {
             // Join and discard it before mutating the route inputs, then force the new
             // route's terrain to become the next complete mesh.
             gTerrainMesh.reset();
-            pendingWaterCells.reset();
-            waterCells.clear();
             trk.reset();
             trackRenderCache.reset();
             trackRenderCache.update(trk, 0);
-            u = 0.5f; v = 7.0f; boost = 40; score = 0; gVertMax = 1.0f; gVertMin = 1.0f;
+            u = Track::rideStartU; v = 7.0f; boost = 40; score = 0;
+            generationFault = false;
+            gVert = gVertMax = gVertMin = 1.0f;
+            gLat = gLong = 0.0f;
             dispatched = false; simTime = 0;
             atStation = true; midStation = false;
             curPlatPos = trk.startPos; curPlatYaw = trk.startYaw;
@@ -1142,7 +1605,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        if ((cobraShot || captureShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
+        if ((captureShot || (!onFoot && IsKeyPressed(KEY_SPACE))) &&
             !dispatched && atStation && !paused) {
             dispatched = true; atStation = false; midStation = false; v = 12.0f; simTime = 0;
             sinceStation = 0;
@@ -1155,30 +1618,43 @@ int main(int argc, char **argv) {
         if (rttestMode && boost > 0 && frame > 8) boosting = true;
 
         bool chain = false;
+        float longitudinalG = 0.0f;
+        if (!paused) {
+            const float requiredU = u + 64.0f;
+            trk.ensureFinalizedAhead(requiredU);
+            if (trk.schedulerExhaustions != 0 ||
+                trk.maxFinalU() + 0.001f < requiredU) {
+                if (!generationFault)
+                    printf("GENERATION FAIL: ride paused at u=%.1f, finalized=%.1f, "
+                           "exhaustions=%u\n",
+                           u, trk.maxFinalU(), trk.schedulerExhaustions);
+                generationFault = true;
+                paused = true;
+            }
+        }
         if (!paused && !dispatched) {
             simTime += dt;
-            trk.ensureFinalizedAhead(u + 64);
             v = 0.0f;
         }
         if (!paused && dispatched) {
             simTime += dt;
-            trk.ensureFinalizedAhead(u + 64);
 
             Vector3 Tn = trk.tangent(u);
             float slope = Tn.y;
+            unsigned char tg = trk.tagAt(u);
+            unsigned char drive = trk.driveAt(u);
+            bool trackPowered = drive == 2 && (tg == M_LAUNCH || tg == M_BOOST);
 
+            float speedBeforePhysics = v;
             float acc = coastAcceleration(v, slope);
-            if (boosting) { acc += 10.0f; boost = fmaxf(0, boost - 30.0f * dt); }
+            bool manualBoostApplied = boosting && !trackPowered;
+            if (manualBoostApplied) {
+                acc += 10.0f;
+                boost = fmaxf(0, boost - 30.0f * dt);
+            }
             else            boost = fminf(100, boost + 4.0f * dt);
             if (braking)    acc -= 16.0f;
             v += acc * dt;
-
-            if (cobraShot) {
-                bool cobraNear = false;
-                for (float la = -1.0f; la <= 10.0f; la += 1.0f)
-                    if (trk.tagAt(u + la) == M_COBRA) { cobraNear = true; break; }
-                if (cobraNear && v > 24.0f) v = 24.0f;
-            }
 
             if (elemShot) {
                 bool near = false;
@@ -1188,11 +1664,26 @@ int main(int argc, char **argv) {
                 if (near && v > cap) v = cap;
             }
 
-            unsigned char tg = trk.tagAt(u);
-            unsigned char drive = trk.driveAt(u);
             bool onLift = drive == 1;
             chain = onLift && slope > 0.05f;
+            float driveTarget =
+                ((tg == M_LAUNCH || tg == M_BOOST) && drive == 2)
+                    ? V1_PROPULSION.targetSpeed : 0.0f;
+            bool automaticPropulsion = driveTarget > 0.0f && v < driveTarget;
             v = applyTrackDrive(v, tg, drive, slope, dt);
+            // A rider feels longitudinal load from propulsion/braking, not
+            // the ordinary gravity-driven speed change on a hill.  Use the
+            // complete physics-step delta only while an automatic launch/LSM
+            // is actively accelerating; this preserves the specified net
+            // 2x Do-Dodonpa load without showing a fake "launch G" on every
+            // descent. Manual boost and brake contribute their explicit
+            // commanded acceleration when no automatic drive owns the track.
+            if (automaticPropulsion)
+                longitudinalG = (v - speedBeforePhysics) / fmaxf(dt * GRAV, 1.0e-5f);
+            else if (manualBoostApplied)
+                longitudinalG = 10.0f / GRAV;
+            else if (braking)
+                longitudinalG = -16.0f / GRAV;
 
             // No speed floor or cap beyond this: fully physics-driven; only the V_GUARD
             // numeric floor keeps du/dt finite.
@@ -1290,6 +1781,7 @@ int main(int argc, char **argv) {
             float k = 1.0f - expf(-dt * 3.0f);
             gVert  = gVert  + (instVert - gVert)  * k;
             gLat   = gLat   + (instLat  - gLat)   * k;
+            gLong  = gLong  + (longitudinalG - gLong) * k;
             if (dispatched && !paused) {
                 if (gVert > gVertMax) gVertMax = gVert;
                 if (gVert < gVertMin) gVertMin = gVert;
@@ -1392,7 +1884,7 @@ int main(int argc, char **argv) {
                 for (int a = 0; a < 24 && !found; a++) {
                     float ang = a * (2.0f * PI / 24.0f);
                     float wx = P.x + cosf(ang) * r, wz = P.z + sinf(ang) * r;
-                    if ((float)terrainH(wx, wz) + 1.0f < WATER_Y) { wctr = Vector3{ wx, WATER_Y, wz }; found = true; }
+                    if (terrainSurfaceAt(wx, wz).water) { wctr = Vector3{ wx, WATER_Y, wz }; found = true; }
                 }
             Vector3 dir = Vector3Subtract(wctr, P); dir.y = 0;
             float dl = Vector3Length(dir);
@@ -1401,21 +1893,6 @@ int main(int argc, char **argv) {
             cam.target   = Vector3Add(wctr, Vector3Scale(dir, 34.0f));
             cam.up       = Vector3{ 0, 1, 0 };
             cam.fovy     = 64;
-        }
-        if (cobraShot) {
-
-            bool onCobra = trk.tagAt(u) == M_COBRA;
-            bool peakHood = onCobra && gVert >= 2.0f && gVert < cobraPrevG && N.y > 0.35f;
-            if (frame > 120 && peakHood) cobraArmed = true;
-            if (frame >= 4000) cobraArmed = true;
-            cobraPrevG = gVert;
-
-            Vector3 side = Vector3Normalize(Vector3CrossProduct(Th, Vector3{ 0, 1, 0 }));
-            cam.position = Vector3Add(P, Vector3Add(Vector3Add(Vector3Scale(side, 26.0f),
-                                       Vector3Scale(Th, -10.0f)), Vector3{ 0, 12.0f, 0 }));
-            cam.target   = Vector3Add(P, Vector3{ 0, 8.0f, 0 });
-            cam.up       = Vector3{ 0, 1, 0 };
-            cam.fovy     = 60;
         }
         if (elemShot) {
 
@@ -1428,11 +1905,11 @@ int main(int argc, char **argv) {
 
             float dist = 34.0f, camY = 6.0f, aimY = -6.0f;
             switch (elemShotElem) {
-                case M_LOOP: case M_PRETZEL:
+                case M_LOOP:
                                dist = 62.0f; camY = -4.0f; aimY = -22.0f; break;
                 case M_DIVELOOP:
                                dist = 56.0f; camY = -2.0f; aimY = -20.0f; break;
-                case M_IMMEL: case M_COBRA:
+                case M_IMMEL:
                                dist = 50.0f; camY =  0.0f; aimY = -16.0f; break;
                 case M_HELIX:  dist = -58.0f; camY = 10.0f; aimY = -10.0f; break;
                 case M_CLIMB:
@@ -1442,11 +1919,14 @@ int main(int argc, char **argv) {
                     camY = 0.0f;
                     aimY = -alt * 0.45f;
                     break;
-                case M_ROLL: case M_BANANA: case M_HEARTLINE: case M_WINGOVER: case M_STALL:
+                case M_ROLL: case M_STALL:
                                dist = 40.0f; camY =  4.0f; aimY =  -4.0f; break;
                 case M_DIP:    dist = 34.0f; camY =  8.0f; aimY =  -6.0f; break;
-                case M_HILLS: case M_BANKAIR: case M_STENGEL:
-                               dist = 38.0f; camY =  7.0f; aimY =  -3.0f; break;
+                case M_HILLS: case M_BANKAIR:
+                               dist = elemShotFocus == 1 ? 30.0f : 38.0f;
+                               camY = elemShotFocus == 1 ? 5.0f : 7.0f;
+                               aimY = elemShotFocus == 1 ? 0.0f : -3.0f; break;
+                case M_TURN:   dist = 34.0f; camY = 8.0f; aimY = 0.0f; break;
                 default: break;
             }
             cam.position = Vector3Add(elemP, Vector3Add(Vector3Add(Vector3Scale(side, dist),
@@ -1458,8 +1938,8 @@ int main(int argc, char **argv) {
             bool onElem = fastElem || trk.tagAt(u) == (unsigned char)elemShotElem;
             float score;
             switch (elemShotElem) {
-                case M_LOOP: case M_ROLL: case M_IMMEL: case M_DIVELOOP: case M_COBRA:
-                case M_PRETZEL: case M_WINGOVER: case M_HEARTLINE: case M_BANANA: case M_STALL:
+                case M_LOOP: case M_ROLL: case M_IMMEL:
+                case M_DIVELOOP: case M_STALL:
                     score = -elemN.y; break;
                 case M_DIP:
                 case M_HELIX:
@@ -1467,6 +1947,8 @@ int main(int argc, char **argv) {
                 default:
                     score =  alt;   break;
             }
+            if (elemShotFocus == 1) score = -elemP.y;
+            if (elemShotFocus == 2) score = 1.0f - elemN.y;
             if (fastElem && onElem && frame > 4) {
                 elemBest = score;
                 elemBestCam = cam;
@@ -1539,14 +2021,26 @@ int main(int argc, char **argv) {
         // cost. Only refresh it on a rebuild frame: cheap on the ~99% of frames that just redraw
         // the cached mesh, and it stays stable while the async worker consumes it (rebuilds are
         // gated until the in-flight build finishes, so the inputs aren't overwritten mid-build).
-        bool wantRebuild = gTerrainMesh.needsRebuild(ccx, ccz, (int)u);
-        std::shared_ptr<std::vector<Vector3>> nextWaterCells;
+        bool wantRebuild = gTerrainMesh.needsRebuild(ccx, ccz);
+        std::unordered_set<int64_t> terrainCarveKeys;
         if (wantRebuild) {
-            nextWaterCells = std::make_shared<std::vector<Vector3>>();
-            nextWaterCells->reserve((2 * TERRA_R + 1) * (2 * TERRA_R + 1) / 3);
+            terrainCarveKeys.reserve(256);
         }
         if (wantRebuild) {
         prefillTerrain(ccx, ccz, TERRA_R);
+
+        // Carving changes both its own column and a neighbour wall.  Preserve the
+        // affected stable buckets so the old and new track corridors alone are dirtied;
+        // TerrainMesh retains every clean overlapping terrain chunk.
+        auto markTerrainCarve = [&](int cx, int cz) {
+            float wx = cx * CELL + CELL * 0.5f;
+            float wz = cz * CELL + CELL * 0.5f;
+            terrainCarveKeys.insert(terrainBucketKey(wx, wz));
+            terrainCarveKeys.insert(terrainBucketKey(wx + CELL, wz));
+            terrainCarveKeys.insert(terrainBucketKey(wx - CELL, wz));
+            terrainCarveKeys.insert(terrainBucketKey(wx, wz + CELL));
+            terrainCarveKeys.insert(terrainBucketKey(wx, wz - CELL));
+        };
 
         std::fill(carveLo.begin(), carveLo.end(),  1e9f);
         std::fill(carveHi.begin(), carveHi.end(), -1e9f);
@@ -1588,7 +2082,10 @@ int main(int argc, char **argv) {
                             float r2c = cwx*cwx + cwz*cwz;
                             if (r2c > coilR*coilR || r2c < innerR*innerR) continue;
                             int ci = (dz + TERRA_R) * carveW + (dx + TERRA_R);
-                            if (clampY < forceTop[ci]) forceTop[ci] = clampY;
+                            if (clampY < forceTop[ci]) {
+                                forceTop[ci] = clampY;
+                                markTerrainCarve(acx + ox, acz + oz);
+                            }
                         }
                 }
             }
@@ -1610,7 +2107,10 @@ int main(int argc, char **argv) {
                         int dx = scx - ccx, dz = scz - ccz;
                         if (dx < -TERRA_R || dx > TERRA_R || dz < -TERRA_R || dz > TERRA_R) continue;
                         int ci = (dz + TERRA_R) * carveW + (dx + TERRA_R);
-                        if (clampY < forceTop[ci]) forceTop[ci] = clampY;
+                        if (clampY < forceTop[ci]) {
+                            forceTop[ci] = clampY;
+                            markTerrainCarve(scx, scz);
+                        }
                     }
             };
             stampStation(trk.startPos, trk.startYaw);
@@ -1641,7 +2141,10 @@ int main(int argc, char **argv) {
                     int ci = (dz + TERRA_R) * carveW + (dx + TERRA_R);
 
                     float deepTo = lo - 8.0f;
-                    if (deepTo < carveDeep[ci]) carveDeep[ci] = deepTo;
+                    if (deepTo < carveDeep[ci]) {
+                        carveDeep[ci] = deepTo;
+                        markTerrainCarve(scx + ox, scz + oz);
+                    }
                     if (d2 > BORE_R * BORE_R) continue;
                     if (lo < carveLo[ci]) carveLo[ci] = lo;
                     if (hi > carveHi[ci]) carveHi[ci] = hi;
@@ -1649,15 +2152,12 @@ int main(int argc, char **argv) {
         }
         }   // end if (wantRebuild) — prep only on rebuild frames
 
-        // The job owns an immutable Track copy and a private water result. The
-        // previous worker captured both by reference while the main thread
-        // streamed/popped the deques and rendered waterCells: two data races.
+        if (wantRebuild) {
+        // The worker needs stable spline semantics for adaptive tree-clearance
+        // samples, so it owns one route snapshot per dispatched rebuild.
         auto buildTerrainMesh = [&, ccx, ccz, u, fogEnd, finalN,
-                                 trk = Track(trk), simTime = simTime,
-                                 nextWaterCells]() mutable {
+                                 trk = Track(trk), simTime = simTime]() mutable {
         {
-        const bool depthPass = false;
-        nextWaterCells->clear();
 
         // Carve-aware neighbour probe for the thin-skin face culling below. Returns the
         // neighbour column's EFFECTIVE solid profile so we can wall MY column wherever it
@@ -1684,10 +2184,9 @@ int main(int argc, char **argv) {
             return e;
         };
 
-        for (int dz = -TERRA_R; dz <= TERRA_R; dz++) {
-            for (int dx = -TERRA_R; dx <= TERRA_R; dx++) {
-                int cx = ccx + dx, cz = ccz + dz;
-                float wx = cx * CELL + CELL * 0.5f, wz = cz * CELL + CELL * 0.5f;
+        gTerrainMesh.forEachPendingCell(ccx,ccz,
+            [&](int64_t bucketKey,int cx,int cz,float wx,float wz) {
+                const int dx=cx-ccx,dz=cz-ccz;
                 // Cull against the ring CENTER (ccx/ccz, captured by value at dispatch), NOT the live
                 // main-thread P: the worker runs detached while the main loop overwrites P every frame
                 // (a data race), and culling against a moving P built a ring whose fog boundary never
@@ -1695,21 +2194,28 @@ int main(int argc, char **argv) {
                 // popped in on the next rebuild. Center-relative culling is race-free and consistent.
                 float ddx = wx - (ccx * CELL + CELL * 0.5f), ddz = wz - (ccz * CELL + CELL * 0.5f);
                 float dist2 = ddx * ddx + ddz * ddz;
-                if (dist2 > fogEnd * fogEnd) continue;
+                if (dist2 > fogEnd * fogEnd) return;
 
                 float gateFog = Clamp((sqrtf(dist2) - fogEnd * 0.70f) / (fogEnd * 0.27f), 0.0f, 1.0f);
-                if (gateFog > 0.97f) continue;
+                if (gateFog > 0.97f) return;
                 const float fog = 0.0f;
 
                 float cellSz = CELL;
                 int hslot = gHCache.getSlot(cx, cz);
-                int h = gHCache.h[hslot];
+                const int rawH = gHCache.h[hslot];
+                const float rawTop = (float)rawH + 1.0f;
+                const bool naturalWater = isNaturalWaterTop(rawTop);
+                int h = rawH;
 
                 {
                     float ft = forceTop[(dz + TERRA_R) * carveW + (dx + TERRA_R)];
                     if (ft < 1e8f && (float)h > ft) h = (int)floorf(ft);
                 }
                 float top = h + 1.0f;
+
+                if (naturalWater)
+                    gTerrainMesh.captureWaterCell(bucketKey,Vector3{wx,rawTop,wz});
+                gCaptureBucketOverride=bucketKey;
 
                 Color cap = WHITE, col = WHITE;
                 int capTile = T_GRAIN;
@@ -1719,13 +2225,12 @@ int main(int argc, char **argv) {
                 float bio = 0.0f;
                 bool beach = top <= WATER_Y + 0.6f;
 
-                if (!depthPass || dist2 < 58.0f * 58.0f) {
-                    sh = 0.89f + 0.13f * hashf(cx * 5 + 1, cz * 5 + 2);
-                    bio = gHCache.bio[hslot];              // cached (see TerrainCache): identical seeds/freqs as before
-                    float humid = gHCache.humid[hslot];
-                    float temp  = gHCache.temp[hslot];
-                    Color capC = GRASS, colC = DIRT;
-                    capTile = T_GRASS;
+                sh = 0.89f + 0.13f * hashf(cx * 5 + 1, cz * 5 + 2);
+                bio = gHCache.bio[hslot];
+                float humid = gHCache.humid[hslot];
+                float temp  = gHCache.temp[hslot];
+                Color capC = GRASS, colC = DIRT;
+                capTile = T_GRASS;
                     if (h >= 260)      { capC = Color{204,214,224,255}; colC = Color{132,140,154,255}; capTile = T_GRAIN; }
                     else if (h >= 158) { capC = Color{128,138,146,255}; colC = Color{108,116,126,255}; capTile = T_GRAIN; }
                     else if (beach)    { capC = SAND; capTile = T_GRAIN; }
@@ -1741,9 +2246,8 @@ int main(int argc, char **argv) {
                         Color lush = Color{ 96, 188, 96, 255 }, dry = Color{ 196, 206, 120, 255 };
                         capC = mixc(capC, mixc(lush, dry, patch), 0.35f);
                     }
-                    cap = mixc(shade(capC, sh), FOG, fog);
-                    col = mixc(shade(colC, sh * 0.95f), FOG, fog);
-                }
+                cap = mixc(shade(capC, sh), FOG, fog);
+                col = mixc(shade(colC, sh * 0.95f), FOG, fog);
 
                 float colDepth = 42.0f;
                 float colBot = h - colDepth;
@@ -1764,16 +2268,17 @@ int main(int argc, char **argv) {
                         drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
                     }
                 } else {
-                    // Thin-skin heightfield (Minecraft-style hidden-face culling) for the
-                    // BODY only. The top layer (the cap the player actually walks/rides on)
-                    // keeps its full, unculled cube -- every face always emitted, exactly
-                    // like the original renderer -- since culling it was the source of the
-                    // visible artifacting. Only the body underneath it (never visible except
-                    // at an exposed cliff/step) is thinned out below.
+                    // Thin-skin heightfield (Minecraft-style hidden-face culling). Ordinary
+                    // solid columns emit one top quad here; the interval pass below owns
+                    // every exposed side from colBot through the cap. Keeping a six-face cap
+                    // as well duplicated those side walls and emitted five permanently hidden
+                    // faces per cell. Columns carrying carve metadata retain the conservative
+                    // full-cube fallback below so tunnel floors/roofs cannot acquire seams.
                     const float SKIRT = 0.06f;
-                    drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz }, cellSz, 1, cellSz, cap);
 
                     if (cHi <= cLo) {   // no local carve cavity: MY column is one solid span
+                        drawCubeTexFace(capTile, Vector3{ wx, h + 0.5f, wz },
+                                        cellSz, 1, cellSz, cap, CFACE_PY);
                         // Interval-based exposure. MY solid is [colBot, top]; for each of the
                         // 4 planar neighbours I emit a wall wherever that solid overlaps the
                         // neighbour's AIR. A neighbour's air is (a) everything above its cap
@@ -1814,11 +2319,11 @@ int main(int argc, char **argv) {
                         // A carve cavity touches this column (rare -- only near specific
                         // track features): fall back to the old full-depth body so the
                         // cavity's own floor/roof logic above still has solid walls to meet.
+                        drawCubeTex(capTile, Vector3{ wx, h + 0.5f, wz },
+                                    cellSz, 1, cellSz, cap);
                         drawCubeTex(T_GRAIN, Vector3{ wx, (colBot + h) * 0.5f, wz }, cellSz, h - colBot, cellSz, col);
                     }
                 }
-
-                if (top < WATER_Y && !depthPass) nextWaterCells->push_back(Vector3{ wx, cellSz, wz });
 
                 if (cHi > cLo && cHi > colBot && cLo < top) treeType = -1;  // no floating decorations over bored tunnels
 
@@ -1907,7 +2412,7 @@ int main(int argc, char **argv) {
                         }
                         #undef LEAF_AT
                     }
-                } else if (!depthPass && treeType >= 0 && bio < 0.62f && h < 110 && gateFog < 0.65f && th > 0.955f && !beach) {
+                } else if (treeType >= 0 && bio < 0.62f && h < 110 && gateFog < 0.65f && th > 0.955f && !beach) {
 
                     float pick = hashf(cx * 13 + 5, cz * 13 + 9);
                     Color fc = pick < 0.33f ? Color{226, 86, 96, 255}
@@ -1921,7 +2426,7 @@ int main(int argc, char **argv) {
                                     mixc(Color{ 96, 168, 92, 255 }, FOG, fog));
                         drawCubeTex(T_WHITE, Vector3{ wx + ox, top + 0.42f, wz + oz }, 0.26f, 0.22f, 0.26f, fc);
                     }
-                } else if (!depthPass && treeType >= 0 && gateFog < 0.6f && h < 150 &&
+                } else if (treeType >= 0 && gateFog < 0.6f && h < 150 &&
                            hashf(cx * 17 + 3, cz * 11 + 7) > 0.982f) {
 
                     Color rk = mixc(shade(Color{ 138, 140, 148, 255 }, sh), FOG, fog);
@@ -1930,15 +2435,28 @@ int main(int argc, char **argv) {
                     drawCubeTex(T_LEAF,  Vector3{ wx, top + rs * 0.78f, wz }, rs * 0.7f, 0.18f, rs * 0.6f,
                                 mixc(shade(LEAF, sh), FOG, fog));
                 }
-            }
-        }
+            });
+        gCaptureBucketOverride = INT64_MIN;
         }
         };
 
-        static double dwTerrainAcc = 0.0, dwTrackAcc = 0.0; static int dwN = 0;
-        static bool diagWorld = getenv("MC_DIAG") != nullptr;
+        gTerrainMesh.dispatch(buildTerrainMesh, ccx, ccz, terrainCarveKeys);
+        if (!gTerrainMesh.live) gTerrainMesh.finish(true);
+        }
+
+        // A saved image must see the completed ring for its current camera,
+        // but warm-up/recenter frames remain asynchronous. Initial terrain was
+        // already completed above when no previous ring existed.
+        bool captureTerrainNow = shotFrame || rtShot ||
+                                 (elemShot && elemArmed) ||
+                                 (jointShot && jointArmed);
+        if (captureTerrainNow && gTerrainMesh.building) gTerrainMesh.finish(true);
+
+        // Built lazily by the first (shadow) drawWorld call and reused by the
+        // lit call in the same frame. Support-layout tests then read a compact
+        // polyline instead of reevaluating the spline thousands of times.
+        std::vector<std::pair<float, Vector3>> supportClearancePath;
         auto drawWorld = [&](bool depthPass, bool coasterOnly = false, float cullR = 0.0f) {
-        double dwT0 = diagWorld ? GetTime() : 0.0;
         if (!coasterOnly && gTerrainMesh.live) {
 
             Material mat = gTerrainMat;
@@ -1954,27 +2472,16 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
             }
-            // Cull terrain chunks before submitting them. The full TERRA_R ring is always
-            // generated together every rebuild (see TerrainMesh::finish) -- this only skips
-            // DrawMesh calls for chunks that can't be seen, it never skips generating them,
-            // so it cannot reintroduce the old per-chunk-streaming void bug.
+            // Cull stable world chunks before submitting them. Recenter builds retain
+            // clean overlap and replace the exposed band plus track-carve buckets atomically.
             if (depthPass) {
-                // Each cascade uses its own ortho box centred on P (see ShadowSys::computeLightVP)
-                // -- cull by XZ distance from P using the CURRENT cascade's cull radius (cullR,
-                // passed in by the caller for this depth-pass call), which already includes a
-                // margin past that cascade's box half-diagonal. Must be XZ-only (not 3-D) to match
-                // the ortho box's footprint and the shader's shadow() cascade-selection distance
-                // (also XZ-only, see render_fx.cpp) -- a 3-D check would under-cull tall/deep
-                // chunks whose vertical offset from P is large but whose XZ offset is well within
-                // the box, silently dropping them from the depth pass.
-                int dcnt = 0;
+                // Cull by XZ distance from the single ground-anchored orthographic
+                // shadow volume; vertical displacement must not hide in-range chunks.
                 for (auto &c : gTerrainMesh.chunks) {
                     float dx = c.center.x - P.x, dz = c.center.z - P.z;
                     if (sqrtf(dx*dx + dz*dz) - c.radius > cullR) continue;
                     DrawMesh(c.mesh, mat, MatrixIdentity());
-                    dcnt++;
                 }
-                if (diagWorld) printf("[diag-cull] cullR=%.1f drawn=%d/%zu\n", cullR, dcnt, gTerrainMesh.chunks.size());
             } else {
                 Vector3 F = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
                 Vector3 Rt = Vector3Normalize(Vector3CrossProduct(F, cam.up));
@@ -2008,16 +2515,47 @@ int main(int argc, char **argv) {
             if (midStation)
                 drawStation(trk, curPlatPos, curPlatYaw, P, fogEnd);
         }
-        double dwT1 = diagWorld ? GetTime() : 0.0;
-        if (diagWorld) dwTerrainAcc += (dwT1 - dwT0) * 1000.0;
 
         int k0 = (int)fmaxf(1.0f, u - 14.0f), k1 = (int)(u + 64);
+
+        if (supportClearancePath.empty()) {
+            float q0 = fmaxf(0.5f, (float)k0 - 10.0f);
+            float q1 = fminf(trk.maxFinalU(), (float)k1 + 10.0f);
+            supportClearancePath.reserve((size_t)fmaxf(1.0f, (q1 - q0) / 0.20f + 2.0f));
+            for (float q = q0; q <= q1; q += 0.20f)
+                supportClearancePath.emplace_back(q, trk.pos(q));
+        }
 
         float trackFog = fogEnd * 1.9f;
         const float trackCull = depthPass ? (cullR + SEG_LEN) : (trackFog + SEG_LEN);
         const float trackCull2 = trackCull * trackCull;
 
-        auto drawVBent = [&](Vector3 p, float topY, float gC, Vector3 tang, Vector3 railUp, Color sc) {
+        auto supportMemberClear = [&](Vector3 a, Vector3 b, float supportU, float clearance) {
+            Vector3 ab = Vector3Subtract(b, a);
+            float ab2 = Vector3DotProduct(ab, ab);
+            if (ab2 < 0.04f) return false;
+            float loX = fminf(a.x, b.x) - clearance, hiX = fmaxf(a.x, b.x) + clearance;
+            float loY = fminf(a.y, b.y) - clearance, hiY = fmaxf(a.y, b.y) + clearance;
+            float loZ = fminf(a.z, b.z) - clearance, hiZ = fmaxf(a.z, b.z) + clearance;
+            // A support must clear the full train envelope on every nearby
+            // track pass, not merely the control point that owns the support.
+            // This catches the lower/upper passes of helices and the return
+            // side of loops which share almost the same XZ position.
+            for (const auto &sample : supportClearancePath) {
+                float q = sample.first;
+                if (fabsf(q - supportU) < 1.25f) continue;
+                Vector3 x = sample.second;
+                if (x.x < loX || x.x > hiX || x.y < loY || x.y > hiY || x.z < loZ || x.z > hiZ)
+                    continue;
+                float along = Clamp(Vector3DotProduct(Vector3Subtract(x, a), ab) / ab2, 0.0f, 1.0f);
+                Vector3 closest = Vector3Add(a, Vector3Scale(ab, along));
+                if (Vector3DistanceSqr(x, closest) < clearance * clearance) return false;
+            }
+            return true;
+        };
+
+        auto drawVBent = [&](Vector3 p, float topY, float gC, Vector3 tang,
+                             Vector3 railUp, Color sc, float supportU, unsigned char supportTag) {
             float hgt = topY - gC;
             if (hgt < 1.0f) return;
 
@@ -2027,18 +2565,147 @@ int main(int argc, char **argv) {
             float topHalf  = 0.22f;
 
             Vector3 rRight = Vector3Normalize(Vector3CrossProduct(railUp, tang));
-            Vector3 latH   = Vector3Normalize(Vector3{ rRight.x, 0.0f, rRight.z });
+            Vector3 fwdH = Vector3{ tang.x, 0.0f, tang.z };
+            float fwdHLen = Vector3Length(fwdH);
+            fwdH = fwdHLen > 0.01f ? Vector3Scale(fwdH, 1.0f / fwdHLen)
+                                   : Vector3{ 0.0f, 0.0f, 1.0f };
+
+            // A highly banked helix makes rail-frame "right" nearly vertical,
+            // so its horizontal projection cannot identify the outside of the
+            // coil. Derive that direction from centreline curvature instead.
+            Vector3 ta = trk.tangent(supportU - 0.65f);
+            Vector3 tb = trk.tangent(supportU + 0.65f);
+            Vector3 taH = Vector3{ ta.x, 0.0f, ta.z };
+            Vector3 tbH = Vector3{ tb.x, 0.0f, tb.z };
+            float taHLen = Vector3Length(taH), tbHLen = Vector3Length(tbH);
+            if (taHLen > 0.01f) taH = Vector3Scale(taH, 1.0f / taHLen);
+            if (tbHLen > 0.01f) tbH = Vector3Scale(tbH, 1.0f / tbHLen);
+            Vector3 inward = Vector3Subtract(tbH, taH);
+            float inwardLen = Vector3Length(inward);
+            if (inwardLen > 0.01f) inward = Vector3Scale(inward, 1.0f / inwardLen);
+
+            Vector3 radialOut = inwardLen > 0.01f
+                ? Vector3Scale(inward, -1.0f)
+                : Vector3Normalize(Vector3CrossProduct(WUP, fwdH));
+            Vector3 latH = supportTag == M_HELIX
+                ? radialOut
+                : Vector3{ rRight.x, 0.0f, rRight.z };
+            float latHLen = Vector3Length(latH);
+            latH = latHLen > 0.01f ? Vector3Scale(latH, 1.0f / latHLen)
+                                   : Vector3{ 1.0f, 0.0f, 0.0f };
             float nodeDrop = 0.58f;
             Vector3 node = Vector3Subtract(p, Vector3Scale(railUp, nodeDrop));
-            Vector3 tops[2], feet[2]; int si = 0;
-            for (float s : { -1.0f, 1.0f }) {
-                Vector3 top  = Vector3Add(node, Vector3Scale(rRight, s * topHalf));
-                float bx = p.x + latH.x * s * baseHalf, bz = p.z + latH.z * s * baseHalf;
-                Vector3 foot = { bx, groundTopAt(bx, bz), bz };
-                tops[si] = top; feet[si] = foot; si++;
-                Vector3 dir  = Vector3Subtract(foot, top);
+
+            Vector3 tops[2] = {
+                Vector3Add(node, Vector3Scale(rRight, -topHalf)),
+                Vector3Add(node, Vector3Scale(rRight,  topHalf))
+            };
+            Vector3 feet[2]{};
+            bool haveBent = false;
+
+            // Helix curvature points toward the coil centre. Prefer a bent
+            // leaning to the outside of that centre, like a real cantilevered
+            // helix support, then widen/reverse only if terrain or another
+            // track pass blocks it. Ordinary track tries the symmetric A-frame
+            // first. Every option is checked against the swept train envelope.
+            float outsideSign = 1.0f;
+            if (supportTag != M_HELIX && inwardLen > 0.01f) {
+                outsideSign = Vector3DotProduct(latH, Vector3Scale(inward, -1.0f)) >= 0.0f ? 1.0f : -1.0f;
+            }
+            float biasTry[5] = { 0.0f, outsideSign * baseHalf * 1.15f,
+                                 -outsideSign * baseHalf * 1.15f,
+                                 outsideSign * baseHalf * 1.75f,
+                                 -outsideSign * baseHalf * 1.75f };
+            if (supportTag == M_HELIX || supportTag == M_TURN) {
+                float tmp = biasTry[0]; biasTry[0] = biasTry[1]; biasTry[1] = tmp;
+            }
+            const float clearRadius = 1.85f;
+            bool cantilever = false;
+            bool haveOutrigger = false;
+            Vector3 outriggerEnd{};
+
+            // Stacked helix coils need the support to leave the shared plan
+            // circle before descending. Search a short radial arm plus an
+            // outside terrain column; small phase offsets let the tower adapt
+            // around crossings without ever bypassing train-envelope checks.
+            if (supportTag == M_HELIX) {
+                float firstReach = Clamp(5.5f + hgt * 0.035f, 6.0f, 9.0f);
+                float reaches[5] = { firstReach, firstReach + 3.0f, firstReach + 6.0f,
+                                     firstReach + 9.0f, firstReach + 12.0f };
+                const float phaseTry[5] = { 0.0f, 2.5f, -2.5f, 5.0f, -5.0f };
+                for (float reach : reaches) {
+                    for (float phase : phaseTry) {
+                        Vector3 knee = Vector3Add(node, Vector3Add(
+                            Vector3Scale(radialOut, reach), Vector3Scale(fwdH, phase)));
+                        knee.y = node.y;
+                        Vector3 foot = Vector3{ knee.x, groundTopAt(knee.x, knee.z), knee.z };
+                        if (foot.y >= knee.y - 0.25f) continue;
+                        if (!supportMemberClear(node, knee, supportU, clearRadius) ||
+                            !supportMemberClear(knee, foot, supportU, clearRadius))
+                            continue;
+                        tops[0] = knee;
+                        feet[0] = foot;
+                        outriggerEnd = knee;
+                        haveOutrigger = true;
+                        cantilever = true;
+                        break;
+                    }
+                    if (haveOutrigger) break;
+                }
+            }
+
+            if (!haveOutrigger) {
+                for (float widen : { 1.0f, 1.35f, 1.70f }) {
+                    for (float bias : biasTry) {
+                        bool clear = true;
+                        for (int side = 0; side < 2; ++side) {
+                            float s = side ? 1.0f : -1.0f;
+                            float off = bias + s * baseHalf * widen;
+                            float bx = p.x + latH.x * off, bz = p.z + latH.z * off;
+                            feet[side] = Vector3{ bx, groundTopAt(bx, bz), bz };
+                            if (!supportMemberClear(tops[side], feet[side], supportU, clearRadius)) {
+                                clear = false;
+                                break;
+                            }
+                        }
+                        if (clear) { haveBent = true; break; }
+                    }
+                    if (haveBent) break;
+                }
+            }
+
+            // Dense coils can reject every two-leg bent. Retain the support as
+            // a real-world style single cantilever: search radial then
+            // longitudinal foot positions and keep the first collision-free
+            // column instead of deleting the support wholesale.
+            if (!haveBent && !cantilever) {
+                Vector3 dirs[6] = {
+                    Vector3Scale(latH, outsideSign), Vector3Scale(latH, -outsideSign),
+                    fwdH, Vector3Scale(fwdH, -1.0f),
+                    Vector3Normalize(Vector3Add(Vector3Scale(latH, outsideSign), fwdH)),
+                    Vector3Normalize(Vector3Subtract(Vector3Scale(latH, outsideSign), fwdH))
+                };
+                for (float reach : { baseHalf * 1.4f, baseHalf * 2.0f, baseHalf * 2.7f }) {
+                    for (Vector3 dirH : dirs) {
+                        float bx = p.x + dirH.x * reach, bz = p.z + dirH.z * reach;
+                        Vector3 foot = Vector3{ bx, groundTopAt(bx, bz), bz };
+                        if (supportMemberClear(node, foot, supportU, clearRadius)) {
+                            tops[0] = node; feet[0] = foot;
+                            cantilever = true;
+                            break;
+                        }
+                    }
+                    if (cantilever) break;
+                }
+            }
+
+            if (!haveBent && !cantilever) return;
+
+            int legCount = haveBent ? 2 : 1;
+            for (int side = 0; side < legCount; ++side) {
+                Vector3 dir = Vector3Subtract(feet[side], tops[side]);
                 float len = Vector3Length(dir);
-                Vector3 mid = Vector3Scale(Vector3Add(top, foot), 0.5f);
+                Vector3 mid = Vector3Scale(Vector3Add(tops[side], feet[side]), 0.5f);
                 pushFrame(mid, Vector3Normalize(dir), WUP);
                 drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, legR, legR, len, sc);
                 popFrame();
@@ -2052,15 +2719,24 @@ int main(int argc, char **argv) {
                 popFrame();
             };
 
-            if (hgt > 14.0f) {
+            if (haveOutrigger)
+                strut(node, outriggerEnd, legR * 0.82f);
+
+            if (haveBent && hgt > 14.0f) {
                 int levels = (int)Clamp(hgt / 16.0f, 1.0f, 4.0f);
                 Vector3 prevL{}, prevR{}; bool have = false;
                 for (int k = 1; k <= levels; k++) {
                     float f = (float)k / (float)(levels + 1);
                     Vector3 L = Vector3Lerp(tops[0], feet[0], f);
                     Vector3 R = Vector3Lerp(tops[1], feet[1], f);
-                    strut(L, R, legR * 0.7f);
-                    if (have && hgt > 22.0f) { strut(prevL, R, legR * 0.5f); strut(prevR, L, legR * 0.5f); }
+                    if (supportMemberClear(L, R, supportU, clearRadius))
+                        strut(L, R, legR * 0.7f);
+                    if (have && hgt > 22.0f) {
+                        if (supportMemberClear(prevL, R, supportU, clearRadius))
+                            strut(prevL, R, legR * 0.5f);
+                        if (supportMemberClear(prevR, L, supportU, clearRadius))
+                            strut(prevR, L, legR * 0.5f);
+                    }
                     prevL = L; prevR = R; have = true;
                 }
             }
@@ -2073,14 +2749,7 @@ int main(int argc, char **argv) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
             bool tightShape = (tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
-                                tg == M_STALL || tg == M_DIVELOOP || tg == M_COBRA ||
-                                tg == M_HEARTLINE || tg == M_PRETZEL);
-            // BANANA and WINGOVER are deliberately NOT in this exclusion list: unlike the tight,
-            // self-contained loop-shaped elements below (whose top/bottom sit at nearly the same
-            // X/Z), both travel forward continuously across their whole length while banking/
-            // inverting, so the inverted midpoint is tens of meters from every other point of the
-            // same element -- a straight-down support there can't clip through its own track, and
-            // excluding them left a large unsupported gap during the tallest, most inverted part.
+                               tg == M_STALL || tg == M_DIVELOOP);
             if (tightShape && trk.up[i].y < 0.35f) continue;
             float ddx = p.x - P.x, ddz = p.z - P.z;
             if (ddx * ddx + ddz * ddz > trackCull2) continue;
@@ -2114,11 +2783,14 @@ int main(int argc, char **argv) {
             float topY = p.y - 0.5f;
             float gC   = groundTopAt(p.x, p.z);
             float hgt  = topY - gC;
-            const float SUP_SP = 9.0f;
+            float SUP_SP = Clamp(11.0f + hgt * 0.055f, 11.0f, 20.0f);
+            if (tg == M_HELIX || tg == M_TURN || tg == M_LOOP ||
+                tg == M_IMMEL || tg == M_DIVELOOP)
+                SUP_SP *= 0.78f;
             bool placeHere = i > 0 &&
                 floorf(trk.arc[i] / SUP_SP) != floorf(trk.arc[i - 1] / SUP_SP);
             if (hgt > 0.5f && placeHere)
-                drawVBent(p, topY, gC, t, trk.up[i], sc);
+                drawVBent(p, topY, gC, t, trk.up[i], sc, (float)i - 1.0f, tg);
 
             if (tg == M_LAUNCH || tg == M_BOOST) {
                 Vector3 fwd = Vector3Normalize(Vector3{ t.x, 0, t.z });
@@ -2176,21 +2848,9 @@ int main(int argc, char **argv) {
                 popFrame();
             }
         }
-        if (diagWorld) {
-            dwTrackAcc += (GetTime() - dwT1) * 1000.0;
-            dwN++;
-            if (dwN % 80 == 0) printf("[diag-dw] n=%d terrain_avg=%.3fms track_avg=%.3fms (per-call)\n", dwN, dwTerrainAcc/dwN, dwTrackAcc/dwN);
-        }
         };
 
-        if (wantRebuild) {
-            pendingWaterCells = nextWaterCells;
-            gTerrainMesh.dispatch(buildTerrainMesh, ccx, ccz, (int)u);
-            if (!gTerrainMesh.live) gTerrainMesh.finish(true);   // first build: must have a mesh to draw
-        }
-
-        // One stable shadow volume, ground-anchored so tall elements do not move coverage away
-        // from the terrain below them. There are no cascade boundaries or close-shadow layer.
+        // Ground-anchor the single shadow volume so tall elements preserve terrain coverage.
         {
             const float SHADOW_FOCUS_LIFT = 45.0f;
             float groundY = groundTopAt(P.x, P.z);
@@ -2199,9 +2859,6 @@ int main(int argc, char **argv) {
         }
         BeginDrawing();
 
-        static bool diagTiming = getenv("MC_DIAG") != nullptr;
-        static double dShadowAcc = 0.0, dMainAcc = 0.0; static int dN = 0;
-        double tShadow0 = diagTiming ? GetTime() : 0.0;
         rlDrawRenderBatchActive();
         rlEnableFramebuffer(gShadow.fbo);
         rlViewport(0, 0, gShadow.SM, gShadow.SM);
@@ -2218,7 +2875,6 @@ int main(int argc, char **argv) {
         rlEnableColorBlend();
         rlDisableFramebuffer();
         rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
-        if (diagTiming) dShadowAcc += (GetTime() - tShadow0) * 1000.0;
 
         // Bind the single map once per frame for every lit draw.
         auto bindShadowUniforms = [&]() {
@@ -2297,18 +2953,11 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyOff, SHADER_UNIFORM_FLOAT);
         }
 
-        double tMain0 = diagTiming ? GetTime() : 0.0;
         BeginShaderMode(gShadow.lit);
         bindShadowTextures();
-        drawWorld(false);
+        drawWorld(false, captureShot && getenv("MC_TRACK_ONLY"));
         EndShaderMode();
         unbindShadowTextures();
-        if (diagTiming) {
-            rlDrawRenderBatchActive();
-            dMainAcc += (GetTime() - tMain0) * 1000.0;
-            dN++;
-            if (dN % 20 == 0) printf("[diag] n=%d shadow2x_avg=%.2fms main_avg=%.2fms\n", dN, dShadowAcc/dN, dMainAcc/dN);
-        }
 
         {
             struct SplashContact { Vector3 p, fwd, right; float gap; };
@@ -2316,9 +2965,7 @@ int main(int argc, char **argv) {
             int contactN = 0;
 
             auto isWaterTile = [&](float wx, float wz) {
-                // groundTopAt = max(terrainH+1, WATER_Y), so this is EXACTLY the SPLASHDOWN
-                // label's predicate (submergedGround) -- spray and banner can't disagree.
-                return submergedGround(groundTopAt(wx, wz));
+                return terrainSurfaceAt(wx, wz).water;
             };
             auto localToWorld = [&](Vector3 cp, Vector3 ct, Vector3 cu,
                                     float lx, float ly, float lz,
@@ -2346,7 +2993,7 @@ int main(int argc, char **argv) {
                     for (float sx : wheelXs) {
                         for (float sz : wheelZs) {
                             Vector3 fwd{}, right{};
-                            Vector3 wp = localToWorld(cp, ct, cu, sx, -0.17f, sz, &fwd, &right);
+                            Vector3 wp = localToWorld(cp, ct, cu, sx, 0.09f, sz, &fwd, &right);
                             float gap = wp.y - WATER_Y;
                             if (gap >= -0.45f && gap <= 1.45f && isWaterTile(wp.x, wp.z) && contactN < 16)
                                 contacts[contactN++] = SplashContact{ wp, fwd, right, gap };
@@ -2425,12 +3072,12 @@ int main(int argc, char **argv) {
             rlBegin(RL_QUADS);
             rlNormal3f(0, 1, 0);
 
-            for (auto &wc : waterCells) {
-                float hs = wc.y * 0.5f;
+            for (const auto &bucket : gTerrainMesh.liveWaterBuckets)
+            for (const Vector3 &wc : bucket.second) {
+                float hs = CELL * 0.5f;
                 float x0 = wc.x - hs, x1 = wc.x + hs;
                 float z0 = wc.z - hs, z1 = wc.z + hs;
-                float bed   = (float)terrainH((int)floorf(wc.x), (int)floorf(wc.z)) + 1.0f;
-                float depth = WATER_Y - bed;
+                float depth = WATER_Y - wc.y;
                 float dN    = 1.0f - expf(-depth * 0.32f);
                 Color shallow = { 96, 196, 198, 150 };
                 Color deep    = { 54, 132, 196, 150 };
@@ -2510,10 +3157,8 @@ int main(int argc, char **argv) {
             SetShaderValue(gPT.rt, gPT.rAtlasSize, asz, SHADER_UNIFORM_VEC2);
             SetShaderValue(gPT.rt, gPT.rVoxSize, &vsz, SHADER_UNIFORM_FLOAT);
 
-            // The voxel path tracer has its own single-shadow-map shader interface (it
-            // computes most shadowing via its own voxel ray march); feed it cascade 1
-            // (mid distance) as a reasonable single proxy rather than extending its
-            // shader to the full 3-cascade scheme.
+            // The voxel path tracer shares the raster path's single shadow map; its
+            // voxel ray march supplies the remaining local occlusion.
             SetShaderValueMatrix(gPT.rt, gPT.rLightVP, gShadow.lightVP);
             float rstx[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
             SetShaderValue(gPT.rt, gPT.rShadowTexel, rstx, SHADER_UNIFORM_VEC2);
@@ -2580,7 +3225,7 @@ int main(int argc, char **argv) {
             EndMode3D();
         }
 
-        if (shotFrame && !rasterShot && !orbitShot && !waterShot && !cobraShot) {
+        if (shotFrame && !rasterShot && !orbitShot && !waterShot) {
             int rw = GetRenderWidth(), rh = GetRenderHeight();
             if (gPT.W != rw || gPT.H != rh) { gPT.initBuffers(rw, rh); }
 
@@ -2754,8 +3399,30 @@ int main(int argc, char **argv) {
             // skimming water, a valley-guarded high DIP relabels by pitch, a DROP forced up a
             // rising hillside reads CLIMB, etc. The Vulkan HUD calls the SAME function.
             bool special = false;
-            const char *en = rideElemName(trk.tagAt(u), trk.tangent(u).y,
-                                          P.y, gY, special);
+            unsigned char hudTag = trk.tagAt(u);
+            float hudPitch = trk.tangent(u).y;
+            bool semanticTopHat = false;
+            // CLIMB is shared by analytical top hats and ordinary adaptive
+            // terrain rises.  Cosmetic tag alone therefore cannot name a
+            // section. Incoming-span ownership is authoritative: only a span
+            // belonging to MACRO_TOP_HAT may display TOP HAT, including its
+            // crown and descending half. A near-level terrain connector gets
+            // no banner rather than masquerading as a top hat.
+            int incoming = (int)trk.clampFinalU(u) + 2;
+            if (incoming >= trk.finalizedPointCount()) incoming = trk.finalizedPointCount() - 1;
+            if (incoming >= 0 && incoming < (int)trk.spanRun.size()) {
+                const Track::AnalyticRun *run = trk.analyticRun(trk.spanRun[(size_t)incoming]);
+                semanticTopHat = run && run->kind == Track::MACRO_TOP_HAT;
+            }
+            const char *en = nullptr;
+            if (semanticTopHat) {
+                en = "TOP HAT";
+            } else if (hudTag == M_CLIMB) {
+                en = hudPitch > 0.12f ? "CLIMB"
+                   : hudPitch < -0.12f ? "DROP" : nullptr;
+            } else {
+                en = rideElemName(hudTag, hudPitch, P.y, gY, special);
+            }
             if (en) {
                 int fs = 18;
                 int tw = MeasureText(en, fs);
@@ -2806,14 +3473,16 @@ int main(int argc, char **argv) {
             if (ol > R - 8.0f) off = Vector2Scale(off, (R - 8.0f) / ol);
             Vector2 ball = { gc.x + off.x, gc.y + off.y };
 
+            float gResultant = sqrtf(gVert*gVert + gLat*gLat + gLong*gLong);
+            float gDisplay = copysignf(gResultant, gVert < 0.0f ? -1.0f : 1.0f);
             Color bc = gVert < -0.1f ? Color{ 80, 220, 255, 255 }
-                     : gVert <  0.5f ? Color{ 96, 204, 255, 255 }
-                     : gVert <  2.0f ? Color{ 124, 230, 140, 255 }
-                     : gVert <  3.5f ? Color{ 255, 200, 84, 255 }
-                                     : Color{ 255, 96, 84, 255 };
+                     : gResultant <  0.5f ? Color{ 96, 204, 255, 255 }
+                     : gResultant <  2.0f ? Color{ 124, 230, 140, 255 }
+                     : gResultant <  3.5f ? Color{ 255, 200, 84, 255 }
+                                          : Color{ 255, 96, 84, 255 };
             DrawCircleV(ball, 8.0f, Color{ 10, 12, 20, 210 });
             DrawCircleV(ball, 6.5f, bc);
-            const char *gtxt = TextFormat("%+.1f", gVert);
+            const char *gtxt = TextFormat("%+.1f", gDisplay);
             int gw = MeasureText(gtxt, 28);
             textSh(gtxt, (int)gc.x - gw / 2, (int)(gc.y - R - 34), 28, RAYWHITE);
             textSh("G", (int)gc.x + gw / 2 + 3, (int)(gc.y - R - 26), 16, Color{ 185, 195, 214, 230 });
@@ -2894,13 +3563,6 @@ int main(int argc, char **argv) {
             fflush(stdout);
             if (frame == 560) lastShot = true;
         }
-        if (cobraShot && cobraArmed) {
-            rlDrawRenderBatchActive();
-            TakeScreenshot("cobra_peakg.png");
-            printf("cobra peak-g  g=%.1f  -> cobra_peakg.png\n", cobraPrevG);
-            fflush(stdout);
-            lastShot = true;
-        }
         if (elemShot && elemArmed) {
             rlDrawRenderBatchActive();
 
@@ -2972,8 +3634,7 @@ int main(int argc, char **argv) {
     if (benchMode) {
         static const char *EN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL(corkscrew)","STATION","DIP","LAUNCH",
-            "HELIX","BOOST","IMMELMANN","SCURVE","DIVE","BANKAIR","WAVE","STALL(0g)","DIVELOOP","COBRA",
-            "WINGOVER","HEARTLINE(0g roll)","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
+            "HELIX","BOOST","IMMELMANN","SCURVE","DIVE","BANKAIR","WAVE","STALL(0g)","DIVELOOP" };
         printf("\n=== per-element g profile (total felt g) ===\n");
         double avgSum = 0; int avgN = 0; double worstAvg = 0; const char *worstNm = "";
         for (int t = 0; t < M_COUNT; t++) {
@@ -2994,8 +3655,7 @@ int main(int argc, char **argv) {
     if (gtraceMode && (int)gtTot.size() > 4) {
         const char *EN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH",
-            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","COBRA",
-            "WINGOVER","HEART","PRETZEL","STENGEL","BANANA","CLIFFDIVE" };
+            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP" };
         const int GW = 2400, GH = 1000, X0 = 80, X1 = GW - 30, Y0 = 50, Y1 = GH - 150;
         int N = (int)gtTot.size();
         float gLo = -8.0f, gHi = 18.0f;

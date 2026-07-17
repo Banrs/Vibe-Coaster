@@ -4,7 +4,10 @@ static void drawCoasterCar(Color body, Color accent, bool lead, int seed) {
     Color bodyD = shade(body, 0.82f);
     Color bodyU = shade(body, 1.06f);
 
-    drawCubeTex(T_IRON,  Vector3{ 0, 0.12f, 0 }, 1.62f, 0.28f, 3.1f, Color{ 60, 62, 70, 255 });
+    // Rail top is local y=+0.09. Keep the chassis physically above it;
+    // the former -0.02 bottom cut through both running rails on every loop and
+    // made the train appear fused to the track when inverted.
+    drawCubeTex(T_IRON,  Vector3{ 0, 0.27f, 0 }, 1.62f, 0.24f, 3.1f, Color{ 60, 62, 70, 255 });
 
     drawCubeTex(T_WHITE, Vector3{ 0, 0.34f, 0.0f }, 1.56f, 0.36f, 3.06f, bodyD);
     drawCubeTex(T_WHITE, Vector3{ 0, 0.60f, 0.0f }, 1.40f, 0.40f, 2.92f, body);
@@ -48,9 +51,11 @@ static void drawCoasterCar(Color body, Color accent, bool lead, int seed) {
         }
     }
 
+    // Road wheels touch the top of each rail instead of occupying the same
+    // voxel volume. Their lower face sits at y=0.09, exactly on the rail top.
     for (float sx : { -0.55f, 0.55f })
         for (float sz : { -0.95f, 0.95f })
-            drawCubeTex(T_IRON, Vector3{ sx, -0.02f, sz }, 0.22f, 0.30f, 0.5f, tyre);
+            drawCubeTex(T_IRON, Vector3{ sx, 0.23f, sz }, 0.22f, 0.28f, 0.5f, tyre);
 }
 
 static void drawStation(const Track &trk, Vector3 pos, float yaw, Vector3 camP, float fogEnd) {

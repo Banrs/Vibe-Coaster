@@ -1,0 +1,84 @@
+name: macOS arm64 build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - codex/v1-legacy-coaster-fix
+    paths:
+      - CMakeLists.txt
+      - src/**
+      - v1/**
+      - .github/workflows/macos-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Minecoaster for Apple silicon
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure Release build
+        run: >-
+          cmake -S . -B build-macos
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+
+      - name: Build
+        run: cmake --build build-macos --config Release --parallel 3
+
+      - name: Package application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app="dist/Minecoaster.app"
+          executable="$app/Contents/MacOS/minecoaster"
+          plist="$app/Contents/Info.plist"
+
+          mkdir -p "$app/Contents/MacOS"
+          install -m 755 minecoaster "$executable"
+
+          plutil -create xml1 "$plist"
+          plutil -insert CFBundleDevelopmentRegion -string en "$plist"
+          plutil -insert CFBundleDisplayName -string Minecoaster "$plist"
+          plutil -insert CFBundleExecutable -string minecoaster "$plist"
+          plutil -insert CFBundleIdentifier -string com.vibecoaster.minecoaster "$plist"
+          plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$plist"
+          plutil -insert CFBundleName -string Minecoaster "$plist"
+          plutil -insert CFBundlePackageType -string APPL "$plist"
+          plutil -insert CFBundleShortVersionString -string 1.0 "$plist"
+          plutil -insert CFBundleVersion -string "${GITHUB_RUN_NUMBER}" "$plist"
+          plutil -insert LSMinimumSystemVersion -string 13.0 "$plist"
+          plutil -insert NSHighResolutionCapable -bool true "$plist"
+
+          test -x "$executable"
+          lipo -verify_arch arm64 "$executable"
+          non_system_deps="$(otool -L "$executable" | awk 'NR > 1 { print $1 }' \
+            | grep -Ev '^(/System/Library/|/usr/lib/)' || true)"
+          if [[ -n "$non_system_deps" ]]; then
+            echo "Unexpected non-system runtime dependencies:" >&2
+            echo "$non_system_deps" >&2
+            exit 1
+          fi
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$app" dist/Minecoaster-macOS-arm64.zip
+
+      - name: Upload runnable app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minecoaster-macOS-arm64-${{ github.run_number }}
+          path: dist/Minecoaster-macOS-arm64.zip
+          if-no-files-found: error
+          retention-days: 14

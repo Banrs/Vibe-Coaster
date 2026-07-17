@@ -5,16 +5,16 @@
 // The independent variable is plan-view distance along the route (the same
 // distance advanced by SEG_LEN in coaster_track.cpp), not three-dimensional
 // rail arc length.  Every authored join carries height, grade and vertical
-// curvature.  The convenience profiles below are C3 at their internal joins,
-// so they are intended to be sampled directly into finalized control points;
-// a second, downstream smoothing pass is neither necessary nor desirable.
+// curvature.  The convenience profiles below are C2 at their internal joins
+// (the top-hat feet additionally have zero jerk), so they are sampled directly
+// into finalized control points; a second smoothing pass would only distort
+// their boundary conditions.
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
-#include <limits>
 
 namespace v1profile {
 
@@ -23,8 +23,46 @@ constexpr double kDegreesToRadians = kPi / 180.0;
 constexpr double kRadiansToDegrees = 180.0 / kPi;
 constexpr double kTopHatMinFaceDegrees = 60.0;
 constexpr double kTopHatMaxFaceDegrees = 65.0;
-constexpr std::size_t kMaxSegments = 24;
+constexpr double kTopHatReferenceRise = 165.0;
+constexpr double kTopHatReferenceFaceDegrees = 64.25;
+constexpr double kTopHatMaximumUnitSlope = 5.210821945572;
+constexpr double kTopHatMaximumSlopeU = 0.2893314096;
+// Canonical 165 m / 64.25 degree dimensions. Every generated hat is a scaled
+// instance of this law, so footprint, rail length and radius share one scale
+// contract instead of depending on separately rounded copies.
+constexpr double kTopHatReferencePlanLength = 414.71135295802475;
+constexpr double kTopHatReferenceRailLength = 569.2931108803162;
+constexpr double kTopHatReferenceCrownRadius = 72.03308270020875;
+constexpr double kTopHatReferenceTightCrestRadius = 71.396248485;
+constexpr double kTopHatReferencePullupRadius = 96.721269472;
+constexpr std::size_t kMaxSegments = 8;
 constexpr std::size_t kMaxChainHills = 4;
+constexpr double kCamelbackValleyCurvatureRatio = 0.45;
+
+// Height on either half of the top hat is one degree-20 Bernstein polynomial
+// in s=(2u-1)^2.  The non-increasing coefficients make the profile monotone
+// from either foot to the crown, while the five trailing zeroes give each
+// foot zero grade, curvature and jerk.  Unlike face/crown/face construction,
+// this law has no internal seam or constant-pitch interval.
+constexpr std::array<double, 21> kTopHatHeightBernstein{{
+    1.0,
+    0.909560964683043,
+    0.787706264466512,
+    0.787706264466512,
+    0.244138729186889,
+    0.244138729186889,
+    0.169398193085941,
+    0.169398193085941,
+    0.169398193085941,
+    0.0492794743522736,
+    0.0492794743522736,
+    0.0492794743522736,
+    0.0492794743522736,
+    0.00746658702307168,
+    0.00746658702307168,
+    0.00746658702307168,
+    0.0, 0.0, 0.0, 0.0, 0.0
+}};
 
 inline double clamp01(double value) {
     return std::max(0.0, std::min(1.0, value));
@@ -34,18 +72,52 @@ inline bool finite(double value) {
     return std::isfinite(value);
 }
 
-// Integral of quintic smootherstep.  Its value at one is 1/2, which makes a
-// slope blend's height delta exactly length * (startGrade + endGrade) / 2.
-inline double smootherstep5(double t) {
-    t = clamp01(t);
-    return t * t * t * (10.0 + t * (-15.0 + 6.0 * t));
-}
+// Evaluate a finite difference of a Bernstein polynomial in O(degree).  The
+// basis is walked from the better-conditioned endpoint, avoiding both the
+// large alternating power-basis coefficients and an O(n^2) de Casteljau pass.
+inline double bernsteinDifference(int differenceOrder, double x) {
+    assert(differenceOrder >= 0 && differenceOrder <= 3);
+    x = clamp01(x);
+    const int degree = 20 - differenceOrder;
+    auto coefficient = [differenceOrder](int i) {
+        const auto &d = kTopHatHeightBernstein;
+        if (differenceOrder == 0) return d[static_cast<std::size_t>(i)];
+        if (differenceOrder == 1)
+            return d[static_cast<std::size_t>(i + 1)] -
+                   d[static_cast<std::size_t>(i)];
+        if (differenceOrder == 2)
+            return d[static_cast<std::size_t>(i + 2)] -
+                   2.0*d[static_cast<std::size_t>(i + 1)] +
+                   d[static_cast<std::size_t>(i)];
+        return d[static_cast<std::size_t>(i + 3)] -
+               3.0*d[static_cast<std::size_t>(i + 2)] +
+               3.0*d[static_cast<std::size_t>(i + 1)] -
+               d[static_cast<std::size_t>(i)];
+    };
 
-inline double smootherstep5Integral(double t) {
-    t = clamp01(t);
-    const double t2 = t * t;
-    const double t4 = t2 * t2;
-    return t4 * (2.5 + t * (-3.0 + t));
+    if (x <= 0.0) return coefficient(0);
+    if (x >= 1.0) return coefficient(degree);
+
+    const double oneMinusX = 1.0 - x;
+    double sum = 0.0;
+    if (x <= 0.5) {
+        double basis = std::pow(oneMinusX, degree);
+        for (int i = 0; i <= degree; ++i) {
+            sum += coefficient(i) * basis;
+            if (i < degree)
+                basis *= (static_cast<double>(degree - i) / (i + 1)) *
+                         (x / oneMinusX);
+        }
+    } else {
+        double basis = std::pow(x, degree);
+        for (int i = degree; i >= 0; --i) {
+            sum += coefficient(i) * basis;
+            if (i > 0)
+                basis *= (static_cast<double>(i) / (degree - i + 1)) *
+                         (oneMinusX / x);
+        }
+    }
+    return sum;
 }
 
 struct Boundary {
@@ -59,15 +131,6 @@ struct Sample : Boundary {
 
     double pitchRadians() const { return std::atan(grade); }
     double pitchDegrees() const { return pitchRadians() * kRadiansToDegrees; }
-
-    // Signed curvature of the graph y(s), useful for force estimates.  The
-    // Boundary::curvature member intentionally remains the cheaper y'' value.
-    double geometricCurvature() const {
-        const double metric = 1.0 + grade * grade;
-        return curvature / (metric * std::sqrt(metric));
-    }
-
-    double railDistanceScale() const { return std::sqrt(1.0 + grade * grade); }
 };
 
 inline bool near(double a, double b, double tolerance) {
@@ -86,61 +149,27 @@ inline bool finiteBoundary(const Boundary& boundary) {
            finite(boundary.curvature);
 }
 
-// Polynomial in normalized segment coordinate u = localDistance / length.
-// Coefficients are stored in height units; physical derivatives are obtained
-// by the appropriate power of 1/length.  Degree six is enough for an
-// integrated quintic grade blend, while generic explicit-boundary segments
-// use the quintic subset.
+// A segment is either a polynomial boundary solve or the single analytic
+// top-hat law. Coefficients are in height units; physical derivatives apply
+// powers of 1/length.
 struct Segment {
-    static constexpr int kDegree = 6;
+    static constexpr int kDegree = 15;
+    enum class Kind : unsigned char { Quintic, TopHat };
 
+    Kind kind = Kind::Quintic;
     double length = 0.0;
     std::array<double, kDegree + 1> coefficient{};
-    bool cosineGrade = false;
-    double cosineStartHeight = 0.0;
-    double cosineStartGrade = 0.0;
-    double cosineEndGrade = 0.0;
+    double topHatStartHeight = 0.0;
+    double topHatRise = 0.0;
 
-    static Segment line(double startHeight, double grade, double segmentLength) {
-        assert(segmentLength > 0.0);
+    static Segment topHat(double startHeight, double crestHeight,
+                          double maximumPitch) {
         Segment result;
-        result.length = segmentLength;
-        result.coefficient[0] = startHeight;
-        result.coefficient[1] = grade * segmentLength;
-        return result;
-    }
-
-    // Blend grade monotonically using quintic smootherstep, then integrate it
-    // analytically.  Height, grade, curvature and jerk match a neighboring
-    // line at both ends (C3).  This is the primitive used for crowns, troughs,
-    // pull-ups and pull-outs.
-    static Segment slopeBlend(double startHeight, double startGrade,
-                              double endGrade, double segmentLength) {
-        assert(segmentLength > 0.0);
-        Segment result;
-        result.length = segmentLength;
-        const double delta = endGrade - startGrade;
-        result.coefficient[0] = startHeight;
-        result.coefficient[1] = startGrade * segmentLength;
-        result.coefficient[4] = 2.5 * delta * segmentLength;
-        result.coefficient[5] = -3.0 * delta * segmentLength;
-        result.coefficient[6] = delta * segmentLength;
-        return result;
-    }
-
-    // Integrate a raised-cosine grade transition.  Unlike smootherstep, its
-    // curvature is distributed across the whole section instead of dwelling
-    // near a constant endpoint grade; position, grade and curvature still
-    // match neighboring sections exactly (C2).
-    static Segment slopeCosine(double startHeight, double startGrade,
-                               double endGrade, double segmentLength) {
-        assert(segmentLength > 0.0);
-        Segment result;
-        result.length = segmentLength;
-        result.cosineGrade = true;
-        result.cosineStartHeight = startHeight;
-        result.cosineStartGrade = startGrade;
-        result.cosineEndGrade = endGrade;
+        result.kind = Kind::TopHat;
+        result.topHatStartHeight = startHeight;
+        result.topHatRise = crestHeight - startHeight;
+        result.length = result.topHatRise * kTopHatMaximumUnitSlope /
+                        std::tan(maximumPitch);
         return result;
     }
 
@@ -182,21 +211,69 @@ struct Segment {
         return result;
     }
 
+    // Integrate a bounded Bernstein curvature law from trough to crown, or its
+    // exact mirror. Two equal controls at the trough and four -1 controls at
+    // the crown make jerk zero at both extrema and keep the negative-G crown
+    // broad enough to be sustained rather than a single sampled peak. The
+    // eight intervening controls share exactly the positive curvature needed
+    // for zero total curvature. Bernstein's convex-hull property guarantees
+    // no positive or negative curvature overshoot.
+    static Segment camelbackHalf(const Boundary& begin, const Boundary& end,
+                                 double segmentLength, bool crownAtEnd) {
+        const Boundary& crown = crownAtEnd ? end : begin;
+        const Boundary& trough = crownAtEnd ? begin : end;
+        const double crownCurvature = -crown.curvature;
+        const double ratio = trough.curvature / crownCurvature;
+        assert(crownCurvature > 0.0 && ratio >= 0.0 && ratio < 1.0);
+        assert(near(begin.grade, 0.0, 1.0e-10) &&
+               near(end.grade, 0.0, 1.0e-10));
+
+        Segment result;
+        result.length = segmentLength;
+        result.coefficient[0] = begin.height;
+        const double scale = crownCurvature * segmentLength * segmentLength;
+        constexpr int curvatureDegree = 13;
+        std::array<double, curvatureDegree + 1> ascentControl{};
+        ascentControl[0] = ascentControl[1] = ratio;
+        const double compensation = (4.0 - 2.0 * ratio) / 8.0;
+        for (int i = 2; i <= 9; ++i) ascentControl[i] = compensation;
+        for (int i = 10; i <= curvatureDegree; ++i) ascentControl[i] = -1.0;
+
+        auto choose = [](int n, int k) {
+            int value = 1;
+            for (int i = 1; i <= k; ++i) value = value * (n - i + 1) / i;
+            return value;
+        };
+        for (int power = 0; power <= curvatureDegree; ++power) {
+            double difference = 0.0;
+            for (int i = 0; i <= power; ++i) {
+                const int controlIndex = crownAtEnd ? i : curvatureDegree - i;
+                const double sign = ((power - i) & 1) ? -1.0 : 1.0;
+                difference += sign * choose(power, i) * ascentControl[controlIndex];
+            }
+            const double curvaturePower =
+                choose(curvatureDegree, power) * difference;
+            result.coefficient[power + 2] = scale * curvaturePower /
+                static_cast<double>((power + 1) * (power + 2));
+        }
+        return result;
+    }
+
     double derivativeNormalized(double u, int order) const {
         assert(order >= 0 && order <= 3);
         u = clamp01(u);
-        if (cosineGrade) {
-            const double delta = cosineEndGrade - cosineStartGrade;
+        if (kind == Kind::TopHat) {
+            const double t = 2.0*u - 1.0;
+            const double s = t*t;
             if (order == 0)
-                return cosineStartHeight + length *
-                    (cosineStartGrade * u + delta *
-                     (0.5 * u - std::sin(kPi * u) / (2.0 * kPi)));
-            if (order == 1)
-                return length * (cosineStartGrade +
-                    0.5 * delta * (1.0 - std::cos(kPi * u)));
+                return topHatStartHeight + topHatRise*bernsteinDifference(0, s);
+            const double first = 20.0*bernsteinDifference(1, s);
+            if (order == 1) return topHatRise*4.0*t*first;
+            const double second = 20.0*19.0*bernsteinDifference(2, s);
             if (order == 2)
-                return length * 0.5 * delta * kPi * std::sin(kPi * u);
-            return length * 0.5 * delta * kPi * kPi * std::cos(kPi * u);
+                return topHatRise*(8.0*first + 16.0*s*second);
+            const double third = 20.0*19.0*18.0*bernsteinDifference(3, s);
+            return topHatRise*32.0*t*(3.0*second + 2.0*s*third);
         }
         double result = 0.0;
         for (int index = kDegree; index >= order; --index) {
@@ -234,17 +311,16 @@ struct Segment {
 };
 
 // Fixed-capacity storage keeps construction allocation-free and sampling
-// predictable.  The largest built-in shape (four hills) uses 17 segments.
+// predictable. The largest built-in shape (four hills) uses eight segments.
 class Profile {
 public:
     bool append(const Segment& segment) {
         if (segmentCount_ >= segment_.size() || !(segment.length > 0.0) ||
             !finite(segment.length))
             return false;
-        if (segment.cosineGrade &&
-            (!finite(segment.cosineStartHeight) ||
-             !finite(segment.cosineStartGrade) ||
-             !finite(segment.cosineEndGrade)))
+        if (segment.kind == Segment::Kind::TopHat &&
+            (!finite(segment.topHatStartHeight) ||
+             !finite(segment.topHatRise) || !(segment.topHatRise > 0.0)))
             return false;
         for (double coefficient : segment.coefficient)
             if (!finite(coefficient)) return false;
@@ -262,13 +338,6 @@ public:
         return segment_[index];
     }
 
-    double segmentStartDistance(std::size_t index) const {
-        assert(index <= segmentCount_);
-        double distance = 0.0;
-        for (std::size_t i = 0; i < index; ++i) distance += segment_[i].length;
-        return distance;
-    }
-
     Sample sampleDistance(double distance) const {
         if (empty()) return {};
         distance = std::max(0.0, std::min(totalLength_, distance));
@@ -281,20 +350,8 @@ public:
         return segment_[segmentCount_ - 1].sampleNormalized(1.0);
     }
 
-    Sample sampleNormalized(double t) const {
-        return sampleDistance(clamp01(t) * totalLength_);
-    }
-
     double heightDistance(double distance) const {
         return sampleDistance(distance).height;
-    }
-
-    double heightNormalized(double t) const {
-        return sampleNormalized(t).height;
-    }
-
-    double heightDelta(double fromDistance, double toDistance) const {
-        return heightDistance(toDistance) - heightDistance(fromDistance);
     }
 
     Boundary begin() const {
@@ -313,6 +370,30 @@ private:
     double totalLength_ = 0.0;
 };
 
+// Convert the profile's plan-distance parameter into physical centreline
+// length. A fixed Simpson rule is deterministic, allocation-free, and more
+// than sufficient for the low-degree laws used by V1.
+inline double railArcLength(const Profile& profile, double beginDistance,
+                            double endDistance, int intervals = 128) {
+    if (profile.empty()) return 0.0;
+    beginDistance = std::max(0.0, std::min(profile.length(), beginDistance));
+    endDistance = std::max(beginDistance, std::min(profile.length(), endDistance));
+    if (!(endDistance > beginDistance)) return 0.0;
+    intervals = std::max(2, intervals + (intervals & 1));
+    const double step = (endDistance - beginDistance) / intervals;
+    double sum = 0.0;
+    for (int i = 0; i <= intervals; ++i) {
+        const double grade = profile.sampleDistance(beginDistance + step*i).grade;
+        const double weight = (i == 0 || i == intervals) ? 1.0 : (i & 1 ? 4.0 : 2.0);
+        sum += weight * std::sqrt(1.0 + grade*grade);
+    }
+    return sum * step / 3.0;
+}
+
+inline double railArcLength(const Profile& profile, int intervals = 128) {
+    return railArcLength(profile, 0.0, profile.length(), intervals);
+}
+
 // Small stateful composer for custom V1 profiles.  It refuses discontinuous
 // appends rather than relying on a later spline pass to hide them.
 class ProfileBuilder {
@@ -320,39 +401,22 @@ public:
     explicit ProfileBuilder(Boundary initial = {}) : cursor_(initial) {}
 
     bool good() const { return good_; }
-    const Boundary& cursor() const { return cursor_; }
     const Profile& profile() const { return profile_; }
-
-    bool appendLine(double segmentLength) {
-        if (!good_ || !(segmentLength > 0.0) || !finite(segmentLength) ||
-            !finiteBoundary(cursor_) || std::abs(cursor_.curvature) > 1.0e-10)
-            return fail();
-        return appendChecked(Segment::line(cursor_.height, cursor_.grade, segmentLength));
-    }
-
-    bool appendSlopeBlend(double endGrade, double segmentLength) {
-        if (!good_ || !(segmentLength > 0.0) || !finite(segmentLength) ||
-            !finite(endGrade) || !finiteBoundary(cursor_) ||
-            std::abs(cursor_.curvature) > 1.0e-10)
-            return fail();
-        return appendChecked(
-            Segment::slopeBlend(cursor_.height, cursor_.grade, endGrade, segmentLength));
-    }
-
-    bool appendSlopeCosine(double endGrade, double segmentLength) {
-        if (!good_ || !(segmentLength > 0.0) || !finite(segmentLength) ||
-            !finite(endGrade) || !finiteBoundary(cursor_) ||
-            std::abs(cursor_.curvature) > 1.0e-10)
-            return fail();
-        return appendChecked(
-            Segment::slopeCosine(cursor_.height, cursor_.grade, endGrade, segmentLength));
-    }
 
     bool appendQuintic(const Boundary& end, double segmentLength) {
         if (!good_ || !(segmentLength > 0.0) || !finite(segmentLength) ||
             !finiteBoundary(cursor_) || !finiteBoundary(end))
             return fail();
         return appendChecked(Segment::quintic(cursor_, end, segmentLength));
+    }
+
+    bool appendCamelbackHalf(const Boundary& end, double segmentLength,
+                             bool crownAtEnd) {
+        if (!good_ || !(segmentLength > 0.0) || !finite(segmentLength) ||
+            !finiteBoundary(cursor_) || !finiteBoundary(end))
+            return fail();
+        return appendChecked(Segment::camelbackHalf(
+            cursor_, end, segmentLength, crownAtEnd));
     }
 
 private:
@@ -379,7 +443,6 @@ struct ContinuityMetrics {
     double maximumHeightJump = 0.0;
     double maximumGradeJump = 0.0;
     double maximumCurvatureJump = 0.0;
-    std::size_t worstJoin = 0;
 
     bool isC2(double tolerance = 1.0e-8) const {
         return maximumHeightJump <= tolerance &&
@@ -390,7 +453,6 @@ struct ContinuityMetrics {
 
 inline ContinuityMetrics continuityMetrics(const Profile& profile) {
     ContinuityMetrics result;
-    double worst = 0.0;
     for (std::size_t i = 1; i < profile.segmentCount(); ++i) {
         const Boundary left = profile.segment(i - 1).end();
         const Boundary right = profile.segment(i).begin();
@@ -401,20 +463,12 @@ inline ContinuityMetrics continuityMetrics(const Profile& profile) {
         result.maximumGradeJump = std::max(result.maximumGradeJump, gradeJump);
         result.maximumCurvatureJump =
             std::max(result.maximumCurvatureJump, curvatureJump);
-        const double joinWorst = std::max(heightJump, std::max(gradeJump, curvatureJump));
-        if (joinWorst > worst) {
-            worst = joinWorst;
-            result.worstJoin = i;
-        }
     }
     return result;
 }
 
 struct ShapeMetrics {
-    double minimumHeight = std::numeric_limits<double>::infinity();
-    double maximumHeight = -std::numeric_limits<double>::infinity();
     double maximumAbsoluteGrade = 0.0;
-    double maximumAbsoluteCurvature = 0.0;
     std::size_t localMaxima = 0;
     std::size_t localMinima = 0;
 
@@ -426,11 +480,7 @@ struct ShapeMetrics {
 inline ShapeMetrics shapeMetrics(const Profile& profile,
                                  std::size_t samplesPerSegment = 32) {
     ShapeMetrics result;
-    if (profile.empty()) {
-        result.minimumHeight = 0.0;
-        result.maximumHeight = 0.0;
-        return result;
-    }
+    if (profile.empty()) return result;
     samplesPerSegment = std::max<std::size_t>(samplesPerSegment, 4);
     int previousGradeSign = 0;
     for (std::size_t segmentIndex = 0;
@@ -441,12 +491,8 @@ inline ShapeMetrics shapeMetrics(const Profile& profile,
             const Sample sample = profile.segment(segmentIndex).sampleNormalized(
                 static_cast<double>(sampleIndex) /
                 static_cast<double>(samplesPerSegment));
-            result.minimumHeight = std::min(result.minimumHeight, sample.height);
-            result.maximumHeight = std::max(result.maximumHeight, sample.height);
             result.maximumAbsoluteGrade =
                 std::max(result.maximumAbsoluteGrade, std::abs(sample.grade));
-            result.maximumAbsoluteCurvature =
-                std::max(result.maximumAbsoluteCurvature, std::abs(sample.curvature));
 
             const int gradeSign = sample.grade > 1.0e-9 ? 1 :
                                   sample.grade < -1.0e-9 ? -1 : 0;
@@ -469,118 +515,58 @@ inline void assertC2(const Profile& profile) {
 #endif
 }
 
-// The integral of a +grade to -grade crown at u=1/2 is 11/32 of
-// grade*length.  This exact constant is useful both for sizing and validation.
-constexpr double kSymmetricBlendExtremumRise = 11.0 / 32.0;
-constexpr double kSymmetricCosineExtremumRise = 1.0 / kPi;
-
 struct TopHatSpec {
     double startHeight = 0.0;
     double crestHeight = 250.0;
     double endHeight = 0.0;
-    double faceDegrees = 67.5;
-    double entryTransitionLength = 28.0;
-    double crownLength = 34.0;
-    double exitTransitionLength = 30.0;
-    double horizontalDilation = 1.30;
+    double faceDegrees = kTopHatReferenceFaceDegrees;
 };
 
 struct TopHatProfile {
     Profile profile{};
     TopHatSpec spec{};
     double apexDistance = 0.0;
-    double ascentFaceStartDistance = 0.0;
-    double descentFaceEndDistance = 0.0;
     bool valid = false;
 
     explicit operator bool() const { return valid; }
 };
-
-inline bool validateTopHat(const TopHatProfile& topHat,
-                           double tolerance = 1.0e-6) {
-    if (topHat.profile.empty() ||
-        !continuityMetrics(topHat.profile).isC2(tolerance))
-        return false;
-    const Boundary begin = topHat.profile.begin();
-    const Boundary end = topHat.profile.end();
-    const Sample apex = topHat.profile.sampleDistance(topHat.apexDistance);
-    const ShapeMetrics shape = shapeMetrics(topHat.profile);
-    const double dilatedPitch = std::atan(
-        std::tan(topHat.spec.faceDegrees * kDegreesToRadians) /
-        topHat.spec.horizontalDilation) * kRadiansToDegrees;
-    return topHat.spec.faceDegrees >= kTopHatMinFaceDegrees - tolerance &&
-           topHat.spec.faceDegrees <= kTopHatMaxFaceDegrees + tolerance &&
-           near(begin.height, topHat.spec.startHeight, tolerance) &&
-           near(begin.grade, 0.0, tolerance) &&
-           near(begin.curvature, 0.0, tolerance) &&
-           near(end.height, topHat.spec.endHeight, tolerance) &&
-           near(end.grade, 0.0, tolerance) &&
-           near(end.curvature, 0.0, tolerance) &&
-           near(apex.height, topHat.spec.crestHeight, tolerance) &&
-           near(apex.grade, 0.0, tolerance) && apex.curvature < 0.0 &&
-           shape.localMaxima == 1 &&
-           near(shape.maximumPitchDegrees(), dilatedPitch, 2.0e-5);
-}
 
 inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
     TopHatProfile result;
     result.spec = spec;
 
     const bool finiteInput = finite(spec.startHeight) && finite(spec.crestHeight) &&
-                             finite(spec.endHeight) && finite(spec.faceDegrees) &&
-                             finite(spec.entryTransitionLength) &&
-                             finite(spec.crownLength) &&
-                             finite(spec.exitTransitionLength) &&
-                             finite(spec.horizontalDilation);
+                             finite(spec.endHeight) && finite(spec.faceDegrees);
     if (!finiteInput ||
         spec.faceDegrees < kTopHatMinFaceDegrees ||
-        spec.faceDegrees > kTopHatMaxFaceDegrees ||
-        !(spec.entryTransitionLength > 0.0) || !(spec.crownLength > 0.0) ||
-        !(spec.exitTransitionLength > 0.0) || !(spec.horizontalDilation >= 1.0))
+        spec.faceDegrees > kTopHatMaxFaceDegrees)
         return result;
 
-    const double faceGrade = std::tan(spec.faceDegrees * kDegreesToRadians);
     const double ascentRise = spec.crestHeight - spec.startHeight;
     const double descentDrop = spec.crestHeight - spec.endHeight;
     if (!(ascentRise > 0.0) || !(descentDrop > 0.0)) return result;
 
-    // One continuous camelback: the crown curve begins one third of the way
-    // up and remains active until two thirds of the way down.  Raised-cosine
-    // grade keeps pitch changing across each whole section instead of
-    // dwelling at a constant face angle.  There is still exactly one apex.
-    constexpr double crownRiseFraction = 2.0 / 3.0;
-    const double entryLength = 2.0 * (1.0 - crownRiseFraction) * ascentRise / faceGrade;
-    const double crownLength = crownRiseFraction * ascentRise /
-                               (kSymmetricCosineExtremumRise * faceGrade);
-    const double exitLength = entryLength -
-                              2.0 * (spec.endHeight - spec.startHeight) / faceGrade;
-    if (!(entryLength > 0.0) || !(crownLength > 0.0) || !(exitLength > 0.0))
+    if (!near(spec.startHeight, spec.endHeight, 1.0e-9)) return result;
+    const double actualPitch = spec.faceDegrees * kDegreesToRadians;
+    const Segment shaped = Segment::topHat(spec.startHeight, spec.crestHeight,
+                                           actualPitch);
+    const double length = shaped.length;
+    if (!(length > 0.0) || !finite(length)) return result;
+
+    if (!result.profile.append(shaped))
         return result;
-
-    ProfileBuilder builder({spec.startHeight, 0.0, 0.0});
-    if (!builder.appendSlopeCosine(faceGrade, entryLength)) return result;
-    result.ascentFaceStartDistance = builder.profile().length();
-    const double crownStartDistance = builder.profile().length();
-    if (!builder.appendSlopeCosine(-faceGrade, crownLength)) return result;
-    result.apexDistance = crownStartDistance + 0.5 * crownLength;
-    result.descentFaceEndDistance = builder.profile().length();
-    if (!builder.appendSlopeCosine(0.0, exitLength)) return result;
-
-    Profile dilated;
-    for (std::size_t i = 0; i < builder.profile().segmentCount(); ++i) {
-        Segment segment = builder.profile().segment(i);
-        segment.length *= spec.horizontalDilation;
-        if (segment.cosineGrade) {
-            segment.cosineStartGrade /= spec.horizontalDilation;
-            segment.cosineEndGrade /= spec.horizontalDilation;
-        }
-        if (!dilated.append(segment)) return result;
-    }
-    result.ascentFaceStartDistance *= spec.horizontalDilation;
-    result.apexDistance *= spec.horizontalDilation;
-    result.descentFaceEndDistance *= spec.horizontalDilation;
-    result.profile = dilated;
-    result.valid = builder.good() && validateTopHat(result);
+    result.apexDistance = length * 0.5;
+    const Sample foot = result.profile.sampleDistance(0.0);
+    const Sample face = result.profile.sampleDistance(
+        length * kTopHatMaximumSlopeU);
+    const Sample apex = result.profile.sampleDistance(result.apexDistance);
+    result.valid = near(foot.height, spec.startHeight, 1.0e-9) &&
+                   near(foot.grade, 0.0, 1.0e-9) &&
+                   near(foot.curvature, 0.0, 1.0e-9) &&
+                   near(foot.jerk, 0.0, 1.0e-9) &&
+                   near(face.pitchDegrees(), spec.faceDegrees, 1.0e-9) &&
+                   near(apex.height, spec.crestHeight, 1.0e-9) &&
+                   near(apex.grade, 0.0, 1.0e-9) && apex.curvature < 0.0;
     if (result.valid) assertC2(result.profile);
     return result;
 }
@@ -592,13 +578,7 @@ struct HillChainSpec {
     double firstCrestRise = 28.0;
     double crestHeightDecay = 0.82;        // absolute crests descend each hop
     double troughDropPerHill = 3.0;
-    double faceDegrees = 42.0;
-    double entryTransitionLength = 10.0;
-    double crownLength = 18.0;
-    double crownLengthDecay = 0.90;
-    double troughLength = 12.0;            // deliberately shorter than a crown
-    double exitTransitionLength = 10.0;
-    double designSpeed = 60.0;              // m/s; sizes curvature, not propulsion
+    double crownRadius = 30.625;             // metres; fixed geometry, never entry-speed prediction
 };
 
 struct HillChainProfile {
@@ -615,13 +595,15 @@ struct HillChainProfile {
 
 inline bool validateHillChain(const HillChainProfile& chain,
                               double tolerance = 1.0e-6) {
-    if (chain.spec.hillCount < 2 || chain.spec.hillCount > kMaxChainHills ||
+    if (chain.spec.hillCount < 1 || chain.spec.hillCount > kMaxChainHills ||
         chain.profile.empty() ||
         !continuityMetrics(chain.profile).isC2(tolerance))
         return false;
 
     const Boundary begin = chain.profile.begin();
     const Boundary end = chain.profile.end();
+    const Sample beginSample = chain.profile.sampleDistance(0.0);
+    const Sample endSample = chain.profile.sampleDistance(chain.profile.length());
     const double expectedEnd = chain.spec.startHeight -
                                chain.spec.troughDropPerHill *
                                static_cast<double>(chain.spec.hillCount) +
@@ -631,20 +613,27 @@ inline bool validateHillChain(const HillChainProfile& chain,
         !near(begin.curvature, 0.0, tolerance) ||
         !near(end.height, expectedEnd, tolerance) ||
         !near(end.grade, 0.0, tolerance) ||
-        !near(end.curvature, 0.0, tolerance))
+        !near(end.curvature, 0.0, tolerance) ||
+        !near(beginSample.jerk, 0.0, tolerance) ||
+        !near(endSample.jerk, 0.0, tolerance))
         return false;
 
     for (std::size_t i = 0; i < chain.spec.hillCount; ++i) {
         const Sample crest = chain.profile.sampleDistance(chain.crestDistance[i]);
         if (!near(crest.height, chain.crestHeight[i], tolerance) ||
-            !near(crest.grade, 0.0, tolerance) || !(crest.curvature < 0.0))
+            !near(crest.grade, 0.0, tolerance) ||
+            !near(crest.curvature, -1.0 / chain.spec.crownRadius, tolerance) ||
+            !near(crest.jerk, 0.0, tolerance))
             return false;
 
         const Sample trough = chain.profile.sampleDistance(chain.troughDistance[i]);
         if (!near(trough.height, chain.troughHeight[i], tolerance) ||
             !near(trough.grade, 0.0, tolerance))
             return false;
-        if (i + 1 < chain.spec.hillCount && !(trough.curvature > 0.0))
+        if (i + 1 < chain.spec.hillCount &&
+            (!near(trough.curvature,
+                   kCamelbackValleyCurvatureRatio / chain.spec.crownRadius,
+                   tolerance) || !near(trough.jerk, 0.0, tolerance)))
             return false;
     }
 
@@ -661,26 +650,15 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
                              finite(spec.firstCrestRise) &&
                              finite(spec.crestHeightDecay) &&
                              finite(spec.troughDropPerHill) &&
-                             finite(spec.faceDegrees) &&
-                             finite(spec.entryTransitionLength) &&
-                             finite(spec.crownLength) &&
-                             finite(spec.crownLengthDecay) &&
-                             finite(spec.troughLength) &&
-                             finite(spec.exitTransitionLength) &&
-                             finite(spec.designSpeed);
-    if (!finiteInput || spec.hillCount < 2 || spec.hillCount > kMaxChainHills ||
+                             finite(spec.crownRadius);
+    if (!finiteInput || spec.hillCount < 1 || spec.hillCount > kMaxChainHills ||
         !(spec.terrainRise >= 0.0) ||
         !(spec.firstCrestRise > 0.0) ||
         !(spec.crestHeightDecay > 0.0 && spec.crestHeightDecay < 1.0) ||
         !(spec.troughDropPerHill >= 0.0) ||
-        !(spec.faceDegrees > 0.0 && spec.faceDegrees < 80.0) ||
-        !(spec.entryTransitionLength > 0.0) || !(spec.crownLength > 0.0) ||
-        !(spec.crownLengthDecay > 0.0 && spec.crownLengthDecay <= 1.0) ||
-        !(spec.troughLength > 0.0 && spec.troughLength <= spec.crownLength) ||
-        !(spec.exitTransitionLength > 0.0) || !(spec.designSpeed > 0.0))
+        !(spec.crownRadius > 0.0))
         return result;
 
-    const double faceGrade = std::tan(spec.faceDegrees * kDegreesToRadians);
     const std::size_t extremaCount = 2 * spec.hillCount + 1;
     std::array<double, 2 * kMaxChainHills + 1> height{};
     std::array<double, 2 * kMaxChainHills> span{};
@@ -698,34 +676,33 @@ inline HillChainProfile makeDescendingHillChain(const HillChainSpec& spec) {
         height[2 * i + 2] = spec.startHeight + troughBase - spec.troughDropPerHill *
                             static_cast<double>(i + 1);
     }
-    // A sinusoidal camelback is best understood as a sequence of smooth
-    // extrema, not straight faces plus crown fillets.  Quintic Hermite spans
-    // approximate those half-waves while allowing curvature to match across
-    // unequal, descending hills (something independent cosine pieces cannot).
-    for (std::size_t i = 0; i + 1 < extremaCount; ++i) {
-        const double delta = std::abs(height[i + 1] - height[i]);
-        // A half-cosine of height delta reaches max grade pi*delta/(2L).
-        // Use that exact sizing, then reproduce its endpoint curvature below.
-        const double gradeLength = 0.5 * kPi * delta / faceGrade;
-        // Endpoint curvature of this Hermite half-wave is approximately
-        // 6*delta/L^2.  Size it for a -5 g crest at the actual planned ride
-        // speed; pitch alone made 30 m hills dangerously short at 240 km/h.
-        const double forceLength = spec.designSpeed *
-            std::sqrt(delta / (0.92 * 9.81));
-        span[i] = std::max(18.0, std::max(gradeLength, forceLength));
-    }
     curvature[0] = curvature[extremaCount - 1] = 0.0;
     for (std::size_t i = 1; i + 1 < extremaCount; ++i) {
-        const double left = std::abs(height[i] - height[i - 1]) / (span[i - 1] * span[i - 1]);
-        const double right = std::abs(height[i + 1] - height[i]) / (span[i] * span[i]);
-        const double sign = (i & 1u) ? -1.0 : 1.0;
-        // Half-cosine endpoint curvature is pi^2*delta/(2L^2).
-        curvature[i] = sign * 6.0 * std::min(left, right);
+        curvature[i] = (i & 1u) ? -1.0 / spec.crownRadius
+                                : kCamelbackValleyCurvatureRatio /
+                                  spec.crownRadius;
+    }
+    // The integrated curvature law fixes half length exactly from height and
+    // crown radius.  It has no face-angle or entry-speed sizing input.
+    for (std::size_t i = 0; i + 1 < extremaCount; ++i) {
+        const double delta = std::abs(height[i + 1] - height[i]);
+        const double crownCurvature = (i & 1u) ? -curvature[i]
+                                               : -curvature[i + 1];
+        const double troughCurvature = (i & 1u) ? curvature[i + 1]
+                                                : curvature[i];
+        const double ratio = troughCurvature / crownCurvature;
+        // For the degree-13 controls above, integral((1-u)*curvature) is
+        // (12+5r)/105. This fixes height exactly while leaving crown radius as
+        // an independent dimension.
+        const double heightFactor = (12.0 + 5.0 * ratio) / 105.0;
+        span[i] = std::sqrt(delta / (crownCurvature * heightFactor));
     }
 
     ProfileBuilder builder({height[0], 0.0, curvature[0]});
     for (std::size_t i = 0; i + 1 < extremaCount; ++i) {
-        if (!builder.appendQuintic({height[i + 1], 0.0, curvature[i + 1]}, span[i]))
+        if (!builder.appendCamelbackHalf(
+                {height[i + 1], 0.0, curvature[i + 1]}, span[i],
+                (i & 1u) == 0u))
             return result;
         if ((i & 1u) == 0u) {
             std::size_t hill = i / 2;

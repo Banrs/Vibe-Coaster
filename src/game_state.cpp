@@ -14,6 +14,7 @@
 #include <deque>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -24,6 +25,7 @@
 #include <atomic>
 #include <climits>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 // V1 shared physics constants. V2 will own a renderer-neutral configuration.
@@ -97,10 +99,7 @@ static Color mixc(Color a, Color b, float t) {
 enum SegMode { M_FLAT, M_CLIMB, M_DROP, M_HILLS, M_TURN, M_LOOP, M_ROLL,
                M_STATION, M_DIP, M_LAUNCH, M_HELIX, M_BOOST, M_IMMEL,
                M_SCURVE, M_DIVE, M_BANKAIR, M_WAVE,
-               M_STALL, M_DIVELOOP, M_COBRA,
-               M_WINGOVER, M_HEARTLINE,
-               M_PRETZEL, M_STENGEL, M_BANANA,
-               M_CLIFFDIVE,
+               M_STALL, M_DIVELOOP,
                M_COUNT };
 
 // One propulsion/energy law shared by live simulation, generator prediction,
@@ -112,31 +111,17 @@ static float coastAcceleration(float speed, float tangentY) {
 
 static float applyTrackDrive(float speed, unsigned char tag, unsigned char drive,
                              float tangentY, float dt) {
-    if (tag == M_LAUNCH && speed < LAUNCH_V) {
-        // LAUNCH_ACCEL is a measured-profile NET acceleration. Cancel the
-        // coasting loss already integrated this frame so grade/drag do not
-        // silently change the hydraulic reference time.
-        float thrust = LAUNCH_ACCEL - coastAcceleration(speed, tangentY);
-        speed = fminf(speed + thrust * dt, LAUNCH_V);
-    } else if (tag == M_CLIMB && drive == 2 && speed < CLIFF_LSM_V) {
-        float thrust = BOOST_ACCEL - coastAcceleration(speed, tangentY);
-        speed = fminf(speed + thrust * dt, CLIFF_LSM_V);
-    } else if (tag == M_CLIMB && drive == 0 && speed < CLIMB_V) {
-        speed = fminf(speed + 44.0f * dt, CLIMB_V);
+    if (drive == 2 && (tag == M_LAUNCH || tag == M_BOOST) &&
+        speed < V1_PROPULSION.targetSpeed) {
+        // Propulsion belongs to the owned powered span, not to its display
+        // name.  LAUNCH and BOOST share the same physical 360 km/h / 1.5x
+        // reference contract; the tag only describes where the block sits in
+        // the ride.  The propulsion contract remains the requested measured
+        // net acceleration, independent of the local grade or drag loss.
+        float thrust = V1_PROPULSION.netAcceleration -
+                       coastAcceleration(speed, tangentY);
+        speed = fminf(speed + thrust * dt, V1_PROPULSION.targetSpeed);
     }
-
-    if (tag == M_BOOST) {
-        // Uphill authored BOOST track is the Falcon-style 150 km/h cliff LSM;
-        // ordinary near-level boosters use Red Force's 180 km/h LSM profile.
-        float target = tangentY > 0.05f ? CLIFF_LSM_V : BOOST_V;
-        if (speed < target) {
-            float thrust = BOOST_ACCEL - coastAcceleration(speed, tangentY);
-            speed = fminf(speed + thrust * dt, target);
-        }
-    }
-    if (speed < 30.0f && tag != M_STATION && tag != M_LAUNCH && tag != M_BOOST)
-        speed += 60.0f * fmaxf(0.0f, 1.0f - speed / 34.0f) * dt;
-
     if (drive == 1 && tangentY > 0.05f) {
         float liftV = tangentY > 0.55f ? 27.0f : CHAIN_V;
         if (speed < liftV) speed = fminf(speed + 20.0f * dt, liftV);
@@ -148,6 +133,26 @@ static float integrateRideSpeed(float speed, float tangentY, unsigned char tag,
                                 unsigned char drive, float dt) {
     speed += coastAcceleration(speed, tangentY) * dt;
     return applyTrackDrive(speed, tag, drive, tangentY, dt);
+}
+
+// Distance-domain wrapper used by geometry planning.  It deliberately calls
+// the same 120 Hz time-step law as live play instead of taking one coarse
+// Euler step per 7--14 m control chord.  Planned entry speeds therefore mean
+// the speed the train will actually have when it reaches an element.
+static float integrateRideDistance(float speed, float tangentY,
+                                   unsigned char tag, unsigned char drive,
+                                   float distance) {
+    float remaining = fmaxf(distance, 0.0f);
+    int guard = 0;
+    while (remaining > 1.0e-4f && guard++ < 4096) {
+        const float oldSpeed = speed;
+        const float dt = fminf(1.0f / 120.0f,
+                               remaining / fmaxf(oldSpeed, V_GUARD));
+        speed = integrateRideSpeed(speed, tangentY, tag, drive, dt);
+        const float travelled = 0.5f * (oldSpeed + speed) * dt;
+        remaining -= fmaxf(travelled, 1.0e-5f);
+    }
+    return speed;
 }
 
 static int   gForceElem  = -1;

@@ -68,124 +68,30 @@ static const char *SHADOW_FS =
 
     // One shadow map and one filtering path. Cascade selection was removed.
     "uniform mat4 lightVP; uniform sampler2D shadowMap; uniform vec2 shadowTexel;\n"
-    // Each cascade's normalized [0,1] depth-buffer range covers a different span
-    // of world metres (near cascades are tight/shallow, far cascades deep) -- a
-    // single normalized bias would be either too small (acne) on the far
-    // cascade or too large (peter-panning) on the near one, so bias is computed
-    // in world metres then converted per-cascade via its own inverse depth range.
+    // Normalized depth per world metre for the single light volume.
     "uniform float invRange;\n"
-    // World metres per shadow-map texel (XY, i.e. 2*cascadeRadius/mapResolution)
-    // for each cascade -- lets the PCSS blocker-search/penumbra math below
-    // convert normalized depth into a world-stable filter radius.
-    "uniform float pcssTexelWorld;\n"
-
-    "const vec2 PD12[12] = vec2[12](\n"
-    "  vec2(-0.326,-0.406),vec2(-0.840,-0.074),vec2(-0.696, 0.457),vec2(-0.203, 0.621),\n"
-    "  vec2( 0.962,-0.195),vec2( 0.473,-0.480),vec2( 0.519, 0.767),vec2( 0.185,-0.893),\n"
-    "  vec2( 0.507, 0.064),vec2( 0.896, 0.412),vec2(-0.322,-0.933),vec2(-0.792,-0.598));\n"
-    // radiusScale is a per-fragment texel-count parameter -- PCSS (below)
-    // varies it based on blocker distance, so shadows go tight right at the
-    // occluding edge and soften with distance from it (the visual signature
-    // of a ray-traced soft shadow) instead of one uniform softness everywhere.
-    "float pcfTap(sampler2D sm, vec2 texel, vec3 p, float bias, float radiusScale){\n"
-    "  float ang = fract(sin(dot(fragWorld.xz, vec2(12.9898,78.233)))*43758.5453)*6.2831853;\n"
-    "  float ca=cos(ang), sa=sin(ang); mat2 rot=mat2(ca,-sa,sa,ca);\n"
-    "  vec2 o = texel*radiusScale;\n"
-    "  float s=0.0;\n"
-    "  for(int i=0; i<12; i++){\n"
-    "    vec2 tap = p.xy + rot*PD12[i]*o;\n"
-    "    if(tap.x<0.0||tap.x>1.0||tap.y<0.0||tap.y>1.0) s += 1.0;\n"
-    "    else s += (p.z-bias > texture(sm, tap).r) ? 0.0 : 1.0;\n"
-    "  }\n"
-    "  return s*(1.0/12.0);\n"
-    "}\n"
-    // PCSS blocker search: reuses the first 6 taps of the same Poisson disk
-    // (same per-fragment rotation as pcfTap, so the search and the later PCF
-    // filter agree on "nearby") at a fixed, generous texel radius to find
-    // occluders closer to the light than the receiver. Returns the number
-    // found and their average depth -- when nothing is found the fragment is
-    // in open sun with no nearby occluder and shadowCascadeN below skips the
-    // PCF filter entirely (both a correctness win -- no shadow at all where
-    // there's genuinely nothing to cast one -- and a performance win, exactly
-    // the "tight near the occluder, otherwise not paying for it" behaviour a
-    // ray-traced soft shadow has and a fixed-radius PCF cannot).
-    "void blockerSearch(sampler2D sm, vec2 texel, vec3 p, float bias, float searchTexels, out int n, out float avgBlocker){\n"
-    "  float ang = fract(sin(dot(fragWorld.xz, vec2(12.9898,78.233)))*43758.5453)*6.2831853;\n"
-    "  float ca=cos(ang), sa=sin(ang); mat2 rot=mat2(ca,-sa,sa,ca);\n"
-    "  vec2 o = texel*searchTexels;\n"
-    "  float sum=0.0; int cnt=0;\n"
-    "  for(int i=0; i<6; i++){\n"
-    "    vec2 tap = p.xy + rot*PD12[i]*o;\n"
-    "    if(tap.x<0.0||tap.x>1.0||tap.y<0.0||tap.y>1.0) continue;\n"
-    "    float d = texture(sm, tap).r;\n"
-    "    if(d < p.z - bias){ sum += d; cnt++; }\n"
-    "  }\n"
-    "  n = cnt;\n"
-    "  avgBlocker = (cnt > 0) ? sum/float(cnt) : 0.0;\n"
-    "}\n"
-    // Bias tuned in world metres, comfortably clearing the ~1 m terrain height
-    // steps regardless of which cascade is sampled; converted to each
-    // cascade's normalized units by the caller via invRangeN.
-    "float worldBias(float NoL){ return clamp(1.4 + 1.75*(1.0-NoL), 1.4, 3.2); }\n"
-    // PCSS tuning: PCSS_ANGULAR_TAN stands in for the sun's apparent angular
-    // size (tan of its half-angle) -- deliberately larger than the real sun
-    // (~0.005) so the penumbra is actually visible at this game's scale
-    // rather than a few sub-pixel texels, matching the "soft with distance"
-    // look this pass is going for without pretending to be physically exact.
-    // The penumbra half-width is clamped in WORLD METRES (MIN/MAX below), then
-    // converted to texels PER CASCADE at each use site, so the softness stays
-    // consistent (~0.25 m soft edge) at every altitude and cascade instead of
-    // scaling with each cascade's own texel size.
-    "const float PCSS_ANGULAR_TAN = 0.022;\n"
-    "const float PCSS_MIN_WORLD = 0.04;\n"
-    "const float PCSS_MAX_WORLD = 0.25;\n"
-    "const float PCSS_SEARCH_WORLD = 0.35;\n"
-    // Fade out the shadow of a high caster. worldZDiff (below) is the world
-    // distance from the blocker to the receiver it's shadowing -- for the
-    // ground under a train riding high on a hill/top-hat that's the train's
-    // altitude. A real object 100 m+ up casts an essentially invisible,
-    // hugely-diffused shadow, so fade the shadow to fully-lit as the caster
-    // gets far above the receiver; near-ground shadows (small worldZDiff --
-    // terrain, supports, a train low to the ground) are untouched.
-    "const float SHADOW_FADE_NEAR = 120.0;\n"
-    "const float SHADOW_FADE_FAR  = 400.0;\n"
-    // Cascade 0 is retired: its 0.031 m/texel map resolved dense
-    // sub-metre detail (grass tufts, flower/decor voxels, blocky terrain
-    // micro-relief) that the coarser cascade1/2 maps physically cannot
-    // represent, and at that texel density the PCSS blocker-search picked
-    // those up as occluders, smearing their micro-shadows into a continuous
-    // grey carpet over open ground near the train. The near field now samples
-    // shadowCascade1 directly, matching the cascade1/2 quality that already
-    // looks right in the 15-400 m field.
-    // Split per-cascade so every call site passes a compile-time-known cascade --
-    // no runtime idx branch needed since callers always pass a literal 0/1/2.
+    // One receiver test and one 3x3 PCF path; there are no cascades or close
+    // layer and therefore no layer-specific overrides to fight each other.
     "float shadowMapVisibility(vec3 N){\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
-    "  vec4 lp = lightVP*vec4(fragWorld,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
+    "  vec3 receiver = fragWorld + N*(0.20 + 0.35*(1.0-NoL));\n"
+    "  vec4 lp = lightVP*vec4(receiver,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
     "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "  float bias = worldBias(NoL)*invRange;\n"
-    "  int nB; float avgB;\n"
-    "  blockerSearch(shadowMap, shadowTexel, p, bias, PCSS_SEARCH_WORLD/pcssTexelWorld, nB, avgB);\n"
-    "  if(nB == 0) return 1.0;\n"
-    "  float worldZDiff = (p.z - avgB) / invRange;\n"
-    "  float radius = clamp(worldZDiff*PCSS_ANGULAR_TAN, PCSS_MIN_WORLD, PCSS_MAX_WORLD)/pcssTexelWorld;\n"
-    "  float sh = pcfTap(shadowMap, shadowTexel, p, bias, radius);\n"
-    "  return mix(1.0, sh, 1.0 - smoothstep(SHADOW_FADE_NEAR, SHADOW_FADE_FAR, worldZDiff));\n"
+    // One conservative 3x3 PCF. The removed PCSS blocker search treated the
+    // receiver's own voxel surface as a blocker across most of the map and
+    // drove virtually every fragment into shadow.
+    "  float bias = (0.65 + 1.10*(1.0-NoL))*invRange;\n"
+    "  float vis = 0.0;\n"
+    "  float maxDepth = 0.0;\n"
+    "  for(int y=-1; y<=1; ++y) for(int x=-1; x<=1; ++x){\n"
+    "    float d = texture(shadowMap, p.xy + vec2(x,y)*shadowTexel).r;\n"
+    "    maxDepth = max(maxDepth, d);\n"
+    "    vis += (p.z-bias <= d) ? 1.0 : 0.0;\n"
+    "  }\n"
+    "  if(maxDepth < 0.00001) return 1.0;\n"
+    "  vis *= (1.0/9.0);\n"
+    "  return mix(1.0, vis, 0.55);\n"
     "}\n"
-    // Select cascade by full 3D distance from focus, not XZ-only: the ortho
-    // box each cascade's computeLightVP builds is centred on the TRAIN's
-    // actual 3D position (main.cpp calls computeLightVP(P), not a ground-
-    // projected point), so when the train is high up, ground fragments almost
-    // directly below it have a small XZ offset but a huge vertical one. 3D
-    // distance correctly escalates to a bigger-radius cascade whenever any
-    // axis (including height) is large, so those fragments still land inside
-    // the chosen cascade's light-space bounds.
-    // Soft-blending across a band near each split keeps the cascade seam from
-    // ever being a visible hard line; right at each band's inner/outer edge t
-    // is ~0 or ~1 and the far/near tap contributes negligibly -- skip it there
-    // so the common case (deep inside a cascade, or barely past a blend edge)
-    // never pays for a second full 12-tap PCF.
-    // One shadow type and one map. Cascade selection/blending was the recurring near-layer bug.
     "float shadow(vec3 N){ return shadowMapVisibility(N); }\n"
 
     "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
@@ -395,9 +301,9 @@ struct ShadowSys {
     unsigned int depthTex = 0;
     int SM = SHADOW_MAP_SIZE;
     int locLightVP=-1, locShadowMap=-1, locShadowTexel=-1;
-    int locInvRange=-1, locPcssTexelWorld=-1;
+    int locInvRange=-1;
     int locLightDir=-1, locViewPos=-1;
-    int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1, locTime=-1;
+    int locSun=-1, locSky=-1, locGround=-1, locTime=-1;
     int locFogEnd=-1, locFogStart=-1, locFogRange=-1, locFogCol=-1, locFogColLinear=-1;
     int locRailTangent=-1, locRailUVRange=-1, locMetalUVRange=-1;
     int locLegacyTonemap=-1;
@@ -412,9 +318,6 @@ struct ShadowSys {
         locShadowMap = GetShaderLocation(lit, "shadowMap");
         locShadowTexel = GetShaderLocation(lit, "shadowTexel");
         locInvRange = GetShaderLocation(lit, "invRange");
-        locPcssTexelWorld = GetShaderLocation(lit, "pcssTexelWorld");
-        float texelWorld = (2.0f * SHADOW_RADIUS) / (float)SM;
-        SetShaderValue(lit, locPcssTexelWorld, &texelWorld, SHADER_UNIFORM_FLOAT);
         locLightDir    = GetShaderLocation(lit, "lightDir");
         locViewPos     = GetShaderLocation(lit, "viewPos");
         locSun         = GetShaderLocation(lit, "sunCol");
@@ -1034,9 +937,8 @@ struct PostFX {
     // from cam.fovy for the sky shader -- SSAO needs the same values to
     // reconstruct view-space position from sceneRT's depth texture.
     void resolve(int rw, int rh, float time, float tanHalfFovY, float aspect) {
-        // DEPTH_UNIT/AO_UNIT picked distinct from every other texture unit already
-        // in use across this frame (shadow cascades 10/13/14, RT_SHADOW_UNIT=12 and
-        // RT_DEPTH_UNIT=11 in the separate liveRT path, SCENE_UNIT/BLOOM_UNIT below)
+        // DEPTH_UNIT/AO_UNIT stay distinct from the single raster shadow map,
+        // RT_SHADOW_UNIT=12, RT_DEPTH_UNIT=11, and the scene/bloom pair below
         // so there's no ambiguity even though the liveRT ones are never live at the
         // same time as this (offline) resolve() path.
         static const int SCENE_UNIT = 15, BLOOM_UNIT = 16, DEPTH_UNIT = 18, AO_UNIT = 19;
@@ -1143,7 +1045,7 @@ struct PostFX {
         // Leave depth test/mask disabled here, matching the state EndMode3D()
         // already leaves things in pre-existing code paths: nothing else this
         // frame (HUD, screenshot triggers) needs depth testing, and the next
-        // frame's shadow-cascade pass re-enables both explicitly before it
+        // frame's single shadow pass re-enables both explicitly before it
         // needs them. The default framebuffer's own depth attachment is never
         // written by this pipeline any more (all 3-D geometry now depth-tests
         // against sceneRT's own depth texture instead), so its contents are

@@ -1,172 +1,3 @@
-#if 0
-
-static const char *SHADOW_VS =
-    "#version 330\n"
-    "in vec3 vertexPosition; in vec2 vertexTexCoord; in vec3 vertexNormal; in vec4 vertexColor;\n"
-    "uniform mat4 mvp; uniform mat4 matModel;\n"
-    "uniform mat4 lightVP;\n"
-    "out vec2 fragTexCoord; out vec4 fragColor; out vec3 fragNormal; out vec3 fragWorld; out vec4 fragLightPos;\n"
-    "void main(){\n"
-    "  vec4 wp = matModel*vec4(vertexPosition,1.0);\n"
-    "  fragWorld = wp.xyz;\n"
-    "  fragTexCoord = vertexTexCoord; fragColor = vertexColor;\n"
-    "  fragNormal = normalize(mat3(matModel)*vertexNormal);\n"
-    "  fragLightPos = lightVP*wp;\n"
-    "  gl_Position = mvp*vec4(vertexPosition,1.0);\n"
-    "}\n";
-static const char *SHADOW_FS =
-    "#version 330\n"
-    "in vec2 fragTexCoord; in vec4 fragColor; in vec3 fragNormal; in vec3 fragWorld; in vec4 fragLightPos;\n"
-    "uniform sampler2D texture0; uniform vec4 colDiffuse;\n"
-    "uniform sampler2D shadowMap; uniform vec2 shadowTexel;\n"
-    "uniform vec3 lightDir; uniform vec3 viewPos;\n"
-    "uniform vec3 sunCol; uniform vec3 skyCol; uniform vec3 groundCol;\n"
-    "out vec4 finalColor;\n"
-
-    "float shadow(vec3 N){\n"
-    "  vec3 p = fragLightPos.xyz/fragLightPos.w; p = p*0.5+0.5;\n"
-    "  if(p.z>1.0) return 1.0;\n"
-    "  if(p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    "  float NoL = max(dot(N,lightDir),0.0);\n"
-    "  float bias = max(0.0012*(1.0-NoL),0.00035);\n"
-    "  vec2 o = shadowTexel*0.75;\n"
-    "  float s=0.0;\n"
-    "  s += (p.z-bias > texture(shadowMap, p.xy+vec2(-o.x,-o.y)).r) ? 0.0 : 1.0;\n"
-    "  s += (p.z-bias > texture(shadowMap, p.xy+vec2( o.x,-o.y)).r) ? 0.0 : 1.0;\n"
-    "  s += (p.z-bias > texture(shadowMap, p.xy+vec2(-o.x, o.y)).r) ? 0.0 : 1.0;\n"
-    "  s += (p.z-bias > texture(shadowMap, p.xy+vec2( o.x, o.y)).r) ? 0.0 : 1.0;\n"
-    "  return s*0.25;\n"
-    "}\n"
-
-    "vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }\n"
-
-    "vec3 toLinear(vec3 c){ return pow(c, vec3(2.2)); }\n"
-    "void main(){\n"
-    "  vec4 tex = texture(texture0, fragTexCoord);\n"
-    "  vec3 albedo = toLinear(tex.rgb*fragColor.rgb*colDiffuse.rgb);\n"
-    "  vec3 N = normalize(fragNormal);\n"
-    "  float ndl = max(dot(N,lightDir),0.0);\n"
-    "  float rawSh = shadow(N);\n"
-    "  float sh = mix(0.38, 1.0, rawSh);\n"
-
-    "  vec3 direct = sunCol*ndl*sh;\n"
-
-    "  float up = clamp(N.y*0.5+0.5,0.0,1.0);\n"
-    "  vec3 ambient = mix(groundCol, skyCol, up) * (0.86 + 0.14*rawSh);\n"
-
-    "  vec3 V = normalize(viewPos-fragWorld);\n"
-    "  vec3 H = normalize(lightDir+V);\n"
-    "  float spec = pow(max(dot(N,H),0.0), 36.0)*0.30*rawSh*ndl;\n"
-    "  vec3 col = albedo*(ambient + direct) + sunCol*spec;\n"
-    "  col = aces(col*1.04);\n"
-    "  col = pow(col, vec3(1.0/2.2));\n"
-    "  finalColor = vec4(col, tex.a*fragColor.a*colDiffuse.a);\n"
-    "}\n";
-
-static const char *DEPTH_VS =
-    "#version 330\n"
-    "in vec3 vertexPosition; uniform mat4 mvp;\n"
-    "void main(){ gl_Position = mvp*vec4(vertexPosition,1.0); }\n";
-static const char *DEPTH_FS =
-    "#version 330\n"
-    "void main(){}\n";
-
-struct ShadowSys {
-    Shader lit{}, depth{};
-    unsigned int fbo = 0, depthTex = 0;
-    int SM = 1024;
-    int locLightVP=-1, locShadowMap=-1, locShadowTexel=-1, locLightDir=-1, locViewPos=-1;
-    int locSun=-1, locSky=-1, locGround=-1, locDepthMVP=-1;
-    Matrix lightVP{};
-
-    void init() {
-        lit   = LoadShaderFromMemory(SHADOW_VS, SHADOW_FS);
-        depth = LoadShaderFromMemory(DEPTH_VS, DEPTH_FS);
-        locLightVP     = GetShaderLocation(lit, "lightVP");
-        locShadowMap   = GetShaderLocation(lit, "shadowMap");
-        locShadowTexel = GetShaderLocation(lit, "shadowTexel");
-        locLightDir    = GetShaderLocation(lit, "lightDir");
-        locViewPos     = GetShaderLocation(lit, "viewPos");
-        locSun         = GetShaderLocation(lit, "sunCol");
-        locSky         = GetShaderLocation(lit, "skyCol");
-        locGround      = GetShaderLocation(lit, "groundCol");
-
-        fbo = rlLoadFramebuffer();
-        rlEnableFramebuffer(fbo);
-        depthTex = rlLoadTextureDepth(SM, SM, false);
-        rlFramebufferAttach(fbo, depthTex, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
-        if (!rlFramebufferComplete(fbo)) TraceLog(LOG_WARNING, "SHADOW: framebuffer is incomplete, shadows may be disabled");
-        rlDisableFramebuffer();
-    }
-
-    Matrix computeLightVP(Vector3 focus) {
-        float R = 105.0f;
-        Vector3 ctr = focus;
-        Vector3 eye = Vector3Add(ctr, Vector3Scale(g_sunDir, 260.0f));
-        Matrix view = MatrixLookAt(eye, ctr, Vector3{ 0, 1, 0 });
-        Matrix proj = MatrixOrtho(-R, R, -R, R, 8.0f, 520.0f);
-        lightVP = MatrixMultiply(view, proj);
-        return lightVP;
-    }
-};
-static ShadowSys gShadow;
-
-static const char *SKY_VS =
-    "#version 330\n"
-    "in vec3 vertexPosition; in vec2 vertexTexCoord;\n"
-    "uniform mat4 mvp;\n"
-    "uniform vec2 resolution;\n"
-    "out vec2 uv;\n"
-    "void main(){ uv = vertexPosition.xy/resolution; gl_Position = mvp*vec4(vertexPosition,1.0); }\n";
-static const char *SKY_FS =
-    "#version 330\n"
-    "in vec2 uv; out vec4 finalColor;\n"
-    "uniform vec3 camDir; uniform vec3 camRight; uniform vec3 camUp;\n"
-    "uniform float tanHalfFovY; uniform float aspect;\n"
-    "uniform vec3 sunDir;\n"
-
-    "const vec3 ZENITH  = vec3(0.12, 0.34, 0.76);\n"
-    "const vec3 MIDSKY  = vec3(0.36, 0.62, 0.92);\n"
-    "const vec3 HORIZON = vec3(0.78, 0.87, 0.98);\n"
-    "const vec3 GROUND  = vec3(0.74, 0.82, 0.93);\n"
-    "void main(){\n"
-    "  vec3 dir = normalize(camDir + camRight*(uv.x*2.0-1.0)*tanHalfFovY*aspect\n"
-    "                              + camUp *((1.0-uv.y)*2.0-1.0)*tanHalfFovY);\n"
-    "  vec3 sun = normalize(sunDir);\n"
-    "  float y = clamp(1.0-uv.y, 0.0, 1.0);\n"
-    "  float t = pow(y, 0.76);\n"
-    "  vec3 col = mix(HORIZON, MIDSKY, smoothstep(0.0, 0.42, t));\n"
-    "  col = mix(col, ZENITH, smoothstep(0.35, 1.0, t));\n"
-    "  col = mix(col, GROUND, smoothstep(0.0, 0.18, uv.y));\n"
-    "  col += vec3(1.0, 0.92, 0.76) * exp(-abs(uv.y-0.56)*8.0) * 0.055;\n"
-
-    "  float cosT = max(dot(dir, sun), 0.0);\n"
-    "  float glow = pow(cosT, 7.0);\n"
-    "  col += vec3(1.0, 0.82, 0.58) * glow * 0.24;\n"
-    "  col = mix(col, vec3(1.0, 0.94, 0.80), pow(cosT, 80.0)*0.28);\n"
-
-    "  col += vec3(1.0, 0.98, 0.88) * smoothstep(0.99915, 0.99972, cosT) * 0.55;\n"
-    "  finalColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n"
-    "}\n";
-
-struct SkySys {
-    Shader sh{};
-    int locCamDir=-1, locCamRight=-1, locCamUp=-1, locTan=-1, locAspect=-1, locSun=-1, locRes=-1;
-    void init() {
-        sh = LoadShaderFromMemory(SKY_VS, SKY_FS);
-        locCamDir   = GetShaderLocation(sh, "camDir");
-        locCamRight = GetShaderLocation(sh, "camRight");
-        locCamUp    = GetShaderLocation(sh, "camUp");
-        locTan      = GetShaderLocation(sh, "tanHalfFovY");
-        locAspect   = GetShaderLocation(sh, "aspect");
-        locSun      = GetShaderLocation(sh, "sunDir");
-        locRes      = GetShaderLocation(sh, "resolution");
-    }
-};
-static SkySys gSky;
-
-#endif
-
 // T_RAIL is texturally identical to T_IRON (same brushed-metal generator below) but gets
 // its own atlas slot so the fragment shader can tell "this quad is a running rail" from
 // fragTexCoord alone -- a texcoord-range check is a genuinely per-vertex signal (unlike a
@@ -284,20 +115,59 @@ static void endVoxelBatch() {
 
 static thread_local bool gCapture = false;
 
-// Terrain vertices are captured into fixed-size world-space BUCKETS instead of one flat
-// array -- 16x16 world units, the same footprint as a Minecraft chunk (CELL=1.0, so that's
-// 16x16 cells). Generation is UNCHANGED (still one worker thread builds the whole TERRA_R
-// ring synchronously, still swapped in atomically -- see TerrainMesh::finish -- so this
-// cannot reintroduce the old async per-chunk streaming void bug: nothing is generated on
-// demand, everything is generated together, every time, exactly as before). Bucketing only
-// lets the DRAW side skip submitting buckets that are off-screen / outside the shadow box,
-// instead of always drawing the entire ring's geometry regardless of what's visible.
+// Terrain vertices are captured into fixed-size 16x16 world buckets. Bucket identity is
+// stable across recentering, so unchanged overlap can remain resident while the worker
+// builds only newly exposed bands and track-carve dirt.
 static const float TERRAIN_BUCKET = 16.0f;   // world units per draw-culling bucket (16x16, MC-style)
+
+// Raylib's UploadMesh reads these arrays but retains their pointers, and its
+// UnloadMesh releases them with RL_FREE.  Growing capture data with the same
+// allocator lets a finished bucket transfer ownership straight into Mesh;
+// the former std::vector staging arrays were copied wholesale into a second
+// set of RL_MALLOC buffers on the render thread just before every upload.
+template <typename T>
+struct CaptureBuffer {
+    T *ptr = nullptr;
+    size_t count = 0, capacity = 0;
+
+    CaptureBuffer() = default;
+    CaptureBuffer(const CaptureBuffer &) = delete;
+    CaptureBuffer &operator=(const CaptureBuffer &) = delete;
+    CaptureBuffer(CaptureBuffer &&other) noexcept
+        : ptr(other.ptr), count(other.count), capacity(other.capacity) {
+        other.ptr=nullptr; other.count=other.capacity=0;
+    }
+    CaptureBuffer &operator=(CaptureBuffer &&other) noexcept {
+        if(this==&other) return *this;
+        RL_FREE(ptr);
+        ptr=other.ptr; count=other.count; capacity=other.capacity;
+        other.ptr=nullptr; other.count=other.capacity=0;
+        return *this;
+    }
+    ~CaptureBuffer() { RL_FREE(ptr); }
+
+    void push_back(T value) {
+        if(count==capacity) {
+            const size_t next=capacity ? capacity*2 : 512;
+            void *grown=RL_REALLOC(ptr,next*sizeof(T));
+            if(!grown) std::abort();
+            ptr=(T *)grown; capacity=next;
+        }
+        ptr[count++]=value;
+    }
+    size_t size() const { return count; }
+    T *release() {
+        T *out=ptr;
+        ptr=nullptr; count=capacity=0;
+        return out;
+    }
+};
+
 struct CapBucket {
-    std::vector<float> pos, uv, nrm;
-    std::vector<unsigned char> col;
-    std::vector<unsigned short> idx;   // 2 tris (0,1,2, 0,2,3) per quad -- see capQuad()
+    CaptureBuffer<float> pos, uv, nrm;
+    CaptureBuffer<unsigned char> col;
     Vector3 bmin{ 1e9f, 1e9f, 1e9f }, bmax{ -1e9f, -1e9f, -1e9f };
+    int64_t key = 0;
 };
 // NOT thread_local: exactly like the flat arrays this replaces, only the single in-flight
 // worker thread ever writes here (gated by TerrainMesh::building), and the main thread only
@@ -309,17 +179,26 @@ static inline int64_t terrainBucketKey(float x, float z) {
     int bz = (int)floorf(z / TERRAIN_BUCKET) + 100000;
     return ((int64_t)bx << 32) | (uint32_t)bz;
 }
+static inline int terrainBucketX(int64_t key) {
+    return (int)(int32_t)((uint64_t)key >> 32) - 100000;
+}
+static inline int terrainBucketZ(int64_t key) {
+    return (int)(int32_t)(uint32_t)key - 100000;
+}
 // Set ONCE per primitive (by emitCubeTex, from the shape's own centre) before it emits any
 // vertices -- capVert must NOT recompute a bucket per vertex: a cube straddling a bucket
 // boundary would then split its own triangles across two chunk meshes and tear a gap in
 // both of them at every chunk seam.
-static thread_local int64_t gCapBucketKey = 0;
+static thread_local CapBucket *gCapBucket = nullptr;
+// Keep every primitive produced by one heightfield cell (surface, walls and
+// decorations) in that cell's stable world bucket.  A jittered tree may cross a
+// bucket boundary; splitting it into the neighbouring incremental replacement
+// would otherwise leave a partial chunk behind.
+static thread_local int64_t gCaptureBucketOverride = INT64_MIN;
 
-// Returns the new vertex's index within its bucket (so callers building indexed quads
-// know what to reference from the shared index buffer).
-static inline unsigned short capVert(float x, float y, float z, float u, float v,
+static inline void capVert(float x, float y, float z, float u, float v,
                            float nx, float ny, float nz, Color c) {
-    CapBucket &b = gCapBuckets[gCapBucketKey];
+    CapBucket &b = *gCapBucket;
     b.pos.push_back(x); b.pos.push_back(y); b.pos.push_back(z);
     b.uv.push_back(u);  b.uv.push_back(v);
     b.nrm.push_back(nx); b.nrm.push_back(ny); b.nrm.push_back(nz);
@@ -327,58 +206,141 @@ static inline unsigned short capVert(float x, float y, float z, float u, float v
     if (x < b.bmin.x) b.bmin.x = x; if (x > b.bmax.x) b.bmax.x = x;
     if (y < b.bmin.y) b.bmin.y = y; if (y > b.bmax.y) b.bmax.y = y;
     if (z < b.bmin.z) b.bmin.z = z; if (z > b.bmax.z) b.bmax.z = z;
-    return (unsigned short)(b.pos.size() / 3 - 1);
 }
 // Emit two independent voxel triangles. The former four-corner indexed optimization
 // corrupted atlas interpolation on several drivers and made track/terrain faces look joined.
+// The six vertices already form a non-indexed triangle list, so a second sequential index
+// array only duplicated staging/upload work without sharing a single vertex.
 static inline void capQuad(float nx, float ny, float nz,
                            float ax, float ay, float az, float au, float av, Color ac,
                            float bx, float by, float bz, float bu, float bv, Color bc,
                            float cx, float cy, float cz, float cu, float cv, Color cc,
                            float dx, float dy, float dz, float du, float dv, Color dc) {
-    CapBucket &b = gCapBuckets[gCapBucketKey];
-    unsigned short i0 = capVert(ax, ay, az, au, av, nx, ny, nz, ac);
-    unsigned short i1 = capVert(bx, by, bz, bu, bv, nx, ny, nz, bc);
-    unsigned short i2 = capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
-    unsigned short i3 = capVert(ax, ay, az, au, av, nx, ny, nz, ac);
-    unsigned short i4 = capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
-    unsigned short i5 = capVert(dx, dy, dz, du, dv, nx, ny, nz, dc);
-    b.idx.push_back(i0); b.idx.push_back(i1); b.idx.push_back(i2);
-    b.idx.push_back(i3); b.idx.push_back(i4); b.idx.push_back(i5);
+    capVert(ax, ay, az, au, av, nx, ny, nz, ac);
+    capVert(bx, by, bz, bu, bv, nx, ny, nz, bc);
+    capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
+    capVert(ax, ay, az, au, av, nx, ny, nz, ac);
+    capVert(cx, cy, cz, cu, cv, nx, ny, nz, cc);
+    capVert(dx, dy, dz, du, dv, nx, ny, nz, dc);
 }
 
-struct TerrainChunk { Mesh mesh{}; Vector3 center{}; float radius = 0.0f; };
+struct TerrainChunk { Mesh mesh{}; Vector3 center{}; float radius = 0.0f; int64_t key = 0; };
 
 struct TerrainMesh {
+    using WaterBuckets=std::unordered_map<int64_t,std::vector<Vector3>>;
+
     std::vector<TerrainChunk> chunks;
+    WaterBuckets liveWaterBuckets;
     bool live = false;
-    int keyCx = INT_MIN, keyCz = INT_MIN, keyU = INT_MIN;
+    int keyCx = INT_MIN, keyCz = INT_MIN;
     std::thread worker;
     bool building = false;
     std::atomic<bool> ready{false};   // worker sets when the CPU build has finished
-    int  pendCx = 0, pendCz = 0, pendU = 0;
+    int  pendCx = 0, pendCz = 0;
 
     // Upload-spreading state (see finish()): once the worker's CPU build is done, GPU
     // uploads for the (possibly hundreds of) new chunk buckets are throttled to a few per
     // frame instead of all at once, to avoid a large fps spike on every rebuild.
     std::vector<CapBucket> pendingBuckets;
     std::vector<TerrainChunk> pendingChunks;
+    std::unordered_set<int64_t> pendingBuildKeys;
+    std::unordered_set<int64_t> pendingDesiredKeys;
+    std::unordered_set<int64_t> pendingCarveKeys;
+    std::unordered_set<int64_t> lastCarveKeys;
+    WaterBuckets pendingWaterBuckets;
+    bool rebuildAll = true;
     size_t uploadCursor = 0;
-    static const int UPLOAD_BUDGET = 20;   // chunks uploaded per frame once the world is already live. 48 (this session) was a 4x jump in SYNCHRONOUS main-thread UploadMesh() calls per frame during the post-rebuild drain -- a measured frame-time spike on every re-center (user: FPS tanking). 20 still drains the ring promptly without the stall (was 12 pre-session).
+    // UploadMesh is synchronous, so an already-visible world drains a rebuild
+    // over several frames while retaining its old resident overlap.
+    static const int UPLOAD_BUDGET = 20;
 
-    static const int REBUILD_CELLS = 56;   // re-centre cadence: 96 made the atomic-swap re-centre JUMP ~96 m (a visible terrain pop); 56 halves that while the biome cache + center-relative cull + UPLOAD_BUDGET=48 keep each rebuild fast enough that a fast train still doesn't outrun the 320 m ring
-    static const int REBUILD_U     = 8;
-    bool needsRebuild(int cx, int cz, int uIdx) const {
+    // Keep recenter steps comfortably inside the unchanged 320 m visible ring.
+    static const int REBUILD_CELLS = 56;
+    bool needsRebuild(int cx, int cz) const {
         if (building) return false;
-        return !live || abs(cx - keyCx) >= REBUILD_CELLS || abs(cz - keyCz) >= REBUILD_CELLS
-                     || abs(uIdx - keyU) >= REBUILD_U;
+        return !live || abs(cx - keyCx) >= REBUILD_CELLS || abs(cz - keyCz) >= REBUILD_CELLS;
+    }
+
+    template <class VisitFn>
+    void forEachPendingCell(int ccx,int ccz,VisitFn &&visit) const {
+        const int ringX0=ccx-TERRA_R,ringX1=ccx+TERRA_R;
+        const int ringZ0=ccz-TERRA_R,ringZ1=ccz+TERRA_R;
+        for(int64_t key:pendingBuildKeys) {
+            const float worldX0=terrainBucketX(key)*TERRAIN_BUCKET;
+            const float worldZ0=terrainBucketZ(key)*TERRAIN_BUCKET;
+            int cx0=(int)ceilf(worldX0/CELL-0.5f);
+            int cx1=(int)ceilf((worldX0+TERRAIN_BUCKET)/CELL-0.5f)-1;
+            int cz0=(int)ceilf(worldZ0/CELL-0.5f);
+            int cz1=(int)ceilf((worldZ0+TERRAIN_BUCKET)/CELL-0.5f)-1;
+            cx0=std::max(cx0,ringX0); cx1=std::min(cx1,ringX1);
+            cz0=std::max(cz0,ringZ0); cz1=std::min(cz1,ringZ1);
+            for(int cz=cz0;cz<=cz1;++cz)
+                for(int cx=cx0;cx<=cx1;++cx)
+                    visit(key,cx,cz,
+                          cx*CELL+CELL*0.5f,
+                          cz*CELL+CELL*0.5f);
+        }
+    }
+
+    void captureWaterCell(int64_t key,Vector3 cell) {
+        auto found=pendingWaterBuckets.find(key);
+        if(found==pendingWaterBuckets.end()) {
+            std::vector<Vector3> cells;
+            cells.reserve((size_t)(TERRAIN_BUCKET/CELL)*(size_t)(TERRAIN_BUCKET/CELL));
+            found=pendingWaterBuckets.emplace(key,std::move(cells)).first;
+        }
+        found->second.push_back(cell);
+    }
+
+    void prepareIncrementalKeys(int cx, int cz,
+                                const std::unordered_set<int64_t> &carveKeys) {
+        pendingBuildKeys.clear();
+        pendingDesiredKeys.clear();
+        pendingCarveKeys = carveKeys;
+        rebuildAll = !live;
+
+        std::unordered_set<int64_t> resident;
+        resident.reserve(chunks.size() * 2 + 1);
+        for (const TerrainChunk &chunk : chunks) resident.insert(chunk.key);
+
+        const float effectiveR = TERRA_R * CELL * (0.70f + 0.27f * 0.97f);
+        const float halfDiag = TERRAIN_BUCKET * 0.72f;
+        const int bx0 = (int)floorf((cx * CELL - effectiveR) / TERRAIN_BUCKET);
+        const int bx1 = (int)floorf((cx * CELL + effectiveR) / TERRAIN_BUCKET);
+        const int bz0 = (int)floorf((cz * CELL - effectiveR) / TERRAIN_BUCKET);
+        const int bz1 = (int)floorf((cz * CELL + effectiveR) / TERRAIN_BUCKET);
+        for (int bx = bx0; bx <= bx1; ++bx) {
+            for (int bz = bz0; bz <= bz1; ++bz) {
+                float wx = (bx + 0.5f) * TERRAIN_BUCKET;
+                float wz = (bz + 0.5f) * TERRAIN_BUCKET;
+                float newD = hypotf(wx - cx * CELL, wz - cz * CELL);
+                if (newD > effectiveR + halfDiag) continue;
+                int64_t key = terrainBucketKey(wx, wz);
+                pendingDesiredKeys.insert(key);
+                if (rebuildAll || resident.count(key) == 0)
+                    pendingBuildKeys.insert(key);
+                else {
+                    // Edge buckets were clipped against the old circular fog ring.
+                    // Regenerate the narrow boundary band when its center moves.
+                    float oldD = hypotf(wx - keyCx * CELL, wz - keyCz * CELL);
+                    if (fabsf(newD - effectiveR) < 1.5f * TERRAIN_BUCKET ||
+                        fabsf(oldD - effectiveR) < 1.5f * TERRAIN_BUCKET)
+                        pendingBuildKeys.insert(key);
+                }
+            }
+        }
+        pendingBuildKeys.insert(lastCarveKeys.begin(), lastCarveKeys.end());
+        pendingBuildKeys.insert(carveKeys.begin(), carveKeys.end());
     }
 
     template <class EmitFn>
-    void dispatch(EmitFn &&emit, int cx, int cz, int uIdx) {
-        pendCx = cx; pendCz = cz; pendU = uIdx; building = true;
+    void dispatch(EmitFn &&emit, int cx, int cz,
+                  const std::unordered_set<int64_t> &carveKeys) {
+        prepareIncrementalKeys(cx, cz, carveKeys);
+        pendCx = cx; pendCz = cz; building = true;
         ready = false;
         gCapBuckets.clear();
+        pendingWaterBuckets.clear();
 
         worker = std::thread([this, emit = std::forward<EmitFn>(emit)]() mutable {
             gCapture = true;
@@ -389,27 +351,24 @@ struct TerrainMesh {
     }
 
     void uploadOne(CapBucket &b) {
+        if (!pendingDesiredKeys.count(b.key)) return;
         int vcount = (int)(b.pos.size() / 3);
         if (vcount == 0) return;
+        if(b.pos.size()!=(size_t)vcount*3 ||
+           b.uv.size()!=(size_t)vcount*2 ||
+           b.nrm.size()!=(size_t)vcount*3 ||
+           b.col.size()!=(size_t)vcount*4) std::abort();
         TerrainChunk c{};
         c.mesh.vertexCount   = vcount;
-        // Every quad is now 4 unique vertices + 6 indices (see capQuad) instead of 6
-        // duplicated vertices -- triangleCount must come from the index count, not
-        // vertexCount, or DrawMesh/UploadMesh under-draws by a third.
-        c.mesh.triangleCount = (int)(b.idx.size() / 3);
-        c.mesh.vertices  = (float *)RL_CALLOC(vcount * 3, sizeof(float));
-        c.mesh.texcoords = (float *)RL_CALLOC(vcount * 2, sizeof(float));
-        c.mesh.normals   = (float *)RL_CALLOC(vcount * 3, sizeof(float));
-        c.mesh.colors    = (unsigned char *)RL_CALLOC(vcount * 4, sizeof(unsigned char));
-        c.mesh.indices   = (unsigned short *)RL_CALLOC(b.idx.size(), sizeof(unsigned short));
-        std::copy(b.pos.begin(), b.pos.end(), c.mesh.vertices);
-        std::copy(b.uv.begin(),  b.uv.end(),  c.mesh.texcoords);
-        std::copy(b.nrm.begin(), b.nrm.end(), c.mesh.normals);
-        std::copy(b.col.begin(), b.col.end(), c.mesh.colors);
-        std::copy(b.idx.begin(), b.idx.end(), c.mesh.indices);
-        UploadMesh(&c.mesh, true);
+        c.mesh.triangleCount = vcount / 3;
+        c.mesh.vertices  = b.pos.release();
+        c.mesh.texcoords = b.uv.release();
+        c.mesh.normals   = b.nrm.release();
+        c.mesh.colors    = b.col.release();
+        UploadMesh(&c.mesh, false);
         c.center = Vector3Scale(Vector3Add(b.bmin, b.bmax), 0.5f);
         c.radius = Vector3Distance(c.center, b.bmax) + 0.5f;
+        c.key = b.key;
         pendingChunks.push_back(c);
     }
 
@@ -426,7 +385,10 @@ struct TerrainMesh {
             if (!block && !ready.load()) return;
             if (worker.joinable()) worker.join();
             pendingBuckets.reserve(gCapBuckets.size());
-            for (auto &kv : gCapBuckets) pendingBuckets.push_back(std::move(kv.second));
+            for (auto &kv : gCapBuckets) {
+                kv.second.key = kv.first;
+                pendingBuckets.push_back(std::move(kv.second));
+            }
             gCapBuckets.clear();
             pendingChunks.clear();
             pendingChunks.reserve(pendingBuckets.size());
@@ -439,20 +401,38 @@ struct TerrainMesh {
         for (; uploadCursor < end; uploadCursor++) uploadOne(pendingBuckets[uploadCursor]);
         if (uploadCursor < pendingBuckets.size()) return;   // more to upload next frame
 
-        // Every bucket is uploaded: swap the WHOLE new chunk set in at once -- the old
-        // chunks (still `live`, still fully drawable) are only torn down now, so there is
-        // never a frame where the terrain is partially missing.
-        for (auto &c : chunks) UnloadMesh(c.mesh);
-        chunks = std::move(pendingChunks);
-        live = !chunks.empty();
-        if (getenv("MC_DIAG")) {
-            long totalV = 0; int maxV = 0;
-            for (auto &c : chunks) { totalV += c.mesh.vertexCount; if (c.mesh.vertexCount > maxV) maxV = c.mesh.vertexCount; }
-            printf("[diag-chunks] count=%zu totalVerts=%ld avgVertsPerChunk=%.1f maxVertsPerChunk=%d\n",
-                   chunks.size(), totalV, chunks.empty() ? 0.0 : (double)totalV / chunks.size(), maxV);
+        // Merge atomically. A requested rebuild is authoritative even when it
+        // emits no geometry (for example an old clipped edge bucket that moved
+        // fully outside the cell-level ring). Retaining an old chunk merely
+        // because no replacement was uploaded left stale terrain/carve walls.
+        std::vector<TerrainChunk> merged;
+        merged.reserve(chunks.size() + pendingChunks.size());
+        for (TerrainChunk &c : chunks) {
+            if (pendingDesiredKeys.count(c.key) &&
+                !pendingBuildKeys.count(c.key))
+                merged.push_back(c);
+            else
+                UnloadMesh(c.mesh);
         }
+        for (TerrainChunk &c : pendingChunks) merged.push_back(c);
+
+        for(auto it=liveWaterBuckets.begin();it!=liveWaterBuckets.end();) {
+            if(pendingDesiredKeys.count(it->first) &&
+               !pendingBuildKeys.count(it->first)) ++it;
+            else it=liveWaterBuckets.erase(it);
+        }
+        for(auto &entry:pendingWaterBuckets)
+            if(pendingDesiredKeys.count(entry.first) && !entry.second.empty())
+                liveWaterBuckets.insert_or_assign(entry.first,std::move(entry.second));
+
+        chunks = std::move(merged);
+        live = !chunks.empty();
         pendingBuckets.clear(); pendingChunks.clear(); uploadCursor = 0;
-        keyCx = pendCx; keyCz = pendCz; keyU = pendU;
+        pendingWaterBuckets.clear();
+        lastCarveKeys = std::move(pendingCarveKeys);
+        pendingBuildKeys.clear(); pendingDesiredKeys.clear(); pendingCarveKeys.clear();
+        rebuildAll = false;
+        keyCx = pendCx; keyCz = pendCz;
         building = false;
     }
 
@@ -466,16 +446,20 @@ struct TerrainMesh {
         for (TerrainChunk &chunk : pendingChunks) UnloadMesh(chunk.mesh);
         pendingChunks.clear();
         pendingBuckets.clear();
+        pendingWaterBuckets.clear();
+        pendingBuildKeys.clear(); pendingDesiredKeys.clear(); pendingCarveKeys.clear();
+        lastCarveKeys.clear(); rebuildAll = true;
         uploadCursor = 0;
         building = false;
-        pendCx = pendCz = pendU = 0;
-        keyCx = keyCz = keyU = INT_MIN;
+        pendCx = pendCz = 0;
+        keyCx = keyCz = INT_MIN;
     }
 
     void reset() {
         discardPending();
         for (TerrainChunk &chunk : chunks) UnloadMesh(chunk.mesh);
         chunks.clear();
+        liveWaterBuckets.clear();
         live = false;
     }
 
@@ -485,6 +469,8 @@ struct TerrainMesh {
         // benefit from reusing it.
         std::vector<CapBucket>().swap(pendingBuckets);
         std::vector<TerrainChunk>().swap(pendingChunks);
+        WaterBuckets().swap(pendingWaterBuckets);
+        WaterBuckets().swap(liveWaterBuckets);
     }
 };
 static TerrainMesh gTerrainMesh;
@@ -516,7 +502,9 @@ static void emitCubeTex(int tile, Vector3 p, float w, float h, float l, Color c,
         // never per-vertex -- a cube that straddles a bucket boundary must still land as
         // one whole primitive in one chunk mesh, or the boundary vertices split across two
         // chunks and tear the shared triangles apart (visible gaps at chunk seams).
-        gCapBucketKey = terrainBucketKey(x, z);
+        int64_t key = gCaptureBucketOverride != INT64_MIN
+                    ? gCaptureBucketOverride : terrainBucketKey(x, z);
+        gCapBucket = &gCapBuckets[key];
 
         Color cB = capCol(c, kB), cT = capCol(c, kT);
         float xm = x - w/2, xp = x + w/2, ym = y - h/2, yp = y + h/2, zm = z - l/2, zp = z + l/2;

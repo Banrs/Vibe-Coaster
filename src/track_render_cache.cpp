@@ -90,10 +90,8 @@ struct CpuMeshBuilder {
     std::vector<float> texcoords;
     std::vector<float> normals;
     std::vector<unsigned char> colors;
-    std::vector<unsigned short> indices;
     Vector3 boundsMin{ FLT_MAX, FLT_MAX, FLT_MAX };
     Vector3 boundsMax{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
-    bool overflowed = false;
     int vertexCount() const { return (int)(positions.size() / 3); }
     bool empty() const { return positions.empty(); }
 
@@ -104,7 +102,6 @@ struct CpuMeshBuilder {
         texcoords.reserve(vertices * 2u);
         normals.reserve(vertices * 3u);
         colors.reserve(vertices * 4u);
-        indices.reserve((size_t)cubeCount * 36u);
     }
 
     void includePoint(Vector3 p) {
@@ -116,19 +113,13 @@ struct CpuMeshBuilder {
         boundsMax.z = fmaxf(boundsMax.z, p.z);
     }
 
-    unsigned short appendVertex(Vector3 p, Vector3 normal, Vector2 uv, Color color) {
-        const int index = vertexCount();
-        if (index >= 65535) {
-            overflowed = true;
-            return 0;
-        }
+    void appendVertex(Vector3 p, Vector3 normal, Vector2 uv, Color color) {
         positions.push_back(p.x); positions.push_back(p.y); positions.push_back(p.z);
         texcoords.push_back(uv.x); texcoords.push_back(uv.y);
         normals.push_back(normal.x); normals.push_back(normal.y); normals.push_back(normal.z);
         colors.push_back(color.r); colors.push_back(color.g);
         colors.push_back(color.b); colors.push_back(color.a);
         includePoint(p);
-        return (unsigned short)index;
     }
 
     void appendQuad(const RenderFrame &frame, Vector3 localNormal,
@@ -136,76 +127,19 @@ struct CpuMeshBuilder {
                     Vector3 b, Vector2 buv, Color bc,
                     Vector3 c, Vector2 cuv, Color cc,
                     Vector3 d, Vector2 duv, Color dc) {
-        if (overflowed || vertexCount() > 65529) {
-            overflowed = true;
-            return;
-        }
         const Vector3 normal = frameDirection(frame, localNormal);
-        // Match the voxel emitter exactly: two independent textured triangles (six vertices).
-        // Sharing four corners across the diagonal caused atlas interpolation/face corruption on
-        // the cached track path even though the index topology was mathematically equivalent.
-        const unsigned short i0 = appendVertex(framePoint(frame, a), normal, auv, ac);
-        const unsigned short i1 = appendVertex(framePoint(frame, b), normal, buv, bc);
-        const unsigned short i2 = appendVertex(framePoint(frame, c), normal, cuv, cc);
-        const unsigned short i3 = appendVertex(framePoint(frame, a), normal, auv, ac);
-        const unsigned short i4 = appendVertex(framePoint(frame, c), normal, cuv, cc);
-        const unsigned short i5 = appendVertex(framePoint(frame, d), normal, duv, dc);
-        if (overflowed) return;
-        indices.push_back(i0); indices.push_back(i1); indices.push_back(i2);
-        indices.push_back(i3); indices.push_back(i4); indices.push_back(i5);
-    }
-
-    void appendWorldQuad(Vector3 normal,
-                         Vector3 a, Vector2 auv, Color ac,
-                         Vector3 b, Vector2 buv, Color bc,
-                         Vector3 c, Vector2 cuv, Color cc,
-                         Vector3 d, Vector2 duv, Color dc) {
-        if (overflowed || vertexCount() > 65529) { overflowed = true; return; }
-        normal = Vector3Normalize(normal);
-        const unsigned short i0 = appendVertex(a, normal, auv, ac);
-        const unsigned short i1 = appendVertex(b, normal, buv, bc);
-        const unsigned short i2 = appendVertex(c, normal, cuv, cc);
-        const unsigned short i3 = appendVertex(a, normal, auv, ac);
-        const unsigned short i4 = appendVertex(c, normal, cuv, cc);
-        const unsigned short i5 = appendVertex(d, normal, duv, dc);
-        if (overflowed) return;
-        indices.push_back(i0); indices.push_back(i1); indices.push_back(i2);
-        indices.push_back(i3); indices.push_back(i4); indices.push_back(i5);
-    }
-
-    // Continuous swept voxel prism. Adjacent samples share the exact same endpoint
-    // cross-section, so bank/roll changes twist one coherent rail instead of rotating a row of
-    // overlapping boxes and exposing a stitched joint at every sample.
-    void appendSweep(int tile, const RenderFrame &a, const RenderFrame &b,
-                     float centreX, float centreY, float width, float height, Color color) {
-        if (overflowed || width <= 0.0f || height <= 0.0f) return;
-        const float u0 = (tile * 16.0f + 0.5f) / (float)(TILE_N * 16);
-        const float u1 = (tile * 16.0f + 15.5f) / (float)(TILE_N * 16);
-        const float v0 = 0.5f / 16.0f, v1 = 15.5f / 16.0f;
-        const float xl = centreX - width * 0.5f, xr = centreX + width * 0.5f;
-        const float yb = centreY - height * 0.5f, yt = centreY + height * 0.5f;
-        const Color bottom = height > 1.2f ? scaleColor(color, 196.0f / 255.0f) : color;
-
-        Vector3 alt = framePoint(a, Vector3{xl,yt,0}), art = framePoint(a, Vector3{xr,yt,0});
-        Vector3 alb = framePoint(a, Vector3{xl,yb,0}), arb = framePoint(a, Vector3{xr,yb,0});
-        Vector3 blt = framePoint(b, Vector3{xl,yt,0}), brt = framePoint(b, Vector3{xr,yt,0});
-        Vector3 blb = framePoint(b, Vector3{xl,yb,0}), brb = framePoint(b, Vector3{xr,yb,0});
-        Vector3 upN = Vector3Add(a.up, b.up);
-        Vector3 rightN = Vector3Add(a.right, b.right);
-
-        appendWorldQuad(upN, alt,{u0,v0},color, blt,{u0,v1},color,
-                        brt,{u1,v1},color, art,{u1,v0},color);
-        appendWorldQuad(Vector3Scale(upN,-1), alb,{u1,v0},bottom, arb,{u0,v0},bottom,
-                        brb,{u0,v1},bottom, blb,{u1,v1},bottom);
-        appendWorldQuad(rightN, arb,{u1,v1},bottom, art,{u1,v0},color,
-                        brt,{u0,v0},color, brb,{u0,v1},bottom);
-        appendWorldQuad(Vector3Scale(rightN,-1), alb,{u0,v1},bottom, blb,{u1,v1},bottom,
-                        blt,{u1,v0},color, alt,{u0,v0},color);
+        // Exactly match the voxel emitter: two independent textured triangles.
+        appendVertex(framePoint(frame, a), normal, auv, ac);
+        appendVertex(framePoint(frame, b), normal, buv, bc);
+        appendVertex(framePoint(frame, c), normal, cuv, cc);
+        appendVertex(framePoint(frame, a), normal, auv, ac);
+        appendVertex(framePoint(frame, c), normal, cuv, cc);
+        appendVertex(framePoint(frame, d), normal, duv, dc);
     }
 
     void appendBox(int tile, const RenderFrame &frame, Vector3 centre,
                    float width, float height, float length, Color color) {
-        if (overflowed || width <= 0.0f || height <= 0.0f || length <= 0.0f) return;
+        if (width <= 0.0f || height <= 0.0f || length <= 0.0f) return;
 
         const float u0 = (tile * 16.0f + 0.5f) / (float)(TILE_N * 16);
         const float u1 = (tile * 16.0f + 15.5f) / (float)(TILE_N * 16);
@@ -256,36 +190,32 @@ struct CpuMeshBuilder {
 
     Mesh uploadStatic() const {
         Mesh mesh{};
-        if (empty() || overflowed || indices.empty()) return mesh;
+        if (empty()) return mesh;
         mesh.vertexCount = vertexCount();
-        mesh.triangleCount = (int)(indices.size() / 3u);
+        mesh.triangleCount = mesh.vertexCount / 3;
         mesh.vertices = (float *)RL_MALLOC(positions.size() * sizeof(float));
         mesh.texcoords = (float *)RL_MALLOC(texcoords.size() * sizeof(float));
         mesh.normals = (float *)RL_MALLOC(normals.size() * sizeof(float));
         mesh.colors = (unsigned char *)RL_MALLOC(colors.size() * sizeof(unsigned char));
-        mesh.indices = (unsigned short *)RL_MALLOC(indices.size() * sizeof(unsigned short));
         std::memcpy(mesh.vertices, positions.data(), positions.size() * sizeof(float));
         std::memcpy(mesh.texcoords, texcoords.data(), texcoords.size() * sizeof(float));
         std::memcpy(mesh.normals, normals.data(), normals.size() * sizeof(float));
         std::memcpy(mesh.colors, colors.data(), colors.size() * sizeof(unsigned char));
-        std::memcpy(mesh.indices, indices.data(), indices.size() * sizeof(unsigned short));
         UploadMesh(&mesh, false);
 
         // UploadMesh() retains the caller's RAM arrays even for an immutable
-        // mesh. Once both vertex and index VBOs exist the cache never reads
-        // those arrays again; DrawMesh/UnloadMesh only need the VAO/VBOs and
+        // mesh. Once its vertex VBO exists the cache never reads those arrays
+        // again; DrawMesh/UnloadMesh only need the VAO/VBOs and
         // counts. Keep the arrays on a non-VBO backend (OpenGL 1.1 fallback),
         // otherwise release the duplicate CPU copy and leave null pointers for
         // UnloadMesh() to free safely later.
         const bool gpuResident = mesh.vboId != nullptr &&
-            mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION] != 0 &&
-            mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_INDICES] != 0;
+            mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION] != 0;
         if (gpuResident) {
             RL_FREE(mesh.vertices);  mesh.vertices = nullptr;
             RL_FREE(mesh.texcoords); mesh.texcoords = nullptr;
             RL_FREE(mesh.normals);   mesh.normals = nullptr;
             RL_FREE(mesh.colors);    mesh.colors = nullptr;
-            RL_FREE(mesh.indices);   mesh.indices = nullptr;
         }
         return mesh;
     }
@@ -547,7 +477,7 @@ private:
             int sampleCount = (int)ceilf(segmentLength / 0.85f);
             sampleCount = sampleCount < 1 ? 1 : (sampleCount > 80 ? 80 : sampleCount);
             const int kindIndex = k < finalPoints ? k : finalPoints - 1;
-            const bool chain = track.chainf[kindIndex] != 0;
+            const bool chain = track.chainf[kindIndex] == 1;
 
             for (int j = 0; j < sampleCount; j++) {
                 const float u0 = (float)k + (float)j / (float)sampleCount;
@@ -557,9 +487,12 @@ private:
                 const Vector3 tangent = track.tangent(sampleU);
                 const Vector3 up = track.upAt(sampleU);
                 const RenderFrame frame = makeRenderFrame(p, tangent, up);
-                const RenderFrame frame0 = makeRenderFrame(track.pos(u0), track.tangent(u0), track.upAt(u0));
-                const RenderFrame frame1 = makeRenderFrame(track.pos(u1), track.tangent(u1), track.upAt(u1));
-                const float pieceLength = segmentLength / (float)sampleCount + 0.18f;
+                // Use the same complete six-face voxel primitive as the rest of
+                // the renderer. Swept four-face ribbons fold their triangle
+                // diagonals during rapid roll and visibly corrupt the atlas.
+                const Vector3 p0 = track.pos(u0);
+                const Vector3 p1 = track.pos(u1);
+                const float pieceLength = fmaxf(Vector3Distance(p0, p1) + 0.14f, 0.18f);
                 const unsigned char tag = track.tagAt(sampleU);
                 const bool poweredSpine = tag == M_LAUNCH || tag == M_BOOST;
                 const bool liftSpine = tag == M_CLIMB && !chain;
@@ -567,44 +500,43 @@ private:
                 sourceSamples++;
 
                 if (poweredSpine) {
-                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.30f,
-                                     0.38f, 0.54f, track.spineC);
+                    iron.appendBox(T_IRON, frame, Vector3{0.0f, -0.30f, 0.0f},
+                                   0.38f, 0.54f, pieceLength, track.spineC);
                     if ((j & 1) == 0)
                         iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.18f, 0.0f },
                                        0.62f, 0.22f, pieceLength * 0.6f,
                                        track.trainAccent);
                 } else if (liftSpine) {
-                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.30f,
-                                     0.34f, 0.50f, liftSpineColor);
+                    iron.appendBox(T_IRON, frame, Vector3{0.0f, -0.30f, 0.0f},
+                                   0.34f, 0.50f, pieceLength, liftSpineColor);
                     if ((j & 1) == 0)
                         iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.08f, 0.0f },
                                        0.24f, 0.24f, pieceLength * 0.5f,
                                        liftDogColor);
                 } else {
-                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.30f, 0.30f, 0.46f,
-                                     ordinarySpineColor);
+                    iron.appendBox(T_IRON, frame, Vector3{0.0f, -0.30f, 0.0f},
+                                   0.30f, 0.46f, pieceLength, ordinarySpineColor);
                 }
 
-                railSpan.appendSweep(T_RAIL, frame0, frame1, -0.55f, 0.0f,
-                                     0.18f, 0.18f, track.railC);
-                railSpan.appendSweep(T_RAIL, frame0, frame1, 0.55f, 0.0f,
-                                     0.18f, 0.18f, track.railC);
+                railSpan.appendBox(T_RAIL, frame, Vector3{-0.55f, 0.0f, 0.0f},
+                                   0.18f, 0.18f, pieceLength, track.railC);
+                railSpan.appendBox(T_RAIL, frame, Vector3{ 0.55f, 0.0f, 0.0f},
+                                   0.18f, 0.18f, pieceLength, track.railC);
 
                 if ((j & 1) == 0)
                     iron.appendBox(T_IRON, frame, Vector3{ 0.0f, -0.17f, 0.0f },
                                    1.35f, 0.14f, 0.45f, tieColor);
                 if (chain)
-                    iron.appendSweep(T_IRON, frame0, frame1, 0.0f, -0.05f,
-                                     0.14f, 0.14f, CHAINC);
+                    iron.appendBox(T_IRON, frame, Vector3{0.0f, -0.05f, 0.0f},
+                                   0.14f, 0.14f, pieceLength, CHAINC);
             }
         }
 
         bool railsEmpty = true;
         for (const CpuMeshBuilder &span : rails) {
-            if (span.overflowed) return false;
             if (!span.empty()) railsEmpty = false;
         }
-        if (iron.overflowed || (iron.empty() && railsEmpty)) return false;
+        if (iron.empty() && railsEmpty) return false;
 
         Vector3 boundsMin{}, boundsMax{};
         bool haveBounds = false;

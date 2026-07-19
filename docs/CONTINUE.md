@@ -90,8 +90,14 @@ few elements in** and never finishes the ride.
   target on the chain (brief item 5).
 - **M_TURN / M_DIVE +12 g vertical** entry spikes (possibly real — non-inverting, so not the audit
   artifact above).
-- **Top-hat drop** returns to entry level (`beginTopHat` sets endHeight=startHeight); make the drop
-  side dive ~200 m toward terrain.
+- **Top-hat drop** — `makeTopHat` (`src/v1_profiles.h:549`) HARD-REQUIRES `startHeight == endHeight`
+  (symmetric): the drop returns to entry level, and since the launch enters at grade the crest→entry
+  drop is already ~200 m. The human's "stops at ~30 m" is the drop not continuing *past* entry toward
+  the terrain floor. Two routes, both needing in-game confirmation: (a) rework `makeTopHat` to allow
+  `endHeight < startHeight` (asymmetric deep dive) — delicate, it currently rejects that; or (b) make
+  the post-top-hat recovery-dive (`enterDrop`) always carry the track down to a low terrain clearance
+  when the exit sits elevated. NOTE this is also implicated in seed4's remaining stall (a top-hat exit
+  buried at clr=-14) — a terrain-aware top-hat exit height would help both.
 - **`--forceaudit` frame sampling** for inverting elements (rework to use authored per-sample
   derivatives so the g-audit is trustworthy).
 - Visuals (voxel/futuristic).

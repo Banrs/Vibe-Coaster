@@ -3339,14 +3339,14 @@ struct Track {
     bool initDive() {
         mode = M_DIVE;
         turnDir = nextBankDirection();
-        turnMag = turnMagFor(7.0f, 0.018f, 0.58f);   // slightly tighter diving turn (user: increase curves); ~2x-real sustained after slew/ramp dilution, within the 4x-real peak
+        turnMag = turnMagFor(5.0f, 0.018f, 0.50f);   // slightly tighter diving turn (user: increase curves); ~2x-real sustained after slew/ramp dilution, within the 4x-real peak
         bankT   = 0.05f;   // a whisper of over-bank for the diving lean; the sub-vertical clamp keeps it upright
         bankBase = 1.0f;   // full heartline base
         diveBaseY = gpos.y;
         float clearance = gpos.y - genGroundTopAt(gpos.x, gpos.z);
         diveDepth = Clamp(clearance - 8.0f, 8.0f, 30.0f);
         // Size the complete smoothstep dive from its analytic peak curvature.
-        int forceLen=(int)ceilf(genV*sqrtf(5.8f*diveDepth/(5.0f*GRAV))/SEG_LEN)+7;
+        int forceLen=(int)ceilf(genV*sqrtf(5.8f*diveDepth/(4.2f*GRAV))/SEG_LEN)+7;
         remain=Clamp(std::max(irnd(9,12),forceLen),9,28);
         turnLen=remain;
         const Vector3 origin=gpos;
@@ -3388,6 +3388,7 @@ struct Track {
         deriveSpatialArcData(origin,start,finish);
         SpatialRun run=makeSpatialRun(origin,start.up,true);
         if(!spatialCorridorClear(run))return false;
+        if(!spatialForceClear(run, M_DIVE, -3.5f, 9.5f)) return false;   // combined felt budget ~2x a real diving turn
         publishSpatialRun(std::move(run));
         return true;
     }

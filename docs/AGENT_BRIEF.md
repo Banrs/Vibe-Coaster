@@ -11,6 +11,13 @@ Start by reading the whole thing: `v1/coaster_track.cpp` (the streaming generato
 (host, rendering, physics, car, terrain), `src/v1_profiles.h`, and the docs. Then decide what the
 real architecture problems are. Prefer refactoring root causes over stacking patches.
 
+The symptom list below is **not exhaustive** — it's what's been noticed, not a complete bug
+inventory. As you read the codebase and run the build, **fix the other correctness, realism,
+geometry, physics, and rendering issues you find along the way**, whether or not they're listed
+here. Treat anything that makes the ride less correct, less real, or less thrilling as in scope. Use
+judgement on genuinely large architectural rewrites — but don't leave a clear bug unfixed just
+because it isn't named.
+
 ---
 
 ## What this ride is (the identity to hit)

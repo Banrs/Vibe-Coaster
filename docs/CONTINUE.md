@@ -19,6 +19,23 @@ entry/exit speeds, spacing) should still roughly follow real-life proportions pe
 - **Proportions:** radius, duration, and repetition per element follow the real reference (e.g. a
   corkscrew's real revolution count), then scale uniformly by the one 1.0–1.5× λ.
 
+## Terrain + organic-placement design direction (user, 2026-07-19)
+
+Terrain stays **dramatic** — the inspiration is **Falcon's Flight's cliff** (a big cliff drop and a lot
+of terrain variation), up to ~195 m+ with our scaling multipliers. Do NOT flatten it. Tunnels/cuts are
+fine but **shallow and occasional**, not deep or frequent.
+
+The organic fix therefore is NOT "reduce terrain" — it is "make the coaster **work with** the terrain
+like Falcon's Flight does": LAUNCH up rising ground (powered, rate-capped), DIVE where the ground falls
+away (the signature cliff drop), follow the variation — and **stop burying exits in deep cuts**. Root
+cause of the current stalls/fallbacks: descending elements are allowed to bury their exit up to
+`TERRAIN_CUT_TOLERANCE=18 m` into RISING terrain, from which nothing continues. The clean fix is
+terrain-aware placement: a descending element (drop/dive/desc-helix) may only commit where the terrain
+ahead falls away or stays level; where terrain rises, the scheduler climbs under power instead. Then
+cut tolerance can drop toward shallow (real) values, low F2291 clearance works, the airtime-hill
+frequency recovers (hills stop being terrain-blocked), and escapes/fallbacks fall toward zero — all
+from the one root fix. This needs in-game iteration (the terrain↔coaster fit is visual).
+
 ## Real-life calibration targets (researched 2026-07-19; basis: Falcon's Flight + Tormenta)
 
 **Clearance — use ASTM F2291 (envelope-based, NOT a fixed floor).** F2291 has no fixed

@@ -18,6 +18,12 @@ here. Treat anything that makes the ride less correct, less real, or less thrill
 judgement on genuinely large architectural rewrites — but don't leave a clear bug unfixed just
 because it isn't named.
 
+**Work autonomously — attempt this in one shot.** Don't stop to ask for confirmation at each step;
+read the codebase, decide, implement, verify, and keep going until the whole TODO at the bottom is
+addressed. Use your best judgement throughout, with this brief and the referenced docs as your
+guide. The only thing you must not guess about is real-world geometry/flow — research that (see the
+research rule) rather than inventing it.
+
 ---
 
 ## What this ride is (the identity to hit)
@@ -42,18 +48,34 @@ max of either), each type within **0.5×–2×** of that average.
 
 ---
 
-## What's wrong right now (observed symptoms — diagnose the causes yourself)
+## Primary focus: flow and pacing
 
-**Flow (make it feel like a real roller-coaster)**
-- The single most important goal: the ride must *flow* like a genuine roller-coaster — one
-  continuously-shaped, energy-driven path, not a sequence of disjoint pieces bolted together.
-- Concrete tells of the broken flow: rare **random flat segments** appear where the track should be
-  continuously curving, and there's a **flat spot on top of the Immelmann** (and likely other
-  elements) where the real geometry is a continuous arc. Real coaster elements and the transitions
-  between them have specific, continuously-curved shapes with no dead-flat interruptions.
-- **Map each element's real geometry properly** — its true profile, radii, banking, and how it
-  enters and leaves — using web research (see the research rule below), so the flow reads as a real
-  ride.
+This is a **first-class focus of its own**, not a side-effect of fixing individual elements. Two
+distinct things, both essential:
+
+**Flow — the shape of the path.** The ride must read as one continuously-shaped, energy-driven line,
+not a sequence of disjoint pieces bolted together. Every element and every transition between
+elements is a specific, continuously-curved geometry with **no dead-flat interruptions** and no
+heading/roll snaps. Known tells of the current broken flow: rare **random flat segments** where the
+track should be curving, and a **flat spot on top of the Immelmann** (probably other elements too)
+where the real shape is a continuous arc. Map each element's *real* geometry — profile, radii,
+banking, entry/exit — from research (see the research rule) so the line flows like a real ride.
+
+**Pacing — the rhythm of intensity over the whole layout.** A great coaster is *composed*: an opening
+statement (the cliff drop / launch), sequences that build and release, airtime moments spaced against
+inversions, deliberately drawn-out quieter transitions between the intense beats, and a satisfying
+finale — Intamin's own language for Falcon's Flight is "drawn-out curves, gentle banking, and
+transitions balancing intense and quieter moments." Manage the ride's **energy** so each element is
+entered at a speed that makes it both correct and thrilling — no limp, under-speed elements and no
+everything-at-once. Avoid monotony (banked turn after banked turn) and dead air; the sequence of
+elements should feel intentional across the full ride, not locally random.
+
+Treat flow and pacing as the lens you evaluate every other change through: a fix that makes an element
+correct in isolation but breaks the rhythm or the continuity of the line is not done.
+
+---
+
+## What's wrong right now (observed symptoms — diagnose the causes yourself)
 
 **Ride composition / realism**
 - Far too many banked turns, and they frequently chain back-to-back.
@@ -152,6 +174,34 @@ issue. After any generator change, confirm a full multi-seed run still completes
 Use online references as clean-room *concepts* only (openFVD/FVD++ for force-vector design, clothoid
 math for transitions, ASTM F2291 for clearance, manufacturer specs for dimensions), honoring the
 licenses noted in `docs/GEOMETRY_REFERENCES.md`. No GPL code copied.
+
+---
+
+## TODO (work through these; each is done only when verified)
+
+1. **Read** the whole codebase (`v1/coaster_track.cpp`, `src/`, `src/v1_profiles.h`, `docs/`) and
+   write down your own root-cause diagnosis before editing.
+2. **Flow** — remove random flat segments and the flat-on-top-of-Immelmann; make every element and
+   transition a continuous, research-mapped curve with no dead spots or heading/roll snaps.
+3. **Pacing** — compose the ride's intensity rhythm (build/release, airtime vs. inversions, quieter
+   transitions, strong open and finish); manage entry speeds so no element is limp or mistimed.
+4. **Frequencies** — bring the mix to the Falcon's-Flight/Tormenta average (banked turns down and
+   un-chained, airtime hills common, corkscrew ~2–3% occasionally doubled), by making the right
+   elements eligible — not by inflating weights.
+5. **Element + joint geometry** — make each element real (correct profile/radii/banking/revolutions)
+   and every joint continuous: fix the corkscrew yaw/heading snap, the too-fast roll recovery, and
+   entry-angle g-spikes. Correctness, not just staying under a g cap.
+6. **Terrain relationship** — stop the track floating; hug and use dramatic terrain (launch from near
+   grade, dive toward it); fix top-hat launch-platform height; stop random flat-ground digs; keep
+   tunnels shallow/occasional.
+7. **Robustness** — drive artificial fallbacks to ≤ ~1 per 10 seeds by making the normal path robust,
+   while every seed still completes.
+8. **Rendering** — confirm/own crisp cast shadows, restore visible wheels, and do a real optimization
+   pass (culling/LOD/static-mesh caching) for a solid frame rate.
+9. **Anything else** you find that hurts correctness, realism, or thrill.
+10. **Verify** the whole thing (see verification section) and check flow + pacing hold end-to-end.
+
+Keep the record targets (speed/size/g, +12/−6 envelope, F2291 clearance) satisfied throughout.
 
 ---
 

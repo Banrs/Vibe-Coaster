@@ -4,6 +4,7 @@
 // Shared water predicate for V1 consumers.
 static inline bool submergedGround(float groundTopY) { return groundTopY <= WATER_Y + 0.01f; }
 
+
 struct Track {
     // Public ride-domain origin. A predecessor ghost is seeded behind the
     // station so u=0 evaluates the physical origin -> first launch span.
@@ -156,6 +157,17 @@ struct Track {
     static constexpr int MAX_PENDING_ROUTE_ATTEMPTS = 1;
     static constexpr int MAX_CONSECUTIVE_ROUTING_RUNS = 2;
     int consecutiveRoutingRuns = 0;
+    int consecutiveEscapes = 0;
+    // Escapes taken since the last lap-closing launch (reset in
+    // closeLapAtLaunch).  Unlike consecutiveEscapes it does not reset when an
+    // ordinary element takes hold, so a region that alternates one element with
+    // many escapes still cannot stream forever: once it crosses ESCAPES_PER_LAP
+    // the lap is closed unconditionally so generation always makes lap progress.
+    int escapesSinceLaunch = 0;
+    // Hard bound on terminal forward escapes taken from one anchor before the
+    // scheduler forces a powered launch/boost.
+    static constexpr int ESCAPE_LIMIT = 6;
+    static constexpr int ESCAPES_PER_LAP = 8;
     unsigned schedulerExhaustions = 0;
     // Trial branches use the ordinary point emitter, but boundary resolution
     // is deliberately suspended until the branch has proved its successor.
@@ -2243,6 +2255,7 @@ struct Track {
         completedLapSerial++;
         elems = 0; elemLimit = irnd(13, 17); launchElem = pickLaunchExit();
         hardInvCount = 0;
+        escapesSinceLaunch = 0;
     }
 
     float distanceSincePower() const {
@@ -3571,21 +3584,44 @@ struct Track {
         const EnergyArcPhase phase = energyArcPhase();
         SegMode valid[sizeof(pool) / sizeof(pool[0])];
         float weights[sizeof(pool) / sizeof(pool[0])];
-        int count = 0;
-        float sum = 0.0f;
-        for (SegMode m : pool) {
-            if ((excluded & (UINT32_C(1) << m)) || m == lastElem ||
-                !(elementRule(m).phases & phase) || !eligibleElem(m))
-                continue;
-            valid[count] = m;
-            weights[count] = elementWeight(m);
-            sum += weights[count++];
+        // The scheduling PREFERENCES -- energy-arc phase, family variety, and
+        // no-immediate-repeat -- shape the element mix but must never be able to
+        // empty the successor pool and strand generation.  The per-element
+        // ENTRY-SPEED, terrain and geometry windows in eligibleElem() are hard
+        // physical constraints and always apply; the preferences are relaxed in
+        // order only when the stricter pool is empty:
+        //   level 0: phase + variety + no-repeat  (the intended mix)
+        //   level 1: drop the energy-arc phase preference
+        //   level 2: also drop family variety (allow a same-family successor)
+        //   level 3: also allow repeating the immediately preceding element
+        // Every level still requires a physically buildable element, so a
+        // relaxed pick is always a real, in-band feature -- never a fake or a
+        // g-limit violation.  This is what lets a full lap complete when a fast
+        // top-hat exit (only a hard turn qualifies) or a post-inversion runout
+        // (only a terrain-blocked helix qualifies) would otherwise dead-end.
+        for (int relax = 0; relax < 4; ++relax) {
+            const bool dropPhase   = relax >= 1;
+            const bool dropVariety = relax >= 2;
+            const bool allowRepeat = relax >= 3;
+            int count = 0;
+            float sum = 0.0f;
+            for (SegMode m : pool) {
+                if ((excluded & (UINT32_C(1) << m)) ||
+                    (!allowRepeat && m == lastElem) ||
+                    (!dropPhase && !(elementRule(m).phases & phase)) ||
+                    !eligibleElem(m, !dropVariety))
+                    continue;
+                valid[count] = m;
+                weights[count] = elementWeight(m);
+                sum += weights[count++];
+            }
+            if (!count) continue;
+            float draw = frnd(0.0f, sum);
+            for (int i = 0; i < count; ++i)
+                if ((draw -= weights[i]) <= 0.0f) return valid[i];
+            return valid[count - 1];
         }
-        if (!count) return M_COUNT;
-        float draw = frnd(0.0f, sum);
-        for (int i = 0; i < count; ++i)
-            if ((draw -= weights[i]) <= 0.0f) return valid[i];
-        return valid[count - 1];
+        return M_COUNT;
     }
     struct ConnectorPlan {
         SegMode mode;
@@ -3710,9 +3746,77 @@ struct Track {
         spatialUps.back() = finish.up;
         deriveSpatialArcData(origin, start, finish);
         SpatialRun run = makeSpatialRun(origin, start.up, true);
-        if (!spatialCorridorClear(run) ||
-            !spatialForceClear(run, plan.mode, -3.0f, 6.0f)) return false;
+        if (!spatialCorridorClear(run)) {
+            return false;
+        }
+        if (!spatialForceClear(run, plan.mode, -3.0f, 6.0f)) {
+            return false;
+        }
         remain = plan.steps;
+        publishSpatialRun(std::move(run));
+        return true;
+    }
+
+    // Guaranteed-escape arc: a gentle connector that both YAWS (to steer the
+    // corridor away from a wall of terrain the straight escape cannot climb
+    // over) and eases its height to a clear deck, with a level rider frame and a
+    // reset (zero) vertical curvature.  It shares the ordinary connector's
+    // C2 height law and force/corridor validation, but unlike an authored turn
+    // it never inherits the incoming vertical curvature, so a pathological exit
+    // (a coarse-sampled element ending on a sharp second difference) cannot
+    // defeat it.  Returns true and publishes the run on success.
+    bool commitEscapeArc(float yawTarget, int steps, float endY, float startDy) {
+        mode = M_FLAT;
+        connLen = steps;
+        connDyStart = startDy;
+        connCurvatureStart = 0.0f;
+        connStartY = gpos.y;
+        connEndY = endY;
+        bankBase = 1.0f;
+        bankT = 0.0f;
+        const ConnectorPlan hplan{M_FLAT, steps, gpos.y, endY, startDy, 0.0f};
+        const Vector3 origin = gpos;
+        const BoundaryState start = currentBoundary();
+        float x = origin.x, z = origin.z, yaw = gyaw;
+        spatialPts.clear(); spatialUps.clear(); spatialD1.clear(); spatialD2.clear();
+        spatialD3.clear(); spatialDs.clear(); spatialIdx = 0;
+        spatialPts.reserve(steps); spatialUps.resize(steps, WUP);
+        for (int step = 1; step <= steps; ++step) {
+            // Yaw follows a smooth shoulder so its rate eases in and out; the
+            // whole turn integrates to yawTarget by the exit.
+            const float t = (float)step / steps;
+            yaw = gyaw + yawTarget * c3Ease(t);
+            x += sinf(yaw) * SEG_LEN;
+            z += cosf(yaw) * SEG_LEN;
+            spatialPts.push_back({x, connectorHeight(hplan, t), z});
+        }
+        for (int i = 0; i < steps; ++i) {
+            const Vector3 before = i == 0 ? origin : spatialPts[i - 1];
+            const Vector3 after = i + 1 < steps ? spatialPts[i + 1] : spatialPts[i];
+            Vector3 tangent = Vector3Subtract(after, before);
+            tangent = Vector3Length(tangent) > 1.0e-5f
+                ? Vector3Normalize(tangent) : start.tangent;
+            spatialUps[i] = orthoUp(tangent, WUP);
+        }
+        BoundaryState finish;
+        finish.tangent = steps > 1
+            ? Vector3Normalize(Vector3Subtract(spatialPts.back(),
+                                               spatialPts[steps - 2]))
+            : start.tangent;
+        finish.up = orthoUp(finish.tangent, WUP);
+        spatialUps.back() = finish.up;
+        // Interpolate the directly-authored points with the safe Catmull septic
+        // (exactDerivatives = false).  The exact-derivative path would read the
+        // stale spatialOriginD1/D2/D3 this escape never fills and blow the
+        // hermite up into wild off-anchor samples.
+        SpatialRun run = makeSpatialRun(origin, start.up, false);
+        if (!spatialCorridorClear(run)) {
+            return false;
+        }
+        if (!spatialForceClear(run, M_FLAT, -3.0f, 6.0f)) {
+            return false;
+        }
+        remain = steps;
         publishSpatialRun(std::move(run));
         return true;
     }
@@ -3770,8 +3874,9 @@ struct Track {
     bool routeConnectorAround(float maxRise=1.0e9f) {
         if (consecutiveRoutingRuns >= MAX_CONSECUTIVE_ROUTING_RUNS ||
             (pending.kind != PendingKind::None &&
-             pending.routeAttempts >= MAX_PENDING_ROUTE_ATTEMPTS))
+             pending.routeAttempts >= MAX_PENDING_ROUTE_ATTEMPTS)) {
             return false;
+        }
         const RoutingState saved = routingState();
         const uint32_t savedRng = rng;
         const float preferred = fabsf(lastBankSign) > 0.5f ? -lastBankSign
@@ -3793,7 +3898,8 @@ struct Track {
         rng = savedRng;
         if (bestScore < 1.0e29f) {
             restoreRoutingState(best);
-            return commitTurnSpatial();
+            bool ok = commitTurnSpatial();
+            return ok;
         }
         ConnectorPlan connector{};
         bool bounded=planBoundedTerrainConnector(connector);
@@ -4339,14 +4445,158 @@ struct Track {
         // the discarded copy.  This removes the old route-first failure mode
         // where two valid connectors could strand an immutable anchor with no
         // legal successor.
-        for (int attempt = 0; attempt < SCHEDULER_ATTEMPT_BUDGET; ++attempt)
-            if (tryBoundaryBranch(attempt))
+        for (int attempt = 0; attempt < SCHEDULER_ATTEMPT_BUDGET; ++attempt) {
+            if (tryBoundaryBranch(attempt)) {
+                consecutiveEscapes = 0;
                 return ScheduleOutcome::Committed;
+            }
+        }
+
+        // GUARANTEED CONTINUATION.  The three bounded branches above all failed:
+        // the exit anchor admits no named element and no verified routing turn.
+        // Rather than dead-end the whole ride (a single stranded boundary used
+        // to abort generation and cascade every downstream symptom), fall back
+        // to escapes that always make forward progress, so the streaming track
+        // never stops:
+        //   1. a forward terrain-following connector that levels the frame to a
+        //      clear deck and continues -- this breaks a buried, rising-terrain
+        //      or non-neutral exit and hands the next boundary a clean anchor
+        //      the relaxed element pool can use.  Each escape also advances the
+        //      lap toward its launch, so a persistently hostile region cannot
+        //      loop forever: after at most a lap's worth of escapes the lap-end
+        //      launch fires from the levelled escape exit and closes the lap.
+        //   2. if even that fails, a powered launch or boost directly.
+        // These never run inside a trial/probe branch (that would let a branch
+        // fabricate progress); only the live boundary escapes.
+        if (!boundaryTransactionActive) {
+            // A powered launch always closes the lap and climbs out under power;
+            // prefer it the moment escapes have charged the lap budget past its
+            // feature target, and require it before an escape can keep streaming.
+            const bool forceLaunch = elems >= elemLimit + 6 ||
+                                     escapesSinceLaunch >= ESCAPES_PER_LAP;
+            if (forceLaunch) {
+                pending = {}; connLen = 0; terrainAvoidanceTurn = false;
+                if (startLaunch()) { consecutiveEscapes = 0; return ScheduleOutcome::Committed; }
+                pending = {}; connLen = 0; terrainAvoidanceTurn = false;
+                if (startBoost()) { consecutiveEscapes = 0; return ScheduleOutcome::Committed; }
+            }
+            // A whole lap of escapes with no launch is a pathological corridor;
+            // close the lap unconditionally (the counters reset, the census makes
+            // progress) and keep the streaming track alive with one more escape,
+            // so generation can never be trapped by terrain a launch cannot clear.
+            if (escapesSinceLaunch >= ESCAPES_PER_LAP) {
+                closeLapAtLaunch();
+                consecutiveEscapes = 0;
+                pending = {}; connLen = 0; terrainAvoidanceTurn = false;
+                if (escapeForward()) return ScheduleOutcome::Committed;
+            }
+            if (consecutiveEscapes < ESCAPE_LIMIT) {
+                pending = {}; connLen = 0; terrainAvoidanceTurn = false;
+                if (escapeForward()) {
+                    consecutiveEscapes++;
+                    escapesSinceLaunch++;
+                    // Charge the escape against the lap budget.  Pushing elems
+                    // past the launch-postpone window (elemLimit + 6) forces the
+                    // next boundary onto a powered launch instead of streaming
+                    // flat escapes forever through a hostile corridor.
+                    elems = std::min(elems + 1, elemLimit + 6);
+                    return ScheduleOutcome::Committed;
+                }
+            }
+            pending = {}; connLen = 0; terrainAvoidanceTurn = false;
+            if (startLaunch()) { consecutiveEscapes = 0; return ScheduleOutcome::Committed; }
+            pending = {}; connLen = 0; terrainAvoidanceTurn = false;
+            if (startBoost()) { consecutiveEscapes = 0; return ScheduleOutcome::Committed; }
+        }
 
         pending = {};
         nextModePending = true;
         schedulerExhaustions++;
         return ScheduleOutcome::Exhausted;
+    }
+
+    // Terminal forward escape: a gentle connector that eases to a terrain-
+    // following clear deck and continues straight ahead.  It is deliberately far
+    // more permissive than the ordinary bounded connector (no routing-run cap,
+    // up to 40 spans of climb), because its sole job is to guarantee the ride
+    // can always advance one more step.
+    //
+    // Crucially it RESETS the incoming vertical curvature to zero instead of
+    // matching it.  The Hermite connector's curvature coefficient is
+    // 0.5*startCurvature*steps^2, so a large discrete exit curvature (some
+    // authored elements terminate their coarse-sampled profile with a sharp
+    // second difference) makes every curvature-matching connector -- ordinary
+    // or escape -- explode and fail to build, which is exactly the dead-end this
+    // escape exists to break.  Matching position and slope keeps C1 continuity;
+    // dropping the curvature to zero costs only a single bounded g-step at the
+    // join, which is always preferable to stranding the ride.  Curvature is also
+    // where the incoming element already spent its force, so the reset only
+    // relaxes the rider, never adds load.
+    bool escapeForward() {
+        const float reachLo = 0.30f, reachHiUp = 0.55f;
+        // An escape recovers UP to clearance and never descends: the track often
+        // sits exactly on the corridor floor (WATER_Y + deck clearance) with a
+        // residual downward exit slope, and a connector that honours that slope
+        // dips below the floor in its first span and fails everywhere.  Starting
+        // non-descending costs at most a small one-step slope kink at the join.
+        const float startDy = Clamp(genPrevDy, 0.0f, 3.0f);
+        for (int steps = MIN_CONN; steps <= 40; steps += 5) {
+            ConnectorPlan plan{M_FLAT, steps, gpos.y, gpos.y, startDy, 0.0f};
+            ConnectorTerrain terrain = inspectConnectorTerrain(plan);
+            const float loY = gpos.y - reachLo * steps * SEG_LEN;
+            const float hiY = gpos.y + reachHiUp * steps * SEG_LEN;
+            // Aim for genuine DECK clearance above the ground ahead, not the
+            // ordinary route target (which sits inside the cut band): the escape
+            // must lift the track OUT of a bumpy, near-water corridor so that the
+            // next launch can find a clear powered deck and close the lap.  A
+            // long stretch that only ever skims the cut floor never lets a launch
+            // build, and the lap streams flat escapes until the census guard.
+            plan.endY = Clamp(fmaxf(terrain.terminalDeck, terrain.terminalTarget),
+                              loY, hiY);
+            for (int pass = 0; pass < 6; ++pass) {
+                terrain = inspectConnectorTerrain(plan);
+                if (terrain.deficiency <= 0.05f) break;
+                plan.endY = Clamp(plan.endY + terrain.deficiency * 1.35f, loY, hiY);
+            }
+            if (inspectConnectorTerrain(plan).deficiency > 0.05f) continue;
+            plan.mode = plan.endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT;
+            if (commitConnector(plan)) {
+                return true;
+            }
+        }
+        // Straight ahead is blocked (an element pointed the exit into a wall of
+        // rising terrain the connector cannot climb over).  Sweep curving escape
+        // arcs -- increasing yaw, both directions, over a range of lengths and
+        // deck heights -- and take the first that clears.  Unlike an authored
+        // avoidance turn these reset the vertical curvature, so they survive a
+        // pathological (high second-difference) exit that defeats every
+        // curvature-matching primitive.
+        const float startDyArc = Clamp(genPrevDy, 0.0f, 3.0f);
+        for (int steps = 8; steps <= 40; steps += 4) {
+            const float loY = gpos.y - 0.30f * steps * SEG_LEN;
+            const float hiY = gpos.y + 0.55f * steps * SEG_LEN;
+            // Prefer a deck height that clears the ground along the arc's own
+            // (curved) footprint; sample it per candidate direction below.
+            for (float turnMagRad : {0.7f, 1.4f, 2.2f})
+                for (float sign : {-1.0f, 1.0f}) {
+                    const float yawTarget = sign * turnMagRad;
+                    // Deck target: clear the ground under the arc's exit heading.
+                    float deck = gpos.y;
+                    float yaw = gyaw + yawTarget;
+                    for (float d = SEG_LEN; d <= steps * SEG_LEN; d += 2.0f * SEG_LEN) {
+                        const float ax = gpos.x + sinf(yaw) * d;
+                        const float az = gpos.z + cosf(yaw) * d;
+                        const TerrainSurface s = terrainSurfaceAt(ax, az);
+                        deck = fmaxf(deck, (s.water ? s.waterSurface : s.solidTop)
+                                     + TERRAIN_DECK_CLEARANCE);
+                    }
+                    const float endY = Clamp(deck, loY, hiY);
+                    if (commitEscapeArc(yawTarget, steps, endY, startDyArc)) {
+                        return true;
+                    }
+                }
+        }
+        return false;
     }
 
     bool genPoint() {

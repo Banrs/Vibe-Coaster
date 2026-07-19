@@ -5,6 +5,20 @@ Self-contained brief for continuing this work (incl. in a fresh / online session
 verified with `lldb` against the live binary (not just static reading) — trust it over the raw
 audit output, which misreports (see "audit caveat").
 
+## Ride spec — authoritative multipliers (do not re-derive)
+
+Arcade feel on a **real-world record-breaking** grounding. Every element is sized/paced from a real
+reference, then scaled by these multipliers, and the *relative* relations (radii, element durations,
+entry/exit speeds, spacing) should still roughly follow real-life proportions per element:
+
+- **Speed:** ~**240 km/h average**, **360 km/h peak** (~2× Falcon's Flight). So ~200 km/h is *below
+  average* cruising speed — NOT "very high speed". Elements must run cleanly across this whole band;
+  a stall at 190–230 km/h is a geometry/terrain bug, never a "too fast" symptom.
+- **Size:** **1.0–1.5× world-record** dimensions (`RECORD_SCALE_CAP = 1.50`).
+- **G-forces:** ~**2× the real element's** peak, per element (overall envelope ≈ **+12 / −6 g**).
+- **Proportions:** radius, duration, and repetition per element follow the real reference (e.g. a
+  corkscrew's real revolution count), then scale uniformly by the one 1.0–1.5× λ.
+
 ## Mission
 
 Make the procedural generator produce a **complete, intense, record-breaking** ride every time.

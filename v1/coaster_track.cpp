@@ -2235,7 +2235,7 @@ struct Track {
         // scaled by the same lambda.
         constexpr float referenceRadius = CORKSCREW_REFERENCE_RADIUS;
         constexpr float pitch = 60.0f * DEG2RAD;
-        constexpr float targetRadialG = 10.0f;
+        constexpr float targetRadialG = 8.9f;
         const float requiredScale =
             genV * genV * cosf(pitch) * cosf(pitch) /
             (targetRadialG * GRAV * referenceRadius);
@@ -2496,7 +2496,7 @@ struct Track {
         // rising-loop crest equation. This gives a natural 44.6--54.7 m/s
         // entry window for the record-scaled 60--90 m drop.
         constexpr float radiusPerDrop = 0.4387822774f;
-        constexpr float targetG = 11.5f;
+        constexpr float targetG = 9.6f;
         const float denominator = GRAV * (targetG * radiusPerDrop - 1.0f);
         if (!(denominator > 0.0f)) return {};
         const float drop = entrySpeed * entrySpeed / denominator;
@@ -2536,6 +2536,7 @@ struct Track {
         float scale=drop/fmaxf(-yf.back(),1.0e-4f);
         int steps=Clamp((int)ceilf(scale/7.0f),24,56);
         Vector3 origin=gpos;
+        const BoundaryState start = currentBoundary();
         std::vector<Vector3> points, frames;
         points.reserve(steps); frames.reserve(steps);
         for (int j=1;j<=steps;++j) {
@@ -2568,7 +2569,15 @@ struct Track {
         spatialD1.clear(); spatialD2.clear(); spatialD3.clear(); spatialDs.clear();
         spatialIdx=0;
         remain=(int)spatialPts.size();
-        commitSpatialRun(origin,up.empty()?WUP:up.back());
+        BoundaryState finish;
+        finish.tangent = spatialPts.size() > 1
+            ? Vector3Normalize(Vector3Subtract(
+                  spatialPts.back(), spatialPts[spatialPts.size() - 2]))
+            : start.tangent;
+        finish.up = orthoUp(finish.tangent, spatialUps.back());
+        spatialUps.back() = finish.up;
+        deriveSpatialArcData(origin, start, finish);
+        commitSpatialRun(origin,up.empty()?WUP:up.back(),true);
         return true;
     }
 
@@ -2672,11 +2681,11 @@ struct Track {
         // and STALL own their entry windows directly.
         switch (m) {
             // The corkscrew has no large crest to starve. Its physical builder
-            // derives a 1.0..1.5 scale from the requested 10 g radial load;
-            // 62 m/s is the upper speed at which the inferred 6.6 m reference
+            // derives a 1.0..1.5 scale from the requested 8.9 g radial load;
+            // 58 m/s is the upper speed at which the inferred 6.6 m reference
             // radius remains inside that uniform scale cap.
             case M_LOOP:      return 64.0f;
-            case M_ROLL:      return 62.0f;
+            case M_ROLL:      return 58.0f;
             case M_IMMEL:     return 70.0f;
             case M_STALL:     return 56.0f;
             default: break;

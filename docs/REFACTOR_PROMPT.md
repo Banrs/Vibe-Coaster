@@ -46,10 +46,12 @@ are the **same** bug:
 1. Plan the ride as a **height program over arc length that tracks the terrain profile**: cruise hugs
    `ground + F2291 clearance`; elements *launch up from* and *dive back toward* the local surface
    ("work WITH the terrain — launch up, dive off"). Falcon's-Flight-style cliff drops are the template.
-2. Elements become **terrain-relative**: a top hat over a downslope/cliff should end LOWER than it
-   started (asymmetric dive-off), not return to entry height. A hill's valley should sit in the ground
-   band. Loops/rolls/immelmanns already gate to a near-ground band — extend that to *positive* placement,
-   not just rejection.
+2. Elements become **terrain-relative**: a hill's valley should sit in the ground band; loops/rolls/
+   immelmanns already gate to a near-ground band — extend that to *positive* placement, not just
+   rejection. **Top hats stay symmetric** (they return to entry height, which is correct) — the bug is
+   that the *entry/launch platform is too high above grade*, so fix the approach height (ground-hug the
+   run-in), not the element's symmetry. A symmetric top hat launched from `ground + clearance` naturally
+   crests and returns near grade.
 3. **Digs only where terrain genuinely rises.** Make the allowed cut depth a function of local terrain
    rise (near-zero on flat ground, full tolerance into a real hillside), OR bake a deterministic cutting/
    trench into the *static* heightfield where the finalized track passes below grade so a dig reads as an

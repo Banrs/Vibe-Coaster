@@ -478,17 +478,20 @@ struct Track {
         return true;
     }
 
-    bool beginHillChain() {
+    bool beginHillChain(unsigned hillCount = 2u) {
         lockMacroAnchor();
         if (genV < HILL_ENTRY_MIN || genV > HILL_ENTRY_MAX) return false;
         v1profile::HillChainSpec spec;
-        // Keep a chain compact.  Three record-scale camelbacks can occupy
-        // half a kilometre and read as one endless waveform rather than a
-        // sequence of authored coaster elements.
-        // Airtime is a motif, not a lone generic hump between two connector
-        // flats.  Two descending camelbacks give the sequence a purpose while
-        // remaining short enough not to monopolize the layout.
-        spec.hillCount = 2u;
+        // Airtime is a motif, not a lone generic hump.  Two descending
+        // camelbacks give the sequence a purpose, but a two-lobe chain needs a
+        // ~400-570 m clear, non-rising corridor AND both decayed lobes in the
+        // 1.0-1.5x dimension band -- so on undulating terrain the chain is far
+        // rarer than it should be (measured: terrain deficiency and the second
+        // lobe's band were the dominant rejections).  The caller therefore tries
+        // 2 lobes first and falls back to a single record-scale airtime hill,
+        // which needs half the corridor and only one in-band lobe, so the
+        // signature ejector hill actually appears at cruise speed.
+        spec.hillCount = hillCount;
         spec.startHeight = gpos.y;
         // A modern record-scale camelback starts at 60 m. Entry speed may grow
         // it toward 1.25x, but size is not inflated when it adds no useful
@@ -535,9 +538,18 @@ struct Track {
                     built.crestDistance[hill]).curvature);
                 float crownRadius = crownCurvature > 1.0e-7f ?
                     1.0f/crownCurvature : 1.0e9f;
+                // The AIRTIME-critical dimensions -- crest rise and crown radius
+                // (which set the ejector crest g) -- are held to the strict
+                // 1.0-1.5x band.  The lobe PLAN and RAIL are the flank lengths;
+                // the descending-chain builder naturally stretches them a little
+                // longer per crown than the single reference camelback (plan/crown
+                // ~7.7 vs the reference 6.2), which is a gentler up/down flank, not
+                // a weaker crest.  Allow the flanks a wider upper bound so the
+                // signature airtime hill is not rejected for a slightly long
+                // approach while its crest g stays exactly on target.
                 if (!dimensionInBand(lobeRise, AIRTIME_RECORD_HEIGHT) ||
-                    !dimensionInBand(lobePlan, HILL_REFERENCE_LOBE_PLAN) ||
-                    !dimensionInBand(lobeRail, HILL_REFERENCE_LOBE_RAIL) ||
+                    !dimensionInBand(lobePlan, HILL_REFERENCE_LOBE_PLAN, 1.25f) ||
+                    !dimensionInBand(lobeRail, HILL_REFERENCE_LOBE_RAIL, 1.25f) ||
                     !dimensionInBand(crownRadius, HILL_REFERENCE_CROWN_RADIUS))
                     return false;
                 previousTroughDistance = built.troughDistance[hill];
@@ -2399,8 +2411,12 @@ struct Track {
     bool initHills() {
         const uint32_t savedRng = rng;
         const Vector3 savedPos = gpos;
-        if (beginHillChain()) return true;
-        rng = savedRng; gpos = savedPos;
+        // Prefer the full descending chain; fall back to a single ejector hill
+        // so airtime hills still generate where terrain cannot host two lobes.
+        for (unsigned hills : {2u, 1u}) {
+            if (beginHillChain(hills)) return true;
+            rng = savedRng; gpos = savedPos;
+        }
         return false;
     }
 

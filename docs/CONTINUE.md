@@ -60,9 +60,15 @@ few elements in** and never finishes the ride.
 ### Still open (this session did not get to these)
 - **seed4** (1/8) still stalls at ~356 km/h near-peak, post-launch, buried — escapes are force-limited
   at near-peak speed. Investigate why the post-launch top hat doesn't fire there.
-- **M_HILLS frequency is 0.6 %** (2/314) — the straight airtime-hill chain barely appears; its entry
-  window [196–240 km/h] + 60 m clearance gate is too tight vs cruise. BANKAIR/WAVE fill the airtime
-  role instead. Widen so the signature decreasing-hill chain generates; add an explicit crest-g target.
+- **M_HILLS raised 0.6 %→1.8 %** (this session) by removing two artificial blockers: `initHills` now
+  falls back from a 2-lobe chain to a single record-scale ejector hill (half the corridor), and the
+  lobe PLAN/RAIL band got a 1.25× upper allowance (the descending-chain builder makes flanks ~7.7×
+  crown vs the reference 6.2×; the crest/crown radius that sets ejector g is still held to strict
+  1.0–1.5×). **Remaining blocker is terrain deficiency**: a ~200–320 m clear, non-rising corridor is
+  rare on the undulating low terrain the ride hugs. Raising it further means lifting the hill baseline
+  to clear the forward corridor while making the exit descend back (no net accumulation) — deferred as
+  it risks the documented "layouts accumulate to 300–400 m" regression. Still want an explicit crest-g
+  target on the chain (brief item 5).
 - **M_TURN / M_DIVE +12 g vertical** entry spikes (possibly real — non-inverting, so not the audit
   artifact above).
 - **Top-hat drop** returns to entry level (`beginTopHat` sets endHeight=startHeight); make the drop

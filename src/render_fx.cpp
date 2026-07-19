@@ -355,8 +355,19 @@ struct ShadowSys {
         rlEnableFramebuffer(fbo);
         depthTex = rlLoadTextureDepth(SM, SM, false);
         rlFramebufferAttach(fbo, depthTex, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_TEXTURE2D, 0);
+        // A depth-ONLY FBO (no colour attachment) is INCOMPLETE on strict GL
+        // drivers unless the colour draw/read buffers are explicitly disabled.
+        // Without this the shadow map silently never renders, so the terrain gets
+        // ambient-only light and reads as uniformly, slightly dim with no shadows
+        // at all.  raylib does not set these for us, so do it here.
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
         if (!rlFramebufferComplete(fbo)) TraceLog(LOG_WARNING, "SHADOW: framebuffer is incomplete");
         rlDisableFramebuffer();
+        // Restore the default framebuffer's colour buffers so the main scene
+        // passes are unaffected by the NONE draw/read state set above.
+        glDrawBuffer(GL_BACK);
+        glReadBuffer(GL_BACK);
     }
 
     // Build the one ground-anchored light volume.

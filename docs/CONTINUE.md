@@ -19,6 +19,40 @@ entry/exit speeds, spacing) should still roughly follow real-life proportions pe
 - **Proportions:** radius, duration, and repetition per element follow the real reference (e.g. a
   corkscrew's real revolution count), then scale uniformly by the one 1.0–1.5× λ.
 
+## Real-life calibration targets (researched 2026-07-19; basis: Falcon's Flight + Tormenta)
+
+**Clearance — use ASTM F2291 (envelope-based, NOT a fixed floor).** F2291 has no fixed
+ground-clearance minimum: clearance is the patron reach envelope + 3 in (76 mm), which tapers to
+nearly nothing at foot height (legs are restraint-contained). Near grade, real coasters (RMC
+trenches/stalls) legitimately run **inches to ~1 ft (0.1–0.3 m)** above ground; practical
+structural/drainage margin in ordinary sections is **~1–2 m**, NOT a hard code value. Our old 4 m
+deck floor is 15–30× too conservative, and the track floats **mean 13–18 m, 15–26 % of points >30 m**
+above ground (measured) — that is the "weirdly high ground sections". Target: hug ground at ~1.5–2 m
+in ordinary/connector sections, rising only for authored elements.
+
+**Per-element frequency targets = the AVERAGE of the two references** (user directive: average, don't
+lean to either archetype; keep a FEW corkscrews and other fun modern-record-breaker elements). 0.5–2×
+tolerance:
+
+| Element | Falcon's Flight | Tormenta | **AVG target** | Our current |
+|---|---|---|---|---|
+| Airtime hills | 28–32 % | 0 % | **~15 %** | 3 % (terrain-blocked — the big gap) |
+| Banked turns | 35–40 % | 15–17 % | **~26 %** | 26 % ✓ |
+| Inversions total | 0 % | 33–38 % | **~18 %** (Immel-heavy) | ~14 % |
+| — Corkscrew | 0 % | 0 % | **~2–3 %** ("a few", occasionally doubled) | ~6 % |
+| — Immelmann / loop | 0 % | ~24 / ~8 % | **~12 % / ~4 %** | ~4 % / ~4 % |
+| Drops | 10–12 % | 15–17 % | **~13 %** | ~4 % (low) |
+| Launches | 16–18 % | 0 % | **~8 %** | (CLIMB 14%) |
+| DIP (splashdown) | — | — | **~2–5 %** | **17 % (way over — crowding out hills)** |
+
+Corkscrews are rare-but-present (keep a few, sometimes double). DIP is badly over-represented because
+hills can't fit the terrain, so the airtime/filler slots fall to DIP — fix hills organically and DIP
+drops. Element density AVG ~4.3–9.8/km (ours ~3.2/km, slightly sparse).
+
+**Fallbacks must be organic-rare.** Target total fallback rate (terminal escapes + single-element
+fallbacks + pool relaxations) **≤ ~1 per 10 seeds**. Fix the ROOT placement causes (clearance, element
+sizing) rather than papering over with escapes/relaxation.
+
 ## Mission
 
 Make the procedural generator produce a **complete, intense, record-breaking** ride every time.

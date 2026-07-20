@@ -2052,6 +2052,31 @@ int main(int argc, char **argv) {
     };
     std::unordered_map<long long, SupportPlacement> supportPlacementCache;
 
+    // Static-geometry cache for supports. drawVBent used to regenerate every leg,
+    // strut and node cube in immediate mode every frame, in BOTH the depth and lit
+    // passes. The geometry is a pure function of finalized track + (fixed) terrain,
+    // so bake it once into an immutable Mesh keyed by the SAME global control-point
+    // index as supportPlacementCache/trackRenderCache, then just DrawMesh it every
+    // frame. Base (unfogged) colors are baked; the shared track shader-fog band is
+    // applied at draw time (exactly like track_render_cache.cpp), so the mesh never
+    // has to be rebuilt when the camera moves. popFront invalidation drops entries
+    // whose global index falls behind Track::base.
+    struct SupportMeshEntry {
+        Mesh mesh{};
+        Vector3 center{};
+        float radius = 0.0f;
+        bool built = false;    // a build was attempted for this cp
+        bool hasGeom = false;  // the build produced (and uploaded) real geometry
+    };
+    std::unordered_map<long long, SupportMeshEntry> supportMeshCache;
+    // Global cp indices per support chunk (one merged static mesh per chunk).
+    const long SUP_CHUNK = 16;
+    auto unloadSupportMeshes = [&]() {
+        for (auto &kv : supportMeshCache)
+            if (kv.second.hasGeom) UnloadMesh(kv.second.mesh);
+        supportMeshCache.clear();
+    };
+
     const int   NCARS    = 2;
     const float CAR_GAP  = 4.2f;
 
@@ -2191,6 +2216,7 @@ int main(int argc, char **argv) {
             // trk.reset() zeroes Track::base, so old global control-point
             // indices could otherwise alias fresh ones on the new route.
             supportPlacementCache.clear();
+            unloadSupportMeshes();
             u = Track::rideStartU; v = 7.0f; boost = 40; score = 0;
             generationFault = false;
             gVert = gVertMax = gVertMin = 1.0f;
@@ -3190,17 +3216,20 @@ int main(int argc, char **argv) {
 
         int k0 = (int)fmaxf(1.0f, u - 14.0f), k1 = (int)(u + 64);
 
-        if (supportClearancePath.empty()) {
-            float q0 = fmaxf(0.5f, (float)k0 - 10.0f);
-            float q1 = fminf(trk.maxFinalU(), (float)k1 + 10.0f);
+        // Fill the support-clearance polyline over [q0,q1] (spline parameter). Rebuilt
+        // per support-chunk build so each chunk's leg search tests the full local
+        // train envelope, including helix/loop return passes near it in XZ.
+        auto ensureClearancePath = [&](float q0, float q1) {
+            supportClearancePath.clear();
+            q0 = fmaxf(0.5f, q0);
+            q1 = fminf(trk.maxFinalU(), q1);
+            if (q1 < q0) return;
             supportClearancePath.reserve((size_t)fmaxf(1.0f, (q1 - q0) / 0.20f + 2.0f));
             for (float q = q0; q <= q1; q += 0.20f)
                 supportClearancePath.emplace_back(q, trk.pos(q));
-        }
+        };
 
         float trackFog = fogEnd * 1.9f;
-        const float trackCull = depthPass ? (cullR + SEG_LEN) : (trackFog + SEG_LEN);
-        const float trackCull2 = trackCull * trackCull;
 
         auto supportMemberClear = [&](Vector3 a, Vector3 b, float supportU, float clearance) {
             Vector3 ab = Vector3Subtract(b, a);
@@ -3226,11 +3255,15 @@ int main(int argc, char **argv) {
             return true;
         };
 
-        auto drawVBent = [&](Vector3 p, float topY, float gC, Vector3 tang,
+        // Emit one support's geometry into a static CpuMeshBuilder (baked once, then
+        // DrawMesh'd every frame). sc is the UNFOGGED base color; the shared track
+        // shader-fog band is applied at draw time. Returns false if no support is placed.
+        auto drawVBent = [&](v1_track_render::CpuMeshBuilder &mb,
+                             Vector3 p, float topY, float gC, Vector3 tang,
                              Vector3 railUp, Color sc, float supportU, unsigned char supportTag,
-                             long long placementKey) {
+                             long long placementKey) -> bool {
             float hgt = topY - gC;
-            if (hgt < 1.0f) return;
+            if (hgt < 1.0f) return false;
 
             float legR = Clamp(0.30f + hgt * 0.0045f, 0.30f, 0.55f);
             float nodeDrop = 0.58f;
@@ -3248,7 +3281,7 @@ int main(int argc, char **argv) {
             auto cacheIt = supportPlacementCache.find(placementKey);
             if (cacheIt != supportPlacementCache.end()) {
                 const SupportPlacement &c = cacheIt->second;
-                if (!c.valid) return; // previously searched: no clear placement exists
+                if (!c.valid) return false; // previously searched: no clear placement exists
                 haveBent = c.haveBent; cantilever = c.cantilever; haveOutrigger = c.haveOutrigger;
                 tops[0] = c.tops[0]; tops[1] = c.tops[1];
                 feet[0] = c.feet[0]; feet[1] = c.feet[1];
@@ -3397,7 +3430,7 @@ int main(int argc, char **argv) {
             if (supportPlacementCache.size() > 4096) supportPlacementCache.clear();
             supportPlacementCache[placementKey] = rec;
 
-            if (!rec.valid) return;
+            if (!rec.valid) return false;
             }
 
             int legCount = haveBent ? 2 : 1;
@@ -3405,17 +3438,16 @@ int main(int argc, char **argv) {
                 Vector3 dir = Vector3Subtract(feet[side], tops[side]);
                 float len = Vector3Length(dir);
                 Vector3 mid = Vector3Scale(Vector3Add(tops[side], feet[side]), 0.5f);
-                pushFrame(mid, Vector3Normalize(dir), WUP);
-                drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, legR, legR, len, sc);
-                popFrame();
+                v1_track_render::RenderFrame fr = v1_track_render::makeRenderFrame(mid, dir, WUP);
+                mb.appendBox(T_IRON, fr, Vector3{ 0, 0, 0 }, legR, legR, len, sc);
             }
 
             auto strut = [&](Vector3 a, Vector3 b, float r) {
                 Vector3 d = Vector3Subtract(b, a); float L = Vector3Length(d);
                 if (L < 0.3f) return;
-                pushFrame(Vector3Scale(Vector3Add(a, b), 0.5f), Vector3Normalize(d), WUP);
-                drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, r, r, L, sc);
-                popFrame();
+                v1_track_render::RenderFrame fr = v1_track_render::makeRenderFrame(
+                    Vector3Scale(Vector3Add(a, b), 0.5f), d, WUP);
+                mb.appendBox(T_IRON, fr, Vector3{ 0, 0, 0 }, r, r, L, sc);
             };
 
             if (haveOutrigger)
@@ -3440,59 +3472,114 @@ int main(int argc, char **argv) {
                 }
             }
 
-            pushFrame(node, tang, railUp);
-            drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, 0.56f, 0.56f, 1.0f, sc);
-            popFrame();
+            {
+                v1_track_render::RenderFrame fr = v1_track_render::makeRenderFrame(node, tang, railUp);
+                mb.appendBox(T_IRON, fr, Vector3{ 0, 0, 0 }, 0.56f, 0.56f, 1.0f, sc);
+            }
+            return true;
         };
-        for (int i = k0; i <= k1 && i + 1 < finalN; i++) {
+        // popFront invalidation: drop cached supports whose chunk has fallen entirely
+        // behind the streaming Track base (matches trackRenderCache).
+        for (auto it = supportMeshCache.begin(); it != supportMeshCache.end();) {
+            if (it->first + SUP_CHUNK <= (long long)trk.base) {
+                if (it->second.hasGeom) UnloadMesh(it->second.mesh);
+                it = supportMeshCache.erase(it);
+            } else ++it;
+        }
+
+        // Geometric qualification for a support at local cp index i (pure function of
+        // finalized track + fixed terrain -- no camera/view dependence, so it can be
+        // baked). Fills the drawVBent inputs when a support belongs there.
+        auto qualifiesSupport = [&](int i, Vector3 &pOut, float &topYOut, float &gCOut,
+                                    Vector3 &tOut, unsigned char &tgOut) -> bool {
+            if (i < 1 || i + 1 >= finalN) return false;
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
             bool tightShape = (tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
                                tg == M_STALL || tg == M_DIVELOOP);
-            if (tightShape && trk.up[i].y < 0.35f) continue;
-            float ddx = p.x - P.x, ddz = p.z - P.z;
-            if (ddx * ddx + ddz * ddz > trackCull2) continue;
-            float dist = sqrtf(ddx * ddx + ddz * ddz);
-            float fog = Clamp((dist - trackFog * 0.70f) / (trackFog * 0.27f), 0.0f, 1.0f);
-            if (fog > 0.97f) continue;
+            if (tightShape && trk.up[i].y < 0.35f) return false;
             float g = groundTopAt(p.x, p.z);
-            if (p.y - g < 1.5f) continue;
-            // The up.y check above only excludes the bottom of THIS point's own rotation phase --
-            // it doesn't stop a strut placed during the "upright" phase (up.y>=0.35) from clipping
-            // through the SAME loop/roll/etc.'s own track at a nearby point along its length that
-            // happens to pass through where the strut physically runs (straight down from p to the
-            // ground). Scan a local window (one full rotation of these elements is well under 48
-            // control points) and skip the support if another point of the same contiguous element
-            // sits close in XZ while between the ground and this point's height.
+            if (p.y - g < 1.5f) return false;
+            // A strut placed during the "upright" phase can still clip the SAME
+            // element's own track where it passes nearby in XZ between ground and
+            // this point's height. Scan a local window (one rotation is < 48 cps).
             if (tightShape) {
-                bool blocked = false;
                 int wStart = (i - 48 > 0) ? i - 48 : 0;
                 int wEnd   = (i + 48 < finalN - 1) ? i + 48 : finalN - 1;
                 for (int j = wStart; j <= wEnd; j++) {
                     if (j == i || trk.kind[j] != tg) continue;
                     Vector3 q = trk.cp[j];
                     float qdx = q.x - p.x, qdz = q.z - p.z;
-                    if (qdx*qdx + qdz*qdz < 9.0f && q.y > g + 1.0f && q.y < p.y - 1.0f) { blocked = true; break; }
+                    if (qdx*qdx + qdz*qdz < 9.0f && q.y > g + 1.0f && q.y < p.y - 1.0f) return false;
                 }
-                if (blocked) continue;
             }
-            Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
-            Color sc = mixc(Color{ 118, 122, 130, 255 }, FOG, fog);
-
-            float topY = p.y - 0.5f;
-            float gC   = groundTopAt(p.x, p.z);
-            float hgt  = topY - gC;
+            float topY = p.y - 0.5f, hgt = topY - g;
             float SUP_SP = Clamp(11.0f + hgt * 0.055f, 11.0f, 20.0f);
             if (tg == M_HELIX || tg == M_TURN || tg == M_LOOP ||
                 tg == M_IMMEL || tg == M_DIVELOOP)
                 SUP_SP *= 0.78f;
             bool placeHere = i > 0 &&
                 floorf(trk.arc[i] / SUP_SP) != floorf(trk.arc[i - 1] / SUP_SP);
-            if (hgt > 0.5f && placeHere)
-                drawVBent(p, topY, gC, t, trk.up[i], sc, (float)i - 1.0f, tg,
-                          (long long)trk.base + (long long)i);
+            if (!(hgt > 0.5f && placeHere)) return false;
+            pOut = p; topYOut = topY; gCOut = g; tgOut = tg;
+            tOut = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
+            return true;
+        };
 
-            if (tg == M_LAUNCH || tg == M_BOOST) {
+        // Build one immutable support CHUNK: every support whose global cp index lands
+        // in [cs, cs+SUP_CHUNK) is baked into a SINGLE static mesh, so a whole run of
+        // supports draws in one DrawMesh instead of one-per-support (the per-support
+        // draw-call overhead is what dominates on a software rasterizer). Only built
+        // once its entire cp span is finalized, so the mesh never changes afterward.
+        auto buildSupportChunk = [&](long cs) {
+            long localStart = cs - (long)trk.base;
+            long localEndExcl = localStart + SUP_CHUNK;
+            if (localEndExcl + 1 > (long)finalN) return;  // not fully finalized yet
+            ensureClearancePath((float)localStart - 12.0f, (float)localEndExcl + 12.0f);
+            v1_track_render::CpuMeshBuilder mb;
+            for (long gi = cs; gi < cs + SUP_CHUNK; gi++) {
+                int i = (int)(gi - (long)trk.base);
+                Vector3 p, t; float topY, gC; unsigned char tg;
+                if (!qualifiesSupport(i, p, topY, gC, t, tg)) continue;
+                drawVBent(mb, p, topY, gC, t, trk.up[i], Color{ 118, 122, 130, 255 },
+                          (float)i - 1.0f, tg, (long long)gi);
+            }
+            SupportMeshEntry e{};
+            e.built = true;
+            if (!mb.empty()) {
+                e.mesh = mb.uploadStatic();
+                e.center = Vector3Scale(Vector3Add(mb.boundsMin, mb.boundsMax), 0.5f);
+                float rx = fmaxf(fabsf(mb.boundsMax.x - e.center.x), fabsf(mb.boundsMin.x - e.center.x));
+                float ry = fmaxf(fabsf(mb.boundsMax.y - e.center.y), fabsf(mb.boundsMin.y - e.center.y));
+                float rz = fmaxf(fabsf(mb.boundsMax.z - e.center.z), fabsf(mb.boundsMin.z - e.center.z));
+                e.radius = sqrtf(rx * rx + ry * ry + rz * rz) + 0.5f;
+                e.hasGeom = (e.mesh.vaoId != 0 || e.mesh.vboId != nullptr);
+            }
+            supportMeshCache.emplace(cs, e);
+        };
+
+        // Ensure every support chunk overlapping the visible cp window is built.
+        {
+            long gLo = (long)trk.base + k0, gHi = (long)trk.base + k1;
+            long csLo = (gLo / SUP_CHUNK) * SUP_CHUNK;
+            for (long cs = csLo; cs <= gHi; cs += SUP_CHUNK) {
+                if (cs + SUP_CHUNK <= (long)trk.base) continue;
+                if (supportMeshCache.find(cs) == supportMeshCache.end())
+                    buildSupportChunk(cs);
+            }
+        }
+
+        for (int i = k0; i <= k1 && i + 1 < finalN; i++) {
+            Vector3 p = trk.cp[i];
+            unsigned char tg = trk.kind[i];
+            if (tg != M_LAUNCH && tg != M_BOOST) continue;
+            float ddx = p.x - P.x, ddz = p.z - P.z;
+            float dist = sqrtf(ddx * ddx + ddz * ddz);
+            float fog = Clamp((dist - trackFog * 0.70f) / (trackFog * 0.27f), 0.0f, 1.0f);
+            if (fog > 0.97f) continue;
+            Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));
+
+            {
                 Vector3 fwd = Vector3Normalize(Vector3{ t.x, 0, t.z });
                 pushFrame(Vector3{ p.x, p.y, p.z }, fwd, WUP);
                 Color grate = mixc(Color{ 150, 154, 162, 255 }, FOG, fog);
@@ -3530,6 +3617,23 @@ int main(int argc, char **argv) {
         }
         trackRenderCache.draw(depthPass, P,
             depthPass ? cullR + 8.0f : trackFog + SEG_LEN, g0, g1);
+        // Cached supports share the exact same fog band as the track cache. Draw every
+        // chunk whose cp span overlaps the visible window [k0,k1], distance-culled.
+        {
+            Material smat = gTerrainMat;
+            smat.shader = depthPass ? gShadow.depth : gShadow.lit;
+            float sCull = depthPass ? (cullR + SEG_LEN) : (trackFog + SEG_LEN);
+            for (auto &kv : supportMeshCache) {
+                SupportMeshEntry &e = kv.second;
+                if (!e.hasGeom) continue;
+                long cl = (long)(kv.first - (long long)trk.base);   // chunk start (local)
+                if (cl + SUP_CHUNK <= k0 || cl > k1) continue;      // outside visible window
+                float dx = e.center.x - P.x, dz = e.center.z - P.z;
+                float reach = sCull + e.radius;
+                if (dx * dx + dz * dz > reach * reach) continue;
+                DrawMesh(e.mesh, smat, MatrixIdentity());
+            }
+        }
         if (!depthPass) {
             float off = 0.0f;
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);
@@ -4429,6 +4533,7 @@ int main(int argc, char **argv) {
     gPT.shutdown();
     gTerrainMesh.shutdown();
     trackRenderCache.unload();
+    unloadSupportMeshes();
     gPostFX.shutdown();
     gSky.shutdown();
     gShadow.shutdown();

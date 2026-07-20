@@ -2,13 +2,14 @@
 // only connective track is adapted before it crosses the publication fence.
 #include "../src/v1_profiles.h"
 #include <cstring>
+#include <cassert>
 // Phase 1 STEP 2: the generation-side terrain memo, the submergedGround
 // predicate, and the genTerrainSurfaceAt / genGroundTopAt accessors moved to
 // v1/terrain_probe.cpp (namespace tprobe), which is included in the unity
 // chain immediately before this file.  Their names/signatures are unchanged,
 // so every call site below evaluates identically.
 
-struct Track {
+struct Track : CommittedTrack, GenCursor {
     // Public ride-domain origin. A predecessor ghost is seeded behind the
     // station so u=0 evaluates the physical origin -> first launch span.
     static constexpr float rideStartU = 0.0f;
@@ -48,6 +49,74 @@ struct Track {
     static constexpr float SCURVE_REFERENCE_PLAN       = genc::SCURVE_REFERENCE_PLAN;
     static constexpr float SCURVE_REFERENCE_RISE       = genc::SCURVE_REFERENCE_RISE;
 
+    // Phase 1b STEP 4: transaction snapshot/rollback on SELF (no whole-Track
+    // deep copies).  Storage (CommittedTrack) is append-only within a
+    // transaction, so rollback truncates the deques to their snapshot sizes and
+    // restores the few run completion marks; the small GenCursor slice
+    // (including rng) is copied wholesale.  This removes the O(track length)
+    // deep copy that dominated generation (~20 s/lap on seed 8).  popFront lives
+    // in CommittedTrack and is called only by main.cpp streaming; the no-
+    // popFront-in-txn invariant is asserted here by base equality at rollback.
+    int txnDepth = 0;   // transaction nesting depth (debug LIFO guard)
+    struct TxnSnapshot {
+        size_t cpN = 0, analyticN = 0, spatialN = 0;
+        long base = 0;
+        std::vector<long> analyticMarks, spatialMarks;
+        GenCursor cur;
+        int depth = 0;
+    };
+    TxnSnapshot takeSnapshot() {
+        TxnSnapshot s;
+        s.cpN = cp.size();
+        s.analyticN = analyticRuns.size();
+        s.spatialN = spatialRuns.size();
+        s.base = base;
+        s.analyticMarks.reserve(s.analyticN);
+        for (size_t i = 0; i < s.analyticN; ++i)
+            s.analyticMarks.push_back(analyticRuns[i].lastGlobalPoint);
+        s.spatialMarks.reserve(s.spatialN);
+        for (size_t i = 0; i < s.spatialN; ++i)
+            s.spatialMarks.push_back(spatialRuns[i].lastGlobalPoint);
+        s.cur = static_cast<const GenCursor &>(*this);
+        s.depth = txnDepth++;
+        return s;
+    }
+    void rollback(const TxnSnapshot &s) {
+        assert(base == s.base);   // no popFront inside a transaction
+        auto trunc = [](auto &dq, size_t n) { while (dq.size() > n) dq.pop_back(); };
+        trunc(cp, s.cpN); trunc(up, s.cpN); trunc(kind, s.cpN);
+        trunc(chainf, s.cpN); trunc(alignmentf, s.cpN);
+        trunc(spanRun, s.cpN); trunc(spanStart, s.cpN); trunc(spanEnd, s.cpN);
+        trunc(arc, s.cpN); trunc(gvlog, s.cpN);
+        while (analyticRuns.size() > s.analyticN) analyticRuns.pop_back();
+        while (spatialRuns.size() > s.spatialN) spatialRuns.pop_back();
+        for (size_t i = 0; i < s.analyticN; ++i)
+            analyticRuns[i].lastGlobalPoint = s.analyticMarks[i];
+        for (size_t i = 0; i < s.spatialN; ++i)
+            spatialRuns[i].lastGlobalPoint = s.spatialMarks[i];
+        static_cast<GenCursor &>(*this) = s.cur;
+        assert(txnDepth == s.depth + 1);   // LIFO nesting
+        txnDepth = s.depth;
+    }
+    void commitSnapshot(const TxnSnapshot &s) {
+        assert(txnDepth == s.depth + 1);   // LIFO nesting
+        txnDepth = s.depth;
+    }
+    // RAII driver: created at transaction start, rolls back on scope exit
+    // unless commit() ran first.  Every early `return false` failure path
+    // therefore restores self exactly, matching the old "discard the copy"
+    // semantics without any per-return bookkeeping.
+    struct TxnGuard {
+        Track &t;
+        TxnSnapshot snap;
+        bool committed = false;
+        explicit TxnGuard(Track &tk) : t(tk), snap(tk.takeSnapshot()) {}
+        ~TxnGuard() { if (!committed) t.rollback(snap); }
+        void commit() { committed = true; t.commitSnapshot(snap); }
+        TxnGuard(const TxnGuard &) = delete;
+        TxnGuard &operator=(const TxnGuard &) = delete;
+    };
+
     static bool dimensionInBand(float value, float reference,
                                 float upperAllowance = 1.0f) {
         return value >= reference - 0.02f &&
@@ -56,121 +125,32 @@ struct Track {
     // Layout randomness belongs to the track transaction. Presentation or
     // terrain consumers may use the legacy global generator, but cannot alter
     // a successor that has already been qualified and reserved.
-    uint32_t rng = 1;
-    uint32_t xr32() {
-        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
-        return rng;
-    }
-    float rnd01() { return (xr32() & 0xffffff) / 16777216.0f; }
-    float frnd(float a, float b) { return a + (b - a) * rnd01(); }
-    int irnd(int a, int b) {
-        return a + (int)(xr32() % (uint32_t)(b - a + 1));
-    }
-    std::deque<Vector3>       cp;
-    std::deque<Vector3>       up;
-    std::deque<unsigned char> kind;
-    std::deque<unsigned char> chainf;
-    std::deque<unsigned char> alignmentf;
-    // Incoming-span ownership for exact evaluation. spanRun[i] describes the
-    // curve from cp[i-1] to cp[i]; unlike a knot flag, this lets two authored
-    // runs share a boundary without either one losing its terminal span.
-    std::deque<uint32_t>      spanRun;
-    std::deque<float>         spanStart;
-    std::deque<float>         spanEnd;
-    std::deque<float>         arc;
-    std::deque<float>         gvlog;
-    long base = 0;
 
-    Vector3 gpos{};
-    float   gyaw = 0;
-    SegMode mode = M_FLAT;
-    int     remain = 2;
-    bool    nextModePending = false;
-    float   turnDir = 1;
-    float   turnMag = 0.4f;
-    int     turnLen = 1;
-    float   turnEntryY = 0.0f;
-    float   turnEntryDy = 0.0f;
-    float   turnRise = 0.0f;
-    float   turnExitDelta = 0.0f;
-    bool    terrainAvoidanceTurn = false;
-    float   bankT   = 0.6f;
-    float   bankBase = 1.0f;   // FRACTION of the full heartline lean this element actually banks: 1.0 = fully heartlined (all lateral load rotates into the seat -- hard turns/helix); <1 = deliberately UNDER-banked so the rider keeps some felt-lateral (airtime hills ~0.2, S-curve ~0.4). bankT then adds OVER-bank past that toward inversion for signature elements.
-    float   hillTurn = 0;
-    int     elems = 0;       // physical feature slots; a routing banked turn spends one too
-    int     elemLimit = 3;
     // Committed physical occurrences, separate from rendered tags. Routing
     // turns, complete top hats and recovery drops belong in this census; flat
     // alignment-only connectors remain transitions rather than fake elements.
-    int     lapElemCount[M_COUNT] = {0};
-    int     completedElemCount[M_COUNT] = {0};
-    int     lapAuthoredCount[M_COUNT] = {0};
-    int     lapTopHatCount = 0;
-    int     completedTopHatCount = 0;
-    int     lapHelixGeometryCount = 0, lapBadHelixGeometry = 0;
-    int     completedHelixGeometryCount = 0, completedBadHelixGeometry = 0;
-    float   completedMinHelixDropPerRev = 0.0f;
-    float   lapMinHelixDropPerRev = 1.0e9f;
-    float   completedMinHelixRev = 0.0f, completedMaxHelixRev = 0.0f;
-    float   lapMinHelixRev = 1.0e9f, lapMaxHelixRev = 0.0f;
-    float   completedMinHelixRadius = 0.0f, completedMaxHelixRadius = 0.0f;
-    float   lapMinHelixRadius = 1.0e9f, lapMaxHelixRadius = 0.0f;
-    float   completedMinHelixLength = 0.0f, completedMaxHelixLength = 0.0f;
-    float   lapMinHelixLength = 1.0e9f, lapMaxHelixLength = 0.0f;
-    float   completedMinHelixDrop = 0.0f, completedMaxHelixDrop = 0.0f;
-    float   lapMinHelixDrop = 1.0e9f, lapMaxHelixDrop = 0.0f;
-    unsigned completedLapSerial = 0;
-    float   straightRun = 0.0f;
-    float   genPrevDy = 0;
-    float   genPrevCurv = 0;
-    float   genPrevDyaw = 0;
-    float   lastBankSign = 0;
-    enum class PendingKind : unsigned char {
-        None, Element, Launch, Boost, RecoveryDrop
-    };
-    struct PendingAction {
-        PendingKind kind = PendingKind::None;
-        SegMode element = M_COUNT;
-        // Number of already-published alignment runs used to reach this
-        // successor.  An intent gets one such handoff; if it still cannot fit,
-        // the boundary scheduler chooses a normal counted feature instead of
-        // publishing another turn/flat and retrying forever.
-        unsigned char routeAttempts = 0;
-    };
-    PendingAction pending{};
     enum class ScheduleOutcome : unsigned char {
         Committed, Exhausted
     };
     static constexpr int SCHEDULER_ATTEMPT_BUDGET = genc::SCHEDULER_ATTEMPT_BUDGET;
     static constexpr int MAX_PENDING_ROUTE_ATTEMPTS = 1;
     static constexpr int MAX_CONSECUTIVE_ROUTING_RUNS = 2;
-    int consecutiveRoutingRuns = 0;
-    int consecutiveEscapes = 0;
     // Fallback census (the brief's target: <= ~1 fallback per 10 seeds of ANY
     // kind).  Escapes, forced lap closes, and deep pool relaxations are all
     // artificial rescues; count every firing so the probes can report them.
-    unsigned fallbackEscapes = 0;
-    unsigned fallbackForcedLapCloses = 0;
-    unsigned fallbackRelaxedPicks = 0;
     // Escapes taken since the last lap-closing launch (reset in
     // closeLapAtLaunch).  Unlike consecutiveEscapes it does not reset when an
     // ordinary element takes hold, so a region that alternates one element with
     // many escapes still cannot stream forever: once it crosses ESCAPES_PER_LAP
     // the lap is closed unconditionally so generation always makes lap progress.
-    int escapesSinceLaunch = 0;
     // Hard bound on terminal forward escapes taken from one anchor before the
     // scheduler forces a powered launch/boost.
     static constexpr int ESCAPE_LIMIT = genc::ESCAPE_LIMIT;
     static constexpr int ESCAPES_PER_LAP = genc::ESCAPES_PER_LAP;
-    unsigned schedulerExhaustions = 0;
     // Trial branches use the ordinary point emitter, but boundary resolution
     // is deliberately suspended until the branch has proved its successor.
     // The flag lives in Track so a complete trial copy also owns this state.
-    bool boundaryTransactionActive = false;
-    float   genV      = V1_PROPULSION.targetSpeed;
-    unsigned char lastGenMode = (unsigned char)M_FLAT;
 
-    int     hardInvCount = 0;
     static constexpr int INVERSION_BUDGET = genc::INVERSION_BUDGET;
     // Composed pacing: each lap is scripted as beats (Falcon's Flight's
     // punctuated model crossed with Tormenta's inversion blocks): the launch
@@ -179,23 +159,9 @@ struct Track {
     // launch.  Beats express PREFERENCE at relax level 0 of the scheduler;
     // the hard physical windows in eligibleElem always apply, and the
     // existing relaxation ladder keeps completion robust.
-    enum BeatPhase : unsigned char {
-        BEAT_RUSH = 1, BEAT_AIR = 2, BEAT_INV = 4,
-        BEAT_BREATH = 8, BEAT_FINALE = 16, BEAT_ANY = 31
-    };
-    unsigned char beat = BEAT_RUSH;
-    int beatFeatureCount = 0;
-    int lapInversionChains = 0;
-    float rollHand = 0.0f;   // handedness of the last corkscrew (doubles continue it)
-    float   lastBoostArc = 0.0f;
     // A transition and its semantic successor are one transaction.  There is
     // exactly one pending action; the old independent launch/boost/drop flags
     // and pending element could contradict each other and replay stale work.
-    float   connDyStart = 0;   // dy at connector start (smootherstep ramp origin)
-    float   connCurvatureStart = 0; // discrete d2y at the exact incoming boundary
-    int     connLen = 0;       // connector's sized length; ramp progress = 1 - remain/connLen
-    float   connStartY = 0.0f;
-    float   connEndY = 0.0f;
     // Minimum length of a complete connective transition.
     static constexpr int MIN_CONN = genc::MIN_CONN;   // 4 cps ~= 56 m; longer only when the actual incoming curvature requires it
     // Terrain is a whole-corridor constraint; ordinary routes target a shallow cutting.
@@ -260,94 +226,17 @@ struct Track {
         }
         return 8;
     }
-    SegMode lastElem = M_FLAT, prevElem = M_FLAT;
-    int familyRun = 0;   // consecutive committed features from one family
-    SegMode launchElem = M_CLIMB;
-    enum MacroProfileKind : unsigned char {
-        MACRO_NONE, MACRO_TOP_HAT, MACRO_HILLS, MACRO_DROP
-    };
-    MacroProfileKind macroKind = MACRO_NONE;
-    v1profile::Profile macroProfile{};
-    float macroDistance = 0.0f;
-    float macroApexDistance = 0.0f;
-    float macroYaw = 0.0f;
-    uint32_t macroRunId = 0;
-    uint32_t nextMacroRunId = 1;
-    struct AnalyticRun {
-        uint32_t id = 0;
-        MacroProfileKind kind = MACRO_NONE;
-        v1profile::Profile profile{};
-        Vector3 origin{};
-        Vector3 startUp{0.0f, 1.0f, 0.0f};
-        float yaw = 0.0f;
-        long lastGlobalPoint = LONG_MAX;
-    };
-    std::deque<AnalyticRun> analyticRuns;
     static constexpr float MACRO_SAMPLE_STEP = genc::MACRO_SAMPLE_STEP;
 
     // Named spatial elements are sampled from one complete parametric run.
     // Their centreline and rider frame are authored together; no pointwise
     // terrain/curvature/bank servos never get a second vote.
-    std::vector<Vector3> spatialPts;
-    std::vector<Vector3> spatialUps;
     // Exact arc-length derivatives for named spatial curves.  When present,
     // these are dP/ds, d2P/ds2 and d3P/ds3 at each emitted knot (the origin
     // derivatives are stored separately).  The final evaluator must preserve
     // these boundary conditions instead of fitting the curve a second time
     // from neighbouring positions.
-    std::vector<Vector3> spatialD1, spatialD2, spatialD3;
-    std::vector<float> spatialDs;
-    Vector3 spatialOriginD1{}, spatialOriginD2{}, spatialOriginD3{};
-    int spatialIdx = 0;
-    uint32_t spatialRunId = 0;
-    struct RadialFrameSpec {
-        bool valid;
-        Vector3 origin;
-        Vector3 forward;
-        Vector3 up;
-        float radius;
-    };
-    enum class SpatialFrameKind : unsigned char {
-        Authored,
-        Radial,
-        FeltBank
-    };
-    struct FeltBankSpan {
-        // Signed bank about the rendered tangent.  Rates are radians per
-        // metre of rail; acceleration and jerk are deliberately zero at
-        // every shared knot, so adjacent Hermite7 spans form one C3 law.
-        float bankA = 0.0f, bankB = 0.0f;
-        float rateA = 0.0f, rateB = 0.0f;
-        float arcLength = SEG_LEN;
-    };
-    struct SpatialRun {
-        uint32_t id = 0;
-        std::vector<Vector3> points;
-        // One rider frame per point, including the incoming boundary frame.
-        // The parametric builder owns these just as it owns the centreline;
-        // the final evaluator must not reconstruct roll from mutable cp/up
-        // knots after the run has been committed.
-        std::vector<Vector3> frames;
-        std::vector<Vector3> spanD1A, spanD1B;
-        std::vector<Vector3> spanD2A, spanD2B;
-        std::vector<Vector3> spanD3A, spanD3B;
-        SpatialFrameKind frameKind = SpatialFrameKind::Authored;
-        std::vector<FeltBankSpan> feltBank;
-        // A cylindrical corkscrew derives its rail-up vector from the same
-        // rendered centreline and physical axis.  This prevents a separately
-        // interpolated roll phase from ever pointing outside the coil.
-        RadialFrameSpec radialFrame{false, {}, {}, {}, 0.0f};
-        Vector3 ghostBefore{}, ghostAfter{};
-        long lastGlobalPoint = LONG_MAX;
-    };
-    std::deque<SpatialRun> spatialRuns;
 
-    struct BoundaryState {
-        Vector3 tangent{0.0f, 0.0f, 1.0f};
-        Vector3 curvature{};
-        Vector3 jerk{};
-        Vector3 up{0.0f, 1.0f, 0.0f};
-    };
 
     struct PowerApproachPlan {
         bool valid = false;
@@ -366,34 +255,12 @@ struct Track {
 
     // Parametric banked-airtime families retain their dedicated size state;
     // ordinary HILLS use macroProfile instead.
-    int     hillLen = 6;
-    float   hillH = 16.0f;
-    int     hillBumps = 1;
 
-    int     dipLen = 6;
-    float   dipEntryY = 0, dipExitY = 0;
-    float   dipTargetY = 0;
-    bool    dipSplash = false;   // water-aimed dip (see initDip): flattens the sine's bottom into a held surface skim
 
-    float   immelDir = 1;
 
-    Vector3 stallF{}, stallSide{};
-    float   stallEntryY = 0, stallH = 16;
-    int     stallLen = 9;
-    float   stallDir = 1;
 
-    Color railC{}, spineC{}, trainBody{}, trainAccent{};
 
-    Vector3 startPos{};
-    float   startYaw = 0;
 
-    bool    stationPending = false;
-    bool    stationActive  = false;
-    Vector3 stationPos{};
-    float   stationYaw = 0;
-    Vector3 stationStop{};
-    bool    stationRamping = false;
-    float   stationDeckY = 0;
 
     void pushCP(Vector3 p, Vector3 upv, unsigned char tag, unsigned char ch = 0,
                 uint32_t run = 0, float runStart = 0.0f, float runEnd = 0.0f,
@@ -404,16 +271,6 @@ struct Track {
         alignmentf.push_back(alignment ? 1 : 0);
         spanRun.push_back(run); spanStart.push_back(runStart); spanEnd.push_back(runEnd); arc.push_back(a);
         gvlog.push_back(genV);
-    }
-    void popFront() {
-        cp.pop_front(); up.pop_front(); kind.pop_front(); chainf.pop_front(); alignmentf.pop_front();
-        spanRun.pop_front(); spanStart.pop_front(); spanEnd.pop_front(); arc.pop_front();
-        if (!gvlog.empty()) gvlog.pop_front();
-        base++;
-        while (!analyticRuns.empty() && analyticRuns.front().lastGlobalPoint < base)
-            analyticRuns.pop_front();
-        while (!spatialRuns.empty() && spatialRuns.front().lastGlobalPoint < base)
-            spatialRuns.pop_front();
     }
 
     void lockMacroAnchor() {
@@ -1180,106 +1037,6 @@ struct Track {
                                          exactDerivatives, radialFrame));
     }
 
-    const SpatialRun *spatialRun(uint32_t id) const {
-        if ((id & UINT32_C(0x80000000)) == 0) return nullptr;
-        for (const SpatialRun &run : spatialRuns) if (run.id == id) return &run;
-        return nullptr;
-    }
-
-    static float hermite7Value(float p0, float p1, float v0, float v1,
-                               float a0, float a1, float j0, float j1,
-                               float t) {
-        const float c0=p0, c1=v0, c2=0.5f*a0, c3=j0/6.0f;
-        const float P=p1-(c0+c1+c2+c3);
-        const float V=v1-(c1+2.0f*c2+3.0f*c3);
-        const float A=a1-(2.0f*c2+6.0f*c3);
-        const float J=j1-6.0f*c3;
-        const float c4=35.0f*P-15.0f*V+2.5f*A-J/6.0f;
-        const float c5=-84.0f*P+39.0f*V-7.0f*A+0.5f*J;
-        const float c6=70.0f*P-34.0f*V+6.5f*A-0.5f*J;
-        const float c7=-20.0f*P+10.0f*V-2.0f*A+J/6.0f;
-        return (((((((c7*t+c6)*t+c5)*t+c4)*t+c3)*t+c2)*t+c1)*t+c0);
-    }
-
-    Vector3 spatialRunPos(const SpatialRun &run, float d) const {
-        int spans = (int)run.points.size() - 1;
-        d = Clamp(d, 0.0f, (float)spans);
-        int j = std::min((int)floorf(d), spans - 1);
-        float t = d - j;
-        Vector3 p1 = run.points[j], p2 = run.points[j+1];
-        if ((int)run.spanD1A.size() == spans) {
-            const Vector3 &v0=run.spanD1A[j], &v1=run.spanD1B[j];
-            const Vector3 &a0=run.spanD2A[j], &a1=run.spanD2B[j];
-            const Vector3 &q0=run.spanD3A[j], &q1=run.spanD3B[j];
-            return {hermite7Value(p1.x,p2.x,v0.x,v1.x,a0.x,a1.x,q0.x,q1.x,t),
-                    hermite7Value(p1.y,p2.y,v0.y,v1.y,a0.y,a1.y,q0.y,q1.y,t),
-                    hermite7Value(p1.z,p2.z,v0.z,v1.z,a0.z,a1.z,q0.z,q1.z,t)};
-        }
-        Vector3 p0 = j > 0 ? run.points[j-1] : run.ghostBefore;
-        Vector3 p3 = j + 2 < (int)run.points.size() ? run.points[j+2] : run.ghostAfter;
-        return {septicC3(p0.x,p1.x,p2.x,p3.x,t),
-                septicC3(p0.y,p1.y,p2.y,p3.y,t),
-                septicC3(p0.z,p1.z,p2.z,p3.z,t)};
-    }
-
-    Vector3 spatialRunUp(const SpatialRun &run, float d) const {
-        const int spans = (int)run.points.size() - 1;
-        if (spans <= 0) return WUP;
-        d = Clamp(d, 0.0f, (float)spans);
-        const int j = std::min((int)floorf(d), spans - 1);
-        const float t = d - j;
-
-        Vector3 tangent = Vector3Subtract(spatialRunPos(run, d + 0.01f),
-                                          spatialRunPos(run, d - 0.01f));
-        if (Vector3Length(tangent) < 1.0e-5f)
-            tangent = Vector3Subtract(run.points[j + 1], run.points[j]);
-        if (Vector3Length(tangent) < 1.0e-5f) tangent = Vector3{0, 0, 1};
-        else tangent = Vector3Normalize(tangent);
-
-        if (run.frameKind == SpatialFrameKind::Radial &&
-            run.radialFrame.valid) {
-            const RadialFrameSpec &frame = run.radialFrame;
-            const Vector3 p = spatialRunPos(run, d);
-            const float along = Vector3DotProduct(
-                Vector3Subtract(p, frame.origin), frame.forward);
-            const Vector3 axis = Vector3Add(frame.origin,
-                Vector3Add(Vector3Scale(frame.forward, along),
-                           Vector3Scale(frame.up, frame.radius)));
-            const Vector3 inward = Vector3Subtract(axis, p);
-            if (Vector3Length(inward) > 1.0e-5f)
-                return orthoUp(tangent, inward);
-        }
-
-        if (run.frameKind == SpatialFrameKind::FeltBank &&
-            (int)run.feltBank.size() == spans) {
-            const FeltBankSpan &span = run.feltBank[j];
-            const float length = fmaxf(span.arcLength, 1.0e-4f);
-            const float bank = hermite7Value(
-                span.bankA, span.bankB,
-                span.rateA * length, span.rateB * length,
-                0.0f, 0.0f, 0.0f, 0.0f, t);
-            const Vector3 natural = orthoUp(tangent, WUP);
-            const Vector3 side = Vector3Normalize(
-                Vector3CrossProduct(natural, tangent));
-            return Vector3Normalize(Vector3Add(
-                Vector3Scale(natural, cosf(bank)),
-                Vector3Scale(side, sinf(bank))));
-        }
-
-        if ((int)run.frames.size() != spans + 1) return WUP;
-
-        // Interpolate the signed roll angle about the run's own tangent. This
-        // remains well-defined through an inversion, where component-wise
-        // lerp would pass through zero and can choose the wrong half-turn.
-        const Vector3 a = orthoUp(tangent, run.frames[j]);
-        const Vector3 b = orthoUp(tangent, run.frames[j + 1]);
-        const float angle = atan2f(Vector3DotProduct(
-                                       tangent, Vector3CrossProduct(a, b)),
-                                   Clamp(Vector3DotProduct(a, b), -1.0f, 1.0f));
-        const Vector3 side = Vector3CrossProduct(tangent, a);
-        return Vector3Normalize(Vector3Add(Vector3Scale(a, cosf(angle * t)),
-                                            Vector3Scale(side, sinf(angle * t))));
-    }
 
     bool attachFeltBankFrame(SpatialRun &run, float entrySpeed,
                              float bankGain, float maximumBank) const {
@@ -1398,75 +1155,6 @@ struct Track {
         return true;
     }
 
-    BoundaryState currentBoundary() const {
-        BoundaryState result;
-        if (cp.empty()) return result;
-        result.up = up.empty() ? WUP : up.back();
-        if (!spanRun.empty()) {
-            if (const SpatialRun *run = spatialRun(spanRun.back())) {
-                const int spans = (int)run->points.size() - 1;
-                if (spans > 0 && (int)run->spanD1B.size() == spans) {
-                    const Vector3 parameterTangent = run->spanD1B.back();
-                    const float ds = fmaxf(Vector3Length(parameterTangent), 1.0e-4f);
-                    result.tangent = Vector3Scale(parameterTangent, 1.0f / ds);
-                    result.curvature = Vector3Scale(run->spanD2B.back(),
-                                                     1.0f / (ds * ds));
-                    result.jerk = Vector3Scale(run->spanD3B.back(),
-                                                1.0f / (ds * ds * ds));
-                    result.up = spatialRunUp(*run, (float)spans);
-                    return result;
-                }
-            }
-            if (const AnalyticRun *run = analyticRun(spanRun.back())) {
-                const v1profile::Sample q = run->profile.sampleDistance(
-                    run->profile.length());
-                const Vector3 planForward{sinf(run->yaw), 0.0f,
-                                          cosf(run->yaw)};
-                const Vector3 r1 = Vector3Add(
-                    planForward, Vector3Scale(WUP, (float)q.grade));
-                const Vector3 r2 = Vector3Scale(WUP, (float)q.curvature);
-                const Vector3 r3 = Vector3Scale(WUP, (float)q.jerk);
-                const float speed2 = fmaxf(Vector3DotProduct(r1, r1), 1.0e-8f);
-                const float speed = sqrtf(speed2);
-                const float h = Vector3DotProduct(r1, r2);
-                const float hPrime = Vector3DotProduct(r2, r2) +
-                                     Vector3DotProduct(r1, r3);
-                result.tangent = Vector3Scale(r1, 1.0f / speed);
-                result.curvature = Vector3Subtract(
-                    Vector3Scale(r2, 1.0f / speed2),
-                    Vector3Scale(r1, h / (speed2 * speed2)));
-                // d(curvature)/d(rail arc).  Keeping the analytic terminal
-                // jerk here means the next owner receives the authored C3
-                // boundary rather than a finite-difference chord estimate.
-                Vector3 dKdl = Vector3Scale(r3, 1.0f / speed2);
-                dKdl = Vector3Subtract(dKdl,
-                    Vector3Scale(r2, 3.0f * h / (speed2 * speed2)));
-                dKdl = Vector3Subtract(dKdl,
-                    Vector3Scale(r1, hPrime / (speed2 * speed2)));
-                dKdl = Vector3Add(dKdl,
-                    Vector3Scale(r1, 4.0f * h * h /
-                                       (speed2 * speed2 * speed2)));
-                result.jerk = Vector3Scale(dKdl, 1.0f / speed);
-                result.up = orthoUp(result.tangent, result.up);
-                return result;
-            }
-        }
-        if (cp.size() >= 2) {
-            result.tangent = Vector3Normalize(
-                Vector3Subtract(cp.back(), cp[cp.size() - 2]));
-            if (cp.size() >= 3) {
-                Vector3 prior = Vector3Normalize(
-                    Vector3Subtract(cp[cp.size() - 2], cp[cp.size() - 3]));
-                const float ds = fmaxf(0.5f * (
-                    Vector3Distance(cp.back(), cp[cp.size() - 2]) +
-                    Vector3Distance(cp[cp.size() - 2], cp[cp.size() - 3])), 1.0e-4f);
-                result.curvature = Vector3Scale(
-                    Vector3Subtract(result.tangent, prior), 1.0f / ds);
-            }
-        }
-        result.up = orthoUp(result.tangent, result.up);
-        return result;
-    }
 
     void syncContinuityFromBoundary() {
         if (cp.empty()) return;
@@ -1948,42 +1636,45 @@ struct Track {
 
     bool commitPowerApproach(const PowerApproachPlan &plan) {
         if (!powerPlanMatches(plan)) return false;
-        Track transaction = *this;
+        // Snapshot-on-self: genPoint runs over the transition on SELF with
+        // boundaryTransactionActive raised; any failure rolls back (restoring
+        // the cursor -- rng included -- and truncating the published run/cps),
+        // exactly reproducing the old "discard the transaction copy" path.
+        TxnGuard txn(*this);
         const bool outerTransaction = boundaryTransactionActive;
-        transaction.boundaryTransactionActive = true;
-        transaction.pending = {};
-        transaction.nextModePending = false;
+        boundaryTransactionActive = true;
+        pending = {};
+        nextModePending = false;
         if (plan.transitionSteps > 0) {
-            transaction.mode = M_FLAT;
-            transaction.connLen = plan.transitionSteps;
-            transaction.remain = plan.transitionSteps;
-            transaction.terrainAvoidanceTurn = false;
-            transaction.spatialIdx = 0;
-            transaction.publishSpatialRun(plan.transition);
+            mode = M_FLAT;
+            connLen = plan.transitionSteps;
+            remain = plan.transitionSteps;
+            terrainAvoidanceTurn = false;
+            spatialIdx = 0;
+            publishSpatialRun(plan.transition);
             int budget = plan.transitionSteps + 2;
-            while (transaction.hasActiveOwnedRun() && budget-- > 0)
-                if (!transaction.genPoint()) return false;
-            if (transaction.hasActiveOwnedRun() || budget < 0) return false;
-            transaction.syncContinuityFromBoundary();
+            while (hasActiveOwnedRun() && budget-- > 0)
+                if (!genPoint()) return false;
+            if (hasActiveOwnedRun() || budget < 0) return false;
+            syncContinuityFromBoundary();
         }
-        if (Vector3Distance(transaction.gpos, plan.deck.points.front()) > 0.03f)
+        if (Vector3Distance(gpos, plan.deck.points.front()) > 0.03f)
             return false;
-        transaction.nextModePending = false;
-        transaction.pending = {};
-        transaction.connLen = 0;
-        transaction.terrainAvoidanceTurn = false;
-        transaction.lastBankSign = 0.0f;
-        transaction.consecutiveRoutingRuns = 0;
-        transaction.straightRun = 0.0f;
-        transaction.mode = plan.role == PendingKind::Launch ? M_LAUNCH : M_BOOST;
-        transaction.lastBoostArc = transaction.arc.empty() ? 0.0f
-                                                            : transaction.arc.back();
-        transaction.genV = plan.fromRest ? 0.0f : plan.deckEntrySpeed;
-        transaction.spatialIdx = 0;
-        transaction.remain = plan.deckSteps;
-        transaction.publishSpatialRun(plan.deck);
-        transaction.boundaryTransactionActive = outerTransaction;
-        *this = std::move(transaction);
+        nextModePending = false;
+        pending = {};
+        connLen = 0;
+        terrainAvoidanceTurn = false;
+        lastBankSign = 0.0f;
+        consecutiveRoutingRuns = 0;
+        straightRun = 0.0f;
+        mode = plan.role == PendingKind::Launch ? M_LAUNCH : M_BOOST;
+        lastBoostArc = arc.empty() ? 0.0f : arc.back();
+        genV = plan.fromRest ? 0.0f : plan.deckEntrySpeed;
+        spatialIdx = 0;
+        remain = plan.deckSteps;
+        publishSpatialRun(plan.deck);
+        boundaryTransactionActive = outerTransaction;
+        txn.commit();
         return true;
     }
 
@@ -3117,14 +2808,6 @@ struct Track {
             lapBadHelixGeometry++;
         return true;
     }
-    int     scurveLen = 10;
-    float   scurveEntryY = 0.0f;
-    float   scurveEntryDy = 0.0f;
-    float   scurveEntryCurv = 0.0f;
-    float   scurveRise = 0.0f;
-    float   scurveExitDelta = 0.0f;
-    float   diveBaseY = 0.0f;
-    float   diveDepth = 12.0f;
     struct SCurvePlan {
         bool valid = false;
         float radius = 0.0f;
@@ -4497,7 +4180,7 @@ struct Track {
                 continue;
             }
 
-            Track before = *this;
+            TxnGuard txn(*this);
             bool committed = true;
             switch (pick) {
                 case M_CLIMB: {
@@ -4524,9 +4207,12 @@ struct Track {
             }
             if (committed) {
                 commitInitializedElement(true);
+                txn.commit();
                 return true;
             }
-            *this = std::move(before);
+            // Failure: txn (scoped to this for-iteration) rolls back on scope
+            // exit, restoring self (cursor incl rng, plus any published cps/
+            // runs) exactly as the old `*this = std::move(before)` did.
             excluded |= UINT32_C(1) << pick;
         }
 
@@ -4594,15 +4280,17 @@ struct Track {
             SegMode descend = descendPick < 0.5f ? M_DIVELOOP : M_HELIX;
             for (int attempt = 0; attempt < 2; ++attempt) {
                 if (eligibleAsRecovery(descend)) {
-                    Track candidate = *this;
-                    candidate.pending = {};
+                    TxnGuard txn(*this);
+                    pending = {};
                     const bool built = descend == M_DIVELOOP
-                        ? candidate.initDiveLoop() : candidate.initHelix();
+                        ? initDiveLoop() : initHelix();
                     if (built) {
-                        candidate.commitInitializedElement(true);
-                        *this = std::move(candidate);
+                        commitInitializedElement(true);
+                        txn.commit();
                         return true;
                     }
+                    // failure: txn rolls back on scope exit, restoring rng so
+                    // the flipped-descend retry starts from the same state.
                 }
                 descend = descend == M_DIVELOOP ? M_HELIX : M_DIVELOOP;
             }
@@ -4674,25 +4362,33 @@ struct Track {
                 bool committed=false;
                 if (exit==M_CLIMB) {
                     const bool major = rnd01() < 0.60f;
-                    Track candidate = *this;
-                    committed = candidate.beginTopHat(major);
+                    // The old code re-copied `candidate = *this` between the two
+                    // beginTopHat attempts, discarding the first attempt's rng
+                    // consumption so the !major retry starts from the same rng.
+                    // Reproduce that with an explicit rollback + re-snapshot.
+                    TxnSnapshot snap = takeSnapshot();
+                    committed = beginTopHat(major);
                     if (!committed) {
-                        candidate = *this;
-                        committed = candidate.beginTopHat(!major);
+                        rollback(snap);
+                        snap = takeSnapshot();
+                        committed = beginTopHat(!major);
                     }
                     if (committed) {
-                        candidate.commitInitializedElement(true);
-                        *this = std::move(candidate);
+                        commitInitializedElement(true);
+                        commitSnapshot(snap);
+                    } else {
+                        rollback(snap);
                     }
                 } else {
-                    Track candidate = *this;
-                    committed = exit==M_HILLS ? candidate.initHills()
-                              : exit==M_BANKAIR ? candidate.initBankAir()
+                    TxnGuard txn(*this);
+                    committed = exit==M_HILLS ? initHills()
+                              : exit==M_BANKAIR ? initBankAir()
                               : false;
                     if (committed) {
-                        candidate.commitInitializedElement(true);
-                        *this = std::move(candidate);
+                        commitInitializedElement(true);
+                        txn.commit();
                     }
+                    // else: txn rolls back on scope exit
                 }
                 if(!committed) {
                     pending = {};
@@ -4725,12 +4421,13 @@ struct Track {
                 if (mode == M_ROLL && lapAuthoredCount[M_ROLL] == 1 &&
                     hardInvCount < INVERSION_BUDGET &&
                     genV <= invVMax(M_ROLL) && rnd01() < 0.72f) {
-                    Track candidate = *this;
-                    if (candidate.initRoll(rollHand)) {
-                        candidate.commitInitializedElement(true);
-                        *this = std::move(candidate);
+                    TxnGuard txn(*this);
+                    if (initRoll(rollHand)) {
+                        commitInitializedElement(true);
+                        txn.commit();
                         break;
                     }
+                    // failure: txn rolls back on scope exit, restoring rng
                 }
                 float clearanceAhead = recoveryClearanceAhead();
                 if (clearanceAhead > 22.0f) {
@@ -4890,57 +4587,55 @@ struct Track {
     }
 
     bool tryBoundaryBranch(int attempt) {
-        const uint32_t savedRng = rng;
-        Track trial = *this;
-        trial.boundaryTransactionActive = true;
-        trial.nextModePending = false;
-        trial.syncContinuityFromBoundary();
+        // Snapshot-on-self replaces the old `Track trial = *this` copy.  Every
+        // failure path returns and the TxnGuard rolls back, restoring the whole
+        // cursor INCLUDING rng -- which matches the old explicit `rng = savedRng`
+        // because the snapshot is taken at the exact point savedRng was captured
+        // (function entry, before any mutation).  The trial's other mutations,
+        // which used to vanish with the discarded copy, are undone by the same
+        // rollback (deque truncation + run-mark restore + cursor restore).
+        TxnGuard txn(*this);
+        boundaryTransactionActive = true;
+        nextModePending = false;
+        syncContinuityFromBoundary();
 
         bool committed = false;
         if (attempt == 0) {
-            trial.nextMode();
-            committed = !trial.nextModePending && trial.hasActiveOwnedRun();
+            nextMode();
+            committed = !nextModePending && hasActiveOwnedRun();
         } else if (attempt == 1) {
-            trial.pending = {};
-            trial.connLen = 0;
-            trial.terrainAvoidanceTurn = false;
-            committed = trial.chooseElement(false);
+            pending = {};
+            connLen = 0;
+            terrainAvoidanceTurn = false;
+            committed = chooseElement(false);
         } else {
             // The final branch is still atomic: construct one bounded terrain
             // transition, consume it privately, and admit its exact semantic
             // successor before any point becomes visible.
-            trial.pending = {};
-            trial.connLen = 0;
-            trial.terrainAvoidanceTurn = false;
-            committed = trial.routeConnectorAround();
-            if (committed) trial.commitInitializedElement(false);
+            pending = {};
+            connLen = 0;
+            terrainAvoidanceTurn = false;
+            committed = routeConnectorAround();
+            if (committed) commitInitializedElement(false);
         }
 
-        if (!committed || trial.nextModePending ||
-            !trial.hasActiveOwnedRun()) {
-            rng = savedRng;
+        if (!committed || nextModePending || !hasActiveOwnedRun())
             return false;
-        }
 
-        if (trial.activeRunIsAlignment()) {
-            const PendingAction successor = trial.pending;
-            const bool stationSuccessor = trial.stationRamping;
-            if (!trial.consumeAlignmentInTrial()) {
-                rng = savedRng;
+        if (activeRunIsAlignment()) {
+            const PendingAction successor = pending;
+            const bool stationSuccessor = stationRamping;
+            if (!consumeAlignmentInTrial())
                 return false;
-            }
             // The exact committed run, not legacy chord trackers, owns the
             // successor's entry boundary.
-            trial.syncContinuityFromBoundary();
-            if (!trial.commitReservedSuccessor(successor,
-                                               stationSuccessor)) {
-                rng = savedRng;
+            syncContinuityFromBoundary();
+            if (!commitReservedSuccessor(successor, stationSuccessor))
                 return false;
-            }
         }
 
-        trial.boundaryTransactionActive = false;
-        *this = std::move(trial);
+        boundaryTransactionActive = false;
+        txn.commit();
         return true;
     }
 
@@ -5238,158 +4933,6 @@ struct Track {
         ensureAhead(maxU + (ADAPTIVE_LAG - 5));
     }
 
-    int finalizedPointCount() const {
-        // cp[n-23] is final after genPoint returns, so [0,n-23] is publishable.
-        int count = (int)cp.size() - (ADAPTIVE_LAG - 1);
-        return count > 0 ? count : 0;
-    }
-
-    float maxFinalU() const {
-        // pos(k+t) reads cp[k..k+3]. Keep the complete stencil at or behind
-        // the last finalized point and leave a small epsilon below the next k.
-        return fmaxf((float)cp.size() - (ADAPTIVE_LAG + 2) - 0.001f, 0.0f);
-    }
-
-    float clampFinalU(float u) const {
-        if (!(u == u) || u < 0.0f) return 0.0f;
-        return fminf(u, maxFinalU());
-    }
-
-    const AnalyticRun *analyticRun(uint32_t id) const {
-        if (!id) return nullptr;
-        for (const AnalyticRun &run : analyticRuns)
-            if (run.id == id) return &run;
-        return nullptr;
-    }
-
-    Vector3 rawPos(float u) const {
-        u = clampFinalU(u);
-        int k = (int)u;
-        if (k > finalizedPointCount() - 4) k = finalizedPointCount() - 4;
-        if (k < 0) k = 0;
-        float t = u - k;
-        const int incoming = k + 2;
-        if (incoming < (int)spanRun.size()) {
-            if (const SpatialRun *run = spatialRun(spanRun[incoming])) {
-                float d = spanStart[incoming] +
-                          (spanEnd[incoming] - spanStart[incoming]) * t;
-                return spatialRunPos(*run, d);
-            }
-            const AnalyticRun *run = analyticRun(spanRun[incoming]);
-            if (run) {
-                float d = spanStart[incoming] +
-                          (spanEnd[incoming] - spanStart[incoming]) * t;
-                const v1profile::Sample q = run->profile.sampleDistance(d);
-                return {run->origin.x + sinf(run->yaw) * d, (float)q.height,
-                        run->origin.z + cosf(run->yaw) * d};
-            }
-        }
-        // One interpolation family owns every non-macro span. Switching from
-        // Catmull/monotone inside an element to a different quintic only at a
-        // tag boundary was itself the visible stitch.
-        return trackSpline(cp[k], cp[k+1], cp[k+2], cp[k+3], t, true);
-    }
-    Vector3 pos(float u) const { return rawPos(u); }
-    Vector3 rawUpAt(float u) const {
-        u = clampFinalU(u);
-        int k = (int)u;
-        if (k > finalizedPointCount() - 4) k = finalizedPointCount() - 4;
-        if (k < 0) k = 0;
-        float t = u - k;
-        const int incoming = k + 2;
-        if (incoming < (int)spanRun.size()) {
-            if (const SpatialRun *run = spatialRun(spanRun[incoming])) {
-                float d = spanStart[incoming] +
-                          (spanEnd[incoming] - spanStart[incoming]) * t;
-                return spatialRunUp(*run, d);
-            }
-            const AnalyticRun *run = analyticRun(spanRun[incoming]);
-            if (run) {
-                float d = spanStart[incoming] +
-                          (spanEnd[incoming] - spanStart[incoming]) * t;
-                const v1profile::Sample q = run->profile.sampleDistance(d);
-                Vector3 tangent = Vector3Normalize({sinf(run->yaw), (float)q.grade,
-                                                    cosf(run->yaw)});
-                Vector3 a=orthoUp(tangent,up[k+1]);
-                Vector3 b=orthoUp(tangent,up[k+2]);
-                if (Vector3DotProduct(a,b)<-0.98f) {
-                    Vector3 s=Vector3Normalize(Vector3CrossProduct(tangent,a));
-                    return Vector3Normalize(Vector3Add(Vector3Scale(a,cosf(PI*t)),
-                                                        Vector3Scale(s,sinf(PI*t))));
-                }
-                Vector3 u=Vector3Lerp(a,b,t);
-                return Vector3Length(u)<1.0e-4f ? a : Vector3Normalize(u);
-            }
-        }
-        Vector3 tangent = Vector3Subtract(rawPos(u + 0.01f), rawPos(u - 0.01f));
-        if (Vector3Length(tangent) < 1.0e-5f) tangent = Vector3{0,0,1};
-        else tangent = Vector3Normalize(tangent);
-        // Interpolate the two endpoint frames of this exact incoming span,
-        // then orthogonalize once against the single centreline tangent. The
-        // authored samples already contain the intended continuous roll; a
-        // second component-wise Catmull/quintic frame spline could overshoot
-        // through zero or add a roll joint of its own.
-        Vector3 a = orthoUp(tangent, up[k + 1]);
-        Vector3 b = orthoUp(tangent, up[k + 2]);
-        if (Vector3DotProduct(a, b) < -0.98f) {
-            Vector3 side = Vector3Normalize(Vector3CrossProduct(tangent, a));
-            float ang = PI * t;
-            return Vector3Normalize(Vector3Add(Vector3Scale(a, cosf(ang)),
-                                                Vector3Scale(side, sinf(ang))));
-        }
-        Vector3 blended = Vector3Lerp(a, b, t);
-        return Vector3Length(blended) < 1.0e-4f ? a : Vector3Normalize(blended);
-    }
-    Vector3 upAt(float u) const { return rawUpAt(u); }
-    unsigned char tagAt(float u) const {
-        // pos(k+t) is the span cp[k+1] -> cp[k+2]. pushCP stores a
-        // span's semantic data on its incoming endpoint, so consumers must
-        // read k+2 as well; reading k lagged physics/HUD by two points.
-        int incoming = (int)clampFinalU(u) + 2;
-        if (incoming >= finalizedPointCount()) incoming = finalizedPointCount() - 1;
-        if (incoming < 0) return (unsigned char)M_FLAT;
-        return kind[incoming];
-    }
-    bool alignmentAt(float u) const {
-        int incoming = (int)clampFinalU(u) + 2;
-        if (incoming >= finalizedPointCount()) incoming = finalizedPointCount() - 1;
-        return incoming >= 0 && alignmentf[incoming] != 0;
-    }
-    unsigned char driveAt(float u) const {
-        int incoming = (int)clampFinalU(u) + 2;
-        if (incoming >= finalizedPointCount()) incoming = finalizedPointCount() - 1;
-        if (incoming < 0) return 0;
-        unsigned char drive = chainf[incoming];
-        if (drive == 2) {
-            // Exact powered decks were qualified and authored level as one
-            // SpatialRun. Do not let a derivative stencil cross into the
-            // unpowered neighbour and shorten an otherwise level deck.
-            if (incoming < (int)spanRun.size() && spatialRun(spanRun[incoming]))
-                return drive;
-            Vector3 a = rawPos(u - 0.15f), b = rawPos(u + 0.15f);
-            float horizontal = sqrtf((b.x-a.x)*(b.x-a.x) + (b.z-a.z)*(b.z-a.z));
-            float grade = (b.y-a.y) / fmaxf(horizontal, 1.0e-4f);
-            if (fabsf(grade) > tanf(0.5f * DEG2RAD)) return 0;
-        }
-        return drive;
-    }
-    Vector3 tangent(float u) const {
-        Vector3 d = Vector3Subtract(pos(u + 0.05f), pos(u - 0.05f));
-        float L = Vector3Length(d);
-        if (L < 1e-5f) return Vector3{ 0, 0, 1 };
-        return Vector3Scale(d, 1.0f / L);
-    }
-    float speedScale(float u) const {
-        float s = Vector3Length(Vector3Subtract(pos(u + 0.01f), pos(u))) * 100.0f;
-        if (!(s == s)) return 1.0f;
-        return Clamp(s, 0.1f, 400.0f);
-    }
-    float plannedSpeedAt(float u) const {
-        int incoming = (int)clampFinalU(u) + 2;
-        if (incoming >= finalizedPointCount()) incoming = finalizedPointCount() - 1;
-        if (incoming < 0 || incoming >= (int)gvlog.size()) return 0.0f;
-        return gvlog[(size_t)incoming];
-    }
 };
 
 // HONEST HUD ELEMENT NAMES -- the ONE shared diagnosis both renderers use (user: names are

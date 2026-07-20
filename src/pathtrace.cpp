@@ -37,7 +37,7 @@ struct PTSys {
 
     int rCamPos=-1, rCamDir=-1, rCamRight=-1, rCamUp=-1, rTan=-1, rAspect=-1;
     int rSunDir=-1, rGridMin=-1, rGridN=-1, rVoxSize=-1, rAtlasSize=-1, rTiles=-1;
-    int rLightVP=-1, rShadowMap=-1, rShadowTexel=-1;
+    int rLightVP=-1, rShadowMap=-1, rShadowTexel=-1, rInvRange=-1;
 
     int bDepthTex=-1, bInvRes=-1;
 
@@ -309,6 +309,9 @@ void PTSys::initShaders() {
         "uniform ivec3 coarseN; uniform ivec2 coarseTiles; uniform int coarseY0; uniform int macroK;\n"
 
         "uniform mat4 lightVP; uniform sampler2D shadowMap; uniform vec2 shadowTexel;\n"
+        // Normalized shadow-map depth per world metre, shared verbatim with the
+        // raster path (gShadow.invRange) so the bias below matches SHADOW_FS.
+        "uniform float invRange;\n"
 
         "vec4 voxFetch(ivec3 c){\n"
         "  if(c.x<0||c.y<0||c.z<0||c.x>=gridN.x||c.y>=gridN.y||c.z>=gridN.z) return vec4(0.0);\n"
@@ -327,12 +330,20 @@ void PTSys::initShaders() {
         "}\n"
 
         "float shadowMapVis(vec3 wp, vec3 N, vec3 sun){\n"
-        "  vec4 lp = lightVP*vec4(wp,1.0);\n"
+        "  float NoL = max(dot(N,sun),0.0);\n"
+        // Mirror SHADOW_FS (render_fx.cpp) so this voxel-preview path and the
+        // raster path shade the single shared shadow map identically instead of
+        // drifting: the SAME tiny world-space receiver normal offset and the SAME
+        // world-unit depth bias, converted to normalized depth with the SAME
+        // invRange uniform (both fed from gShadow). The map now stores back faces,
+        // so both use the shrunk ~0.5-1.5 texel bias. (This path keeps its own
+        // rotated 4-tap PCF kernel; only the bias scheme/constants are unified.)
+        "  vec3 receiver = wp + N*(0.02 + 0.04*(1.0-NoL));\n"
+        "  vec4 lp = lightVP*vec4(receiver,1.0);\n"
         "  vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
         "  if(p.z>1.0) return 1.0;\n"
         "  if(p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-        "  float NoL = max(dot(N,sun),0.0);\n"
-        "  float bias = max(0.0024*(1.0-NoL), 0.0010);\n"
+        "  float bias = (0.12 + 0.20*(1.0-NoL))*invRange;\n"
         "  float ang = fract(sin(dot(wp.xz, vec2(12.9898,78.233)))*43758.5453)*6.2831853;\n"
         "  float ca=cos(ang), sa=sin(ang); mat2 rot=mat2(ca,-sa,sa,ca);\n"
         "  vec2 o = shadowTexel*0.9;\n"
@@ -607,8 +618,7 @@ void PTSys::initShaders() {
     rLightVP    = GetShaderLocation(rt, "lightVP");
     rShadowMap  = GetShaderLocation(rt, "shadowMap");
     rShadowTexel= GetShaderLocation(rt, "shadowTexel");
-    printf("RT LOCS: lightVP=%d shadowMap=%d shadowTexel=%d  (rt.id=%u)\n",
-           rLightVP, rShadowMap, rShadowTexel, rt.id); fflush(stdout);
+    rInvRange   = GetShaderLocation(rt, "invRange");
 
     bDepthTex = GetShaderLocation(rtBlit, "depthTex");
     bInvRes   = GetShaderLocation(rtBlit, "invRes");

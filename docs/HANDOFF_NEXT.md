@@ -114,6 +114,24 @@ New issues from the user's play session:
 - **U4. Some elements still appear too often** (banked family ~59%, TURN ~30%, WAVE/BANKAIR
   ~9-10% each vs wave-turn's real 1-2/ride). Fold into U3's percentage controller.
 
+- **U5. Shadows still broken on the user's GPU — full shader rework needed.** Approach (designed,
+  not yet implemented): render BACK faces into the shadow depth map (closed voxel cubes → kills
+  acne AND lets bias shrink to ~0.5-1.5 texels, no detached rail shadows), 3x3-5x5 PCF, and make
+  shadow multiply the DIRECT sun term only with a hemispheric ambient that is NEVER shadow-
+  modulated (the residual modulation is the "uniformly slightly dim" look). KEY UNLOCK: headless
+  verification works — `xvfb-run -a ./minecoaster --orbitshot` renders ~1 frame in ~4 min and
+  writes orbit_f5.png; an agent can Read the PNG and judge crisp-vs-dim shadows, so iterate
+  shader→screenshot→judge without the user's GPU.
+- **U1 implementation sketch (occupancy)**: persistent `shared_ptr` archive of evicted spans +
+  16 m hash grid, mutated ONLY in popFront (trials never popFront → cheap Track copies stay safe);
+  query = grid 3x3 + live cp-deque scan excluding the 4 spans behind the anchor; envelope 6 m
+  (4 m for escapes via a member override); enforce in spatialCorridorClear + every dense terrain
+  loop (tophat/hills/drop/roll/helix/dip/turn/connector); occupancy rejections are organic
+  rejections (reroute), and census must stay complete=yes (relax envelope 6→4.5 if a seed fails).
+- **U3 implementation sketch (percentage shares)**: ride-cumulative share bands (0.75-1.75x of the
+  researched targets) gate eligibility high and boost weight low; keep only true one-per-ride
+  count rules (opening top hat, splashdown finale, corkscrew pairing, inversion budget/adjacency).
+
 ## OPEN ITEMS (in priority order, with analysis)
 
 1. RESOLVED: --jointaudit 8 shows tangent 0.0deg and roll-rate <=3.7deg/m on all seeds — the

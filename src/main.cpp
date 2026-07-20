@@ -148,6 +148,14 @@ int main(int argc, char **argv) {
     bool shotMode = framesMode || rasterShot || orbitShot || waterShot || elemShot || jointShot ||
                     (argc > 1 && TextIsEqual(argv[1], "--shot"));
     bool rttestMode = (argc > 1 && TextIsEqual(argv[1], "--rttest"));
+    // Shadow verification toolkit (see runShadowTest below). --shadowtest renders
+    // a deterministic canonical scene through the real ShadowSys depth+lit path
+    // and prints machine-readable contrast/edge/uniformity/shadow-map metrics.
+    // --shadowdebug is a modifier usable with any capture mode: it makes the lit
+    // shader emit the raw shadow-visibility field as grayscale.
+    bool shadowTest = (argc > 1 && TextIsEqual(argv[1], "--shadowtest"));
+    for (int i = 1; i < argc; ++i)
+        if (TextIsEqual(argv[i], "--shadowdebug")) g_shadowDebug = true;
 
     if (argc > 1 && TextIsEqual(argv[1], "--terrainaudit")) {
         uint64_t f0 = gHCache.fills;
@@ -1603,6 +1611,7 @@ int main(int argc, char **argv) {
     // image larger than the display.  The live game keeps Retina + MSAA;
     // captures are bounded, native-resolution, and intentionally single-sample.
     SetConfigFlags(benchMode ? FLAG_WINDOW_HIDDEN
+                 : shadowTest ? FLAG_WINDOW_HIDDEN   // deterministic 1:1 backbuffer, no MSAA/HiDPI resample
                  : captureShot ? 0
                  : rttestMode ? (FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT)
                               : (FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT));
@@ -1610,6 +1619,7 @@ int main(int argc, char **argv) {
                                          : (captureShot ? 1600 : 1280);
     int windowH = getenv("MC_CAPTURE_H") ? atoi(getenv("MC_CAPTURE_H"))
                                          : (captureShot ? 900 : 720);
+    if (shadowTest) { windowW = 1280; windowH = 720; }
     if (captureShot) {
         windowW = Clamp(windowW, 960, 1920);
         windowH = Clamp(windowH, 540, 1080);
@@ -1658,6 +1668,272 @@ int main(int argc, char **argv) {
         float metalU1 = (T_RAIL * 16 + 15.5f) / (float)(TILE_N * 16);
         float muv[2] = { metalU0, metalU1 };
         SetShaderValue(gShadow.lit, gShadow.locMetalUVRange, muv, SHADER_UNIFORM_VEC2);
+    }
+
+    // ======================================================================
+    // --shadowtest : shadow-pipeline verification toolkit
+    // ----------------------------------------------------------------------
+    // Renders a deterministic canonical scene (flat ground, one tall solid
+    // pillar, one horizontal overhang slab, the game's fixed g_sunDir, a fixed
+    // close camera) through the REAL ShadowSys depth + lit path -- not a toy
+    // renderer -- then reads back the framebuffer and computes in-process
+    // metrics: shadow/lit mean luminance + contrast, boundary edge width, an
+    // A/B uniformity stddev (live vs. uShadowForce=1), and a shadow-map depth
+    // readback (min/max/mean + occupied fraction). PASS/FAIL is quantitative.
+    // ======================================================================
+    if (shadowTest) {
+        // Plain diffuse cubes: push the rail/metal atlas bands out of reach so
+        // no specular streak confounds the luminance probes.
+        float noUV[2] = { 99.0f, 100.0f };
+        SetShaderValue(gShadow.lit, gShadow.locRailUVRange,  noUV, SHADER_UNIFORM_VEC2);
+        SetShaderValue(gShadow.lit, gShadow.locMetalUVRange, noUV, SHADER_UNIFORM_VEC2);
+
+        const int RW = GetRenderWidth(), RH = GetRenderHeight();
+
+        // Canonical geometry, metres. Ground top surface at y=0.
+        const Vector3 groundC={0,-1.0f,0}, groundS={640,2,640};
+        const Vector3 pillarC={0,20,0},    pillarS={8,40,8};
+        const Vector3 slabC={-24,15,22},   slabS={30,3,30};
+        const Color groundCol={185,185,185,255};
+        const Color pillarCol={168,168,174,255};
+        const Color slabCol  ={176,172,166,255};
+        const Color skyClear ={118,158,208,255};
+
+        // Fixed close camera (~60 m from the pillar) looking down at the pillar's
+        // shadow side. g_sunDir=(-0.48,0.60,0.64) casts the pillar shadow toward
+        // +x,-z, so the camera sits on +x/-z and looks back across that ground.
+        Camera3D cam{};
+        cam.position={58,46,-34}; cam.target={8,1,-14}; cam.up={0,1,0};
+        cam.fovy=48.0f; cam.projection=CAMERA_PERSPECTIVE;
+        printf("[shadowtest] cam pos=(%.0f,%.0f,%.0f) target=(%.0f,%.0f,%.0f) fovy=%.0f res=%dx%d\n",
+               cam.position.x,cam.position.y,cam.position.z,cam.target.x,cam.target.y,cam.target.z,
+               cam.fovy,RW,RH);
+        printf("[shadowtest] sun g_sunDir=(%.3f,%.3f,%.3f)\n", g_sunDir.x,g_sunDir.y,g_sunDir.z);
+
+        gShadow.computeLightVP(Vector3{10,4,-12});
+
+        auto drawCubes=[&](){
+            DrawCubeV(groundC, groundS, groundCol);
+            DrawCubeV(pillarC, pillarS, pillarCol);
+            DrawCubeV(slabC,   slabS,   slabCol);
+        };
+        // One frame through the production depth + lit path; returns the
+        // read-back image. force/debug drive ShadowSys::setDebug. linear=true
+        // outputs raw linear-HDR colour (legacyTonemap=0, PostFX off) so
+        // contrast is measured in physically-meaningful linear space; linear=
+        // false does the shader's own inline ACES tonemap+gamma for a viewable
+        // PNG. The shadow application is identical either way.
+        auto capture=[&](float force,float debug,bool linear)->Image{
+            BeginDrawing();
+            gShadow.beginDepthPass();
+                drawCubes();
+            gShadow.endDepthPass(RW,RH);
+            ClearBackground(skyClear);
+            BeginMode3D(cam);
+                gShadow.bindLitUniforms();
+                gShadow.setDebug(force,debug);
+                float ld[3]={g_sunDir.x,g_sunDir.y,g_sunDir.z};
+                SetShaderValue(gShadow.lit, gShadow.locLightDir, ld, SHADER_UNIFORM_VEC3);
+                float vp3[3]={cam.position.x,cam.position.y,cam.position.z};
+                SetShaderValue(gShadow.lit, gShadow.locViewPos, vp3, SHADER_UNIFORM_VEC3);
+                // legacyTonemap=1 so the lit shader does its own inline ACES
+                // tonemap+gamma -> a directly-readable LDR backbuffer, no PostFX.
+                // Shadowing (shadowMapVisibility, direct*rawSh) is identical
+                // regardless of this flag, so this stays the production path.
+                float sunL[3]={SCENE_LIGHT.sun[0]*SCENE_LIGHT.legacySun,SCENE_LIGHT.sun[1]*SCENE_LIGHT.legacySun,SCENE_LIGHT.sun[2]*SCENE_LIGHT.legacySun};
+                float skyL[3]={SCENE_LIGHT.sky[0]*SCENE_LIGHT.legacySky,SCENE_LIGHT.sky[1]*SCENE_LIGHT.legacySky,SCENE_LIGHT.sky[2]*SCENE_LIGHT.legacySky};
+                float gndL[3]={SCENE_LIGHT.ground[0]*SCENE_LIGHT.legacyGround,SCENE_LIGHT.ground[1]*SCENE_LIGHT.legacyGround,SCENE_LIGHT.ground[2]*SCENE_LIGHT.legacyGround};
+                SetShaderValue(gShadow.lit, gShadow.locSun, sunL, SHADER_UNIFORM_VEC3);
+                SetShaderValue(gShadow.lit, gShadow.locSky, skyL, SHADER_UNIFORM_VEC3);
+                SetShaderValue(gShadow.lit, gShadow.locGround, gndL, SHADER_UNIFORM_VEC3);
+                float legacyFlag=linear?0.0f:1.0f, fogOff=0.0f, t0=0.0f;
+                SetShaderValue(gShadow.lit, gShadow.locLegacyTonemap, &legacyFlag, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gShadow.lit, gShadow.locFogEnd, &fogOff, SHADER_UNIFORM_FLOAT);
+                SetShaderValue(gShadow.lit, gShadow.locTime, &t0, SHADER_UNIFORM_FLOAT);
+                BeginShaderMode(gShadow.lit);
+                    gShadow.bindLitTexture();
+                    drawCubes();
+                EndShaderMode();
+                gShadow.unbindLitTexture();
+            EndMode3D();
+            rlDrawRenderBatchActive();
+            Image img = LoadImageFromScreen();
+            EndDrawing();
+            return img;
+        };
+
+        auto lumAt=[&](Image &im,int x,int y)->float{
+            if(x<0||y<0||x>=im.width||y>=im.height) return -1.0f;
+            Color c=GetImageColor(im,x,y);
+            return (0.299f*c.r+0.587f*c.g+0.114f*c.b)/255.0f;
+        };
+        auto meanLumRect=[&](Image &im,int cx,int cy,int half)->float{
+            double s=0; int n=0;
+            for(int y=cy-half;y<=cy+half;++y) for(int x=cx-half;x<=cx+half;++x){
+                float l=lumAt(im,x,y); if(l>=0){s+=l;++n;}
+            }
+            return n? (float)(s/n): -1.0f;
+        };
+
+        // Warm-up frame (first frame's clears/state settle), then the captures.
+        // Metrics run on the LINEAR renders (contrast in physical light units);
+        // the tonemapped render is exported for a human-viewable PNG.
+        { Image w=capture(0,0,true); UnloadImage(w); }
+        Image live    = capture(0.0f,0.0f,true);   // production shadows, linear
+        Image forced  = capture(1.0f,0.0f,true);   // uShadowForce -> no shadows, linear
+        Image liveView= capture(0.0f,0.0f,false);  // tonemapped, for the PNG
+        Image dbg     = capture(0.0f,1.0f,false);   // raw visibility field
+
+        ExportImage(liveView, "shadowtest.png");
+        ExportImage(dbg,      "shadowtest_debug.png");
+
+        // Hardcoded screen-space probe rectangles (deterministic scene+camera).
+        // Both sit on flat ground on the SAME screen row: shadowProbe deep inside
+        // the pillar's cast-shadow band, litProbe on open sunlit ground to its
+        // right, so the row between them crosses exactly one shadow boundary.
+        const int PROBE_ROW=600;
+        const int sx=830, sy=PROBE_ROW;   // deep in shadow band
+        const int lx=1120, ly=PROBE_ROW;  // open sunlit ground
+        const int HALF=16;
+        // Self-check probe placement against the raw visibility field.
+        float visS=lumAt(dbg,sx,sy), visL=lumAt(dbg,lx,ly);
+        if(visS>0.3f) printf("[shadowtest] WARN shadow probe vis=%.2f not deep in shadow\n",visS);
+        if(visL<0.7f) printf("[shadowtest] WARN lit probe vis=%.2f not fully lit\n",visL);
+        float meanShadow=meanLumRect(live,sx,sy,HALF);
+        float meanLit   =meanLumRect(live,lx,ly,HALF);
+        float contrast  = (meanShadow>1e-4f)? meanLit/meanShadow : 0.0f;
+        printf("[shadowtest] probe shadow px=(%d,%d) vis=%.2f linearLum=%.4f\n", sx,sy,visS,meanShadow);
+        printf("[shadowtest] probe lit    px=(%d,%d) vis=%.2f linearLum=%.4f\n", lx,ly,visL,meanLit);
+        printf("[shadowtest] CONTRAST lit/shadow (linear) = %.3f\n", contrast);
+
+        // Edge width: the shadow band's boundary runs diagonally across the
+        // screen, so a single horizontal scan crosses it at a shallow angle and
+        // over-reports the width. Scan many rows and keep the SHARPEST rising
+        // 20%->80% transition found -- that row crosses the edge most nearly
+        // perpendicular, giving the true edge width. A row with no real swing
+        // (lmax-lmin small) contributes nothing.
+        auto edgeAtRow=[&](Image &im,int row,int x0,int x1)->int{
+            float lmin=1e9f,lmax=-1e9f;
+            for(int x=x0;x<=x1;++x){float l=lumAt(im,x,row);if(l>=0){lmin=fminf(lmin,l);lmax=fmaxf(lmax,l);}}
+            if(lmax-lmin<0.15f) return 99999;
+            float t20=lmin+0.20f*(lmax-lmin), t80=lmin+0.80f*(lmax-lmin);
+            int best=99999, x20=-1;
+            for(int x=x0;x<=x1;++x){float l=lumAt(im,x,row);if(l<0)continue;
+                if(l<=t20){x20=x;}
+                else if(l>=t80 && x20>=0){ best=std::min(best,x-x20); x20=-1; }}
+            return best;
+        };
+        int edgeWidth=99999, edgeRow=-1;
+        for(int row=340;row<=680;row+=6){
+            int e=edgeAtRow(live,row,500,1240);
+            if(e<edgeWidth){ edgeWidth=e; edgeRow=row; }
+        }
+        printf("[shadowtest] EDGE sharpest 20%%->80%% rise = %dpx (at row %d)\n", edgeWidth, edgeRow);
+
+        // Angle-independent crispness: fraction of ground-rect pixels in the raw
+        // visibility field that are partial (0.15<vis<0.85). Crisp cast shadows
+        // are almost all fully-lit or fully-occluded, so this penumbra fraction
+        // is small. A "uniform dimming" failure has no sharp boundary and would
+        // wash this much higher (or show no dark pixels at all).
+        long penN=0, litN=0, shN=0;
+        for(int y=430;y<=715;++y) for(int x=120;x<=1240;++x){
+            float v=lumAt(dbg,x,y);
+            if(v<0) continue;
+            if(v>0.85f) ++litN; else if(v<0.15f) ++shN; else ++penN;
+        }
+        double penFrac=(penN+litN+shN)? (double)penN/(penN+litN+shN) : 1.0;
+        double shadeFrac=(penN+litN+shN)? (double)shN/(penN+litN+shN) : 0.0;
+        printf("[shadowtest] CRISPNESS penumbraFrac=%.4f (lit=%ld shadow=%ld penumbra=%ld) shadowFrac=%.4f\n",
+               penFrac, litN, shN, penN, shadeFrac);
+
+        // A/B uniformity: per-pixel ratio live/forced over a screen rectangle
+        // that is entirely open ground (below the pillar base, above the frame
+        // bottom -- no sky, no pillar, no slab), so no colour mask is needed
+        // (shadowed ground is sky-tinted and would defeat one anyway). If shadows
+        // work the ratio is ~1 on lit ground and <1 inside the band -> high
+        // stddev. Uniform dimming would give stddev ~0 with mean<1.
+        const int gx0=120, gx1=1240, gy0=430, gy1=715;
+        double rs=0, rs2=0; int rn=0;
+        for(int y=gy0;y<=gy1;++y) for(int x=gx0;x<=gx1;++x){
+            Color cf=GetImageColor(forced,x,y);
+            float lf=(0.299f*cf.r+0.587f*cf.g+0.114f*cf.b)/255.0f;
+            if(lf<0.05f) continue;
+            Color cl=GetImageColor(live,x,y);
+            float ll=(0.299f*cl.r+0.587f*cl.g+0.114f*cl.b)/255.0f;
+            float ratio=ll/fmaxf(lf,1e-3f);
+            rs+=ratio; rs2+=(double)ratio*ratio; ++rn;
+        }
+        float ratMean=rn? (float)(rs/rn):0.0f;
+        float ratStd =rn? (float)sqrt(fmax(0.0,rs2/rn - (double)ratMean*ratMean)):0.0f;
+        printf("[shadowtest] A/B ground rect=[%d,%d]-[%d,%d] pixels=%d meanRatio=%.4f STDDEV=%.4f\n",
+               gx0,gy0,gx1,gy1,rn,ratMean,ratStd);
+
+        // Shadow-map depth readback: min/max/mean + fraction != clear(1.0).
+        std::vector<float> depthPix((size_t)gShadow.SM*gShadow.SM);
+        glBindTexture(GL_TEXTURE_2D, gShadow.depthTex);
+        glGetTexImage(GL_TEXTURE_2D,0,GL_DEPTH_COMPONENT,GL_FLOAT,depthPix.data());
+        glBindTexture(GL_TEXTURE_2D,0);
+        double dmin=1e9,dmax=-1e9,dsum=0; size_t occ=0;
+        for(float d: depthPix){ dmin=fmin(dmin,d); dmax=fmax(dmax,d); dsum+=d; if(d<0.99990f)++occ; }
+        double dmean=dsum/depthPix.size();
+        double occFrac=(double)occ/depthPix.size();
+        printf("[shadowtest] SHADOWMAP %dx%d depth min=%.5f max=%.5f mean=%.5f occupiedFrac=%.5f\n",
+               gShadow.SM,gShadow.SM,dmin,dmax,dmean,occFrac);
+        GLint maxTexQ=0; glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxTexQ);
+        const char *glVerQ=(const char*)glGetString(GL_VERSION);
+        const char *glRenQ=(const char*)glGetString(GL_RENDERER);
+        printf("[shadowtest] GL fboComplete=%s colourFallback=%s allocSize=%d GL_MAX_TEXTURE_SIZE=%d\n",
+               gShadow.fboComplete?"yes":"NO",
+               gShadow.usedColorFallback?"yes":"no", gShadow.SM, (int)maxTexQ);
+        printf("[shadowtest] GL_VERSION='%s' GL_RENDERER='%s'\n",
+               glVerQ?glVerQ:"?", glRenQ?glRenQ:"?");
+
+        // Grayscale shadow-map dump, downsampled to 1024 for a viewable PNG.
+        // Remap [dmin,1] -> [0,255] so the nearest occluder is black, empty=white.
+        {
+            const int OUT=1024, step=gShadow.SM/OUT;
+            Image smImg=GenImageColor(OUT,OUT,BLACK);
+            double span=fmax(1e-6,1.0-dmin);
+            for(int y=0;y<OUT;++y) for(int x=0;x<OUT;++x){
+                float d=depthPix[(size_t)(y*step)*gShadow.SM + (size_t)(x*step)];
+                int g=(int)(((d-dmin)/span)*255.0); g=g<0?0:(g>255?255:g);
+                ImageDrawPixel(&smImg,x,y,Color{(unsigned char)g,(unsigned char)g,(unsigned char)g,255});
+            }
+            ExportImage(smImg,"shadowmap.png");
+            UnloadImage(smImg);
+        }
+
+        // PASS/FAIL. Thresholds locked to what a correct render actually
+        // produces here, with margin:
+        //   contrast >= 1.8   -- linear lit/shadow (correct render ~2.8)
+        //   edge     <= 10 px -- sharpest perpendicular 20->80 luminance rise.
+        //                        The correct render measures ~8 px: that is the
+        //                        deliberate 3x3-tap-on-hardware-2x2-PCF softening
+        //                        (an intentional soft contact edge, ~4 texels),
+        //                        NOT blur -- see penumbraFrac, which is the tight
+        //                        angle-independent crispness gate. Locked at 10
+        //                        (measured 8 + margin) per "tune to the real
+        //                        render then lock".
+        //   penumbra <= 0.06  -- crisp field, not a graded wash (correct ~0.015)
+        //   stddev   >= 0.05  -- A/B ratio varies over ground (correct ~0.24);
+        //                        a uniform-dimming failure collapses this to ~0
+        //   map: occupied fraction sane AND framebuffer complete.
+        bool passContrast = contrast   >= 1.8f;
+        bool passEdge     = edgeWidth   <= 10;
+        bool passPenumbra = penFrac     <= 0.06;
+        bool passStddev   = ratStd      >= 0.05f;
+        bool passMap      = occFrac     >= 0.0005 && occFrac <= 0.60 && gShadow.fboComplete;
+        bool pass = passContrast && passEdge && passPenumbra && passStddev && passMap;
+        printf("[shadowtest] RESULT contrast=%s edge=%s penumbra=%s stddev=%s map=%s => %s\n",
+               passContrast?"PASS":"FAIL", passEdge?"PASS":"FAIL", passPenumbra?"PASS":"FAIL",
+               passStddev?"PASS":"FAIL", passMap?"PASS":"FAIL", pass?"PASS":"FAIL");
+        printf("[shadowtest] PNGs: shadowtest.png shadowtest_debug.png shadowmap.png\n");
+        fflush(stdout);
+
+        UnloadImage(live); UnloadImage(forced); UnloadImage(liveView); UnloadImage(dbg);
+        gShadow.shutdown();
+        CloseWindow();
+        return pass?0:1;
     }
 
     std::vector<float> ptBakeBuf;
@@ -3284,53 +3560,26 @@ int main(int argc, char **argv) {
         }
         BeginDrawing();
 
-        rlDrawRenderBatchActive();
-        rlEnableFramebuffer(gShadow.fbo);
-        rlViewport(0, 0, gShadow.SM, gShadow.SM);
-        rlClearScreenBuffers();
-        rlDisableColorBlend();
-        rlEnableDepthTest(); rlEnableDepthMask();
-        glDepthFunc(GL_LEQUAL);
-        // Render BACK faces into the shadow map. The voxel occluders (terrain,
-        // track boxes, supports, stations) are all closed solids, so culling
-        // FRONT faces stores the far wall of each occluder as the shadow depth.
-        // The lit pass's receiver test then runs on the front (lit) surface,
-        // which sits a whole cube-thickness in front of that stored depth --
-        // that built-in separation kills self-shadow acne, letting the bias in
-        // SHADOW_FS shrink to ~0.5-1.5 texel (see render_fx.cpp). raylib leaves
-        // GL_CULL_FACE enabled with GL_BACK by default; flip to GL_FRONT here
-        // and restore GL_BACK after the pass's batch has flushed so every other
-        // pass (which relies on default back-face culling) is unaffected.
-        rlSetCullFace(RL_CULL_FACE_FRONT);
-        rlSetMatrixProjection(MatrixIdentity());
-        rlSetMatrixModelview(gShadow.lightVP);
-        BeginShaderMode(gShadow.depth);
+        // Shadow depth pass: the ShadowSys module owns and restores all of its
+        // GL state (FBO binding, viewport, FRONT-face culling, GL_LEQUAL depth,
+        // draw/read buffers). main.cpp only supplies the occluder draws between
+        // begin/endDepthPass -- no scattered raw GL calls here anymore.
+        gShadow.beginDepthPass();
         drawWorld(true, false, SHADOW_CULL_RADIUS);
-        rlDrawRenderBatchActive();
-        EndShaderMode();
-        rlSetCullFace(RL_CULL_FACE_BACK); // restore default back-face culling
-        rlEnableColorBlend();
-        rlDisableFramebuffer();
-        rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
-        glDepthFunc(GL_LESS); // restore default depth func after shadow pass's GL_LEQUAL
+        gShadow.endDepthPass(GetRenderWidth(), GetRenderHeight());
 
-        // Bind the single map once per frame for every lit draw.
+        // Thin wrappers over the module's lit-pass shadow binding, kept so the
+        // many call sites below read the same as before. bindLitUniforms sets
+        // lightVP/texel/invRange + the sampler unit; bindLitTexture binds the
+        // depth texture and flips it into hardware depth-compare mode (restored
+        // by unbindLitTexture). setDebug(0,0) keeps force/debug off in play; the
+        // --shadowdebug flag overrides the debug term to visualise the field.
         auto bindShadowUniforms = [&]() {
-            SetShaderValueMatrix(gShadow.lit, gShadow.locLightVP, gShadow.lightVP);
-            float texel[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
-            SetShaderValue(gShadow.lit, gShadow.locShadowTexel, texel, SHADER_UNIFORM_VEC2);
-            SetShaderValue(gShadow.lit, gShadow.locInvRange, &gShadow.invRange, SHADER_UNIFORM_FLOAT);
+            gShadow.bindLitUniforms();
+            gShadow.setDebug(0.0f, g_shadowDebug ? 1.0f : 0.0f);
         };
-        static const int SHADOW_TEX_UNIT = 14;
-        auto bindShadowTextures = [&]() {
-            SetShaderValue(gShadow.lit, gShadow.locShadowMap, &SHADOW_TEX_UNIT, SHADER_UNIFORM_INT);
-            rlActiveTextureSlot(SHADOW_TEX_UNIT); rlEnableTexture(gShadow.depthTex);
-            rlActiveTextureSlot(0);
-        };
-        auto unbindShadowTextures = [&]() {
-            rlActiveTextureSlot(SHADOW_TEX_UNIT); rlDisableTexture();
-            rlActiveTextureSlot(0);
-        };
+        auto bindShadowTextures   = [&]() { gShadow.bindLitTexture(); };
+        auto unbindShadowTextures = [&]() { gShadow.unbindLitTexture(); };
 
         if (!liveRT) {
         // Sky + opaque + water all render into the offscreen linear-HDR scene

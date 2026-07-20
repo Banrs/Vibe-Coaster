@@ -66,51 +66,59 @@ static const char *SHADOW_FS =
     "uniform float legacyTonemap;\n"
     "out vec4 finalColor;\n"
 
-    // One shadow map and one filtering path. Cascade selection was removed.
-    "uniform mat4 lightVP; uniform sampler2D shadowMap; uniform vec2 shadowTexel;\n"
+    // One shadow map, hardware depth comparison. `shadowMap` is a
+    // sampler2DShadow bound to a GL_DEPTH_COMPONENT texture whose
+    // GL_TEXTURE_COMPARE_MODE is GL_COMPARE_REF_TO_TEXTURE with GL_LEQUAL and
+    // GL_LINEAR filtering (see ShadowSys::bindLitTexture in render_fx.cpp).
+    // Each texture(shadowMap, vec3(uv, ref)) therefore returns a hardware 2x2
+    // PCF-filtered visibility in [0,1] -- ref<=storedDepth reads lit -- with the
+    // bilinear tap done in fixed-function silicon, removing the manual
+    // per-texel depth fetch + branch that the old sampler2D path drifted on.
+    "uniform mat4 lightVP; uniform sampler2DShadow shadowMap; uniform vec2 shadowTexel;\n"
     // Normalized depth per world metre for the single light volume.
     "uniform float invRange;\n"
-    // One receiver test and one 3x3 PCF path; there are no cascades or close
-    // layer and therefore no layer-specific overrides to fight each other.
+    // Debug/verification hooks driven by ShadowSys::setDebug (0 in normal play):
+    //   uShadowForce -- force full visibility (1.0) everywhere, so the A/B
+    //     uniformity detector in --shadowtest can render the exact same scene
+    //     with shadows disabled and diff the two.
+    //   uShadowDebug -- output the raw shadow visibility as a grayscale field
+    //     (see main() below), so --shadowdebug screenshots show the shadow
+    //     factor directly instead of the fully-lit scene.
+    "uniform float uShadowForce; uniform float uShadowDebug;\n"
+    // One receiver test and one 3x3 spread of hardware PCF taps; there are no
+    // cascades or close layer and therefore no layer-specific overrides to
+    // fight each other.
     "float shadowMapVisibility(vec3 N){\n"
+    "  if(uShadowForce > 0.5) return 1.0;\n"
     "  float NoL = max(dot(N,lightDir),0.0);\n"
     // Receiver offset and bias are in world units; the shadow map covers
     // 2*SHADOW_RADIUS world units across SHADOW_MAP_SIZE texels, so texel
     // density is (2*SHADOW_RADIUS)/SHADOW_MAP_SIZE world units/texel (~0.234u
-    // at current settings). The depth pass now renders BACK faces (see the
-    // rlSetCullFace(RL_CULL_FACE_FRONT) wrap around the shadow depth pass in
-    // main.cpp): voxel cubes are closed solids, so the stored depth is the far
-    // wall of each occluder -- a whole cube-thickness behind the lit front
-    // surface the receiver test runs on. That separation eliminates self-shadow
-    // acne on its own, so the old ~0.30-0.85u (~1.3-3.6 texel) bias and
-    // ~0.06-0.18u normal offset shrink hard: bias to ~0.5-1.5 texel and the
-    // receiver offset to a hair -- just enough to stop thin rails (~0.18u) from
-    // grazing-angle peter-panning, without swallowing rail-scale contact
-    // shadows. (0.234u/texel: 0.12u~0.5tx, 0.35u~1.5tx.)
+    // at current settings). The depth pass renders BACK faces (see
+    // ShadowSys::beginDepthPass' RL_CULL_FACE_FRONT in render_fx.cpp): voxel
+    // cubes are closed solids, so the stored depth is the far wall of each
+    // occluder -- a whole cube-thickness behind the lit front surface the
+    // receiver test runs on. That separation eliminates self-shadow acne on
+    // its own, so the bias stays tiny: ~0.5-1.5 texel plus a hair of normal
+    // offset, just enough to stop thin rails (~0.18u) from grazing-angle
+    // peter-panning without swallowing rail-scale contact shadows.
     "  vec3 receiver = fragWorld + N*(0.02 + 0.04*(1.0-NoL));\n"
     "  vec4 lp = lightVP*vec4(receiver,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
     "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
-    // One conservative 3x3 PCF. The removed PCSS blocker search treated the
-    // receiver's own voxel surface as a blocker across most of the map and
-    // drove virtually every fragment into shadow.
     "  float bias = (0.12 + 0.20*(1.0-NoL))*invRange;\n"
+    "  float ref = p.z - bias;\n"
+    // 3x3 spread of hardware-PCF taps. Each texture() call already does a 2x2
+    // bilinear compare in silicon, so this is effectively ~4x4 filtering for 9
+    // fetches. Returns the true averaged visibility (0 = fully occluded, 1 =
+    // fully lit) uncompressed -- the shading in main() removes direct sun by
+    // exactly this factor, so a fully-shadowed fragment gets zero direct light
+    // and the ambient term alone, which is what makes cast shadows read as
+    // crisp rather than a faint uniform dimming.
     "  float vis = 0.0;\n"
     "  for(int y=-1; y<=1; ++y) for(int x=-1; x<=1; ++x){\n"
-    "    float d = texture(shadowMap, p.xy + vec2(x,y)*shadowTexel).r;\n"
-    "    vis += (p.z-bias <= d) ? 1.0 : 0.0;\n"
+    "    vis += texture(shadowMap, vec3(p.xy + vec2(x,y)*shadowTexel, ref));\n"
     "  }\n"
     "  vis *= (1.0/9.0);\n"
-    // Return the raw PCF-averaged visibility (0 = fully occluded, 1 = fully
-    // lit) uncompressed. This used to be `mix(1.0, vis, 0.55)`, which floors
-    // even a fully-shadowed fragment at 0.45 -- and every caller then floors
-    // it AGAIN (see `sh = mix(0.18, 1.0, rawSh)` in main() below and the
-    // other mix(x, 1.0, rawSh) soft-shadow terms), so the two floors
-    // compounded to squeeze all real per-fragment contrast into a narrow
-    // ~[0.55, 1.0] band -- reading as uniformly, slightly dim ambient light
-    // rather than crisp cast shadows, with no framebuffer-incomplete warning
-    // to hint at it because the depth pass/sampling were never broken. The
-    // callers' own mix() floors already provide the "shadows aren't pure
-    // black" softening, so this function should just report the truth.
     "  return vis;\n"
     "}\n"
     "float shadow(vec3 N){ return shadowMapVisibility(N); }\n"
@@ -211,6 +219,10 @@ static const char *SHADOW_FS =
     "  vec3 N = normalize(fragNormal);\n"
     "  float ndl = max(dot(N,lightDir),0.0);\n"
     "  float rawSh = shadow(N);\n"
+    // --shadowdebug: emit the raw shadow visibility field directly (0=occluded
+    // black .. 1=lit white) so any capture shows exactly what the shadow term
+    // is, independent of albedo/lighting. Straight LDR write, no tonemap/fog.
+    "  if(uShadowDebug > 0.5){ finalColor = vec4(vec3(rawSh), 1.0); return; }\n"
     // Physically-correct shadowing: the shadow term occludes the DIRECT sun
     // ONLY. There is no direct floor -- a fully-shadowed fragment gets zero
     // direct sun (rawSh=0 -> direct=0). The old `sh = mix(0.18,1.0,rawSh)`
@@ -340,10 +352,22 @@ static constexpr float SHADOW_CULL_RADIUS = SHADOW_RADIUS * 1.42f + 15.0f;
 // this quietly falls back to the largest size it can, rather than failing.
 static constexpr int SHADOW_MAP_SIZE = 4096;
 
+// Texture unit the lit pass binds the shadow map to. A high unit that no
+// material texture (albedo atlas at 0, PostFX targets, etc.) uses, so the
+// shadow bind never collides with a bound material sampler.
+static const int SHADOW_LIT_TEX_UNIT = 14;
+
+// Self-contained shadow pipeline module. Owns its FBO, depth texture, both
+// shaders, the light matrix, and -- crucially -- ALL the GL state its passes
+// touch. main.cpp calls init()/computeLightVP()/beginDepthPass()/endDepthPass()
+// /bindLit*()/setDebug()/shutdown() and never issues a raw GL call of its own
+// for shadows: cull face, depth func, viewport, draw/read buffers, FBO binding,
+// and the depth texture's compare/filter state are all set and restored here.
 struct ShadowSys {
     Shader lit{}, depth{};
     unsigned int fbo = 0;
     unsigned int depthTex = 0;
+    unsigned int colorTex = 0;  // throwaway colour attachment, only if the depth-only FBO is incomplete
     int SM = SHADOW_MAP_SIZE;
     int locLightVP=-1, locShadowMap=-1, locShadowTexel=-1;
     int locInvRange=-1;
@@ -352,9 +376,17 @@ struct ShadowSys {
     int locFogEnd=-1, locFogStart=-1, locFogRange=-1, locFogCol=-1, locFogColLinear=-1;
     int locRailTangent=-1, locRailUVRange=-1, locMetalUVRange=-1;
     int locLegacyTonemap=-1;
+    int locShadowForce=-1, locShadowDebug=-1;
     Matrix lightVP{};
     float invRange = 0.0f;
     Vector3 focus{};
+    // init() diagnostics, retained so --shadowtest and callers can reprint them.
+    // (raylib's rlFramebufferComplete internally calls glCheckFramebufferStatus
+    // and TraceLogs the specific incomplete-* enum; the GL 3.0 function pointer
+    // itself is not exported to this translation unit, so we surface the boolean
+    // here and rely on that log line for the exact status enum on failure.)
+    bool  fboComplete = false;
+    bool  usedColorFallback = false;
 
     void init() {
         lit   = LoadShaderFromMemory(SHADOW_VS, SHADOW_FS);
@@ -378,12 +410,15 @@ struct ShadowSys {
         locRailUVRange = GetShaderLocation(lit, "railUVRange");
         locMetalUVRange = GetShaderLocation(lit, "metalUVRange");
         locLegacyTonemap = GetShaderLocation(lit, "legacyTonemap");
+        locShadowForce = GetShaderLocation(lit, "uShadowForce");
+        locShadowDebug = GetShaderLocation(lit, "uShadowDebug");
         // Defensive clamp: SHADOW_MAP_SIZE (4096) is a safe size on effectively
         // all desktop GL 3.3 hardware, but this can't be build/run-tested here,
         // so ask the driver rather than assume. Falls back to whatever the GPU
         // actually supports instead of creating an oversized/invalid texture.
         GLint maxTex = 0;
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
+        int requested = SM;
         if (maxTex > 0 && SM > maxTex) SM = maxTex;
         fbo = rlLoadFramebuffer();
         rlEnableFramebuffer(fbo);
@@ -396,12 +431,113 @@ struct ShadowSys {
         // at all.  raylib does not set these for us, so do it here.
         glDrawBuffer(GL_NONE);
         glReadBuffer(GL_NONE);
-        if (!rlFramebufferComplete(fbo)) TraceLog(LOG_WARNING, "SHADOW: framebuffer is incomplete");
+        fboComplete = rlFramebufferComplete(fbo);
+        // Robust fallback: a few strict/older drivers still reject a colour-less
+        // FBO even with the draw/read buffers disabled. Attach a tiny throwaway
+        // colour texture (the classic workaround, via rlgl so no GL 3.0 entry
+        // points are needed here) and re-check with the colour buffer wired back
+        // up. The depth pass writes nothing meaningful to it -- we only ever
+        // sample depthTex -- so its contents are ignored.
+        if (!fboComplete) {
+            TraceLog(LOG_WARNING, "SHADOW: depth-only FBO incomplete; attaching colour-texture fallback");
+            colorTex = rlLoadTexture(NULL, SM, SM, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
+            rlFramebufferAttach(fbo, colorTex, RL_ATTACHMENT_COLOR_CHANNEL0, RL_ATTACHMENT_TEXTURE2D, 0);
+            rlEnableFramebuffer(fbo);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            usedColorFallback = true;
+            fboComplete = rlFramebufferComplete(fbo);
+        }
         rlDisableFramebuffer();
         // Restore the default framebuffer's colour buffers so the main scene
         // passes are unaffected by the NONE draw/read state set above.
         glDrawBuffer(GL_BACK);
         glReadBuffer(GL_BACK);
+
+        const char *glVer = (const char *)glGetString(GL_VERSION);
+        const char *glRen = (const char *)glGetString(GL_RENDERER);
+        TraceLog(fboComplete ? LOG_INFO : LOG_WARNING,
+                 "SHADOW: init map=%dx%d (requested %d, GL_MAX_TEXTURE_SIZE=%d) fbo=%u depthTex=%u "
+                 "complete=%s colourFallback=%s",
+                 SM, SM, requested, (int)maxTex, fbo, depthTex,
+                 fboComplete ? "yes" : "NO", usedColorFallback ? "yes" : "no");
+        TraceLog(LOG_INFO, "SHADOW: GL_VERSION='%s' GL_RENDERER='%s'",
+                 glVer ? glVer : "?", glRen ? glRen : "?");
+    }
+
+    // ---- Depth pass ----------------------------------------------------------
+    // beginDepthPass()/endDepthPass() are the ONLY place the shadow depth pass'
+    // GL state lives. beginDepthPass flushes the pending batch, binds the shadow
+    // FBO, sets the light viewport/matrices, switches to FRONT-face culling (so
+    // closed voxel solids store their FAR wall -- see SHADOW_FS) and GL_LEQUAL
+    // depth, then enters the depth shader. endDepthPass flushes, exits the
+    // shader, and restores every one of those to its scene-pass default
+    // (BACK-face cull, GL_LESS depth, colour blend on, default FBO, screen
+    // viewport). The caller draws its occluders between the two.
+    void beginDepthPass() {
+        rlDrawRenderBatchActive();
+        rlEnableFramebuffer(fbo);
+        rlViewport(0, 0, SM, SM);
+        rlClearScreenBuffers();
+        rlDisableColorBlend();
+        rlEnableDepthTest(); rlEnableDepthMask();
+        glDepthFunc(GL_LEQUAL);
+        rlSetCullFace(RL_CULL_FACE_FRONT);
+        rlSetMatrixProjection(MatrixIdentity());
+        rlSetMatrixModelview(lightVP);
+        BeginShaderMode(depth);
+    }
+    void endDepthPass(int screenW, int screenH) {
+        rlDrawRenderBatchActive();
+        EndShaderMode();
+        rlSetCullFace(RL_CULL_FACE_BACK);
+        rlEnableColorBlend();
+        rlDisableFramebuffer();
+        rlViewport(0, 0, screenW, screenH);
+        glDepthFunc(GL_LESS);
+    }
+
+    // ---- Lit pass shadow binding --------------------------------------------
+    // Per-frame lightVP/texel/invRange uniforms + the sampler unit. Call once
+    // before the lit draws.
+    void bindLitUniforms() {
+        SetShaderValueMatrix(lit, locLightVP, lightVP);
+        float texel[2] = { 1.0f / (float)SM, 1.0f / (float)SM };
+        SetShaderValue(lit, locShadowTexel, texel, SHADER_UNIFORM_VEC2);
+        SetShaderValue(lit, locInvRange, &invRange, SHADER_UNIFORM_FLOAT);
+        int unit = SHADOW_LIT_TEX_UNIT;
+        SetShaderValue(lit, locShadowMap, &unit, SHADER_UNIFORM_INT);
+    }
+    // Bind depthTex to the lit unit and flip it into hardware depth-compare mode
+    // (GL_COMPARE_REF_TO_TEXTURE + GL_LEQUAL + GL_LINEAR) so the sampler2DShadow
+    // in SHADOW_FS gets free 2x2 PCF. unbindLitTexture() restores GL_NONE +
+    // GL_NEAREST so any other reader of this same texture object (the path
+    // tracer samples it as a plain sampler2D) sees raw depth, never a compare
+    // result. The two passes are mutually exclusive per frame, so this keeps the
+    // shared texture's state unambiguous for whichever runs.
+    void bindLitTexture() {
+        rlActiveTextureSlot(SHADOW_LIT_TEX_UNIT);
+        rlEnableTexture(depthTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        rlActiveTextureSlot(0);
+    }
+    void unbindLitTexture() {
+        rlActiveTextureSlot(SHADOW_LIT_TEX_UNIT);
+        rlEnableTexture(depthTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        rlDisableTexture();
+        rlActiveTextureSlot(0);
+    }
+    // Verification hooks (0,0 in normal play). force=1 -> full visibility
+    // everywhere; debug=1 -> lit shader emits the raw visibility field.
+    void setDebug(float force, float debug) {
+        SetShaderValue(lit, locShadowForce, &force, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(lit, locShadowDebug, &debug, SHADER_UNIFORM_FLOAT);
     }
 
     // Build the one ground-anchored light volume.
@@ -443,6 +579,7 @@ struct ShadowSys {
         if (lit.id) UnloadShader(lit);
         if (depth.id) UnloadShader(depth);
         lit = {}; depth = {};
+        if (colorTex) { rlUnloadTexture(colorTex); colorTex = 0; }
         if (fbo) rlUnloadFramebuffer(fbo);
         else if (depthTex) rlUnloadTexture(depthTex);
         fbo = 0;

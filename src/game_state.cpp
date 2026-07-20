@@ -90,6 +90,11 @@ static Color shade(Color c, float s) {
 }
 
 static Vector3 g_sunDir = { -0.48f, 0.60f, 0.64f };
+// --shadowdebug: when set, the lit shader emits the raw shadow-visibility field
+// as grayscale instead of the shaded scene, so any capture mode shows the
+// shadow factor directly. Parsed in main(); consumed where the lit uniforms are
+// bound. Off (false) in normal play.
+static bool g_shadowDebug = false;
 static Color mixc(Color a, Color b, float t) {
     return { (unsigned char)(a.r + (b.r - a.r) * t),
              (unsigned char)(a.g + (b.g - a.g) * t),

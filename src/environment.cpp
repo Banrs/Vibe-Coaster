@@ -141,8 +141,35 @@ static int terrainH(float x, float z) {
     float erosion = fbm(wx * 0.0032f + 31.7f, wz * 0.0032f + 12.3f, 3);
     float pv  = ridgef(wx * 0.0048f + 5.0f, wz * 0.0048f + 9.0f, 3);
     float det = fbm(wx * 0.020f, wz * 0.020f, 2);
-    float inland = smooth01(-0.18f, 0.30f, continentalness);
-    float base = WATER_Y + 2.0f + continentalness * 28.0f;
+
+    // Phase 3 (U2) continental reshape (docs/REFACTOR_PLAN.md): measured
+    // water fraction was 46.8% against a 10-15% target. This is a coordinated
+    // reshape of the continentalness->height mapping, not a single constant
+    // nudge, and it deliberately leaves mountain/rolling AMPLITUDE (92.0f /
+    // 18.0f below) and the inland window's UPPER bound (0.30f, i.e. the
+    // "full-strength ridged mountains" cutoff -- about the same top ~12% of
+    // the continentalness range as before) untouched, so relief stays as
+    // dramatic and covers about as much of the map as before:
+    //   1) only the inland window's LOWER bound moves, modestly, to a more
+    //      negative continentalness so relief starts a bit closer to the new
+    //      coast instead of leaving a wide dead-flat plain between shore and
+    //      foothills (an earlier, much larger shift here -- tried first --
+    //      dragged the *upper* bound's effective percentile down with it and
+    //      pushed full-strength mountains across roughly half the sampled
+    //      world, which the generator choked on; keeping the upper bound
+    //      fixed avoids that);
+    //   2) a small shore-shelf bump adds a few meters right around the new
+    //      coastline so the land/water line reads as a shallow beach/shelf
+    //      gradient rather than a knife edge (real coastlines shoal before
+    //      they climb);
+    //   3) the base land offset is raised, which -- combined with 1) and 2)
+    //      -- pushes the water threshold down to a lower continentalness
+    //      percentile so fewer, but still noise-distributed (many separate
+    //      lakes/ponds plus a couple of larger connected bodies, not one
+    //      giant ocean edge), basins stay underwater.
+    float inland = smooth01(-0.25f, 0.30f, continentalness);
+    float shoreShelf = smooth01(-0.55f, -0.15f, continentalness) * 7.0f;
+    float base = WATER_Y + 14.0f + continentalness * 28.0f + shoreShelf;
     float mountains = inland * powf(pv, 2.35f) * powf(1.0f - erosion, 1.45f) * 92.0f;
     float rolling = inland * (fbm(wx * 0.008f + 32.0f, wz * 0.008f + 77.0f, 3) - 0.5f) * 18.0f;
     float h = base + mountains + rolling + (det - 0.5f) * 8.0f;

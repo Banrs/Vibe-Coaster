@@ -2,108 +2,51 @@
 // only connective track is adapted before it crosses the publication fence.
 #include "../src/v1_profiles.h"
 #include <cstring>
-// Shared water predicate for V1 consumers.
-static inline bool submergedGround(float groundTopY) { return groundTopY <= WATER_Y + 0.01f; }
-
-// Generation-side terrain memo.  Boundary resolution re-probes identical
-// coordinates thousands of times (trial branches, the powered-deck height
-// search, corridor scans), and every probe otherwise pays a mutexed tile
-// lookup or a cold 18-vnoise column build.  Terrain is a pure function of
-// (x, z) for a given world, so memoise exact query points; reset() bumps the
-// epoch.  Generation runs on one thread at a time (play loop or audit), so
-// the memo needs no locking; the tile store underneath stays thread-safe for
-// the terrain-mesh worker.
-struct GenTerrainMemo {
-    static constexpr uint32_t N = 1u << 17;
-    uint64_t key[N];
-    float solid[N];
-    uint32_t stamp[N];
-    uint32_t epoch = 0;
-    void clear() { ++epoch; }
-    static uint64_t pack(float x, float z) {
-        uint32_t xb, zb;
-        memcpy(&xb, &x, 4); memcpy(&zb, &z, 4);
-        return ((uint64_t)xb << 32) | zb;
-    }
-    float solidTopAt(float x, float z) {
-        const uint64_t k = pack(x, z);
-        const uint32_t h = (uint32_t)((k * 0x9E3779B97F4A7C15ull) >> 40) % N;
-        for (uint32_t probe = 0; probe < 8; ++probe) {
-            const uint32_t i = (h + probe) % N;
-            if (stamp[i] == epoch && key[i] == k) return solid[i];
-            if (stamp[i] != epoch) {
-                const float s = terrainSurfaceAt(x, z).solidTop;
-                key[i] = k; solid[i] = s; stamp[i] = epoch;
-                return s;
-            }
-        }
-        return terrainSurfaceAt(x, z).solidTop;
-    }
-};
-static GenTerrainMemo gGenTerrain;
-static inline TerrainSurface genTerrainSurfaceAt(float x, float z) {
-    const float solid = gGenTerrain.solidTopAt(x, z);
-    return {solid, WATER_Y, isNaturalWaterTop(solid)};
-}
-static inline float genGroundTopAt(float x, float z) {
-    return genTerrainSurfaceAt(x, z).visibleTop();
-}
-
+// Phase 1 STEP 2: the generation-side terrain memo, the submergedGround
+// predicate, and the genTerrainSurfaceAt / genGroundTopAt accessors moved to
+// v1/terrain_probe.cpp (namespace tprobe), which is included in the unity
+// chain immediately before this file.  Their names/signatures are unchanged,
+// so every call site below evaluates identically.
 
 struct Track {
     // Public ride-domain origin. A predecessor ghost is seeded behind the
     // station so u=0 evaluates the physical origin -> first launch span.
     static constexpr float rideStartU = 0.0f;
-    // Reserve successor lookahead beyond the final sampling stencil.
-    static constexpr int ADAPTIVE_LAG = 23;
-    // Every physical axis owns the same record-scale contract: 1.0x is the
-    // floor and 1.5x is the hard cap.  Centreline length alone gets a small
-    // allowance for C3 shoulders and 14 m publication quantisation.  A height
-    // cap can therefore never conceal an oversized radius or kilometre-long
-    // path again.
-    static constexpr float RECORD_SCALE_CAP       = 1.50f;
-    static constexpr float TOP_HAT_RECORD_RISE =
-        (float)v1profile::kTopHatReferenceRise; // Intamin Falcon's Flight camelback
-    static constexpr float TOP_HAT_FACE_DEGREES =
-        (float)v1profile::kTopHatReferenceFaceDegrees;
-    static constexpr float TOP_HAT_VERTICAL_CAP =
-        TOP_HAT_RECORD_RISE * RECORD_SCALE_CAP; // 247.5 m: rise, drop and terrain clearance
-    static constexpr float LOOP_RECORD_HEIGHT     = 54.5592f;  // Tormenta, official 179 ft loop
-    static constexpr float IMMEL_RECORD_HEIGHT    = 66.4464f;  // Tormenta, official 218 ft Immelmann
-    static constexpr float LOOP_REFERENCE_CROWN_RADIUS =
-        LOOP_RECORD_HEIGHT * (19.6f / 48.8f); // canonical clothoid crown, not half-height
-    static constexpr float IMMEL_REFERENCE_RADIUS = IMMEL_RECORD_HEIGHT * 0.5f;
-    static constexpr float DIVELOOP_RECORD_DROP   = 60.0f;
-    static constexpr float AIRTIME_RECORD_HEIGHT  = 60.0f;
-    static constexpr float BANKAIR_RECORD_HEIGHT  = 35.0f;
-    static constexpr float CORKSCREW_REFERENCE_RADIUS = 6.6f;
-    static constexpr float CORKSCREW_REFERENCE_EXCURSION =
-        2.0f * CORKSCREW_REFERENCE_RADIUS;
-    static constexpr float CORKSCREW_REFERENCE_RAIL = 94.30664f;
-    static constexpr float HELIX_RECORD_REVS      = 1.625f;
-
-    // No formal helix-radius world record is published.  Six Flags America's
-    // engineering workbook does publish 30.5 m for Ride of Steel's first
-    // horizontal loop/helix, so this is deliberately named as a real-ride
-    // reference rather than a fictitious WR.  Its 1.5x cap is 45.75 m radius
-    // (91.5 m diameter).
-    static constexpr float HELIX_REFERENCE_RADIUS = 30.5f;
-    static constexpr float HELIX_REFERENCE_DROP   = 30.0f;
-    static constexpr float HELIX_TARGET_G         = 11.75f;
-    static constexpr float HELIX_SPIRAL_SWEEP     = 6.0f;
-    static constexpr float HELIX_MAX_REVS         = 1.725f;
-    static constexpr float BANKAIR_REFERENCE_RADIUS = 132.0f;
-    static constexpr float WAVE_REFERENCE_RADIUS    = 100.0f;
-    static constexpr float HILL_REFERENCE_LOBE_PLAN = 190.44893f;
-    static constexpr float HILL_REFERENCE_LOBE_RAIL = 233.50868f;
-    static constexpr float HILL_REFERENCE_CROWN_RADIUS = 30.625f;
-    static constexpr float HARD_TURN_REFERENCE_RADIUS = 45.0f;
-    static constexpr float SPEED_TURN_REFERENCE_RADIUS = 68.0f;
-    static constexpr float HARD_TURN_REFERENCE_LENGTH = 210.0f;
-    static constexpr float SPEED_TURN_REFERENCE_LENGTH = 154.0f;
-    static constexpr float SCURVE_REFERENCE_RADIUS = SPEED_TURN_REFERENCE_RADIUS;
-    static constexpr float SCURVE_REFERENCE_PLAN = 140.0f;
-    static constexpr float SCURVE_REFERENCE_RISE = 10.0f;
+    // Phase 1: design constants moved to genc namespace (v1/gen_constants.h).
+    // These aliases keep every `Track::X` / bare-name call site unchanged.
+    static constexpr int   ADAPTIVE_LAG                = genc::ADAPTIVE_LAG;
+    static constexpr float RECORD_SCALE_CAP            = genc::RECORD_SCALE_CAP;
+    static constexpr float TOP_HAT_RECORD_RISE         = genc::TOP_HAT_RECORD_RISE;
+    static constexpr float TOP_HAT_FACE_DEGREES        = genc::TOP_HAT_FACE_DEGREES;
+    static constexpr float TOP_HAT_VERTICAL_CAP        = genc::TOP_HAT_VERTICAL_CAP;
+    static constexpr float LOOP_RECORD_HEIGHT          = genc::LOOP_RECORD_HEIGHT;
+    static constexpr float IMMEL_RECORD_HEIGHT         = genc::IMMEL_RECORD_HEIGHT;
+    static constexpr float LOOP_REFERENCE_CROWN_RADIUS = genc::LOOP_REFERENCE_CROWN_RADIUS;
+    static constexpr float IMMEL_REFERENCE_RADIUS      = genc::IMMEL_REFERENCE_RADIUS;
+    static constexpr float DIVELOOP_RECORD_DROP        = genc::DIVELOOP_RECORD_DROP;
+    static constexpr float AIRTIME_RECORD_HEIGHT       = genc::AIRTIME_RECORD_HEIGHT;
+    static constexpr float BANKAIR_RECORD_HEIGHT       = genc::BANKAIR_RECORD_HEIGHT;
+    static constexpr float CORKSCREW_REFERENCE_RADIUS  = genc::CORKSCREW_REFERENCE_RADIUS;
+    static constexpr float CORKSCREW_REFERENCE_EXCURSION = genc::CORKSCREW_REFERENCE_EXCURSION;
+    static constexpr float CORKSCREW_REFERENCE_RAIL    = genc::CORKSCREW_REFERENCE_RAIL;
+    static constexpr float HELIX_RECORD_REVS           = genc::HELIX_RECORD_REVS;
+    static constexpr float HELIX_REFERENCE_RADIUS      = genc::HELIX_REFERENCE_RADIUS;
+    static constexpr float HELIX_REFERENCE_DROP        = genc::HELIX_REFERENCE_DROP;
+    static constexpr float HELIX_TARGET_G              = genc::HELIX_TARGET_G;
+    static constexpr float HELIX_SPIRAL_SWEEP          = genc::HELIX_SPIRAL_SWEEP;
+    static constexpr float HELIX_MAX_REVS              = genc::HELIX_MAX_REVS;
+    static constexpr float BANKAIR_REFERENCE_RADIUS    = genc::BANKAIR_REFERENCE_RADIUS;
+    static constexpr float WAVE_REFERENCE_RADIUS       = genc::WAVE_REFERENCE_RADIUS;
+    static constexpr float HILL_REFERENCE_LOBE_PLAN    = genc::HILL_REFERENCE_LOBE_PLAN;
+    static constexpr float HILL_REFERENCE_LOBE_RAIL    = genc::HILL_REFERENCE_LOBE_RAIL;
+    static constexpr float HILL_REFERENCE_CROWN_RADIUS = genc::HILL_REFERENCE_CROWN_RADIUS;
+    static constexpr float HARD_TURN_REFERENCE_RADIUS  = genc::HARD_TURN_REFERENCE_RADIUS;
+    static constexpr float SPEED_TURN_REFERENCE_RADIUS = genc::SPEED_TURN_REFERENCE_RADIUS;
+    static constexpr float HARD_TURN_REFERENCE_LENGTH  = genc::HARD_TURN_REFERENCE_LENGTH;
+    static constexpr float SPEED_TURN_REFERENCE_LENGTH = genc::SPEED_TURN_REFERENCE_LENGTH;
+    static constexpr float SCURVE_REFERENCE_RADIUS     = genc::SCURVE_REFERENCE_RADIUS;
+    static constexpr float SCURVE_REFERENCE_PLAN       = genc::SCURVE_REFERENCE_PLAN;
+    static constexpr float SCURVE_REFERENCE_RISE       = genc::SCURVE_REFERENCE_RISE;
 
     static bool dimensionInBand(float value, float reference,
                                 float upperAllowance = 1.0f) {
@@ -198,7 +141,7 @@ struct Track {
     enum class ScheduleOutcome : unsigned char {
         Committed, Exhausted
     };
-    static constexpr int SCHEDULER_ATTEMPT_BUDGET = 3;
+    static constexpr int SCHEDULER_ATTEMPT_BUDGET = genc::SCHEDULER_ATTEMPT_BUDGET;
     static constexpr int MAX_PENDING_ROUTE_ATTEMPTS = 1;
     static constexpr int MAX_CONSECUTIVE_ROUTING_RUNS = 2;
     int consecutiveRoutingRuns = 0;
@@ -217,8 +160,8 @@ struct Track {
     int escapesSinceLaunch = 0;
     // Hard bound on terminal forward escapes taken from one anchor before the
     // scheduler forces a powered launch/boost.
-    static constexpr int ESCAPE_LIMIT = 6;
-    static constexpr int ESCAPES_PER_LAP = 8;
+    static constexpr int ESCAPE_LIMIT = genc::ESCAPE_LIMIT;
+    static constexpr int ESCAPES_PER_LAP = genc::ESCAPES_PER_LAP;
     unsigned schedulerExhaustions = 0;
     // Trial branches use the ordinary point emitter, but boundary resolution
     // is deliberately suspended until the branch has proved its successor.
@@ -228,7 +171,7 @@ struct Track {
     unsigned char lastGenMode = (unsigned char)M_FLAT;
 
     int     hardInvCount = 0;
-    static constexpr int INVERSION_BUDGET = 4;
+    static constexpr int INVERSION_BUDGET = genc::INVERSION_BUDGET;
     // Composed pacing: each lap is scripted as beats (Falcon's Flight's
     // punctuated model crossed with Tormenta's inversion blocks): the launch
     // opening statement, a high-speed rush, airtime blocks against inversion
@@ -254,15 +197,15 @@ struct Track {
     float   connStartY = 0.0f;
     float   connEndY = 0.0f;
     // Minimum length of a complete connective transition.
-    static constexpr int MIN_CONN = 4;   // 4 cps ~= 56 m; longer only when the actual incoming curvature requires it
+    static constexpr int MIN_CONN = genc::MIN_CONN;   // 4 cps ~= 56 m; longer only when the actual incoming curvature requires it
     // Terrain is a whole-corridor constraint; ordinary routes target a shallow cutting.
-    static constexpr float TERRAIN_CUT_TOLERANCE = 18.0f;
-    static constexpr float TERRAIN_DECK_CLEARANCE = 2.0f;
+    static constexpr float TERRAIN_CUT_TOLERANCE = genc::TERRAIN_CUT_TOLERANCE;
+    static constexpr float TERRAIN_DECK_CLEARANCE = genc::TERRAIN_DECK_CLEARANCE;
     // Energy solve for a -5 g crest: v_entry^2 = g*scale*
     // (2*60 m + 6*30.625 m). Scaling height and radius together gives the
     // exact 1.0--1.5x geometry window rather than an unrelated speed clamp.
-    static constexpr float HILL_ENTRY_MIN = 48.0f; // 172.8 km/h; entering slower than the exact -5g energy solve (54.59f/196.5 km/h at 1.0x) just yields a gentler (floater) crest -- the 1.0-1.5x dimension clamp still applies -- so widen the window here so the airtime family isn't starved by near-misses.
-    static constexpr float HILL_ENTRY_MAX = 66.85f; // 240.7 km/h at 1.5x
+    static constexpr float HILL_ENTRY_MIN = genc::HILL_ENTRY_MIN; // 172.8 km/h; see gen_constants.h
+    static constexpr float HILL_ENTRY_MAX = genc::HILL_ENTRY_MAX; // 240.7 km/h at 1.5x
     static float ordinaryCorridorFloor(float groundTop) {
         // Rock/soil may be cut through shallowly; water is not terrain and may
         // never inherit that negative clearance.  Only initDip's explicit
@@ -340,7 +283,7 @@ struct Track {
         long lastGlobalPoint = LONG_MAX;
     };
     std::deque<AnalyticRun> analyticRuns;
-    static constexpr float MACRO_SAMPLE_STEP = 7.0f;
+    static constexpr float MACRO_SAMPLE_STEP = genc::MACRO_SAMPLE_STEP;
 
     // Named spatial elements are sampled from one complete parametric run.
     // Their centreline and rider frame are authored together; no pointwise
@@ -512,14 +455,8 @@ struct Track {
             // the cut-band floor: a top hat whose exit only clears via an
             // 18 m trench strands the next boundary buried (measured seed
             // failures at clearance -13..-18 directly after CLIMB).
-            float landing = -1.0e9f;
-            for (float out = 0.0f; out <= 168.0f; out += 7.0f)
-                for (float side : {-7.0f, 0.0f, 7.0f})
-                    landing = fmaxf(landing, ordinaryRouteTarget(
-                        genGroundTopAt(gpos.x + sinf(gyaw) * (endDistance + out) +
-                                      cosf(gyaw) * side,
-                                    gpos.z + cosf(gyaw) * (endDistance + out) -
-                                      sinf(gyaw) * side)));
+            const float landing =
+                tprobe::scanAhead(gpos, gyaw, 168.0f, 7.0f, 7.0f, endDistance).maxTarget;
             if (landing > spec.endHeight + 12.0f) return reject("runout-terrain");
 
             float maxClearance = -1.0e9f;
@@ -658,16 +595,9 @@ struct Track {
                 previousTroughDistance = built.troughDistance[hill];
                 previousTroughHeight = built.troughHeight[hill];
             }
-            float deficiency = 0.0f;
-            for (float s = 0.0f; s <= (float)built.profile.length(); s += 3.5f) {
-                float y = (float)built.profile.sampleDistance(s).height;
-                float floor = -1.0e9f;
-                for (float side : {-7.0f, 0.0f, 7.0f})
-                    floor = fmaxf(floor, ordinaryCorridorFloor(genGroundTopAt(
-                        gpos.x + sinf(gyaw) * s + cosf(gyaw) * side,
-                        gpos.z + cosf(gyaw) * s - sinf(gyaw) * side)));
-                deficiency = fmaxf(deficiency, floor - y);
-            }
+            float deficiency = tprobe::deficiencyAlong(
+                [&](float s) { return (float)built.profile.sampleDistance(s).height; },
+                gpos, gyaw, (float)built.profile.length(), 3.5f, 7.0f);
             // Qualify the height of the section following the final trough as
             // well.  A hill ending safely at one knot but directly below a
             // rising runout handed an impossible climb to connective FLAT.
@@ -802,12 +732,8 @@ struct Track {
             // of the analytical drop solve: the whole pullout changes shape,
             // while the following track remains level instead of being lifted
             // point-by-point after generation.
-            float landing = -1.0e9f;
-            for (float out = 0.0f; out <= 168.0f; out += 7.0f)
-                for (float side : {-7.0f, 0.0f, 7.0f})
-                    landing = fmaxf(landing, ordinaryRouteTarget(
-                        genGroundTopAt(gpos.x + sinf(gyaw) * (d + out) + cosf(gyaw) * side,
-                                    gpos.z + cosf(gyaw) * (d + out) - sinf(gyaw) * side)));
+            const float landing =
+                tprobe::scanAhead(gpos, gyaw, 168.0f, 7.0f, 7.0f, d).maxTarget;
             float nextHeight = fmaxf(WATER_Y + 4.0f,
                                      fmaxf(startHeight - 250.0f, landing));
             endHeight = nextHeight;
@@ -820,16 +746,9 @@ struct Track {
             // an underground dip followed by a bounce.
             built = solve(endHeight);
             if (built.empty()) return false;
-            float deficiency = 0.0f;
-            for (float s = 0.0f; s <= (float)built.length(); s += 3.5f) {
-                float y = (float)built.sampleDistance(s).height;
-                float floor = -1.0e9f;
-                for (float side : {-7.0f, 0.0f, 7.0f})
-                    floor = fmaxf(floor, ordinaryCorridorFloor(genGroundTopAt(
-                        gpos.x + sinf(gyaw) * s + cosf(gyaw) * side,
-                        gpos.z + cosf(gyaw) * s - sinf(gyaw) * side)));
-                deficiency = fmaxf(deficiency, floor - y);
-            }
+            float deficiency = tprobe::deficiencyAlong(
+                [&](float s) { return (float)built.sampleDistance(s).height; },
+                gpos, gyaw, (float)built.length(), 3.5f, 7.0f);
             if (deficiency <= 0.05f) { corridorClear = true; break; }
             endHeight = fminf(startHeight - 8.0f, endHeight + deficiency * 1.35f);
         }
@@ -1659,7 +1578,7 @@ struct Track {
                 const TerrainSurface surface = genTerrainSurfaceAt(x, z);
                 const float floor = splash && surface.water
                     ? surface.waterSurface + 0.5f
-                    : ordinaryCorridorFloorAt(x, z);
+                    : tprobe::corridorFloorAt(x, z);
                 if (p.y < floor - 0.05f || p.y > BUILD_MAX) return false;
             }
         }
@@ -2372,7 +2291,7 @@ struct Track {
             for (float offset : {-3.5f, 0.0f, 3.5f}) {
                 const float x = p.x + corridorSide.x * offset;
                 const float z = p.z + corridorSide.z * offset;
-                if (p.y < ordinaryCorridorFloorAt(x, z) - 0.05f || p.y > BUILD_MAX)
+                if (p.y < tprobe::corridorFloorAt(x, z) - 0.05f || p.y > BUILD_MAX)
                     return false;
             }
         }
@@ -4652,11 +4571,11 @@ struct Track {
 
     float recoveryClearanceAhead() const {
         float localGround = genGroundTopAt(gpos.x, gpos.z);
-        float highestGround = localGround;
-        for (float distance = 14.0f; distance <= 84.0f; distance += 14.0f)
-            highestGround = fmaxf(highestGround,
-                genGroundTopAt(gpos.x + sinf(gyaw) * distance,
-                            gpos.z + cosf(gyaw) * distance));
+        // Straight centreline scan (side offsets collapse to the centreline at
+        // halfWidth 0); forward 14..84 m in 14 m steps, identical to the loop
+        // it replaces.
+        float highestGround = fmaxf(localGround,
+            tprobe::scanAhead(gpos, gyaw, 70.0f, 14.0f, 0.0f, 14.0f).maxGround);
         return gpos.y - highestGround;
     }
 

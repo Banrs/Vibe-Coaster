@@ -8,6 +8,8 @@
 #include "render_fx.cpp"
 #include "voxel_render.cpp"
 #include "spline.cpp"
+#include "../v1/gen_constants.h"
+#include "../v1/terrain_probe.cpp"
 #include "../v1/coaster_track.cpp"
 #include "track_render_cache.cpp"
 #include "coaster_car.cpp"

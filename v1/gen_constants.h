@@ -8,11 +8,27 @@
 // Phase-1 parity values (RECORD_SCALE floor/ceiling unchanged; value changes are
 // Phase 4).  These are consumed both by Track and by the terrain-probe service.
 #include "../src/v1_profiles.h"
+#include <climits>
 
 namespace genc {
 
 // Reserve successor lookahead beyond the final sampling stencil.
 inline constexpr int ADAPTIVE_LAG = 23;
+
+// --- Continuity audit thresholds (single source) ------------------------------
+// Both audit files (src/main.cpp force/joint audits and
+// src/v1_geometry_audit.cpp seam detector) previously carried their own copies
+// of these limits, which had drifted: main.cpp used a single curvature-jerk
+// bound of 0.18 /m^2 while the geometry audit split it into a 0.15 /m^2
+// magnitude/vector bound and a 0.18 /m^2 one-sided bound.  The canonical values
+// live here and both files reference them.  main.cpp's single bound is a
+// curvature-MAGNITUDE jerk (|dk/ds| of the whole curvature vector), so it is
+// reconciled to the 0.15 magnitude limit; the 0.18 one-sided figure is a
+// separate, looser bound the geometry audit applies to a single-sided residual.
+inline constexpr float CURVATURE_JERK_MAG_MAX      = 0.1500f; // 1/m^2 (magnitude/vector jerk)
+inline constexpr float CURVATURE_JERK_ONESIDED_MAX = 0.1800f; // 1/m^2 (one-sided residual)
+inline constexpr float ROLL_RATE_MAX_DEG_PER_M     = 24.0f;   // deg/m
+inline constexpr float ROLL_ACCEL_MAX_DEG_PER_M2   = 5.5f;    // deg/m^2
 
 // Every physical axis owns the same record-scale contract.  Phase 4 lowered
 // the floor from 1.0x to 0.75x (approved sizing spec): a smaller element
@@ -29,18 +45,73 @@ inline constexpr float TOP_HAT_FACE_DEGREES =
     (float)v1profile::kTopHatReferenceFaceDegrees;
 inline constexpr float TOP_HAT_VERTICAL_CAP =
     TOP_HAT_RECORD_RISE * RECORD_SCALE_CAP; // 247.5 m: rise, drop and terrain clearance
+// Phase 5X (USER DIRECTIVE): the asymmetric top-hat exit leg descends past the
+// entry foot to a terrain-following hand-off.  Target exit ground clearance is
+// at most this many metres (except flagged water / steep-rise corridors where
+// the exit descends only as far as the corridor floor allows).
+inline constexpr float TOPHAT_EXIT_CLEARANCE_MAX = 10.0f;
+// The asymmetric exit leg bottoms out faster than the symmetric foot did, so
+// the exit pull-out felt vertical g rises with the drop.  Cap the exit-pullout
+// felt vertical g at this value -- 0.5 g under the +12 g hard vertical envelope,
+// and a transient ceiling above the ~+10.4 g sustained load the crest guard
+// already allows.  In practice the real pull-out is ~4-6 g, so this only limits
+// pathological hot-and-deep combinations.
+inline constexpr float TOPHAT_PULLOUT_FELT_MAX = 11.5f;
 inline constexpr float LOOP_RECORD_HEIGHT     = 54.5592f;  // Tormenta, official 179 ft loop
 inline constexpr float IMMEL_RECORD_HEIGHT    = 66.4464f;  // Tormenta, official 218 ft Immelmann
 inline constexpr float LOOP_REFERENCE_CROWN_RADIUS =
     LOOP_RECORD_HEIGHT * (19.6f / 48.8f); // canonical clothoid crown, not half-height
 inline constexpr float IMMEL_REFERENCE_RADIUS = IMMEL_RECORD_HEIGHT * 0.5f;
 inline constexpr float DIVELOOP_RECORD_DROP   = 60.0f;
-inline constexpr float AIRTIME_RECORD_HEIGHT  = 60.0f;
+// Record first-drop reference: Falcon's Flight ~160 m escarpment drop (Six
+// Flags Qiddiya, 2025). Drop ceilings derive as 1.5x this; the old code used
+// an uncited literal 250 (docs/REAL_WORLD_REFERENCES.md 4).
+inline constexpr float DROP_RECORD_HEIGHT     = 160.0f;
+// Re-anchored 2026-07-20: 60 m was UNCITED (no real coaster matches). Record
+// non-tophat airtime camelback: Intimidator 305's 45.7 m (150 ft) hill,
+// Kings Dominion 2010 (docs/REAL_WORLD_REFERENCES.md 5).
+inline constexpr float AIRTIME_RECORD_HEIGHT  = 45.7f;
 inline constexpr float BANKAIR_RECORD_HEIGHT  = 35.0f;
 inline constexpr float CORKSCREW_REFERENCE_RADIUS = 6.6f;
 inline constexpr float CORKSCREW_REFERENCE_EXCURSION =
     2.0f * CORKSCREW_REFERENCE_RADIUS;
 inline constexpr float CORKSCREW_REFERENCE_RAIL = 94.30664f;
+
+// --- PHASE 5: speed-aware corkscrew (ROLL) entry (spec §5) --------------
+// The felt-lateral spike at the roll-in shoulder is the phase angular-
+// ACCELERATION term (curvature's circle-tangent component ~= the rider's
+// side axis), which scales with 1/shoulder^2.  Lengthen the shoulder with
+// entry speed so the roll-in transient stays bounded regardless of how hot
+// the corkscrew is admitted -- the corkscrew's revolution/geometry is
+// unchanged, only the entry/exit ease lengthens, so the subtype is never
+// starved.  ROLL_REF_V is sized so the shoulder scales from the 0.14 base at
+// ~22 m/s up to ~0.37 at the ~58 m/s admission ceiling -- the value that
+// pulls the hottest corkscrew's felt-lateral inside LATERAL_G_ENVELOPE.  The
+// 0.42 MAX is a safety ceiling that the admissible speed band never reaches.
+inline constexpr float CORKSCREW_SHOULDER_BASE = 0.14f;
+inline constexpr float CORKSCREW_SHOULDER_MAX  = 0.42f;
+inline constexpr float CORKSCREW_ROLL_REF_V    = 22.0f;   // m/s
+// Radial-g is TRIMMED with speed below the admission cap (larger radius,
+// lower felt load) and FLOORED so the element stays a recognizable
+// corkscrew (>= 5 g radial) -- the "cannot starve the subtype" floor.  The
+// trim only bites where the record-scale cap leaves radius headroom (low/
+// mid entry speeds); at the hot top the 1.5x cap binds and the shoulder
+// (above) carries the transient instead.
+inline constexpr float CORKSCREW_RADIAL_G_REF   = 8.9f;
+inline constexpr float CORKSCREW_RADIAL_G_MIN   = 5.0f;
+inline constexpr float CORKSCREW_RADIAL_ENTRY_V = 34.0f;  // m/s comfort entry
+// (spec §5c reserved a scheduled entry-brake for a hot corkscrew that still
+// breached after 5a/5b; the speed-scaled shoulder alone pulls the hottest
+// admitted corkscrew inside LATERAL_G_ENVELOPE, so no brake is needed and
+// admissibility stays byte-identical to Phase 4 -- no window was shrunk.)
+
+// Lateral-g comfort envelope for the --forceaudit PASS gate (spec §5d).
+// The vertical envelope this generator gates on is [-6.5, +12] g; sustained
+// lateral comfort (ASTM-adjacent) is far lower, but a coaster tolerates a
+// brief roll-in transient.  6 g is the hard cap on the felt-lateral peak --
+// well below the pre-Phase-5 +14.59 g corkscrew class and matched to the
+// vertical -6.5 g magnitude.  This is a symmetric |lat| bound.
+inline constexpr float LATERAL_G_ENVELOPE = 6.0f;
 inline constexpr float HELIX_RECORD_REVS      = 1.625f;
 
 // No formal helix-radius world record is published.  Six Flags America's
@@ -73,6 +144,34 @@ inline constexpr int SCHEDULER_ATTEMPT_BUDGET = 3;
 inline constexpr int ESCAPE_LIMIT = 6;
 inline constexpr int ESCAPES_PER_LAP = 20;
 inline constexpr int INVERSION_BUDGET = 4;
+
+// Per-subtype inversion lap caps (single source; consumed by the generator's
+// Track::inversionLapCap admission gate AND the census subtypeRepeat check, so
+// the census can never report a cap the generator does not actually enforce).
+// Values mirror the researched references: Tormenta runs THREE Immelmanns;
+// loops and (paired) corkscrews may appear twice; stall and dive loop stay
+// one-per-lap.  Non-inversion / uncapped subtypes are INT_MAX (no cap).
+inline constexpr int SUBTYPE_LAP_CAP[M_COUNT] = {
+    /*M_FLAT*/     INT_MAX,
+    /*M_CLIMB*/    INT_MAX,
+    /*M_DROP*/     INT_MAX,
+    /*M_HILLS*/    INT_MAX,
+    /*M_TURN*/     INT_MAX,
+    /*M_LOOP*/     2,
+    /*M_ROLL*/     2,
+    /*M_STATION*/  INT_MAX,
+    /*M_DIP*/      INT_MAX,
+    /*M_LAUNCH*/   INT_MAX,
+    /*M_HELIX*/    INT_MAX,
+    /*M_BOOST*/    INT_MAX,
+    /*M_IMMEL*/    3,
+    /*M_SCURVE*/   INT_MAX,
+    /*M_DIVE*/     INT_MAX,
+    /*M_BANKAIR*/  INT_MAX,
+    /*M_WAVE*/     INT_MAX,
+    /*M_STALL*/    1,
+    /*M_DIVELOOP*/ 1,
+};
 
 // Minimum length of a complete connective transition.
 inline constexpr int MIN_CONN = 4;   // 4 cps ~= 56 m; longer only when the actual incoming curvature requires it
@@ -111,6 +210,20 @@ inline constexpr float OCCUPANCY_ENVELOPE_RELAXED = 4.5f;
 inline constexpr float OCCUPANCY_ENVELOPE_LASTRESORT = 2.5f;
 inline constexpr float OCCUPANCY_ARC_EXCLUDE     = 120.0f;
 
+// --- PHASE 5 §1: occupancy-AWARE routing ---------------------------------
+// Clearance is a first-class heading score term computed at candidate time
+// (not a post-hoc reject).  A connector heading is ranked by how much room it
+// leaves: a candidate whose minimum occupancy clearance sits at the project
+// envelope earns the full straightness-scale penalty; one MARGIN metres
+// clear of the envelope earns none.  Sized so a full-margin clearance deficit
+// equals the yawT==0 straightness penalty (2.0) -- roominess trades exactly
+// against straightness, turning "fail then relax the envelope" into "prefer
+// the roomy heading up front".  This is the mechanism that removes the escape
+// ladder's near-miss reduced-envelope commits.  Envelope constants themselves
+// are UNCHANGED (§6 non-goal).
+inline constexpr float CLEARANCE_MARGIN  = 4.0f;   // metres above envelope = "roomy"
+inline constexpr float CLEARANCE_SCORE_W = 2.0f;   // == straightness penalty
+
 // --- PHASE 4 COMPOSITION DIRECTOR ---------------------------------------
 // Share controller (U3/U4).  Replaces the count-based per-lap caps with a
 // windowed share controller: SHARE_TARGET[m] is the target percent of
@@ -119,8 +232,16 @@ inline constexpr float OCCUPANCY_ARC_EXCLUDE     = 120.0f;
 // rules (top hat, splashdown, corkscrew pairing, inversion adjacency and
 // budget) are kept separately in the generator; a 0 target here means the
 // element is governed by a count rule, not the share controller.
+// Entry speed at which the physics-locked helix radius equals 1.0x the 30.5 m
+// record reference (v^2 = HELIX_TARGET_G*G*30.5 - G*30): offer-weight pivot
+// for the built-scale-mean-above-1.0x law.
+inline constexpr float HELIX_SCALE_PAR_SPEED = 57.0f;
+
 inline constexpr float SHARE_BAND_LO = 0.75f;
-inline constexpr float SHARE_BAND_HI = 1.75f;
+// User directive 2026-07-20: tightened from 1.75 to 1.5. Bands are DIAGNOSTIC
+// + the runaway backstop; composition is steered by weights, never hard-gated
+// below the backstop (docs/REAL_WORLD_REFERENCES.md 6).
+inline constexpr float SHARE_BAND_HI = 1.5f;
 // Sliding window (most-recent counted features) the live shares are measured
 // over -- adaptive, so an early-ride deficit does not become permanent debt.
 inline constexpr int   SHARE_WINDOW  = 48;
@@ -134,22 +255,26 @@ inline constexpr float FAMILY_BANKED_TARGET = 26.0f;
 inline constexpr float SHARE_TARGET[M_COUNT] = {
     /*M_FLAT*/     0.0f,
     /*M_CLIMB*/    0.0f,   // top hat: exactly-1/lap count rule
-    /*M_DROP*/    13.0f,
-    /*M_HILLS*/   15.0f,
-    /*M_TURN*/    14.0f,
-    /*M_LOOP*/     4.0f,
-    /*M_ROLL*/     2.5f,
+    // Revised 2026-07-20 from the 13-coaster population study (docs/
+    // REAL_WORLD_REFERENCES.md 6): the old 50/50 Falcon's-Flight+Tormenta
+    // average baked in Tormenta's record triple-Immelmann (a dive-coaster
+    // outlier) and starved corkscrews/airtime vs the acclaimed population.
+    /*M_DROP*/    11.0f,
+    /*M_HILLS*/   20.0f,
+    /*M_TURN*/    15.0f,
+    /*M_LOOP*/     5.0f,
+    /*M_ROLL*/     6.0f,
     /*M_STATION*/  0.0f,
     /*M_DIP*/      3.0f,
     /*M_LAUNCH*/   0.0f,
     /*M_HELIX*/    4.0f,
     /*M_BOOST*/    0.0f,
-    /*M_IMMEL*/   12.0f,
-    /*M_SCURVE*/   8.0f,
+    /*M_IMMEL*/    4.0f,
+    /*M_SCURVE*/   6.0f,
     /*M_DIVE*/     4.0f,
-    /*M_BANKAIR*/  6.0f,
+    /*M_BANKAIR*/  7.0f,
     /*M_WAVE*/     4.0f,
-    /*M_STALL*/    3.0f,
+    /*M_STALL*/    4.0f,
     /*M_DIVELOOP*/ 3.0f,
 };
 

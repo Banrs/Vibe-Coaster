@@ -40,16 +40,23 @@ static const Vector3 WUP = { 0, 1, 0 };
 
 static const Color SKY    = {186, 205, 232, 255};
 
-// Default matches the sky-derived value at the current default g_sunDir
-// exactly (see computeFogColor()) -- overwritten with the real derived value
-// in main() right after g_sunDir is finalized, before anything (including the
-// background terrain-mesh worker thread) reads FOG. g_sunDir is currently
-// fixed for the whole run, so a one-time derivation here is equivalent to a
-// per-frame one; if a live day/night cycle is ever added, this must be
-// recomputed once per frame instead *and* that update must be made safe
+static Vector3 g_sunDir = { -0.48f, 0.60f, 0.64f };
+
+// FOG has a SINGLE source of truth: computeFogColor()/computeFogColorLinear()
+// (defined in environment.cpp) evaluated at g_sunDir.  These globals are
+// derived from that same function here at static-init (the default g_sunDir is
+// unit length, so this reproduces the former hand-picked {198,204,209} /
+// {0.687,0.735,0.831} exactly -- no separate literal to drift), and main()
+// re-derives them from the SAME function once g_sunDir is finalized, before
+// anything (including the background terrain-mesh worker thread) reads FOG.
+// g_sunDir is currently fixed for the whole run, so this one-time derivation is
+// equivalent to a per-frame one; if a live day/night cycle is ever added, this
+// must be recomputed once per frame instead *and* that update must be made safe
 // against TerrainMesh's worker thread, which also reads FOG concurrently.
-static Color FOG    = {198, 204, 209, 255};
-static Vector3 FOG_LINEAR = { 0.687f, 0.735f, 0.831f };   // overwritten alongside FOG, see above
+static Color   computeFogColor(Vector3 sunDir);        // environment.cpp
+static Vector3 computeFogColorLinear(Vector3 sunDir);  // environment.cpp
+static Color FOG    = computeFogColor(g_sunDir);
+static Vector3 FOG_LINEAR = computeFogColorLinear(g_sunDir);
 static const Color GRASS  = {130, 206, 102, 255};
 static const Color SAND   = {242, 228, 184, 255};
 static const Color DIRT   = {158, 116,  82, 255};
@@ -89,7 +96,6 @@ static Color shade(Color c, float s) {
              (unsigned char)Clamp(c.b * s, 0, 255), c.a };
 }
 
-static Vector3 g_sunDir = { -0.48f, 0.60f, 0.64f };
 // --shadowdebug: when set, the lit shader emits the raw shadow-visibility field
 // as grayscale instead of the shaded scene, so any capture mode shows the
 // shadow factor directly. Parsed in main(); consumed where the lit uniforms are

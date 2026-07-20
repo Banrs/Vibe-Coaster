@@ -8,8 +8,16 @@ static const float GRAV      = 9.81f;
 // Calibrated against the 64-seed live integrator: powered peaks remain
 // 360 km/h while the full-layout mean settles near the requested 240 km/h.
 static float       DRAG      = 0.00040f;
-static const float FRICTION  = 0.015f;
-static const float CHAIN_V   = 22.0f;
+// Realism calibration 2026-07-20 (docs/REAL_WORLD_REFERENCES.md 7): rolling
+// resistance = C_rr * g with record-class polyurethane-on-steel C_rr ~ 0.010
+// -> ~0.10 m/s^2. The old 0.015 was ~7x below physical rolling resistance
+// (uncited). DRAG kept: the memo's coast-down cross-check found it sound.
+static const float FRICTION  = 0.10f;
+// Realism calibration 2026-07-20: real chain lifts run 1.8-4.5 m/s (fastest
+// ~4 m/s); 1.5x record -> 6 m/s. The old 22 m/s was uncited fiction. ch=1 is
+// not yet emitted by generation, so this only shapes the upcoming cliff-dive
+// crest crawl (docs/REAL_WORLD_REFERENCES.md 8).
+static const float CHAIN_V   = 6.0f;
 static const float MIN_V     = 42.0f;
 static const float MAX_V     = 82.0f;
 static const float V_GUARD   =  6.0f;
@@ -45,8 +53,11 @@ static constexpr PropulsionSpec V1_PROPULSION{
     70.0f, 1700.0f, 42.0f
 };
 // In-course boosters re-cruise, they do not re-launch: only the station
-// launch reaches the 360 km/h record peak (Falcon's Flight's own top speed
-// arrives once, on its final launch).  Mid-lap boosts top out at 292 km/h so
+// launch reaches the 360 km/h peak. CITATION FIX 2026-07-20: 360 km/h is NOT
+// "Falcon's Flight's own top speed" (that is 250 km/h, Six Flags Qiddiya,
+// opened 2025 -- the current record, superseding Formula Rossa's 240). Our
+// 360 = 1.44x the 250 record, inside the project 1.5x cap
+// (docs/REAL_WORLD_REFERENCES.md 8).  Mid-lap boosts top out at 292 km/h so
 // the coast arc actually passes through the airtime/inversion entry windows
 // instead of pinning the whole lap above every element's usable speed.
 static constexpr float BOOST_CRUISE_TARGET = 292.0f / 3.6f;

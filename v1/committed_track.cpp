@@ -187,6 +187,28 @@ struct CommittedTrack {
         return true;
     }
 
+    // Phase 5 §1a: the SCORING form of occupancyClear.  Returns the actual
+    // MINIMUM clearance over every span of a candidate centreline (not a
+    // boolean) so a heading can be ranked by roominess *before* it is
+    // committed.  Reuses occClearanceSegment with a negative envelope so its
+    // early-out never fires -- we want the true value, not a pass/fail -- while
+    // keeping the identical OCCUPANCY_ARC_EXCLUDE self-exclusion occupancyClear
+    // uses.  occupancyClear stays as the fast hard gate (its early-out matters
+    // on the hot commit path); this is the pure-function probe §1b/§1d score
+    // with.  A caller with no committed occupancy sees the "infinitely clear"
+    // sentinel.
+    float occClearancePolyline(const std::vector<Vector3> &pts,
+                               float tipArc) const {
+        if (pts.size() < 2 || occGrid.empty()) return 1.0e9f;
+        float best = 1.0e9f;
+        for (size_t i = 0; i + 1 < pts.size(); ++i) {
+            const float d = occClearanceSegment(pts[i], pts[i + 1],
+                                                tipArc, -1.0e9f);
+            if (d < best) best = d;
+        }
+        return best;
+    }
+
     enum MacroProfileKind : unsigned char {
         MACRO_NONE, MACRO_TOP_HAT, MACRO_HILLS, MACRO_DROP
     };
@@ -249,7 +271,31 @@ struct CommittedTrack {
         Vector3 curvature{};
         Vector3 jerk{};
         Vector3 up{0.0f, 1.0f, 0.0f};
+        // Phase 5 (spec 2a): the authored bank scalars at this boundary --
+        // signed roll about the RENDERED tangent (not the horizontal heading)
+        // and its d/d(rail arc).  Every builder seeds its start frame from
+        // these instead of re-deriving a bank from up.back() ad hoc, so a
+        // banked/descending exit is measured about the true tangent (the
+        // Immelmann's 24 deg descending exit no longer reads as "neutral").
+        float bank = 0.0f;
+        float bankRate = 0.0f;
     };
+
+    // Signed roll of a rider frame about its rail tangent, relative to the
+    // natural (upright) frame at that tangent.  This is the exact felt-bank the
+    // FeltBank law authors (see attachFeltBankFrame's signedBank lambda) and the
+    // spatialRunUp evaluator renders, so the continuity contract and the render
+    // agree by construction.
+    static float signedBankAngle(Vector3 tangent, Vector3 frame) {
+        if (Vector3Length(tangent) < 1.0e-6f) return 0.0f;
+        tangent = Vector3Normalize(tangent);
+        const Vector3 natural = orthoUp(tangent, WUP);
+        const Vector3 side = Vector3Normalize(
+            Vector3CrossProduct(natural, tangent));
+        frame = orthoUp(tangent, frame);
+        return atan2f(Vector3DotProduct(frame, side),
+                      Clamp(Vector3DotProduct(frame, natural), -1.0f, 1.0f));
+    }
 
     void popFront() {
         cp.pop_front(); up.pop_front(); kind.pop_front(); chainf.pop_front(); alignmentf.pop_front();
@@ -385,6 +431,15 @@ struct CommittedTrack {
                     result.jerk = Vector3Scale(run->spanD3B.back(),
                                                 1.0f / (ds * ds * ds));
                     result.up = spatialRunUp(*run, (float)spans);
+                    result.bank = signedBankAngle(result.tangent, result.up);
+                    // Authored exit bank RATE (d bank / d rail arc), exact from
+                    // the terminal FeltBank span.  Authored inversions (loop /
+                    // Immelmann / helix) publish a neutral-rate exit, so 0 is the
+                    // faithful contract value there and keeps this off the
+                    // scheduler hot path.
+                    if (run->frameKind == SpatialFrameKind::FeltBank &&
+                        !run->feltBank.empty())
+                        result.bankRate = run->feltBank.back().rateB;
                     return result;
                 }
             }
@@ -419,6 +474,7 @@ struct CommittedTrack {
                                        (speed2 * speed2 * speed2)));
                 result.jerk = Vector3Scale(dKdl, 1.0f / speed);
                 result.up = orthoUp(result.tangent, result.up);
+                result.bank = signedBankAngle(result.tangent, result.up);
                 return result;
             }
         }
@@ -436,6 +492,7 @@ struct CommittedTrack {
             }
         }
         result.up = orthoUp(result.tangent, result.up);
+        result.bank = signedBankAngle(result.tangent, result.up);
         return result;
     }
 
@@ -594,6 +651,74 @@ struct CommittedTrack {
 
 };
 
+// Signed felt-bank angle (degrees) of the generator's AUTHORED frame: the roll
+// of the rendered up N = orthoUp(tangent, up) about the tangent, measured
+// relative to the natural (level) up orthoUp(tangent, WUP).  This is the exact
+// felt-bank the generator authors in spatialRunUp.  The audits read it directly
+// from upAt/tangent instead of reconstructing roll by parallel transport, which
+// measured roll against a transported frame rather than the authored bank law
+// and so made a perfectly-authored inversion read spurious roll-rate.  Lives
+// here (not in main.cpp) so both the main.cpp force/joint audits and
+// v1/audit_diagnostics.cpp -- included before main's helper block -- share the
+// one implementation.
+static float authoredBankDeg(Vector3 tangent, Vector3 up) {
+    Vector3 T = Vector3Normalize(tangent);
+    Vector3 natural = orthoUp(T, WUP);
+    Vector3 N = orthoUp(T, up);
+    Vector3 bankSide = Vector3CrossProduct(T, natural);
+    float bsl = Vector3Length(bankSide);
+    if (bsl < 1.0e-6f) return 0.0f;   // track vertical: bank degenerate
+    bankSide = Vector3Scale(bankSide, 1.0f / bsl);
+    return atan2f(Vector3DotProduct(N, bankSide),
+                  Vector3DotProduct(N, natural)) / DEG2RAD;
+}
+static float authoredBankDeg(const CommittedTrack &t, float u) {
+    return authoredBankDeg(t.tangent(u), t.upAt(u));
+}
+// Signed shortest-arc difference (deg) between two authored bank angles, wrapped
+// to (-180,180].  Bank is an angle mod 360, so an inversion (corkscrew, loop)
+// that sweeps through the +/-180 representation boundary of authoredBankDeg must
+// be differenced ON THE CIRCLE: a 179 -> -179 sample step is a -2 deg change,
+// not a spurious -358.  Roll-rate/roll-accel in the audits difference bank with
+// this rather than a raw subtraction.
+static float authoredBankDeltaDeg(float fromDeg, float toDeg) {
+    float d = toDeg - fromDeg;
+    while (d > 180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    return d;
+}
+static float authoredBankDeltaDeg(const CommittedTrack &t, float u0, float u1) {
+    return authoredBankDeltaDeg(authoredBankDeg(t, u0), authoredBankDeg(t, u1));
+}
+// True when the tangent is too close to vertical for the world-up bank reference
+// (authoredBankDeg) to be well-defined: at pitch steeper than ~75deg the natural
+// up orthoUp(tangent, WUP) has a vanishing, numerically unstable horizontal
+// component, so a bank angle measured against it -- and therefore any roll-rate
+// differenced from it -- is meaningless (a loop/Immelmann sweeping through its
+// vertical registers a spurious ~90deg reference flip).  This is the same
+// gimbal-degenerate cutoff the geometry audit's roll gate already uses; the
+// force/joint audits exclude such samples from their roll-rate/accel maxima.
+static bool bankFrameDegenerate(Vector3 tangent) {
+    return fabsf(Vector3Normalize(tangent).y) > 0.966f;   // sin(75deg)
+}
+
+// One shared ride-advance step: advance the rail parameter u by a pre-computed
+// arc step du (clamped to the 1.5 cu/frame ceiling) and keep the sliding
+// CommittedTrack window trimmed by popFront.  Every headless drive loop
+// (occurrence/force audits, rollingSim) and the live HUD used to inline this
+// exact "u += min(du,1.5); popFront while u past popU with more than popKeep
+// cps" bookkeeping; centralising it guarantees they cannot drift.  The du
+// computation itself stays at the call site because callers legitimately differ
+// in their speed-scale floor (the audits step by v*dt / max(riderSpeedScale,
+// 0.5) with riderSpeedScale already floored at 1.0, the HUD/sim by v*dt /
+// max(speedScale,0.5)) -- passing the finished, NaN-guarded du keeps this
+// refactor byte-for-byte behaviour-neutral.
+static void driveRideStep(CommittedTrack &t, float &u, float du,
+                          float popU, int popKeep) {
+    u += fminf(du, 1.5f);
+    while (u > popU && (int)t.cp.size() > popKeep) { t.popFront(); u -= 1.0f; }
+}
+
 // Phase 1b STEP 5: GenCursor -- the small, copyable mutable generation state
 // (rng, cursor, counters, beat/act, builder scratch). Track derives from it
 // (struct Track : CommittedTrack, GenCursor), so every field keeps its exact
@@ -652,6 +777,17 @@ struct GenCursor {
     // a rolled-back trial restores them exactly.
     float   lapRideSeconds = 0.0f;
     float   completedLapSeconds = 0.0f;
+    // Phase 5X top-hat exit-clearance log.  Fixed POD arrays keep GenCursor
+    // trivially snapshot-copyable (a rolled-back trial's records vanish, a
+    // committed top hat's persist).  Report-only: never gates completion.
+    static constexpr int TOPHAT_EXIT_LOG = 64;
+    float   topHatExitHandoff[TOPHAT_EXIT_LOG] = {0};   // exit foot ground clearance at hand-off (m)
+    float   topHatExitMinFollow[TOPHAT_EXIT_LOG] = {0}; // min track clearance over the following ~200 m
+    unsigned char topHatExitFlagged[TOPHAT_EXIT_LOG] = {0}; // 1 = water/steep-rise: <=10 m unreachable
+    int     topHatExitCount = 0;      // records written (saturates at TOPHAT_EXIT_LOG)
+    int     pendingTopHatRecord = -1; // record awaiting its macro to finish so following can start
+    int     topHatFollowIndex = -1;   // record currently accumulating min-following clearance
+    float   topHatFollowDist = 0.0f;  // metres walked since the followed top hat's hand-off
     int     lapElemCount[M_COUNT] = {0};
     int     completedElemCount[M_COUNT] = {0};
     int     lapAuthoredCount[M_COUNT] = {0};
@@ -715,13 +851,58 @@ struct GenCursor {
     float   genPrevDy = 0;
     float   genPrevCurv = 0;
     float   genPrevDyaw = 0;
+    // Phase 5 (spec 2b): the incoming authored bank / bank-rate carried across
+    // the joint by syncContinuityFromBoundary.  Cursor state, so TxnSnapshot
+    // restores it on rollback exactly like genPrevDy et al.
+    float   genPrevBank = 0;
+    float   genPrevBankRate = 0;
     float   lastBankSign = 0;
     PendingAction pending{};
     int consecutiveRoutingRuns = 0;
     int consecutiveEscapes = 0;
+    // Phase 5 §1e counter semantics.  The fallback gate (§7-gate-2) counts
+    // only GENUINE occupancy/completion rescues -- events where the ordinary
+    // 6 m-envelope routing could not place anything and the envelope had to be
+    // relaxed or forward progress forced:
+    //   fallbackCleanForward   = a forward continuation connector that cleared
+    //                            at the FULL 6 m project envelope.  The atomic
+    //                            element+alignment scheduler could not admit a
+    //                            named element at this anchor (every element
+    //                            clips committed occupancy at 6 m or its speed/
+    //                            terrain window is closed), so a bare forward
+    //                            connector continues generation to a boundary
+    //                            where an element fits.  It RESPECTS the full
+    //                            project envelope, so it is NOT a reduced-
+    //                            envelope rescue and is excluded from the gate
+    //                            sum (per §7 counter-semantics: a tick must be a
+    //                            genuine reduced-envelope OR forced event).  This
+    //                            is the "route the corridor as a near-miss
+    //                            flyby" continuation the §6 design calls a
+    //                            feature, not the escape ladder's relaxation.
+    //   fallbackRelaxedPicks   = a commit that only cleared at a RELAXED
+    //                            envelope (escapeForward's 4/3/2.5/2 m tiers,
+    //                            or the 4.5 m completion launch/boost stage).
+    //   fallbackEscapes        = a TRUE escape: occupancy fully off (0 m) --
+    //                            a genuinely boxed-in anchor, the absolute
+    //                            completion guarantee.
+    //   fallbackForcedLapCloses= a lap force-closed to guarantee progress.
+    // variantPicks is DIFFERENT in kind and is NOT a rescue: it counts the
+    // element-pool RHYTHM relaxation (a same-family successor allowed when the
+    // beat has no other eligible member).  Every variant pick still passes the
+    // full 6 m occupancy gate -- it is always a real, in-band feature -- so it
+    // is reported for diagnostics but deliberately excluded from the gate sum
+    // (counting it there was the Phase-4 self-inflation the §7 precondition
+    // flags: 48/4-seed "rescues" that were never occupancy rescues at all).
     unsigned fallbackEscapes = 0;
     unsigned fallbackForcedLapCloses = 0;
     unsigned fallbackRelaxedPicks = 0;
+    unsigned fallbackCleanForward = 0;
+    unsigned variantPicks = 0;
+    // Transient: the true min clearance (to committed occupancy, recent-arc
+    // excluded) of the escape geometry just committed by commitEscapeArc.  Used
+    // by escapeForward to classify the commit by its ACTUAL clearance rather
+    // than the tier the sweep happened to reach (see fallbackCleanForward doc).
+    float escapeCommitClearance = 0.0f;
     int escapesSinceLaunch = 0;
     unsigned schedulerExhaustions = 0;
     bool boundaryTransactionActive = false;

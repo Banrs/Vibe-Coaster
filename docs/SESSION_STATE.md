@@ -47,13 +47,41 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   support ≤22m); Falcon's Flight + Tormenta are THE references (Falcon's ~160m Tuwaiq cliff dive
   primary for the set piece); supervise agents' work every ~20-30 min, don't trust unsupervised
   fix loops. Specs: scratchpad/phase5_design.md (reviewed+amended), phase7_design.md (ditto).
-- NEXT: Phase 5 (fallbacks→≤1/10 seeds via occupancy-AWARE routing; two known near-misses to kill:
-  seed4 1.24m TURN↔FLAT-escape, seed2 0.21m IMMEL↔FLAT-escape — both from completion-guarantee
-  escape tiers; joint anomalies seed2 ROLL→FLAT 0.312m/33°, seed4 TURN→CLIMB; authored-frame
-  audits (Track::upAt, kill parallel-transport reconstruction); centralize drifted thresholds
-  (0.18 vs 0.15 curvature-jerk; fog-warning dup game_state.cpp:45 vs main.cpp:1642); dedupe the
-  5x copy-pasted drive loop). Then Phase 7 (cliff-dive set piece 88–95° with crest hold; avg
-  speed 215→toward 240; full gate suite + orbitshot/watershot/wheels GPU gallery for user).
+- PHASE 5 (this commit): occupancy-aware routing (clearance-scored headings, widened fan,
+  escapes 211→~0-14/8 seeds, BOTH grandfathered near-misses KILLED — overlap 4 all seeds 0
+  pairs<2m), joint bank/roll boundary contract (seed4 24°→1.6°, jointaudit 4 all PASS),
+  authored-frame audits (parallel transport deleted; forceaudit/jointaudit continuity now
+  trustworthy), asymmetric top hat (exit hand-off ≤10m normal cases, census gate PASS),
+  speed-aware corkscrew lateral fix + LATERAL_G_ENVELOPE 6.0 in forceaudit gate, threshold/
+  drive-loop/caps consolidation (census prints read genc:: — a stale hand-copied target table
+  in main.cpp long reported wrong numbers), honest fallback counter split (escapes/relaxed vs
+  cleanForward/variantPicks which clear the full 6m gate).
+- CONSTANTS RECALIBRATION (same commit; docs/REAL_WORLD_REFERENCES.md is the retraceable source
+  table — user law: geometry refs = real RECORD, 0.75-1.5x scale, built mean >1.0x; g targets =
+  2x RECORD): share band hi 1.75→1.5; share targets re-derived from 13-coaster population
+  (IMMEL 12→4, ROLL 2.5→6, HILLS 15→20, DROP 13→11, TURN 15, SCURVE 6, BANKAIR 7, LOOP 5,
+  STALL 4); g-law LOOP gT 10→11.8, TURN 10.5→9.6, SCURVE 5.0(undoubled!)→9.6, tophat crest own
+  −2.2 guard (user: −2 at our speeds), 5 hardcoded 1.0x floors → 0.75x (ROLL/DIVELOOP/SCURVE/
+  WAVE x2/BANKAIR x2); AIRTIME_RECORD 60(uncited)→45.7 (I305); DROP ceiling 250(uncited)→
+  DROP_RECORD_HEIGHT 160×1.5; FRICTION 0.015→0.10 (C_rr realism); CHAIN_V 22→6 m/s (1.5x real
+  record chain; ch=1 still unemitted); launch 360 km/h comment misattribution fixed (record is
+  Falcon's Flight 250, ours = 1.44x); HELIX offer speed-bias (scale-par 57 m/s) for mean>1x;
+  RUNAWAY BACKSTOP NOW HARD (band-hi gate no longer drops under relax — SCURVE hit 18.1% via
+  that hole). Build recipe now -O3 -march=native -ffp-contract=off (bit-identical, ~1.3x faster;
+  -march=native WITHOUT ffp-contract=off changes tracks via FMA).
+- NEXT: Phase 7 per scratchpad/phase7_design.md — order: (1) Tuwaiq escarpment terrain feature
+  (PREREQUISITE §0.9: real terrain maxes 89m/53m drop/25° faces — ZERO cliff sites; escarpment
+  plateau 165-185m, 60-75° monotone wall; re-rolls all baselines, one world-change moment, gates:
+  waterfrac 10-15, census 8, --cliffsites ≥2 sites); (2) cliff-dive (cherry-pick probe commit
+  b3e120f scanDescent/--cliffsites from stopped workflow wf_02dc8775-1ff worktree; face-tracking
+  pitch ≤90°, setback 4-12m, support ≤22m, ch=1 crest crawl at new CHAIN_V 6, pull-out 7-8g per
+  2xWR law, --cliffaudit gate); (3) pillars/trees track-clearance (§3Y, --structaudit); (4)
+  live-game frame-budget generation fix (§3X, user-reported 1-2s stalls); (5) organic speed
+  toward 240 (§2.3: altitude discipline + terrain drops; NO gate-chasing constants); (6) final
+  acceptance suite + GPU gallery + docs. GitHub issue #10 = future 3D geometry audit.
+- OPEN residuals to re-check at next gates: fallback totals after constants re-roll (was 44/4
+  seeds mid-iteration; hard backstop may shift it), HELIX scale mean (0.94, target ≥1.0),
+  one seed1 roll-accel 11.35 continuity spike (tag5), seed4 last-lap 22.9s short-lap artifact.
 
 ## Build & verify (container)
 - raylib: /root/raylib55/libraylib.a (built; GLFW objs compiled individually). Build:

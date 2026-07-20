@@ -55,13 +55,15 @@ constexpr float TANGENT_STEP_HARD_DEG  = 9.0f;
 // hills legitimately reach about 0.11 1/m^2 while the former stitched
 // dive-loop/teleport defects measured 0.9-2.8 1/m^2. Keep ample separation:
 // this is a hard seam detector, not a ban on intentional force onset.
-constexpr float CURVATURE_MAG_JERK_HARD = 0.1500f; // 1/m^2
-constexpr float CURVATURE_VEC_JERK_BASE = 0.1500f; // 1/m^2
+// Curvature-jerk / roll-rate / roll-accel limits come from the single genc::
+// source shared with src/main.cpp's force/joint audits (see gen_constants.h).
+constexpr float CURVATURE_MAG_JERK_HARD = genc::CURVATURE_JERK_MAG_MAX;      // 1/m^2
+constexpr float CURVATURE_VEC_JERK_BASE = genc::CURVATURE_JERK_MAG_MAX;      // 1/m^2
 constexpr float CURVATURE_VEC_K2_SCALE  = 1.8f;
-constexpr float CURVATURE_ONE_SIDED_JERK_HARD = 0.1800f; // 1/m^2
+constexpr float CURVATURE_ONE_SIDED_JERK_HARD = genc::CURVATURE_JERK_ONESIDED_MAX; // 1/m^2
 constexpr float ROLL_STEP_HARD_DEG      = 24.0f;
-constexpr float ROLL_RATE_HARD          = 24.0f;   // degrees/m
-constexpr float ROLL_ACCEL_HARD         = 5.5f;    // degrees/m^2
+constexpr float ROLL_RATE_HARD          = genc::ROLL_RATE_MAX_DEG_PER_M;     // degrees/m
+constexpr float ROLL_ACCEL_HARD         = genc::ROLL_ACCEL_MAX_DEG_PER_M2;   // degrees/m^2
 constexpr float ROLL_JERK_HARD          = 5.0f;    // degrees/m^3
 constexpr float JOINT_EVENT_MERGE_M     = 8.0f;
 constexpr float TERRAIN_PENETRATION_M   = 18.0f;

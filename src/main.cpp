@@ -73,37 +73,20 @@ static V1RiderAuditSample v1RiderAuditSample(const Track &track,
     return sample;
 }
 
-static Vector3 v1AuditTransportUp(Vector3 up, Vector3 fromTangent,
-                                  Vector3 toTangent) {
-    Vector3 axis = Vector3CrossProduct(fromTangent, toTangent);
-    const float sine = Vector3Length(axis);
-    const float cosine = Clamp(Vector3DotProduct(fromTangent, toTangent),
-                               -1.0f, 1.0f);
-    if (sine > 1.0e-6f) {
-        axis = Vector3Scale(axis, 1.0f / sine);
-        up = Vector3Add(
-            Vector3Add(Vector3Scale(up, cosine),
-                       Vector3Scale(Vector3CrossProduct(axis, up), sine)),
-            Vector3Scale(axis, Vector3DotProduct(axis, up) * (1.0f - cosine)));
-    }
-    return orthoUp(toTangent, up);
-}
+// Roll continuity in the audits is now measured directly from the authored
+// frame via authoredBankDeg (committed_track.cpp): roll-rate is the arc
+// derivative of that signed bank, roll-accel its second difference.  The former
+// parallel-transport reconstruction (v1AuditTransportUp / v1AuditMaterialRoll-
+// Delta) has been removed -- it measured roll against a transported frame, not
+// the authored bank law, and produced the "sampling artifact" continuity reads.
 
-static float v1AuditMaterialRollDelta(Vector3 fromTangent, Vector3 fromUp,
-                                      Vector3 toTangent, Vector3 toUp) {
-    const Vector3 transported = v1AuditTransportUp(
-        orthoUp(fromTangent, fromUp), fromTangent, toTangent);
-    const Vector3 actual = orthoUp(toTangent, toUp);
-    return atan2f(Vector3DotProduct(Vector3CrossProduct(transported, actual),
-                                    toTangent),
-                  Clamp(Vector3DotProduct(transported, actual), -1.0f, 1.0f)) /
-           DEG2RAD;
-}
-
+// Audit continuity thresholds.  The curvature-jerk / roll-rate / roll-accel
+// limits are the centralized genc:: values (single source shared with
+// v1_geometry_audit.cpp); the tangent-step bound is audit-local.
 static constexpr float V1_AUDIT_TANGENT_STEP_MAX_DEG = 9.0f;
-static constexpr float V1_AUDIT_CURVATURE_JERK_MAX = 0.18f; // 1/m^2
-static constexpr float V1_AUDIT_ROLL_RATE_MAX = 24.0f;      // degrees/m
-static constexpr float V1_AUDIT_ROLL_ACCEL_MAX = 5.5f;     // degrees/m^2
+static constexpr float V1_AUDIT_CURVATURE_JERK_MAX = genc::CURVATURE_JERK_MAG_MAX; // 1/m^2
+static constexpr float V1_AUDIT_ROLL_RATE_MAX = genc::ROLL_RATE_MAX_DEG_PER_M;     // degrees/m
+static constexpr float V1_AUDIT_ROLL_ACCEL_MAX = genc::ROLL_ACCEL_MAX_DEG_PER_M2;  // degrees/m^2
 
 // ---- Unified scene lighting (single source of truth) -------------------------
 // The three lit-pass call sites -- the main HDR raster path, the live path-trace
@@ -410,8 +393,7 @@ int main(int argc, char **argv) {
 
                 float duRide = v * dt / fmaxf(rider.speedScale, 0.5f);
                 if (!std::isfinite(duRide)) duRide = 0.0f;
-                u += fminf(duRide, 1.5f);
-                while (u > 13.0f && (int)t.cp.size() > 18) { t.popFront(); u -= 1.0f; }
+                driveRideStep(t, u, duRide, 13.0f, 18);
             }
             // Do not publish the truncated occurrence at a failed boundary.
             if (generationOK) {
@@ -509,6 +491,7 @@ int main(int argc, char **argv) {
             float maxRollRate = 0.0f, maxRollAccel = 0.0f;
             float maxTangentU = 0.0f, maxCurvatureU = 0.0f;
             float maxRollRateU = 0.0f, maxRollAccelU = 0.0f;
+            int maxRollAccelTag = -1, maxRollRateTag = -1;
             bool havePriorRider = false, havePriorCurvature = false;
             bool havePriorRollRate = false;
             V1RiderAuditSample priorRider{};
@@ -639,9 +622,15 @@ int main(int argc, char **argv) {
                         const Vector3 instantCurvature = Vector3Scale(
                             Vector3Subtract(rider.tangent, priorRider.tangent),
                             1.0f / ds);
-                        const float rollRate = v1AuditMaterialRollDelta(
-                            priorRider.tangent, priorRider.up,
-                            rider.tangent, rider.up) / ds;
+                        // Zero the roll contribution across a near-vertical span:
+                        // the world-up bank reference is degenerate there, so a
+                        // differenced bank is a reference-flip artifact.
+                        float rollRate = authoredBankDeltaDeg(
+                            authoredBankDeg(priorRider.tangent, priorRider.up),
+                            authoredBankDeg(rider.tangent, rider.up)) / ds;
+                        if (bankFrameDegenerate(priorRider.tangent) ||
+                            bankFrameDegenerate(rider.tangent))
+                            rollRate = 0.0f;
                         if (frame > 240 && tangentStep > maxTangentStep) {
                             maxTangentStep = tangentStep;
                             maxTangentU = u + (float)t.base;
@@ -659,6 +648,7 @@ int main(int argc, char **argv) {
                         if (frame > 240 && fabsf(rollRate) > maxRollRate) {
                             maxRollRate = fabsf(rollRate);
                             maxRollRateU = u + (float)t.base;
+                            maxRollRateTag = t.tagAt(u);
                         }
                         if (havePriorRollRate) {
                             const float centreDistance = fmaxf(
@@ -668,6 +658,7 @@ int main(int argc, char **argv) {
                             if (frame > 240 && rollAccel > maxRollAccel) {
                                 maxRollAccel = rollAccel;
                                 maxRollAccelU = u + (float)t.base;
+                                maxRollAccelTag = t.tagAt(u);
                             }
                         }
                         priorInstantCurvature = instantCurvature;
@@ -766,8 +757,7 @@ int main(int argc, char **argv) {
                 float duRide = v * dt / fmaxf(rider.speedScale, 0.5f);
                 if (!std::isfinite(duRide)) duRide = 0.0f;
                 riddenDistance += v * dt;
-                u += fminf(duRide, 1.5f);
-                while (u > 13.0f && (int)t.cp.size() > 18) { t.popFront(); u -= 1.0f; }
+                driveRideStep(t, u, duRide, 13.0f, 18);
             }
             // The current force lobe is incomplete when generation failed.
             if (generationOK) flushSustained();
@@ -802,22 +792,29 @@ int main(int argc, char **argv) {
                 maxCurvatureJerk <= V1_AUDIT_CURVATURE_JERK_MAX + 0.0001f &&
                 maxRollRate <= V1_AUDIT_ROLL_RATE_MAX + 0.001f &&
                 maxRollAccel <= V1_AUDIT_ROLL_ACCEL_MAX + 0.001f;
+            // Phase 5 §5d: the felt-lateral peak must land inside the comfort
+            // envelope too -- previously |lat|max was printed but never gated,
+            // so the +14.59 g corkscrew roll-in class passed silently.
+            const bool lateralOK = maxLat <= genc::LATERAL_G_ENVELOPE + 0.01f;
             bool pass = generationOK &&
                         maxV <= 12.0f + 0.01f && minV >= -6.5f - 0.01f &&
+                        lateralOK &&
                         longestLowRun <= 240 && hillEntryOK && continuityOK;
-            printf("seed%2d  vert [%+6.2f @u%.0f/tag%d, %+6.2f @u%.0f/tag%d]  sustained[%+.2f/%+.2f]  |lat|max=%5.2f @u%.0f/tag%d  speed[avg%3.0f plan%3.0f peak%3.0f min%3.0f hill-entry>=%3.0f kmh low=%4.1fs]  %s\n",
+            printf("seed%2d  vert [%+6.2f @u%.0f/tag%d, %+6.2f @u%.0f/tag%d]  sustained[%+.2f/%+.2f]  |lat|max=%5.2f @u%.0f/tag%d(<=%.1f %s)  speed[avg%3.0f plan%3.0f peak%3.0f min%3.0f hill-entry>=%3.0f kmh low=%4.1fs]  %s\n",
                    seed, minV, minVU, (int)minVTag, maxV, maxVU, (int)maxVTag,
                    bestPosSustained > -1.0e8f ? bestPosSustained : 0.0f,
                    bestNegSustained <  1.0e8f ? bestNegSustained : 0.0f,
                    maxLat, maxLatU, (int)maxLatTag,
+                   genc::LATERAL_G_ENVELOPE, lateralOK ? "PASS" : "FAIL",
                    averageSpeed * 3.6f, averagePlannedSpeed * 3.6f,
                    peakSpeed * 3.6f, minMovingSpeed * 3.6f,
                    minHillEntry < 1.0e8f ? minHillEntry * 3.6f : 0.0f,
                    longestLowRun / 120.0f, pass ? "PASS" : "FAIL");
             printf("         continuity tangent=%.2fdeg@u%.0f curvature-jerk=%.4f/m2@u%.0f "
-                   "roll-rate=%.2fdeg/m@u%.0f roll-accel=%.2fdeg/m2@u%.0f  %s\n",
+                   "roll-rate=%.2fdeg/m@u%.0f/tag%d roll-accel=%.2fdeg/m2@u%.0f/tag%d  %s\n",
                    maxTangentStep, maxTangentU, maxCurvatureJerk, maxCurvatureU,
-                   maxRollRate, maxRollRateU, maxRollAccel, maxRollAccelU,
+                   maxRollRate, maxRollRateU, maxRollRateTag,
+                   maxRollAccel, maxRollAccelU, maxRollAccelTag,
                    continuityOK ? "PASS" : "FAIL");
             if (!hillEntryOK)
                 printf("  FAIL airtime-hill entry %.0f..%.0f km/h (contract %.0f..%.0f; first low at u%.0f)\n",
@@ -959,12 +956,16 @@ int main(int argc, char **argv) {
         int laps = 0, invBudgetMiss = 0, subtypeRepeat = 0;
         int inversionSpacingMiss = 0, helixGeometryMiss = 0;
         unsigned long totalEscapes = 0, totalForcedCloses = 0, totalRelaxed = 0;
+        unsigned long totalVariant = 0, totalCleanForward = 0;
         // Phase 4: per-lap ride-seconds accumulation for the ~120 s pacing gate.
         double totalLapSeconds = 0.0; int lapSecondsN = 0;
         double minLapSeconds = 1e9, maxLapSeconds = 0.0;
         // Phase-4 HELIX resurrection probe: mean built radius-scale vs the real
         // record reference, accumulated across every committed helix.
         double helixScaleSum = 0.0; long helixScaleN = 0;
+        // Phase 5X: top-hat exit ground-clearance accounting (report only).
+        int topHatExitN = 0, topHatExitOver10 = 0, topHatExitFlagged = 0;
+        float topHatExitMaxHandoff = 0.0f, topHatExitMaxNormal = 0.0f;
         for (int sd = 1; sd <= seeds; sd++) {
             g_rng = (uint32_t)sd * 2654435761u | 1u;
             Track t; t.reset();
@@ -1029,14 +1030,13 @@ int main(int argc, char **argv) {
                     if (lapSecs > maxLapSeconds) maxLapSeconds = lapSecs;
                     laps++;
                     if (inv > 4) invBudgetMiss++;
-                    // Subtype caps mirror the researched references: Tormenta
-                    // runs THREE Immelmanns; loops and (paired) corkscrews may
-                    // appear twice; stall and dive loop stay one-per-lap.
-                    for (int i : invType) {
-                        const int cap = i == M_IMMEL ? 3
-                                      : (i == M_LOOP || i == M_ROLL) ? 2 : 1;
-                        if (cnt[i] > cap) subtypeRepeat++;
-                    }
+                    // Subtype caps read the single genc:: table the generator's
+                    // Track::inversionLapCap admission enforces, so the census
+                    // can never report a stale cap (references: Tormenta runs
+                    // THREE Immelmanns; loops and paired corkscrews may appear
+                    // twice; stall and dive loop stay one-per-lap).
+                    for (int i : invType)
+                        if (cnt[i] > genc::SUBTYPE_LAP_CAP[i]) subtypeRepeat++;
                     // Adjacent inversions are design-legal in bounded chains
                     // (double corkscrew, Tormenta's Immelmann-loop sequence);
                     // only flag a lap that chains AND runs over the inversion
@@ -1059,14 +1059,36 @@ int main(int argc, char **argv) {
                        t.gpos.x, t.gpos.y, t.gpos.z, t.genPrevDy, t.genPrevCurv,
                        t.connLen, (int)t.pending.element);
             }
+            // Phase 5X: per-top-hat exit ground clearance at the hand-off point
+            // plus the minimum clearance over the following ~200 m of layout.
+            // PASS iff hand-off clearance <= TOPHAT_EXIT_CLEARANCE_MAX (10 m),
+            // except flagged water/steep-rise corridors.  Report only.
+            for (int k = 0; k < t.topHatExitCount; ++k) {
+                const float ho = t.topHatExitHandoff[k];
+                const bool flg = t.topHatExitFlagged[k] != 0;
+                printf("[census] tophat seed%d #%d exitClearance=%.1fm minFollow200=%.1fm %s\n",
+                       sd, k, ho, t.topHatExitMinFollow[k],
+                       flg ? "FLAGGED(water/steep-rise)"
+                           : (ho <= Track::TOPHAT_EXIT_CLEARANCE_MAX ? "ok" : "OVER10"));
+                topHatExitN++;
+                if (ho > topHatExitMaxHandoff) topHatExitMaxHandoff = ho;
+                if (flg) topHatExitFlagged++;
+                else {
+                    if (ho > Track::TOPHAT_EXIT_CLEARANCE_MAX) topHatExitOver10++;
+                    if (ho > topHatExitMaxNormal) topHatExitMaxNormal = ho;
+                }
+            }
             totalEscapes += t.fallbackEscapes;
             totalForcedCloses += t.fallbackForcedLapCloses;
             totalRelaxed += t.fallbackRelaxedPicks;
+            totalVariant += t.variantPicks;
+            totalCleanForward += t.fallbackCleanForward;
             if (t.fallbackEscapes || t.fallbackForcedLapCloses ||
-                t.fallbackRelaxedPicks)
+                t.fallbackRelaxedPicks || t.variantPicks || t.fallbackCleanForward)
                 printf("[census] seed%d fallbacks: escapes=%u forcedLapCloses=%u "
-                       "relaxedPicks=%u\n", sd, t.fallbackEscapes,
-                       t.fallbackForcedLapCloses, t.fallbackRelaxedPicks);
+                       "relaxedPicks=%u (cleanForward=%u variantPicks=%u, not rescues)\n", sd,
+                       t.fallbackEscapes, t.fallbackForcedLapCloses,
+                       t.fallbackRelaxedPicks, t.fallbackCleanForward, t.variantPicks);
         }
         long grand = setType[M_LOOP]+setType[M_ROLL]+setType[M_IMMEL]+
                      setType[M_DIVELOOP]+setType[M_STALL];
@@ -1091,6 +1113,13 @@ int main(int argc, char **argv) {
         printf("[census] family share: banked=%.1f%% airtime=%.1f%% features=%ld\n",
                totalFeatures?100.0*bankedFeatures/totalFeatures:0.0,
                totalFeatures?100.0*airFeatures/totalFeatures:0.0,totalFeatures);
+        // Phase 5X: top-hat exit ground-clearance summary (report only).  The
+        // gate is per-tophat: normal (non-flagged) exits hand off at <= 10 m.
+        printf("[census] tophat exits: N=%d over10(normal)=%d flagged=%d "
+               "maxHandoff=%.1fm maxNormalHandoff=%.1fm gate=%s\n",
+               topHatExitN, topHatExitOver10, topHatExitFlagged,
+               topHatExitMaxHandoff, topHatExitMaxNormal,
+               topHatExitOver10 == 0 ? "PASS" : "OVER10");
         printf("[census] observed mix (report only):");
         for (int i=0;i<M_COUNT;i++) if (setType[i])
             printf(" %s=%ld(%.1f%%)",GEN_NM[i],setType[i],
@@ -1109,25 +1138,30 @@ int main(int argc, char **argv) {
             auto flagOf = [](double share, double lo, double hi) {
                 return share < lo ? "LOW" : share > hi ? "HIGH" : "IN";
             };
+            // Targets/bands read the generator's genc:: tables (a stale
+            // hand-copied duplicate here once reported old targets while the
+            // generator steered by new ones).
             auto printBand = [&](const char *name, long count, double target) {
-                double share = shareOf(count), lo = target * 0.75, hi = target * 1.75;
+                double share = shareOf(count),
+                       lo = target * genc::SHARE_BAND_LO,
+                       hi = target * genc::SHARE_BAND_HI;
                 printf("[census] share %s %.1f%% target %.1f%% band [%.1f,%.1f] %s\n",
                        name, share, target, lo, hi, flagOf(share, lo, hi));
             };
             long turnFamily = setType[M_TURN] + setType[M_SCURVE] +
                               setType[M_DIVE] + setType[M_WAVE];
-            printBand("TURN(family=TURN+SCURVE+DIVE+WAVE)", turnFamily, 26.0);
+            printBand("TURN(family=TURN+SCURVE+DIVE+WAVE)", turnFamily, genc::FAMILY_BANKED_TARGET);
             printf("[census] share TURN-family subtypes (raw, no band):");
             for (int i : {M_TURN, M_SCURVE, M_DIVE, M_WAVE})
                 printf(" %s=%.1f%%", GEN_NM[i], shareOf(setType[i]));
             printf("\n");
-            printBand("HILLS", setType[M_HILLS], 15.0);
-            printBand("DROP", setType[M_DROP], 13.0);
-            printBand("IMMEL", setType[M_IMMEL], 12.0);
-            printBand("LOOP", setType[M_LOOP], 4.0);
-            printBand("ROLL", setType[M_ROLL], 2.5);
-            printBand("SCURVE", setType[M_SCURVE], 8.0);
-            printBand("HELIX", setType[M_HELIX], 4.0);
+            printBand("HILLS", setType[M_HILLS], genc::SHARE_TARGET[M_HILLS]);
+            printBand("DROP", setType[M_DROP], genc::SHARE_TARGET[M_DROP]);
+            printBand("IMMEL", setType[M_IMMEL], genc::SHARE_TARGET[M_IMMEL]);
+            printBand("LOOP", setType[M_LOOP], genc::SHARE_TARGET[M_LOOP]);
+            printBand("ROLL", setType[M_ROLL], genc::SHARE_TARGET[M_ROLL]);
+            printBand("SCURVE", setType[M_SCURVE], genc::SHARE_TARGET[M_SCURVE]);
+            printBand("HELIX", setType[M_HELIX], genc::SHARE_TARGET[M_HELIX]);
         }
         // Built-scale probe: mean coil radius vs real-record reference across the
         // whole census.  The sizing window is 0.75x-1.5x; the built mean must
@@ -1140,10 +1174,18 @@ int main(int argc, char **argv) {
             printf("[census] DEAD enabled inversion subtype: %s\n", GEN_NM[i]);
             deadSubtype++;
         }
+        const unsigned long fallbackSum =
+            totalEscapes + totalForcedCloses + totalRelaxed;
         printf("[census] fallback totals (%d seeds): escapes=%lu forcedLapCloses=%lu "
-               "relaxedPicks=%lu (target: <=%.1f total artificial rescues)\n",
+               "relaxedPicks=%lu sum=%lu (target: <=%.1f total artificial rescues)"
+               " [cleanForward=%lu excluded: bare 6m-envelope forward continuation, no clip;"
+               " variantPicks=%lu excluded: rhythm relaxation, clears full 6m gate]\n",
                seeds, totalEscapes, totalForcedCloses, totalRelaxed,
-               seeds * 0.1);
+               fallbackSum, seeds * 0.1, totalCleanForward, totalVariant);
+        const bool fallbackGateFail = fallbackSum > (unsigned long)(seeds * 0.1 + 0.5);
+        if (fallbackGateFail)
+            printf("[census] FALLBACK GATE FAIL: %lu genuine reduced-envelope/forced rescues > %.1f target\n",
+                   fallbackSum, seeds * 0.1);
         printf("[census] laps=%d invOver4=%d subtypeRepeat=%d inversionSpacing=%d helixGeometryMiss=%d deadSubtype=%d complete=%s\n",
                laps,invBudgetMiss,subtypeRepeat,inversionSpacingMiss,
                helixGeometryMiss,deadSubtype,complete?"yes":"NO");
@@ -1436,7 +1478,7 @@ int main(int argc, char **argv) {
         constexpr float derivativeProbe = 0.05f;
         constexpr float railOffset = 0.55f;
         bool ok = true;
-        printf("=== V1 rendered-rail joint audit (%d seeds, +/-%.4f control units, gauge %.2fm) ===\n",
+        printf("=== V1 authored-frame joint audit (%d seeds, +/-%.4f control units, gauge %.2fm) ===\n",
                seeds, eps, railOffset * 2.0f);
         for (int seed = 1; seed <= seeds; ++seed) {
             g_rng = (uint32_t)seed * UINT32_C(2654435761) | UINT32_C(1);
@@ -1489,10 +1531,17 @@ int main(int argc, char **argv) {
                 const float centreDistance = fmaxf(0.5f * (leftDs + rightDs), 1.0e-4f);
                 const float curvatureJerk = Vector3Length(Vector3Subtract(
                     rightCurvature, leftCurvature)) / centreDistance;
-                const float leftRollRate = v1AuditMaterialRollDelta(
-                    leftT0, t.upAt(left0U), leftT1, t.upAt(left1U)) / leftDs;
-                const float rightRollRate = v1AuditMaterialRollDelta(
-                    rightT0, t.upAt(right0U), rightT1, t.upAt(right1U)) / rightDs;
+                // Zero the roll contribution across any near-vertical span: the
+                // world-up bank reference is degenerate there, so a differenced
+                // bank is a reference-flip artifact, not authored roll.
+                float leftRollRate =
+                    authoredBankDeltaDeg(t, left0U, left1U) / leftDs;
+                float rightRollRate =
+                    authoredBankDeltaDeg(t, right0U, right1U) / rightDs;
+                if (bankFrameDegenerate(leftT0) || bankFrameDegenerate(leftT1))
+                    leftRollRate = 0.0f;
+                if (bankFrameDegenerate(rightT0) || bankFrameDegenerate(rightT1))
+                    rightRollRate = 0.0f;
                 const float rollRate = fmaxf(fabsf(leftRollRate), fabsf(rightRollRate));
                 const float rollAccel = fabsf(rightRollRate - leftRollRate) /
                                         centreDistance;
@@ -2499,9 +2548,7 @@ int main(int argc, char **argv) {
 
             float du = v * dt / fmaxf(trk.speedScale(u), 0.5f);
             if (!(du == du)) du = 0.0f;
-            u += fminf(du, 1.5f);
-
-            while (u > 13.0f && (int)trk.cp.size() > 18) { trk.popFront(); u -= 1.0f; }
+            driveRideStep(trk, u, du, 13.0f, 18);
 
             score += v * dt * (1.0f + v / 25.0f);
 

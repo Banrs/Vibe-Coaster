@@ -160,16 +160,46 @@ struct Segment {
     double length = 0.0;
     std::array<double, kDegree + 1> coefficient{};
     double topHatStartHeight = 0.0;
-    double topHatRise = 0.0;
+    double topHatRise = 0.0;          // ascent rise = crest - startHeight
+    // Phase 5X (asymmetric top hat): the exit foot may descend past the entry
+    // foot to a terrain-following hand-off.  The ascent half and the descent
+    // half each remain one mirror-symmetric Bernstein leg; only the descent
+    // face is steepened so the *crest curvature* (crown radius) is unchanged --
+    // "the same g-law run longer, not tighter".  topHatEndHeight == startHeight
+    // and topHatCrestFraction == 0.5 recover the symmetric law byte-for-byte.
+    double topHatEndHeight = 0.0;     // exit foot height (== startHeight if symmetric)
+    double topHatDescentRise = 0.0;   // descent rise = crest - endHeight
+    double topHatCrestFraction = 0.5; // lenUp / (lenUp + lenDown)
 
     static Segment topHat(double startHeight, double crestHeight,
                           double maximumPitch) {
+        return topHatAsymmetric(startHeight, crestHeight, startHeight,
+                                maximumPitch);
+    }
+
+    // Ascent leg reaches maximumPitch; the descent leg reaches
+    // atan(tan(maximumPitch) * sqrt(riseDown/riseUp)) so that the physical
+    // crest curvature matches on both sides, giving an internally C2/C3 crown.
+    static Segment topHatAsymmetric(double startHeight, double crestHeight,
+                                    double endHeight, double maximumPitch) {
         Segment result;
         result.kind = Kind::TopHat;
         result.topHatStartHeight = startHeight;
-        result.topHatRise = crestHeight - startHeight;
-        result.length = result.topHatRise * kTopHatMaximumUnitSlope /
-                        std::tan(maximumPitch);
+        result.topHatEndHeight = endHeight;
+        const double riseUp = crestHeight - startHeight;
+        const double riseDown = crestHeight - endHeight;
+        result.topHatRise = riseUp;
+        result.topHatDescentRise = riseDown;
+        const double tanUp = std::tan(maximumPitch);
+        // lenUp: half the symmetric plan length for riseUp.  lenDown: derived
+        // from the curvature-matching face so lenDown = 0.5*sqrt(riseUp*riseDown)
+        // * kUnitSlope / tanUp (= 0.5*riseDown*kUnitSlope/tan(pitchDown)).
+        const double lenUp = 0.5 * riseUp * kTopHatMaximumUnitSlope / tanUp;
+        const double lenDown = 0.5 * std::sqrt(riseUp * riseDown) *
+                               kTopHatMaximumUnitSlope / tanUp;
+        result.length = lenUp + lenDown;
+        result.topHatCrestFraction = (result.length > 0.0)
+            ? lenUp / result.length : 0.5;
         return result;
     }
 
@@ -263,17 +293,36 @@ struct Segment {
         assert(order >= 0 && order <= 3);
         u = clamp01(u);
         if (kind == Kind::TopHat) {
-            const double t = 2.0*u - 1.0;
+            // Map the whole-segment parameter u onto one mirror-symmetric leg.
+            // Ascent (u<=f): the [0,0.5] half of a symmetric top hat of rise
+            // riseUp; descent (u>f): the [0.5,1] half of one of rise riseDown.
+            // The chain-rule factor `scale = duSym/du` converts leg-local
+            // derivatives back to whole-segment ones; physical derivatives then
+            // divide by the total length in sampleNormalized as usual.
+            const double f = topHatCrestFraction;
+            double uSym, baseHeight, rise, scale;
+            if (u <= f) {
+                uSym  = (f > 0.0) ? 0.5 * (u / f) : 0.0;
+                baseHeight = topHatStartHeight;
+                rise  = topHatRise;
+                scale = (f > 0.0) ? 0.5 / f : 1.0;
+            } else {
+                uSym  = 0.5 + 0.5 * ((u - f) / (1.0 - f));
+                baseHeight = topHatEndHeight;
+                rise  = topHatDescentRise;
+                scale = 0.5 / (1.0 - f);
+            }
+            const double t = 2.0*uSym - 1.0;
             const double s = t*t;
             if (order == 0)
-                return topHatStartHeight + topHatRise*bernsteinDifference(0, s);
+                return baseHeight + rise*bernsteinDifference(0, s);
             const double first = 20.0*bernsteinDifference(1, s);
-            if (order == 1) return topHatRise*4.0*t*first;
+            if (order == 1) return rise*4.0*t*first * scale;
             const double second = 20.0*19.0*bernsteinDifference(2, s);
             if (order == 2)
-                return topHatRise*(8.0*first + 16.0*s*second);
+                return rise*(8.0*first + 16.0*s*second) * (scale*scale);
             const double third = 20.0*19.0*18.0*bernsteinDifference(3, s);
-            return topHatRise*32.0*t*(3.0*second + 2.0*s*third);
+            return rise*32.0*t*(3.0*second + 2.0*s*third) * (scale*scale*scale);
         }
         double result = 0.0;
         for (int index = kDegree; index >= order; --index) {
@@ -320,7 +369,12 @@ public:
             return false;
         if (segment.kind == Segment::Kind::TopHat &&
             (!finite(segment.topHatStartHeight) ||
-             !finite(segment.topHatRise) || !(segment.topHatRise > 0.0)))
+             !finite(segment.topHatRise) || !(segment.topHatRise > 0.0) ||
+             !finite(segment.topHatEndHeight) ||
+             !finite(segment.topHatDescentRise) ||
+             !(segment.topHatDescentRise > 0.0) ||
+             !(segment.topHatCrestFraction > 0.0) ||
+             !(segment.topHatCrestFraction < 1.0)))
             return false;
         for (double coefficient : segment.coefficient)
             if (!finite(coefficient)) return false;
@@ -546,27 +600,35 @@ inline TopHatProfile makeTopHat(const TopHatSpec& spec) {
     const double descentDrop = spec.crestHeight - spec.endHeight;
     if (!(ascentRise > 0.0) || !(descentDrop > 0.0)) return result;
 
-    if (!near(spec.startHeight, spec.endHeight, 1.0e-9)) return result;
+    // Phase 5X: the exit foot may sit below the entry foot (endHeight <
+    // startHeight); a raised exit is not a top hat and is rejected.
+    if (spec.endHeight > spec.startHeight + 1.0e-9) return result;
     const double actualPitch = spec.faceDegrees * kDegreesToRadians;
-    const Segment shaped = Segment::topHat(spec.startHeight, spec.crestHeight,
-                                           actualPitch);
+    const Segment shaped = Segment::topHatAsymmetric(
+        spec.startHeight, spec.crestHeight, spec.endHeight, actualPitch);
     const double length = shaped.length;
     if (!(length > 0.0) || !finite(length)) return result;
 
     if (!result.profile.append(shaped))
         return result;
-    result.apexDistance = length * 0.5;
+    result.apexDistance = length * shaped.topHatCrestFraction;
     const Sample foot = result.profile.sampleDistance(0.0);
+    // The ascent face reaches faceDegrees at the symmetric max-slope point,
+    // which within the [0,f] ascent leg lands at u = f * (kSlopeU / 0.5).
     const Sample face = result.profile.sampleDistance(
-        length * kTopHatMaximumSlopeU);
+        length * shaped.topHatCrestFraction * (kTopHatMaximumSlopeU / 0.5));
     const Sample apex = result.profile.sampleDistance(result.apexDistance);
+    const Sample exitFoot = result.profile.sampleDistance(length);
     result.valid = near(foot.height, spec.startHeight, 1.0e-9) &&
                    near(foot.grade, 0.0, 1.0e-9) &&
                    near(foot.curvature, 0.0, 1.0e-9) &&
                    near(foot.jerk, 0.0, 1.0e-9) &&
                    near(face.pitchDegrees(), spec.faceDegrees, 1.0e-9) &&
                    near(apex.height, spec.crestHeight, 1.0e-9) &&
-                   near(apex.grade, 0.0, 1.0e-9) && apex.curvature < 0.0;
+                   near(apex.grade, 0.0, 1.0e-9) && apex.curvature < 0.0 &&
+                   near(exitFoot.height, spec.endHeight, 1.0e-9) &&
+                   near(exitFoot.grade, 0.0, 1.0e-9) &&
+                   near(exitFoot.curvature, 0.0, 1.0e-9);
     if (result.valid) assertC2(result.profile);
     return result;
 }

@@ -16,21 +16,11 @@ static const char* NM[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","R
 static const char GATE[8] = {'A','B','C','D','E','F','G','I'};
 static const bool GATE_HARD[8] = { true,true,true,true,false,true,true,true };
 
-// signed bank/roll of the seat about the track direction (deg), PITCH-FREE: the angle of the
-// seat up-vector N off the "level up" (world-up projected perpendicular to the tangent). Both
-// are perpendicular to the tangent, so the angle between them is the roll alone. Same idiom as
-// the HUD meter / legacy --gaudit; sign from the horizontal side vector.
-static float rollDeg(Vector3 tan, Vector3 upv) {
-    Vector3 lvlUp = Vector3Subtract(Vector3{0,1,0}, Vector3Scale(tan, tan.y));
-    float ll = Vector3Length(lvlUp);
-    if (ll < 1e-4f) return 0.0f;   // track vertical: roll degenerate
-    lvlUp = Vector3Scale(lvlUp, 1.0f/ll);
-    Vector3 N = orthoUp(tan, upv);
-    Vector3 sideLvl = Vector3CrossProduct(tan, lvlUp);
-    float sl = Vector3Length(sideLvl);
-    if (sl > 1e-4f) sideLvl = Vector3Scale(sideLvl, 1.0f/sl);
-    return atan2f(Vector3DotProduct(N, sideLvl), Vector3DotProduct(N, lvlUp)) * 57.29578f;
-}
+// Roll is now measured from the authored finalized-rail frame via
+// authoredBankDeg (committed_track.cpp), which reads upAt/tangent and so honours
+// the SpatialRun felt-bank law instead of the raw knot up.  The former
+// chord-tangent + raw-knot rollDeg helper is gone (its only callers moved to
+// authoredBankDeg).
 // per-cp pitch = atan2(vertical step, horizontal step), deg (climb +, drop -).
 static float pitchDeg(Vector3 prev, Vector3 cur) {
     float dx = cur.x - prev.x, dz = cur.z - prev.z, dy = cur.y - prev.y;
@@ -171,8 +161,7 @@ static bool rollingSim(int seed, int& stallOut) {
         (void)dispatched;
         float du = v*dt / fmaxf(t.speedScale(u), 0.5f);
         if (!(du==du)) du = 0;
-        u += fminf(du, 1.5f);
-        while (u > 8.0f && (int)t.cp.size() > 12) { t.popFront(); u -= 1.0f; }
+        driveRideStep(t, u, du, 8.0f, 12);
     }
     stallOut = maxRun;
     return true;
@@ -272,20 +261,10 @@ static SeedRes auditSeed(int seed) {
                     Vector3 p0 = t.cp[k-1], p1 = t.cp[k];
                     float dx = p1.x - p0.x, dz = p1.z - p0.z;
                     float heading = atan2f(dx, dz) * 180.0f / PI;
-                    // Signed bank/roll: angle of up[k] away from the "flat" up in the
-                    // plane normal to the track tangent (0 = level, +right lean).
-                    float roll = 0.0f;
-                    if (k < n - 1) {
-                        Vector3 tanv = Vector3Normalize(Vector3Subtract(t.cp[k+1], p0));
-                        Vector3 side = Vector3CrossProduct(Vector3{0, 1, 0}, tanv);
-                        float sl = Vector3Length(side);
-                        if (sl > 1e-4f) {
-                            side = Vector3Scale(side, 1.0f/sl);
-                            Vector3 flatUp = Vector3CrossProduct(tanv, side);
-                            roll = atan2f(Vector3DotProduct(t.up[k], side),
-                                          Vector3DotProduct(t.up[k], flatUp)) * 180.0f / PI;
-                        }
-                    }
+                    // Signed bank/roll from the AUTHORED finalized-rail frame
+                    // (upAt/tangent at u=k), not the raw knot t.up[k] which lags
+                    // the run's felt-bank law for SpatialRun elements.
+                    float roll = authoredBankDeg(t, (float)k);
                     printf("[dump] seed%d cp%d kind=%s pos=(%.2f,%.2f,%.2f) heading=%.2f dy=%+.2f terr=%.1f roll=%+.1f v=%.1f\n",
                            seed, k, NM[t.kind[k]], p1.x, p1.y, p1.z, heading,
                            p1.y - p0.y, groundTopAt(p1.x, p1.z), roll,
@@ -302,11 +281,12 @@ static SeedRes auditSeed(int seed) {
     for (int k=0;k<n;k++) {
         KD[k] = t.kind[k]; Y[k] = t.cp[k].y; TR[k] = groundTopAt(t.cp[k].x, t.cp[k].z);
         DY[k] = k ? Y[k]-Y[k-1] : 0.0f;
-        Vector3 a = t.cp[k>0?k-1:0], b = t.cp[k<n-1?k+1:n-1];
-        Vector3 tanv = Vector3Subtract(b, a); float tl = Vector3Length(tanv);
-        tanv = tl>1e-5f ? Vector3Scale(tanv,1.0f/tl) : Vector3{0,0,1};
         PIT[k] = k ? pitchDeg(t.cp[k-1], t.cp[k]) : 0.0f;
-        ROL[k] = rollDeg(tanv, t.up[k]);
+        // Roll from the AUTHORED finalized-rail frame (upAt/tangent at rail
+        // parameter u=k), not the raw knot t.up[k]: for SpatialRun elements
+        // (corkscrews, loops) the true felt-bank lives in the run's frame law,
+        // which upAt evaluates and the mutable knot lags.
+        ROL[k] = authoredBankDeg(t, (float)k);
     }
     std::vector<std::pair<int,int>> fails;
 

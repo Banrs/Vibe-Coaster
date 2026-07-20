@@ -104,6 +104,31 @@ static constexpr float V1_AUDIT_CURVATURE_JERK_MAX = 0.18f; // 1/m^2
 static constexpr float V1_AUDIT_ROLL_RATE_MAX = 24.0f;      // degrees/m
 static constexpr float V1_AUDIT_ROLL_ACCEL_MAX = 5.5f;     // degrees/m^2
 
+// ---- Unified scene lighting (single source of truth) -------------------------
+// The three lit-pass call sites -- the main HDR raster path, the live path-trace
+// preview overlay, and the offline path-trace shot overlay -- previously each
+// hard-coded their own drifted sun/sky/ground triples (e.g. HDR sky 0.15/0.21/
+// 0.33 vs preview 0.25/0.33/0.47 vs shot 0.30/0.38/0.52). They now all derive
+// from this one block, so a tweak lands everywhere and the paths cannot drift.
+//
+// The main path renders into a linear-HDR target that a later composite pass
+// tonemaps once, so it feeds the base (linear) values straight to gShadow.lit.
+// The two legacy overlay paths composite their decorative draws directly onto an
+// already-tonemapped LDR backbuffer and do their OWN inline ACES tonemap
+// (legacyTonemap uniform = 1), so they need a brighter pre-tonemap input to land
+// at the same on-screen level -- they reuse the SAME base scaled by the legacy*
+// factors below, exactly the ~1.3x relationship the old hard-coded copies had,
+// but now from one source.
+struct SceneLighting {
+    float sun[3]    = { 1.58f, 1.38f, 1.05f };   // linear-HDR sun radiance
+    float sky[3]    = { 0.15f, 0.21f, 0.33f };   // sky-dome ambient tint
+    float ground[3] = { 0.13f, 0.10f, 0.075f };  // warm ground-bounce tint
+    float legacySun    = 1.30f;                  // inline-tonemap overlay scales
+    float legacySky    = 1.65f;
+    float legacyGround = 1.15f;
+};
+static constexpr SceneLighting SCENE_LIGHT{};
+
 int main(int argc, char **argv) {
     bool framesMode = (argc > 1 && TextIsEqual(argv[1], "--frames"));
     bool rasterShot = (argc > 1 && TextIsEqual(argv[1], "--rastershot"));
@@ -3265,12 +3290,24 @@ int main(int argc, char **argv) {
         rlDisableColorBlend();
         rlEnableDepthTest(); rlEnableDepthMask();
         glDepthFunc(GL_LEQUAL);
+        // Render BACK faces into the shadow map. The voxel occluders (terrain,
+        // track boxes, supports, stations) are all closed solids, so culling
+        // FRONT faces stores the far wall of each occluder as the shadow depth.
+        // The lit pass's receiver test then runs on the front (lit) surface,
+        // which sits a whole cube-thickness in front of that stored depth --
+        // that built-in separation kills self-shadow acne, letting the bias in
+        // SHADOW_FS shrink to ~0.5-1.5 texel (see render_fx.cpp). raylib leaves
+        // GL_CULL_FACE enabled with GL_BACK by default; flip to GL_FRONT here
+        // and restore GL_BACK after the pass's batch has flushed so every other
+        // pass (which relies on default back-face culling) is unaffected.
+        rlSetCullFace(RL_CULL_FACE_FRONT);
         rlSetMatrixProjection(MatrixIdentity());
         rlSetMatrixModelview(gShadow.lightVP);
         BeginShaderMode(gShadow.depth);
         drawWorld(true, false, SHADOW_CULL_RADIUS);
         rlDrawRenderBatchActive();
         EndShaderMode();
+        rlSetCullFace(RL_CULL_FACE_BACK); // restore default back-face culling
         rlEnableColorBlend();
         rlDisableFramebuffer();
         rlViewport(0, 0, GetRenderWidth(), GetRenderHeight());
@@ -3341,12 +3378,10 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locLightDir, ld, SHADER_UNIFORM_VEC3);
             float vp3[3] = { cam.position.x, cam.position.y, cam.position.z };
             SetShaderValue(gShadow.lit, gShadow.locViewPos, vp3, SHADER_UNIFORM_VEC3);
-            float sun[3] = { 1.58f, 1.38f, 1.05f };
-            float sky[3] = { 0.15f, 0.21f, 0.33f };
-            float gnd[3] = { 0.13f, 0.10f, 0.075f };
-            SetShaderValue(gShadow.lit, gShadow.locSun, sun, SHADER_UNIFORM_VEC3);
-            SetShaderValue(gShadow.lit, gShadow.locSky, sky, SHADER_UNIFORM_VEC3);
-            SetShaderValue(gShadow.lit, gShadow.locGround, gnd, SHADER_UNIFORM_VEC3);
+            // Main HDR path: base linear values (tonemapped later by the post pass).
+            SetShaderValue(gShadow.lit, gShadow.locSun, SCENE_LIGHT.sun, SHADER_UNIFORM_VEC3);
+            SetShaderValue(gShadow.lit, gShadow.locSky, SCENE_LIGHT.sky, SHADER_UNIFORM_VEC3);
+            SetShaderValue(gShadow.lit, gShadow.locGround, SCENE_LIGHT.ground, SHADER_UNIFORM_VEC3);
             // Rendering into the offscreen HDR scene target now (gPostFX) --
             // stay linear HDR here, the post pass tonemaps once at the end.
             float legacyOff = 0.0f;
@@ -3562,6 +3597,8 @@ int main(int argc, char **argv) {
             SetShaderValueMatrix(gPT.rt, gPT.rLightVP, gShadow.lightVP);
             float rstx[2] = { 1.0f / gShadow.SM, 1.0f / gShadow.SM };
             SetShaderValue(gPT.rt, gPT.rShadowTexel, rstx, SHADER_UNIFORM_VEC2);
+            // Share the raster path's exact shadow bias scale (see RT_FS shadowMapVis).
+            SetShaderValue(gPT.rt, gPT.rInvRange, &gShadow.invRange, SHADER_UNIFORM_FLOAT);
             const int RT_SHADOW_UNIT = 12;
             SetShaderValue(gPT.rt, gPT.rShadowMap, &RT_SHADOW_UNIT, SHADER_UNIFORM_INT);
 
@@ -3605,9 +3642,10 @@ int main(int argc, char **argv) {
                 SetShaderValue(gShadow.lit, gShadow.locLightDir, ldL, SHADER_UNIFORM_VEC3);
                 float vpL[3] = { cam.position.x, cam.position.y, cam.position.z };
                 SetShaderValue(gShadow.lit, gShadow.locViewPos, vpL, SHADER_UNIFORM_VEC3);
-                float sunL[3] = { 2.05f, 1.82f, 1.42f };
-                float skyL[3] = { 0.25f, 0.33f, 0.47f };
-                float gndL[3] = { 0.15f, 0.12f, 0.095f };
+                // Legacy inline-tonemap overlay: same base, scaled up (see SceneLighting).
+                float sunL[3] = { SCENE_LIGHT.sun[0]*SCENE_LIGHT.legacySun, SCENE_LIGHT.sun[1]*SCENE_LIGHT.legacySun, SCENE_LIGHT.sun[2]*SCENE_LIGHT.legacySun };
+                float skyL[3] = { SCENE_LIGHT.sky[0]*SCENE_LIGHT.legacySky, SCENE_LIGHT.sky[1]*SCENE_LIGHT.legacySky, SCENE_LIGHT.sky[2]*SCENE_LIGHT.legacySky };
+                float gndL[3] = { SCENE_LIGHT.ground[0]*SCENE_LIGHT.legacyGround, SCENE_LIGHT.ground[1]*SCENE_LIGHT.legacyGround, SCENE_LIGHT.ground[2]*SCENE_LIGHT.legacyGround };
                 SetShaderValue(gShadow.lit, gShadow.locSun, sunL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, skyL, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gndL, SHADER_UNIFORM_VEC3);
@@ -3705,9 +3743,10 @@ int main(int argc, char **argv) {
                 float vp2[3] = { cam.position.x, cam.position.y, cam.position.z };
                 SetShaderValue(gShadow.lit, gShadow.locViewPos, vp2, SHADER_UNIFORM_VEC3);
 
-                float sun2[3] = { 2.05f, 1.82f, 1.42f };
-                float sky2[3] = { 0.30f, 0.38f, 0.52f };
-                float gnd2[3] = { 0.12f, 0.11f, 0.10f };
+                // Legacy inline-tonemap overlay: same base, scaled up (see SceneLighting).
+                float sun2[3] = { SCENE_LIGHT.sun[0]*SCENE_LIGHT.legacySun, SCENE_LIGHT.sun[1]*SCENE_LIGHT.legacySun, SCENE_LIGHT.sun[2]*SCENE_LIGHT.legacySun };
+                float sky2[3] = { SCENE_LIGHT.sky[0]*SCENE_LIGHT.legacySky, SCENE_LIGHT.sky[1]*SCENE_LIGHT.legacySky, SCENE_LIGHT.sky[2]*SCENE_LIGHT.legacySky };
+                float gnd2[3] = { SCENE_LIGHT.ground[0]*SCENE_LIGHT.legacyGround, SCENE_LIGHT.ground[1]*SCENE_LIGHT.legacyGround, SCENE_LIGHT.ground[2]*SCENE_LIGHT.legacyGround };
                 SetShaderValue(gShadow.lit, gShadow.locSun, sun2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locSky, sky2, SHADER_UNIFORM_VEC3);
                 SetShaderValue(gShadow.lit, gShadow.locGround, gnd2, SHADER_UNIFORM_VEC3);

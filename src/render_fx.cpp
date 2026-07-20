@@ -77,18 +77,23 @@ static const char *SHADOW_FS =
     // Receiver offset and bias are in world units; the shadow map covers
     // 2*SHADOW_RADIUS world units across SHADOW_MAP_SIZE texels, so texel
     // density is (2*SHADOW_RADIUS)/SHADOW_MAP_SIZE world units/texel (~0.234u
-    // at current settings). Rails are only ~0.18u wide, so the old
-    // 0.65-1.75u bias/offset (several rail-widths) buried thin geometry in
-    // its own acne-avoidance slack and washed out contact shadows. Sized
-    // down to ~0.06-0.18u offset and ~0.30-0.85u (~1.3-3.6 texel) bias --
-    // enough to avoid self-shadow acne without swallowing rail-scale detail.
-    "  vec3 receiver = fragWorld + N*(0.06 + 0.12*(1.0-NoL));\n"
+    // at current settings). The depth pass now renders BACK faces (see the
+    // rlSetCullFace(RL_CULL_FACE_FRONT) wrap around the shadow depth pass in
+    // main.cpp): voxel cubes are closed solids, so the stored depth is the far
+    // wall of each occluder -- a whole cube-thickness behind the lit front
+    // surface the receiver test runs on. That separation eliminates self-shadow
+    // acne on its own, so the old ~0.30-0.85u (~1.3-3.6 texel) bias and
+    // ~0.06-0.18u normal offset shrink hard: bias to ~0.5-1.5 texel and the
+    // receiver offset to a hair -- just enough to stop thin rails (~0.18u) from
+    // grazing-angle peter-panning, without swallowing rail-scale contact
+    // shadows. (0.234u/texel: 0.12u~0.5tx, 0.35u~1.5tx.)
+    "  vec3 receiver = fragWorld + N*(0.02 + 0.04*(1.0-NoL));\n"
     "  vec4 lp = lightVP*vec4(receiver,1.0); vec3 p = lp.xyz/lp.w; p = p*0.5+0.5;\n"
     "  if(p.z<=0.0||p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;\n"
     // One conservative 3x3 PCF. The removed PCSS blocker search treated the
     // receiver's own voxel surface as a blocker across most of the map and
     // drove virtually every fragment into shadow.
-    "  float bias = (0.30 + 0.55*(1.0-NoL))*invRange;\n"
+    "  float bias = (0.12 + 0.20*(1.0-NoL))*invRange;\n"
     "  float vis = 0.0;\n"
     "  for(int y=-1; y<=1; ++y) for(int x=-1; x<=1; ++x){\n"
     "    float d = texture(shadowMap, p.xy + vec2(x,y)*shadowTexel).r;\n"
@@ -206,14 +211,27 @@ static const char *SHADOW_FS =
     "  vec3 N = normalize(fragNormal);\n"
     "  float ndl = max(dot(N,lightDir),0.0);\n"
     "  float rawSh = shadow(N);\n"
-    "  float sh = mix(0.18, 1.0, rawSh);\n"
-    "  vec3 direct = sunCol*1.02*ndl*sh;\n"
+    // Physically-correct shadowing: the shadow term occludes the DIRECT sun
+    // ONLY. There is no direct floor -- a fully-shadowed fragment gets zero
+    // direct sun (rawSh=0 -> direct=0). The old `sh = mix(0.18,1.0,rawSh)`
+    // floor left 18% of the sun leaking into shadow, which (with the ambient
+    // modulation below) collapsed cast shadows into a faint uniform dimming.
+    "  vec3 direct = sunCol*1.02*ndl*rawSh;\n"
 
+    // Hemispheric ambient (sky dome from up-facing normals, warm ground bounce
+    // from down-facing) is indirect skylight -- it reaches into shadow just as
+    // it reaches lit surfaces, so it is NEVER shadow-modulated. (The old
+    // `*(0.52 + 0.22*rawSh)` factor darkened ambient in shadow, which is what
+    // made cast shadows read as a flat grey wash instead of sky-blue fill.)
+    // Ambient is full strength everywhere; the crisp shadow contrast comes
+    // entirely from direct being removed. Magnitudes are tuned so a shadowed
+    // receiver still reads as clearly darker than lit ground but stays legible
+    // and colored by the sky, not black.
     "  float up   = clamp( N.y*0.5+0.5, 0.0, 1.0);\n"
     "  float down = clamp(-N.y, 0.0, 1.0);\n"
-    "  vec3 skyFill   = skyCol   * (0.62 + 0.55*up);\n"
-    "  vec3 bounce    = groundCol* (0.50 + 1.40*down);\n"
-    "  vec3 ambient   = (skyFill + bounce) * (0.52 + 0.22*rawSh);\n"
+    "  vec3 skyFill   = skyCol   * (0.85 + 0.75*up);\n"
+    "  vec3 bounce    = groundCol* (0.55 + 1.50*down);\n"
+    "  vec3 ambient   = skyFill + bounce;\n"
     "  vec3 V = normalize(viewPos-fragWorld);\n"
     "  vec3 H = normalize(lightDir+V);\n"
     "  float NoH = max(dot(N,H),0.0);\n"

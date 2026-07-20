@@ -5054,8 +5054,15 @@ struct Track {
         //      launch fires from the levelled escape exit and closes the lap.
         //   2. if even that fails, a powered launch or boost directly.
         // These never run inside a trial/probe branch (that would let a branch
-        // fabricate progress); only the live boundary escapes.
+        // fabricate progress); only the live boundary escapes.  They build their
+        // connector plans straight off genPrevDy/genPrevCurv/genPrevDyaw, so --
+        // exactly like tryBoundaryBranch's trial -- resync those from the exact
+        // authored boundary first: a coarsely-sampled element (e.g. a corkscrew's
+        // eased-shoulder exit) can leave a large raw chord delta on an anchor
+        // whose true analytic curvature is zero, and an escape seeded with that
+        // stale "momentum" bakes a real, spurious bank spike into its first span.
         if (!boundaryTransactionActive) {
+            syncContinuityFromBoundary();
             // A powered launch always closes the lap and climbs out under power;
             // prefer it the moment escapes have charged the lap budget past its
             // feature target, and require it before an escape can keep streaming.

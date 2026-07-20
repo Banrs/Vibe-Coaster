@@ -14,11 +14,14 @@ namespace genc {
 // Reserve successor lookahead beyond the final sampling stencil.
 inline constexpr int ADAPTIVE_LAG = 23;
 
-// Every physical axis owns the same record-scale contract: 1.0x is the
-// floor and 1.5x is the hard cap.  Centreline length alone gets a small
-// allowance for C3 shoulders and 14 m publication quantisation.  A height
-// cap can therefore never conceal an oversized radius or kilometre-long
-// path again.
+// Every physical axis owns the same record-scale contract.  Phase 4 lowered
+// the floor from 1.0x to 0.75x (approved sizing spec): a smaller element
+// admits a LOWER entry speed (its viability window widens at the bottom),
+// which helps mix breadth without ever conceding the 1.5x hard cap.
+// Centreline length alone gets a small allowance for C3 shoulders and 14 m
+// publication quantisation.  A height cap can therefore never conceal an
+// oversized radius or kilometre-long path again.
+inline constexpr float RECORD_SCALE_MIN       = 0.75f;
 inline constexpr float RECORD_SCALE_CAP       = 1.50f;
 inline constexpr float TOP_HAT_RECORD_RISE =
     (float)v1profile::kTopHatReferenceRise; // Intamin Falcon's Flight camelback
@@ -68,7 +71,7 @@ inline constexpr int SCHEDULER_ATTEMPT_BUDGET = 3;
 // Hard bound on terminal forward escapes taken from one anchor before the
 // scheduler forces a powered launch/boost.
 inline constexpr int ESCAPE_LIMIT = 6;
-inline constexpr int ESCAPES_PER_LAP = 8;
+inline constexpr int ESCAPES_PER_LAP = 20;
 inline constexpr int INVERSION_BUDGET = 4;
 
 // Minimum length of a complete connective transition.
@@ -107,5 +110,97 @@ inline constexpr float OCCUPANCY_ENVELOPE_RELAXED = 4.5f;
 // invariant.  Only the escape/launch fallbacks ever drop this low.
 inline constexpr float OCCUPANCY_ENVELOPE_LASTRESORT = 2.5f;
 inline constexpr float OCCUPANCY_ARC_EXCLUDE     = 120.0f;
+
+// --- PHASE 4 COMPOSITION DIRECTOR ---------------------------------------
+// Share controller (U3/U4).  Replaces the count-based per-lap caps with a
+// windowed share controller: SHARE_TARGET[m] is the target percent of
+// COUNTED features (the same denominator the census "observed mix" uses).
+// Bands are [SHARE_BAND_LO, SHARE_BAND_HI] x target.  Set-piece / count
+// rules (top hat, splashdown, corkscrew pairing, inversion adjacency and
+// budget) are kept separately in the generator; a 0 target here means the
+// element is governed by a count rule, not the share controller.
+inline constexpr float SHARE_BAND_LO = 0.75f;
+inline constexpr float SHARE_BAND_HI = 1.75f;
+// Sliding window (most-recent counted features) the live shares are measured
+// over -- adaptive, so an early-ride deficit does not become permanent debt.
+inline constexpr int   SHARE_WINDOW  = 48;
+// Banked-turn family (elemFamily(3) = TURN/SCURVE/DIVE/WAVE) aggregate target.
+// The family hi-gate is the binding one for that family (the per-subtype
+// bands sum a little above it by design).
+inline constexpr float FAMILY_BANKED_TARGET = 26.0f;
+
+// Target percent of counted features, indexed by SegMode (positional, enum
+// order).  0 == count-ruled / not a counted feature.
+inline constexpr float SHARE_TARGET[M_COUNT] = {
+    /*M_FLAT*/     0.0f,
+    /*M_CLIMB*/    0.0f,   // top hat: exactly-1/lap count rule
+    /*M_DROP*/    13.0f,
+    /*M_HILLS*/   15.0f,
+    /*M_TURN*/    14.0f,
+    /*M_LOOP*/     4.0f,
+    /*M_ROLL*/     2.5f,
+    /*M_STATION*/  0.0f,
+    /*M_DIP*/      3.0f,
+    /*M_LAUNCH*/   0.0f,
+    /*M_HELIX*/    4.0f,
+    /*M_BOOST*/    0.0f,
+    /*M_IMMEL*/   12.0f,
+    /*M_SCURVE*/   8.0f,
+    /*M_DIVE*/     4.0f,
+    /*M_BANKAIR*/  6.0f,
+    /*M_WAVE*/     4.0f,
+    /*M_STALL*/    3.0f,
+    /*M_DIVELOOP*/ 3.0f,
+};
+
+// Lap pacing by TIME (~130 s/lap): the lap closes at its ride-second budget
+// rather than a feature count.  Backstops keep a pathological corridor from
+// running an unbounded lap (hard elems cap; +45 s launch-postpone window).
+// A full lap closes AT this budget, but hostile-terrain laps that spend their
+// escape budget force-launch early (30-85 s); centring the normal lap a little
+// above the 120 s midpoint keeps the census mean inside the [105,135] band
+// once those unavoidable short laps are averaged in.
+inline constexpr float TARGET_LAP_SECONDS       = 120.0f;
+inline constexpr int   LAP_HARD_ELEM_CAP        = 44;
+inline constexpr float LAP_POSTPONE_SECONDS     = 45.0f;
+
+// Duration realism (approved 0.9-1.0x spec): clean-room estimate of each
+// element's real ride duration in seconds (per lobe for HILLS, per rev for
+// ROLL/corkscrew).  0 == truly unknown -> skip the duration bias for it.
+// Consumed as a SOFT size/lambda preference in the builders, never a hard
+// reject (which could strand completion).
+inline constexpr float REAL_ELEMENT_SECONDS[M_COUNT] = {
+    /*M_FLAT*/     0.0f,
+    /*M_CLIMB*/    9.0f,   // top hat profile
+    /*M_DROP*/     6.0f,
+    /*M_HILLS*/    5.0f,   // per lobe
+    /*M_TURN*/     5.5f,
+    /*M_LOOP*/     4.5f,
+    /*M_ROLL*/     2.8f,   // per revolution
+    /*M_STATION*/  0.0f,
+    /*M_DIP*/      4.0f,
+    /*M_LAUNCH*/   0.0f,
+    /*M_HELIX*/    8.0f,
+    /*M_BOOST*/    0.0f,
+    /*M_IMMEL*/    5.0f,
+    /*M_SCURVE*/   5.0f,
+    /*M_DIVE*/     0.0f,   // unknown -> skip
+    /*M_BANKAIR*/  4.0f,
+    /*M_WAVE*/     5.0f,
+    /*M_STALL*/    3.5f,
+    /*M_DIVELOOP*/ 5.0f,
+};
+inline constexpr float REAL_DURATION_BIAS_LO = 0.9f;
+inline constexpr float REAL_DURATION_BIAS_HI = 1.0f;
+
+// Act themes: each lap is one composed act with a rotating theme that biases
+// shares INSIDE their bands (weights, never gates).  Multipliers are bounded
+// [0.7,1.4] so a theme can never push a share out of band.
+enum class ActTheme : unsigned char { MOUNTAIN, CANYON, WATER, CLASSIC };
+inline constexpr int   ACT_THEME_COUNT = 4;
+inline constexpr float ACT_THEME_MULT_LO = 0.7f;
+inline constexpr float ACT_THEME_MULT_HI = 1.4f;
+// Distance (m) ahead a lap probes for water before choosing the WATER theme.
+inline constexpr float ACT_WATER_PROBE_DIST = 600.0f;
 
 } // namespace genc

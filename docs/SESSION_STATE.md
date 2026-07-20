@@ -29,12 +29,24 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
 - 4b0134d Phase3 water 46.8%→12.9%, relief preserved (A/B verified 18..89m → 18..108m)
 
 ## Phase status
-- DONE: 0 (probes/baseline), 1 (split), 2 (occupancy), 3 (water), 6 (shadows+renderer+wheels).
-- IN FLIGHT: Phase 4 composition director — Workflow run wf_f2d0339f-514 (task whmlp4ty1), script
-  /root/.claude/projects/-home-user-Vibe-Coaster/6133a740-2d6c-536a-ae69-bf585476bdc3/workflows/scripts/phase4-director.js
-  Stages: [helix diagnosis (worktree) ∥ director-core impl (main tree, opus)] → helix fix →
-  parallel gates (census8/overlap4/forceaudit2/jointaudit4) → ≤2 fix rounds. Working tree will be
-  DIRTY with its edits until I gate+commit. Spec: scratchpad/phase4_design.md.
+- DONE: 0 (probes/baseline), 1 (split), 2 (occupancy), 3 (water), 4 (composition director,
+  CHECKPOINT — see below), 6 (shadows+renderer+wheels).
+- Phase 4 checkpoint state (census 8 complete=yes verified): share controller (48-window,
+  hi-gate + weight bias), time-based ~120s laps (ds/genV), act themes, 0.75x scale sweep,
+  duration table, HELIX resurrected (3.6% share IN, scale mean 1.05x, n=15; fix = 0.75x bands
+  widening speed window to ~46.9-71.1 m/s + clearance-matched drop + descent pre-gate),
+  inversion-budget undercount bugfix (same-subtype chains). OPEN (owned by Phase 5, root cause =
+  eligibility scarcity -> escapes -> forced lap closes at coaster_track.cpp ~:5005): lap-seconds
+  mean 100.1 OUT [105,135] (min 2.2 degenerate lap), HILLS/DROP/IMMEL/LOOP LOW, TURN family 45.3%
+  at band edge, fallbacks 211 escapes/104 relaxed per 8 seeds. Do NOT re-tune weights to fix these
+  — fix routing (phase5 spec §1).
+- USER DIRECTIVES added this session: no artificial speed pushing (physics constants only as
+  documented REALISM calibration toward record-class values, never gate-fitting); top-hat exit
+  ground clearance must drop to <10m (asymmetric top hat OK, symmetry rescinded); cliff-dive max
+  90° pitch tracking the local face slope (face-hug binding, no mega-towers, setback 4-12m,
+  support ≤22m); Falcon's Flight + Tormenta are THE references (Falcon's ~160m Tuwaiq cliff dive
+  primary for the set piece); supervise agents' work every ~20-30 min, don't trust unsupervised
+  fix loops. Specs: scratchpad/phase5_design.md (reviewed+amended), phase7_design.md (ditto).
 - NEXT: Phase 5 (fallbacks→≤1/10 seeds via occupancy-AWARE routing; two known near-misses to kill:
   seed4 1.24m TURN↔FLAT-escape, seed2 0.21m IMMEL↔FLAT-escape — both from completion-guarantee
   escape tiers; joint anomalies seed2 ROLL→FLAT 0.312m/33°, seed4 TURN→CLIMB; authored-frame

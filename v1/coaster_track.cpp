@@ -17,6 +17,7 @@ struct Track : CommittedTrack, GenCursor {
     // These aliases keep every `Track::X` / bare-name call site unchanged.
     static constexpr int   ADAPTIVE_LAG                = genc::ADAPTIVE_LAG;
     static constexpr float RECORD_SCALE_CAP            = genc::RECORD_SCALE_CAP;
+    static constexpr float RECORD_SCALE_MIN            = genc::RECORD_SCALE_MIN;
     static constexpr float TOP_HAT_RECORD_RISE         = genc::TOP_HAT_RECORD_RISE;
     static constexpr float TOP_HAT_FACE_DEGREES        = genc::TOP_HAT_FACE_DEGREES;
     static constexpr float TOP_HAT_VERTICAL_CAP        = genc::TOP_HAT_VERTICAL_CAP;
@@ -118,9 +119,32 @@ struct Track : CommittedTrack, GenCursor {
         TxnGuard &operator=(const TxnGuard &) = delete;
     };
 
+    // Section 5 duration realism (approved 0.9-1.0x spec).  Nudge a random
+    // size draw toward the size whose estimated ride duration falls in
+    // [0.9,1.0]x the element's real seconds, using a linear size<->rail-length
+    // model anchored on the element's reference (refSize, refRail) pair and the
+    // mean traversal speed.  SOFT preference only: the result is a gentle blend
+    // that stays within [lo,hi]; an unknown real duration (0) or a missing
+    // reference returns the raw draw unchanged, so it can NEVER strand
+    // completion by rejecting a size.
+    static float durationBiasedDraw(SegMode m, float raw, float lo, float hi,
+                                    float refSize, float refRail,
+                                    float meanSpeed) {
+        const float real = genc::REAL_ELEMENT_SECONDS[m];
+        if (real <= 0.0f || refSize <= 0.0f || refRail <= 0.0f || hi <= lo)
+            return raw;
+        const float prefLen = fmaxf(meanSpeed, 4.0f) * real *
+            0.5f * (genc::REAL_DURATION_BIAS_LO + genc::REAL_DURATION_BIAS_HI);
+        const float prefSize = Clamp(prefLen * refSize / refRail, lo, hi);
+        return Clamp(0.5f * raw + 0.5f * prefSize, lo, hi);
+    }
+
     static bool dimensionInBand(float value, float reference,
                                 float upperAllowance = 1.0f) {
-        return value >= reference - 0.02f &&
+        // Phase 4 sizing spec: the lower band edge is 0.75x the reference
+        // (was 1.0x).  Smaller elements are legal, so a slower entry that
+        // sizes a sub-reference dimension is admitted rather than rejected.
+        return value >= reference * genc::RECORD_SCALE_MIN - 0.02f &&
                value <= reference * RECORD_SCALE_CAP * upperAllowance + 0.02f;
     }
     // Layout randomness belongs to the track transaction. Presentation or
@@ -266,7 +290,12 @@ struct Track : CommittedTrack, GenCursor {
     void pushCP(Vector3 p, Vector3 upv, unsigned char tag, unsigned char ch = 0,
                 uint32_t run = 0, float runStart = 0.0f, float runEnd = 0.0f,
                 bool alignment = false) {
-        float a = arc.empty() ? 0.0f : arc.back() + Vector3Length(Vector3Subtract(p, cp.back()));
+        float ds = arc.empty() ? 0.0f : Vector3Length(Vector3Subtract(p, cp.back()));
+        float a = arc.empty() ? 0.0f : arc.back() + ds;
+        // Phase 4 time-based lap pacing: accumulate planned ride seconds from
+        // the same speed the integrator logs (ds / genV).  genV can momentarily
+        // fall to a crawl on a station approach, so clamp the divisor.
+        if (ds > 0.0f) lapRideSeconds += ds / fmaxf(genV, 4.0f);
         cp.push_back(p); up.push_back(upv);
         kind.push_back(tag); chainf.push_back(ch);
         alignmentf.push_back(alignment ? 1 : 0);
@@ -319,8 +348,17 @@ struct Track : CommittedTrack, GenCursor {
         spec.startHeight = gpos.y;
         spec.endHeight = gpos.y;
         spec.faceDegrees = TOP_HAT_FACE_DEGREES;
-        const float wantedRise = major ? frnd(235.0f, TOP_HAT_VERTICAL_CAP)
-                                       : frnd(TOP_HAT_RECORD_RISE, 195.0f);
+        // Section 5: bias the free rise draw toward the ~9 s real top-hat
+        // duration.  The train slows markedly over a 165 m+ arch, so the mean
+        // traversal speed is well under genV -- estimate ~0.7x.  Soft: stays
+        // within each branch's own [lo,hi] range.
+        const float topHatLo = major ? 235.0f
+                                      : TOP_HAT_RECORD_RISE * RECORD_SCALE_MIN;
+        const float topHatHi = major ? TOP_HAT_VERTICAL_CAP : 195.0f;
+        const float wantedRise = durationBiasedDraw(M_CLIMB,
+            frnd(topHatLo, topHatHi), topHatLo, topHatHi,
+            TOP_HAT_RECORD_RISE, (float)v1profile::kTopHatReferenceRailLength,
+            0.7f * genV);
         spec.crestHeight = gpos.y + wantedRise;
         auto reject = [&](const char *) { rng=savedRng; gpos=savedPos; return false; };
 
@@ -363,7 +401,7 @@ struct Track : CommittedTrack, GenCursor {
                 maxCrest = fminf(maxCrest, spec.crestHeight -
                     (maxClearance - TOP_HAT_VERTICAL_CAP));
             float minCrest = spec.startHeight +
-                (major ? 235.0f : TOP_HAT_RECORD_RISE);
+                (major ? 235.0f : TOP_HAT_RECORD_RISE * RECORD_SCALE_MIN);
             if (minCrest > maxCrest) return reject("height-cap");
             spec.crestHeight = Clamp(spec.crestHeight, minCrest, maxCrest);
         }
@@ -435,7 +473,7 @@ struct Track : CommittedTrack, GenCursor {
         const float scale = Clamp(genV * genV /
             (GRAV * (2.0f * AIRTIME_RECORD_HEIGHT +
                      6.0f * HILL_REFERENCE_CROWN_RADIUS)),
-            1.0f, RECORD_SCALE_CAP);
+            RECORD_SCALE_MIN, RECORD_SCALE_CAP);
         spec.crestHeightDecay = frnd(0.92f, 0.96f);
         spec.troughDropPerHill =
             AIRTIME_RECORD_HEIGHT * (1.0f - spec.crestHeightDecay) +
@@ -444,13 +482,19 @@ struct Track : CommittedTrack, GenCursor {
         // chain's original baseline.  Solve the first rise jointly with decay
         // so neither lobe can dip below the 60 m 1.0x floor while Gate G only
         // notices the taller first crest.
-        float minimumFirstRise = fmaxf(AIRTIME_RECORD_HEIGHT,
-            (AIRTIME_RECORD_HEIGHT - (float)spec.troughDropPerHill) /
+        float minimumFirstRise = fmaxf(AIRTIME_RECORD_HEIGHT * RECORD_SCALE_MIN,
+            (AIRTIME_RECORD_HEIGHT * RECORD_SCALE_MIN -
+             (float)spec.troughDropPerHill) /
             (float)spec.crestHeightDecay);
         float maximumFirstRise = fminf(AIRTIME_RECORD_HEIGHT * scale,
                                        availableRise);
         if (maximumFirstRise < minimumFirstRise) return false;
-        spec.firstCrestRise = frnd(minimumFirstRise, maximumFirstRise);
+        // Section 5: bias the free crest-rise draw toward the ~5 s/lobe real
+        // airtime-hill duration (soft; stays inside [min,max]).
+        spec.firstCrestRise = durationBiasedDraw(M_HILLS,
+            frnd(minimumFirstRise, maximumFirstRise),
+            minimumFirstRise, maximumFirstRise,
+            AIRTIME_RECORD_HEIGHT, HILL_REFERENCE_LOBE_RAIL, genV);
         spec.crownRadius = HILL_REFERENCE_CROWN_RADIUS * scale;
         v1profile::HillChainProfile built =
             v1profile::makeDescendingHillChain(spec);
@@ -879,6 +923,13 @@ struct Track : CommittedTrack, GenCursor {
         for (int &count : lapElemCount) count = 0;
         for (int &count : completedElemCount) count = 0;
         for (int &count : lapAuthoredCount) count = 0;
+        // Phase 4 share controller + time pacing reset.
+        lapRideSeconds = completedLapSeconds = 0.0f;
+        recentHead = recentCount = 0;
+        for (int &c : windowCount) c = 0;
+        for (int i = 0; i < genc::SHARE_WINDOW; ++i) recentTags[i] = 0;
+        for (long &c : rideElemCount) c = 0;
+        currentAct = genc::ActTheme::CLASSIC;
         lapTopHatCount = completedTopHatCount = 0;
         lapHelixGeometryCount = lapBadHelixGeometry = 0;
         completedHelixGeometryCount = completedBadHelixGeometry = 0;
@@ -892,6 +943,7 @@ struct Track : CommittedTrack, GenCursor {
         lapMinHelixLength = 1.0e9f; lapMaxHelixLength = 0.0f;
         completedMinHelixDrop = completedMaxHelixDrop = 0.0f;
         lapMinHelixDrop = 1.0e9f; lapMaxHelixDrop = 0.0f;
+        lapHelixScaleSum = completedHelixScaleSum = 0.0f;
         completedLapSerial = 0;
         connDyStart = 0; connCurvatureStart = 0; connLen = 0;
         macroKind = MACRO_NONE; macroProfile = {}; macroDistance = 0.0f; macroApexDistance = 0.0f;
@@ -1867,7 +1919,7 @@ struct Track : CommittedTrack, GenCursor {
         // pull-up, capped at 1.5x record; a slow-window loop no longer gets a
         // gratuitous 1.5x silhouette.
         const float loopHeight = Clamp(2.0f * genV * genV / (14.0f * GRAV),
-                                       LOOP_RECORD_HEIGHT,
+                                       LOOP_RECORD_HEIGHT * RECORD_SCALE_MIN,
                                        LOOP_RECORD_HEIGHT * RECORD_SCALE_CAP);
         return buildLoopSpatial(2.0f * PI, loopHeight, false);
     }
@@ -2279,6 +2331,7 @@ struct Track : CommittedTrack, GenCursor {
         completedMaxHelixLength = lapMaxHelixLength;
         completedMinHelixDrop = lapHelixGeometryCount ? lapMinHelixDrop : 0.0f;
         completedMaxHelixDrop = lapMaxHelixDrop;
+        completedHelixScaleSum = lapHelixScaleSum; lapHelixScaleSum = 0.0f;
         lapHelixGeometryCount = lapBadHelixGeometry = 0;
         lapMinHelixDropPerRev = 1.0e9f;
         lapMinHelixRev = 1.0e9f; lapMaxHelixRev = 0.0f;
@@ -2286,12 +2339,33 @@ struct Track : CommittedTrack, GenCursor {
         lapMinHelixLength = 1.0e9f; lapMaxHelixLength = 0.0f;
         lapMinHelixDrop = 1.0e9f; lapMaxHelixDrop = 0.0f;
         completedLapSerial++;
+        // Time-based pacing: record the lap's accumulated ride seconds for the
+        // census report, then reset the clock for the next act.
+        completedLapSeconds = lapRideSeconds;
+        lapRideSeconds = 0.0f;
         elems = 0; elemLimit = irnd(13, 17); launchElem = pickLaunchExit();
         hardInvCount = 0;
         escapesSinceLaunch = 0;
         beat = BEAT_RUSH;
         beatFeatureCount = 0;
         lapInversionChains = 0;
+        chooseActTheme();   // section 3: rotate the composed act's theme
+    }
+    // Section 3: pick the next lap's act theme.  Rotate MOUNTAIN/CANYON/WATER/
+    // CLASSIC with rng jitter; WATER only when the corridor ahead actually
+    // meets water within the probe distance, else fall back to CLASSIC.
+    void chooseActTheme() {
+        genc::ActTheme picks[genc::ACT_THEME_COUNT] = {
+            genc::ActTheme::MOUNTAIN, genc::ActTheme::CANYON,
+            genc::ActTheme::WATER,    genc::ActTheme::CLASSIC };
+        genc::ActTheme want = picks[(completedLapSerial + (xr32() & 1u)) %
+                                    genc::ACT_THEME_COUNT];
+        if (want == genc::ActTheme::WATER) {
+            const float wd = waterAheadDist();
+            if (!(wd > 0.0f && wd <= genc::ACT_WATER_PROBE_DIST))
+                want = genc::ActTheme::CLASSIC;
+        }
+        currentAct = want;
     }
 
     float distanceSincePower() const {
@@ -2388,7 +2462,7 @@ struct Track : CommittedTrack, GenCursor {
     static float invRAt(SegMode m, float v) {
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) return 0.0f;
-        float rMin = s.rMaxRec;
+        float rMin = s.rMaxRec * RECORD_SCALE_MIN;   // Phase 4: 0.75x floor
         float rMax = s.rMaxRec * RECORD_SCALE_CAP;
         float vv   = Clamp(v, 28.0f, 135.0f);
         float r    = Clamp(vv * vv / ((s.gT - 1.0f) * GRAV * s.gMul), rMin, rMax);
@@ -2564,6 +2638,12 @@ struct Track : CommittedTrack, GenCursor {
         // the audited "M_TURN +12 g entry spikes".  10.5 keeps the felt load
         // at ~10.5 with margin for spline overshoot.
         const float targetPlanG = 10.5f;
+        // Phase 4: the banked-turn family keeps its 1.0x radius floor.  A turn
+        // is already low-speed eligible (the Clamp lifts a slow entry up to the
+        // reference), so a 0.75x floor would only tighten routing geometry
+        // (more boundary struggles / escapes, higher lateral g) with no mix
+        // breadth to show for it -- the 0.75x sizing win lives in the STARVED
+        // families (inversions/hills/top hat), not the over-represented turns.
         const float radius = Clamp(genV * genV / (targetPlanG * GRAV),
                                    radiusReference,
                                    radiusReference * RECORD_SCALE_CAP);
@@ -2712,9 +2792,18 @@ struct Track : CommittedTrack, GenCursor {
     };
     HelixPlan makeHelixPlan(float entrySpeed) const {
         const float denominator = HELIX_TARGET_G * GRAV;
-        const float radiusMin = HELIX_REFERENCE_RADIUS;
-        const float radiusMax = radiusMin * RECORD_SCALE_CAP;
-        float dropMin = fmaxf(HELIX_REFERENCE_DROP,
+        // Phase 4 sizing spec: the 0.75x floor applies to the helix radius AND
+        // drop bands (was a hard 1.0x on both).  A smaller coil holds the same
+        // felt-g at a LOWER entry speed, so a plan now exists across the whole
+        // v in [~47, 71] m/s band instead of only the narrow 55.4-70.6 m/s slot
+        // the 1.0x floor pinned to the valley of the bimodal genV distribution.
+        // Lowering the minimum descent from 30 m to 22.5 m is the other half:
+        // the speed window and the descent requirement are anti-correlated by
+        // energy conservation (fast means low), so the shallower floor is what
+        // lets a physically-clearing coil exist at all.
+        const float radiusMin = HELIX_REFERENCE_RADIUS * RECORD_SCALE_MIN;
+        const float radiusMax = HELIX_REFERENCE_RADIUS * RECORD_SCALE_CAP;
+        float dropMin = fmaxf(HELIX_REFERENCE_DROP * RECORD_SCALE_MIN,
             (radiusMin * denominator - entrySpeed * entrySpeed) / GRAV);
         float dropMax = fminf(HELIX_REFERENCE_DROP * RECORD_SCALE_CAP,
             (radiusMax * denominator - entrySpeed * entrySpeed) / GRAV);
@@ -2734,8 +2823,15 @@ struct Track : CommittedTrack, GenCursor {
         const float preferredDir = bankedEntry ? lastBankSign
                                                : nextBankDirection();
         const Vector3 origin = gpos;
-        const float radiusMin = HELIX_REFERENCE_RADIUS;
-        const float radiusMax = radiusMin * RECORD_SCALE_CAP;
+        // radiusRef is the record anchor dimensionInBand measures against (its
+        // own 0.75x-1.5x window); radiusFloor is the smallest r0 the coil-centre
+        // clamp may reach.  Splitting them lets initHelix realise the 0.75x floor
+        // makeHelixPlan now permits -- the old code clamped the centre against
+        // the 1.0x reference, so every plan valid only at a sub-reference radius
+        // was silently re-inflated past its own drop band and died on terrain.
+        const float radiusRef = HELIX_REFERENCE_RADIUS;
+        const float radiusFloor = HELIX_REFERENCE_RADIUS * RECORD_SCALE_MIN;
+        const float radiusMax = HELIX_REFERENCE_RADIUS * RECORD_SCALE_CAP;
         const float referencePlan = helixReferencePlanLength();
         const float referenceRail = helixReferenceRailLength();
         constexpr int denseN = 4096;
@@ -2745,17 +2841,39 @@ struct Track : CommittedTrack, GenCursor {
         float chosenRevs=0.0f, chosenDir=0.0f, horizontalLength=0.0f, railLength=0.0f;
         int helixSteps=0;
         bool accepted=false;
-        const float drops[2] = {
-            Clamp(37.5f, plan.minimumDrop, plan.maximumDrop), plan.minimumDrop
-        };
+        // Clearance-aware drop selection.  The coil sweeps a disc up to ~2x
+        // radius wide and lands its exit anchor (which permits NO cut) on the
+        // far side.  Probe the worst solidTop that footprint will cross and
+        // prefer a drop that keeps the exit above grade, instead of blindly
+        // trying the LARGEST drop first (the old {37.5, min} order maximised
+        // exit burial -- 21/80 candidates cleared mid-coil terrain then died at
+        // the no-cut exit anchor).  Fall back to the minimum (shallowest) drop.
+        float worstSolid = genGroundTopAt(origin.x, origin.z);
+        {
+            const float probeR = radiusMax + 0.5f * HELIX_SPIRAL_SWEEP;
+            for (float fwd = 0.0f; fwd <= 2.0f * probeR + 0.01f; fwd += 0.5f * probeR)
+                for (float lat = -2.0f * probeR; lat <= 2.0f * probeR + 0.01f;
+                     lat += 0.5f * probeR) {
+                    float x = origin.x + sinf(gyaw) * fwd + cosf(gyaw) * lat;
+                    float z = origin.z + cosf(gyaw) * fwd - sinf(gyaw) * lat;
+                    TerrainSurface s = genTerrainSurfaceAt(x, z);
+                    if (!s.water) worstSolid = fmaxf(worstSolid, s.solidTop);
+                }
+        }
+        // available altitude before the exit anchor (solidTop + 1) is breached,
+        // less a 1 m margin so the clearance-matched coil clears rather than grazes.
+        const float availDrop = origin.y - (worstSolid + 1.0f) - 1.0f;
+        const float matchedDrop =
+            Clamp(availDrop, plan.minimumDrop, plan.maximumDrop);
+        const float drops[2] = { matchedDrop, plan.minimumDrop };
         for (int dp=0; dp<2 && !accepted; ++dp) {
             if (dp && fabsf(drops[1]-drops[0]) < 0.01f) continue;
             float forceRadius=(genV*genV + GRAV*drops[dp])/(HELIX_TARGET_G*GRAV);
-            float center=Clamp(forceRadius, radiusMin+0.5f*HELIX_SPIRAL_SWEEP,
+            float center=Clamp(forceRadius, radiusFloor+0.5f*HELIX_SPIRAL_SWEEP,
                                radiusMax-0.5f*HELIX_SPIRAL_SWEEP);
             float r0=center-0.5f*HELIX_SPIRAL_SWEEP;
             float r1=center+0.5f*HELIX_SPIRAL_SWEEP;
-            if (!dimensionInBand(r0,radiusMin) || !dimensionInBand(r1,radiusMin)) continue;
+            if (!dimensionInBand(r0,radiusRef) || !dimensionInBand(r1,radiusRef)) continue;
             float weightSum=0.0f;
             for (int i=0;i<denseN;++i) {
                 float t=((float)i+0.5f)/denseN;
@@ -2874,6 +2992,11 @@ struct Track : CommittedTrack, GenCursor {
         lapMaxHelixLength=fmaxf(lapMaxHelixLength,railLength);
         lapMinHelixDrop=fminf(lapMinHelixDrop,chosenDrop);
         lapMaxHelixDrop=fmaxf(lapMaxHelixDrop,chosenDrop);
+        // Probe: built radius-scale (coil centre / real-record reference).  The
+        // 0.75x-1.5x window admits small coils at low entry speed; this tracks
+        // whether the sizer is biasing upward (mean must stay above 1.0x) rather
+        // than clustering at the 0.75 floor to buy frequency.
+        lapHelixScaleSum += 0.5f*(innerRadius+outerRadius)/HELIX_REFERENCE_RADIUS;
         if(chosenRevs<HELIX_RECORD_REVS-0.001f||
            chosenRevs>HELIX_RECORD_REVS*RECORD_SCALE_CAP+0.001f||
            !dimensionInBand(innerRadius,HELIX_REFERENCE_RADIUS)||
@@ -3381,16 +3504,24 @@ struct Track : CommittedTrack, GenCursor {
         }
         if (isBudgetInversion(m) && isBudgetInversion(lastElem))
             lapInversionChains++;
+        // Phase 4 inversion budget: count every committed budget inversion
+        // exactly once (natural same-subtype pairs included), so eligibleElem's
+        // hardInvCount >= INVERSION_BUDGET gate can never be undercounted past 4.
+        if (isBudgetInversion(m)) hardInvCount++;
         familyRun = elemFamily(m) == elemFamily(lastElem) ? familyRun + 1 : 1;
         lapElemCount[m]++;
         lapAuthoredCount[m]++;
+        // Phase 4 share controller: this committed counted feature enters the
+        // sliding window and the ride-cumulative tally.
+        pushRecentTag((unsigned char)m);
+        rideElemCount[m]++;
         prevElem = lastElem;
         lastElem = m;
         elems++;
         // Beat bookkeeping: the committed feature advances the composed
         // script once its beat has said its piece.
         if (++beatFeatureCount >= beatTargetLen(beat)) advanceBeat();
-        else if (elems >= elemLimit - 3) { beat = BEAT_FINALE; }
+        else if (lapNearEnd()) { beat = BEAT_FINALE; }
     }
     void commitInitializedElement(bool selectedFeature = true) {
         SegMode committed = mode;
@@ -3467,6 +3598,12 @@ struct Track : CommittedTrack, GenCursor {
             default:         return INT_MAX;
         }
     }
+    // Phase 4: the composed act's closing FINALE beat runs over the last
+    // stretch of the ~120 s lap (time-based, replacing the old
+    // elems>=elemLimit-3 feature-count proxy).
+    bool lapNearEnd() const {
+        return lapRideSeconds >= genc::TARGET_LAP_SECONDS - 15.0f;
+    }
     int beatTargetLen(unsigned char b) const {
         switch (b) {
             case BEAT_RUSH:   return 2;
@@ -3477,7 +3614,7 @@ struct Track : CommittedTrack, GenCursor {
         }
     }
     void advanceBeat() {
-        if (elems >= elemLimit - 3) { beat = BEAT_FINALE; beatFeatureCount = 0; return; }
+        if (lapNearEnd()) { beat = BEAT_FINALE; beatFeatureCount = 0; return; }
         switch (beat) {
             case BEAT_RUSH:   beat = BEAT_AIR;    break;
             case BEAT_AIR:    beat = hardInvCount < INVERSION_BUDGET
@@ -3536,7 +3673,8 @@ struct Track : CommittedTrack, GenCursor {
             default:                       return 0.68f;
         }
     }
-    bool eligibleElem(SegMode m, bool variety = true, bool asRecovery = false) const {
+    bool eligibleElem(SegMode m, bool variety = true, bool asRecovery = false,
+                      bool shareGate = true) const {
         switch (m) {
             case M_CLIMB:
             case M_LOOP: case M_ROLL: case M_IMMEL: case M_STALL:
@@ -3545,6 +3683,26 @@ struct Track : CommittedTrack, GenCursor {
             case M_HILLS:
                 break;
             default:
+                return false;
+        }
+        // Phase 4 share controller gate (U3/U4).  An element already at or over
+        // the HIGH edge of its band is ineligible at the COMPOSED level (relax
+        // 0, shareGate on).  Dropping the beat preference (relax 1) or variety
+        // (relax>=2) both clear the gate so the successor pool is never emptied
+        // -- crucial where terrain leaves only the banked family speed-eligible,
+        // so the gate biases the mix without inflating relaxed-pick fallbacks.
+        // Set-piece / count-ruled elements (SHARE_TARGET == 0) are exempt --
+        // their own rules below govern them.
+        if (variety && shareGate) {
+            const float tgt = genc::SHARE_TARGET[m];
+            if (tgt > 0.0f &&
+                windowShare(m) >= tgt * genc::SHARE_BAND_HI) return false;
+            // Banked-turn family (TURN/SCURVE/DIVE/WAVE) aggregate hi-gate: the
+            // binding constraint for that family (its per-subtype bands sum a
+            // little above the family target by design).
+            if (elemFamily(m) == 3 &&
+                windowShareFamilyBanked() >=
+                    genc::FAMILY_BANKED_TARGET * genc::SHARE_BAND_HI)
                 return false;
         }
         // Per-element ENTRY-SPEED WINDOW, derived from the same record-capped anchors invRAt uses
@@ -3564,10 +3722,12 @@ struct Track : CommittedTrack, GenCursor {
         // classic double corkscrew), at most two chained pairs per lap.
         if (isBudgetInversion(m)) {
             if (hardInvCount >= INVERSION_BUDGET) return false;
+            // Phase 4: the share controller now governs inversion MIX; the
+            // per-lap subtype count survives only as a comfort safety cap
+            // (consistent with INVERSION_BUDGET and the census subtype gate),
+            // and the corkscrew every-other-lap gate is removed (ROLL is
+            // share-gated at 2.5%).
             if (lapAuthoredCount[m] >= inversionLapCap(m)) return false;
-            // Corkscrews are a rare set-piece (a few per ride, usually as a
-            // double): offer the event only every other lap.
-            if (m == M_ROLL && (completedLapSerial & 1u)) return false;
             if (!asRecovery) {
                 if (isBudgetInversion(lastElem)) {
                     const bool naturalPair =
@@ -3592,7 +3752,15 @@ struct Track : CommittedTrack, GenCursor {
                 return false;
         }
         if (m == M_HELIX) {
-            if (!makeHelixPlan(genV).valid) return false;
+            const HelixPlan hplan = makeHelixPlan(genV);
+            if (!hplan.valid) return false;
+            // Descent-clearance pre-gate (mirrors DIVE's clr<20 guard).  A helix
+            // descends at least minimumDrop metres; offering it where the entry
+            // clearance can't absorb that drop just burns every scheduler and
+            // recovery pick on a coil that dies on the corridor floor or the
+            // no-cut exit anchor (baseline: 0/80 builds).  Gating on physical fit
+            // here lets the recovery coin-flip actually favour HELIX 50/50.
+            if (clr < hplan.minimumDrop + 3.0f) return false;
         }
         if (m == M_SCURVE && !makeSCurvePlan(genV).valid) return false;
         if (m == M_DIVELOOP) {
@@ -3650,16 +3818,15 @@ struct Track : CommittedTrack, GenCursor {
         }
         // Fixed hills cannot own a corridor that rises beyond their profile.
         if ((m == M_HILLS || m == M_BANKAIR || m == M_WAVE) && hillRiseAhead() > 26.0f) return false;
-        // Dips require a non-rising, fully qualified corridor.  A splashdown
-        // is closing punctuation (SheiKra runs its water skim as one of the
-        // final elements, and only ever one): a WATER dip may appear once the
-        // lap is past its midpoint, a dry dip only in the last third, once.
+        // Dips require a non-rising, fully qualified corridor.  Phase 4: the
+        // DIP is share-gated (above) + water-gated (below) + placement-gated to
+        // not appear in the first 25% of the lap (time-based, replacing the old
+        // once-per-lap + last-third proxy).  The splashdown finale stays at most
+        // one per lap: a real splashdown is a single closing punctuation
+        // element (SheiKra/Griffon).
         if (m == M_DIP) {
-            if (lapAuthoredCount[M_DIP] >= 1) return false;
-            const bool water = waterAheadDist() > 0 &&
-                               gpos.y - WATER_Y <= 35.0f;
-            if (elems < (water ? elemLimit / 2 : (2 * elemLimit) / 3))
-                return false;
+            if (lapRideSeconds < 0.25f * genc::TARGET_LAP_SECONDS) return false;
+            if (lapAuthoredCount[M_DIP] >= 1) return false;   // splashdown finale <=1/lap
         }
         if (m == M_DIP && hillRiseAhead() > 14.0f) return false;
         if (m == M_DIP && !dipCorridorViable()) return false;
@@ -3703,11 +3870,43 @@ struct Track : CommittedTrack, GenCursor {
         return eligibleElem(m, false, true);
     }
 
+    // Section 3: act-theme weight multiplier (bounded 0.7-1.4 so a theme can
+    // never push a share out of its band -- it only reweights WITHIN the band).
+    float actThemeMultiplier(SegMode m) const {
+        using AT = genc::ActTheme;
+        switch (currentAct) {
+            case AT::MOUNTAIN:   // high-relief banked lines + dive
+                if (m == M_TURN || m == M_DIVE) return 1.30f;
+                if (m == M_HELIX) return 1.15f;
+                return 1.0f;
+            case AT::CANYON:     // wave/bankair walls + aerial stall
+                if (m == M_WAVE || m == M_BANKAIR) return 1.30f;
+                if (m == M_STALL) return 1.20f;
+                return 1.0f;
+            case AT::WATER:      // splash dip + wave skim
+                if (m == M_DIP) return 1.40f;
+                if (m == M_WAVE) return 1.25f;
+                return 1.0f;
+            case AT::CLASSIC:
+            default: return 1.0f;
+        }
+    }
+    // Phase 4 share controller weighting.  The base ElementRule.weight carries
+    // the beat-phase-appropriate relative bias (already ~proportional to the
+    // researched targets); the share factor then pushes toward the target share
+    // (up-weight when under, down-weight when over), and the act theme reweights
+    // within the band.  The old softMax overflow damping is subsumed by this.
     float elementWeight(SegMode m) const {
         const ElementRule rule = elementRule(m);
-        if (isBudgetInversion(m) || rule.softMax <= 0) return rule.weight;
-        const int overflow = std::max(lapAuthoredCount[m] - rule.softMax + 1, 0);
-        return rule.weight / (1.0f + 3.0f * overflow * overflow);
+        float w = rule.weight;
+        const float target = genc::SHARE_TARGET[m];
+        if (target > 0.0f) {
+            const float share = windowShare(m);
+            w *= Clamp(1.0f + 1.2f * (target - share) / fmaxf(target, 1.0f),
+                       0.4f, 2.5f);
+        }
+        w *= actThemeMultiplier(m);
+        return w;
     }
     SegMode pickElement(uint32_t excluded = 0) {
         if (gForceElem >= 0) {
@@ -3750,7 +3949,7 @@ struct Track : CommittedTrack, GenCursor {
                     if ((excluded & (UINT32_C(1) << m)) ||
                         (!allowRepeat && m == lastElem) ||
                         (!dropPhase && !(elementRule(m).phases & beat)) ||
-                        !eligibleElem(m, !dropVariety))
+                        !eligibleElem(m, !dropVariety, false, relax == 0))
                         continue;
                     valid[count] = m;
                     weights[count] = elementWeight(m);
@@ -3869,7 +4068,8 @@ struct Track : CommittedTrack, GenCursor {
         return result;
     }
 
-    bool commitConnector(const ConnectorPlan &plan) {
+    bool commitConnector(const ConnectorPlan &plan,
+                         bool ignoreCorridor = false) {
         mode = plan.mode;
         connLen = plan.steps;
         connDyStart = plan.startDy;
@@ -3919,11 +4119,18 @@ struct Track : CommittedTrack, GenCursor {
         // flat-frame blend both snapped leaned entries and rode every curve
         // unbanked.
         attachFeltBankFrame(run, genV, 1.0f, 1.10f);
-        if (!spatialCorridorClear(run)) {
-            return false;
-        }
-        if (!spatialForceClear(run, plan.mode, -3.0f, 6.0f)) {
-            return false;
+        // ignoreCorridor is the ABSOLUTE last-resort escape rung (see
+        // escapeForward): a genuinely boxed anchor where no clearing stub
+        // exists at all still gets a flat forward run so streaming generation
+        // can never dead-end.  Only ever reached with occupancy already off,
+        // and only after every terrain-clearing straight/arc has failed.
+        if (!ignoreCorridor) {
+            if (!spatialCorridorClear(run)) {
+                return false;
+            }
+            if (!spatialForceClear(run, plan.mode, -3.0f, 6.0f)) {
+                return false;
+            }
         }
         remain = plan.steps;
         publishSpatialRun(std::move(run));
@@ -4528,13 +4735,21 @@ struct Track : CommittedTrack, GenCursor {
                 // top-hat, so the big climb stays once-per-lap and the ride keeps hugging the ground.
                 // End the lap at its feature target; optional inversions do not
                 // gate the next launch.
-                bool wantLaunch = elems >= elemLimit;
+                // Phase 4: the lap closes on its ~120 s ride-time budget, not a
+                // feature count.  A hard elems backstop still bounds a
+                // pathological corridor that somehow never accrues time.
+                bool wantLaunch = lapRideSeconds >= genc::TARGET_LAP_SECONDS ||
+                                  elems >= genc::LAP_HARD_ELEM_CAP;
                 // A real LSM/hydraulic launch lives AT GRADE on flat ground -- the old corridor
                 // lift put the dead-flat launch deck at the height of the tallest terrain ahead,
-                // producing 100 m launch straights on stilts. Postpone the launch (up to 6 extra
-                // elements) until the corridor ahead is actually flat and the track is low; past
-                // that, launch anyway (the corridor lift remains as the fallback).
-                if (wantLaunch && elems < elemLimit + 6) {
+                // producing 100 m launch straights on stilts. Postpone the launch (up to +45 s of
+                // ride time) until the corridor ahead is actually flat and the track is low; past
+                // that window (or the hard elems cap), launch anyway (the corridor lift remains
+                // as the fallback).
+                if (wantLaunch &&
+                    lapRideSeconds < genc::TARGET_LAP_SECONDS +
+                                     genc::LAP_POSTPONE_SECONDS &&
+                    elems < genc::LAP_HARD_ELEM_CAP) {
                     float cs = cosf(gyaw), sn = sinf(gyaw);
                     float gtHere = gpos.y - h, corrMax = gtHere;
                     for (float lz = 10.0f; lz <= 150.0f; lz += 10.0f)
@@ -4773,7 +4988,9 @@ struct Track : CommittedTrack, GenCursor {
             // A powered launch always closes the lap and climbs out under power;
             // prefer it the moment escapes have charged the lap budget past its
             // feature target, and require it before an escape can keep streaming.
-            const bool forceLaunch = elems >= elemLimit + 6 ||
+            const bool forceLaunch = lapRideSeconds >= genc::TARGET_LAP_SECONDS +
+                                                       genc::LAP_POSTPONE_SECONDS ||
+                                     elems >= genc::LAP_HARD_ELEM_CAP ||
                                      escapesSinceLaunch >= ESCAPES_PER_LAP;
             if (forceLaunch) {
                 pending = {}; connLen = 0; terrainAvoidanceTurn = false;
@@ -4949,6 +5166,32 @@ struct Track : CommittedTrack, GenCursor {
                 }
         }
         }   // envelope tier loop (4 m escape envelope, then occupancy off)
+        // ABSOLUTE last resort: every terrain-clearing straight and curving
+        // escape failed at every envelope down to occupancy-off -- the anchor
+        // is boxed by terrain the escape cannot climb over or turn out of (a
+        // rare bowl a tighter 0.75x element can steer the corridor into).
+        // Publish a flat forward stub that ignores the corridor floor so
+        // streaming generation always advances one more step; the next
+        // boundary, handed a level neutral anchor pointed forward, recovers
+        // with the ordinary relaxed pool.  Prefer to level onto the ground
+        // ahead when that is not itself a wall.
+        occupancyEnvelope = 0.0f;
+        {
+            float deckAhead = gpos.y;
+            for (float d = SEG_LEN; d <= MIN_CONN * SEG_LEN; d += SEG_LEN)
+                deckAhead = fmaxf(deckAhead,
+                    genGroundTopAt(gpos.x + sinf(gyaw) * d,
+                                   gpos.z + cosf(gyaw) * d) + TERRAIN_DECK_CLEARANCE);
+            const float endY = fmaxf(gpos.y, fminf(deckAhead,
+                                     gpos.y + 0.30f * MIN_CONN * SEG_LEN));
+            ConnectorPlan stub{endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT,
+                               MIN_CONN, gpos.y, endY,
+                               Clamp(genPrevDy, 0.0f, 2.0f), 0.0f};
+            if (commitConnector(stub, /*ignoreCorridor=*/true)) {
+                fallbackEscapes++;
+                return true;
+            }
+        }
         return false;
     }
 
@@ -4959,8 +5202,13 @@ struct Track : CommittedTrack, GenCursor {
         }
 
         unsigned char tag = (unsigned char)mode;
-        if (isBudgetInversion((SegMode)tag) && tag != lastGenMode)
-            hardInvCount++;
+        // NOTE: hardInvCount is maintained per-committed-feature in
+        // rememberElement (below), not here.  The old genPoint-level
+        // tag-transition increment undercounted a same-subtype natural pair
+        // (IMMEL+IMMEL, ROLL+ROLL corkscrew) generated with no connective span
+        // between them -- tag == lastGenMode across the whole second inversion,
+        // so its samples never bumped the budget and a lap could place a 5th
+        // inversion past the 4-budget (census invOver4 / inversionSpacing).
         // Propulsion ownership is exact for both station launch and in-course
         // booster; display tags do not create thrust outside their run.
         unsigned char ch = (mode == M_LAUNCH || mode == M_BOOST) ? 2 : 0;

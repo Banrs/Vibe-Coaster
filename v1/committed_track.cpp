@@ -644,9 +644,54 @@ struct GenCursor {
     float   hillTurn = 0;
     int     elems = 0;       // physical feature slots; a routing banked turn spends one too
     int     elemLimit = 3;
+    // Phase 4 time-based lap pacing (~120 s/lap): accumulated planned ride
+    // seconds since the last launch (ds/genV summed at every pushCP, using the
+    // planned integrator's own speed).  The lap closes on this budget rather
+    // than a feature count; completedLapSeconds is the value at the last close
+    // (for the census per-lap ride-seconds report).  Both live in the cursor so
+    // a rolled-back trial restores them exactly.
+    float   lapRideSeconds = 0.0f;
+    float   completedLapSeconds = 0.0f;
     int     lapElemCount[M_COUNT] = {0};
     int     completedElemCount[M_COUNT] = {0};
     int     lapAuthoredCount[M_COUNT] = {0};
+    // Phase 4 share controller (U3/U4): a sliding window of the last
+    // SHARE_WINDOW committed COUNTED features drives the live shares.  The
+    // window PERSISTS across laps (adaptive -- an early deficit is worked off
+    // over the next features, never carried as permanent debt), while
+    // rideElemCount keeps the ride-cumulative tally for census reporting.
+    unsigned char recentTags[genc::SHARE_WINDOW] = {0};
+    int     recentHead = 0;          // next write slot (circular)
+    int     recentCount = 0;         // valid entries in the window
+    int     windowCount[M_COUNT] = {0};   // per-mode count within the window
+    long    rideElemCount[M_COUNT] = {0}; // ride-cumulative counted features
+    // Per-lap act theme (section 3), chosen at closeLapAtLaunch.  Biases
+    // shares INSIDE their bands via a bounded weight multiplier.
+    genc::ActTheme currentAct = genc::ActTheme::CLASSIC;
+    // Push one committed counted feature into the sliding window.
+    void pushRecentTag(unsigned char m) {
+        if (recentCount == genc::SHARE_WINDOW) {
+            unsigned char old = recentTags[recentHead];
+            if (windowCount[old] > 0) windowCount[old]--;
+        } else {
+            recentCount++;
+        }
+        recentTags[recentHead] = m;
+        windowCount[m]++;
+        recentHead = (recentHead + 1) % genc::SHARE_WINDOW;
+    }
+    // Live windowed share of mode m, as a PERCENT of counted features (same
+    // denominator as SHARE_TARGET).  0 when the window is empty.
+    float windowShare(SegMode m) const {
+        return recentCount ? 100.0f * (float)windowCount[m] / (float)recentCount
+                           : 0.0f;
+    }
+    float windowShareFamilyBanked() const {
+        if (!recentCount) return 0.0f;
+        int fam = windowCount[M_TURN] + windowCount[M_SCURVE] +
+                  windowCount[M_DIVE] + windowCount[M_WAVE];
+        return 100.0f * (float)fam / (float)recentCount;
+    }
     int     lapTopHatCount = 0;
     int     completedTopHatCount = 0;
     int     lapHelixGeometryCount = 0, lapBadHelixGeometry = 0;
@@ -661,6 +706,10 @@ struct GenCursor {
     float   lapMinHelixLength = 1.0e9f, lapMaxHelixLength = 0.0f;
     float   completedMinHelixDrop = 0.0f, completedMaxHelixDrop = 0.0f;
     float   lapMinHelixDrop = 1.0e9f, lapMaxHelixDrop = 0.0f;
+    // Phase-4 probe: running sum of built helix radius-scale (center/reference)
+    // per lap, exposed so the census can print mean built scale vs the real
+    // record reference (guards against the sizer clustering at the 0.75 floor).
+    float   lapHelixScaleSum = 0.0f, completedHelixScaleSum = 0.0f;
     unsigned completedLapSerial = 0;
     float   straightRun = 0.0f;
     float   genPrevDy = 0;

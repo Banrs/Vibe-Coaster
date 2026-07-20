@@ -959,6 +959,12 @@ int main(int argc, char **argv) {
         int laps = 0, invBudgetMiss = 0, subtypeRepeat = 0;
         int inversionSpacingMiss = 0, helixGeometryMiss = 0;
         unsigned long totalEscapes = 0, totalForcedCloses = 0, totalRelaxed = 0;
+        // Phase 4: per-lap ride-seconds accumulation for the ~120 s pacing gate.
+        double totalLapSeconds = 0.0; int lapSecondsN = 0;
+        double minLapSeconds = 1e9, maxLapSeconds = 0.0;
+        // Phase-4 HELIX resurrection probe: mean built radius-scale vs the real
+        // record reference, accumulated across every committed helix.
+        double helixScaleSum = 0.0; long helixScaleN = 0;
         for (int sd = 1; sd <= seeds; sd++) {
             g_rng = (uint32_t)sd * 2654435761u | 1u;
             Track t; t.reset();
@@ -1009,12 +1015,18 @@ int main(int argc, char **argv) {
                     int inv = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
                     int total = 0; for (int i=0;i<M_COUNT;i++) total += cnt[i];
                     double ms = (double)(clock()-lapClk)*1000.0/CLOCKS_PER_SEC;
-                    printf("[census] seed%d lap%u features=%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d total=%d spacing=%s} helix=%d/%d@%.1fm/rev tophat=%d ms/lap=%.1f\n",
+                    double lapSecs = t.completedLapSeconds;
+                    printf("[census] seed%d lap%u features=%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d total=%d spacing=%s} helix=%d/%d@%.1fm/rev tophat=%d rideSecs=%.1f ms/lap=%.1f\n",
                            sd,seenSerial,total,cnt[M_ROLL],cnt[M_LOOP],cnt[M_IMMEL],
                            cnt[M_DIVELOOP],cnt[M_STALL],inv,
                            lapSpacingBad?"FAIL":"ok",cnt[M_HELIX],
                            t.completedHelixGeometryCount,t.completedMinHelixDropPerRev,
-                           t.completedTopHatCount,ms);
+                           t.completedTopHatCount,lapSecs,ms);
+                    helixScaleSum += t.completedHelixScaleSum;
+                    helixScaleN += t.completedHelixGeometryCount;
+                    totalLapSeconds += lapSecs; lapSecondsN++;
+                    if (lapSecs < minLapSeconds) minLapSeconds = lapSecs;
+                    if (lapSecs > maxLapSeconds) maxLapSeconds = lapSecs;
                     laps++;
                     if (inv > 4) invBudgetMiss++;
                     // Subtype caps mirror the researched references: Tormenta
@@ -1066,6 +1078,16 @@ int main(int argc, char **argv) {
         for(int i=0;i<M_COUNT;i++) totalFeatures+=setType[i];
         for(int i:{M_TURN,M_HELIX,M_SCURVE,M_DIVE,M_BANKAIR,M_WAVE}) bankedFeatures+=setType[i];
         for(int i:{M_HILLS,M_BANKAIR,M_WAVE}) airFeatures+=setType[i];
+        // Phase 4 lap-pacing report (gate 3: mean in [105,135] s over the run).
+        {
+            double meanSecs = lapSecondsN ? totalLapSeconds / lapSecondsN : 0.0;
+            const char *lapFlag = (meanSecs >= 105.0 && meanSecs <= 135.0)
+                                  ? "IN" : "OUT";
+            printf("[census] lap-seconds: mean=%.1f min=%.1f max=%.1f laps=%d "
+                   "target=[105,135] %s\n",
+                   meanSecs, lapSecondsN ? minLapSeconds : 0.0, maxLapSeconds,
+                   lapSecondsN, lapFlag);
+        }
         printf("[census] family share: banked=%.1f%% airtime=%.1f%% features=%ld\n",
                totalFeatures?100.0*bankedFeatures/totalFeatures:0.0,
                totalFeatures?100.0*airFeatures/totalFeatures:0.0,totalFeatures);
@@ -1107,6 +1129,12 @@ int main(int argc, char **argv) {
             printBand("SCURVE", setType[M_SCURVE], 8.0);
             printBand("HELIX", setType[M_HELIX], 4.0);
         }
+        // Built-scale probe: mean coil radius vs real-record reference across the
+        // whole census.  The sizing window is 0.75x-1.5x; the built mean must
+        // land ABOVE 1.0x (frequency is bought by widening the valid speed
+        // window + clearance-matched drop, NOT by clustering at the 0.75 floor).
+        printf("[census] scale HELIX mean=%.2fx n=%ld\n",
+               helixScaleN ? helixScaleSum / helixScaleN : 0.0, helixScaleN);
         int deadSubtype = 0;
         if (seeds > 1) for (int i : invType) if (setType[i] == 0) {
             printf("[census] DEAD enabled inversion subtype: %s\n", GEN_NM[i]);

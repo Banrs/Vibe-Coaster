@@ -66,6 +66,10 @@ static const char *SHADOW_FS =
     // this shader falls back to doing its own inline tonemap+gamma+saturation
     // exactly as before.
     "uniform float legacyTonemap;\n"
+    // Real material-ID flag (replaces the old vertex-alpha/blue-tint heuristic). Set to
+    // 1.0 only for the cached water-surface mesh draw, 0.0 for everything else. Water
+    // then reads its per-vertex baked DEPTH and SHORE factor from fragTexCoord.
+    "uniform float uIsWater;\n"
     "out vec4 finalColor;\n"
 
     // One shadow map, hardware depth comparison. `shadowMap` is a
@@ -189,17 +193,29 @@ static const char *SHADOW_FS =
     "  vec4 tex = texture(texture0, fragTexCoord);\n"
     "  vec3 base = tex.rgb*fragColor.rgb*colDiffuse.rgb;\n"
 
-    "  if(fragColor.a < 0.72 && normalize(fragNormal).y > 0.80 && base.b > base.r*1.15){\n"
+    // Water surface: a real material (uIsWater), not a color heuristic. Depth and shore
+    // factor are baked per-vertex into fragTexCoord (see the water mesh in main.cpp).
+    // Shallows read turquoise and near-transparent, deepening to opaque blue; crisp foam
+    // rides the shore edge; wave shading, Fresnel sky reflection, sun glint and received
+    // shadow come from waterShade(); the flat per-cell voxel silhouette is untouched.
+    "  if(uIsWater > 0.5){\n"
+    "    float depth = max(fragTexCoord.x, 0.0);\n"
+    "    float shore = clamp(fragTexCoord.y, 0.0, 1.0);\n"
     "    float rawShW = shadow(vec3(0.0,1.0,0.0));\n"
-
-    "    float foam = smoothstep(0.62, 0.70, fragColor.a);\n"
-    "    vec3 wcol = waterShade(base, rawShW, foam);\n"
+    "    float dN = 1.0 - exp(-depth*0.35);\n"
+    "    vec3 shallowCol = vec3(0.36, 0.80, 0.80);\n"
+    "    vec3 deepCol    = vec3(0.10, 0.30, 0.62);\n"
+    "    vec3 bodyBase = mix(shallowCol, deepCol, dN);\n"
+    // Foam where the shore mesh flagged a land edge, plus a shallow-water lip.
+    "    float foam = max(shore, 1.0 - smoothstep(0.0, 0.55, depth));\n"
+    "    vec3 wcol = waterShade(bodyBase, rawShW, foam);\n"
     "    if(legacyTonemap > 0.5){\n"
     "      wcol = aces(wcol*0.94);\n"
     "      wcol = pow(wcol, vec3(1.0/2.2));\n"
     "    }\n"
-    "    float wa = mix(0.90, 0.96, foam);\n"
-
+    // Shallows let the bed show through; deep water and foam turn opaque.
+    "    float wa = mix(0.58, 0.90, dN);\n"
+    "    wa = max(wa, foam*0.92);\n"
     "    if(fogEnd > 0.0){\n"
     "      float d = length(viewPos.xz - fragWorld.xz);\n"
     "      float fog = clamp((d - fogStart)/max(fogRange, 0.001), 0.0, 1.0);\n"
@@ -379,6 +395,7 @@ struct ShadowSys {
     int locRailUVRange=-1, locMetalUVRange=-1;
     int locLegacyTonemap=-1;
     int locShadowForce=-1, locShadowDebug=-1;
+    int locIsWater=-1;
     Matrix lightVP{};
     float invRange = 0.0f;
     Vector3 focus{};
@@ -413,6 +430,7 @@ struct ShadowSys {
         locLegacyTonemap = GetShaderLocation(lit, "legacyTonemap");
         locShadowForce = GetShaderLocation(lit, "uShadowForce");
         locShadowDebug = GetShaderLocation(lit, "uShadowDebug");
+        locIsWater = GetShaderLocation(lit, "uIsWater");
         // Defensive clamp: SHADOW_MAP_SIZE (4096) is a safe size on effectively
         // all desktop GL 3.3 hardware, but this can't be build/run-tested here,
         // so ask the driver rather than assume. Falls back to whatever the GPU

@@ -231,6 +231,9 @@ struct TerrainMesh {
 
     std::vector<TerrainChunk> chunks;
     WaterBuckets liveWaterBuckets;
+    // Bumped whenever liveWaterBuckets changes, so the (main-thread) cached water mesh
+    // in main.cpp knows to rebuild -- same lifecycle as the terrain chunk meshes.
+    unsigned waterVersion = 0;
     bool live = false;
     int keyCx = INT_MIN, keyCz = INT_MIN;
     std::thread worker;
@@ -424,6 +427,7 @@ struct TerrainMesh {
         for(auto &entry:pendingWaterBuckets)
             if(pendingDesiredKeys.count(entry.first) && !entry.second.empty())
                 liveWaterBuckets.insert_or_assign(entry.first,std::move(entry.second));
+        ++waterVersion;   // water buckets just changed; main.cpp rebuilds its water mesh
 
         chunks = std::move(merged);
         live = !chunks.empty();
@@ -460,6 +464,7 @@ struct TerrainMesh {
         for (TerrainChunk &chunk : chunks) UnloadMesh(chunk.mesh);
         chunks.clear();
         liveWaterBuckets.clear();
+        ++waterVersion;
         live = false;
     }
 

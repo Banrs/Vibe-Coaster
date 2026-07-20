@@ -2077,6 +2077,67 @@ int main(int argc, char **argv) {
         supportMeshCache.clear();
     };
 
+    // Cached water surface. The old path rebuilt every water quad in immediate mode
+    // every frame from gTerrainMesh.liveWaterBuckets. Bake them once, per terrain
+    // rebuild (tracked by gTerrainMesh.waterVersion), into static per-16m-bucket meshes.
+    // Each vertex carries baked DEPTH (WATER_Y - bed) in texcoord.x and a SHORE/foam
+    // factor in texcoord.y; the water material (uIsWater) in SHADOW_FS reads them.
+    // A single merged water mesh (one draw call, like the old single batched immediate
+    // pass -- splitting it per bucket regressed on the software rasterizer). Distant
+    // water is fogged out in-shader, exactly as the immediate path relied on.
+    Mesh waterMesh{};
+    bool waterMeshReady = false;
+    unsigned builtWaterVersion = 0xFFFFFFFFu;
+    auto unloadWaterMesh = [&]() {
+        if (waterMeshReady) UnloadMesh(waterMesh);
+        waterMesh = Mesh{};
+        waterMeshReady = false;
+        builtWaterVersion = 0xFFFFFFFFu;
+    };
+    auto rebuildWaterMesh = [&]() {
+        if (waterMeshReady) UnloadMesh(waterMesh);
+        waterMesh = Mesh{};
+        waterMeshReady = false;
+        const float hs = CELL * 0.5f;
+        std::vector<float> pos, uv, nrm;
+        std::vector<unsigned char> col;
+        auto vert = [&](float x, float z, float depth, float shore) {
+            pos.push_back(x); pos.push_back(WATER_Y); pos.push_back(z);
+            uv.push_back(depth); uv.push_back(shore);
+            nrm.push_back(0.0f); nrm.push_back(1.0f); nrm.push_back(0.0f);
+            col.push_back(255); col.push_back(255); col.push_back(255); col.push_back(255);
+        };
+        for (const auto &bucket : gTerrainMesh.liveWaterBuckets) {
+            for (const Vector3 &wc : bucket.second) {
+                float depth = WATER_Y - wc.y;
+                // Crisp foam edge: any orthogonal neighbour cell that is not water is a shore.
+                bool shoreN = !terrainSurfaceAt(wc.x + CELL, wc.z).water ||
+                              !terrainSurfaceAt(wc.x - CELL, wc.z).water ||
+                              !terrainSurfaceAt(wc.x, wc.z + CELL).water ||
+                              !terrainSurfaceAt(wc.x, wc.z - CELL).water;
+                float shore = shoreN ? 1.0f : 0.0f;
+                float x0 = wc.x - hs, x1 = wc.x + hs, z0 = wc.z - hs, z1 = wc.z + hs;
+                // Same top-face winding the immediate quad (and terrain tops) used.
+                vert(x0, z0, depth, shore); vert(x0, z1, depth, shore); vert(x1, z1, depth, shore);
+                vert(x0, z0, depth, shore); vert(x1, z1, depth, shore); vert(x1, z0, depth, shore);
+            }
+        }
+        builtWaterVersion = gTerrainMesh.waterVersion;
+        if (pos.empty()) return;
+        waterMesh.vertexCount = (int)(pos.size() / 3);
+        waterMesh.triangleCount = waterMesh.vertexCount / 3;
+        waterMesh.vertices  = (float *)RL_MALLOC(pos.size() * sizeof(float));
+        waterMesh.texcoords = (float *)RL_MALLOC(uv.size() * sizeof(float));
+        waterMesh.normals   = (float *)RL_MALLOC(nrm.size() * sizeof(float));
+        waterMesh.colors    = (unsigned char *)RL_MALLOC(col.size());
+        memcpy(waterMesh.vertices, pos.data(), pos.size() * sizeof(float));
+        memcpy(waterMesh.texcoords, uv.data(), uv.size() * sizeof(float));
+        memcpy(waterMesh.normals, nrm.data(), nrm.size() * sizeof(float));
+        memcpy(waterMesh.colors, col.data(), col.size());
+        UploadMesh(&waterMesh, false);
+        waterMeshReady = true;
+    };
+
     const int   NCARS    = 2;
     const float CAR_GAP  = 4.2f;
 
@@ -2217,6 +2278,7 @@ int main(int argc, char **argv) {
             // indices could otherwise alias fresh ones on the new route.
             supportPlacementCache.clear();
             unloadSupportMeshes();
+            unloadWaterMesh();
             u = Track::rideStartU; v = 7.0f; boost = 40; score = 0;
             generationFault = false;
             gVert = gVertMax = gVertMin = 1.0f;
@@ -3699,6 +3761,8 @@ int main(int argc, char **argv) {
         auto bindShadowUniforms = [&]() {
             gShadow.bindLitUniforms();
             gShadow.setDebug(0.0f, g_shadowDebug ? 1.0f : 0.0f);
+            float notWater = 0.0f;   // only the water mesh draw flips this to 1.0
+            SetShaderValue(gShadow.lit, gShadow.locIsWater, &notWater, SHADER_UNIFORM_FLOAT);
         };
         auto bindShadowTextures   = [&]() { gShadow.bindLitTexture(); };
         auto unbindShadowTextures = [&]() { gShadow.unbindLitTexture(); };
@@ -3870,36 +3934,21 @@ int main(int argc, char **argv) {
             SetShaderValue(gShadow.lit, gShadow.locFogCol, fc, SHADER_UNIFORM_VEC3);
             SetShaderValue(gShadow.lit, gShadow.locFogColLinear, fcl, SHADER_UNIFORM_VEC3);
 
-            BeginShaderMode(gShadow.lit);
-            bindShadowTextures();
+            // Rebuild the cached water mesh only when the terrain (and thus its water
+            // buckets) changed -- same lifecycle as the terrain chunk meshes.
+            if (gTerrainMesh.waterVersion != builtWaterVersion) rebuildWaterMesh();
 
-            rlSetTexture(gAtlas.id);
-            float wu = (T_WHITE * 16 + 8.0f) / (float)(TILE_N * 16);
-            float wv = 8.0f / 16.0f;
-            rlBegin(RL_QUADS);
-            rlNormal3f(0, 1, 0);
-
-            for (const auto &bucket : gTerrainMesh.liveWaterBuckets)
-            for (const Vector3 &wc : bucket.second) {
-                float hs = CELL * 0.5f;
-                float x0 = wc.x - hs, x1 = wc.x + hs;
-                float z0 = wc.z - hs, z1 = wc.z + hs;
-                float depth = WATER_Y - wc.y;
-                float dN    = 1.0f - expf(-depth * 0.32f);
-                Color shallow = { 96, 196, 198, 150 };
-                Color deep    = { 54, 132, 196, 150 };
-                Color wcol = mixc(shallow, deep, dN);
-
-                unsigned char wa = (depth < 1.6f) ? 178 : 150;
-                rlColor4ub(wcol.r, wcol.g, wcol.b, wa);
-                rlTexCoord2f(wu, wv); rlVertex3f(x0, WATER_Y, z0);
-                rlTexCoord2f(wu, wv); rlVertex3f(x0, WATER_Y, z1);
-                rlTexCoord2f(wu, wv); rlVertex3f(x1, WATER_Y, z1);
-                rlTexCoord2f(wu, wv); rlVertex3f(x1, WATER_Y, z0);
+            if (waterMeshReady) {
+                bindShadowTextures();
+                float isW = 1.0f;
+                SetShaderValue(gShadow.lit, gShadow.locIsWater, &isW, SHADER_UNIFORM_FLOAT);
+                Material wmat = gTerrainMat;
+                wmat.shader = gShadow.lit;
+                DrawMesh(waterMesh, wmat, MatrixIdentity());
+                float notW = 0.0f;
+                SetShaderValue(gShadow.lit, gShadow.locIsWater, &notW, SHADER_UNIFORM_FLOAT);
+                unbindShadowTextures();
             }
-            rlEnd();
-            EndShaderMode();
-            unbindShadowTextures();
             float off = 0.0f;
             SetShaderValue(gShadow.lit, gShadow.locFogEnd, &off, SHADER_UNIFORM_FLOAT);
         }
@@ -4534,6 +4583,7 @@ int main(int argc, char **argv) {
     gTerrainMesh.shutdown();
     trackRenderCache.unload();
     unloadSupportMeshes();
+    unloadWaterMesh();
     gPostFX.shutdown();
     gSky.shutdown();
     gShadow.shutdown();

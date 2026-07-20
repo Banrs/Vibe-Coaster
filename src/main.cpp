@@ -2542,18 +2542,26 @@ int main(int argc, char **argv) {
         }
         if (waterShot) {
 
+            // Water is only a fraction of the world and can sit well outside the
+            // 160 m the earlier search covered (the car often spawns on a plateau),
+            // so the shot framed only track. Search a much wider ring and aim the
+            // camera DOWN onto the found water so shallows/deep gradient, shore foam
+            // and glint fill the frame -- the whole point of --watershot.
             Vector3 wctr = P; bool found = false;
-            for (int r = 2; r <= 160 && !found; r += 2)
-                for (int a = 0; a < 24 && !found; a++) {
-                    float ang = a * (2.0f * PI / 24.0f);
+            for (int r = 4; r <= 900 && !found; r += 4)
+                for (int a = 0; a < 48 && !found; a++) {
+                    float ang = a * (2.0f * PI / 48.0f);
                     float wx = P.x + cosf(ang) * r, wz = P.z + sinf(ang) * r;
                     if (terrainSurfaceAt(wx, wz).water) { wctr = Vector3{ wx, WATER_Y, wz }; found = true; }
                 }
+            if (const char *wv = getenv("MC_WATER_XZ")) {
+                float wx, wz; if (sscanf(wv, "%f,%f", &wx, &wz) == 2) wctr = Vector3{ wx, WATER_Y, wz };
+            }
             Vector3 dir = Vector3Subtract(wctr, P); dir.y = 0;
             float dl = Vector3Length(dir);
             dir = (dl < 1e-3f) ? Vector3{ 0, 0, 1 } : Vector3Scale(dir, 1.0f / dl);
-            cam.position = Vector3Add(wctr, Vector3Add(Vector3Scale(dir, -34.0f), Vector3{ 0, 5.5f, 0 }));
-            cam.target   = Vector3Add(wctr, Vector3Scale(dir, 34.0f));
+            cam.position = Vector3Add(wctr, Vector3Add(Vector3Scale(dir, -26.0f), Vector3{ 0, 15.0f, 0 }));
+            cam.target   = Vector3Add(wctr, Vector3Scale(dir, 12.0f));
             cam.up       = Vector3{ 0, 1, 0 };
             cam.fovy     = 64;
         }
@@ -3530,13 +3538,23 @@ int main(int argc, char **argv) {
         {
 
             int firstCar = (!depthPass && !onFoot && camMode == 0) ? 1 : 0;
+            // Arc length travelled at a spline parameter, interpolated from the per-cp
+            // arc table -- drives the running gear's wheel rotation (coaster_car.cpp).
+            auto arcLenAt = [&](float uu) -> float {
+                if (finalN < 2) return 0.0f;
+                int i0 = (int)floorf(uu);
+                if (i0 < 0) i0 = 0;
+                if (i0 > finalN - 2) i0 = finalN - 2;
+                float f = Clamp(uu - (float)i0, 0.0f, 1.0f);
+                return trk.arc[i0] + (trk.arc[i0 + 1] - trk.arc[i0]) * f;
+            };
             for (int i = firstCar; i < NCARS; i++) {
                 float ui = (i == 0) ? u : backU(u, i * CAR_GAP);
                 Vector3 cp = trk.pos(ui);
                 Vector3 ct = trk.tangent(ui);
                 Vector3 cu = trk.upAt(ui);
                 pushFrame(cp, ct, cu);
-                drawCoasterCar(trk.trainBody, trk.trainAccent, i == 0, i);
+                drawCoasterCar(trk.trainBody, trk.trainAccent, i == 0, i, arcLenAt(ui));
                 popFrame();
             }
         }

@@ -1,4 +1,7 @@
-static void drawCoasterCar(Color body, Color accent, bool lead, int seed) {
+// arcDist is the car's distance travelled along the track (metres). It drives the
+// running gear's visible rotation: every wheel spins about its own axle at
+// angle = arcDist / wheelRadius, so the faster the train the faster the wheels roll.
+static void drawCoasterCar(Color body, Color accent, bool lead, int seed, float arcDist = 0.0f) {
     Color dark  = Color{ 32, 34, 40, 255 };
     Color tyre  = Color{ 24, 24, 28, 255 };
     Color bodyD = shade(body, 0.82f);
@@ -62,14 +65,54 @@ static void drawCoasterCar(Color body, Color accent, bool lead, int seed) {
     // (0.23->0.21) to straddle the rail-top plane (y=0.09) now that the
     // skirt above is thinner and raised, so the wheel reads as a real disc
     // instead of a sliver poking out from under the chassis.
-    Color guideC  = Color{ 40, 40, 46, 255 };  // side-friction wheel, slightly lighter than tyre
-    Color upstopC = Color{ 18, 18, 22, 255 };  // upstop wheel, slightly darker than tyre
+    Color wheelDark = Color{ 20, 20, 24, 255 };   // tyre, darkened so the disc reads against the chassis
+    Color hubC      = Color{ 150, 152, 160, 255 }; // bright steel hub cap / spoke marker
+    Color guideC    = Color{ 44, 44, 52, 255 };    // side-friction wheel
+    Color upstopC   = Color{ 16, 16, 20, 255 };    // upstop wheel
+
+    // Road/upstop wheels are discs lying in the car's Y-Z plane (axle along local X),
+    // so they roll about the lateral axis. Side-friction (guide) wheels press against
+    // the rail's inner web, so they spin about the vertical axis. A cube rotating about
+    // its axle reads as a spinning wheel (its corners sweep); a bright off-centre spoke
+    // marker makes the direction and speed of roll unmistakable.
+    const float roadR   = 0.20f;                       // road-wheel radius (metres)
+    const float guideR  = 0.10f;
+    const float upstopR = 0.07f;
+    // fmod into [0,360) so sinf/cosf inside rlRotatef stay precise even after the train
+    // has travelled kilometres (a raw arcDist/R can reach millions of degrees).
+    const float roadDeg   = fmodf(arcDist / roadR   * RAD2DEG, 360.0f);
+    const float guideDeg  = fmodf(arcDist / guideR  * RAD2DEG, 360.0f);
+    const float upstopDeg = fmodf(arcDist / upstopR * RAD2DEG, 360.0f);
+
+    // Draw one rotating wheel: a dark disc-cube plus a bright radial spoke marker and a
+    // centred hub cap, spun about `axis` by `deg` degrees around the wheel centre.
+    auto wheel = [&](Vector3 c, float w, float diam, Color disc, Color hub,
+                     Vector3 axis, float deg, float markLocalR) {
+        rlPushMatrix();
+        rlTranslatef(c.x, c.y, c.z);
+        rlRotatef(deg, axis.x, axis.y, axis.z);
+        drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, w, diam, diam, disc);
+        // Hub cap: bright square on both axle faces (centred on the axis, so it reads as
+        // the wheel hub rather than a spinning mark).
+        drawCubeTex(T_IRON, Vector3{ 0, 0, 0 }, w * 1.18f, diam * 0.34f, diam * 0.34f, hub);
+        // Spoke marker: a short bright bar offset radially so it orbits the axle -- this is
+        // what actually reveals the spin. For a lateral-axle wheel it sits above centre (+Y);
+        // for a vertical-axle guide wheel it sits forward (+Z).
+        Vector3 mark = (axis.y > 0.5f) ? Vector3{ 0, 0, markLocalR }
+                                       : Vector3{ 0, markLocalR, 0 };
+        drawCubeTex(T_IRON, mark, w * 1.05f, diam * 0.14f, diam * 0.14f, hub);
+        rlPopMatrix();
+    };
+
     for (float sx : { -0.55f, 0.55f })
         for (float sz : { -0.95f, 0.95f }) {
-            drawCubeTex(T_IRON, Vector3{ sx, 0.21f, sz }, 0.22f, 0.30f, 0.5f, tyre);
+            wheel(Vector3{ sx, 0.21f, sz }, 0.20f, 0.40f, wheelDark, hubC,
+                  Vector3{ 1, 0, 0 }, roadDeg, 0.14f);
             float gx = (sx > 0.0f) ? sx - 0.11f : sx + 0.11f; // inboard, x = +-0.44
-            drawCubeTex(T_IRON, Vector3{ gx, 0.12f, sz }, 0.10f, 0.16f, 0.28f, guideC);
-            drawCubeTex(T_IRON, Vector3{ sx, 0.00f, sz }, 0.16f, 0.10f, 0.28f, upstopC);
+            wheel(Vector3{ gx, 0.12f, sz }, 0.10f, 0.22f, guideC, hubC,
+                  Vector3{ 0, 1, 0 }, guideDeg, 0.07f);
+            wheel(Vector3{ sx, 0.00f, sz }, 0.16f, 0.16f, upstopC, hubC,
+                  Vector3{ 1, 0, 0 }, upstopDeg, 0.05f);
         }
 }
 

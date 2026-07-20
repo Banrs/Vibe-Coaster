@@ -85,6 +85,35 @@ support-placement search cached by global cp index.
 - `--clearance 4`: buried 0.9–3.6% (was up to 17%); avg clearance still high (floaty cruise remains
   partially — see open item 3).
 
+## USER FEEDBACK 2026-07-19 (top priority for next session — ask the user first)
+
+The user reviewed the current build and reports it has NOT improved enough. Their direction:
+**start the next session by interviewing the user about their goals, then plan and execute a
+full-codebase refactor** (approved plan first), rather than continuing incremental fixes.
+
+New issues from the user's play session:
+- **U1. Element overlap / self-intersection (architectural).** Elements cut through each other —
+  e.g. the Immelmann's top is clipped by other elements. Root cause (code-verified): element
+  qualification only tests the TERRAIN corridor (spatialCorridorClear/corridor floors); nothing
+  ever tests against ALREADY-BUILT track, and the streaming window pops old cps, so no global
+  occupancy exists. A real fix needs a persistent spatial occupancy structure (hash grid of
+  committed track segments + a rider-envelope clearance radius, ~4-6 m) consulted by every
+  element/connector commit, sized so it cannot strand generation (reject→reroute, count as
+  organic rejection not fallback).
+- **U2. Too much water.** The world reads too watery. Terrain tuning in src/environment.cpp
+  terrainH(): base = WATER_Y+2+continentalness*28 with inland smoothstep(-0.18,0.30) — raise the
+  land base / shrink the ocean share so water is an occasional feature (splashdown ponds, a lake
+  passage), not the default lowland. Note DIP-splash targeting and escape water-crossings both
+  interact with this.
+- **U3. Frequencies must be calibrated as PERCENTAGES of features, not counts per lap.** The
+  user's coaster is longer than the reference rides, so count caps (IMMEL<=3/lap, tophat=1/lap,
+  corkscrew every other lap...) drift as lap length changes. Rework the composition controller to
+  hold each element's SHARE of committed features inside its researched band (see mix table
+  below), using lapElemCount[m]/elems (and ride-cumulative shares) to gate eligibility; keep pure
+  count rules only for true one-per-ride set pieces (splashdown finale, opening top hat).
+- **U4. Some elements still appear too often** (banked family ~59%, TURN ~30%, WAVE/BANKAIR
+  ~9-10% each vs wave-turn's real 1-2/ride). Fold into U3's percentage controller.
+
 ## OPEN ITEMS (in priority order, with analysis)
 
 1. RESOLVED: --jointaudit 8 shows tangent 0.0deg and roll-rate <=3.7deg/m on all seeds — the

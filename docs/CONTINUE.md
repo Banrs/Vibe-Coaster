@@ -134,6 +134,11 @@ This session's overhaul made every seed complete generation end-to-end: `--censu
 | `--orbitshot` (headless `xvfb-run`) | ran without crashing; only reached frame 5 within the 240 s budget (llvmpipe software rendering is slow headless) — `artifacts/v1-audit/orbit_f5.png` captured, later frames not reached |
 
 ## Open follow-ups
+- RESOLVED: --jointaudit 8 shows tangent 0.0deg and roll-rate <=3.7deg/m on all seeds — the
+  forceaudit ~7.4deg continuity spikes are its inverted-frame sampling artifact (item 2's
+  authored-frame rework remains the fix). NEW measured rail-level anomalies to investigate: seed2
+  joint @368 rail gap 0.312m + 33deg roll jump near the ROLL(corkscrew)->FLAT handoff; seed4 joint
+  @133 rail 0.069m + 7.2deg roll at a TURN->CLIMB boundary.
 - Fallback rate (escapes=28, relaxedPicks=97 over 8 seeds) is far above the ≤0.8 target from the
   calibration section above — generation completes but leans on relaxed picks/escapes more than the
   "organic-rare" bar; next session should chase the root placement gaps those are covering for.

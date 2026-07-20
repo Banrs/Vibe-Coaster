@@ -87,16 +87,11 @@ support-placement search cached by global cp index.
 
 ## OPEN ITEMS (in priority order, with analysis)
 
-1. **Arbitrate the forceaudit joint-spike question (first thing).** After 923f627, --forceaudit
-   shows uniform ~7.3–7.5° "continuity tangent" spikes + one 85 °/m roll-rate reading across seeds.
-   Two hypotheses: (a) it's the *documented* forceaudit frame-sampling artifact on INVERTING
-   elements (dive loops now generate 15×/census vs 0 before — the audit misreads inverted frames);
-   (b) the initDiveLoop exact-derivative boundary change (923f627) introduced real joint breaks.
-   Decisive test: `--jointaudit 8` (rail-level, trusted). If PASS (tangent ≤2°, roll ≤6 °/m):
-   document the artifact in CONTINUE.md and move on. If FAIL at DIVELOOP-adjacent joints: revert
-   ONLY the initDiveLoop boundary change (keep the g constants 9.6/8.9/58). An in-flight 40-seed
-   comparison was interrupted; nothing about this is committed either way — HEAD has the exact-
-   derivative version.
+1. RESOLVED: --jointaudit 8 shows tangent 0.0deg and roll-rate <=3.7deg/m on all seeds — the
+   forceaudit ~7.4deg continuity spikes are its inverted-frame sampling artifact (item 2's
+   authored-frame rework remains the fix). NEW measured rail-level anomalies to investigate: seed2
+   joint @368 rail gap 0.312m + 33deg roll jump near the ROLL(corkscrew)->FLAT handoff; seed4 joint
+   @133 rail 0.069m + 7.2deg roll at a TURN->CLIMB boundary.
 2. **forceaudit frame sampling rework**: make it use authored frames (Track::upAt at the sample u)
    instead of reconstructing the frame — that makes the g audit trustworthy across inversions and
    settles item 1's class of ambiguity permanently. (v1RiderAuditSample in src/main.cpp.)

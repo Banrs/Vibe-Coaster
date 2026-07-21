@@ -223,6 +223,24 @@ struct Track : CommittedTrack, GenCursor {
     // scheduler forces a powered launch/boost.
     static constexpr int ESCAPE_LIMIT = genc::ESCAPE_LIMIT;
     static constexpr int ESCAPES_PER_LAP = genc::ESCAPES_PER_LAP;
+    // First-class cut-exit (archetype-B desert fix): a named element -- notably
+    // a top-hat crown or a vertical loop's dive-out -- can leave its exit
+    // anchor pointwise clear yet hand the boundary over inside a terrain
+    // cut/canyon whose FORWARD corridor is buried (measured clearance -11..+3 m
+    // at 70-88 m/s).  Nothing can be built from such a boundary, so it used to
+    // fall straight into the escape ladder, charging the lap budget until the
+    // lap force-closed as a micro-lap.  A dedicated terrain-following lift-out
+    // now runs BEFORE the escape ladder; it is not an artificial rescue -- it
+    // touches neither the escape counters nor the lap feature budget -- and the
+    // ordinary element pool resumes the moment the corridor emerges clear.
+    // ENTER is the buried-boundary threshold; TARGET sits above it for
+    // hysteresis so one lift clears the ENTER band outright.  LIMIT bounds the
+    // consecutive lift-outs so a truly sealed corridor still reaches the
+    // escape ladder's completion guarantee.
+    static constexpr int CUT_EXIT_LIMIT = 16;
+    static constexpr float CUT_ENTER_CLEAR = 8.0f;
+    static constexpr float CUT_TARGET_CLEAR = 10.0f;
+    int consecutiveCutExits = 0;
     // Trial branches use the ordinary point emitter, but boundary resolution
     // is deliberately suspended until the branch has proved its successor.
     // The flag lives in Track so a complete trial copy also owns this state.
@@ -285,6 +303,20 @@ struct Track : CommittedTrack, GenCursor {
     static bool exitAnchorClear(const Vector3 &p) {
         const TerrainSurface s = genTerrainSurfaceAt(p.x, p.z);
         return s.water || p.y >= s.solidTop + 1.0f;
+    }
+    // The analytic macros (top hat, hill chain, straight drop) ride a FIXED
+    // heading (macroYaw = gyaw) and the curved drop's plan has zero initial
+    // yaw slope: all of them assume a straight, unbanked entry.  Publishing
+    // one from a still-curving boundary (the eased tail of a yawing escape /
+    // stub connector) snaps the yaw rate to zero in one span -- measured as
+    // a 15-17 deg tangent/roll step with ~2/m^2 curvature-jerk at the joint.
+    // Gate all such entries here; the caller's settle/routing machinery then
+    // straightens the boundary and the element retries from a legal frame.
+    bool straightEntryOK() const {
+        const float yawLimit = Clamp(2.4f * SEG_LEN * GRAV /
+                                     fmaxf(genV * genV, 400.0f),
+                                     0.0010f, 0.24f);
+        return fabsf(genPrevDyaw) <= yawLimit;
     }
     static float poweredTargetFor(SegMode tag) {
         return tag == M_BOOST ? BOOST_CRUISE_TARGET
@@ -404,6 +436,7 @@ struct Track : CommittedTrack, GenCursor {
     }
 
     bool beginTopHat(bool major) {
+        if (!straightEntryOK()) return false;   // fixed-heading macro (see helper)
         const uint32_t savedRng=rng;
         const Vector3 savedPos=gpos;
         lockMacroAnchor();
@@ -639,6 +672,7 @@ struct Track : CommittedTrack, GenCursor {
     }
 
     bool beginHillChain(unsigned hillCount = 2u) {
+        if (!straightEntryOK()) return false;   // fixed-heading macro (see helper)
         lockMacroAnchor();
         if (genV < HILL_ENTRY_MIN || genV > HILL_ENTRY_MAX) return false;
         v1profile::HillChainSpec spec;
@@ -757,6 +791,16 @@ struct Track : CommittedTrack, GenCursor {
     }
 
     bool beginDropProfile() {
+        // Both drop publishers assume a straight (zero-yaw-rate) entry: the
+        // analytic macro rides a FIXED heading (macroYaw = gyaw) and the
+        // curved publisher's plan psi(s) = gyaw + yawT*ease(s/L) has zero
+        // initial slope.  Publishing either from a still-curving boundary
+        // (e.g. the tail of a yawing escape/stub connector) snaps the yaw
+        // rate to zero in one span -- the measured 15-16 deg tangent step /
+        // 1.85 curvature-jerk / 27.7 roll-accel kink at the drop joint.
+        // Refuse here instead: the caller's settle / routing connector
+        // straightens the boundary and the pending RecoveryDrop retries.
+        if (!straightEntryOK()) return false;
         lockMacroAnchor();
         const float startHeight = gpos.y;
         // One recovery drop owns the complete return toward the local ground
@@ -854,7 +898,11 @@ struct Track : CommittedTrack, GenCursor {
         bool corridorClear = false;
         for (int pass = 0; pass < 7; ++pass) {
             built = solve(endHeight);
-            if (built.empty()) return false;
+            // An empty solve here means the STRAIGHT corridor pushed endHeight
+            // into analytically-unsolvable small-drop territory -- not that a
+            // drop is impossible.  Break to the curved fallback below (which
+            // re-solves the ambitious profile) instead of failing outright.
+            if (built.empty()) break;
             float d = (float)built.length();
             // Solve the pullout to the height of the section it actually
             // hands to, not merely the terrain under its final knot.  Looking
@@ -877,14 +925,31 @@ struct Track : CommittedTrack, GenCursor {
             // whole pullout smoothly instead of letting a later floor create
             // an underground dip followed by a bounce.
             built = solve(endHeight);
-            if (built.empty()) return false;
+            if (built.empty()) break;   // same: curved fallback decides
             float deficiency = tprobe::deficiencyAlong(
                 [&](float s) { return (float)built.sampleDistance(s).height; },
                 gpos, gyaw, (float)built.length(), 3.5f, 7.0f);
             if (deficiency <= 0.05f) { corridorClear = true; break; }
             endHeight = fminf(startHeight - 8.0f, endHeight + deficiency * 1.35f);
         }
-        if (!corridorClear) return false;
+        // Straight-ahead corridor blocked through all passes.  That used to be
+        // terminal, which killed the recovery drop precisely where it is most
+        // needed: an Immelmann REVERSES the heading, so its (settled) elevated
+        // exit often points its dive back over a ridge -- while 100+ m of open
+        // air sits a few degrees to either side (the ride just flew through
+        // it).  The curved publisher below already validates its own yawed
+        // footprint (spatialCorridorClear / exitAnchorClear / force gates), so
+        // hand it the ambitious profile and let it find the open heading; only
+        // if every yaw fails is the drop genuinely impossible.  The straight
+        // analytic macro stays forbidden in this case -- its corridor never
+        // cleared.
+        bool mustCurve = false;
+        if (!corridorClear) {
+            built = solve(fmaxf(WATER_Y + 4.0f,
+                                startHeight - genc::DROP_RECORD_HEIGHT * RECORD_SCALE_CAP));
+            if (built.empty()) return false;
+            mustCurve = true;
+        }
 
         // Falcon's Flight's first drop is TWISTED: a big recovery drop may curve
         // its plan while it dives.  Build the same longitudinal law along a gently
@@ -892,42 +957,107 @@ struct Track : CommittedTrack, GenCursor {
         // analytic macro below where the curved corridor doesn't fit.
         bool publishedCurved = false;
         const float dropTotal = startHeight - (float)built.sampleDistance(built.length()).height;
-        if (dropTotal >= 40.0f && rnd01() < 0.65f) {
-            const float L = (float)built.length();
+        if (getenv("MC_RDTRACE"))
+            fprintf(stderr, "[RDTRACE]   bdp corridorClear=%d mustCurve=%d dropTotal=%.1f "
+                    "emptyBuilt=%d\n", (int)corridorClear, (int)mustCurve, dropTotal,
+                    (int)built.empty());
+        if (dropTotal >= 40.0f && (mustCurve || rnd01() < 0.65f)) {
             for (float yawT : {0.8f * nextBankDirection(), -0.8f * nextBankDirection(), 0.5f, -0.5f}) {
                 const Vector3 origin = gpos;
                 const BoundaryState start = currentBoundary();
-                const int knots = Clamp((int)ceilf(L / MACRO_SAMPLE_STEP), 6, 64);
                 // Dense midpoint integration of the yawing plan: psi(s) = gyaw +
                 // yawT * spatialEase(s/L).  Height/grade come straight from the
                 // already-solved longitudinal profile, sampled at plan distance s
                 // (the same convention every other curved element here uses).
                 std::vector<Vector3> points;
-                points.reserve(knots);
-                float x = origin.x, z = origin.z;
                 constexpr int subN = 4;
                 bool geometryOk = true;
-                for (int k = 1; k <= knots; ++k) {
-                    const float sPrev = (float)(k - 1) * L / knots;
-                    const float sNext = (float)k * L / knots;
-                    for (int sub = 0; sub < subN; ++sub) {
-                        const float sMid = sPrev + ((float)sub + 0.5f) *
-                                           (sNext - sPrev) / subN;
-                        const float psiMid = gyaw + yawT * spatialEase(sMid / L);
-                        const float dsSub = (sNext - sPrev) / (float)subN;
-                        x += sinf(psiMid) * dsSub;
-                        z += cosf(psiMid) * dsSub;
+                auto integrate = [&](const v1profile::Profile &prof) {
+                    const float L = (float)prof.length();
+                    const int knots = Clamp((int)ceilf(L / MACRO_SAMPLE_STEP), 6, 64);
+                    points.clear();
+                    points.reserve(knots);
+                    float x = origin.x, z = origin.z;
+                    geometryOk = true;
+                    for (int k = 1; k <= knots; ++k) {
+                        const float sPrev = (float)(k - 1) * L / knots;
+                        const float sNext = (float)k * L / knots;
+                        for (int sub = 0; sub < subN; ++sub) {
+                            const float sMid = sPrev + ((float)sub + 0.5f) *
+                                               (sNext - sPrev) / subN;
+                            const float psiMid = gyaw + yawT * spatialEase(sMid / L);
+                            const float dsSub = (sNext - sPrev) / (float)subN;
+                            x += sinf(psiMid) * dsSub;
+                            z += cosf(psiMid) * dsSub;
+                        }
+                        const float y = origin.y +
+                            ((float)prof.sampleDistance(sNext).height - startHeight);
+                        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                            geometryOk = false;
+                            break;
+                        }
+                        points.push_back({x, y, z});
                     }
-                    const float y = origin.y +
-                        ((float)built.sampleDistance(sNext).height - startHeight);
-                    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
-                        geometryOk = false;
-                        break;
+                };
+                v1profile::Profile prof = built;
+                integrate(prof);
+                if (mustCurve) {
+                    // The shared profile was solved without a landing scan (the
+                    // straight corridor was blocked, so its landing was
+                    // meaningless here).  Iteratively lift this yaw's pullout to
+                    // its OWN landing: each pass measures the terrain target at
+                    // the integrated endpoint (plus a short scan along the exit
+                    // heading), re-solves, and re-integrates -- the endpoint
+                    // moves as the profile shortens, so a single pass cannot
+                    // converge on sloped terrain.
+                    float eh = (float)prof.sampleDistance(prof.length()).height;
+                    bool fitted = true;
+                    int why = 0;
+                    for (int fixup = 0; fixup < 6; ++fixup) {
+                        if (!geometryOk || points.empty()) { fitted = false; why = 1; break; }
+                        // One lift criterion for the WHOLE candidate: the
+                        // endpoint must satisfy the exit-anchor law AND the
+                        // path itself must stay above the corridor floor
+                        // (otherwise spatialCorridorClear rejects it later
+                        // anyway -- lift for it here, where the profile can
+                        // still be re-solved).
+                        float pathDef = 0.0f;
+                        for (const Vector3 &p : points)
+                            pathDef = fmaxf(pathDef,
+                                ordinaryCorridorFloorAt(p.x, p.z) - p.y);
+                        const Vector3 e = points.back();
+                        const float endDef = fmaxf(
+                            ordinaryRouteTarget(genGroundTopAt(e.x, e.z)) - e.y,
+                            exitAnchorClear(e) ? 0.0f : 0.5f);
+                        const float deficiency = fmaxf(pathDef, endDef);
+                        if (deficiency <= 0.05f) break;
+                        const float ehNext = Clamp(eh + deficiency + 0.5f,
+                                                   WATER_Y + 4.0f, startHeight - 8.0f);
+                        if (ehNext <= eh + 0.05f) { fitted = false; why = 2; break; }
+                        eh = ehNext;
+                        prof = solve(eh);
+                        if (prof.empty()) { fitted = false; why = 3; break; }
+                        integrate(prof);
                     }
-                    points.push_back({x, y, z});
+                    if (!fitted || !geometryOk || points.empty() ||
+                        !exitAnchorClear(points.back())) {
+                        if (getenv("MC_RDTRACE"))
+                            fprintf(stderr, "[RDTRACE]   bdp curved yawT=%.2f "
+                                    "landing-fixup failed (eh=%.1f why=%d "
+                                    "exit=%d)\n", yawT, eh, why,
+                                    points.empty() ? -1 :
+                                    (int)exitAnchorClear(points.back()));
+                        continue;
+                    }
                 }
-                if (!geometryOk || points.empty() || !exitAnchorClear(points.back()))
+                if (!geometryOk || points.empty() || !exitAnchorClear(points.back())) {
+                    if (getenv("MC_RDTRACE"))
+                        fprintf(stderr, "[RDTRACE]   bdp curved yawT=%.2f geomOk=%d "
+                                "exitClear=%d\n", yawT, (int)geometryOk,
+                                points.empty() ? -1 :
+                                (int)exitAnchorClear(points.back()));
                     continue;
+                }
                 spatialPts.clear(); spatialUps.clear(); spatialD1.clear();
                 spatialD2.clear(); spatialD3.clear(); spatialDs.clear();
                 spatialIdx = 0;
@@ -951,10 +1081,20 @@ struct Track : CommittedTrack, GenCursor {
                 spatialUps.back() = finish.up;
                 deriveSpatialArcData(origin, start, finish);
                 SpatialRun run = makeSpatialRun(origin, start.up, true);
-                if (!attachFeltBankFrame(run, genV, 1.0f, 1.15f)) continue;
-                if (!spatialCorridorClear(run) || !exitAnchorClear(points.back()) ||
-                    !spatialForceClear(run, M_DROP, -3.5f, 11.0f))
+                if (!attachFeltBankFrame(run, genV, 1.0f, 1.15f)) {
+                    if (getenv("MC_RDTRACE"))
+                        fprintf(stderr, "[RDTRACE]   bdp curved yawT=%.2f bankFrame=0\n", yawT);
                     continue;
+                }
+                if (!spatialCorridorClear(run) || !exitAnchorClear(points.back()) ||
+                    !spatialForceClear(run, M_DROP, -3.5f, 11.0f)) {
+                    if (getenv("MC_RDTRACE"))
+                        fprintf(stderr, "[RDTRACE]   bdp curved yawT=%.2f corr=%d exit=%d "
+                                "force=%d\n", yawT, (int)spatialCorridorClear(run),
+                                (int)exitAnchorClear(points.back()),
+                                (int)spatialForceClear(run, M_DROP, -3.5f, 11.0f));
+                    continue;
+                }
                 mode = M_DROP;
                 remain = (int)points.size();
                 spatialIdx = 0;
@@ -966,6 +1106,7 @@ struct Track : CommittedTrack, GenCursor {
             }
         }
         if (publishedCurved) return true;
+        if (mustCurve) return false;   // straight corridor never cleared
 
         if (!occMacroClear(built, gpos, gyaw)) return false;
         macroProfile = built;
@@ -2209,7 +2350,17 @@ struct Track : CommittedTrack, GenCursor {
                 // completing just past the crest (research: "half-loop with a
                 // half-roll near/through the top", exit below the crest and
                 // descending).  It must never read as loop-then-roll-then-flat.
-                float rollT = spatialEase((t - 0.45f) / 0.50f);
+                // Roll window [0.55,1.00] (was [0.45,0.95]).  In this half-loop
+                // the pitch is VERTICAL at t~0.5 and the crest (theta=PI) sits
+                // at t~0.9, so a roll window that overlaps t~0.5 rolls while
+                // the world-referenced bank is near its vertical-tangent
+                // degeneracy -- that coupling is what the audit's authored-bank
+                // roll-accel flags (measured: window [0.45,0.95] -> 6.99
+                // deg/m^2, [0.30,0.90] -> 9.47, both over the 5.5 gate).
+                // Starting at 0.55 keeps the whole roll after the vertical,
+                // blending through the crest and finishing exactly at the exit
+                // (research: half-roll near/through the top, exit descending).
+                float rollT = spatialEase((t - 0.55f) / 0.45f);
                 float beta = PI * rollT * immelDir;
                 Vector3 lateral = Vector3CrossProduct(tangent, frame);
                 frame = Vector3Normalize(Vector3Add(Vector3Scale(frame, cosf(beta)),
@@ -2785,6 +2936,7 @@ struct Track : CommittedTrack, GenCursor {
         elems = 0; elemLimit = irnd(13, 17); launchElem = pickLaunchExit();
         hardInvCount = 0;
         escapesSinceLaunch = 0;
+        consecutiveCutExits = 0;
         beat = BEAT_RUSH;
         beatFeatureCount = 0;
         lapInversionChains = 0;
@@ -5397,6 +5549,15 @@ struct Track : CommittedTrack, GenCursor {
                                    fmaxf(capPerSpan, 1.0e-4f)));
                 }
                 pending = {PendingKind::RecoveryDrop, M_COUNT};
+                // NOTE (hands-on A/B, census-8): aiming this settle at the
+                // dive's pull-out altitude (endY + dy*N/2) was tried and
+                // REVERTED -- the ~45 m the pull-out spends is exactly the
+                // altitude budget the descending set-pieces need, so HELIX
+                // starved and valley-floor congestion doubled the published
+                // escape clips, while the diving-exit escape count it was
+                // meant to fix barely moved (6 -> 5).  A steep diving exit is
+                // an ELEMENT geometry defect (an Immelmann exits level by
+                // definition) and is fixed in the builder, not rescued here.
                 bool slc = startLevelConnector(Clamp(settleSteps, MIN_CONN, 24), gpos.y);
                 if (getenv("MC_RDTRACE"))
                     fprintf(stderr, "[RDTRACE]   settle steps=%d startLevelConnector=%d\n",
@@ -5853,6 +6014,34 @@ struct Track : CommittedTrack, GenCursor {
             occupancyEnvelope = genc::OCCUPANCY_ENVELOPE_RELAXED;
             struct StageEnvRestore { float &e; float v; ~StageEnvRestore() { e = v; } }
                 stageEnvRestore{occupancyEnvelope, savedStageEnv};
+            // FIRST-CLASS CUT-EXIT, ahead of the whole escape/launch ladder
+            // (see CUT_ENTER_CLEAR).  The three bounded branches failed; if
+            // that is because the boundary sits in a buried terrain cut,
+            // terrain-follow OUT of the cut with a move that charges neither
+            // the escape counters nor the lap feature budget -- real elements
+            // resume the instant the corridor emerges clear.  Bounded by
+            // CUT_EXIT_LIMIT so a truly sealed corridor still falls through to
+            // the escape ladder's completion guarantee below.
+            const float cutClr = forwardCorridorClearance();
+            if (cutClr >= CUT_ENTER_CLEAR) {
+                consecutiveCutExits = 0;
+            } else if (consecutiveCutExits < CUT_EXIT_LIMIT) {
+                pending = {}; connLen = 0; terrainAvoidanceTurn = false;
+                if (cutExitConnector()) {
+                    // Walk the WHOLE committed lift-out before re-resolving
+                    // (without this the same anchor re-resolves immediately
+                    // and every lift-out fired twice from one spot).
+                    nextModePending = false;
+                    consecutiveCutExits++;
+                    consecutiveEscapes = 0;
+                    if (getenv("MC_LAPTRACE"))
+                        fprintf(stderr, "[CUTEXIT] #%d elems=%d/%d clrIn=%.1f "
+                                "pos=(%.1f,%.1f,%.1f) v=%.1f\n",
+                                consecutiveCutExits, elems, elemLimit, cutClr,
+                                gpos.x, gpos.y, gpos.z, genV);
+                    return ScheduleOutcome::Committed;
+                }
+            }
             // A powered launch always closes the lap and climbs out under power;
             // prefer it the moment escapes have charged the lap budget past its
             // feature target, and require it before an escape can keep streaming.
@@ -6026,6 +6215,72 @@ struct Track : CommittedTrack, GenCursor {
         if (clearance >= genc::OCCUPANCY_ENVELOPE - 0.01f) fallbackCleanForward++;
         else if (clearance < 2.0f) fallbackEscapes++;
         else fallbackRelaxedPicks++;
+    }
+
+    // Deck clearance (m) over the ground beneath the FORWARD corridor the next
+    // element would occupy: the max non-water ground within +/-7 m of the
+    // centreline over the next `spans` steps of the current heading, subtracted
+    // from the exit deck height.  A named element's exit anchor can be
+    // pointwise clear (exitAnchorClear) yet leave this deeply negative when the
+    // anchor sits at the floor of a rising cut/canyon -- that buried corridor
+    // is exactly what no successor element can be built from.
+    // CENTRELINE-ONLY on purpose: a cut buries the corridor when its FLOOR
+    // rises above the deck ahead; canyon WALLS flanking a clear floor are
+    // ordinary canyon flying (side sampling made this fire 29x per census-8
+    // on legal water-channel runs and lifted the ride out of its canyons).
+    float forwardCorridorClearance(int spans = 8) const {
+        float wall = -1.0e9f;
+        for (int s = 1; s <= spans; ++s) {
+            const float d = s * SEG_LEN;
+            const float g = genGroundTopAt(gpos.x + sinf(gyaw) * d,
+                                           gpos.z + cosf(gyaw) * d);
+            if (submergedGround(g)) continue;
+            wall = fmaxf(wall, g);
+        }
+        if (wall < -1.0e8f) return 1.0e9f;   // all water ahead: never a cut
+        return gpos.y - wall;
+    }
+
+    // Terrain-following lift-out of a buried cut/canyon.  Structurally the
+    // escape's straight branch, but its deck target clears the wall over the
+    // connector's WHOLE forward footprint by CUT_TARGET_CLEAR instead of only
+    // hugging the local floor, so a single move lifts the boundary out of the
+    // cut (or, in a long canyon, makes real forward progress the next move
+    // continues).  First-class scheduler move: no escape counters, no lap
+    // feature budget charge, so it can never collapse the lap into a micro-lap.
+    bool cutExitConnector() {
+        const float reachLo = 0.30f, reachHiUp = 0.55f;
+        const float startDy = Clamp(genPrevDy, 0.0f, 3.0f);
+        for (int steps = MIN_CONN; steps <= 40; steps += 4) {
+            ConnectorPlan plan{M_CLIMB, steps, gpos.y, gpos.y, startDy, 0.0f};
+            const float loY = gpos.y - reachLo * steps * SEG_LEN;
+            const float hiY = gpos.y + reachHiUp * steps * SEG_LEN;
+            float wall = -1.0e9f;
+            for (int s = 1; s <= steps; ++s) {
+                const float d = s * SEG_LEN;
+                const float cx = gpos.x + sinf(gyaw) * d;
+                const float cz = gpos.z + cosf(gyaw) * d;
+                for (float side : {-7.0f, 0.0f, 7.0f}) {
+                    const float g = genGroundTopAt(cx + cosf(gyaw) * side,
+                                                   cz - sinf(gyaw) * side);
+                    if (submergedGround(g)) continue;
+                    wall = fmaxf(wall, g);
+                }
+            }
+            const float aim = (wall < -1.0e8f)
+                ? gpos.y                       // open water ahead: hold height
+                : wall + CUT_TARGET_CLEAR;
+            plan.endY = Clamp(aim, loY, hiY);
+            for (int pass = 0; pass < 6; ++pass) {
+                ConnectorTerrain terrain = inspectConnectorTerrain(plan);
+                if (terrain.deficiency <= 0.05f) break;
+                plan.endY = Clamp(plan.endY + terrain.deficiency * 1.35f, loY, hiY);
+            }
+            if (inspectConnectorTerrain(plan).deficiency > 0.05f) continue;
+            plan.mode = plan.endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT;
+            if (commitConnector(plan)) return true;
+        }
+        return false;
     }
 
     bool escapeForward() {
@@ -6262,16 +6517,58 @@ struct Track : CommittedTrack, GenCursor {
         // ahead when that is not itself a wall.
         occupancyEnvelope = 0.0f;
         {
+            // DAYLIGHT-STEERED stub: the old stub always went dead straight,
+            // so an anchor facing a terrain wall tunnelled blindly INTO it --
+            // each corridor-ignoring stub ended more buried than the last
+            // (measured chains of ~25 stubs at dy=+1.51 reaching 150 m below
+            // a peak, each then classified cleanForward because track-to-track
+            // clearance inside a mountain is huge).  The stub keeps its
+            // absolute completion guarantee (corridor still ignored, straight
+            // still in the fan) but now picks the heading whose forward
+            // footprint has the LEAST rising ground -- successive stubs
+            // reorient toward open ground instead of chaining under the peak.
+            // Deterministic fixed fan, no rnd draws; straight is scanned first
+            // and a rotated heading must beat it by >2 m so flat terrain keeps
+            // the old dead-ahead behaviour byte-for-byte.
+            static const float stubYaw[9] = { 0.0f, 0.35f, -0.35f, 0.70f,
+                                              -0.70f, 1.05f, -1.05f, 1.40f,
+                                              -1.40f };
+            // Force-feasibility cap on the steering: yawTarget spreads over
+            // MIN_CONN spans, so total yaw is bounded by the curvature a 2 g
+            // lateral allows at the current speed (kappa = 2g*G/v^2, yaw/span
+            // = kappa*SEG_LEN).  The connector's eased shoulder concentrates
+            // rate ~2x the uniform spread, so a 2 g uniform budget peaks near
+            // 4 g felt -- ride-legal.  Without this the full 1.4 rad candidate
+            // at ~70 m/s put ~16 deg of heading change in ONE span -- a 9-17 g
+            // lateral kink the forceaudit flagged (seed2 u294).  Successive
+            // stubs still rotate toward daylight, just at ride-legal rate.
+            const float maxStubYaw = (float)MIN_CONN * SEG_LEN *
+                2.0f * GRAV / fmaxf(genV * genV, 400.0f);
+            float bestYaw = 0.0f, bestGround = 1.0e9f;
+            for (int c = 0; c < 9; ++c) {
+                if (c > 0 && fabsf(stubYaw[c]) > maxStubYaw) continue;
+                const float ray = gyaw + stubYaw[c];
+                float ground = -1.0e9f;
+                for (float d = SEG_LEN; d <= 12.0f * SEG_LEN; d += 2.0f * SEG_LEN)
+                    ground = fmaxf(ground,
+                        genGroundTopAt(gpos.x + sinf(ray) * d,
+                                       gpos.z + cosf(ray) * d));
+                if (ground < bestGround - 2.0f) {
+                    bestGround = ground;
+                    bestYaw = stubYaw[c];
+                }
+            }
+            const float rayBest = gyaw + bestYaw;
             float deckAhead = gpos.y;
             for (float d = SEG_LEN; d <= MIN_CONN * SEG_LEN; d += SEG_LEN)
                 deckAhead = fmaxf(deckAhead,
-                    genGroundTopAt(gpos.x + sinf(gyaw) * d,
-                                   gpos.z + cosf(gyaw) * d) + TERRAIN_DECK_CLEARANCE);
+                    genGroundTopAt(gpos.x + sinf(rayBest) * d,
+                                   gpos.z + cosf(rayBest) * d) + TERRAIN_DECK_CLEARANCE);
             const float endY = fmaxf(gpos.y, fminf(deckAhead,
                                      gpos.y + 0.30f * MIN_CONN * SEG_LEN));
             ConnectorPlan stub{endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT,
                                MIN_CONN, gpos.y, endY,
-                               Clamp(genPrevDy, 0.0f, 2.0f), 0.0f};
+                               Clamp(genPrevDy, 0.0f, 2.0f), 0.0f, bestYaw};
             connectorCentreline(stub, escapeProbePts);
             const float stubClr = occClearancePolyline(escapeProbePts,
                                                        arc.empty() ? 0.0f : arc.back());

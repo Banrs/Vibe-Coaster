@@ -183,3 +183,18 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
 - Usage-limit interruptions killed agents twice; SendMessage to the agent id resumes them with
   context. Stop-hook nags about uncommitted changes are expected while agents work — commit only
   after gates.
+
+## Post-compact user directives (2026-07-21, after snapshot 2)
+- DURATION LAW (supersedes the flagged ~0.63x question): element durations must not get too
+  short. Implement SPEED-AWARE SCALING inside the [1.0,1.5]x WR window: element entry speed in
+  the LOWER quartile of our speed distribution draws scale around the lower-quartile midpoint
+  (~1.125x); UPPER-quartile speed draws around ~1.375x (linear quartile->quartile mapping in
+  between, jitter allowed, never clamp the achievable range). Acceptance: mean element duration
+  ~0.75x of that element's real-world reference seconds, and NO element averaging longer than
+  1.0x real (fast-entry + small-scale is the failure mode this kills). Add a duration-ratio
+  line to census output so the 0.75x mean / 1.0x cap is gated, not assumed.
+- FRICTION/DRAG: user asked to move the too-low one toward record-low realism. ALREADY DONE in
+  commit 706062c: FRICTION 0.015 -> 0.10 m/s^2 (= C_rr 0.010 x g, the record-low END of the
+  published 0.010-0.02 polyurethane-on-steel band, not the 0.0125 average the memo tabled).
+  DRAG 0.00040 verified INSIDE the physically derived envelope (0.000155-0.001225, mid
+  ~0.000368) by the coast-down cross-check — no literature basis to move it. Do not touch.

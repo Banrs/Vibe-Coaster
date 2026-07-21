@@ -286,3 +286,17 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   lat<=6.0, no post-launch starvation, spectrum/duration tables, then census 8+16 gates ->
   strip traces, review --elementaudit, REFERENCES rows (ROLL stretch law, LOOP invVMax 74.9,
   turn g-law precedence, tophat split, bankair/wave caps) -> commit+push everything.
+- COLLAPSE ROOT-CAUSED (06:5x): the 21s lap collapse was MY turn edit, NOT the agents' work.
+  Both variants (reject AND sweeper) created a 75-100 m/s eligibility desert: the reject
+  directly; the sweeper because initTurn's dimensionInBand(radius/length) re-rejected the
+  >1.5x sweeper radius downstream (hence byte-identical behavior. it2/3 passed because the
+  CLAMPED radius = exactly 1.5x squeaked the band). Boundaries then streamed escapes to the
+  ESCAPES_PER_LAP budget -> forceLaunch closed micro-laps (proof: MC_LAPTRACE showed closes at
+  6-8 escapes, features=0, genV 83-98; kept MC_LAPTRACE env-gated like MC_JOINTDETAIL).
+  FIX: sweeper exempt from the radius/length band (yaw sanity kept) -> seed1 census: laps
+  74/124/126 mean 108 IN, features 14-25, ROLL+STALL+LOOP+IMMEL+DIVELOOP all alive.
+  Agents' work vindicated: escape yaw-fan + stretched ROLL/STALL are fine; micro-STALL H=2.8
+  at v=74 observed once (agent's H law: review clamp lower bound later). inversionSpacing=FAIL
+  seen on 4-inversion laps (check census8 gate line). Full suite on /tmp/mc_final running
+  (task b8fp3tnqz: census8/force2/overlap4/joint4/water/cliffsites -> fin_*.txt).
+  Lesson recorded: intermediate tree snapshots would have made the bisect trivial.

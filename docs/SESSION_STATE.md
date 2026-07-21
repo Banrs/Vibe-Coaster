@@ -1,4 +1,42 @@
-# Session state — full redesign in progress (updated 2026-07-20, pre-compact snapshot)
+# Session state — full redesign in progress (updated 2026-07-21, PRE-COMPACT SNAPSHOT 2)
+
+## NEW LAWS since snapshot 1 (all binding, chronological)
+- G LAW: per-element g target = 2x the real-world RECORD for that element (not typical), capped
+  by [-6.5,+12]; per-element audit table in docs/REAL_WORLD_REFERENCES.md (in repo since 706062c).
+- RATIO LAW (PROJECT-WIDE): derive every real-coaster parameter as a DIMENSIONLESS RATIO of that
+  coaster's own quantity, applied to OUR quantity under project scalings — never absolute
+  transplants. Durations move to ratio too (~0.63x real at 1.25x size / 2x speed) unless user vetoes.
+- SCALE WINDOW: now [1.0, 1.5]x WR, built mean 1.25x = midpoint (was 0.75-1.5). NOT YET APPLIED —
+  my next hands-on pass after phase7a commits. CAUTION: 0.75 floor was what widened HELIX/LOOP
+  entry windows; must re-verify shares after raising the floor (report honestly if helix starves).
+- FREQUENCY GATE: add a WIDE-seed census (adopt --census 16) as THE composition check — per-element
+  frequencies must match the user's coaster vision (record-blend profile, organic via weights).
+- Cliff dive: SUSTAINED TRUE-90° section = researched fraction of real 90°-class drops (~0.55-0.7
+  of drop; cite) x OUR site drop => >=120 m at 1.25x mean; escarpment caprock 85-90° must reach
+  ~130-150 m on tall stretches (mesa caprock-over-talus profile).
+- Terrain: Minecraft-style GRADUATED biome heights (plains 60-80, hills 80-120, mtns 120-200,
+  mesa band 155-275) via multi-point splines on existing cont/erosion/pv fields (MC 1.18 shaper
+  params as numeric reference; cubiomes MIT; no GPL/NC copying). No bimodal plains->mesa.
+- Orientation realism pass: FVD-style authored pitch/roll/yaw per element (bank tracks curvature,
+  HEARTLINE roll ~1.1 m offset, roll-rate <= 2x real, loops hold plane); concepts from open
+  source OK, NO GPL code. Gate: per-element orientation report + authored-frame continuity.
+- Physics: FRICTION 0.10 (C_rr realism), CHAIN_V 6 m/s, DRAG 0.00040 kept. Build recipe:
+  -O3 -march=native -ffp-contract=off (bit-identical, ~1.3x faster; native FMA changes tracks).
+- Supervision every ~25 min via send_later; hands-on takeover when agents thrash (worked well);
+  fable <= ~40% of work. Runaway share backstop must keep a drain path (window advances only on
+  COUNTED commits — fully-hard gate deadlocked into 61.9s laps once).
+
+## IN FLIGHT at snapshot: workflow wf_47031ed5-2ee (phase7a: residuals+escarpment)
+- Escarpment agent DONE (own gates green): mesa terrain feature in environment.cpp (66-72 deg
+  monotone walls, drops to 208m+, tuned toward a >=220m site), b3e120f cliffsites probe cherry-
+  picked, tprobe memo epoch bumped. Orbitshot reads as mesa w/ track on plateau rim.
+- Residuals agent DONE: SCURVE lateral cap, roll-continuity, helix 1.25x bias (RNG-preserving
+  frndUp), bounded tier-3. Gate phase (6 gates census8/overlap4/force2/joint4/cliffsites/
+  waterfrac, opus judges) was RUNNING at snapshot. On green: verify + commit phase7a, THEN
+  hands-on [1.0,1.5] window + ratio sweep + census-16 gate, re-gate, commit.
+- Old snapshot follows (phase status there is stale where it conflicts with the above).
+
+# (snapshot 1, 2026-07-20)
 
 Working doc for the ACTIVE session (and any successor). Authoritative plan: docs/REFACTOR_PLAN.md.
 Branch: `claude/vibe-coaster-refactor-plan-jkxn0h` (push here ONLY — user chose designated branch,

@@ -243,7 +243,12 @@ struct DescentProfile {
     float runToFloor = 0.0f;  // horizontal distance lip -> floor
     float meanFaceDeg = 0.0f; // atan2(dropTotal, runToFloor)
     bool  monotone = false;   // no overhang/bench/concave re-rise between lip and floor (within reRiseTol)
+    float caprockDrop = 0.0f; // vertical extent (lip..floor) held at >=85 deg (spec §0.95(b) caprock band)
 };
+
+// Caprock threshold (spec §0.95(b)): terrain samples steeper than this read as
+// the near-vertical caprock band that hosts the sustained-90 dive.
+constexpr float CAPROCK_MIN_SLOPE_DEG = 85.0f;
 
 // Forward direction convention matches --terrainaudit / the existing generator
 // probes: x += sin(yaw)*d, z += cos(yaw)*d.
@@ -380,6 +385,16 @@ static DescentProfile scanDescent(Vector3 origin, float yaw,
         if (g < runMin) runMin = g;
         else if (g > runMin + DESCENT_RERISE_TOL) { prof.monotone = false; break; }
     }
+
+    // Caprock extent (spec §0.95(b)): the vertical drop accumulated over lip->floor
+    // samples whose local face slope is >= CAPROCK_MIN_SLOPE_DEG. Summing the
+    // per-sample drop (not counting samples) makes this robust to how many 3.5 m
+    // steps span the near-vertical band. On the reworked mesa this measures the
+    // 86-deg caprock; the builder's sustained-90 dive length must fit inside it.
+    prof.caprockDrop = 0.0f;
+    for (int j = lipIdx; j < floorIdx; ++j)
+        if (prof.samples[j].localFaceSlopeDeg >= CAPROCK_MIN_SLOPE_DEG)
+            prof.caprockDrop += prof.samples[j].groundY - prof.samples[j + 1].groundY;
 
     std::lock_guard<std::mutex> lock(detail::gScanMutex);
     if (detail::gScanMemo.size() < detail::SCAN_MEMO_MAX)

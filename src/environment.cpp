@@ -130,6 +130,23 @@ static float ridgef(float x, float z, int oct) {
     return a / norm;
 }
 
+// Monotone piecewise-linear spline (spec §0.95(a) height shaper). Maps a driver
+// t (clamped to the knot domain) to a value, interpolating linearly between
+// adjacent knots. Knot arrays kt[] must be strictly increasing. This is the
+// "proper multi-point spline" the graduated-biome directive calls for -- the
+// Minecraft 1.18 terrain shaper builds height the same way (nested splines on
+// continentalness/erosion/peaks-valleys; open numeric reference, cubiomes MIT).
+static float splineEval(const float *kt, const float *kv, int n, float t) {
+    if (t <= kt[0])     return kv[0];
+    if (t >= kt[n - 1]) return kv[n - 1];
+    for (int i = 1; i < n; ++i)
+        if (t <= kt[i]) {
+            float u = (t - kt[i - 1]) / (kt[i] - kt[i - 1]);
+            return kv[i - 1] + (kv[i] - kv[i - 1]) * u;
+        }
+    return kv[n - 1];
+}
+
 // --- Tuwaiq escarpment (Phase 7, spec §0.9) --------------------------------
 // A dedicated table-mountain band added to the fixed terrain so the playfield
 // can physically host the Falcon's-Flight cliff-dive set piece (the real ride
@@ -173,9 +190,22 @@ static float tuwaiqEscarpment(float x, float z, float hNatural) {
     constexpr float CX = 0.0f, CZ = 1900.0f;    // mesa centre (far north of corridor)
     constexpr float RP   = 470.0f;              // plateau radius (mesa top)
     constexpr float FOOT = 30.0f;               // flat valley-apron floor (>WATER_Y=18)
-    constexpr float TAN_FACE = 3.0777f;         // tan(72 deg): outer wall in the 60-75 deg band
     constexpr float APRON = 175.0f;             // flat valley in front (dive pull-out room)
     constexpr float FEATHER = 120.0f;           // apron -> natural feather width
+
+    // §0.95(b) CAPROCK PROFILE. A real mesa is a NEAR-VERTICAL caprock band over
+    // a gentler talus apron -- not one uniform slope. The rim drop splits into a
+    // caprock (top, 85-90 deg) that holds the sustained-90 dive, and a talus
+    // (bottom, 60-70 deg) run-out to the valley. The caprock's vertical extent is
+    // CAP_FRAC of the total rim relief, where CAP_FRAC = the researched fraction
+    // of a 90-deg-class record drop that is held truly vertical (Yukon Striker /
+    // Kingda-Ka-class; see docs/REAL_WORLD_REFERENCES.md, expressed as a ratio).
+    // On the 120-240 m rim drops this yields ~78 m (0.75x floor) up to ~156 m
+    // (1.5x) of >=85-deg caprock -- the tall stretches clear the ~130-150 m the
+    // cliff-dive's sustained-90 length needs.
+    constexpr float TAN_CAP  = 14.3007f;        // tan(86 deg): near-vertical caprock (85-90 band)
+    constexpr float TAN_TAL  = 2.1445f;         // tan(65 deg): talus apron (60-70 band)
+    constexpr float CAP_FRAC = 0.65f;           // caprock share of rim drop (RATIO LAW; REFERENCES)
 
     const float dx = x - CX, dz = z - CZ;
     const float rho = sqrtf(dx * dx + dz * dz);  // distance from the mesa centre
@@ -184,17 +214,25 @@ static float tuwaiqEscarpment(float x, float z, float hNatural) {
     // rims and the full 120..240 m usable-drop window. sin(x*..) is smooth at
     // the origin (no theta cusp under the station).
     const float plateauTop = Clamp(215.0f + 62.0f * sinf(x * 0.0042f), 150.0f, 275.0f);
-    const float faceRun = (plateauTop - FOOT) / TAN_FACE;   // keeps the wall ~72 deg for any height
+    const float rimRelief = plateauTop - FOOT;
+    const float capH   = CAP_FRAC * rimRelief;              // caprock vertical extent (>=85 deg)
+    const float talH   = rimRelief - capH;                  // talus vertical extent (60-70 deg)
+    const float capRun = capH / TAN_CAP;                    // caprock horizontal run
+    const float talRun = talH / TAN_TAL;                    // talus   horizontal run
+    const float faceRun = capRun + talRun;                  // full rim wall run
+    const float capEnd  = RP + capRun;                      // caprock/talus break radius
 
     const float rimEnd   = RP + faceRun;        // foot of the wall
     const float apronEnd = rimEnd + APRON;
     if (rho > apronEnd + FEATHER) return hNatural;  // outside the mesa's influence
 
-    // Mesa surface as a monotone function of radius rho.
+    // Mesa surface as a monotone function of radius rho: flat top -> caprock
+    // (near-vertical) -> talus (gentler) -> flat valley apron.
     float mesa;
-    if (rho <= RP)            mesa = plateauTop;                                             // flat table top
-    else if (rho < rimEnd)    mesa = plateauTop - (rho - RP) / faceRun * (plateauTop - FOOT); // 72 deg wall
-    else                      mesa = FOOT;                                                   // valley apron
+    if (rho <= RP)            mesa = plateauTop;                                    // flat table top
+    else if (rho < capEnd)    mesa = plateauTop - (rho - RP) * TAN_CAP;             // 86 deg caprock
+    else if (rho < rimEnd)    mesa = (plateauTop - capH) - (rho - capEnd) * TAN_TAL;// 65 deg talus
+    else                      mesa = FOOT;                                          // valley apron
 
     // Influence weight: full across plateau+wall+apron; feathers to the natural
     // field out in the valley so the foot meets the surrounding basin smoothly.
@@ -243,9 +281,60 @@ static int terrainH(float x, float z) {
     float inland = smooth01(-0.25f, 0.30f, continentalness);
     float shoreShelf = smooth01(-0.55f, -0.15f, continentalness) * 7.0f;
     float base = WATER_Y + 14.0f + continentalness * 28.0f + shoreShelf;
-    float mountains = inland * powf(pv, 2.35f) * powf(1.0f - erosion, 1.45f) * 92.0f;
-    float rolling = inland * (fbm(wx * 0.008f + 32.0f, wz * 0.008f + 77.0f, 3) - 0.5f) * 18.0f;
-    float h = base + mountains + rolling + (det - 0.5f) * 8.0f;
+
+    // --- §0.95(a) GRADUATED-BIOME height shaper --------------------------------
+    // Replaces the old bimodal "base + a little mountain noise" mapping (which
+    // topped out ~89 m and left an empty 90-150 m band before the bolted-on
+    // mesa) with a Minecraft-1.18-style multi-point spline so land height is
+    // populated CONTINUOUSLY across plains -> rolling hills -> mountains ->
+    // badlands mesa (open numeric reference: MC terrain-shaper spline structure;
+    // cubiomes is MIT -- concepts/numbers only, no code copied).
+    //
+    // Two drivers feed the spline, mirroring the MC fields already computed:
+    //  * ridge  = ridged peaks-valleys (pv) sharpened by LOW erosion -> the
+    //    noise-distributed "mountain-ness" that scatters hills/peaks over the map
+    //    (so the intermediate bands are genuine terrain, not a bare ramp).
+    //  * province = a large-scale northward HIGHLAND gradient (warped edge, not a
+    //    straight latitude line). It concentrates the dramatic bands toward the
+    //    escarpment (north, +z) so the mesa rises out of northern foothills
+    //    rather than straight out of plains, while the southern RIDE CORRIDOR
+    //    (z<~960) stays navigable plains/low-rolling -- generation is not fighting
+    //    a wall, and census survives (verified by --census, not assumed).
+    // The relief driver is passed through a monotone spline whose knot heights
+    // sit in each band; a roughly-graduated driver distribution therefore fills
+    // the bands with no gap. Amplitude is gated by 'inland' so oceans/coasts stay
+    // low and waterfrac is undisturbed.
+    float ridge = Clamp(powf(pv, 1.1f) * (1.35f - erosion), 0.0f, 1.0f); // 0..1 broad mountain-ness
+    float provWarp = (fbm(wx * 0.0016f + 120.0f, wz * 0.0016f + 64.0f, 2) - 0.5f) * 520.0f;
+    float province = smooth01(650.0f, 1750.0f, wz + provWarp);          // 0 south .. 1 north (mesa)
+    float reliefDrv = inland * Clamp(0.88f * ridge + 0.52f * province, 0.0f, 1.0f);
+    // Driver -> added relief metres. Knots: plains base (0), rolling (~+40),
+    // mountains (~+95..165), badlands mesa base (~+215). Widths chosen so plains
+    // dominate, rolling/mountains carry a meaningful share, mesa is the rare top.
+    static const float kRT[] = { 0.00f, 0.22f, 0.42f, 0.61f, 0.83f, 1.00f };
+    static const float kRV[] = { 0.0f,  14.0f, 46.0f, 100.0f, 168.0f, 215.0f };
+    float reliefNew = splineEval(kRT, kRV, 6, reliefDrv);
+
+    // RIDE-CORRIDOR GUARD. The graduated spline is a WORLD-shaping change; the
+    // dramatic bands must populate the map AWAY from the ride corridor, which the
+    // generator's pacing/routing was tuned against. Inside the measured lap-wander
+    // footprint (x in [-170,1650], z in [-830,960]; SESSION_STATE) the old,
+    // calm relief formula is retained verbatim so census pacing is preserved; the
+    // graduated relief takes over smoothly outside it. This keeps the northern
+    // highland/mesa and the flanks carrying the plains->rolling->mountains->mesa
+    // occupancy while the corridor stays navigable (verified by --census, not
+    // assumed -- the broadened ridge otherwise over-hills the mid-corridor and
+    // starves 2nd/3rd-lap routing into degenerate micro-laps).
+    float reliefOld = inland * powf(pv, 2.35f) * powf(1.0f - erosion, 1.45f) * 92.0f
+                    + inland * (fbm(wx * 0.008f + 32.0f, wz * 0.008f + 77.0f, 3) - 0.5f) * 18.0f;
+    // Anisotropic corridor mask centred on the lap footprint (unwarped x,z so the
+    // guard tracks the true track region, not the noise-warped field).
+    float cxr = (x - 740.0f) / 1550.0f;
+    float czr = (z -  65.0f) / 1250.0f;
+    float cRad = sqrtf(cxr * cxr + czr * czr);
+    float corridorW = 1.0f - smooth01(1.02f, 1.34f, cRad);  // 1 inside corridor, 0 outside
+    float relief = reliefOld * corridorW + reliefNew * (1.0f - corridorW);
+    float h = base + relief + (det - 0.5f) * 6.0f;
 
     // Phase 7 (spec §0.9): add the Tuwaiq escarpment BEFORE terracing so the
     // outer wall inherits the same <=2 m voxel steps as the rest of the world

@@ -186,10 +186,30 @@ int main(int argc, char **argv) {
         float bestDrop = -1.0f, bestX = 0.0f, bestZ = 0.0f, bestYaw = 0.0f;
         float minH = 1e9f, maxH = -1e9f;
         int qualified = 0;
+        // Height-occupancy histogram (spec §0.95(a) graduated-biome gate): the
+        // land column height distribution over the sampled world, in 20 m bins,
+        // plus named biome bands. A graduated world shows continuous occupancy
+        // across plains -> rolling -> mountains -> mesa with NO empty bin between
+        // the plains mode and the mesa band (the "bimodal gap" the rework kills).
+        // Durable probe -- part of the terrain audit record.
+        constexpr int HB_W = 20;                 // 20 m bins
+        constexpr int HB_N = 300 / HB_W + 2;     // 0..300 m (> TERRA_MAX 280)
+        long hist[HB_N]; for (int i = 0; i < HB_N; ++i) hist[i] = 0;
+        long landCells = 0;                      // cells above sea level (h>WATER_Y)
+        long bandPlains = 0, bandRolling = 0, bandMountain = 0, bandMesa = 0;
         for (float z = -1800.0f; z <= 1800.0f; z += 30.0f)
             for (float x = -1800.0f; x <= 1800.0f; x += 30.0f) {
                 float h0 = groundTopAt(x, z);
                 minH = fminf(minH, h0); maxH = fmaxf(maxH, h0);
+                int hb = (int)(h0 / HB_W); if (hb < 0) hb = 0; if (hb >= HB_N) hb = HB_N - 1;
+                hist[hb]++;
+                if (h0 > WATER_Y) {
+                    landCells++;
+                    if      (h0 <  80.0f) bandPlains++;
+                    else if (h0 < 120.0f) bandRolling++;
+                    else if (h0 < 200.0f) bandMountain++;
+                    else                  bandMesa++;
+                }
                 for (int a = 0; a < 24; ++a) {
                     float yaw = a * (2.0f * PI / 24.0f);
                     float h1 = groundTopAt(x + sinf(yaw) * 75.0f,
@@ -203,6 +223,56 @@ int main(int argc, char **argv) {
             }
         printf("[terrainaudit] range %.0f..%.0f m, qualified=%d, best drop %.1f m at (%.0f,%.0f) yaw %.1f deg\n",
                minH, maxH, qualified, bestDrop, bestX, bestZ, bestYaw / DEG2RAD);
+        // Graduated-biome histogram (spec §0.95(a)). One '#' per ~0.5% of land.
+        printf("[terrainaudit] land-height histogram (20 m bins, land cells=%ld):\n", landCells);
+        int lastNonEmpty = 0;
+        for (int i = 0; i < HB_N; ++i) if (hist[i] > 0) lastNonEmpty = i;
+        long histMax = 1; for (int i = 0; i < HB_N; ++i) if (hist[i] > histMax) histMax = hist[i];
+        for (int i = 0; i <= lastNonEmpty; ++i) {
+            int bars = (int)(50.0 * hist[i] / (double)histMax);
+            char barbuf[64]; for (int b = 0; b < bars && b < 63; ++b) barbuf[b] = '#'; barbuf[bars < 63 ? bars : 63] = '\0';
+            printf("[terrainaudit]  %3d-%3d m | %6ld %s\n", i * HB_W, (i + 1) * HB_W, hist[i], barbuf);
+        }
+        double lc = (double)std::max(1L, landCells);
+        printf("[terrainaudit] bands: plains(18-80)=%.1f%% rolling(80-120)=%.1f%% "
+               "mountain(120-200)=%.1f%% mesa(200-280)=%.1f%%\n",
+               100.0 * bandPlains / lc, 100.0 * bandRolling / lc,
+               100.0 * bandMountain / lc, 100.0 * bandMesa / lc);
+        // Graduated-occupancy gate (spec §0.95(a)): the world must not be bimodal
+        // ("plains then a sudden mesa"). Two conditions, both dimensionless
+        // fractions of land area:
+        //   (1) the intermediate bands each carry a meaningful share -- rolling
+        //       (80-120 m) >= 4% and mountain (120-200 m) >= 4% of land;
+        //   (2) no DEEP TROUGH -- every interior 20 m land bin from the plains
+        //       band (>=60 m) up to the highest populated bin holds >= 0.5% of
+        //       land (a near-empty bin between the plains mode and the mesa is
+        //       the bimodal signature).
+        constexpr double BAND_MIN_FRAC = 4.0;    // % of land per intermediate band
+        constexpr double APPROACH_MIN_FRAC = 0.4;// % of land per 20 m bin in the 80-200 m approach
+        double rollFrac = 100.0 * bandRolling / lc, mtnFrac = 100.0 * bandMountain / lc;
+        bool bandsOK = rollFrac >= BAND_MIN_FRAC && mtnFrac >= BAND_MIN_FRAC;
+        // Anti-bimodal check: the APPROACH span (80-200 m, between the plains mode
+        // and the badlands mesa) must have NO near-empty bin -- an empty bin here
+        // is the "plains then sudden mesa" signature. The mesa band itself (>=200 m)
+        // is legitimately sparse (a rare landform) and is NOT required to be dense.
+        int apLo = 80 / HB_W, apHi = 200 / HB_W;
+        double approachMin = 1e9; int approachBin = -1;
+        for (int i = apLo; i < apHi; ++i) {
+            double f = 100.0 * hist[i] / lc;
+            if (f < approachMin) { approachMin = f; approachBin = i; }
+        }
+        bool approachOK = approachMin >= APPROACH_MIN_FRAC;
+        if (bandsOK && approachOK)
+            printf("[terrainaudit] GRADUATED: rolling=%.1f%% mountain=%.1f%% (>=%.0f%% each), "
+                   "min approach bin %.2f%% at %d-%d m (>=%.1f%%) -- no bimodal gap\n",
+                   rollFrac, mtnFrac, BAND_MIN_FRAC, approachMin, approachBin * HB_W,
+                   (approachBin + 1) * HB_W, APPROACH_MIN_FRAC);
+        else
+            printf("[terrainaudit] BIMODAL: rolling=%.1f%% mountain=%.1f%% (need>=%.0f%%), "
+                   "min approach bin %.2f%% at %d-%d m (need>=%.1f%%) [bands%s approach%s]\n",
+                   rollFrac, mtnFrac, BAND_MIN_FRAC, approachMin, approachBin * HB_W,
+                   (approachBin + 1) * HB_W, APPROACH_MIN_FRAC,
+                   bandsOK ? "OK" : "LOW", approachOK ? "OK" : "LOW");
         return qualified > 0 ? 0 : 1;
     }
 
@@ -242,6 +312,8 @@ int main(int argc, char **argv) {
             int   distinctHeadings = 0;   // distinct compass headings among qualifiers
             float dropMin = 0.0f, dropMean = 0.0f, dropMax = 0.0f;
             float bestDrop = 0.0f;
+            float bestDropCaprock = 0.0f;  // caprock height (>=85 deg) of the deepest site
+            float caprockMax = 0.0f;       // tallest caprock band among qualifiers
         };
 
         // Sweep every heading from every anchor and report qualifying sites for
@@ -254,14 +326,18 @@ int main(int argc, char **argv) {
             float dropMin = 1.0e9f, dropMax = -1.0e9f, dropSum = 0.0f;
             float faceMin = 1.0e9f, faceMax = -1.0e9f, faceSum = 0.0f;
             float bestDrop = -1.0e9f, bestFace = 0.0f, bestRun = 0.0f, bestBaseRise = 0.0f;
-            float bestX = 0.0f, bestZ = 0.0f, bestYawDeg = 0.0f;
+            float bestX = 0.0f, bestZ = 0.0f, bestYawDeg = 0.0f, bestCaprock = 0.0f;
+            // Best CLIFF-DIVE site: the caprock-max qualifier (deep AND near-vertical
+            // caprock -- the fall-line-aligned face the builder will actually dive).
+            float caprockMax = 0.0f, capSiteDrop = 0.0f, capSiteFace = 0.0f;
+            float capSiteX = 0.0f, capSiteZ = 0.0f, capSiteYaw = 0.0f;
             // Terrain-ceiling diagnostics: the best RAW descent the anchors offer
             // regardless of whether it clears the qualification gates, so a
             // ZERO-qualifying result still quantifies how far the terrain falls
             // short of the 120 m / 58 deg signature-dive floor.
             float rawBestDrop = 0.0f, rawBestDropFace = 0.0f;
             float rawBestFace = 0.0f, rawBestFaceDrop = 0.0f;
-            struct Listed { float x, z, yawDeg, drop, face, run, baseRise; };
+            struct Listed { float x, z, yawDeg, drop, face, run, baseRise, caprock; };
             std::vector<Listed> listed;
 
             for (const Vector3 &anchor : anchors) {
@@ -288,14 +364,20 @@ int main(int argc, char **argv) {
                     dropMin = fminf(dropMin, p.dropTotal); dropMax = fmaxf(dropMax, p.dropTotal);
                     faceMin = fminf(faceMin, p.meanFaceDeg); faceMax = fmaxf(faceMax, p.meanFaceDeg);
                     dropSum += p.dropTotal; faceSum += p.meanFaceDeg;
+                    if (p.caprockDrop > caprockMax) {
+                        caprockMax = p.caprockDrop; capSiteDrop = p.dropTotal;
+                        capSiteFace = p.meanFaceDeg; capSiteX = anchor.x;
+                        capSiteZ = anchor.z; capSiteYaw = yaw / DEG2RAD;
+                    }
                     if (p.dropTotal > bestDrop) {
                         bestDrop = p.dropTotal; bestFace = p.meanFaceDeg; bestRun = p.runToFloor;
-                        bestBaseRise = v.basePullOutRise;
+                        bestBaseRise = v.basePullOutRise; bestCaprock = p.caprockDrop;
                         bestX = anchor.x; bestZ = anchor.z; bestYawDeg = yaw / DEG2RAD;
                     }
                     if (listed.size() < 12)
                         listed.push_back({anchor.x, anchor.z, yaw / DEG2RAD,
-                                          p.dropTotal, p.meanFaceDeg, p.runToFloor, v.basePullOutRise});
+                                          p.dropTotal, p.meanFaceDeg, p.runToFloor,
+                                          v.basePullOutRise, p.caprockDrop});
                 }
                 if (anchorHasSite) ++distinctAnchors;
             }
@@ -318,18 +400,24 @@ int main(int argc, char **argv) {
                    label, dropMin, dropSum / qualifyingCandidates, dropMax);
             printf("[cliffsites] %s: face  min/mean/max = %.1f / %.1f / %.1f deg\n",
                    label, faceMin, faceSum / qualifyingCandidates, faceMax);
-            printf("[cliffsites] %s: BEST  drop=%.1f m face=%.1f deg run=%.1f m baseRise=%.1f m at (%.0f,%.0f) yaw %.0f deg\n",
-                   label, bestDrop, bestFace, bestRun, bestBaseRise, bestX, bestZ, bestYawDeg);
+            printf("[cliffsites] %s: BEST  drop=%.1f m face=%.1f deg run=%.1f m baseRise=%.1f m caprock(>=85deg)=%.1f m at (%.0f,%.0f) yaw %.0f deg\n",
+                   label, bestDrop, bestFace, bestRun, bestBaseRise, bestCaprock, bestX, bestZ, bestYawDeg);
+            printf("[cliffsites] %s: BEST CLIFF-DIVE site (caprock-max): drop=%.1f m face=%.1f deg "
+                   "caprock(>=85deg)=%.1f m (%.0f%% of drop) at (%.0f,%.0f) yaw %.0f deg\n",
+                   label, capSiteDrop, capSiteFace, caprockMax,
+                   capSiteDrop > 1.0f ? 100.0f * caprockMax / capSiteDrop : 0.0f,
+                   capSiteX, capSiteZ, capSiteYaw);
             for (size_t i = 0; i < listed.size(); ++i)
-                printf("[cliffsites] %s:   site[%zu] (%.0f,%.0f) yaw %.0f deg  drop=%.1f m  face=%.1f deg  run=%.1f m  baseRise=%.1f m\n",
+                printf("[cliffsites] %s:   site[%zu] (%.0f,%.0f) yaw %.0f deg  drop=%.1f m  face=%.1f deg  run=%.1f m  baseRise=%.1f m  caprock=%.1f m\n",
                        label, i, listed[i].x, listed[i].z, listed[i].yawDeg,
-                       listed[i].drop, listed[i].face, listed[i].run, listed[i].baseRise);
+                       listed[i].drop, listed[i].face, listed[i].run, listed[i].baseRise, listed[i].caprock);
             SweepResult r;
             r.qualifyingCandidates = qualifyingCandidates;
             r.distinctAnchors = distinctAnchors;
             r.distinctHeadings = distinctHeadings;
             r.dropMin = dropMin; r.dropMean = dropSum / qualifyingCandidates; r.dropMax = dropMax;
             r.bestDrop = bestDrop;
+            r.bestDropCaprock = bestCaprock; r.caprockMax = caprockMax;
             return r;
         };
 
@@ -400,6 +488,10 @@ int main(int argc, char **argv) {
                " drop min/mean/max = %.1f / %.1f / %.1f m, best drop = %.1f m\n",
                world.qualifyingCandidates, world.distinctHeadings,
                world.dropMin, world.dropMean, world.dropMax, world.bestDrop);
+        printf("[cliffsites] world-grid caprock (>=85 deg): deepest-site caprock = %.1f m, "
+               "tallest caprock among qualifiers = %.1f m  (tall sites expect ~130-150 m; "
+               "spec §0.95(b) sustained-90 length = 0.65 x siteDrop)\n",
+               world.bestDropCaprock, world.caprockMax);
 
         // World-grid PASS gate: >=3 heading-diverse qualifying sites, at least one
         // drop >=220 m, and a drop spread covering ~120-240 m (low end <=150 m so

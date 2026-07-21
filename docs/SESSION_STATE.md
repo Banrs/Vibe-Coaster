@@ -210,3 +210,19 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   phase7a gate round is rebuilding). Update REAL_WORLD_REFERENCES rows 7 (friction) + drag row
   with the 0.9x law; expect faster laps — census lap-seconds band and speed numbers re-checked
   under the same gates, not pre-adjusted to pass.
+- DELEGATION LAW UPDATE (user, post-compact msg 3): when an agent fails/doesn't understand,
+  Fable takes over. Fable involvement cap raised to ~50/50 (from 40/60). Never accept agent
+  output as truth — verify with own probe runs.
+- PHASE7A TAKEOVER (Fable hands-on): workflow wf_47031ed5-2ee stopped after fix agent declared
+  STRUCTURAL, no changes. Round-0 gates: waterfrac 11.8 PASS, cliffsites PASS (632 candidates,
+  drops 120-246m). FAILS: census8 (lap-sec mean 78.7 w/ degenerate 1.4-5s zero-feature laps;
+  HELIX scale 0.90; TURN fam 47.6, IMMEL/SCURVE/HELIX over 1.5x caps), overlap (5 pairs <2m,
+  worst 0.18m, seeds 1-2, vs FLAT far-station), forceaudit (lat 6.26; helix roll-rate 11.47 ~
+  UNCHANGED vs 11.54 pre-'fix'; LOOP roll-accel 13.30; seed2 curvature-jerk 0.9079), jointaudit
+  (seed4 roll 12.7deg joint). Fix-agent diagnosis (to VERIFY, not trust): (1) mesa merged ahead
+  of its consumer starves routing -> guaranteed-continuation forced closes -> degenerate laps +
+  sub-2m clips (env-off path) + share skew; (2) 1.25x sizing vs occupancy corridor tension;
+  (3) residuals agent's roll-continuity fix ineffective. Hands-on plan: A/B escarpment off to
+  confirm (1); fix terrain-aware routing organically (needed for phase7b anyway, do NOT just
+  gate the mesa); guaranteed-continuation must never publish <2m; then the queued sizing/
+  duration/physics pass on top.

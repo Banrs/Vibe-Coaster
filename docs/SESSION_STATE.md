@@ -257,3 +257,17 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   DURATION census: mostly 0.6-0.9 in band; DROP 1.73x OVER (investigate tag-span/pullout
   attribution), HILLS 1.89 advisory (per-lobe ref), BANKAIR 1.17/WAVE 1.22 mildly over (expect
   improvement from hotter big-draw coupling). deadSubtype=2 (ROLL, +STALL or HELIX -- check).
+- IN FLIGHT (post-it3): (a) opus agent "speed-stretched ROLL/STALL" owns initRoll/initStall/
+  invVMax ROLL+STALL cases (rev TIME anchored ~2.8s real, axis advance scales v/22, radius stays
+  [1.0,1.5]x of 6.6m; verify census ROLL/STALL alive + forceaudit tags 6/17); (b) opus agent
+  "escape-clip elimination" owns escapeForward occupancy-off tier + squeeze launchEnv loop
+  (deterministic 7-heading yaw fan, max-min-clearance pick, escapeClipPublished counter; verify
+  overlap 2 pairs<2m=0); (c) MY turn fix APPLIED: initTurn rejects when v^2/(9.6g) > ref*1.5
+  (G-LAW PRECEDENCE, kills lat 6.15@u11; measuring /tmp/mc_turnfix forceaudit+census, task
+  b0mn878qv). it3 census green bits: CLIMB spectrum 4/6/4 FIXED, WAVE 2/5/7, IMMEL/LOOP/SCURVE
+  shares IN. Open after these: HILLS 6.3 low + hi-tercile empty (energy/entry-heat), DROP 1.7
+  low + 17.3s duration attribution (tag spans pullout? investigate), HELIX n=2 supply, TURN fam
+  61 (expect turn-reject to cut), vert +12.28+tangent 4.06 same-u launch-joint kink (escape
+  curvature-reset "bounded g-step" now marginally over at new speeds — revisit after escape
+  agent lands), LOOP/IMMEL/DIVELOOP hi-cluster (needs valley speed diversity), BANKAIR 1.20/
+  WAVE 1.24 duration. Then: census 8+16 full gates -> commit+push everything.

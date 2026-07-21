@@ -5955,6 +5955,11 @@ struct Track : CommittedTrack, GenCursor {
     }
 
     bool escapeForward() {
+        if (getenv("MC_LAPTRACE"))
+            fprintf(stderr, "[ESCTRACE] escape at (%.0f,%.0f,%.0f) genV=%.1f "
+                    "mode=%d ground=%.1f clr=%.1f dy=%.2f\n", gpos.x, gpos.y,
+                    gpos.z, genV, (int)mode, genGroundTopAt(gpos.x, gpos.z),
+                    gpos.y - genGroundTopAt(gpos.x, gpos.z), genPrevDy);
         // U1: escape arcs / connectors are the last-resort reroute.  They first
         // try to clear committed geometry to the narrow 4 m escape envelope, but
         // an escape is ALSO the streaming ride's guaranteed forward-progress

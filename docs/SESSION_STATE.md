@@ -309,3 +309,18 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   hot states). Then: TURN 60.9 (weight/eligibility rebalance once desert closed), HILLS 6.7
   (entry-heat supply), DROP 1.9 + 2.73x duration attribution, HELIX 0.4 supply, ROLL 2.9
   (below band 4.5 but alive), lat 6.22 turn-shoulder speed-scaling, vert +12.21, seed3 clips.
+- DESERT POCKETS ROOT-CAUSED (ESCTRACE, 8 seeds): TWO archetypes, coordinates logged.
+  (A) DIVING IMMEL EXITS: escapes at mode=12 boundaries, dy=-6.23 (~42deg dive), v 40-53,
+  clr 75-106m (e.g. (1608,130,1199), (2609,124,1214), (1743,122,-509), (1481,115,-853),
+  (1739,118,-392)). IMMEL exits 24deg past crest still diving BY DESIGN; the
+  startRecoveryDrop settle machinery (needsSettle -> level connector -> re-enter) is NOT
+  rescuing these anchors -- find why (scheduler order? consecutiveRoutingRuns gate? settle
+  build fails at dy -6.23?). Fix here kills ~half the escapes AND probably feeds DROP/HELIX
+  shares (descending recovery set-pieces are their supply!).
+  (B) BURIED HOT BOUNDARIES: post-tophat/LOOP exits inside terrain cuts, clr -11..+3m at
+  v 70-88 (e.g. (2317,21,-555) clr-11.3 after mode=4->1, (3559,21,183) clr 3.0 after
+  mode=5->1, (2076,45,-897) clr 9.5). Nothing builds in a cut at that speed; escapes stream
+  while the runway climbs out. Fix: tophat/loop exit contracts should hand over OUTSIDE the
+  cut (extend the exit leg to daylight) OR make the cut-exit connector a first-class move.
+  Escapes charge the lap budget -> early closes; escapeClipPublished 56 = all clips come from
+  these two archetypes. Fix A first, re-measure B.

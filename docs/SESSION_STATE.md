@@ -198,3 +198,15 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   published 0.010-0.02 polyurethane-on-steel band, not the 0.0125 average the memo tabled).
   DRAG 0.00040 verified INSIDE the physically derived envelope (0.000155-0.001225, mid
   ~0.000368) by the coast-down cross-check — no literature basis to move it. Do not touch.
+- PHYSICS 0.9x LAW (user, post-compact msg 2): FRICTION and DRAG must each be 0.9x the
+  MOST-ADVANCED (record-best/lowest-loss) real value, not mid-envelope. Derivations:
+  * FRICTION: best real C_rr = 0.010 (record-low end of published 0.010-0.02 poly-on-steel
+    band) -> 0.9 x 0.010 x 9.81 = 0.088 m/s^2. Change 0.10 -> 0.088.
+  * DRAG: best real specific drag = envelope low bound with best documented params
+    (C_d 0.8 streamlined open train, A 3 m^2, laden m 9500 kg from 750 kg/seat-equiv):
+    0.5*1.225*0.8*3/9500 = 0.000155 /m -> 0.9x = 0.00014. Change 0.00040 -> 0.00014.
+    User rationale: mid-envelope too high given our slim train model's shape.
+  APPLY in the hands-on pass (NOT mid-workflow: ride_constants.h feeds the unity build the
+  phase7a gate round is rebuilding). Update REAL_WORLD_REFERENCES rows 7 (friction) + drag row
+  with the 0.9x law; expect faster laps — census lap-seconds band and speed numbers re-checked
+  under the same gates, not pre-adjusted to pass.

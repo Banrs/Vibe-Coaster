@@ -235,3 +235,25 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   Implementation: per-element scale accumulators (sum/min/max/N + tercile counts + capViol) in
   Track, recorded at each init's success path; census prints a scale-spectrum table + element
   crest-height histogram; gate = all terciles nonzero for elements with N>=6, capViol=0.
+- TAKEOVER ITERATION LEDGER (2026-07-21, binaries /tmp/mc_*):
+  it1 (mc_handson: mesa@1900 + speed-aware frndUp + floor 1.0 + 0.9x physics): speed exploded
+  258-267, shares collapsed (TURN fam 70.6, HILLS 2.7, ROLL 0, deadSubtype 2) -- pacing was
+  calibrated for old drag. it2 (mc_handson4: + BOOST_CRUISE 292->278, cadence 1700->2100 in
+  V1_PROPULSION; + scurve exit-drain 8 zero-request steps): avg 243 ON TARGET, lap-sec 125.1 IN,
+  jointaudit 4/4 PASS (drain fixed the 6.11 roll-accel joint), seed1 overlap CLEAN; remaining:
+  TURN fam 60.8, HILLS 6.1, ROLL 0 (needs speed-stretched corkscrew law: Arrow 6.6m/22m-per-rev
+  geometry impossible >=41 m/s valleys; realism model = Velocicoaster-style stretched heartline
+  roll, rev TIME ~ real 2.8s, axis advance scales v/22), HELIX n=2 (pick-supply), IMMEL 7.9>6,
+  lat 6.15@u11/tag4 both seeds (post-launch turn: radius cap 1.5x forces 15g plan at 360 km/h;
+  fix = g-law precedence over scale cap: radius >= v^2/(9.6*g) allowed past 1.5x cap, document
+  as G-LAW PRECEDENCE + exempt from capViol), vert +12.28@tag0+tangent 4.06 same u (launch
+  runway kink, investigate), LOOP roll-accel 7.38@tag5 (residuals agent's lateral-offset frame
+  correction ineffective -- re-verify its block ~coaster_track:2100), seed2 overlap 4 clips
+  IMMEL-vs-FLAT (escape runways; yaw-fan clearance search planned for env-off rungs).
+  SPECTRUM instrumentation LANDED (GenCursor ScaleStat arrays, TxnSnapshot-safe via GenCursor
+  copy; census prints spectrum/duration/heights + gates): capViol 0; one-signature fixes applied
+  it3 (mc_spec2): tophat split 206.25 (was 195/235 hole), bankair/wave caps 49/46 ->
+  RECORD*CAP 52.5, LOOP invVMax 64->74.9 (1.5x crossover, crest-g scale-invariant law).
+  DURATION census: mostly 0.6-0.9 in band; DROP 1.73x OVER (investigate tag-span/pullout
+  attribution), HILLS 1.89 advisory (per-lobe ref), BANKAIR 1.17/WAVE 1.22 mildly over (expect
+  improvement from hotter big-draw coupling). deadSubtype=2 (ROLL, +STALL or HELIX -- check).

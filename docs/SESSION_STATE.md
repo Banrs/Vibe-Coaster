@@ -300,3 +300,12 @@ NOT main). Ultracode is ON: user opted into Workflow-tool orchestration for all 
   seen on 4-inversion laps (check census8 gate line). Full suite on /tmp/mc_final running
   (task b8fp3tnqz: census8/force2/overlap4/joint4/water/cliffsites -> fin_*.txt).
   Lesson recorded: intermediate tree snapshots would have made the bisect trivial.
+- CENSUS 16 WIDE GATE (post-f8ad2b5, /tmp/fin_census16.txt): complete=yes deadSubtype=0
+  capViol=0 oneSignature=2 (ROLL exception + HILLS) — confirms census-8 at scale. IMMEL 4.0/
+  LOOP 4.0/SCURVE 8.0 IN. THE dominant remaining defect: desert pockets (lap mean 79.6, 56
+  escapes ALL publishing via occupancy-off fan = escapeClipPublished 56, forcedLapCloses 5).
+  NEXT CYCLE PRIORITY #1: MC_LAPTRACE the short-lap seeds — find what starves those specific
+  boundaries (NOT turns anymore; suspect terrain/altitude at specific spots or post-tophat
+  hot states). Then: TURN 60.9 (weight/eligibility rebalance once desert closed), HILLS 6.7
+  (entry-heat supply), DROP 1.9 + 2.73x duration attribution, HELIX 0.4 supply, ROLL 2.9
+  (below band 4.5 but alive), lat 6.22 turn-shoulder speed-scaling, vert +12.21, seed3 clips.

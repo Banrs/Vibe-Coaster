@@ -283,6 +283,21 @@ struct TerrainColumnStore {
     static constexpr int TILE_SIZE = 1 << TILE_SHIFT;
     static constexpr size_t SHARDS = 64;
     static constexpr size_t MAX_TILES_PER_SHARD = 128;
+    // Runtime per-shard eviction cap. Interactive play keeps the bounded
+    // MAX_TILES_PER_SHARD so a roaming session stays memory-bounded. Headless
+    // audit/probe sweeps (--census/--forceaudit/--overlap/... , argc>1) raise it
+    // via useUnboundedTerrainCache(): those runs sweep far-flung corridors,
+    // 7-heading escape yaw-fans and ~1 km descent scans that touch millions of
+    // distinct cells -- FAR more than the play working set the 128-tile cap is
+    // sized for -- so under the play cap the store thrashed, regenerating each
+    // evicted tile's 256 columns over and over. Measured on census 2: 59.8M vs
+    // 4.5M terrainH/vnoise solves (13.2x) with the cap raised, and terrainH is
+    // ~91% of census wall time (census 4: 54.2s -> 7.7s, 7.1x, this VM). A
+    // tile's columns are a pure function of (cx,cz), so the cap changes only how
+    // often terrainH is recomputed -- never any value -- keeping every audit's
+    // output byte-identical. With no eviction the store self-limits to the
+    // distinct tiles actually touched (~tens of MB for a full census).
+    static size_t s_capPerShard;
 
     struct Tile {
         int tx = 0, tz = 0;
@@ -340,7 +355,7 @@ struct TerrainColumnStore {
         // reach different rows of the same cold tile together; publishing
         // outside the lock allowed every worker to repeat all 256 noise solves.
         TilePtr made=generateTile(tx,tz);
-        if(s.tiles.size()>=MAX_TILES_PER_SHARD && !s.tiles.empty())
+        if(s.tiles.size()>=s_capPerShard && !s.tiles.empty())
             s.tiles.erase(s.tiles.begin());
         s.tiles.emplace(k,made);
         return made;
@@ -350,7 +365,20 @@ struct TerrainColumnStore {
         return getTile(tx,tz)->at(cx,cz);
     }
 };
+size_t TerrainColumnStore::s_capPerShard = TerrainColumnStore::MAX_TILES_PER_SHARD;
 static TerrainColumnStore gTerrainColumns;
+
+// Headless audit/probe entry points (argc>1, all return before InitWindow) call
+// this once at startup so the shared terrain tile store never evicts a tile a
+// later corridor/escape/descent scan will revisit. MC_TILECAP overrides the cap
+// to an exact value -- a benchmark/regression hook to reproduce the pre-fix
+// thrash (MC_TILECAP=128) on the same binary; unset means unbounded (the fix).
+// Never touched by the interactive game (argc==1), which keeps the bounded cap.
+static void useUnboundedTerrainCache() {
+    const char *e = getenv("MC_TILECAP");
+    TerrainColumnStore::s_capPerShard =
+        e ? (size_t)strtoull(e, nullptr, 10) : SIZE_MAX;
+}
 
 // Natural water belongs to the generated terrain column, not to later render-
 // only modifications such as station/helix forceTop clamps or track carving.

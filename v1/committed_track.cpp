@@ -763,6 +763,7 @@ struct GenCursor {
     float   turnEntryDy = 0.0f;
     float   turnRise = 0.0f;
     float   turnExitDelta = 0.0f;
+    float   turnShoulderFrac = 0.22f;  // speed-scaled TURN entry/exit ease (see turnShoulder / TURN_SHOULDER_*); in GenCursor so a rolled-back transaction restores it with turnMag
     bool    terrainAvoidanceTurn = false;
     float   bankT   = 0.6f;
     float   bankBase = 1.0f;   // FRACTION of the full heartline lean this element actually banks: 1.0 = fully heartlined (all lateral load rotates into the seat -- hard turns/helix); <1 = deliberately UNDER-banked so the rider keeps some felt-lateral (airtime hills ~0.2, S-curve ~0.4). bankT then adds OVER-bank past that toward inversion for signature elements.

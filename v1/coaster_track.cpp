@@ -1210,12 +1210,16 @@ struct Track : CommittedTrack, GenCursor {
         t=Clamp(t,0.0f,1.0f); float t2=t*t, t4=t2*t2;
         return 0.5f*t2+t4*(-5.0f+t*(10.0f+t*(-7.5f+2.0f*t)));
     }
-    static float turnShoulder(float t) {
+    static float turnShoulder(float t, float frac = genc::TURN_SHOULDER_BASE) {
         // One curvature law is shared by planning and emission.  Its first
         // two derivatives vanish at each end, while its faster quintic rise
         // avoids the dead-level notch produced by the old over-smoothed C3
-        // shoulder between adjacent turns.
-        return spatialEase(t / 0.22f) * spatialEase((1.0f - t) / 0.22f);
+        // shoulder between adjacent turns.  `frac` is the entry/exit ease
+        // fraction: a hot TURN passes a wider (speed-scaled) ease so the
+        // governed felt-bank roll keeps up with the balance-bank ramp (see
+        // turnShoulderFrac / TURN_SHOULDER_* -- the corkscrew's 5a fix).
+        // Connectors and the demotion cap keep the 0.22 default.
+        return spatialEase(t / frac) * spatialEase((1.0f - t) / frac);
     }
     static float helixShoulder(float t) {
         // Asymmetric shoulders: the coil winds its (up to ~84 degree) bank up
@@ -2558,7 +2562,24 @@ struct Track : CommittedTrack, GenCursor {
         // terrain -- the zero-g height refit below keeps felt-g ~0 at any span.
         stallLen  = Clamp((int)(L / SEG_LEN + 0.5f), 8, 12);
         float Lf  = stallLen * SEG_LEN;
-        stallH    = fminf(GRAV * Lf * Lf / (16.0f * vc2 * 1.32f), maxClearH());   // 1.32 = 1.15^2 keeps the height consistent with the widened span
+        // FLOAT-TIME FLOOR (2026-07-21, micro-STALL fix): re-fitting the height to the
+        // length-capped span (above) made stallH scale as ~1/vc2, so a hot 51-75 m/s entry
+        // paired with the 12-segment cap collapsed the crest to a few meters (H=2.8 m
+        // observed at v=74) -- a true zero-g curvature match, but a visually-nonexistent
+        // "blip", not a rideable airtime hill. A real zero-g stall is sold on FLOAT TIME, not
+        // curvature purity -- ArieForce One (Fun Spot America Atlanta; REFERENCES row 141)
+        // markets "nearly four seconds of floating airtime" as its headline stat, i.e. the
+        // 2-4 s band this class of element targets. During true zero g the vehicle is in
+        // freefall, so the crest-to-shoulder drop over a float of T seconds is the standard
+        // freefall relation h = g*(T/2)^2 (half the float climbing, half descending) =
+        // GRAV*T^2/8. Floor at the representative mid-band T=3.0 s (below ArieForce's
+        // marketed ~4 s ceiling, comfortably above the 2 s "still reads as a stall" line) ->
+        // GRAV*9.0/8.0 ~= 11.04 m: tall enough to read as a real hump at any built span/speed
+        // in the 51-75 m/s window (maxClearH()'s own hard floor is 6 m, so this floor is
+        // always satisfiable -- see docs/REAL_WORLD_REFERENCES.md STALL row).
+        constexpr float STALL_FLOAT_TIME_MIN = 3.0f;   // s; mid-band of the real 2-4 s float range
+        const float stallHFloor = GRAV * STALL_FLOAT_TIME_MIN * STALL_FLOAT_TIME_MIN / 8.0f;
+        stallH    = fminf(fmaxf(GRAV * Lf * Lf / (16.0f * vc2 * 1.32f), stallHFloor), maxClearH());   // 1.32 = 1.15^2 keeps the height consistent with the widened span
         stallEntryY = gpos.y;
         stallF      = headingVec();
         stallSide   = Vector3Normalize(Vector3CrossProduct(WUP, stallF));
@@ -3020,7 +3041,8 @@ struct Track : CommittedTrack, GenCursor {
         for (int step=0; step<turnLen+12; ++step) {
             const float x0=x, z0=z, yaw0=yaw;
             const float requested = step < turnLen
-                ? turnDir*turnMag*turnShoulder(((float)step+1.0f)/turnLen)
+                ? turnDir*turnMag*turnShoulder(((float)step+1.0f)/turnLen,
+                                               turnShoulderFrac)
                 : 0.0f;
             yawRate = limitedYawRate(requested, yawRate, M_TURN);
             yaw += yawRate;
@@ -3052,13 +3074,14 @@ struct Track : CommittedTrack, GenCursor {
         float connDyStart, connCurvatureStart, connStartY, connEndY;
         float bankBase, bankT, turnDir, turnMag;
         float turnEntryY, turnEntryDy, turnRise, turnExitDelta;
+        float turnShoulderFrac;
         bool terrainAvoidanceTurn;
     };
     RoutingState routingState() const {
         return {mode, remain, connLen, turnLen,
                 connDyStart, connCurvatureStart, connStartY, connEndY, bankBase, bankT,
                 turnDir, turnMag, turnEntryY, turnEntryDy, turnRise,
-                turnExitDelta, terrainAvoidanceTurn};
+                turnExitDelta, turnShoulderFrac, terrainAvoidanceTurn};
     }
     void restoreRoutingState(const RoutingState &s) {
         mode=s.mode; remain=s.remain;
@@ -3067,7 +3090,8 @@ struct Track : CommittedTrack, GenCursor {
         connStartY=s.connStartY; connEndY=s.connEndY;
         bankBase=s.bankBase; bankT=s.bankT; turnDir=s.turnDir; turnMag=s.turnMag;
         turnEntryY=s.turnEntryY; turnEntryDy=s.turnEntryDy; turnRise=s.turnRise;
-        turnExitDelta=s.turnExitDelta; terrainAvoidanceTurn=s.terrainAvoidanceTurn;
+        turnExitDelta=s.turnExitDelta; turnShoulderFrac=s.turnShoulderFrac;
+        terrainAvoidanceTurn=s.terrainAvoidanceTurn;
     }
 
     bool initTurn(bool big, bool avoidance = false,
@@ -3152,6 +3176,16 @@ struct Track : CommittedTrack, GenCursor {
         if (!sweeper) recordScale(M_TURN, radius / radiusReference);
         turnMag = SEG_LEN / radius;
         bankT = 0.0f;
+        // Speed-scaled entry/exit ease (corkscrew 5a analogue).  A hot TURN's
+        // fixed ~84 deg balance bank must roll in under the 110 deg/s governor;
+        // the 0.22 ease ramps the required bank faster than the frame can
+        // follow above ~44 m/s, leaking felt-lateral.  Widen the ease with
+        // speed so the balance-bank ramp lengthens and the governed roll keeps
+        // up.  turnMag (the curvature peak / 9.6 g sustained load) is untouched
+        // -- only the ease grows.  Shared by sizing, corridor and emission.
+        turnShoulderFrac = Clamp(
+            genc::TURN_SHOULDER_BASE * (genV / genc::TURN_SHOULDER_REF_V),
+            genc::TURN_SHOULDER_BASE, genc::TURN_SHOULDER_MAX);
         remain = avoidance ? (forcedSteps ? forcedSteps : 11)
                            : (big ? irnd(15, 18) : irnd(11, 14));
         turnLen = remain;
@@ -3159,12 +3193,22 @@ struct Track : CommittedTrack, GenCursor {
             float weight = 0.0f;
             for (int step = 0; step < steps; ++step) {
                 float t = ((float)step + 1.0f) / (float)steps;
-                weight += turnShoulder(t);
+                weight += turnShoulder(t, turnShoulderFrac);
             }
             return turnMag * weight;
         };
         const int minSteps = big ? 15 : 11;
-        const int maxSteps = avoidance ? 16 : (big ? 18 : 14);
+        const int baseMaxSteps = avoidance ? 16 : (big ? 18 : 14);
+        // A speed-widened ease lowers the yaw contributed per step, so a hot
+        // turn needs more steps to reach the same yaw band (and the extra
+        // length is exactly the roll-in room the leak fix wants).  Grant steps
+        // in proportion to the shoulder stretch, capped at +8 so the sweeper
+        // stays a bounded set-piece and does not crowd routing.  Un-stretched
+        // (base-frac) turns keep the original bound byte-for-byte.
+        const float shoulderStretch = turnShoulderFrac / genc::TURN_SHOULDER_BASE;
+        const int maxSteps = std::min(
+            baseMaxSteps + (int)lroundf(baseMaxSteps * (shoulderStretch - 1.0f)),
+            baseMaxSteps + 8);
         const float yawFloor = big ? 2.60f : (avoidance ? 0.75f : 0.90f);
         const float yawCeiling = big ? 3.60f : (avoidance ? 2.75f : 1.90f);
         if (!forcedSteps) {
@@ -3198,7 +3242,8 @@ struct Track : CommittedTrack, GenCursor {
             float peakFloor = ordinaryCorridorFloor(genGroundTopAt(x, z));
             for (int step = 0; step < turnLen; ++step) {
                 float t = ((float)step + 1.0f) / (float)turnLen;
-                yawRate = limitedYawRate(dir*turnMag*turnShoulder(t),
+                yawRate = limitedYawRate(dir*turnMag*turnShoulder(t,
+                                             turnShoulderFrac),
                                          yawRate, M_TURN);
                 yaw += yawRate;
                 x += sinf(yaw) * SEG_LEN;
@@ -3275,7 +3320,8 @@ struct Track : CommittedTrack, GenCursor {
         for (int step = 0; step < turnLen; ++step) {
             const float t = ((float)step + 1.0f) / turnLen;
             yawRate = limitedYawRate(
-                turnDir * turnMag * turnShoulder(t), yawRate, M_TURN);
+                turnDir * turnMag * turnShoulder(t, turnShoulderFrac),
+                yawRate, M_TURN);
             yaw += yawRate;
             x += sinf(yaw) * SEG_LEN;
             z += cosf(yaw) * SEG_LEN;
@@ -5351,12 +5397,20 @@ struct Track : CommittedTrack, GenCursor {
                                    fmaxf(capPerSpan, 1.0e-4f)));
                 }
                 pending = {PendingKind::RecoveryDrop, M_COUNT};
-                if (startLevelConnector(Clamp(settleSteps, MIN_CONN, 24), gpos.y)) {
+                bool slc = startLevelConnector(Clamp(settleSteps, MIN_CONN, 24), gpos.y);
+                if (getenv("MC_RDTRACE"))
+                    fprintf(stderr, "[RDTRACE]   settle steps=%d startLevelConnector=%d\n",
+                            (int)Clamp(settleSteps, MIN_CONN, 24), (int)slc);
+                if (slc) {
                     commitInitializedElement(false);
                     return true;
                 }
                 pending = {};
             }
+            if (getenv("MC_RDTRACE"))
+                fprintf(stderr, "[RDTRACE]   settle skipped/failed; trying descend set-pieces "
+                        "eligDIVE=%d eligHELIX=%d\n",
+                        (int)eligibleAsRecovery(M_DIVELOOP), (int)eligibleAsRecovery(M_HELIX));
             const float descendPick = rnd01();
             SegMode descend = descendPick < 0.5f ? M_DIVELOOP : M_HELIX;
             for (int attempt = 0; attempt < 2; ++attempt) {
@@ -5365,6 +5419,9 @@ struct Track : CommittedTrack, GenCursor {
                     pending = {};
                     const bool built = descend == M_DIVELOOP
                         ? initDiveLoop() : initHelix();
+                    if (getenv("MC_RDTRACE"))
+                        fprintf(stderr, "[RDTRACE]   descend %s built=%d\n",
+                                descend==M_DIVELOOP?"DIVE":"HELIX", (int)built);
                     if (built) {
                         commitInitializedElement(true);
                         txn.commit();
@@ -5376,14 +5433,21 @@ struct Track : CommittedTrack, GenCursor {
                 descend = descend == M_DIVELOOP ? M_HELIX : M_DIVELOOP;
             }
         }
-        if (beginDropProfile()) {
+        bool bdp = beginDropProfile();
+        if (getenv("MC_RDTRACE"))
+            fprintf(stderr, "[RDTRACE]   beginDropProfile=%d (v=%.1f dy=%.2f mode=%d bt=%d)\n",
+                    (int)bdp, genV, genPrevDy, mode, (int)boundaryTransactionActive);
+        if (bdp) {
             pending = successor;
             return true;
         }
         pending = successor.kind != PendingKind::None
             ? successor
             : PendingAction{PendingKind::RecoveryDrop, M_COUNT};
-        if (routeConnectorAround()) {
+        bool rca = routeConnectorAround();
+        if (getenv("MC_RDTRACE"))
+            fprintf(stderr, "[RDTRACE]   routeConnectorAround=%d -> recovery FAILED\n", (int)rca);
+        if (rca) {
             commitInitializedElement(false);
             return true;
         }
@@ -5670,7 +5734,17 @@ struct Track : CommittedTrack, GenCursor {
             return false;
         if (action.kind == PendingKind::Boost && mode != M_BOOST)
             return false;
-        if (action.kind == PendingKind::RecoveryDrop && mode != M_DROP)
+        // A RecoveryDrop reservation is satisfied by ANY of startRecoveryDrop's
+        // three legal outcomes, not just the plain drop: when the descending
+        // window is open it authors a dive loop or descending helix (the
+        // set-piece IS the recovery -- and the only altitude those subtypes ever
+        // get), otherwise a M_DROP profile.  Accepting only M_DROP here rejected
+        // every settle-then-set-piece recovery after the alignment connector was
+        // already consumed, stranding elevated diving exits (the Immelmann exits
+        // below its crest) into the escape ladder -- which both force-launched
+        // ~1/3 of laps AND starved the DROP/HELIX/DIVELOOP shares of their supply.
+        if (action.kind == PendingKind::RecoveryDrop &&
+            mode != M_DROP && mode != M_DIVELOOP && mode != M_HELIX)
             return false;
         return true;
     }
@@ -5956,9 +6030,10 @@ struct Track : CommittedTrack, GenCursor {
 
     bool escapeForward() {
         if (getenv("MC_LAPTRACE"))
-            fprintf(stderr, "[ESCTRACE] escape at (%.0f,%.0f,%.0f) genV=%.1f "
+            fprintf(stderr, "[ESCTRACE] escape at (%.0f,%.0f,%.0f) arc=%.1f genV=%.1f "
                     "mode=%d ground=%.1f clr=%.1f dy=%.2f\n", gpos.x, gpos.y,
-                    gpos.z, genV, (int)mode, genGroundTopAt(gpos.x, gpos.z),
+                    gpos.z, arc.empty() ? 0.0f : arc.back(), genV, (int)mode,
+                    genGroundTopAt(gpos.x, gpos.z),
                     gpos.y - genGroundTopAt(gpos.x, gpos.z), genPrevDy);
         // U1: escape arcs / connectors are the last-resort reroute.  They first
         // try to clear committed geometry to the narrow 4 m escape envelope, but
@@ -5972,6 +6047,19 @@ struct Track : CommittedTrack, GenCursor {
         struct EnvRestore { float &e; float v; ~EnvRestore() { e = v; } }
             envRestore{occupancyEnvelope, savedEnv};
         std::vector<Vector3> escapeProbePts;
+        // Best still-clipping occupancy-off candidate found across ALL step
+        // lengths (see below): a short connector (steps=MIN_CONN) is tried
+        // first every time, and a fixed-length fan/dodge search from a boxed
+        // anchor at that short length often cannot develop enough lateral (or
+        // vertical) offset to actually clear the obstruction -- widening yaw
+        // barely moves the endpoint over only a few segments.  So a clipping
+        // candidate is no longer committed on sight; it is trial-committed,
+        // measured, and rolled back so a LONGER connector gets a real chance
+        // to clear.  Only the best of everything tried is published, and only
+        // once every length has had its turn (see the replay-commit after the
+        // tier loop below).
+        struct { bool valid = false; int steps = 0; float yaw = 0.0f,
+                  endY = 0.0f, clr = -1.0f; } bestOff;
         // Tier down only as far as each anchor actually needs: the 4 m escape
         // envelope, then a descending squeeze that always takes the HIGHEST
         // feasible clearance (so the escape never picks a tighter gap than it
@@ -6036,34 +6124,97 @@ struct Track : CommittedTrack, GenCursor {
                 // commitConnector still gates terrain corridor + force, so a
                 // rotated heading that dips into terrain falls back to a roomier
                 // one.  Organic avoidance, not a weakened guarantee.
-                static const float fanYaw[7] = {
+                //
+                // WIDENED FAN (2026-07-21, seed3-clip fix): the original +/-24
+                // deg cap still boxed some anchors (e.g. seed3 SCURVE-vs-FLAT,
+                // 0.37 m) because every heading up to 24 deg swept back through
+                // the SAME nearby prior-lap span -- the obstruction was wide
+                // enough that only a sharper yaw cleared it.  Add +/-32/+/-40
+                // deg to the fan.  Also add two yaw-0 VERTICAL dodges (a small
+                // lift/drop of the target deck) alongside the yaw candidates:
+                // some boxed anchors are pinched by a span at almost exactly
+                // the escape's own height, where no heading change helps but a
+                // couple of metres of vertical offset clears it outright.
+                // Candidates that break the terrain corridor or force gate
+                // simply fail commitConnector and the loop falls through to the
+                // next-roomiest candidate, so this only ever adds options, it
+                // never weakens the occupancy-off completion guarantee.
+                static const float fanYaw[15] = {
                     0.0f, 0.13963f, -0.13963f, 0.27925f, -0.27925f,
-                    0.41888f, -0.41888f };   // 0, +/-8, +/-16, +/-24 degrees
-                struct FanCand { float yaw, clr; } fan[7];
-                for (int f = 0; f < 7; ++f) {
+                    0.41888f, -0.41888f, 0.55851f, -0.55851f,
+                    0.69813f, -0.69813f, 0.83776f, -0.83776f,
+                    0.97738f, -0.97738f };  // 0, +/-8,16,24,32,40,48,56 degrees
+                static const float dodgeDy[8] = { 2.5f, -2.0f, 3.5f, -3.2f, 6.0f, -5.0f,
+                                                   8.0f, -7.0f };
+                constexpr int NFAN = 15, NDODGE = 8, NCAND = NFAN + NDODGE;
+                struct FanCand { float yaw, endY, clr; } fan[NCAND];
+                for (int f = 0; f < NFAN; ++f) {
                     ConnectorPlan cand = plan;
                     cand.yawTarget = fanYaw[f];
                     connectorCentreline(cand, escapeProbePts);
-                    fan[f] = { fanYaw[f],
+                    fan[f] = { fanYaw[f], plan.endY,
                                occClearancePolyline(escapeProbePts, tipArc) };
                 }
-                for (int a = 1; a < 7; ++a) {   // insertion sort, roomiest first
+                for (int d = 0; d < NDODGE; ++d) {
+                    ConnectorPlan cand = plan;
+                    cand.yawTarget = 0.0f;
+                    cand.endY = Clamp(plan.endY + dodgeDy[d], loY, hiY);
+                    connectorCentreline(cand, escapeProbePts);
+                    fan[NFAN + d] = { 0.0f, cand.endY,
+                               occClearancePolyline(escapeProbePts, tipArc) };
+                }
+                for (int a = 1; a < NCAND; ++a) { // insertion sort, roomiest first
                     FanCand key = fan[a]; int b = a - 1;
                     while (b >= 0 && fan[b].clr < key.clr) { fan[b + 1] = fan[b]; --b; }
                     fan[b + 1] = key;
                 }
                 const float bestClr = fan[0].clr;
-                for (int f = 0; f < 7; ++f) {
+                if (getenv("MC_LAPTRACE") && bestClr < 2.0f)
+                    fprintf(stderr, "[FANTRACE] steps=%d bestClr=%.2f bestYaw=%.1fdeg "
+                            "bestDy=%.2f\n", steps, bestClr,
+                            fan[0].yaw * 57.2958f, fan[0].endY - plan.endY);
+                for (int f = 0; f < NCAND; ++f) {
                     plan.yawTarget = fan[f].yaw;
+                    plan.endY = fan[f].endY;
+                    TxnSnapshot snap = takeSnapshot();
                     if (commitConnector(plan)) {
-                        // Even the roomiest heading still clips (<2 m): a
-                        // genuinely boxed corner.  Publish the best available
-                        // and surface it to the census.
-                        if (bestClr < 2.0f) escapeClipPublished++;
-                        classifyEscapeCommit(fan[f].clr);
-                        return true;
+                        if (fan[f].clr >= 2.0f) {
+                            // Clean: no need to search a longer connector.
+                            classifyEscapeCommit(fan[f].clr);
+                            return true;
+                        }
+                        // Still clips.  Keep it as the running best-so-far
+                        // ONLY if it beats what a shorter length already
+                        // found, then roll back and let a longer connector
+                        // (more room for the fan/dodge to actually clear the
+                        // obstruction) take its shot.  gpos/gyaw/genV etc are
+                        // restored by rollback, so the next steps value's
+                        // geometry is unaffected.
+                        if (fan[f].clr > bestOff.clr)
+                            bestOff = {true, steps, fan[f].yaw, fan[f].endY,
+                                       fan[f].clr};
+                        rollback(snap);
+                        break;   // this steps value is settled; try the next
                     }
+                    rollback(snap);
                 }
+            }
+        }
+        // Occupancy-off search exhausted every step length without a clean
+        // (>=2 m) candidate: replay-commit the roomiest clipping candidate
+        // found across the whole search (see bestOff above).  Committed
+        // occupancy is unchanged since it was recorded (every trial in
+        // between rolled back), so this reproduces byte-identically.
+        if (bestOff.valid) {
+            occupancyEnvelope = 0.0f;
+            const float startDyOff = Clamp(genPrevDy, 0.0f, 3.0f);
+            ConnectorPlan plan{bestOff.endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT,
+                               bestOff.steps, gpos.y, bestOff.endY, startDyOff,
+                               bestOff.yaw};
+            if (commitConnector(plan)) {
+                escapeClipPublished++;
+                classifyEscapeCommit(bestOff.clr);
+                return true;
             }
         }
         // Straight ahead is blocked (an element pointed the exit into a wall of

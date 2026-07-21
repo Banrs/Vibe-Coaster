@@ -139,6 +139,25 @@ inline constexpr float HARD_TURN_REFERENCE_RADIUS = 45.0f;
 inline constexpr float SPEED_TURN_REFERENCE_RADIUS = 68.0f;
 inline constexpr float HARD_TURN_REFERENCE_LENGTH = 210.0f;
 inline constexpr float SPEED_TURN_REFERENCE_LENGTH = 154.0f;
+// Speed-scaled TURN entry/exit shoulder (2026-07-21 turn-lat-leak fix).  A
+// banked TURN's sustained load is the 9.6 g plan -- a fixed ~84 deg balance
+// bank that is INDEPENDENT of entry speed (radius follows v^2 by the g-law).
+// The felt-bank frame can only roll IN at the ROLL_RATE ceiling (110 deg/s),
+// so at a hot entry the fixed 0.22 curvature shoulder ramps the required bank
+// faster than the governed frame can follow: the bank lags balance and the
+// uncompensated curvature leaks felt-lateral (measured |lat| 6.15-6.50, and
+// 15.09 with a curvature-jerk spike, at post-launch TURN entries u11/u883
+// tag4, both seeds).  Fix EXACTLY like the corkscrew shoulder (5a): stretch
+// the curvature ease with entry speed so the balance-bank ramp lengthens and
+// the governed roll keeps up.  The curvature PEAK (turnMag) is untouched, so
+// the 9.6 g sustained law holds; only the entry/exit ease grows (the sizing
+// loop absorbs the small yaw-per-step drop by adding steps), so the TURN
+// subtype is never starved.  BASE 0.22 holds at/below REF_V; REF_V 44 sizes
+// the ramp so entry ease length ~ phi_bal*v/(ROLL_RATE) at post-launch speed;
+// MAX 0.48 is the ceiling that still leaves a curvature peak (2*0.48 < 1).
+inline constexpr float TURN_SHOULDER_BASE  = 0.22f;
+inline constexpr float TURN_SHOULDER_MAX   = 0.48f;
+inline constexpr float TURN_SHOULDER_REF_V = 44.0f;   // m/s
 inline constexpr float SCURVE_REFERENCE_RADIUS = SPEED_TURN_REFERENCE_RADIUS;
 inline constexpr float SCURVE_REFERENCE_PLAN = 140.0f;
 inline constexpr float SCURVE_REFERENCE_RISE = 10.0f;

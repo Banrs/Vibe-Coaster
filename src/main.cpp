@@ -1681,6 +1681,17 @@ int main(int argc, char **argv) {
                             "worstJ=(%.0f,%.0f,%.0f)\n", sd,
                             t.cp[worstI].x, t.cp[worstI].y, t.cp[worstI].z,
                             t.cp[worstJ].x, t.cp[worstJ].y, t.cp[worstJ].z);
+                if (getenv("MC_OVLDUMP")) {
+                    Vector3 c = t.cp[worstJ];
+                    for (int k = 0; k < N; ++k) {
+                        float dd = Vector3Distance(t.cp[k], c);
+                        if (dd < 200.0f)
+                            fprintf(stderr, "[OVLDUMP] seed%d k=%d arc=%.1f "
+                                "tag=%s pos=(%.1f,%.1f,%.1f) d=%.1f\n", sd, k,
+                                t.arc[k], GEN_NM[t.kind[k]], t.cp[k].x,
+                                t.cp[k].y, t.cp[k].z, dd);
+                    }
+                }
             } else {
                 printf("[overlap] seed%d laps=%u segs=%d no non-adjacent "
                        "pairs found genMs=%.1f\n", sd, seenSerial, segCount,
@@ -1870,8 +1881,12 @@ int main(int argc, char **argv) {
                 maxGauge = fmaxf(maxGauge, fmaxf(gaugeL, gaugeR));
                 if (getenv("MC_JOINTDETAIL") && upAngle > 20.0f) {
                     Vector3 ul = t.upAt(q - eps), ur = t.upAt(q + eps);
-                    printf("  seed%d q%d %d>%d upL=(%.2f,%.2f,%.2f) upR=(%.2f,%.2f,%.2f)\n",
-                           seed, q, leftTag, rightTag, ul.x, ul.y, ul.z, ur.x, ur.y, ur.z);
+                    Vector3 tl = t.tangent(q - eps), tr = t.tangent(q + eps);
+                    Vector3 pl = t.pos(q - eps);
+                    printf("  seed%d q%d %d>%d upL=(%.2f,%.2f,%.2f) upR=(%.2f,%.2f,%.2f) "
+                           "tanL=(%.2f,%.2f,%.2f) tanR=(%.2f,%.2f,%.2f) at (%.0f,%.0f,%.0f)\n",
+                           seed, q, leftTag, rightTag, ul.x, ul.y, ul.z, ur.x, ur.y, ur.z,
+                           tl.x, tl.y, tl.z, tr.x, tr.y, tr.z, pl.x, pl.y, pl.z);
                 }
                 if (gap > maxGap) { maxGap = gap; gapAt = q; gapFrom=leftTag; gapTo=rightTag; }
                 if (rawGap > maxRawGap) { maxRawGap = rawGap; rawGapAt = q; }

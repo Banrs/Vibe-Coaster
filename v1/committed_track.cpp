@@ -423,23 +423,39 @@ struct CommittedTrack {
             if (const SpatialRun *run = spatialRun(spanRun.back())) {
                 const int spans = (int)run->points.size() - 1;
                 if (spans > 0 && (int)run->spanD1B.size() == spans) {
-                    const Vector3 parameterTangent = run->spanD1B.back();
+                    // The boundary is the ACTUAL tail control point, whose run
+                    // parameter is spanEnd.back() (the integer span index whose
+                    // END this cp sits at -- see pushCP/genPoint where a spatial
+                    // sample stores runEnd = spatialIdx+1).  A run can be only
+                    // partially consumed before another element begins, so the
+                    // tail sits at an interior span boundary; evaluating the
+                    // run's FAR end (.back() / d=spans) would report a frame,
+                    // tangent and bank the published up[] chain never reaches --
+                    // exactly the FLAT>HILLS 17.4deg roll joint (a FeltBank
+                    // descent consumed for one banked span while its authored
+                    // neutral exit lay 8 spans downstream).  Single-source the
+                    // boundary with the published cp/up by evaluating at dEnd.
+                    const float dEnd = spanEnd.empty() ? (float)spans
+                        : Clamp(spanEnd.back(), 1.0f, (float)spans);
+                    const int endSpan =
+                        std::min(std::max((int)lroundf(dEnd), 1), spans) - 1;
+                    const Vector3 parameterTangent = run->spanD1B[endSpan];
                     const float ds = fmaxf(Vector3Length(parameterTangent), 1.0e-4f);
                     result.tangent = Vector3Scale(parameterTangent, 1.0f / ds);
-                    result.curvature = Vector3Scale(run->spanD2B.back(),
+                    result.curvature = Vector3Scale(run->spanD2B[endSpan],
                                                      1.0f / (ds * ds));
-                    result.jerk = Vector3Scale(run->spanD3B.back(),
+                    result.jerk = Vector3Scale(run->spanD3B[endSpan],
                                                 1.0f / (ds * ds * ds));
-                    result.up = spatialRunUp(*run, (float)spans);
+                    result.up = spatialRunUp(*run, dEnd);
                     result.bank = signedBankAngle(result.tangent, result.up);
                     // Authored exit bank RATE (d bank / d rail arc), exact from
-                    // the terminal FeltBank span.  Authored inversions (loop /
-                    // Immelmann / helix) publish a neutral-rate exit, so 0 is the
-                    // faithful contract value there and keeps this off the
-                    // scheduler hot path.
+                    // the terminal FeltBank span at the tail parameter.  Authored
+                    // inversions (loop / Immelmann / helix) publish a neutral-rate
+                    // exit, so 0 is the faithful contract value there and keeps
+                    // this off the scheduler hot path.
                     if (run->frameKind == SpatialFrameKind::FeltBank &&
-                        !run->feltBank.empty())
-                        result.bankRate = run->feltBank.back().rateB;
+                        (int)run->feltBank.size() == spans)
+                        result.bankRate = run->feltBank[endSpan].rateB;
                     return result;
                 }
             }

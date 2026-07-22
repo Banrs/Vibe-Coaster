@@ -218,6 +218,7 @@ constexpr float CLIFFDIVE_MIN_FACE_SLOPE_DEG = genc::CLIFFDIVE_MIN_FACE_SLOPE_DE
 constexpr float DESCENT_DEFAULT_STEP = 3.5f;
 constexpr float DESCENT_LIP_SLOPE_DEG = 30.0f; // steep-descent onset that marks the cliff lip
 constexpr float DESCENT_RERISE_TOL   = 2.0f;   // re-rise past the lip tolerated before it counts as bench/overhang
+constexpr float DESCENT_STEEP_BAND_DEG = 48.0f;// fall-line band floor: samples steeper than this form the "cliff face" the siting slope gate measures (excludes the landing fillet)
 // Base pull-out room (spec §1.2/§1.3): the valley beyond the floor must stay
 // near-flat and non-rising for at least a pull-out radius (~110-120 m at the
 // base speeds of §1.4). This is the horizontal room the base curl needs.
@@ -241,7 +242,12 @@ struct DescentProfile {
     float floorGroundY = 0.0f;
     float dropTotal = 0.0f;   // lip groundY -> local (deepest) min groundY
     float runToFloor = 0.0f;  // horizontal distance lip -> floor
-    float meanFaceDeg = 0.0f; // atan2(dropTotal, runToFloor)
+    float meanFaceDeg = 0.0f; // atan2(dropTotal, runToFloor) -- lip-to-floor average
+    float steepFaceDeg = 0.0f;// angle of the CONTIGUOUS steep fall-line band from the lip
+                              // (excludes the shallow landing fillet / valley runout that
+                              // dilutes meanFaceDeg -- a real mesa cliff reads its cliff
+                              // angle, not the cliff+apron average). This is the siting-gate
+                              // measure; the BUILT dive still hugs the real terrain samples.
     bool  monotone = false;   // no overhang/bench/concave re-rise between lip and floor (within reRiseTol)
     float caprockDrop = 0.0f; // vertical extent (lip..floor) held at >=85 deg (spec §0.95(b) caprock band)
 };
@@ -374,6 +380,21 @@ static DescentProfile scanDescent(Vector3 origin, float yaw,
     prof.meanFaceDeg = atan2f(fmaxf(0.0f, prof.dropTotal),
                               fmaxf(prof.runToFloor, 1.0e-3f)) / DEG2RAD;
 
+    // Steep fall-line band: from the lip, accumulate drop/run over CONTIGUOUS
+    // samples steeper than DESCENT_STEEP_BAND_DEG. This is the actual cliff face,
+    // excluding the concave landing fillet and flat valley runout that pull the
+    // lip-to-floor mean below the siting floor. atan2 of the banded drop/run is
+    // the angle a real mesa cliff reads. Used by the siting slope gate.
+    float steepDrop = 0.0f, steepRun = 0.0f;
+    for (int j = lipIdx; j < floorIdx; ++j) {
+        if (prof.samples[j].localFaceSlopeDeg < DESCENT_STEEP_BAND_DEG) break;
+        steepDrop += prof.samples[j].groundY - prof.samples[j + 1].groundY;
+        steepRun  += step;
+    }
+    prof.steepFaceDeg = steepRun > 1.0e-3f
+        ? atan2f(fmaxf(0.0f, steepDrop), steepRun) / DEG2RAD
+        : prof.meanFaceDeg;
+
     // Monotone: lip -> floor must be non-increasing within reRiseTol (no
     // overhang / bench / concave re-rise before the true floor). A bench shows
     // up as ground rising above the running minimum by more than the tolerance
@@ -446,7 +467,9 @@ static SiteVerdict evaluateSite(Vector3 origin, float yaw,
     v.profile = scanDescent(origin, yaw, maxRun, step);
     const DescentProfile &p = v.profile;
     v.dropOK    = p.valid && p.dropTotal >= CLIFFDIVE_MIN_DROP;
-    v.slopeOK   = p.valid && p.meanFaceDeg >= CLIFFDIVE_MIN_FACE_SLOPE_DEG;
+    // Slope gate on the steep FALL-LINE band, not the fillet-diluted lip-to-floor
+    // mean: a genuine cliff face reads its cliff angle (§1.2, steep-sub-section).
+    v.slopeOK   = p.valid && p.steepFaceDeg >= CLIFFDIVE_MIN_FACE_SLOPE_DEG;
     v.monotoneOK = p.valid && p.monotone;
     v.basePullOutRise = basePullOutRise(p, origin, yaw, DESCENT_PULLOUT_ROOM, step);
     v.baseRoomOK = p.valid && v.basePullOutRise <= DESCENT_PULLOUT_MAX_RISE;

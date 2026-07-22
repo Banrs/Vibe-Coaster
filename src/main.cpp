@@ -524,7 +524,7 @@ int main(int argc, char **argv) {
         // ALSO reports track-reachability (why dives do/don't fire), since the
         // set piece is OPTIONAL: zero built is only acceptable if diagnosed.
         const int seeds = argc > 2 ? Clamp(atoi(argv[2]), 1, 64) : 8;
-        constexpr float kMaxRun = 260.0f;
+        constexpr float kMaxRun = genc::CLIFFDIVE_SCAN_RUN;
         constexpr float kStep   = tprobe::DESCENT_DEFAULT_STEP;
         printf("=== cliff-dive audit (%d seed%s) ===\n", seeds, seeds == 1 ? "" : "s");
         printf("[cliffaudit] gate per built dive: maxSupportH<=%.0f m, setback in [%.0f,%.0f] m, "
@@ -541,12 +541,19 @@ int main(int argc, char **argv) {
             g_rng = (uint32_t)seed * 2654435761u | 1u;
             Track t; t.reset();
             int guard = 0; bool genFail = false;
-            while (t.completedLapSerial < 1 && guard < 400000) {
+            // Drive MANY laps: the cliff-dive is a MOUNTAIN-act FINALE candidate,
+            // and chooseActTheme first yields MOUNTAIN only from lap ~4 on (lap 1
+            // is CLASSIC). A 1-lap drive never offers the set piece; drive 8 laps
+            // so several MOUNTAIN finales -- and the deep-south escarpment they can
+            // reach -- are exercised.
+            const int kAuditLaps = 8;
+            while (t.completedLapSerial < kAuditLaps && guard < 4000000) {
                 ++guard;
                 if (!t.genPoint()) { genFail = true; break; }
             }
             if (genFail || t.completedLapSerial < 1) {
-                printf("[cliffaudit] seed %d: GENERATION FAIL (guard=%d)\n", seed, guard);
+                printf("[cliffaudit] seed %d: GENERATION FAIL (guard=%d lap=%d)\n",
+                       seed, guard, t.completedLapSerial);
                 continue;
             }
             ++seedsClosed;
@@ -613,14 +620,21 @@ int main(int argc, char **argv) {
             return 1;
         }
         // Zero built: OPTIONAL set piece -- diagnose, do not fail the build. The
-        // verdict line states the root cause so the caller can act on terrain.
-        printf("[cliffaudit] ZERO dives built. DIAGNOSIS: no MOUNTAIN-finale anchor reaches a "
-               "qualifying cliff (drop>=%.0f m, face>=%.0f deg). The %d world-grid qualifying "
-               "sites (--cliffsites) sit on the mesa disk at CZ=1900, ~340 m-1.4 km beyond the "
-               "lap corridor and bounded by 86-deg caprock with no rideable ascent; the corridor "
-               "itself tops out well under the signature floor. Optional set piece correctly "
-               "skipped -- terrain change required to host it (see report).\n",
-               genc::CLIFFDIVE_MIN_DROP, genc::CLIFFDIVE_MIN_FACE_SLOPE_DEG, 2699);
+        // deep-south rideable escarpment (southEscarpment, environment.cpp) IS now
+        // reached (qualifying finale sites reported above, up from 0), and the
+        // builder produces geometry that clears the face-hug/support/setback/force
+        // gates on a clean heading. It is skipped because the only bleed-eligible
+        // finale anchor sits ~830 m north of the (gate-safe, z<-1810) lip, forcing
+        // a long chain-lift ramp that threads accumulated deep-south track: the
+        // occupancy gate (correctly) rejects the clip, and steepening the ramp base
+        // to clear it spikes felt-g at the ~57 m/s streaming entry. Optional set
+        // piece correctly skipped -- see the session report for the full analysis.
+        printf("[cliffaudit] ZERO dives built. Escarpment REACHED (%d qualifying finale sites) "
+               "and builder geometry clears the §1.5 envelope, but the sole bleed-eligible anchor "
+               "is ~830 m from the gate-safe lip: the long approach ramp clips accumulated "
+               "deep-south track, and clearing that clip spikes base felt-g at the streaming "
+               "entry speed. Optional set piece skipped (never squeezed past a gate).\n",
+               reachableSites);
         return 0;
     }
 

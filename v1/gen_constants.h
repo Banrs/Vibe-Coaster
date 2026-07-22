@@ -96,6 +96,21 @@ inline constexpr float CLIFFDIVE_FACE_SETBACK_MIN   = 4.0f;   // = OCCUPANCY_ENV
 inline constexpr float CLIFFDIVE_FACE_SETBACK_MAX   = 12.0f;  // hug bound (CORRECTION 2, §1.5)
 inline constexpr float CLIFFDIVE_SUPPORT_H_MAX      = 22.0f;  // short cliff-face anchor, not a mega-tower (§1.5)
 inline constexpr float CLIFFDIVE_MIN_FACE_SLOPE_DEG = 58.0f;  // mean terrain-face steepness required along the descent
+// Max crest-arrival speed the chain lift may hand the dive (m/s). The ideal is
+// CHAIN_V=6 (near-stop creep), but the shared propulsion chain CANNOT brake
+// (game_state.cpp applyTrackDrive drive==1 only ADDS up to liftV), so a hot
+// 47-77 m/s finale entry can only bleed to the crawl by climbing the escarpment
+// BACK against gravity. Bleeding 77->6 needs ~300 m of climb -- more than the
+// ~250 m terrain relief budget allows. 18 m/s is the desert-bounded compromise:
+// <=0.28x the ~64 m/s finale cruise (>70% deceleration, ~65 km/h, a genuine slow
+// creep). Entries too hot to bleed under this over the available climb are
+// SKIPPED (findCliffSite returns !ok), never forced. Ratio: 18/64 ~ 0.28x cruise.
+inline constexpr float CLIFFDIVE_CREST_CRAWL_MAX     = 18.0f;
+// Forward scan range for cliff siting (m). Larger than an ordinary element's
+// reach: the rideable escarpment's gentle ~22 deg chain-lift back (which bleeds
+// the entry speed) is long -- the dive lip sits ~500-650 m ahead of the north-
+// foot approach anchor, so the scan must bracket the whole back + face + floor.
+inline constexpr float CLIFFDIVE_SCAN_RUN            = 1000.0f;
 inline constexpr float BANKAIR_RECORD_HEIGHT  = 35.0f;
 inline constexpr float CORKSCREW_REFERENCE_RADIUS = 6.6f;
 inline constexpr float CORKSCREW_REFERENCE_EXCURSION =

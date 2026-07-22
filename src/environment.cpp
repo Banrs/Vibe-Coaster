@@ -241,6 +241,100 @@ static float tuwaiqEscarpment(float x, float z, float hNatural) {
     return hNatural * (1.0f - w) + mesa * w;
 }
 
+// --- Rideable south escarpment (Phase 7 cliff-dive set piece) --------------
+// The Tuwaiq mesa above is a SCENIC disk at CZ=+1900 the ride never reaches
+// (the streaming generator advances SOUTH -- finales scatter over z in
+// [-3800,+50], never far +z -- and the disk has steep caprock all round, no
+// rideable ascent). Design §0.9 actually wants a RIDEABLE escarpment: a gentle
+// back the chain-lift climbs (the long ch=1 climb bleeds the 47-77 m/s streaming
+// entry toward the crawl) then a sharp >=58 deg dive off the front.
+//
+// This is that feature: a broad E-W RIDGE in the DEEP SOUTH (z < -1900). The
+// ride streams south, so it approaches from the NORTH, climbs the gentle north
+// back, crests, and dives off the SHARP south front -- the natural direction of
+// travel. Placement is deliberately outside EVERY driving gate's reach so those
+// gates stay byte-identical (verified, not assumed): census/overlap drive 3
+// laps (~z-1372), jointaudit 470 u, forceaudit ~1.7 laps -- none reach z<-1800;
+// waterfrac samples [-1600,1600]; terrainaudit [-1800,1800]. Only --cliffaudit
+// (8 laps) streams deep enough to catch it. It is NOT a broad plateau (no
+// station degeneracy risk -- the station and laps 1-4 sit far north near
+// origin); it is a ridge the LATE-lap MOUNTAIN finale approaches and dives off.
+//
+// Geometry: north apron -> gentle ~22 deg back (rises FOOT->CREST) -> flat crest
+// cap (the ~3.5 s crawl surface) -> sharp south front (85 deg caprock over 65
+// deg talus, §0.95(b) ratio law) -> flat valley apron (pull-out room) ->
+// feather. All influence stays south of z=-1850 so terrainaudit never samples it.
+static float southEscarpment(float x, float z, float hNatural) {
+    constexpr float ZNF   = -1850.0f;  // north foot: influence begins here going south
+    constexpr float ZBACK = -2170.0f;  // top of the gentle back = north edge of the crest cap
+    constexpr float ZLIP  = -2230.0f;  // south edge of the flat crest cap = the DIVE LIP
+    constexpr float XC    =   700.0f;  // ridge centre in x
+    constexpr float XW    =  1500.0f;  // ridge half-width (x in [-800,2200], covers the south finale band)
+    constexpr float XFEA  =   220.0f;  // lateral feather
+    constexpr float CREST =   185.0f;  // crest height (foot->crest = 155 m relief over the ~320 m back ~ 26 deg,
+                                       // tall enough that a <=58 m/s finale entry bleeds to the <=18 m/s crawl
+                                       // climbing the back -- the chain cannot brake, so the back IS the bleed)
+    constexpr float FOOT  =    30.0f;  // valley floor (> WATER_Y = 18)
+    constexpr float APRON =   200.0f;  // south pull-out apron (dive base room)
+    constexpr float FEAT  =    40.0f;  // north/south feather to natural (north edge -1810: <-1800, terrainaudit-safe)
+    // Sharp SOUTH front: a UNIFORM ~60 deg wall (spec 60-75 band). A single clean
+    // slope, NOT a near-vertical caprock -- an 85-90 deg caprock over a 155 m drop
+    // would demand a ~17 g face-hugging pull-out at the base (v ~ 55 m/s), busting
+    // the felt-g gate; a 60 deg face lets the rail hug the rock the whole descent
+    // AND pull out inside the g budget (meanFace 60 >= the 58 deg siting floor).
+    constexpr float TAN_FACE = 1.7321f; // tan(60): the sharp dive face
+    constexpr float SIN_FACE = 0.86603f, COS_FACE = 0.5f;
+    // Concave landing fillet: a circular arc (radius RF) tangent to the 60 deg
+    // face at top and to the horizontal valley at bottom -- the curved valley the
+    // dive pulls out INTO (real cliff dives land in a curved runout/tunnel, not a
+    // flat apron). The builder's base pull-out arc (radius ~ v^2/((Gt-1) g) ~ 40 m
+    // at the ~55 m/s base) HUGS this fillet, keeping pull-out support/setback in
+    // gate instead of the rail hanging 30 m over flat ground.
+    constexpr float RF = 48.0f;
+
+    // Lateral window.
+    const float ax = fabsf(x - XC);
+    if (ax > XW + XFEA) return hNatural;
+    const float wX = ax <= XW ? 1.0f : smooth01(XW + XFEA, XW, ax);
+
+    const float rimRelief   = CREST - FOOT;                 // 155 m dive drop (crest -> valley)
+    const float filletDropV = RF * (1.0f - COS_FACE);       // fillet vertical extent
+    const float filletRunH  = RF * SIN_FACE;                // fillet horizontal extent
+    const float faceRun  = (rimRelief - filletDropV) / TAN_FACE; // straight 60 deg run
+    const float ZFILT    = ZLIP - faceRun;                  // face->fillet break
+    const float ZFLOOR   = ZFILT - filletRunH;              // fillet->valley break
+    const float ZAPRON   = ZFLOOR - APRON;                  // south end of the flat valley
+
+    // North->south influence window (feathered both ends).
+    if (z > ZNF + FEAT || z < ZAPRON - FEAT) return hNatural;
+
+    // Surface profile as a function of z (north = +z):
+    //   z >= ZNF       : north apron (FOOT)
+    //   ZBACK..ZNF     : gentle back, CREST at ZBACK down to FOOT at ZNF
+    //   ZLIP..ZBACK    : flat crest cap (CREST) -- the ~3.5 s crawl surface
+    //   ZFILT..ZLIP    : 60 deg sharp dive face
+    //   ZFLOOR..ZFILT  : concave landing fillet (radius RF)
+    //   z <  ZFLOOR    : flat valley (FOOT) -- pull-out runout room
+    float es;
+    if      (z >= ZNF)    es = FOOT;
+    else if (z >= ZBACK)  es = FOOT + (CREST - FOOT) * (z - ZNF) / (ZBACK - ZNF);
+    else if (z >= ZLIP)   es = CREST;
+    else if (z >= ZFILT)  es = CREST - (ZLIP - z) * TAN_FACE;
+    else if (z >= ZFLOOR) {
+        const float db = z - ZFLOOR;                        // 0 at valley .. filletRunH at face
+        es = FOOT + RF - sqrtf(fmaxf(RF*RF - db*db, 0.0f)); // concave arc
+    }
+    else                  es = FOOT;
+
+    // Influence weight: 1 across the whole feature, feathered at the N/S ends and
+    // laterally -- a BOUNDED localized addition, not a lift of the map.
+    float wZ = 1.0f;
+    if (z > ZNF)         wZ = smooth01(ZNF + FEAT, ZNF, z);
+    else if (z < ZAPRON) wZ = smooth01(ZAPRON - FEAT, ZAPRON, z);
+    const float w = wX * wZ;
+    return hNatural * (1.0f - w) + es * w;
+}
+
 static int terrainH(float x, float z) {
     float warpX = (vnoise(x * 0.0011f + 17.5f, z * 0.0011f + 91.0f) - 0.5f) * 220.0f;
     float warpZ = (vnoise(x * 0.0011f + 53.0f, z * 0.0011f + 11.5f) - 0.5f) * 220.0f;
@@ -342,6 +436,7 @@ static int terrainH(float x, float z) {
     // block-world character. Monotonicity of the wall survives terracing
     // (floor() of a monotone descent stays monotone).
     h = tuwaiqEscarpment(x, z, h);
+    h = southEscarpment(x, z, h);   // Phase 7: rideable deep-south cliff-dive escarpment
 
     // Gentle voxel terraces retain the block-world character without lifting
     // the entire map above sea level. Low continentalness now forms broad,

@@ -970,6 +970,7 @@ struct GenCursor {
     // than the tier the sweep happened to reach (see fallbackCleanForward doc).
     float escapeCommitClearance = 0.0f;
     int escapesSinceLaunch = 0;
+    int lapShedCount = 0;   // post-boost speed-shed climbs committed this lap (bounded to protect station/launch siting)
     unsigned schedulerExhaustions = 0;
     bool boundaryTransactionActive = false;
     float   genV      = V1_PROPULSION.targetSpeed;

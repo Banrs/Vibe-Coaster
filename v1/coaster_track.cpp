@@ -3278,6 +3278,7 @@ struct Track : CommittedTrack, GenCursor {
         lapMinHelixLength = 1.0e9f; lapMaxHelixLength = 0.0f;
         lapMinHelixDrop = 1.0e9f; lapMaxHelixDrop = 0.0f;
         completedLapSerial++;
+        lapShedCount = 0;   // fresh shed budget per lap
         // Time-based pacing: record the lap's accumulated ride seconds for the
         // census report, then reset the clock for the next act.
         completedLapSeconds = lapRideSeconds;
@@ -5679,6 +5680,107 @@ struct Track : CommittedTrack, GenCursor {
         }
         return routeConnectorAround();
     }
+
+    // Predicted felt vertical load over a connector's own height law, replayed
+    // with the exact ride integrator (drive 0 = coast, DRAG/FRICTION frozen).
+    // Used to size the shed-climb so its level-off crest never spikes past the
+    // airtime margin.  Mirrors startLevelConnector's inline force loop.
+    bool connectorForceOK(const ConnectorPlan &plan, float gLo, float gHi) const {
+        float previousDy = plan.startDy;
+        float v = genV;
+        for (int i = 0; i < plan.steps; ++i) {
+            const float y0 = connectorHeight(plan, (float)i / plan.steps);
+            const float y1 = connectorHeight(plan, (float)(i + 1) / plan.steps);
+            const float dy = y1 - y0;
+            const float curvature = (dy - previousDy) / (SEG_LEN * SEG_LEN);
+            const float g = 1.0f + v * v * curvature / GRAV;
+            if (g > gHi || g < gLo) return false;
+            const float ds = hypotf(SEG_LEN, dy);
+            v = integrateRideDistance(v, dy / fmaxf(ds, 1.0e-4f), M_CLIMB, 0, ds);
+            previousDy = dy;
+        }
+        return true;
+    }
+
+    // Post-boost speed-shed climb (see gen_constants.h SHED_CLIMB_*): back-solve
+    // the height that trades genV down to shedTargetSpeed by gravity alone
+    // (v^2 = v0^2 - 2 g h).  Search increasing step counts (a longer climb has a
+    // gentler level-off) for the SHORTEST climb whose predicted crest airtime
+    // stays inside a conservative margin AND that clears grade -- an ascending
+    // climb rises above the corridor floor, so terrain only rejects it where the
+    // ground climbs faster than the ride.  Returns false (caller falls back to
+    // the immediate build) when the ride is already slow enough or no climb fits.
+    bool planShedClimb(float shedTargetSpeed, ConnectorPlan &out) const {
+        if (genV <= shedTargetSpeed + 1.0f) return false;
+        float rise = (genV * genV - shedTargetSpeed * shedTargetSpeed) /
+                     (2.0f * GRAV);
+        rise = Clamp(rise, genc::SHED_CLIMB_MIN_RISE, genc::SHED_CLIMB_MAX_RISE);
+        // Prefer a GENTLE climb: a longer connector eases the level-off crest so
+        // its airtime is mild AND commitConnector's own -3 g force gate reliably
+        // passes (the shortest passing climb sits right on the gate and commits
+        // erratically).  Size from a target grade first, then widen the search
+        // both ways for the gentlest terrain+force-clean length.
+        const int gradeSteps = (int)ceilf(rise /
+            (tanf(genc::SHED_CLIMB_TARGET_GRADE_RAD) * SEG_LEN));
+        const int startN = Clamp(gradeSteps, genc::SHED_CLIMB_MIN_STEPS,
+                                 genc::SHED_CLIMB_MAX_STEPS);
+        for (int n = startN; n <= genc::SHED_CLIMB_MAX_STEPS; ++n) {
+            const ConnectorPlan cand{M_CLIMB, n, gpos.y, gpos.y + rise,
+                                     genPrevDy, genPrevCurv};
+            if (inspectConnectorTerrain(cand).deficiency > 0.05f) continue;
+            // -1.8 g crest margin keeps the airtime mild and stays clear of
+            // commitConnector's -3.0 g backstop; +6 g matches the pull-up.
+            if (!connectorForceOK(cand, -1.8f, 6.0f)) continue;
+            out = cand;
+            return true;
+        }
+        return false;
+    }
+
+    // Scheduler hook fired in nextMode's M_BOOST case.  Commits the shed-climb
+    // transactionally so a corridor/force/occupancy rejection leaves the cursor
+    // byte-identical for the immediate-build fallback -- census min-lap is never
+    // put at risk by a half-applied climb.
+    bool trySpeedShedClimb() {
+        if (genV <= genc::SHED_CLIMB_TRIGGER_SPEED) return false;
+        // Guard the seed7-class micro-lap failure mode (docs/SESSION_STATE.md):
+        // a shed climb late in the lap, or from an elevated/buried anchor, or in a
+        // corridor already streaming escapes, shifts the lap-close onto higher
+        // ground and force-closes a degenerate lap.  Shed ONLY early in the lap,
+        // once, from a grade-level unstarved anchor with feature budget to spare;
+        // everywhere else fall back to the immediate build (baseline behaviour).
+        if (lapShedCount >= genc::SHED_CLIMB_MAX_PER_LAP) return false;
+        if (lapRideSeconds > genc::SHED_CLIMB_LAP_LATEST_SECS) return false;
+        if (elems >= elemLimit) return false;
+        if (escapesSinceLaunch > 0) return false;
+        const float hAnchor = gpos.y - genGroundTopAt(gpos.x, gpos.z);
+        if (hAnchor < -2.0f || hAnchor > 18.0f) return false;
+        // LOWLAND guard: a tall shed climb shifts WHERE in the terrain the lap
+        // eventually closes; over a mountain the launch-postpone window expires
+        // on high ground -> elevated launch deck -> top-hat fail -> micro-lap.
+        // Only shed where the anchor and a wide forward+lateral neighbourhood are
+        // genuinely low, so the whole segment the climb perturbs stays in terrain
+        // where station/launch siting is robust.  Elsewhere: immediate build.
+        {
+            const float cs = cosf(gyaw), sn = sinf(gyaw);
+            float maxG = genGroundTopAt(gpos.x, gpos.z);
+            for (float lz = 0.0f; lz <= 260.0f && maxG <= genc::SHED_CLIMB_LOWLAND_MAX; lz += 20.0f)
+                for (float lx = -40.0f; lx <= 40.0f; lx += 40.0f)
+                    maxG = fmaxf(maxG, genGroundTopAt(gpos.x + cs * lx + sn * lz,
+                                                      gpos.z - sn * lx + cs * lz));
+            if (maxG > genc::SHED_CLIMB_LOWLAND_MAX) return false;
+        }
+        ConnectorPlan climb{};
+        if (!planShedClimb(genc::SHED_CLIMB_TARGET_SPEED, climb)) return false;
+        const TxnSnapshot snap = takeSnapshot();
+        if (commitConnector(climb)) {
+            commitSnapshot(snap);
+            lapShedCount++;
+            return true;
+        }
+        rollback(snap);
+        return false;
+    }
     SegMode pickLaunchExit() {
         const int pick = irnd(0, 5);
         return pick < 3 ? M_CLIMB : pick < 5 ? M_HILLS : M_BANKAIR;
@@ -6083,7 +6185,13 @@ struct Track : CommittedTrack, GenCursor {
             case M_BOOST:
                 pending={}; connLen=0; terrainAvoidanceTurn=false;
                 lastBankSign=0.0f;
-                if(!chooseElement(false)) nextModePending=true;
+                // Eligibility fix (2026-07-23): the booster leaves the ride at
+                // ~77 m/s, above every non-TURN entry window.  Shed that surplus
+                // into height first (unpowered M_CLIMB) so the crest and its
+                // descent build non-TURN elements; the M_CLIMB case then runs
+                // chooseElement at the shed speed.  Falls back to the immediate
+                // build where no climb fits, so completion is never traded.
+                if(!trySpeedShedClimb() && !chooseElement(false)) nextModePending=true;
                 break;
             case M_CLIMB:
                 if (!stationRamping && boostDue()) {

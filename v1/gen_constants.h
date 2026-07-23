@@ -245,6 +245,43 @@ inline constexpr float TERRAIN_DECK_CLEARANCE = 2.0f;
 inline constexpr float HILL_ENTRY_MIN = 48.0f; // 172.8 km/h; entering slower than the exact -5g energy solve (54.59f/196.5 km/h at 1.0x) just yields a gentler (floater) crest -- the 1.0-1.5x dimension clamp still applies -- so widen the window here so the airtime family isn't starved by near-misses.
 inline constexpr float HILL_ENTRY_MAX = 66.85f; // 240.7 km/h at 1.5x
 
+// --- POST-BOOST SPEED-SHED CLIMB (2026-07-23) ----------------------------
+// Every in-course booster tops out at BOOST_CRUISE_TARGET (~77.2 m/s), which
+// sits ABOVE every non-TURN entry window (HILLS 66.85, IMMEL 70, LOOP 74.9,
+// ROLL/STALL 75), so only banked turns can build right after a boost -> the
+// measured TURN 58% share, the self-overlapping turn spirals, and the escape
+// fallbacks (the eligibility desert; docs/SESSION_STATE.md 2026-07-23 frontier).
+// The genuine fix is CONNECTIVE, not a pacing constant: an UNPOWERED M_CLIMB
+// inserted after a boost trades surplus speed for height by gravity alone
+// (v^2 = v0^2 - 2 g h, with DRAG/FRICTION frozen at their 0.9x-of-record law).
+// It opens the inversion entry windows on the crest and its descent (LOOP/IMMEL/
+// HELIX rebalance INTO band), trims TURN share, and lowers the escape fallbacks.
+//
+// TUNING NOTE (2026-07-23, measured over census-8/forceaudit-2/overlap-4): the
+// shed sits in a TWO-SIDED HARD-GATE PINCER, so the depth is deliberately shallow
+// and the trigger conditions conservative, NOT free parameters:
+//   * shed DEEP (to ~55-60, a ~120 m climb) opens every window incl. HILLS, but
+//     the tall tower shifts WHERE the streaming lap eventually closes -> the
+//     launch-postpone window expires over a mountain -> elevated launch deck ->
+//     top-hat build fails -> a degenerate micro-lap.  BREAKS census min>=20.
+//   * shed SHALLOW past ~72 opens LOOP at ~72 m/s, near the TOP of its felt-g
+//     entry window, so the built loop crests at +12.1 g.  BREAKS forceaudit +12.
+// The feasible window is narrow: TARGET 70 m/s (a ~54 m climb) enters the loop
+// family cool enough for +12 AND is short enough -- when restricted to genuine
+// LOWLAND (SHED_CLIMB_LOWLAND_MAX) and ONE per lap -- that the lap-close siting
+// stays in a valley and min>=20 holds.  Fires only where terrain+occupancy admit
+// the climb; everywhere else the ride falls back to the immediate build.
+inline constexpr float SHED_CLIMB_TRIGGER_SPEED = 72.0f; // only shed from a genuinely turn-only state (post-boost ~77 m/s > every inversion window)
+inline constexpr float SHED_CLIMB_TARGET_SPEED  = 70.0f; // 252 km/h; the pincer sweet spot -- opens IMMEL(70)/LOOP(74.9)/ROLL/STALL(75) yet enters the loop family cool enough to hold forceaudit +12; deeper breaks min-lap, shallower breaks +12
+inline constexpr float SHED_CLIMB_MAX_RISE      = 150.0f; // energy cap for a hotter (near-77) entry; the tuned 77->70 shed is ~54 m
+inline constexpr float SHED_CLIMB_MIN_RISE      = 20.0f;  // floor: a small shed already opens the inversion windows -- no tall tower needed to rebalance the LOW inversion shares
+inline constexpr int   SHED_CLIMB_MIN_STEPS     = 12;  // >=12 spans (168 m) keeps the level-off crest gentle enough to stay off the airtime floor
+inline constexpr int   SHED_CLIMB_MAX_STEPS     = 40;  // 560 m: length to size the rise as a GENTLE climb inside the connector force envelope
+inline constexpr float SHED_CLIMB_TARGET_GRADE_RAD = 0.44f; // ~25 deg mean grade: gentle enough that the eased crest clears the -3 g commit gate reliably
+inline constexpr float SHED_CLIMB_LAP_LATEST_SECS = 45.0f; // shed only in the lap's first ~third so the climb + its elements + the descent + the station/launch siting all seat before the lap-close budget (a late climb strands the close on higher ground -> elevated launch deck -> top-hat fail -> micro-lap)
+inline constexpr int   SHED_CLIMB_MAX_PER_LAP   = 1;   // one shed per lap: each leaves a structure the lap's later station/launch siting must route around; bounding it protects census min-lap
+inline constexpr float SHED_CLIMB_LOWLAND_MAX   = 34.0f;  // only shed where the anchor+forward terrain is low (WATER_Y 18 + ~16 m): plains/valleys where the lap-close launch siting is robust; over a mountain a shed-shifted lap-close strands the launch on high ground
+
 // Macro-profile sampling step (plan-view metres between authored knots).
 inline constexpr float MACRO_SAMPLE_STEP = 7.0f;
 

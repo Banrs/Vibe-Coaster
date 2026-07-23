@@ -5137,6 +5137,13 @@ struct Track : CommittedTrack, GenCursor {
                                                      gpos.z + cosf(gyaw) * SEG_LEN * la));
             if (gtAhead > gtHere + 28.0f) return false;   // only block a dive into a STEEP rising hillside; the HUD pitch-relabel backstops milder cases
         }
+        // BANK-MONOTONY note (2026-07-23): a HARD 3-consecutive banked bound
+        // was tried here and REVERTED -- it broke census completion (min-lap
+        // 3.6 s) without cutting the share, because in the hot speed band the
+        // banked family is often the ONLY buildable pool (the old whole-family
+        // ban failure mode).  The organic chain-breaker is a hot-band-eligible
+        // NON-banked element instead (the Falcon's Flight non-inverting
+        // airtime stall -- speed-invariant ~0 g quartic, any entry speed).
         // Variety: never the same subtype twice in three features, and no
         // more than two consecutive features from one family.  (The old
         // whole-family ban emptied the pool whenever only the banked family

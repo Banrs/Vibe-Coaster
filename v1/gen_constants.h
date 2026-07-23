@@ -272,7 +272,7 @@ inline constexpr float HILL_ENTRY_MAX = 66.85f; // 240.7 km/h at 1.5x
 // stays in a valley and min>=20 holds.  Fires only where terrain+occupancy admit
 // the climb; everywhere else the ride falls back to the immediate build.
 inline constexpr float SHED_CLIMB_TRIGGER_SPEED = 72.0f; // only shed from a genuinely turn-only state (post-boost ~77 m/s > every inversion window)
-inline constexpr float SHED_CLIMB_TARGET_SPEED  = 70.0f; // 252 km/h; the pincer sweet spot -- opens IMMEL(70)/LOOP(74.9)/ROLL/STALL(75) yet enters the loop family cool enough to hold forceaudit +12; deeper breaks min-lap, shallower breaks +12
+inline constexpr float SHED_CLIMB_TARGET_SPEED  = 68.0f; // 252 km/h; the pincer sweet spot -- opens IMMEL(70)/LOOP(74.9)/ROLL/STALL(75) yet enters the loop family cool enough to hold forceaudit +12; deeper breaks min-lap, shallower breaks +12
 inline constexpr float SHED_CLIMB_MAX_RISE      = 150.0f; // energy cap for a hotter (near-77) entry; the tuned 77->70 shed is ~54 m
 inline constexpr float SHED_CLIMB_MIN_RISE      = 20.0f;  // floor: a small shed already opens the inversion windows -- no tall tower needed to rebalance the LOW inversion shares
 inline constexpr int   SHED_CLIMB_MIN_STEPS     = 12;  // >=12 spans (168 m) keeps the level-off crest gentle enough to stay off the airtime floor

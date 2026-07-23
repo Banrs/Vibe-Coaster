@@ -984,43 +984,86 @@ struct Track : CommittedTrack, GenCursor {
                     "emptyBuilt=%d\n", (int)corridorClear, (int)mustCurve, dropTotal,
                     (int)built.empty());
         if (dropTotal >= 40.0f && (mustCurve || rnd01() < 0.65f)) {
-            for (float yawT : {0.8f * nextBankDirection(), -0.8f * nextBankDirection(), 0.5f, -0.5f}) {
-                const Vector3 origin = gpos;
-                const BoundaryState start = currentBoundary();
-                // Dense midpoint integration of the yawing plan: psi(s) = gyaw +
-                // yawT * spatialEase(s/L).  Height/grade come straight from the
-                // already-solved longitudinal profile, sampled at plan distance s
-                // (the same convention every other curved element here uses).
-                std::vector<Vector3> points;
-                constexpr int subN = 4;
-                bool geometryOk = true;
-                auto integrate = [&](const v1profile::Profile &prof) {
-                    const float L = (float)prof.length();
-                    const int knots = Clamp((int)ceilf(L / MACRO_SAMPLE_STEP), 6, 64);
-                    points.clear();
-                    points.reserve(knots);
-                    float x = origin.x, z = origin.z;
-                    geometryOk = true;
-                    for (int k = 1; k <= knots; ++k) {
-                        const float sPrev = (float)(k - 1) * L / knots;
-                        const float sNext = (float)k * L / knots;
-                        for (int sub = 0; sub < subN; ++sub) {
-                            const float sMid = sPrev + ((float)sub + 0.5f) *
-                                               (sNext - sPrev) / subN;
-                            const float psiMid = gyaw + yawT * spatialEase(sMid / L);
-                            const float dsSub = (sNext - sPrev) / (float)subN;
-                            x += sinf(psiMid) * dsSub;
-                            z += cosf(psiMid) * dsSub;
-                        }
-                        const float y = origin.y +
-                            ((float)prof.sampleDistance(sNext).height - startHeight);
-                        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
-                            geometryOk = false;
-                            break;
-                        }
-                        points.push_back({x, y, z});
+            const Vector3 origin = gpos;
+            const BoundaryState start = currentBoundary();
+            // Dense midpoint integration of the yawing plan: psi(s) = gyaw +
+            // yawT * spatialEase(s/L).  Height/grade come straight from the
+            // already-solved longitudinal profile, sampled at plan distance s
+            // (the same convention every other curved element here uses).
+            std::vector<Vector3> points;
+            constexpr int subN = 4;
+            bool geometryOk = true;
+            float curYawT = 0.0f;
+            auto integrate = [&](const v1profile::Profile &prof) {
+                const float L = (float)prof.length();
+                const int knots = Clamp((int)ceilf(L / MACRO_SAMPLE_STEP), 6, 64);
+                points.clear();
+                points.reserve(knots);
+                float x = origin.x, z = origin.z;
+                geometryOk = true;
+                for (int k = 1; k <= knots; ++k) {
+                    const float sPrev = (float)(k - 1) * L / knots;
+                    const float sNext = (float)k * L / knots;
+                    for (int sub = 0; sub < subN; ++sub) {
+                        const float sMid = sPrev + ((float)sub + 0.5f) *
+                                           (sNext - sPrev) / subN;
+                        const float psiMid = gyaw + curYawT * spatialEase(sMid / L);
+                        const float dsSub = (sNext - sPrev) / (float)subN;
+                        x += sinf(psiMid) * dsSub;
+                        z += cosf(psiMid) * dsSub;
                     }
-                };
+                    const float y = origin.y +
+                        ((float)prof.sampleDistance(sNext).height - startHeight);
+                    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                        geometryOk = false;
+                        break;
+                    }
+                    points.push_back({x, y, z});
+                }
+            };
+            // TERRAIN-STEERED yaw fan (2026-07-23).  The old 4 fixed yaw
+            // attempts were blind to WHERE the terrain affords a descent and
+            // measured 121/122 curved-descent failures on elevated anchors --
+            // every failure fell through to unlabeled banked routing (the TURN
+            // surplus) and kept the ride stranded high, starving HILLS/BANKAIR/
+            // WAVE of at-grade anchors.  Same design as the daylight-steered
+            // cut-exit stub: integrate each candidate cheaply, score it by the
+            // SAME corridor-floor deficiency the landing fixup minimises, and
+            // spend the full bank-frame/corridor/force pipeline on the most
+            // descendable headings first.  Wider fan, identical qualification
+            // laws -- nothing is relaxed, the search just looks where the
+            // valley actually is.
+            const float fanDir = nextBankDirection();
+            struct DropCand { float yawT, score; };
+            DropCand cands[10];
+            {
+                int nc = 0;
+                for (float mag : {0.25f, 0.45f, 0.65f, 0.85f, 1.05f})
+                    for (float sgn : {fanDir, -fanDir}) {
+                        curYawT = mag * sgn;
+                        v1profile::Profile scoreProf = built;
+                        integrate(scoreProf);
+                        float score = 1.0e9f;
+                        if (geometryOk && !points.empty()) {
+                            float pathDef = 0.0f;
+                            for (const Vector3 &p : points)
+                                pathDef = fmaxf(pathDef,
+                                    ordinaryCorridorFloorAt(p.x, p.z) - p.y);
+                            const Vector3 &e = points.back();
+                            const float endDef = fmaxf(0.0f,
+                                ordinaryRouteTarget(genGroundTopAt(e.x, e.z)) - e.y);
+                            score = pathDef + endDef;
+                        }
+                        cands[nc++] = {curYawT, score};
+                    }
+                std::sort(cands, cands + 10,
+                          [](const DropCand &a, const DropCand &b) {
+                              return a.score < b.score;
+                          });
+            }
+            for (int ci = 0; ci < 6; ++ci) {
+                const float yawT = cands[ci].yawT;
+                curYawT = yawT;
                 v1profile::Profile prof = built;
                 integrate(prof);
                 if (mustCurve) {
@@ -6800,7 +6843,7 @@ struct Track : CommittedTrack, GenCursor {
                             gpos.y + 0.55f * fanSteps * SEG_LEN);
                         pending = {}; connLen = 0; terrainAvoidanceTurn = false;
                         if (commitEscapeArc(bestYaw, fanSteps, endY,
-                                            Clamp(genPrevDy, 0.0f, 3.0f))) {
+                                            connectorStartDy())) {
                             // Even the roomiest heading still clips: record it.
                             if (bestClr < 2.0f) escapeClipPublished++;
                             classifyEscapeCommit(escapeCommitClearance);
@@ -6920,7 +6963,7 @@ struct Track : CommittedTrack, GenCursor {
     // feature budget charge, so it can never collapse the lap into a micro-lap.
     bool cutExitConnector() {
         const float reachLo = 0.30f, reachHiUp = 0.55f;
-        const float startDy = Clamp(genPrevDy, 0.0f, 3.0f);
+        const float startDy = connectorStartDy();
         for (int steps = MIN_CONN; steps <= 40; steps += 4) {
             ConnectorPlan plan{M_CLIMB, steps, gpos.y, gpos.y, startDy, 0.0f};
             const float loY = gpos.y - reachLo * steps * SEG_LEN;
@@ -6953,6 +6996,22 @@ struct Track : CommittedTrack, GenCursor {
         return false;
     }
 
+    // Incoming-slope policy for connective plans (2026-07-23 seam fix).  The
+    // old blanket Clamp(genPrevDy, 0, 3) existed so a connector starting ON
+    // the corridor floor never dips below it in its first span -- but it also
+    // DISCARDED genuinely descending entries (an IMMEL exit at -5 m/span,
+    // 104 m above ground), forcing an instant level-off whose slope
+    // discontinuity x v^2 measured +16.1 g at the seam (u599/tag0; same seam
+    // class as the launch-stub fix, descending side).  Honour the descent
+    // whenever there is real floor headroom; keep the non-descending clamp
+    // only where the anchor actually hugs the floor, where the original
+    // rationale holds.
+    float connectorStartDy(float upMax = 3.0f) const {
+        const float clearance = gpos.y -
+            ordinaryCorridorFloorAt(gpos.x, gpos.z);
+        const float loBound = clearance > 6.0f ? -5.0f : 0.0f;
+        return Clamp(genPrevDy, loBound, upMax);
+    }
     bool escapeForward() {
         if (getenv("MC_LAPTRACE"))
             fprintf(stderr, "[ESCTRACE] escape at (%.0f,%.0f,%.0f) arc=%.1f genV=%.1f "
@@ -7002,7 +7061,7 @@ struct Track : CommittedTrack, GenCursor {
         // residual downward exit slope, and a connector that honours that slope
         // dips below the floor in its first span and fails everywhere.  Starting
         // non-descending costs at most a small one-step slope kink at the join.
-        const float startDy = Clamp(genPrevDy, 0.0f, 3.0f);
+        const float startDy = connectorStartDy();
         for (int steps = MIN_CONN; steps <= 40; steps += 5) {
             ConnectorPlan plan{M_FLAT, steps, gpos.y, gpos.y, startDy, 0.0f};
             ConnectorTerrain terrain = inspectConnectorTerrain(plan);
@@ -7144,7 +7203,7 @@ struct Track : CommittedTrack, GenCursor {
         // between rolled back), so this reproduces byte-identically.
         if (bestOff.valid) {
             occupancyEnvelope = 0.0f;
-            const float startDyOff = Clamp(genPrevDy, 0.0f, 3.0f);
+            const float startDyOff = connectorStartDy();
             ConnectorPlan plan{bestOff.endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT,
                                bestOff.steps, gpos.y, bestOff.endY, startDyOff,
                                bestOff.yaw};
@@ -7161,7 +7220,7 @@ struct Track : CommittedTrack, GenCursor {
         // avoidance turn these reset the vertical curvature, so they survive a
         // pathological (high second-difference) exit that defeats every
         // curvature-matching primitive.
-        const float startDyArc = Clamp(genPrevDy, 0.0f, 3.0f);
+        const float startDyArc = connectorStartDy();
         for (int steps = 8; steps <= 40; steps += 4) {
             const float loY = gpos.y - 0.30f * steps * SEG_LEN;
             const float hiY = gpos.y + 0.55f * steps * SEG_LEN;
@@ -7274,7 +7333,7 @@ struct Track : CommittedTrack, GenCursor {
                 : MIN_CONN;
             ConnectorPlan stub{endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT,
                                stubSteps, gpos.y, endY,
-                               Clamp(genPrevDy, 0.0f, 2.0f), 0.0f, bestYaw};
+                               connectorStartDy(2.0f), 0.0f, bestYaw};
             connectorCentreline(stub, escapeProbePts);
             const float stubClr = occClearancePolyline(escapeProbePts,
                                                        arc.empty() ? 0.0f : arc.back());

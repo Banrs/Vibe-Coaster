@@ -24,7 +24,12 @@ static const float FRICTION  = 0.088f;
 // crest crawl (docs/REAL_WORLD_REFERENCES.md 8).
 static const float CHAIN_V   = 6.0f;
 static const float MIN_V     = 42.0f;
-static const float MAX_V     = 82.0f;
+// Camera-FX / size-draw speed anchor only -- NOT a physics clamp (verified: the
+// ride integrator never clamps to MAX_V; it feeds only camera FX scaling in
+// src/main.cpp and mirrors the size-draw speed anchor genc::SIZE_SPEED_HI_MPS).
+// Raised 82 -> 89 for the 2026-07-23 speed directive: in-course boosters now
+// cruise toward 320 km/h (~88.9 m/s), so the FX/size anchor tracks the new top.
+static const float MAX_V     = 89.0f;
 static const float V_GUARD   =  6.0f;
 
 // Launch pacing uses the fastest recorded coaster acceleration as its baseline:
@@ -57,25 +62,25 @@ static constexpr PropulsionSpec V1_PROPULSION{
     360.0f/3.6f, FASTEST_ACCEL_REF, 1.50f, FASTEST_ACCEL_REF*1.50f,
     70.0f, 2100.0f, 42.0f
 };
-// In-course boosters re-cruise, they do not re-launch: only the station
-// launch reaches the 360 km/h peak. CITATION FIX 2026-07-20: 360 km/h is NOT
-// "Falcon's Flight's own top speed" (that is 250 km/h, Six Flags Qiddiya,
-// opened 2025 -- the current record, superseding Formula Rossa's 240). Our
-// 360 = 1.44x the 250 record, inside the project 1.5x cap
-// (docs/REAL_WORLD_REFERENCES.md 8).  Mid-lap boosts top out at 292 km/h so
-// the coast arc actually passes through the airtime/inversion entry windows
-// instead of pinning the whole lap above every element's usable speed.
-// RECALIBRATED 2026-07-21 with the 0.9x-of-record loss law (DRAG 0.00040 ->
-// 0.00014, FRICTION 0.10 -> 0.088): the old 292/1.7 km pacing was measured
-// against ~3x higher aero loss; under the new law it pinned the lap at
-// 258-267 km/h avg with min moving speed 43-50 m/s -- ABOVE the hill entry
-// window (48-66.85 m/s) and the inversion windows, starving HILLS to 2.7%,
-// LOOP to 0.8%, ROLL to 0% (measured --census 4 / --forceaudit 2).  278 km/h
-// cruise + 2.1 km cadence makes the coast arc decay through those windows
-// again (77 -> ~49 m/s per arc) and brings the lap average back toward the
-// 240 km/h organic target.  Same calibration loop as the previous hand-tune,
-// re-run for the new physics.
-static constexpr float BOOST_CRUISE_TARGET = 278.0f / 3.6f;
+// In-course boosters re-cruise, they do not re-launch: only the station launch
+// reaches the 360 km/h peak (V1_PROPULSION.targetSpeed, unchanged). 360 km/h =
+// 1.44x the 250 km/h record (Six Flags Qiddiya, 2025), inside the project 1.5x
+// cap (docs/REAL_WORLD_REFERENCES.md 8).
+// SPEED DIRECTIVE 2026-07-23 (user): in-course boosts now re-cruise toward
+// 320 km/h (was 278). The hotter plateau is what supplies the extra felt g
+// through law-sized geometry (radii/g-targets are NEVER resized to raise g),
+// and it lifts the whole coast arc so more of it sits above the airtime/
+// inversion entry windows. Element ELIGIBILITY at this hotter plateau is
+// handled ORGANICALLY, gravity only (user 2026-07-23: the reference coasters
+// run no mid-course trim brakes, so neither do we): ROLL/STALL windows open to
+// the 89 m/s plateau itself (their felt g is speed-invariant by construction),
+// and the post-boost speed-shed climb trades the remaining surplus for height
+// (v^2 = v0^2 - 2gh) down into the LOOP/IMMEL/HILLS windows; this constant
+// only sets the re-cruise target.
+// HISTORICAL CALIBRATION: the prior 278 km/h value was tuned under the 0.9x-of-
+// record loss law (DRAG 0.00014, FRICTION 0.088) to keep the coast arc decaying
+// through the entry windows without pinning the lap above them.
+static constexpr float BOOST_CRUISE_TARGET = 320.0f / 3.6f;
 // The normal in-course propulsion cadence is now 2.1 km (1.7 before the
 // 2026-07-21 physics recalibration; see BOOST_CRUISE_TARGET note): measured
 // lap average fell to ~215 km/h with the 292 km/h booster cap, so the

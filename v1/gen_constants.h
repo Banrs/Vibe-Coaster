@@ -15,6 +15,16 @@ namespace genc {
 // Reserve successor lookahead beyond the final sampling stencil.
 inline constexpr int ADAPTIVE_LAG = 23;
 
+// --- PER-ELEMENT FELT-G OVERAGE (user directive 2026-07-23) -------------------
+// The project felt-g law is: per-element felt g = 2x that element's REAL-WORLD
+// record.  NEW USER LAW: each per-element 2x-record cap may STRETCH by this
+// overage factor (applies to the NEGATIVE and POSITIVE lobes alike), and the
+// overage must be GENUINELY SPEED-CAUSED -- geometry is never resized to raise g,
+// so the extra load comes purely from a hotter entry speed through law-sized
+// geometry.  Because felt g scales with v^2 through fixed geometry, a g-derived
+// entry-speed window widens by sqrt(overage)=1.0488 wherever it was g-derived.
+inline constexpr float G_ELEMENT_OVERAGE = 1.10f;
+
 // --- Continuity audit thresholds (single source) ------------------------------
 // Both audit files (src/main.cpp force/joint audits and
 // src/v1_geometry_audit.cpp seam detector) previously carried their own copies
@@ -69,6 +79,15 @@ inline constexpr float LOOP_REFERENCE_CROWN_RADIUS =
     LOOP_RECORD_HEIGHT * (19.6f / 48.8f); // canonical clothoid crown, not half-height
 inline constexpr float IMMEL_REFERENCE_RADIUS = IMMEL_RECORD_HEIGHT * 0.5f;
 inline constexpr float DIVELOOP_RECORD_DROP   = 60.0f;
+// Dive-loop felt-g ceiling (2026-07-23 speed-scaled sizing law). The dive loop
+// is now sized like the loop family (radius from the felt-g target at the ACTUAL
+// entry speed, clamped to the [1.0,1.5]x record window), so a hot entry through
+// the pinned 1.5x radius reads a HIGHER felt g. This is the per-element envelope
+// that closes the entry window at the hot top: the analytic mid-point felt g
+// (v^2/(G*R) + 1/0.4387822774) must stay under this. 12.6 is 0.6 g below the
+// +13.2 hard vertical audit envelope (12*G_ELEMENT_OVERAGE), leaving margin for
+// the ~0.3-0.5 g the live spline reads above the mid-point analytic.
+inline constexpr float DIVELOOP_FELT_G_MAX    = 12.6f;
 // Record first-drop reference: Falcon's Flight ~160 m escarpment drop (Six
 // Flags Qiddiya, 2025). Drop ceilings derive as 1.5x this; the old code used
 // an uncited literal 250 (docs/REAL_WORLD_REFERENCES.md 4).
@@ -151,7 +170,9 @@ inline constexpr float CORKSCREW_RADIAL_ENTRY_V = 34.0f;  // m/s comfort entry
 // brief roll-in transient.  6 g is the hard cap on the felt-lateral peak --
 // well below the pre-Phase-5 +14.59 g corkscrew class and matched to the
 // vertical -6.5 g magnitude.  This is a symmetric |lat| bound.
-inline constexpr float LATERAL_G_ENVELOPE = 6.0f;
+// Stretched 6.0 -> 6.6 by the 2026-07-23 per-element overage law (G_ELEMENT_OVERAGE
+// 1.10; the felt-lateral cap is a per-element lobe cap, so it stretches too).
+inline constexpr float LATERAL_G_ENVELOPE = 6.6f;
 inline constexpr float HELIX_RECORD_REVS      = 1.625f;
 
 // No formal helix-radius world record is published.  Six Flags America's
@@ -202,6 +223,14 @@ inline constexpr int SCHEDULER_ATTEMPT_BUDGET = 3;
 // scheduler forces a powered launch/boost.
 inline constexpr int ESCAPE_LIMIT = 6;
 inline constexpr int ESCAPES_PER_LAP = 20;
+// Minimum forward-corridor occupancy clearance (m) required at a lap-closing
+// launch site.  A launch tops the deck out at the 360 km/h design peak and
+// hands the successor lap a ~100 m/s cursor; at that speed even a TURN's swept
+// radius needs more room than the ordinary 6 m envelope, so a launch sited into
+// a prior-lap-track box strands the newborn as a zero-feature micro-lap.  Above
+// the envelope so a genuinely open corridor still launches, but tight boxes
+// (clr ~6 m, where the micro-laps were born) defer to a clearer site.
+inline constexpr float LAUNCH_SITE_MIN_CLEARANCE = 8.0f;
 inline constexpr int INVERSION_BUDGET = 4;
 
 // Per-subtype inversion lap caps (single source; consumed by the generator's
@@ -242,13 +271,17 @@ inline constexpr float TERRAIN_DECK_CLEARANCE = 2.0f;
 // Energy solve for a -5 g crest: v_entry^2 = g*scale*
 // (2*60 m + 6*30.625 m). Scaling height and radius together gives the
 // exact 1.0--1.5x geometry window rather than an unrelated speed clamp.
+// OVERAGE (2026-07-23): the -5 g crest energy solve now stretches to -5.5 g
+// (G_ELEMENT_OVERAGE 1.10), so the g-derived MAX widens by sqrt(1.10)=1.0488.
 inline constexpr float HILL_ENTRY_MIN = 48.0f; // 172.8 km/h; entering slower than the exact -5g energy solve (54.59f/196.5 km/h at 1.0x) just yields a gentler (floater) crest -- the 1.0-1.5x dimension clamp still applies -- so widen the window here so the airtime family isn't starved by near-misses.
-inline constexpr float HILL_ENTRY_MAX = 66.85f; // 240.7 km/h at 1.5x
+inline constexpr float HILL_ENTRY_MAX = 70.11f; // 252.4 km/h at 1.5x (66.85*sqrt(1.10); -5.5g crest overage)
 
 // --- POST-BOOST SPEED-SHED CLIMB (2026-07-23) ----------------------------
-// Every in-course booster tops out at BOOST_CRUISE_TARGET (~77.2 m/s), which
-// sits ABOVE every non-TURN entry window (HILLS 66.85, IMMEL 70, LOOP 74.9,
-// ROLL/STALL 75), so only banked turns can build right after a boost -> the
+// Every in-course booster tops out at BOOST_CRUISE_TARGET (~88.9 m/s after the
+// 2026-07-23 320 km/h re-cruise directive), which sits ABOVE every non-TURN
+// entry window under the new overage-stretched windows (HILLS 70.11, IMMEL
+// 73.42, LOOP 78.55, and ROLL/STALL 89 = the boost operational top itself),
+// so only banked turns can build right after a boost -> the
 // measured TURN 58% share, the self-overlapping turn spirals, and the escape
 // fallbacks (the eligibility desert; docs/SESSION_STATE.md 2026-07-23 frontier).
 // The genuine fix is CONNECTIVE, not a pacing constant: an UNPOWERED M_CLIMB
@@ -271,16 +304,16 @@ inline constexpr float HILL_ENTRY_MAX = 66.85f; // 240.7 km/h at 1.5x
 // LOWLAND (SHED_CLIMB_LOWLAND_MAX) and ONE per lap -- that the lap-close siting
 // stays in a valley and min>=20 holds.  Fires only where terrain+occupancy admit
 // the climb; everywhere else the ride falls back to the immediate build.
-inline constexpr float SHED_CLIMB_TRIGGER_SPEED = 72.0f; // only shed from a genuinely turn-only state (post-boost ~77 m/s > every inversion window)
+inline constexpr float SHED_CLIMB_TRIGGER_SPEED = 80.0f; // only shed from a genuine inversion-window desert: above LOOP's 78.55 m/s overage-stretched top only ROLL/STALL (count-capped) and TURN remain, so the post-boost ~88.9 m/s plateau qualifies
 inline constexpr float SHED_CLIMB_TARGET_SPEED  = 68.0f; // 252 km/h; the pincer sweet spot -- opens IMMEL(70)/LOOP(74.9)/ROLL/STALL(75) yet enters the loop family cool enough to hold forceaudit +12; deeper breaks min-lap, shallower breaks +12
-inline constexpr float SHED_CLIMB_MAX_RISE      = 150.0f; // energy cap for a hotter (near-77) entry; the tuned 77->70 shed is ~54 m
+inline constexpr float SHED_CLIMB_MAX_RISE      = 170.0f; // energy cap: the 320 km/h plateau shed 88.9->68 needs (88.9^2-68^2)/(2*9.81) = 167 m, so 170 keeps the 68 m/s target reachable by gravity alone (was 150, sized for the old 77 m/s plateau)
 inline constexpr float SHED_CLIMB_MIN_RISE      = 20.0f;  // floor: a small shed already opens the inversion windows -- no tall tower needed to rebalance the LOW inversion shares
 inline constexpr int   SHED_CLIMB_MIN_STEPS     = 12;  // >=12 spans (168 m) keeps the level-off crest gentle enough to stay off the airtime floor
 inline constexpr int   SHED_CLIMB_MAX_STEPS     = 40;  // 560 m: length to size the rise as a GENTLE climb inside the connector force envelope
 inline constexpr float SHED_CLIMB_TARGET_GRADE_RAD = 0.44f; // ~25 deg mean grade: gentle enough that the eased crest clears the -3 g commit gate reliably
-inline constexpr float SHED_CLIMB_LAP_LATEST_SECS = 45.0f; // shed only in the lap's first ~third so the climb + its elements + the descent + the station/launch siting all seat before the lap-close budget (a late climb strands the close on higher ground -> elevated launch deck -> top-hat fail -> micro-lap)
-inline constexpr int   SHED_CLIMB_MAX_PER_LAP   = 1;   // one shed per lap: each leaves a structure the lap's later station/launch siting must route around; bounding it protects census min-lap
-inline constexpr float SHED_CLIMB_LOWLAND_MAX   = 34.0f;  // only shed where the anchor+forward terrain is low (WATER_Y 18 + ~16 m): plains/valleys where the lap-close launch siting is robust; over a mountain a shed-shifted lap-close strands the launch on high ground
+inline constexpr float SHED_CLIMB_LAP_LATEST_SECS = 78.0f; // shed through the lap's first two thirds (was 45): under the 320 km/h plateau every re-cruise needs its bleed, and trace evidence showed the 45 s gate starved mid-lap boosts into escape-stream force-closes; the final third stays shed-free so the lap-close siting seats on ground the climbs have not perturbed
+inline constexpr int   SHED_CLIMB_MAX_PER_LAP   = 4;   // one shed per in-course boost (~3-4 boosts/lap at the 2.1 km cadence): the shed now tracks the boost cadence -- the trigger (80 m/s) self-conditions it to genuinely hot re-cruises, and the transactional commit bounds each tower
+inline constexpr float SHED_CLIMB_LOWLAND_MAX   = 55.0f;  // shed where the anchor+forward terrain is plains-to-foothill (WATER_Y 18 + ~37 m; was 34, which trace-measurably rejected marginal 35-45 m corridors and starved the 320 km/h plateau of its bleed): true mountains stay excluded so the lap-close launch siting stays robust
 
 // Macro-profile sampling step (plan-view metres between authored knots).
 inline constexpr float MACRO_SAMPLE_STEP = 7.0f;
@@ -432,7 +465,7 @@ inline constexpr float REAL_DURATION_BIAS_HI = 0.85f;
 // band (ride_constants.h MIN_V/MAX_V mirror).  q = (genV-LO)/(HI-LO) is the
 // entry-speed percentile proxy used to place the scale-window draw centre.
 inline constexpr float SIZE_SPEED_LO_MPS = 42.0f;
-inline constexpr float SIZE_SPEED_HI_MPS = 82.0f;
+inline constexpr float SIZE_SPEED_HI_MPS = 89.0f; // mirrors ride_constants.h MAX_V (raised for the 320 km/h re-cruise plateau, 2026-07-23)
 
 // Act themes: each lap is one composed act with a rotating theme that biases
 // shares INSIDE their bands (weights, never gates).  Multipliers are bounded

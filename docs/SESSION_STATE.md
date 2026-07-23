@@ -511,3 +511,60 @@ Applied the water agent's near-shore cut-tolerance ramp (nearShoreCutTolerance s
 Valley-seating agent (a07dfb38) DISPROVED the launch-siting premise: launches ALREADY seat in valleys (23/24 close ≤46m, median 18m=waterline); descend-to-valley fires 0× when safe, regresses overlap 5→10 when forced. NOT the blocker. REAL blocker (quantified): a deeper post-boost shed builds a taller tower → the ride OVER-SPEEDS descending the far side to 88-100 m/s → at that speed the corridor is above EVERY non-TURN felt-g entry window (HILLS 66.85/IMMEL 70/LOOP 74.9/ROLL-STALL 75) → high-speed corridor starvation → escape-stream → force-close → micro-lap, on LOW ground. Deepening the shed ALSO does nothing for shares (HILLS ~7%, TURN ~46% raw even firing after every boost) — the shed is a weak share lever. Best gate-safe shed = 68 (baseline); 60 holds hard gates but trades LOOP-IN for HELIX-LOW (no net) + costs 18s min-lap headroom + not robust (66 breaks). SHED LEVER EXHAUSTED.
 ROOT (final, 6-agent consensus): the eligibility desert = the **240 km/h AVERAGE target** (forceaudit avg≥230) vs the **2×-record felt-g entry windows** (≤75 m/s). Both are individually correct/realistic (windows = 2× real ~35 m/s element entries; avg = user target), but in TENSION: to average 240 the ride stays near-peak (~70 m/s) where elements can't fit → TURN-only → TURN 55.7% HIGH, HILLS/DROP/LOOP LOW. Real coasters do NOT average near peak (Falcon's Flight peaks 250 but averages ~110). The entry windows should NOT widen (elements at 270+ km/h are unreal). So the ONLY levers are USER DECISIONS: (1) LOWER the avg-speed target (e.g. 180-200) so the ride slows into element-eligible bands → shares rebalance naturally; or (2) accept the current shares as a physics consequence of the aggressive 240 target. A large composition-director rework (place elements only at speed dips) is the alternative but is big+risky. This is a TARGET decision, not a bug — surfaced to user.
 STATE: strong, all hard gates green (census complete min 55.5, force 2/2, joint 4/4, terrain GRADUATED, water 11.7%, cliffsites PASS, airtime 11/11 eject). Remaining soft reds (shares, fallback, overlap) all = this tension. Water-high + corkscrew are landable but trade overlap. Producing GPU gallery (Phase-7 acceptance deliverable) for user visual sign-off.
+
+## 2026-07-23 — SPEED RETUNE MEGA-SESSION (boost 320, g-overage windows, organic sheds, budget decouple, DIVELOOP revival)
+USER DIRECTIVES (this session, binding): boost re-cruise 320 km/h / launch unchanged 360 km/h
+(1.28x/1.44x the 250 km/h Falcon's Flight record); average speed floor stays >=240 km/h (not
+relaxed); per-element felt-g overage 1.10 on TOP of the existing 2x-record cap, both lobes,
+provided the overage is genuinely SPEED-caused through law-sized geometry — radii are NEVER
+resized just to buy headroom; NO mid-course trim brakes — physics-only (energy trade / organic
+sheds), trims are a researched-and-rejected alternative, recorded not adopted; keep grounding
+every number in record-class real-world figures (Falcon's Flight, Tormenta); shares must
+ACTUALLY LAND in-game, not just look correct in the constants (composition-director follow-up).
+
+MECHANISM CHAIN LANDED THIS SESSION (in order): (1) g-overage windows applied — HILLS
+66.85->70.11 m/s, LOOP 74.9->78.55 m/s (both x sqrt(1.10)), ROLL/STALL opened to the 89 m/s
+operational top (already speed-invariant, cap was never binding), hard envelope +12/-6.5/6.0 ->
++13.2/-7.15/6.6 (x1.10 direct); (2) per-boost speed-shed climbs retuned organically — trigger
+80 m/s, sheds to lowland ~55 m/s, capped 4/lap, each climb <=78s to hold pacing; (3) escape
+routing made speed-aware so a reach/escape attempt targets an eligible speed band instead of
+whatever the corridor offers; (4) launch-exit seam stub fix (the post-launch daylight-stub
+joint that was leaking a tangent-step kink at the seam); (5) inversion-budget DECOUPLE — 4-slot
+budget now only charges LOOP/IMMEL/DIVELOOP (sustained-high-g), ROLL/STALL moved to their own
+per-lap caps (2/1) outside the budget, per the funnel-measured composition finding (see
+REAL_WORLD_REFERENCES.md); (6) DIVE LOOP speed-scaled law — recognized as LATERAL-bound (not
+vertical-bound, same finding as IMMEL below), rebuilt to build across 55.6-62 m/s under the 6.6 g
+lateral cap; (7) DROP landing-aim fix — MASKED behind the advisory-only DROP-duration
+reclassification but KEPT in code (still lands correctly, just no longer hard-gated against the
+at-speed 6.0s reference); (8) IMMEL identified as LATERAL-bound — measured |lat| 6.83 g at 73.4
+m/s entries (over the 6.6 g cap), window capped to 72.0 m/s (6.83*(72/73.42)^2 ~ 6.57 <= 6.6).
+
+MEASURED TRAJECTORY (TURN family share, successive fixes, own probe runs each step): 55.7%
+(pre-session baseline) -> 64.1% (g-overage windows applied ALONE — windows alone widened
+eligibility unevenly and briefly worsened TURN dominance before the other levers landed) -> 52.7%
+(inversion-budget decouple) -> 47.1% (+ DIVELOOP revival + DROP landing-aim fix). forceaudit 2/2
+PASS at the new envelope +13.2/-7.15/6.6, avg speed 269 km/h (peak 360, boosts re-cruising 320).
+census-8 complete=yes but **min-lap 1.7s** — 3 zero-feature force-close "echo" laps observed on
+seeds 5/6/8 — this is the OPEN HARD-GATE BLOCKER currently being fixed (a force-close firing with
+zero features published, distinct from the earlier micro-lap/eligibility-desert pattern; suspect
+an interaction between the widened speed-shed triggers and the escape/lap-close guard at the new
+higher operating speeds). Time-share readout added to census: turns now read as ~36% of ride
+SECONDS vs 47% by ELEMENT COUNT — the count-based share metric overstates turn dominance because
+turns are individually shorter than most other elements; both metrics now printed side by side.
+Record-class composition research is in flight to retarget `SHARE_TARGET` off the count-based
+convention using this seconds-based reading.
+
+**COMMITS ARE GATED**: nothing from this session lands until census-8 min-lap >= 20 (the 1.7s
+echo-lap blocker above is fixed) AND the full acceptance suite (census/forceaudit/jointaudit/
+overlap/terrainaudit/waterfrac/cliffsites) passes green together, per the existing "gate before
+commit" discipline this session followed throughout (see prior entries).
+
+## 2026-07-23 — RECORD-CLASS COMPOSITION TARGETS (research agent, sourced) + ELEMENT DIVERSITY AUDIT
+RESEARCH (core-6: Falcon's Flight, Tormenta RR, Fury 325, Steel Vengeance, VelociCoaster, Formula Rossa; strata class reported separately, excluded from targets):
+- Banked-turn family: ~25% by COUNT (range 15-36; hard ceiling 36 = Fury 325, the class's turn-machine outlier), ~28% by TIME (range 15-40). Project measured 47% count (INDEFENSIBLE, 11pts above class ceiling) / ~36% time (upper-quartile borderline).
+- AIRTIME is the class PLURALITY: ~31% count / ~27% time. Inversions ~14%/~11% (bimodal: 0% on FF/Fury/FR vs 30-38% on Tormenta/Velo/SteVe). Drops ~11%/~9%. Infra ~18%/~12%. HELIX ~1% (ONLY Fury has one) -> our 4% target is itself HIGH vs record class; retarget ~2.
+- Diagnostic signature: real coasters have turns SMALLER by count than by time (few, long); ours inverted (many, short) = short banked connective features filling anchors where airtime can't build.
+- VALIDATION: our SHARE_TARGET table (family 26, airtime sum 31) already matches the class — the gap is DELIVERY, not targets. No inflation.
+DIVERSITY AUDIT (census-8 integrated): WAVE n=2, BANKAIR n=2 (near-dead; were 18/39 at baseline — retune regression), SCURVE collapsed 6.4->2.4; ROLL 10.1/HELIX 7.7 over; 7/11 one-signature (LOOP/IMMEL/DIVELOOP pinned 1.5x hi-ter, ROLL 1.05x lowland). POOL GAPS vs researched coasters: (1) OVERBANKED TURN >90 deg (Fury 91 horseshoe, Velo 113/125, SteVe — 4/6 coasters; our felt-bank law tops ~84) = the one genuinely missing element class, queued as TURN-builder bank-offset variant; (2) non-inverting airtime stall (FF); (3) off-axis airtime hill (Velo); treble-clef/spaghetti-bowl = director-level compounds, not new builders. Cliff dive built-but-dormant (FF signature, needs finale routing).
+CONVERGENCE: BANKAIR/WAVE need 35m air headroom minus forward terrain rise -> fails on the SAME elevated/rising-terrain anchors that starve HILLS (2.7%) and DROP (1.6). ONE structural root: post-inversion recovery never returns the ride to grade (600-800m straight profiles fail mustCurve over 50-208m deficiency -> routeConnectorAround stays high -> TURN wins). FIX (fable-owned, next): terrain-following/chunked recovery descent; then HELIX retarget ~2, overbank variant, WAVE/BANKAIR revival ride the same fix.
+OPEN HARD BLOCKER: census-8 min-lap 1.7s (seeds 5/6/8 zero-feature echo laps: escape-budget force-close launch -> newborn lap's opening fails on same hostile ground -> instant re-force-close ~2s later; two launches ~2s apart). Lap-birth fix agent running; decision mine on its traces.

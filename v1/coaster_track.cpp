@@ -803,14 +803,45 @@ struct Track : CommittedTrack, GenCursor {
         if (!straightEntryOK()) return false;
         lockMacroAnchor();
         const float startHeight = gpos.y;
-        // One recovery drop owns the complete return toward the local ground
-        // band. The former fixed 24 m decrement left elevated elements high,
-        // so the scheduler emitted several stacked DROP runs in succession.
-        // Drop ceiling = 1.5x the record drop (Falcon's Flight ~160 m cliff drop,
-        // Six Flags Qiddiya 2025 -- docs/REAL_WORLD_REFERENCES.md 4). Was an
-        // uncited 250.
-        float endHeight = fmaxf(WATER_Y + 4.0f,
+        // Drop CEILING = 1.5x the record drop (Falcon's Flight ~160 m cliff drop,
+        // Six Flags Qiddiya 2025 -- docs/REAL_WORLD_REFERENCES.md 4).  This is the
+        // hard FLOOR the aim may descend to; it is NEVER the aim itself.
+        const float dropFloorCeiling = fmaxf(WATER_Y + 4.0f,
                                 startHeight - genc::DROP_RECORD_HEIGHT * RECORD_SCALE_CAP);
+        // LANDING-AIM (2026-07-23): aim the drop at the REACHABLE landing the
+        // terrain affords, not the maximal record-cap ceiling.  The old solver
+        // aimed the ceiling (or, worse, a distant valley found by a scanAhead at
+        // the ambitious drop's full length) and its straight profile plowed the
+        // rising ground in between -- measured 164/171 recovery anchors resolved
+        // 'mustCurve-straight-uncleared' and fell through to UNLABELED
+        // routeConnectorAround connectors, starving the DROP share to 3%.  Walk
+        // the straight corridor and follow the terrain DOWN to the lowest route
+        // target it reaches before rising back into a wall the straight dive can
+        // not clear; that is the terrain the pullout actually lands on.  A pure
+        // descent aims deep (returns the ride to the valley floor -> the slow
+        // coast tail happens low, feeding the terrain-starved HILLS); a rising
+        // corridor aims short of the wall so the straight profile stays above
+        // grade and the recovery labels as M_DROP.
+        float reachLanding = startHeight - 8.0f;
+        {
+            const float s = sinf(gyaw), c = cosf(gyaw);
+            float lowest = 1.0e9f;
+            for (float dist = 14.0f; dist <= 380.0f; dist += 7.0f) {
+                float tgt = -1.0e9f;
+                for (float side : {-7.0f, 0.0f, 7.0f})
+                    tgt = fmaxf(tgt, ordinaryRouteTarget(genGroundTopAt(
+                        gpos.x + s * dist + c * side,
+                        gpos.z + c * dist - s * side)));
+                // Terrain rising more than TERRAIN_CUT_TOLERANCE above the lowest
+                // floor already reached is a wall the straight dive would plow --
+                // land short of it (the curved publisher below finds open air to
+                // the side; the straight macro cannot).
+                if (tgt > lowest + TERRAIN_CUT_TOLERANCE) break;
+                lowest = fminf(lowest, tgt);
+            }
+            if (lowest < 1.0e8f) reachLanding = lowest;
+        }
+        float endHeight = Clamp(reachLanding, dropFloorCeiling, startHeight - 8.0f);
         v1profile::Profile built;
 
         // A real drop is pushover -> (face) -> pullout.  The old single quintic
@@ -895,42 +926,33 @@ struct Track : CommittedTrack, GenCursor {
             return {};
         };
 
+        // Aim seeded at the reachable landing (above), then refined MONOTONICALLY:
+        // the profile is re-solved and any point that still plows the corridor
+        // floor RAISES the pullout, never below an 8 m minimum drop.  (The old
+        // loop re-derived the aim each pass from a scanAhead at the ambitious
+        // drop's full length -- which pulled the aim back toward a distant valley
+        // ACROSS the intervening rise every pass and oscillated against the
+        // deficiency lift, so the corridor never cleared: the root of the
+        // 164/171 mustCurve failures.)
         bool corridorClear = false;
         for (int pass = 0; pass < 7; ++pass) {
             built = solve(endHeight);
-            // An empty solve here means the STRAIGHT corridor pushed endHeight
-            // into analytically-unsolvable small-drop territory -- not that a
-            // drop is impossible.  Break to the curved fallback below (which
-            // re-solves the ambitious profile) instead of failing outright.
+            // An empty solve here means endHeight fell into analytically-
+            // unsolvable small-drop territory -- not that a drop is impossible.
+            // Break to the curved fallback below instead of failing outright.
             if (built.empty()) break;
-            float d = (float)built.length();
-            // Solve the pullout to the height of the section it actually
-            // hands to, not merely the terrain under its final knot.  Looking
-            // only at that one knot let a drop finish low and forced the first
-            // connective FLAT cps to climb a ridge in 1-2 samples (the visible
-            // teleport/creeping ramp and its +20 g spike).  This is still part
-            // of the analytical drop solve: the whole pullout changes shape,
-            // while the following track remains level instead of being lifted
-            // point-by-point after generation.
-            const float landing =
-                tprobe::scanAhead(gpos, gyaw, 168.0f, 7.0f, 7.0f, d).maxTarget;
-            float nextHeight = fmaxf(WATER_Y + 4.0f,
-                                     fmaxf(startHeight - genc::DROP_RECORD_HEIGHT * RECORD_SCALE_CAP, landing));
-            endHeight = nextHeight;
-            endHeight = fminf(endHeight, startHeight - 8.0f);
-
-            // Solve to the next section's terrain-relative height before any
-            // samples are published.  A midpoint ridge may sit above both the
-            // entry and landing; raising the analytical endpoint lifts the
-            // whole pullout smoothly instead of letting a later floor create
-            // an underground dip followed by a bounce.
-            built = solve(endHeight);
-            if (built.empty()) break;   // same: curved fallback decides
             float deficiency = tprobe::deficiencyAlong(
                 [&](float s) { return (float)built.sampleDistance(s).height; },
                 gpos, gyaw, (float)built.length(), 3.5f, 7.0f);
             if (deficiency <= 0.05f) { corridorClear = true; break; }
-            endHeight = fminf(startHeight - 8.0f, endHeight + deficiency * 1.35f);
+            // Raise the pullout toward the plowing terrain.  If the lift is
+            // already pinned at the 8 m minimum drop and the corridor is still
+            // deficient, the straight dive is genuinely blocked -- stop and let
+            // the curved publisher (which can yaw into open air) decide.
+            const float nextEnd = fminf(startHeight - 8.0f,
+                                        endHeight + deficiency * 1.35f);
+            if (nextEnd <= endHeight + 0.05f) break;
+            endHeight = nextEnd;
         }
         // Straight-ahead corridor blocked through all passes.  That used to be
         // terminal, which killed the recovery drop precisely where it is most
@@ -2774,7 +2796,17 @@ struct Track : CommittedTrack, GenCursor {
         immelDir = (rnd01() < 0.5f) ? -1.0f : 1.0f;
         // Sweep 24 degrees past the crest: the real element exits BELOW its
         // crest, already diving toward its runout, with the half-roll done.
-        return buildLoopSpatial(PI + 24.0f * DEG2RAD, 2.0f * radius, true);
+        // Speed-stretched exit (2026-07-23, same law as the corkscrew/TURN
+        // shoulders): above ~65 m/s the exit sweep lengthens up to +12 deg so
+        // the half-roll (window [0.55,1.00] of the arc) distributes over more
+        // rail and the roll-in lateral transient stays inside the 6.6 g cap
+        // (measured leak: |lat| 6.62 at a 73 m/s overage-window entry with the
+        // fixed 24 deg exit).  Radius and g-targets untouched -- a hot
+        // Immelmann simply dives longer before the handoff, as the real
+        // element does.
+        const float exitSweepDeg =
+            24.0f + 12.0f * Clamp((genV - 65.0f) / 8.42f, 0.0f, 1.0f);
+        return buildLoopSpatial(PI + exitSweepDeg * DEG2RAD, 2.0f * radius, true);
     }
     bool initRoll(float forcedHand = 0.0f) {
         syncYawToTrack();
@@ -3132,21 +3164,46 @@ struct Track : CommittedTrack, GenCursor {
         float drop = 0.0f;
     };
     static DiveLoopPlan makeDiveLoopPlan(float entrySpeed, float clearance) {
-        // The authored descending half-clothoid has Rmid = 0.4387822774*drop.
-        // Size it at the energy-gained midpoint, rather than reusing the
-        // rising-loop crest equation. This gives a natural 44.6--54.7 m/s
-        // entry window for the record-scaled 60--90 m drop.
+        // SPEED-SCALED SIZING LAW (2026-07-23): the old law fixed the drop from a
+        // 9.6 g target (drop = v^2/31.513) and REJECTED unless drop landed in the
+        // record-scaled [60,90] m window -- solving gave a [43.5, 53.25] m/s entry
+        // window entirely BELOW the 55-89 m/s operating band, so the dive loop was
+        // 100% generation-dead.  Give it the SAME design law the loop family uses
+        // (invRAt): size the RADIUS from the felt-g target at the ACTUAL entry
+        // speed, clamp the radius to the [1.0,1.5]x record window, and let the drop
+        // follow from the clamped radius.  A hotter entry through a radius pinned at
+        // the 1.5x cap simply reads a higher felt g (bounded by the envelope gate
+        // below); real dive loops scale radius with entry energy the same way.
+        //
+        // The authored descending half-clothoid has Rmid = 0.4387822774*drop, so
+        // the felt vertical g at the g-critical mid-point (where the rider is
+        // inverted and the ~9 g core is centripetal, gravity term already folded
+        // in) is  felt = v_mid^2/(G*Rmid) = v^2/(G*Rmid) + 1/radiusPerDrop  with
+        // v_mid^2 = v^2 + G*drop and drop = Rmid/radiusPerDrop.
         constexpr float radiusPerDrop = 0.4387822774f;
-        constexpr float targetG = 9.6f;
-        const float denominator = GRAV * (targetG * radiusPerDrop - 1.0f);
-        if (!(denominator > 0.0f)) return {};
-        const float drop = entrySpeed * entrySpeed / denominator;
-        // 0.75x record floor (was hardcoded 1.0x -- docs/REAL_WORLD_REFERENCES.md 4).
-        const float minimumDrop = fmaxf(DIVELOOP_RECORD_DROP * genc::RECORD_SCALE_MIN,
-                                        clearance - 40.0f);
-        const float maximumDrop = fminf(DIVELOOP_RECORD_DROP * RECORD_SCALE_CAP,
+        constexpr float descentTerm   = 1.0f / radiusPerDrop;   // = 2.279 g (gravity/descent)
+        constexpr float targetG       = 9.6f;                   // 2x-record felt sizing target
+        constexpr float referenceRadius = radiusPerDrop * DIVELOOP_RECORD_DROP; // 1.0x mid radius
+        const float rMin = referenceRadius * genc::RECORD_SCALE_MIN;
+        const float rMax = referenceRadius * RECORD_SCALE_CAP;
+        // Radius that holds the felt sizing target at this entry speed.
+        const float denom = GRAV * (targetG - descentTerm);
+        if (!(denom > 0.0f)) return {};
+        float radius = Clamp(entrySpeed * entrySpeed / denom, rMin, rMax);
+        // Clearance ceiling: the dive descends drop = radius/radiusPerDrop and must
+        // not plow the ground; shrink the radius to fit, never below the 1.0x floor.
+        const float dropCeiling = fminf(DIVELOOP_RECORD_DROP * RECORD_SCALE_CAP,
                                         clearance + TERRAIN_CUT_TOLERANCE);
-        if (drop < minimumDrop || drop > maximumDrop) return {};
+        if (dropCeiling < DIVELOOP_RECORD_DROP * genc::RECORD_SCALE_MIN) return {};
+        radius = fminf(radius, dropCeiling * radiusPerDrop);
+        if (radius < rMin - 0.01f) return {};
+        const float drop = radius / radiusPerDrop;
+        // Felt-g ENVELOPE gate: at the clamped radius the mid-point felt g rises
+        // with v^2, so above some entry speed even the 1.5x radius exceeds the
+        // +13.2 hard envelope -- the window naturally CLOSES there (correct).  The
+        // 55-78 m/s band stays open wherever clearance affords the 1.5x radius.
+        const float feltG = entrySpeed * entrySpeed / (GRAV * radius) + descentTerm;
+        if (feltG > genc::DIVELOOP_FELT_G_MAX) return {};
         return {true, drop};
     }
 
@@ -3204,7 +3261,17 @@ struct Track : CommittedTrack, GenCursor {
             // feel) instead of lateral.  beta still ends at 180 deg, and with
             // the half-loop's natural = -WUP at the exit that yields an upright
             // exit frame exactly as before -- geometry (positions) is unchanged.
-            float beta=PI*spatialEase(Clamp(t/0.55f,0.0f,1.0f));
+            // SPEED-SCALED front-load (2026-07-23): the speed-scaled sizing law now
+            // admits HOTTER entries (55-62 m/s) than the 0.55 fraction was first
+            // tuned for (the old 44-53 m/s window).  The felt-lateral roll-in
+            // transient ~ v^2 * kappa(t at beta=90 deg), so at a hot entry beta
+            // must pass 90 deg at a LOWER-curvature point to stay inside
+            // LATERAL_G_ENVELOPE: complete the roll earlier as entry speed rises.
+            // Cold entries keep the proven 0.55; the hot end tightens to 0.46
+            // (measured: holds |lat| < 6.6 across the felt-g-gated 55-62 m/s band).
+            const float rollFrac = Clamp(0.55f - (genV - 53.0f) * 0.010f,
+                                         0.46f, 0.55f);
+            float beta=PI*spatialEase(Clamp(t/rollFrac,0.0f,1.0f));
             Vector3 cross=Vector3CrossProduct(tangent,natural);
             Vector3 frame=Vector3Add(Vector3Scale(natural,cosf(beta)),
                                      Vector3Scale(cross,sinf(beta)*dlturn));
@@ -3432,9 +3499,26 @@ struct Track : CommittedTrack, GenCursor {
             // INVARIANT (v_top^2 and crown radius both scale linearly with
             // v^2), so the safe window extends to the 1.5x crossover:
             // v = sqrt(1.5 * 54.56 * 14 * 9.81 / 2) = 74.9 m/s.
-            case M_LOOP:      return 74.9f;
-            case M_ROLL:      return 75.0f;
-            case M_IMMEL:     return 70.0f;
+            // OVERAGE (2026-07-23): the crest felt-g cap stretches 1.10
+            // (G_ELEMENT_OVERAGE), a genuinely speed-caused overage through the
+            // same 1.5x geometry, so the g-derived window widens by sqrt(1.10)=
+            // 1.0488: 74.9 -> 78.55.
+            case M_LOOP:      return 78.55f;
+            // ROLL felt radial load is entry-speed-INVARIANT by construction
+            // (roll PERIOD pinned to 2.8 s/rev, span stretched with speed -- see
+            // the note above), so it carries NO g overage.  The window simply
+            // opens to the new boost operational top: 89 m/s (320 km/h re-cruise).
+            case M_ROLL:      return 89.0f;
+            // IMMEL crest felt-g overage 1.10 would allow 73.42 (= 70*sqrt(1.10))
+            // on the VERTICAL axis, but the element is LATERAL-bound (2026-07-23,
+            // measured): the half-roll crosses 90 deg bank at a high-total-g arc
+            // point, projecting the specific force onto the rider's side axis --
+            // |lat| read 6.83 g (> 6.6 cap) at overage-window entries, and both
+            // roll-window and exit-sweep reshaping were sweep-confirmed not to
+            // reduce it.  The first-binding felt axis governs the window, so the
+            // cap sits at the measured lateral-bound value instead (6.83*(72/73.42)^2
+            // ~ 6.57 <= 6.6).  Same physics as the dive loop's lateral-bound window.
+            case M_IMMEL:     return 72.0f;
             // REALISM (2026-07-21): a TRUE zero-g stall is speed-agnostic by
             // construction.  initStall sizes the quartic span L = 4*sqrt(h*vc2/G)
             // so apex curvature cancels gravity at the crest speed -> ~0 g felt
@@ -3443,13 +3527,16 @@ struct Track : CommittedTrack, GenCursor {
             // to the operational top (default invVMinFrac 0.68 -> admits
             // [51, 75] m/s, fully covering the 55-75 m/s boundary band).  (The
             // old 56 m/s left every hot boundary above it generation-dead.)
-            case M_STALL:     return 75.0f;
+            // STALL felt g is entry-speed-INVARIANT by construction (quartic apex
+            // cancels gravity at any crest speed), so it carries NO g overage; the
+            // window simply opens to the new 89 m/s boost operational top.
+            case M_STALL:     return 89.0f;
             default: break;
         }
         InvSpec s = invSpec(m);
         if (s.gT <= 0.0f) return 1e9f;
         float rMax = s.rMaxRec * RECORD_SCALE_CAP;
-        const float gTopCap = 4.8f;   // leaves interpolation margin below the +12 g hard envelope
+        const float gTopCap = 5.28f;  // 4.8 * 1.10 per-element overage (2026-07-23); still leaves margin below the +13.2 g hard envelope
         float hTop;
         switch (m) {
             case M_LOOP:     hTop = 2.16f * rMax; break;
@@ -4644,10 +4731,12 @@ struct Track : CommittedTrack, GenCursor {
         }
         if (isBudgetInversion(m) && isBudgetInversion(lastElem))
             lapInversionChains++;
-        // Phase 4 inversion budget: count every committed budget inversion
-        // exactly once (natural same-subtype pairs included), so eligibleElem's
-        // hardInvCount >= INVERSION_BUDGET gate can never be undercounted past 4.
-        if (isBudgetInversion(m)) hardInvCount++;
+        // Phase 4 inversion budget: count every committed SUSTAINED-high-g
+        // inversion exactly once (natural same-subtype pairs included), so
+        // eligibleElem's hardInvCount >= INVERSION_BUDGET gate can never be
+        // undercounted past 4.  ROLL/STALL are budget-decoupled (2026-07-23,
+        // see isSustainedGInversion) and bounded by their own lap caps.
+        if (isSustainedGInversion(m)) hardInvCount++;
         familyRun = elemFamily(m) == elemFamily(lastElem) ? familyRun + 1 : 1;
         lapElemCount[m]++;
         lapAuthoredCount[m]++;
@@ -4687,6 +4776,19 @@ struct Track : CommittedTrack, GenCursor {
     // STALL is ballistic but still spends one rider-inversion slot.
     static bool isBudgetInversion(SegMode m) {
         return m == M_LOOP || m == M_ROLL || m == M_IMMEL || m == M_DIVELOOP || m == M_STALL;
+    }
+    // 2026-07-23 budget decouple (funnel-measured): the 4-slot inversion
+    // budget models rider tolerance to SUSTAINED high-g inversions (loop
+    // family bottoms/crests at the 2x-record law).  A speed-invariant
+    // heartline ROLL (~4.6 g brief radial, period-pinned) and a zero-g STALL
+    // are not that load class -- real rides stack them freely (RMC zero-g
+    // stalls, double corkscrews) while high-g loop counts stay small.
+    // Charging them to the shared budget measurably killed 167 in-window
+    // LOOP/IMMEL anchors per census-4 and pinned the banked-turn share at
+    // 62%.  ROLL/STALL remain bounded by their own per-lap caps (2/1),
+    // adjacency and spacing rules -- only the SHARED budget is scoped here.
+    static bool isSustainedGInversion(SegMode m) {
+        return m == M_LOOP || m == M_IMMEL || m == M_DIVELOOP;
     }
     // Elements whose rider frame carries bank into a short connective span.
     static bool isBankedElem(SegMode m) {
@@ -4856,7 +4958,10 @@ struct Track : CommittedTrack, GenCursor {
         // the real back-to-back pairs (Tormenta's Immelmann-loop chain, the
         // classic double corkscrew), at most two chained pairs per lap.
         if (isBudgetInversion(m)) {
-            if (hardInvCount >= INVERSION_BUDGET) return false;
+            // Shared 4-slot budget charges only sustained-high-g inversions
+            // (2026-07-23 decouple); ROLL/STALL pass to their lap caps below.
+            if (isSustainedGInversion(m) && hardInvCount >= INVERSION_BUDGET)
+                return false;
             // Phase 4: the share controller now governs inversion MIX; the
             // per-lap subtype count survives only as a comfort safety cap
             // (consistent with INVERSION_BUDGET and the census subtype gate),
@@ -5743,18 +5848,37 @@ struct Track : CommittedTrack, GenCursor {
     // put at risk by a half-applied climb.
     bool trySpeedShedClimb() {
         if (genV <= genc::SHED_CLIMB_TRIGGER_SPEED) return false;
-        // Guard the seed7-class micro-lap failure mode (docs/SESSION_STATE.md):
-        // a shed climb late in the lap, or from an elevated/buried anchor, or in a
-        // corridor already streaming escapes, shifts the lap-close onto higher
-        // ground and force-closes a degenerate lap.  Shed ONLY early in the lap,
-        // once, from a grade-level unstarved anchor with feature budget to spare;
-        // everywhere else fall back to the immediate build (baseline behaviour).
-        if (lapShedCount >= genc::SHED_CLIMB_MAX_PER_LAP) return false;
-        if (lapRideSeconds > genc::SHED_CLIMB_LAP_LATEST_SECS) return false;
-        if (elems >= elemLimit) return false;
-        if (escapesSinceLaunch > 0) return false;
+        // 2026-07-23 re-gating (trace-proven root cause of the 320 km/h micro-
+        // lap): every in-course boost re-cruises to ~88.9 m/s -- above every
+        // element entry window -- and the gravity shed is the ONLY bleed, so the
+        // old once-per-lap/first-45s/zero-escape gating left ~3 of 4 boosts
+        // stranded above the windows -> escape stream -> force-close -> a
+        // successor lap born mid-stream at ~97 m/s -> degenerate micro-lap.
+        // The shed now tracks the boost cadence (each hot re-cruise may shed,
+        // Falcon's-Flight-style launch->camelback energy cascade); safety is the
+        // transactional commit itself (corridor/occupancy/force qualification
+        // rolls back cleanly), plus the anchor-grade and LOWLAND guards below.
+        // Feature-budget bail discounts escape inflation (escapes charge elems
+        // up to elemLimit+6), which used to lock the shed out of exactly the
+        // starving laps that most needed it.
+        static const bool shedTrace = getenv("MC_SHEDTRACE") != nullptr;
+        if (lapShedCount >= genc::SHED_CLIMB_MAX_PER_LAP) {
+            if (shedTrace) fprintf(stderr, "[shed] BAIL count=%d v=%.1f\n", lapShedCount, genV);
+            return false;
+        }
+        if (lapRideSeconds > genc::SHED_CLIMB_LAP_LATEST_SECS) {
+            if (shedTrace) fprintf(stderr, "[shed] BAIL late t=%.1f v=%.1f\n", lapRideSeconds, genV);
+            return false;
+        }
+        if (elems - std::min(escapesSinceLaunch, 6) >= elemLimit) {
+            if (shedTrace) fprintf(stderr, "[shed] BAIL elems=%d esc=%d limit=%d\n", elems, escapesSinceLaunch, elemLimit);
+            return false;
+        }
         const float hAnchor = gpos.y - genGroundTopAt(gpos.x, gpos.z);
-        if (hAnchor < -2.0f || hAnchor > 18.0f) return false;
+        if (hAnchor < -2.0f || hAnchor > 18.0f) {
+            if (shedTrace) fprintf(stderr, "[shed] BAIL anchor h=%.1f v=%.1f\n", hAnchor, genV);
+            return false;
+        }
         // LOWLAND guard: a tall shed climb shifts WHERE in the terrain the lap
         // eventually closes; over a mountain the launch-postpone window expires
         // on high ground -> elevated launch deck -> top-hat fail -> micro-lap.
@@ -5768,17 +5892,25 @@ struct Track : CommittedTrack, GenCursor {
                 for (float lx = -40.0f; lx <= 40.0f; lx += 40.0f)
                     maxG = fmaxf(maxG, genGroundTopAt(gpos.x + cs * lx + sn * lz,
                                                       gpos.z - sn * lx + cs * lz));
-            if (maxG > genc::SHED_CLIMB_LOWLAND_MAX) return false;
+            if (maxG > genc::SHED_CLIMB_LOWLAND_MAX) {
+                if (shedTrace) fprintf(stderr, "[shed] BAIL lowland maxG=%.1f v=%.1f\n", maxG, genV);
+                return false;
+            }
         }
         ConnectorPlan climb{};
-        if (!planShedClimb(genc::SHED_CLIMB_TARGET_SPEED, climb)) return false;
+        if (!planShedClimb(genc::SHED_CLIMB_TARGET_SPEED, climb)) {
+            if (shedTrace) fprintf(stderr, "[shed] BAIL plan v=%.1f\n", genV);
+            return false;
+        }
         const TxnSnapshot snap = takeSnapshot();
         if (commitConnector(climb)) {
             commitSnapshot(snap);
             lapShedCount++;
+            if (shedTrace) fprintf(stderr, "[shed] COMMIT v=%.1f lapShed=%d\n", genV, lapShedCount);
             return true;
         }
         rollback(snap);
+        if (shedTrace) fprintf(stderr, "[shed] BAIL commit v=%.1f\n", genV);
         return false;
     }
     SegMode pickLaunchExit() {
@@ -6209,7 +6341,7 @@ struct Track : CommittedTrack, GenCursor {
                 // handedness.  Chain the second immediately, most of the time,
                 // while the inversion budget and speed window allow it.
                 if (mode == M_ROLL && lapAuthoredCount[M_ROLL] == 1 &&
-                    hardInvCount < INVERSION_BUDGET &&
+                    lapAuthoredCount[M_ROLL] < inversionLapCap(M_ROLL) &&
                     genV <= invVMax(M_ROLL) && rnd01() < 0.72f) {
                     TxnGuard txn(*this);
                     if (initRoll(rollHand)) {
@@ -6255,6 +6387,21 @@ struct Track : CommittedTrack, GenCursor {
                     for (float lz = 10.0f; lz <= 150.0f; lz += 10.0f)
                         corrMax = fmaxf(corrMax, genGroundTopAt(gpos.x + sn * lz, gpos.z + cs * lz));
                     if (corrMax - gtHere > 18.0f || h > 16.0f) wantLaunch = false;
+                    // OCCUPANCY postpone (trace-proven micro-lap fix, 2026-07-23):
+                    // a launch tops the deck out at the 360 km/h design peak and
+                    // hands the successor lap a ~100 m/s cursor.  If that cursor's
+                    // forward corridor is boxed by prior-lap track, no opening
+                    // top-hat (its crest floats past -3.8 g at 100 m/s) and no
+                    // element -- not even a TURN, whose swept radius at 100 m/s
+                    // needs more room than a boxed corridor has -- can seat, so
+                    // the newborn escape-streams into a 1.8-2.7 s zero-feature
+                    // micro-lap.  A real launch coaster launches onto open ground;
+                    // so if the forward corridor is tighter than an element can
+                    // use, postpone the launch (keep cruising) until the lap
+                    // reaches a clear launch site.  Bounded by the same postpone
+                    // window above: a persistently boxed region still launches
+                    // once the window expires, so completion is never traded.
+                    if (wantLaunch && !launchSiteClear()) wantLaunch = false;
                 }
                 // Arrive-slow station approach: once a station stop is pending, stop re-powering
                 // and let the final energy arc bleed naturally into the platform (a real launch
@@ -6550,7 +6697,22 @@ struct Track : CommittedTrack, GenCursor {
                 pending = {}; connLen = 0; terrainAvoidanceTurn = false;
                 if (escapeForward()) return ScheduleOutcome::Committed;
             }
-            if (consecutiveEscapes < ESCAPE_LIMIT) {
+            // BOXED-LAUNCH-SITE rope (trace-proven micro-lap fix, 2026-07-23):
+            // the escape budget is spent (consecutiveEscapes >= ESCAPE_LIMIT), so
+            // this boundary is about to fall through to a forced powered launch
+            // below.  If that launch would fire into an occupancy box, its ~100
+            // m/s successor cannot seat an opening element and is stillborn as a
+            // zero-feature micro-lap.  Rather than launch into the box, keep
+            // escaping toward a clear launch site -- but ONLY while the per-lap
+            // escape budget still has room, so the escapesSinceLaunch >=
+            // ESCAPES_PER_LAP forced-close above still bounds a genuinely sealed
+            // corridor (which cannot stream forever).  A clear site launches
+            // immediately as before.
+            const bool ropeToClearLaunch =
+                consecutiveEscapes >= ESCAPE_LIMIT &&
+                escapesSinceLaunch < ESCAPES_PER_LAP &&
+                !launchSiteClear();
+            if (consecutiveEscapes < ESCAPE_LIMIT || ropeToClearLaunch) {
                 pending = {}; connLen = 0; terrainAvoidanceTurn = false;
                 if (escapeForward()) {
                     consecutiveEscapes++;
@@ -6712,6 +6874,30 @@ struct Track : CommittedTrack, GenCursor {
     // rises above the deck ahead; canyon WALLS flanking a clear floor are
     // ordinary canyon flying (side sampling made this fire 29x per census-8
     // on legal water-channel runs and lifted the ride out of its canyons).
+    // Forward-corridor occupancy clearance at a prospective launch site.  A
+    // launch exits at the 360 km/h design peak (~100 m/s); at that speed even a
+    // TURN's swept radius needs more than the ordinary 6 m envelope, so a launch
+    // sited into a prior-lap-track box strands the newborn successor as a zero-
+    // feature micro-lap (the opening top-hat's crest floats past -3.8 g at 100
+    // m/s, and no element fits the box).  Probe the straight forward corridor the
+    // successor's opening would use.  Empty grid -> unconstrained.
+    float launchSiteClearance() const {
+        if (occGrid.empty()) return 1.0e9f;
+        const float tipArc = arc.empty() ? 0.0f : arc.back();
+        const float cs = cosf(gyaw), sn = sinf(gyaw);
+        std::vector<Vector3> stub; stub.reserve(17);
+        float x = gpos.x, z = gpos.z;
+        stub.push_back(gpos);
+        for (int i = 1; i <= 16; ++i) {
+            x += sn * SEG_LEN; z += cs * SEG_LEN;
+            stub.push_back({x, gpos.y, z});
+        }
+        return occClearancePolyline(stub, tipArc);
+    }
+    bool launchSiteClear() const {
+        return launchSiteClearance() >= genc::LAUNCH_SITE_MIN_CLEARANCE;
+    }
+
     float forwardCorridorClearance(int spans = 8) const {
         float wall = -1.0e9f;
         for (int s = 1; s <= spans; ++s) {
@@ -6820,8 +7006,20 @@ struct Track : CommittedTrack, GenCursor {
         for (int steps = MIN_CONN; steps <= 40; steps += 5) {
             ConnectorPlan plan{M_FLAT, steps, gpos.y, gpos.y, startDy, 0.0f};
             ConnectorTerrain terrain = inspectConnectorTerrain(plan);
-            const float loY = gpos.y - reachLo * steps * SEG_LEN;
-            const float hiY = gpos.y + reachHiUp * steps * SEG_LEN;
+            // Speed-aware vertical reach (2026-07-23): the connector's eased
+            // profile concentrates curvature ~2*rise/L^2, felt as ~v^2*k.  The
+            // old speed-BLIND 0.55/0.30 reach slopes let a short (4-step)
+            // escape at the ~100 m/s launch plateau kink at a measured +21 g --
+            // broken geometry, not the speed-overage law.  Bound the reachable
+            // rise/drop by a ~4 g net budget at the CURRENT speed (felt ~ +5 g
+            // crest-side, comfortably inside the connector envelope); long
+            // escapes keep their full reach, and the step ladder still climbs
+            // to 40 steps, so forward progress / completion is preserved.
+            const float escL = steps * SEG_LEN;
+            const float feltReachCap =
+                4.0f * GRAV * escL * escL / (2.0f * fmaxf(genV * genV, 1.0f));
+            const float loY = gpos.y - fminf(reachLo * escL, feltReachCap);
+            const float hiY = gpos.y + fminf(reachHiUp * escL, feltReachCap);
             // Aim for genuine DECK clearance above the ground ahead, not the
             // ordinary route target (which sits inside the cut band): the escape
             // must lift the track OUT of a bumpy, near-water corridor so that the
@@ -7050,8 +7248,32 @@ struct Track : CommittedTrack, GenCursor {
                                    gpos.z + cosf(rayBest) * d) + TERRAIN_DECK_CLEARANCE);
             const float endY = fmaxf(gpos.y, fminf(deckAhead,
                                      gpos.y + 0.30f * MIN_CONN * SEG_LEN));
+            // Speed-scaled span count (2026-07-23 launch-exit spike fix).  The
+            // stub's quintic centreline eases from the incoming grade, but the
+            // RIDE resamples the published cps at SEG_LEN spacing with a
+            // Catmull-Rom spline.  Where a CLIMBING escape stub abuts the dead-
+            // FLAT 100 m/s launch run, the spline tangent at the seam is
+            // (cp+1 - cp-1)/2, injecting the whole first-cp rise as curvature
+            // INTO the last flat launch span -- at v=100 m/s that seam
+            // curvature x v^2 spiked +21.3 g (root-caused: this stub commits
+            // with ignoreCorridor=true, bypassing spatialForceClear).  Do NOT
+            // lower the climb target -- the escape must still reach the deck to
+            // clear rising ground or the anchor stays buried, re-escapes, and
+            // the lap force-closes into a micro-lap.  Instead spread the SAME
+            // rise over more spans so the seam curvature falls: quintic first-
+            // span rise ~ 3*SEG_LEN/N^2 at 0.30 grade, so seam felt-g ~
+            // 1 + v^2*Cr*3/(N^2*SEG_LEN*GRAV) <= G_seam gives
+            // N >= v*sqrt(3*Cr/((G_seam-1)*SEG_LEN*GRAV)), Cr 2.3, G_seam 11.
+            // Only a climbing stub above the post-launch band (>90 m/s -- the
+            // sole speed at which the seam spikes) lengthens; slow escapes and
+            // every flat stub keep the MIN_CONN geometry byte-for-byte.
+            const float seamK = sqrtf(3.0f * 2.3f /
+                                      ((11.0f - 1.0f) * SEG_LEN * GRAV));
+            const int stubSteps = (endY > gpos.y + 0.5f && genV > 90.0f)
+                ? Clamp((int)ceilf(seamK * genV), MIN_CONN, 8)
+                : MIN_CONN;
             ConnectorPlan stub{endY > gpos.y + 0.5f ? M_CLIMB : M_FLAT,
-                               MIN_CONN, gpos.y, endY,
+                               stubSteps, gpos.y, endY,
                                Clamp(genPrevDy, 0.0f, 2.0f), 0.0f, bestYaw};
             connectorCentreline(stub, escapeProbePts);
             const float stubClr = occClearancePolyline(escapeProbePts,

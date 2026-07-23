@@ -9,7 +9,7 @@
 // ======================================================================================
 namespace audit_mode {
 
-static const char* NM[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP"};
+static const char* NM[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","FLOATSTALL","CUTBACK"};
 
 // gate index -> letter (A..I). Only E is WARN-only (never fails the process); every other
 // gate, including G, is HARD per GATE_HARD below.
@@ -28,10 +28,11 @@ static float pitchDeg(Vector3 prev, Vector3 cur) {
 }
 
 static const char* kcol(int kd) {
-    if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE) return "#ffd24a";
+    if (kd==M_HILLS||kd==M_BANKAIR||kd==M_WAVE||kd==M_FLOATSTALL) return "#ffd24a";
     if (kd==M_DROP||kd==M_DIP)                                  return "#ff6b6b";
     if (kd==M_CLIMB||kd==M_LAUNCH||kd==M_BOOST)                return "#9aa0a6";
-    if (kd==M_LOOP||kd==M_IMMEL||kd==M_DIVELOOP||kd==M_ROLL||kd==M_STALL) return "#c77dff";
+    if (kd==M_LOOP||kd==M_IMMEL||kd==M_DIVELOOP||kd==M_ROLL||
+        kd==M_STALL||kd==M_CUTBACK) return "#c77dff";
     if (kd==M_HELIX)  return "#4ade80";
     if (kd==M_TURN||kd==M_SCURVE||kd==M_DIVE) return "#ff9e64";
     if (kd==M_STATION) return "#6b7280";
@@ -201,11 +202,14 @@ static bool census(int seed, long fam[3][6], long invLap[3], long invType[M_COUN
             int L = (int)seenSerial - 1;
             const int *cnt = c.completedElemCount;
             fam[L][0] = c.completedTopHatCount;
-            fam[L][1] = cnt[M_HILLS]; fam[L][2] = cnt[M_TURN];
+            fam[L][1] = cnt[M_HILLS] + cnt[M_FLOATSTALL];
+            fam[L][2] = cnt[M_TURN];
             fam[L][3] = cnt[M_HELIX]; fam[L][4] = cnt[M_DIP];
             fam[L][5] = cnt[M_WAVE] + cnt[M_BANKAIR];
-            invLap[L] = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+cnt[M_STALL];
+            invLap[L] = cnt[M_LOOP]+cnt[M_ROLL]+cnt[M_IMMEL]+
+                        cnt[M_DIVELOOP]+cnt[M_STALL]+cnt[M_CUTBACK];
             invType[M_LOOP]+=cnt[M_LOOP]; invType[M_ROLL]+=cnt[M_ROLL]; invType[M_IMMEL]+=cnt[M_IMMEL];
+            invType[M_CUTBACK]+=cnt[M_CUTBACK];
             invType[M_DIVELOOP]+=cnt[M_DIVELOOP]; invType[M_STALL]+=cnt[M_STALL];
             if(c.completedHelixGeometryCount) {
                 helixMinRev=fminf(helixMinRev,c.completedMinHelixRev);
@@ -435,6 +439,8 @@ static SeedRes auditSeed(int seed) {
                 if(r<0||r>=n)continue; int kd=KD[r];
                 if(kd==M_LAUNCH||kd==M_BOOST||kd==M_STATION||kd==M_DIP||
                    kd==M_LOOP||kd==M_ROLL||kd==M_IMMEL||kd==M_STALL||
+                   kd==M_CUTBACK||
+                   kd==M_FLOATSTALL||
                    kd==M_DIVELOOP)
                     exclude=true;
                 if (r < (int)t.spanRun.size())

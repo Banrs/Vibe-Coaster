@@ -225,7 +225,7 @@ inline constexpr int ESCAPE_LIMIT = 6;
 inline constexpr int ESCAPES_PER_LAP = 20;
 // Minimum forward-corridor occupancy clearance (m) required at a lap-closing
 // launch site.  A launch tops the deck out at the 360 km/h design peak and
-// hands the successor lap a ~100 m/s cursor; at that speed even a TURN's swept
+// hands the successor lap a ~100 m/s cursor; at that speed even a named element's swept
 // radius needs more room than the ordinary 6 m envelope, so a launch sited into
 // a prior-lap-track box strands the newborn as a zero-feature micro-lap.  Above
 // the envelope so a genuinely open corridor still launches, but tight boxes
@@ -236,9 +236,10 @@ inline constexpr int INVERSION_BUDGET = 4;
 // Per-subtype inversion lap caps (single source; consumed by the generator's
 // Track::inversionLapCap admission gate AND the census subtypeRepeat check, so
 // the census can never report a cap the generator does not actually enforce).
-// Values mirror the researched references: Tormenta runs THREE Immelmanns;
-// loops and (paired) corkscrews may appear twice; stall and dive loop stay
-// one-per-lap.  Non-inversion / uncapped subtypes are INT_MAX (no cap).
+// Values are comfort/variety ceilings, not a literal Tormenta inventory:
+// loops may appear twice; the now-conditional comparator corkscrew, cutback,
+// stall and dive loop stay one-per-lap. Non-inversion / uncapped subtypes are
+// INT_MAX (no cap).
 inline constexpr int SUBTYPE_LAP_CAP[M_COUNT] = {
     /*M_FLAT*/     INT_MAX,
     /*M_CLIMB*/    INT_MAX,
@@ -246,19 +247,21 @@ inline constexpr int SUBTYPE_LAP_CAP[M_COUNT] = {
     /*M_HILLS*/    INT_MAX,
     /*M_TURN*/     INT_MAX,
     /*M_LOOP*/     2,
-    /*M_ROLL*/     2,
+    /*M_ROLL*/     1,
     /*M_STATION*/  INT_MAX,
-    /*M_DIP*/      INT_MAX,
+    /*M_DIP*/      1,
     /*M_LAUNCH*/   INT_MAX,
     /*M_HELIX*/    INT_MAX,
     /*M_BOOST*/    INT_MAX,
-    /*M_IMMEL*/    3,
+    /*M_IMMEL*/    2,
     /*M_SCURVE*/   INT_MAX,
-    /*M_DIVE*/     INT_MAX,
+    /*M_DIVE*/     1,
     /*M_BANKAIR*/  INT_MAX,
     /*M_WAVE*/     INT_MAX,
     /*M_STALL*/    1,
     /*M_DIVELOOP*/ 1,
+    /*M_FLOATSTALL*/1,
+    /*M_CUTBACK*/  1,
 };
 
 // Minimum length of a complete connective transition.
@@ -277,13 +280,8 @@ inline constexpr float HILL_ENTRY_MIN = 48.0f; // 172.8 km/h; entering slower th
 inline constexpr float HILL_ENTRY_MAX = 70.11f; // 252.4 km/h at 1.5x (66.85*sqrt(1.10); -5.5g crest overage)
 
 // --- POST-BOOST SPEED-SHED CLIMB (2026-07-23) ----------------------------
-// Every in-course booster tops out at BOOST_CRUISE_TARGET (~88.9 m/s after the
-// 2026-07-23 320 km/h re-cruise directive), which sits ABOVE every non-TURN
-// entry window under the new overage-stretched windows (HILLS 70.11, IMMEL
-// 73.42, LOOP 78.55, and ROLL/STALL 89 = the boost operational top itself),
-// so only banked turns can build right after a boost -> the
-// measured TURN 58% share, the self-overlapping turn spirals, and the escape
-// fallbacks (the eligibility desert; docs/SESSION_STATE.md 2026-07-23 frontier).
+// A speed-shed climb after the 250 km/h booster trades surplus speed for
+// height and opens gentler crest windows without trim brakes.
 // The genuine fix is CONNECTIVE, not a pacing constant: an UNPOWERED M_CLIMB
 // inserted after a boost trades surplus speed for height by gravity alone
 // (v^2 = v0^2 - 2 g h, with DRAG/FRICTION frozen at their 0.9x-of-record law).
@@ -304,16 +302,16 @@ inline constexpr float HILL_ENTRY_MAX = 70.11f; // 252.4 km/h at 1.5x (66.85*sqr
 // LOWLAND (SHED_CLIMB_LOWLAND_MAX) and ONE per lap -- that the lap-close siting
 // stays in a valley and min>=20 holds.  Fires only where terrain+occupancy admit
 // the climb; everywhere else the ride falls back to the immediate build.
-inline constexpr float SHED_CLIMB_TRIGGER_SPEED = 80.0f; // only shed from a genuine inversion-window desert: above LOOP's 78.55 m/s overage-stretched top only ROLL/STALL (count-capped) and TURN remain, so the post-boost ~88.9 m/s plateau qualifies
-inline constexpr float SHED_CLIMB_TARGET_SPEED  = 68.0f; // 252 km/h; the pincer sweet spot -- opens IMMEL(70)/LOOP(74.9)/ROLL/STALL(75) yet enters the loop family cool enough to hold forceaudit +12; deeper breaks min-lap, shallower breaks +12
-inline constexpr float SHED_CLIMB_MAX_RISE      = 170.0f; // energy cap: the 320 km/h plateau shed 88.9->68 needs (88.9^2-68^2)/(2*9.81) = 167 m, so 170 keeps the 68 m/s target reachable by gravity alone (was 150, sized for the old 77 m/s plateau)
+inline constexpr float SHED_CLIMB_TRIGGER_SPEED = 80.0f; // ordinary 250 km/h boosts exit below this; only an unusually hot handoff can request a gravity shed
+inline constexpr float SHED_CLIMB_TARGET_SPEED  = 68.0f; // 245 km/h: a rare hot handoff settles just inside the ordinary inversion windows without trim brakes
+inline constexpr float SHED_CLIMB_MAX_RISE      = 170.0f; // absolute geometry cap for rare >80 m/s handoffs; the normal 69.4 m/s booster never invokes this path
 inline constexpr float SHED_CLIMB_MIN_RISE      = 20.0f;  // floor: a small shed already opens the inversion windows -- no tall tower needed to rebalance the LOW inversion shares
 inline constexpr int   SHED_CLIMB_MIN_STEPS     = 12;  // >=12 spans (168 m) keeps the level-off crest gentle enough to stay off the airtime floor
 inline constexpr int   SHED_CLIMB_MAX_STEPS     = 40;  // 560 m: length to size the rise as a GENTLE climb inside the connector force envelope
 inline constexpr float SHED_CLIMB_TARGET_GRADE_RAD = 0.44f; // ~25 deg mean grade: gentle enough that the eased crest clears the -3 g commit gate reliably
-inline constexpr float SHED_CLIMB_LAP_LATEST_SECS = 78.0f; // shed through the lap's first two thirds (was 45): under the 320 km/h plateau every re-cruise needs its bleed, and trace evidence showed the 45 s gate starved mid-lap boosts into escape-stream force-closes; the final third stays shed-free so the lap-close siting seats on ground the climbs have not perturbed
+inline constexpr float SHED_CLIMB_LAP_LATEST_SECS = 78.0f; // rare hot-handoff recovery stays out of the closing third so it cannot perturb launch siting
 inline constexpr int   SHED_CLIMB_MAX_PER_LAP   = 4;   // one shed per in-course boost (~3-4 boosts/lap at the 2.1 km cadence): the shed now tracks the boost cadence -- the trigger (80 m/s) self-conditions it to genuinely hot re-cruises, and the transactional commit bounds each tower
-inline constexpr float SHED_CLIMB_LOWLAND_MAX   = 55.0f;  // shed where the anchor+forward terrain is plains-to-foothill (WATER_Y 18 + ~37 m; was 34, which trace-measurably rejected marginal 35-45 m corridors and starved the 320 km/h plateau of its bleed): true mountains stay excluded so the lap-close launch siting stays robust
+inline constexpr float SHED_CLIMB_LOWLAND_MAX   = 55.0f;  // rare shed stays in plains/foothills; true mountains remain excluded to protect lap-close launch siting
 
 // Macro-profile sampling step (plan-view metres between authored knots).
 inline constexpr float MACRO_SAMPLE_STEP = 7.0f;
@@ -381,51 +379,137 @@ inline constexpr float SHARE_BAND_LO = 0.75f;
 // User directive 2026-07-20: tightened from 1.75 to 1.5. Bands are DIAGNOSTIC
 // + the runaway backstop; composition is steered by weights, never hard-gated
 // below the backstop (docs/REAL_WORLD_REFERENCES.md 6).
-inline constexpr float SHARE_BAND_HI = 1.5f;
+inline constexpr float SHARE_BAND_HI = 1.35f;
 // Sliding window (most-recent counted features) the live shares are measured
 // over -- adaptive, so an early-ride deficit does not become permanent debt.
 inline constexpr int   SHARE_WINDOW  = 48;
-// Banked-turn family (elemFamily(3) = TURN/SCURVE/DIVE/WAVE) aggregate target.
-// The family hi-gate is the binding one for that family (the per-subtype
-// bands sum a little above it by design).
-inline constexpr float FAMILY_BANKED_TARGET = 26.0f;
+// Authored TURN family (elemFamily(3) = TURN/SCURVE/DIVE/WAVE) aggregate
+// target.  This deliberately excludes HELIX, BANKAIR and off-axis HILLS:
+// those may carry bank, but they are different rider-facing statements.
+// Per-seed census acceptance is looser (25%) so this remains a composition
+// target rather than a runtime quota.
+inline constexpr float FAMILY_BANKED_TARGET = 20.0f;
+inline constexpr float FAMILY_BANKED_SOFT_LO = 15.0f;
+inline constexpr float FAMILY_BANKED_HARD_SEED_MAX = 25.0f;
+// Authored-family occurrence targets use the controlled-feature denominator,
+// so their sum must be 100%. Propulsion, drops and connectors are deliberately
+// absent from this denominator and are reviewed by traversal time instead.
+// The primary blend keeps TURN at 20%, shifts compact comparator-only
+// inversions toward sustained Falcon-style air/terrain statements, and treats
+// water DIP as conditional punctuation rather than a supply quota.
+inline constexpr float FAMILY_INVERSION_TARGET = 27.0f;
+inline constexpr float FAMILY_AIRTIME_TARGET = 45.0f;
+inline constexpr float FAMILY_DIP_TARGET = 0.0f;
+inline constexpr float FAMILY_HELIX_TARGET = 8.0f;
+// Full traversal time of airtime-family elements (including climbs, pullouts
+// and transitions), not seconds actually below 1 g. Keep this distinct from
+// true airtime claims such as VelociCoaster's published 12 seconds.
+inline constexpr float AIRTIME_FAMILY_TIME_TARGET = 24.0f;
+inline constexpr float AIRTIME_FAMILY_TIME_LO = 18.0f;
+inline constexpr float AIRTIME_FAMILY_TIME_HI = 30.0f;
 
 // Target percent of counted features, indexed by SegMode (positional, enum
 // order).  0 == count-ruled / not a counted feature.
 inline constexpr float SHARE_TARGET[M_COUNT] = {
     /*M_FLAT*/     0.0f,
     /*M_CLIMB*/    0.0f,   // top hat: exactly-1/lap count rule
-    // Revised 2026-07-20 from the 13-coaster population study (docs/
-    // REAL_WORLD_REFERENCES.md 6): the old 50/50 Falcon's-Flight+Tormenta
-    // average baked in Tormenta's record triple-Immelmann (a dive-coaster
-    // outlier) and starved corkscrews/airtime vs the acclaimed population.
-    /*M_DROP*/    11.0f,
-    /*M_HILLS*/   20.0f,
-    /*M_TURN*/    15.0f,
-    /*M_LOOP*/     5.0f,
-    /*M_ROLL*/     6.0f,
+    // Primary calibration is an equal-weight Falcon's Flight / Tormenta
+    // Rampaging Run blend. Falcon supplies long hills and drawn-out turns;
+    // Tormenta supplies two Immelmanns, one loop and one cutback (four
+    // inversions total). Other record coasters only fill element classes the
+    // primary pair does not contain.
+    /*M_DROP*/     0.0f,   // recovery infrastructure; cliff dive is count-ruled
+    /*M_HILLS*/   25.0f,
+    /*M_TURN*/     8.0f,
+    /*M_LOOP*/     6.0f,
+    /*M_ROLL*/     0.0f,   // conditional corkscrew/heartline comparator
     /*M_STATION*/  0.0f,
-    /*M_DIP*/      3.0f,
+    /*M_DIP*/      0.0f,   // water/siting conditional; report separately
     /*M_LAUNCH*/   0.0f,
-    /*M_HELIX*/    4.0f,
+    /*M_HELIX*/    8.0f,
     /*M_BOOST*/    0.0f,
-    /*M_IMMEL*/    4.0f,
-    /*M_SCURVE*/   6.0f,
+    /*M_IMMEL*/   13.0f,
+    /*M_SCURVE*/   3.0f,
     /*M_DIVE*/     4.0f,
-    /*M_BANKAIR*/  7.0f,
-    /*M_WAVE*/     4.0f,
-    /*M_STALL*/    4.0f,
-    /*M_DIVELOOP*/ 3.0f,
+    /*M_BANKAIR*/ 14.0f,
+    /*M_WAVE*/     5.0f,
+    /*M_STALL*/    1.0f,
+    /*M_DIVELOOP*/ 1.0f,
+    /*M_FLOATSTALL*/6.0f,
+    /*M_CUTBACK*/  6.0f,   // Tormenta's reversing fourth inversion
 };
 
-// Lap pacing by TIME (~130 s/lap): the lap closes at its ride-second budget
+// Research-calibrated occurrence rates per 60 seconds of active ride. These
+// are soft supply signals, not quotas. The live target grows continuously with
+// elapsed active time, so a postponed long act receives proportionally more
+// structure without a closing-time catch-up burst. Capped signatures saturate
+// at their physical per-act cap. A zero rate means conditional or
+// comparator-only punctuation: the subtype remains available through its share
+// and beat weights but is not forced into every ride.
+//
+// The rates are the equal-weight Falcon/Tormenta inventory normalized to the
+// 60-second Tormenta active run, then moderated by the 20% TURN-family target:
+// long hills and banked-air statements repeat; loop, CUTBACK, HELIX,
+// Immelmann and the secondary dive scale to about one per 120-135 s act.
+inline constexpr float SUBTYPE_RATE_PER_60S[M_COUNT] = {
+    /*M_FLAT*/      0.0f,
+    /*M_CLIMB*/     0.0f,   // count-ruled top hat
+    /*M_DROP*/      0.0f,   // physical helper/signature role
+    /*M_HILLS*/     1.10f,
+    /*M_TURN*/      0.65f,
+    /*M_LOOP*/      0.50f,
+    /*M_ROLL*/      0.0f,   // conditional modern comparator, not Tormenta supply
+    /*M_STATION*/   0.0f,
+    /*M_DIP*/       0.0f,   // only where real water is present
+    /*M_LAUNCH*/    0.0f,
+    /*M_HELIX*/     0.40f,
+    /*M_BOOST*/     0.0f,
+    /*M_IMMEL*/     0.50f,
+    /*M_SCURVE*/    0.0f,
+    /*M_DIVE*/      0.0f,   // first/secondary drops use physical DROP roles
+    /*M_BANKAIR*/   1.00f,
+    /*M_WAVE*/      0.0f,
+    /*M_STALL*/     0.0f,
+    /*M_DIVELOOP*/  0.0f,
+    /*M_FLOATSTALL*/1.0f,
+    /*M_CUTBACK*/   0.50f,
+};
+
+// A positive-rate subtype must average comfortably more than one occurrence
+// every two completed acts. This is a census acceptance floor, not a runtime
+// quota; physical siting and force windows remain authoritative.
+inline constexpr float SUBTYPE_MIN_OCCURRENCES_PER_ACT = 0.60f;
+inline constexpr float SUBTYPE_OCCURRENCE_BAND_LO = 0.65f;
+inline constexpr float SUBTYPE_OCCURRENCE_BAND_HI = 1.75f;
+
+// Lap pacing by TIME: the lap closes at its ride-second budget
 // rather than a feature count.  Backstops keep a pathological corridor from
 // running an unbounded lap (hard elems cap; +45 s launch-postpone window).
-// A full lap closes AT this budget, but hostile-terrain laps that spend their
-// escape budget force-launch early (30-85 s); centring the normal lap a little
-// above the 120 s midpoint keeps the census mean inside the [105,135] band
-// once those unavoidable short laps are averaged in.
+// TARGET_LAP_SECONDS remains the completion-safe closure mechanism; composition
+// quality is reviewed separately against the soft seed-mean band below.
 inline constexpr float TARGET_LAP_SECONDS       = 120.0f;
+// A physical launch can be a mid-course re-acceleration (Falcon's Flight has
+// three), so it only closes a statistical act after a complete Tormenta-scale
+// active run. Shorter launched passages remain part of the same ride.
+inline constexpr float MIN_COMPLETE_ACT_SECONDS = 60.0f;
+inline float subtypeTargetForSeconds(SegMode mode, float activeSeconds) {
+    if (mode < 0 || mode >= M_COUNT) return 0.0f;
+    const float rate = SUBTYPE_RATE_PER_60S[mode];
+    if (rate <= 0.0f) return 0.0f;
+    float target = rate * fmaxf(activeSeconds, 0.0f) /
+                   MIN_COMPLETE_ACT_SECONDS;
+    const int cap = SUBTYPE_LAP_CAP[mode];
+    if (cap != INT_MAX) target = fminf(target, (float)cap);
+    return target;
+}
+// Composition/pacing review target.  This is deliberately SOFT: generation
+// still closes on TARGET_LAP_SECONDS and the complete-act protection above;
+// census reports whether seed means cluster around the inspiration-pair
+// midpoint: Falcon's Flight's official 205 s ride and Tormenta's observed
+// roughly 60 s first-drop-to-final-brakes active run average to 132.5 s.
+inline constexpr float LAP_SOFT_MEAN_TARGET     = 132.5f;
+inline constexpr float LAP_SOFT_MEAN_LO         = 120.0f;
+inline constexpr float LAP_SOFT_MEAN_HI         = 145.0f;
 inline constexpr int   LAP_HARD_ELEM_CAP        = 44;
 inline constexpr float LAP_POSTPONE_SECONDS     = 45.0f;
 
@@ -437,11 +521,11 @@ inline constexpr float LAP_POSTPONE_SECONDS     = 45.0f;
 inline constexpr float REAL_ELEMENT_SECONDS[M_COUNT] = {
     /*M_FLAT*/     0.0f,
     /*M_CLIMB*/    9.0f,   // top hat profile
-    /*M_DROP*/     6.0f,
-    /*M_HILLS*/    5.0f,   // per lobe
+    /*M_DROP*/     0.0f,   // physical tag spans three roles; report separately
+    /*M_HILLS*/    6.5f,   // per lobe; Falcon uses drawn-out crests
     /*M_TURN*/     5.5f,
     /*M_LOOP*/     4.5f,
-    /*M_ROLL*/     2.8f,   // per revolution
+    /*M_ROLL*/     3.0f,   // per revolution
     /*M_STATION*/  0.0f,
     /*M_DIP*/      4.0f,
     /*M_LAUNCH*/   0.0f,
@@ -449,11 +533,13 @@ inline constexpr float REAL_ELEMENT_SECONDS[M_COUNT] = {
     /*M_BOOST*/    0.0f,
     /*M_IMMEL*/    5.0f,
     /*M_SCURVE*/   5.0f,
-    /*M_DIVE*/     0.0f,   // unknown -> skip
-    /*M_BANKAIR*/  4.0f,
-    /*M_WAVE*/     5.0f,
+    /*M_DIVE*/     4.5f,
+    /*M_BANKAIR*/  5.0f,
+    /*M_WAVE*/     6.5f,
     /*M_STALL*/    3.5f,
     /*M_DIVELOOP*/ 5.0f,
+    /*M_FLOATSTALL*/3.5f,
+    /*M_CUTBACK*/  0.0f,   // no published/POV-derived Tormenta traversal time
 };
 // DURATION LAW (user, 2026-07-21, supersedes the 0.9-1.0x spec): built mean
 // element duration ~0.75x of REAL_ELEMENT_SECONDS, and no element may AVERAGE
@@ -465,7 +551,7 @@ inline constexpr float REAL_DURATION_BIAS_HI = 0.85f;
 // band (ride_constants.h MIN_V/MAX_V mirror).  q = (genV-LO)/(HI-LO) is the
 // entry-speed percentile proxy used to place the scale-window draw centre.
 inline constexpr float SIZE_SPEED_LO_MPS = 42.0f;
-inline constexpr float SIZE_SPEED_HI_MPS = 89.0f; // mirrors ride_constants.h MAX_V (raised for the 320 km/h re-cruise plateau, 2026-07-23)
+inline constexpr float SIZE_SPEED_HI_MPS = 89.0f; // mirrors the highest ordinary authored-element entry band, not the 100 m/s station-launch peak
 
 // Act themes: each lap is one composed act with a rotating theme that biases
 // shares INSIDE their bands (weights, never gates).  Multipliers are bounded

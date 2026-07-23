@@ -512,8 +512,8 @@ Valley-seating agent (a07dfb38) DISPROVED the launch-siting premise: launches AL
 ROOT (final, 6-agent consensus): the eligibility desert = the **240 km/h AVERAGE target** (forceaudit avg≥230) vs the **2×-record felt-g entry windows** (≤75 m/s). Both are individually correct/realistic (windows = 2× real ~35 m/s element entries; avg = user target), but in TENSION: to average 240 the ride stays near-peak (~70 m/s) where elements can't fit → TURN-only → TURN 55.7% HIGH, HILLS/DROP/LOOP LOW. Real coasters do NOT average near peak (Falcon's Flight peaks 250 but averages ~110). The entry windows should NOT widen (elements at 270+ km/h are unreal). So the ONLY levers are USER DECISIONS: (1) LOWER the avg-speed target (e.g. 180-200) so the ride slows into element-eligible bands → shares rebalance naturally; or (2) accept the current shares as a physics consequence of the aggressive 240 target. A large composition-director rework (place elements only at speed dips) is the alternative but is big+risky. This is a TARGET decision, not a bug — surfaced to user.
 STATE: strong, all hard gates green (census complete min 55.5, force 2/2, joint 4/4, terrain GRADUATED, water 11.7%, cliffsites PASS, airtime 11/11 eject). Remaining soft reds (shares, fallback, overlap) all = this tension. Water-high + corkscrew are landable but trade overlap. Producing GPU gallery (Phase-7 acceptance deliverable) for user visual sign-off.
 
-## 2026-07-23 — SPEED RETUNE MEGA-SESSION (boost 320, g-overage windows, organic sheds, budget decouple, DIVELOOP revival)
-USER DIRECTIVES (this session, binding): boost re-cruise 320 km/h / launch unchanged 360 km/h
+## 2026-07-23 — HISTORICAL 320 KM/H EXPERIMENT (superseded by current calibration below)
+DIRECTIVES RECORDED AT THAT POINT: boost re-cruise 320 km/h / launch unchanged 360 km/h
 (1.28x/1.44x the 250 km/h Falcon's Flight record); average speed floor stays >=240 km/h (not
 relaxed); per-element felt-g overage 1.10 on TOP of the existing 2x-record cap, both lobes,
 provided the overage is genuinely SPEED-caused through law-sized geometry — radii are NEVER
@@ -587,3 +587,121 @@ Hard 3-consecutive banked bound in eligibleElem MEASURED: breaks completion (com
 - initStall (coaster_track.cpp:3109) already builds a speed-invariant quartic zero-g hump; the inversion is ONLY the `roll = 2*PI*c3Ease(...)` loop over spatialUps (~3187): the variant skips that loop (ups stay orthoUp(tangent, WUP)) = FF's airtime stall exactly. Hot-band eligible at ANY speed (same invVMax 89 as STALL), pure airtime, breaks banked chains organically where the bound could not.
 - Implement as NEW subtype M_FLOATSTALL (diversity goal wants separate identity): touch SegMode enum + M_COUNT tables (SUBTYPE_LAP_CAP: 1/lap; SHARE_TARGET ~3; REAL_ELEMENT_SECONDS ~3.5 like STALL), GEN_NM, isBudgetInversion NO (not an inversion at all), airtime family grouping in census time-share + family share, offer path next to M_STALL in chooseElement/pickElement pool, REFERENCES row (Falcon's Flight airtime stall, Coaster101 2026 review). Alternatively (cheaper if enum ripple too risky): variant flag on M_STALL with 2/lap cap split 1 inverting + 1 non-inverting — decide in implementation.
 Current tree (this commit): reverted bound verified — census-4 complete=yes min 86.9 mean 113.9 IN, forceaudit 2/2 (5 PASS lines incl continuity). QUEUE after float-stall: off-axis airtime hill (Velo; HILLS variant with lateral tilt), overbank >90 (banked family — adds VARIETY not share; keep family count flat), scaling-naturalness review, presence rules, cohesion pass, composition retarget, seed-mean lap 102.5 soft band.
+
+## 2026-07-23 — SIGNATURE DIVERSITY / FLOW QUEUE IMPLEMENTED (VM gates pending)
+
+IMPLEMENTED IN THE CURRENT WORKTREE:
+- `M_FLOATSTALL` is a distinct non-inversion subtype with cap 1/act, 6% share target, 1.00/min soft supply and 3.5 s whole-element duration reference. `initStall(false)` uses the exact existing force-derived quartic stall centreline and skips only the 360-degree rider-frame roll. It is hot-band eligible and is the organic breaker after two genuinely banked features.
+- Off-axis airtime is an internal `M_HILLS` variant: one similarity lambda owns record height, plan length and sweep radius; nearest-span quantisation stays within half a segment. It has dense curved terrain/occupancy checks, the stretched force/lateral envelope, and a short final-heading terrain+occupancy runout gate. A failed variant restores the full cursor/RNG/run state before the unchanged 2-lobe then 1-lobe ordinary hill path.
+- Overbank is an internal `M_TURN` frame variant: unchanged centreline/share/count, 95-115 degree C3 bank pulse, shared roll-rate/roll-acceleration governors, and local force/lateral gate. Short ordinary turns are not lengthened or tightened to manufacture >90 degrees. Only a turn with enough natural roll time enters the frame attempt; a deterministic one-in-four feasible opportunity keeps organic variants reproducible without consuming RNG or forcing extra TURN selections. A frame miss reuses the same selected centreline with ordinary felt bank, so it cannot trigger a second routing/share decision.
+- Presence is soft and auditable: one phase-compatible themed attempt/lap, attempts separate from successes, no repeated parent-mode forcing after a miss. Systemic absence of FLOATSTALL/OFFAXIS/OVERBANK across a multi-seed census is a failure; an individual lap miss remains report-only.
+- Flow/cohesion: RUSH is one statement, then inversion, breath, and airtime/finale progression; off-beat chain breakers do not consume the active scripted slot; adjacent act themes cannot repeat; finale empty-pool scans relax once instead of churning five identical passes. HILLS/FLOATSTALL own the bunny-run finale preference.
+- Bank monotony is measured by a separate cross-family `bankedRun`; after two banked features the director strongly prefers an upright/non-inversion feature without banning the only buildable hot-corridor family. Census reports maximum banked run and includes off-axis HILLS in rider-facing banked exposure.
+- Composition was subsequently recalibrated from the equal-weight primary pair; see `CURRENT COMPOSITION CALIBRATION` below for the live family/subtype targets and 132.5 s soft mean.
+- Scaling-naturalness review is recorded in `docs/REAL_WORLD_REFERENCES.md`: ROLL axial timing, TURN shoulders and IMMEL exit sweep remain physics/comfort transitions rather than independently stretched record dimensions; FLOATSTALL retains its force-derived law; OFFAXIS uses strict similarity scaling.
+
+FAILURE-AUDIT RESULT:
+- Nested `TxnGuard` rollback covers RNG, counters, scale stats, banked-run state, flags, publication IDs and spatial/analytic run tails; no variant state leaks into ordinary generation.
+- Avoidable false rejection was removed from FLOATSTALL's old 26-span inversion funnel and OFFAXIS's unrelated 420 m straight-terrain probe.
+- Census now exposes attempts/builds, signature misses, peak overbank, maximum banked run, phase-drop picks and dead variants, so a fallback-to-ordinary path cannot look like successful signature delivery.
+
+VERIFICATION STATUS (current local MSVC Release run):
+- `--census 8`: exit 0, complete=yes, 24 acts, mean 138.0 s, min 120.1 s,
+  max 213.8 s; all positive-rate subtype occurrence gates pass; every seed is
+  at or below the 25% TURN-family ceiling. Controlled count mix is TURN 23.8%,
+  AIRTIME 42.4%, INVERSION 27.6%, HELIX 6.2%. CUTBACK builds 16 times
+  (0.67/act, 5.0% count share, inside its 4.5-8.1% band); comparator ROLL is
+  zero, so the new subtype does not add a second inversion supply stream.
+  Whole-element traversal is separate: authored TURN 10.4%, routing TURN
+  10.6%, airtime family 22.8%, inversion family 10.2%. Screen-bank exposure is
+  17.2% at >=30 degrees and only 0.57% above 90 degrees.
+- No forced closes. The cutback routing butterfly leaves a reported soft debt:
+  two occupancy-off escape publications and eight 2-6 m reduced-clearance
+  picks across 24 acts. The independent overlap audit still finds zero actual
+  pairs below 2 m (minimum 2.89 m), so this is not hidden or reclassified as a
+  hard pass; the fallback target remains red.
+- Placement thirds disprove a TURN-cap front-load: TURN rises 19.0% -> 21.9%
+  -> 28.0% across the act. STALL is the only >65% warning (12/12 in the first
+  third), caused by its physical hot-entry window. A 40%-of-act eligibility
+  gate was tested and reverted: it moved the warning to CUTBACK (68%), pushed
+  HELIX below band and increased occupancy-off escapes, so the coupled window
+  debt is reported rather than hidden behind another local gate.
+- `--forceaudit 4`: PASS after lengthening every climbing last-resort stub from
+  the same speed-derived seam law. The old >90 m/s condition missed 75-80 m/s
+  ROLL/FLOATSTALL handoffs and allowed +/-18-19 g four-span lift-out seams.
+  Current four-seed extrema are -6.26..+13.05 g vertical and 6.39 g lateral;
+  continuity passes on every seed.
+- `--forceaudit` now measures true rider-frame low-g exposure at 120 Hz instead
+  of treating the AIRTIME family count or whole-element duration as airtime.
+  Across eight seeds, a 132.5 s normalized run contains 8.01 s below +0.25 g
+  and 7.45 s below 0 g from the intentional HILLS/BANKAIR/FLOATSTALL family.
+  That is inside the researched Falcon's Flight/Tormenta blend, so no extra
+  non-airtime element, supply cut, or dilution cap was added. Total low-g
+  exposure is printed separately because launch-hill CLIMB/DROP and connective
+  crests also unload the rider without being selected airtime elements.
+- The wider `--forceaudit 8` diagnostic is not fully green: seeds 7 and 8 have
+  long low-speed periods in their continuous 200 s streaming traversals, and
+  seed 8 also exposes a FLAT-tag continuity spike. The established four-seed
+  force/continuity gate remains green and census-8 completes all 24 acts, but
+  this wider pacing/streaming debt is recorded rather than hidden by changing
+  airtime supply or by raising the emergency-boost trigger.
+- `--elementaudit 8`: PASS, generation failures 0, HILLS entry misses 0.
+  CUTBACK builds 11 natural occurrences averaging 397.5 m / 6.18 s, with hard
+  +0.46..+8.60 g vertical and -5.09..+4.37 g lateral. Forced CUTBACK traversal
+  builds 14 occurrences and also passes; finalized topology remains owned by
+  `--v1issues` because streaming correctly prunes already-ridden SpatialRuns.
+- `--jointaudit 4`: PASS. `--overlap 4`: PASS with zero pairs below 2 m
+  (minimum 2.89 m; 30 advisory pairs below 6 m). `--terrainaudit`: GRADUATED.
+  `--waterfrac`: 11.7%.
+  `--cliffsites 4`: PASS. `--cliffaudit`: optional set piece correctly skipped
+  where the gate-safe approach cannot be built. `--launchaudit`: station
+  360 km/h and booster 250 km/h both PASS.
+
+## CURRENT COMPOSITION CALIBRATION (supersedes earlier WIP values)
+
+- Frequency uses a **60-second active-run normalization**. Positive-rate
+  subtypes scale continuously with elapsed act time and must average at least
+  0.60 occurrences per completed act in census; this eliminates supply elements
+  that appear only once every two rides without closing-time catch-up insertion.
+- Equal primary weight is assigned to Falcon's Flight and Tormenta Rampaging
+  Run. Intamin's official Falcon duration is approximately 205 s; Tormenta's
+  observed first-drop-to-final-brakes active run is approximately 60 s, giving
+  the 132.5 s soft mean used for composition review.
+- Controlled family count targets are AIRTIME 45%, INVERSION 27%, TURN 20% and
+  HELIX 8%. The TURN family hard-fails above 25% on any census seed. `DROP` and
+  `DIP` are not target families: DROP is mixed recovery/top-hat/cliff physical
+  infrastructure and DIP is water-sited helper punctuation.
+- Tormenta's exact inversion inventory is two Immelmanns, one loop and one
+  cutback. `M_CUTBACK` is appended after every preserved legacy enum tag and
+  owns one immutable exact-derivative reversing `SpatialRun`; `M_ROLL` remains
+  only a late CLASSIC corkscrew/heartline fallback when no cutback has built.
+  The former ROLL 6%/0.50-min
+  supply moved intact to CUTBACK, so the controlled partition remains exactly
+  100% and inversion supply is not inflated. The cutback has no invented
+  record scale or real-duration reference: Tormenta's published 179 ft figure
+  belongs to its separate loop.
+- Cutback verification: finalized geometry audit observed five resident runs
+  across eight seeds with 179.2-180.0 degree tangent reversal, inverted
+  crest-up dot -1.000, and 0.0-0.1 degree mirrored-frame error. The fixed
+  1.25 m centreline-mirror tolerance is about 0.3% of a 400 m run and absorbs
+  equal-arc/septic resampling only. Final natural element audit built 11 runs
+  with hard vertical +0.46..+8.60 g and lateral -5.09..+4.37 g; the forced
+  traversal audit built 14 with +0.16..+9.40 g and -5.03..+5.54 g, all inside
+  the -7.15/+13.2/6.6 envelope.
+- In-course boosts are 250 km/h; only the station launch reaches 360 km/h.
+  Earlier 320 km/h notes describe a reverted experiment that created an
+  element-eligibility desert.
+- Airtime-family count share and whole-element traversal time are separate
+  metrics. Neither is true time below 1 g; true airtime must not be inferred
+  from the family percentage.
+- Reduced-clearance connectors are classified by their measured clearance, not
+  by the search tier. The completed-boundary state bug that republished only the
+  first span of continuation chains is fixed; occupancy-off clips remain a hard
+  audit concern rather than being relabelled.
+
+## FUTURE STANDALONE PRESENTATION PROJECTS (user-flagged 2026-07-23)
+
+- **Sound/audio overhaul:** runtime audio is disabled in `src/main.cpp` for now. Rebuild wind, lift/track clacks, launch transients, terrain/tunnel acoustics, mixing, and accessibility controls as one coherent later project instead of extending the placeholder procedural sounds.
+- **Shader/lighting rewrite:** retain the previously flagged clean rewrite; do not patch the current pipeline piecemeal.
+- **Graphics/art-direction overhaul:** treat materials, environment dressing, effects, UI, and the wider presentation language as a dedicated project.
+- **Model/asset overhaul:** replace or comprehensively revise coaster, train, station, support, terrain-prop, and scenery models in one coordinated asset pass.

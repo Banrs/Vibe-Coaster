@@ -786,6 +786,8 @@ struct GenCursor {
     float   turnExitDelta = 0.0f;
     float   turnShoulderFrac = 0.22f;  // speed-scaled TURN entry/exit ease (see turnShoulder / TURN_SHOULDER_*); in GenCursor so a rolled-back transaction restores it with turnMag
     bool    terrainAvoidanceTurn = false;
+    bool    turnOverbank = false;
+    float   turnOverbankPeak = 0.0f;
     float   bankT   = 0.6f;
     float   bankBase = 1.0f;   // FRACTION of the full heartline lean this element actually banks: 1.0 = fully heartlined (all lateral load rotates into the seat -- hard turns/helix); <1 = deliberately UNDER-banked so the rider keeps some felt-lateral (airtime hills ~0.2, S-curve ~0.4). bankT then adds OVER-bank past that toward inversion for signature elements.
     float   hillTurn = 0;
@@ -799,6 +801,21 @@ struct GenCursor {
     // a rolled-back trial restores them exactly.
     float   lapRideSeconds = 0.0f;
     float   completedLapSeconds = 0.0f;
+    // Authored time and connective time are separate axes. A terrain-routing
+    // curve may carry the M_TURN render/physics tag, but it is not an authored
+    // TURN-family statement and must not inflate that duration.
+    float   lapRoutingTurnSeconds = 0.0f, completedRoutingTurnSeconds = 0.0f;
+    float   lapConnectorSeconds = 0.0f, completedConnectorSeconds = 0.0f;
+    // Actual rider-frame exposure, measured from the emitted rail frame rather
+    // than inferred from element labels. This lets the screen-comfort audit
+    // distinguish an exciting brief bank from a long horizon-tilted sequence.
+    float   lapBankedSeconds = 0.0f, completedBankedSeconds = 0.0f;
+    float   lapOverbankSeconds = 0.0f, completedOverbankSeconds = 0.0f;
+    // M_DROP is a physical tag shared by three semantic roles. Keep the tag
+    // stable for rendering/audits while splitting its timing and occurrence.
+    float   lapRecoveryDropSeconds = 0.0f, completedRecoveryDropSeconds = 0.0f;
+    float   lapTopHatDescentSeconds = 0.0f, completedTopHatDescentSeconds = 0.0f;
+    float   lapCliffDiveSeconds = 0.0f, completedCliffDiveSeconds = 0.0f;
     // Phase 5X top-hat exit-clearance log.  Fixed POD arrays keep GenCursor
     // trivially snapshot-copyable (a rolled-back trial's records vanish, a
     // committed top hat's persist).  Report-only: never gates completion.
@@ -812,6 +829,12 @@ struct GenCursor {
     float   topHatFollowDist = 0.0f;  // metres walked since the followed top hat's hand-off
     int     lapElemCount[M_COUNT] = {0};
     int     completedElemCount[M_COUNT] = {0};
+    int     lapRecoveryDropCount = 0, completedRecoveryDropCount = 0;
+    int     lapCliffDiveCount = 0, completedCliffDiveCount = 0;
+    // Authored occurrence distribution by lap-time third. This exposes
+    // front-loaded quota/cap effects without changing generation.
+    int     lapFeatureThird[3][M_COUNT] = {};
+    int     completedFeatureThird[3][M_COUNT] = {};
     // SIZE-SPECTRUM / DURATION LAW instrumentation (2026-07-21): planned ride
     // seconds split per tag (same ds/genV law as lapRideSeconds), the per-tag
     // peak height above local ground, and a 25 m-bucket histogram of control-
@@ -857,8 +880,71 @@ struct GenCursor {
                   windowCount[M_DIVE] + windowCount[M_WAVE];
         return 100.0f * (float)fam / (float)recentCount;
     }
+    bool prospectiveTurnFamilyOver(float ceiling) const {
+        int count = windowCount[M_TURN] + windowCount[M_SCURVE] +
+                    windowCount[M_DIVE] + windowCount[M_WAVE];
+        int denominator = recentCount;
+        if (recentCount == genc::SHARE_WINDOW) {
+            const unsigned char old = recentTags[recentHead];
+            if (old == M_TURN || old == M_SCURVE ||
+                old == M_DIVE || old == M_WAVE)
+                count--;
+        } else {
+            denominator++;
+        }
+        count++;
+        return denominator > 0 &&
+               100.0f * (float)count / (float)denominator > ceiling;
+    }
+    bool prospectiveRideTurnFamilyOver(float ceiling) const {
+        long total = 0;
+        for (int m = 0; m < M_COUNT; ++m) total += rideElemCount[m];
+        const long turns = rideElemCount[M_TURN] + rideElemCount[M_SCURVE] +
+                           rideElemCount[M_DIVE] + rideElemCount[M_WAVE];
+        return 100.0 * (double)(turns + 1) /
+               (double)(total + 1) > ceiling;
+    }
+    float windowShareFamily(int family) const {
+        if (!recentCount) return 0.0f;
+        int count = 0;
+        switch (family) {
+            case 1:
+                count = windowCount[M_LOOP] + windowCount[M_ROLL] +
+                        windowCount[M_IMMEL] + windowCount[M_STALL] +
+                        windowCount[M_DIVELOOP] + windowCount[M_CUTBACK];
+                break;
+            case 2:
+                count = windowCount[M_HILLS] + windowCount[M_BANKAIR] +
+                        windowCount[M_FLOATSTALL];
+                break;
+            case 3:
+                return windowShareFamilyBanked();
+            case 4:
+                count = windowCount[M_DIP];
+                break;
+            case 5:
+                count = windowCount[M_HELIX];
+                break;
+            default:
+                return 0.0f;
+        }
+        return 100.0f * (float)count / (float)recentCount;
+    }
     int     lapTopHatCount = 0;
     int     completedTopHatCount = 0;
+    int     lapOffAxisCount = 0, completedOffAxisCount = 0;
+    int     lapOverbankCount = 0, completedOverbankCount = 0;
+    float   lapOverbankPeakDeg = 0.0f, completedOverbankPeakDeg = 0.0f;
+    enum SignatureMask : unsigned char {
+        SIG_NONE = 0, SIG_OFFAXIS = 1, SIG_OVERBANK = 2, SIG_FLOATSTALL = 4
+    };
+    unsigned char lapSignatureMask = SIG_OFFAXIS;
+    unsigned char completedSignatureMask = SIG_NONE;
+    // Presence is deliberately soft: each themed lap gets one compatible
+    // signature attempt.  Keeping attempts separate from successful counts
+    // exposes geometry misses without repeatedly forcing the parent mode.
+    unsigned char lapSignatureAttemptMask = SIG_NONE;
+    unsigned char completedSignatureAttemptMask = SIG_NONE;
     // Phase 7 (spec §1.6): cliff-dive set piece is COUNT-RULED (<=1 per act,
     // modeled on the top-hat rule), reset in chooseActTheme. Per-built-dive
     // stats (spec §1.5) are recorded here for --cliffaudit and the census
@@ -964,6 +1050,12 @@ struct GenCursor {
     // could not find a >=2 m heading.
     unsigned escapeClipPublished = 0;
     unsigned variantPicks = 0;
+    unsigned phaseDropPicks = 0;  // active beat had no physically eligible candidate
+    int selectedPickRelax = 0;    // committed-pick accounting; failed draws do not count
+    bool selectedTurnCeilingOverride = false;
+    bool allowTurnCeilingOverrideOnce = false;
+    unsigned turnCeilingOverrides = 0;
+    unsigned hotCruiseRuns = 0;   // full-envelope connective energy-management runs
     // Transient: the true min clearance (to committed occupancy, recent-arc
     // excluded) of the escape geometry just committed by commitEscapeArc.  Used
     // by escapeForward to classify the commit by its ACTUAL clearance rather
@@ -971,6 +1063,10 @@ struct GenCursor {
     float escapeCommitClearance = 0.0f;
     int escapesSinceLaunch = 0;
     int lapShedCount = 0;   // post-boost speed-shed climbs committed this lap (bounded to protect station/launch siting)
+    enum class DropExposureRole : unsigned char {
+        None, Recovery, CliffDive
+    };
+    DropExposureRole activeDropExposure = DropExposureRole::None;
     unsigned schedulerExhaustions = 0;
     bool boundaryTransactionActive = false;
     float   genV      = V1_PROPULSION.targetSpeed;
@@ -978,6 +1074,7 @@ struct GenCursor {
     int     hardInvCount = 0;
     unsigned char beat = BEAT_RUSH;
     int beatFeatureCount = 0;
+    int lapRushStatements = 0;
     int lapInversionChains = 0;
     float rollHand = 0.0f;   // handedness of the last corkscrew (doubles continue it)
     float   lastBoostArc = 0.0f;
@@ -988,6 +1085,8 @@ struct GenCursor {
     float   connEndY = 0.0f;
     SegMode lastElem = M_FLAT, prevElem = M_FLAT;
     int familyRun = 0;   // consecutive committed features from one family
+    int bankedRun = 0;   // consecutive genuinely banked features across family boundaries
+    int lapMaxBankedRun = 0, completedMaxBankedRun = 0;
     SegMode launchElem = M_CLIMB;
     CommittedTrack::MacroProfileKind macroKind = CommittedTrack::MACRO_NONE;
     v1profile::Profile macroProfile{};
@@ -1011,6 +1110,7 @@ struct GenCursor {
     int     hillLen = 6;
     float   hillH = 16.0f;
     int     hillBumps = 1;
+    bool    hillOffAxis = false;
     int     dipLen = 6;
     float   dipEntryY = 0, dipExitY = 0;
     float   dipTargetY = 0;

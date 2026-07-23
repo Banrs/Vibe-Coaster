@@ -83,6 +83,12 @@ constexpr float LOOP_PLANAR_TOLERANCE_M  = 0.75f;
 constexpr float LOOP_REFERENCE_PLAN_M    = 124.02636f;
 constexpr float LOOP_REFERENCE_RAIL_M    = 185.38566f;
 constexpr float LOOP_SCALE_MATCH_MAX     = 0.03f;
+// Equal-arc resampling and septic evaluation can leave about one metre of
+// absolute mirrored-point residual across a ~400 m cutback even though the
+// analytic halves are exact mirrors. 1.25 m is ~0.3% of that rail length:
+// tight enough to reject a materially asymmetric second half without treating
+// evaluator quantisation as authored shape.
+constexpr float CUTBACK_MIRROR_TOLERANCE_M = 1.25f;
 
 // drawVBent's first helix outrigger reaches 6 m radially and protects a 1.85 m
 // swept train envelope.  Keeping the next coil outside that complete corridor
@@ -204,6 +210,7 @@ struct SeedMetric {
     int loopRuns = 0, badLoops = 0;
     int immelRuns = 0, badImmels = 0;
     int rollRuns = 0, badRolls = 0;
+    int cutbackRuns = 0, badCutbacks = 0;
     int hillRuns = 0, badHills = 0, hillLobes = 0, badHillLobes = 0;
     int helixRuns = 0, badHelixes = 0;
     int waveRuns = 0, badWaves = 0;
@@ -219,6 +226,9 @@ struct SeedMetric {
     float minRollExcursion = 0.0f, minRollTwist = 0.0f;
     float minRollInwardAlignment = 0.0f;
     unsigned rollHandMask = 0;
+    float minCutbackReversal = 0.0f, maxCutbackSymmetryError = 0.0f;
+    float maxCutbackFrameSymmetryError = 0.0f;
+    float maxCutbackCrestUp = -1.0f;
     MetricRange dimension[DIMENSION_METRIC_COUNT]{};
     float maxHelixEndpointRate = 0.0f, maxHelixEndpointAccel = 0.0f;
     float minBankAirOverlap = 0.0f;
@@ -251,7 +261,8 @@ static bool operational(unsigned char tag) {
 }
 
 static bool authoredInversion(unsigned char tag) {
-    return tag == M_LOOP || tag == M_ROLL || tag == M_IMMEL || tag == M_STALL ||
+    return tag == M_LOOP || tag == M_ROLL || tag == M_IMMEL ||
+           tag == M_CUTBACK || tag == M_STALL ||
            tag == M_DIVELOOP;
 }
 
@@ -850,7 +861,8 @@ static std::vector<ElementRange> namedRanges(const std::vector<Sample> &v) {
         // absent nor defective, so only complete interior instances are eligible.
         if (a > 0 && b < (int)v.size() &&
             (tag == M_LOOP || tag == M_IMMEL || tag == M_ROLL ||
-             tag == M_HILLS || tag == M_HELIX || tag == M_BANKAIR ||
+             tag == M_CUTBACK || tag == M_HILLS || tag == M_HELIX ||
+             tag == M_BANKAIR ||
              tag == M_WAVE) && b - a >= 8)
             out.push_back({a, b - 1, tag});
         a = b;
@@ -1292,6 +1304,94 @@ static void inspectNamedElements(const Track &t, const std::vector<Sample> &v,
                   tangentTurn < 135.0f || totalRoll < 125.0f ||
                   overlap < 10.0f || seams > 0;
             if (bad) ++m.badImmels;
+        } else if (r.tag == M_CUTBACK) {
+            const int previousRuns = m.cutbackRuns++;
+            const Track::SpatialRun *spatial = elementSpatialRun(t, v, a, b);
+            const CurveDimensions dimensions = spatialDimensions(t, spatial);
+            const EndpointFrameMetric endpoint = endpointFrameMetric(t, spatial);
+            float reversal = 0.0f, symmetryError = INFINITY;
+            float frameSymmetryError = INFINITY, crestUpDot = 1.0f;
+            bool exact = false;
+            if (spatial) {
+                const int spans = (int)spatial->points.size() - 1;
+                exact = spans > 0 &&
+                    (int)spatial->spanD1A.size() == spans &&
+                    (int)spatial->spanD2A.size() == spans &&
+                    (int)spatial->spanD3A.size() == spans;
+                const Vector3 entryT = spatialTangent(t, *spatial, 0.0f);
+                const Vector3 exitT = spatialTangent(t, *spatial, (float)spans);
+                reversal = vectorAngleDegrees(entryT, exitT);
+                const Vector3 origin = t.spatialRunPos(*spatial, 0.0f);
+                const Vector3 finish = t.spatialRunPos(*spatial, (float)spans);
+                Vector3 forward = entryT; forward.y = 0.0f;
+                forward = Vector3Normalize(forward);
+                const Vector3 side = Vector3Normalize(
+                    Vector3CrossProduct(WUP, forward));
+                const Vector3 endDelta = Vector3Subtract(finish, origin);
+                symmetryError = 0.0f;
+                frameSymmetryError = 0.0f;
+                for (int i = 0; i <= 32; ++i) {
+                    const float q = 0.5f * i / 32.0f;
+                    const float da = spans * q, db = spans * (1.0f - q);
+                    const Vector3 pa = Vector3Subtract(
+                        t.spatialRunPos(*spatial, da), origin);
+                    const Vector3 pb = Vector3Subtract(
+                        t.spatialRunPos(*spatial, db), origin);
+                    const float alongError = fabsf(
+                        Vector3DotProduct(pa, forward) -
+                        Vector3DotProduct(pb, forward));
+                    const float sideError = fabsf(
+                        Vector3DotProduct(pa, side) +
+                        Vector3DotProduct(pb, side) -
+                        Vector3DotProduct(endDelta, side));
+                    const float heightError = fabsf(pa.y - pb.y);
+                    symmetryError = fmaxf(symmetryError,
+                        fmaxf(alongError, fmaxf(sideError, heightError)));
+                    auto frameRoll = [&](float d) {
+                        const Vector3 tangent = spatialTangent(t, *spatial, d);
+                        const Vector3 upright = orthoUp(tangent, WUP);
+                        const Vector3 localSide = Vector3Normalize(
+                            Vector3CrossProduct(upright, tangent));
+                        const Vector3 actual = orthoUp(
+                            tangent, t.spatialRunUp(*spatial, d));
+                        return atan2f(Vector3DotProduct(actual, localSide),
+                                      Clamp(Vector3DotProduct(actual, upright),
+                                            -1.0f, 1.0f)) * RAD2DEG;
+                    };
+                    const float rollA = frameRoll(da), rollB = frameRoll(db);
+                    frameSymmetryError = fmaxf(frameSymmetryError,
+                        fabsf(fabsf(rollA) - fabsf(rollB)));
+                }
+                const float crest = 0.5f * spans;
+                const Vector3 crestT = spatialTangent(t, *spatial, crest);
+                crestUpDot = Vector3DotProduct(
+                    orthoUp(crestT, t.spatialRunUp(*spatial, crest)), WUP);
+            }
+            if (!previousRuns) m.minCutbackReversal = reversal;
+            else m.minCutbackReversal =
+                fminf(m.minCutbackReversal, reversal);
+            m.maxCutbackSymmetryError =
+                fmaxf(m.maxCutbackSymmetryError, symmetryError);
+            m.maxCutbackFrameSymmetryError =
+                fmaxf(m.maxCutbackFrameSymmetryError, frameSymmetryError);
+            m.maxCutbackCrestUp = fmaxf(m.maxCutbackCrestUp, crestUpDot);
+            float seamSeverity = 0.0f;
+            const int seams = internalSeamEvents(v, a, b, seamSeverity);
+            // Topology, not an invented record dimension: one exact C3 run,
+            // mirrored centreline and reversed roll, inverted at the crest,
+            // neutral at both ends, exiting opposite the entry direction.
+            const float rise = dimensions.maximumY - dimensions.minimumY;
+            bad = !spatial || !exact || !dimensions.valid || !endpoint.valid ||
+                  dimensions.headingSweep < 170.0f * DEG2RAD ||
+                  dimensions.headingSweep > 190.0f * DEG2RAD ||
+                  reversal < 175.0f || rise < 25.0f || rise > 50.0f ||
+                  crestUpDot > -0.98f ||
+                  symmetryError > CUTBACK_MIRROR_TOLERANCE_M ||
+                  frameSymmetryError > 2.0f ||
+                  endpoint.maximumRate > ENDPOINT_ROLL_RATE_MAX ||
+                  endpoint.maximumAcceleration > ENDPOINT_ROLL_ACCEL_MAX ||
+                  seams > 0;
+            if (bad) ++m.badCutbacks;
         } else if (r.tag == M_ROLL) {
             const int previousRuns = m.rollRuns++;
             const Track::SpatialRun *spatial = elementSpatialRun(t, v, a, b);
@@ -1398,6 +1498,34 @@ static void inspectNamedElements(const Track &t, const std::vector<Sample> &v,
             if (bad) ++m.badRolls;
         } else if (r.tag == M_HILLS) {
             ++m.hillRuns;
+            const Track::SpatialRun *offAxis = elementSpatialRun(t, v, a, b);
+            if (offAxis) {
+                const CurveDimensions dimensions = spatialDimensions(t, offAxis);
+                const float rise = dimensions.maximumY - offAxis->points.front().y;
+                const float referenceRadius =
+                    Track::HILL_REFERENCE_LOBE_PLAN / (30.0f * DEG2RAD);
+                const float riseScale = rise / Track::AIRTIME_RECORD_HEIGHT;
+                const float planScale = dimensions.planLength /
+                                        Track::HILL_REFERENCE_LOBE_PLAN;
+                const float radiusScale = dimensions.meanRadius / referenceRadius;
+                const float uniformError = fmaxf(fabsf(riseScale - planScale),
+                                                  fabsf(riseScale - radiusScale));
+                const int previousLobes = m.hillLobes++;
+                bool runBad =
+                    !dimensions.valid ||
+                    badDimension(m.dimension[HILL_RISE], previousLobes, rise,
+                                 Track::AIRTIME_RECORD_HEIGHT, 0.05f) |
+                    badDimension(m.dimension[HILL_PLAN], previousLobes,
+                                 dimensions.planLength,
+                                 Track::HILL_REFERENCE_LOBE_PLAN, 0.05f) |
+                    !dimensionBand(dimensions.meanRadius, referenceRadius, 0.05f) ||
+                    uniformError > LOOP_SCALE_MATCH_MAX;
+                if (runBad) {
+                    ++m.badHillLobes;
+                    ++m.badHills;
+                }
+                continue;
+            }
             uint32_t runId = 0;
             for (int i = a; i <= b && !runId; ++i)
                 if (v[i].macroKind == Track::MACRO_HILLS) runId = v[i].runId;
@@ -1816,7 +1944,7 @@ static SeedMetric inspectSeed(int seed) {
     m.hard += m.planBursts;
     m.hard += m.bankGaps + m.badHats + m.subterranean + m.continuityBreaks +
               m.directionSnaps + m.elevatedFlats + m.gaps;
-    m.hard += m.badLoops + m.badImmels + m.badRolls + m.badHills +
+    m.hard += m.badLoops + m.badImmels + m.badRolls + m.badCutbacks + m.badHills +
               m.badHelixes + m.badWaves + m.badBankAirs;
     m.hard += m.badPoweredBlocks + m.orphanPoweredTags +
               m.cadenceEarly + m.cadenceLate;
@@ -1826,7 +1954,7 @@ static SeedMetric inspectSeed(int seed) {
 }
 
 static const char *tagName(unsigned char tag) {
-    static const char *names[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP"};
+    static const char *names[M_COUNT] = {"FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP","FLOATSTALL","CUTBACK"};
     return tag < M_COUNT ? names[tag] : "?";
 }
 
@@ -1859,11 +1987,27 @@ static void printLoci(const SeedMetric &m) {
 
 } // namespace
 
+bool auditCutbackTopology(const Track &t, int &runs, int &badRuns) {
+    SeedMetric metric;
+    std::vector<Sample> samples = sampleFinal(t);
+    inspectNamedElements(t, samples, metric);
+    runs += metric.cutbackRuns;
+    badRuns += metric.badCutbacks;
+    if (metric.cutbackRuns) {
+        printf("[cutback-topology] runs=%d bad=%d reversal>=%.2fdeg "
+               "mirrorErr<=%.3fm frameMirrorErr<=%.3fdeg crestUp<=%.4f\n",
+               metric.cutbackRuns, metric.badCutbacks,
+               metric.minCutbackReversal, metric.maxCutbackSymmetryError,
+               metric.maxCutbackFrameSymmetryError, metric.maxCutbackCrestUp);
+    }
+    return metric.cutbackRuns > 0 && metric.badCutbacks == 0;
+}
+
 int run(int seeds) {
     seeds = Clamp(seeds, 1, 64);
     const uint32_t savedRng = g_rng;
     int failedSeeds = 0, defects = 0;
-    int namedRuns[7]{}, namedBad[7]{};
+    int namedRuns[8]{}, namedBad[8]{};
     unsigned rollHandMask = 0;
     printf("=== V1 finalized geometry audit (%d seed%s) ===\n", seeds, seeds == 1 ? "" : "s");
     printf("[power-contract] 360km/h at 1.5x Do-Dodonpa; driven rail pitch<=%.2fdeg "
@@ -1894,6 +2038,7 @@ int run(int seeds) {
                "named=L%d/%d(near=%.1fm asp=%.2f crown=%.1fm R/H=%.2f kramp=%.2f lat=%.1fm scale=%.3f apex=%.1fdeg) "
                "I%d/%d(rise=%.0fm turn=%.0fdeg twist=%.0fdeg seam=%.2f ov=%.1fm end=%.2f/%.3f) "
                "R%d/%d(exc=%.1fm twist=%.0fdeg inward=%.3f hand=%u) "
+               "C%d/%d(rev=%.1fdeg sym=%.2fm frame=%.1fdeg crestUp=%.3f) "
                "H%d/%d(lobes=%d/%d rise=%.0f..%.0fm plan=%.0f..%.0fm rail=%.0f..%.0fm crownR=%.1f..%.1fm) "
                "X%d/%d(drop=%.0f..%.0fm rev=%.2f..%.2f R=%.0f..%.0fm plan=%.0f..%.0fm rail=%.0f..%.0fm coil=%.1f..%.1fm end=%.2f/%.3f) "
                "W%d/%d(rise=%.0f..%.0fm R=%.0f..%.0fm plan=%.0f..%.0fm rail=%.0f..%.0fm) "
@@ -1931,6 +2076,9 @@ int run(int seeds) {
                m.maxImmelEndpointAccel,
                m.rollRuns, m.badRolls, m.minRollExcursion,
                m.minRollTwist, m.minRollInwardAlignment, m.rollHandMask,
+               m.cutbackRuns, m.badCutbacks, m.minCutbackReversal,
+               m.maxCutbackSymmetryError, m.maxCutbackFrameSymmetryError,
+               m.maxCutbackCrestUp,
                m.hillRuns, m.badHills, m.hillLobes, m.badHillLobes,
                d[HILL_RISE].minimum, d[HILL_RISE].maximum,
                d[HILL_PLAN].minimum, d[HILL_PLAN].maximum,
@@ -1965,20 +2113,22 @@ int run(int seeds) {
         namedRuns[0] += m.loopRuns; namedBad[0] += m.badLoops;
         namedRuns[1] += m.immelRuns; namedBad[1] += m.badImmels;
         namedRuns[2] += m.rollRuns; namedBad[2] += m.badRolls;
-        namedRuns[3] += m.hillRuns; namedBad[3] += m.badHills;
-        namedRuns[4] += m.helixRuns; namedBad[4] += m.badHelixes;
-        namedRuns[5] += m.waveRuns; namedBad[5] += m.badWaves;
-        namedRuns[6] += m.bankAirRuns; namedBad[6] += m.badBankAirs;
+        namedRuns[3] += m.cutbackRuns; namedBad[3] += m.badCutbacks;
+        namedRuns[4] += m.hillRuns; namedBad[4] += m.badHills;
+        namedRuns[5] += m.helixRuns; namedBad[5] += m.badHelixes;
+        namedRuns[6] += m.waveRuns; namedBad[6] += m.badWaves;
+        namedRuns[7] += m.bankAirRuns; namedBad[7] += m.badBankAirs;
         rollHandMask |= m.rollHandMask;
         if (m.hard) { ++failedSeeds; defects += m.hard; }
     }
     g_rng = savedRng;
-    printf("V1 NAMED SHAPES LOOP=%d/%d IMMEL=%d/%d ROLL=%d/%d HILLS=%d/%d "
+    printf("V1 NAMED SHAPES LOOP=%d/%d IMMEL=%d/%d ROLL=%d/%d CUTBACK=%d/%d HILLS=%d/%d "
            "HELIX=%d/%d WAVE=%d/%d BANKAIR=%d/%d hands=%u (bad/runs)\n",
            namedBad[0], namedRuns[0], namedBad[1], namedRuns[1],
            namedBad[2], namedRuns[2], namedBad[3], namedRuns[3],
            namedBad[4], namedRuns[4], namedBad[5], namedRuns[5],
-           namedBad[6], namedRuns[6], rollHandMask);
+           namedBad[6], namedRuns[6], namedBad[7], namedRuns[7],
+           rollHandMask);
     printf("V1 GEOMETRY %s (%d failed seed%s, %d hard defect%s)\n",
            failedSeeds ? "FAIL" : "PASS", failedSeeds, failedSeeds == 1 ? "" : "s",
            defects, defects == 1 ? "" : "s");

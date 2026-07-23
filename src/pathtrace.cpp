@@ -1004,7 +1004,8 @@ static void bakeVoxelsCPU(Vector3 camCtr, const Track &trk, float u,
     for (int i = i0; i <= i1 && i + 1 < finalN; i++) {
         Vector3 p = trk.cp[i];
         unsigned char tg = trk.kind[i];
-        if ((tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL) && trk.up[i].y < 0.35f) continue;
+        if ((tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
+             tg == M_CUTBACK) && trk.up[i].y < 0.35f) continue;
         float g = groundTopAt(p.x, p.z);
         if (p.y - g < 1.5f) continue;
         Vector3 t = Vector3Normalize(Vector3Subtract(trk.cp[i + 1], trk.cp[i - 1]));

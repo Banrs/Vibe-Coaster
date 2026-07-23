@@ -114,6 +114,10 @@ struct SceneLighting {
 static constexpr SceneLighting SCENE_LIGHT{};
 
 int main(int argc, char **argv) {
+    // Audio is intentionally disabled pending the dedicated sound-design
+    // overhaul recorded in docs/SESSION_STATE.md. Keep the synthesis code for
+    // that future project, but do not initialize or play it during normal use.
+    constexpr bool AUDIO_ENABLED = false;
     // Any flagged invocation (argc>1) is a headless audit/probe or a short-lived
     // screenshot/bench run -- none roam terrain indefinitely, so let the terrain
     // tile store grow to the distinct tiles they touch instead of thrashing the
@@ -321,7 +325,9 @@ int main(int argc, char **argv) {
         // per-seed track-anchor path and the always-on world-grid sweep).
         auto sweepAnchors = [&](const char *label,
                                 const std::vector<Vector3> &anchors) -> SweepResult {
-            bool headingSeen[kHeadings] = {false}; // compass headings hit by a qualifier
+            // kHeadings is local to this CLI branch; a dynamic container avoids
+            // MSVC rejecting it as a lambda-local C array bound.
+            std::vector<bool> headingSeen(kHeadings, false); // compass headings hit by a qualifier
             int anchorsScanned = 0, qualifyingCandidates = 0, distinctAnchors = 0;
             float dropMin = 1.0e9f, dropMax = -1.0e9f, dropSum = 0.0f;
             float faceMin = 1.0e9f, faceMax = -1.0e9f, faceSum = 0.0f;
@@ -656,7 +662,7 @@ int main(int argc, char **argv) {
         bool ok = true;
         printf("=== launch pacing audit ===\n");
         printf("acceleration reference: Do-Dodonpa 0-180 km/h in 1.56 s\n");
-        printf("game targets: station launch 360 km/h peak; in-course booster re-cruises to 292 km/h\n");
+        printf("game targets: station launch 360 km/h peak; in-course booster re-cruises to 250 km/h\n");
         printf("fastest-launch net-acceleration multiplier: %.2fx\n",
                V1_PROPULSION.accelerationMultiplier);
         for (const LaunchProbe &p : probes) {
@@ -685,9 +691,15 @@ int main(int argc, char **argv) {
         const int seeds = argc > 2 ? Clamp(atoi(argv[2]), 1, 64) : 8;
         const int firstSeed = argc > 3 ? Clamp(atoi(argv[3]), 1, 64) : 1;
         const int lastSeed = std::min(64, firstSeed + seeds - 1);
+        const bool forceCutback = argc > 4 && TextIsEqual(argv[4], "CUTBACK");
+        if (forceCutback) {
+            gForceElem = M_CUTBACK;
+            printf("[elementaudit] forcing CUTBACK where physically eligible\n");
+        }
         static const char *NM[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION","DIP","LAUNCH",
-            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP" };
+            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP",
+            "FLOATSTALL","CUTBACK" };
         auto named = [](int tag) {
             return tag >= 0 && tag < M_COUNT && tag != M_FLAT && tag != M_CLIMB &&
                    tag != M_DROP && tag != M_STATION && tag != M_LAUNCH && tag != M_BOOST;
@@ -877,7 +889,21 @@ int main(int argc, char **argv) {
                out[M_HILLS].count, hillGateMisses, hillGateOK ? "PASS" : "FAIL");
         printf("generation continuity: failures=%d  %s\n", generationFailures,
                generationFailures == 0 ? "PASS" : "FAIL");
-        return hillGateOK && generationFailures == 0 ? 0 : 1;
+        // By the end of this 200 s moving ride window, streaming has correctly
+        // pruned the complete SpatialRuns behind the train. Re-scanning Track
+        // here therefore cannot prove topology and used to report a false
+        // runs=0 failure even after measuring many valid cutback occurrences.
+        // The finalized, non-streaming --v1issues audit owns cutback topology;
+        // this forced mode owns live traversal/force coverage.
+        const bool forcedCutbackOK =
+            !forceCutback || out[M_CUTBACK].count > 0;
+        if (forceCutback)
+            printf("forced CUTBACK traversal: occurrences=%ld  %s "
+                   "(topology: run --v1issues before streaming)\n",
+                   out[M_CUTBACK].count,
+                   forcedCutbackOK ? "PASS" : "FAIL");
+        return hillGateOK && generationFailures == 0 && forcedCutbackOK
+            ? 0 : 1;
     }
 
     // Headless force-envelope audit using the exact ride-speed integrator and curvature window used
@@ -896,6 +922,24 @@ int main(int argc, char **argv) {
         int tamePosRuns = 0, tameNegRuns = 0;
         float sustainedPosByTag[M_COUNT] = {}, sustainedNegByTag[M_COUNT] = {};
         int sustainedPosTagRuns[M_COUNT] = {}, sustainedNegTagRuns[M_COUNT] = {};
+        // True physical airtime exposure uses rider-frame seat-normal force,
+        // sampled on the same 120 Hz live path as the force envelope. Keep
+        // <+1 g (light/floater) and <0 g (weightless/negative) nested and
+        // separate; neither is inferred from an element-family label.
+        double activeAirAuditSec = 0.0;
+        double lowOneAirAuditSec = 0.0;
+        double conventionalAirAuditSec = 0.0;
+        double negativeAirAuditSec = 0.0;
+        double activeAirAuditByTag[M_COUNT] = {};
+        double lowOneAirAuditByTag[M_COUNT] = {};
+        double conventionalAirAuditByTag[M_COUNT] = {};
+        double negativeAirAuditByTag[M_COUNT] = {};
+        int completedAirAuditSeeds = 0;
+        static const char *const forceTagName[M_COUNT] = {
+            "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STATION",
+            "DIP","LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE",
+            "BANKAIR","WAVE","STALL","DIVELOOP","FLOATSTALL","CUTBACK"
+        };
         // Durable airtime readout (playtest item #8): the MIN sustained g on any
         // built HILLS lobe and how many HILLS lobes actually eject (sustainedNeg
         // < -1.0 g).  The per-tag mean hides flat lobes (a crest that never
@@ -970,15 +1014,26 @@ int main(int argc, char **argv) {
             unsigned char maxVTag = M_FLAT, minVTag = M_FLAT, maxLatTag = M_FLAT;
             double riddenDistance = 0.0, lastPowerDistance = -1.0;
             bool wasPowered = false;
+            double seedActiveAirAuditSec = 0.0;
+            double seedLowOneAirAuditSec = 0.0;
+            double seedConventionalAirAuditSec = 0.0;
+            double seedNegativeAirAuditSec = 0.0;
+            double seedActiveAirAuditByTag[M_COUNT] = {};
+            double seedLowOneAirAuditByTag[M_COUNT] = {};
+            double seedConventionalAirAuditByTag[M_COUNT] = {};
+            double seedNegativeAirAuditByTag[M_COUNT] = {};
             auto flushSustained = [&]() {
                 if (sustainedRun.size() >= 16) {
                     bool posIntense = !sustainedAlignment &&
                                       (sustainedTag == M_TURN || sustainedTag == M_HELIX ||
                                        sustainedTag == M_DIVE || sustainedTag == M_LOOP ||
-                                       sustainedTag == M_DIVELOOP);
+                                       sustainedTag == M_DIVELOOP ||
+                                       sustainedTag == M_CUTBACK);
                     bool negIntense = sustainedTag == M_HILLS || sustainedTag == M_LOOP ||
                                       sustainedTag == M_ROLL || sustainedTag == M_STALL ||
-                                      sustainedTag == M_DIVELOOP;
+                                      sustainedTag == M_DIVELOOP ||
+                                      sustainedTag == M_FLOATSTALL ||
+                                      sustainedTag == M_CUTBACK;
                     bool posTame = sustainedTag == M_SCURVE || sustainedTag == M_IMMEL;
                     bool negTame = sustainedTag == M_BANKAIR || sustainedTag == M_WAVE;
                     auto recordLobes = [&](bool positive, bool intense) {
@@ -1158,9 +1213,14 @@ int main(int argc, char **argv) {
                             int ck = (int)t.clampFinalU(u);
                             printf("  new vertical max %+.1fg @u%.2f cps", gVertNow, u + (float)t.base);
                             for (int ci = std::max(0, ck - 1); ci <= ck + 3 && ci < (int)t.cp.size(); ++ci)
-                                printf(" [%ld:%d %.0f,%.0f,%.0f ground=%.0f]", t.base + ci,
+                                printf(" [%ld:%d %.0f,%.0f,%.0f ground=%.0f run=%u/%d %.2f->%.2f]", t.base + ci,
                                        (int)t.kind[ci], t.cp[ci].x, t.cp[ci].y, t.cp[ci].z,
-                                       groundTopAt(t.cp[ci].x, t.cp[ci].z));
+                                       groundTopAt(t.cp[ci].x, t.cp[ci].z),
+                                       (unsigned)t.spanRun[ci],
+                                       t.spatialRun(t.spanRun[ci])
+                                           ? (int)t.spatialRun(t.spanRun[ci])->points.size() - 1
+                                           : -1,
+                                       t.spanStart[ci], t.spanEnd[ci]);
                             printf("\n");
                         }
                     }
@@ -1170,9 +1230,14 @@ int main(int argc, char **argv) {
                             int ck = (int)t.clampFinalU(u);
                             printf("  new vertical min %+.1fg @u%.2f cps", gVertNow, u + (float)t.base);
                             for (int ci = std::max(0, ck - 1); ci <= ck + 3 && ci < (int)t.cp.size(); ++ci)
-                                printf(" [%ld:%d %.0f,%.0f,%.0f ground=%.0f]", t.base + ci,
+                                printf(" [%ld:%d %.0f,%.0f,%.0f ground=%.0f run=%u/%d %.2f->%.2f]", t.base + ci,
                                        (int)t.kind[ci], t.cp[ci].x, t.cp[ci].y, t.cp[ci].z,
-                                       groundTopAt(t.cp[ci].x, t.cp[ci].z));
+                                       groundTopAt(t.cp[ci].x, t.cp[ci].z),
+                                       (unsigned)t.spanRun[ci],
+                                       t.spatialRun(t.spanRun[ci])
+                                           ? (int)t.spatialRun(t.spanRun[ci])->points.size() - 1
+                                           : -1,
+                                       t.spanStart[ci], t.spanEnd[ci]);
                             printf("\n");
                         }
                     }
@@ -1193,6 +1258,27 @@ int main(int argc, char **argv) {
                     }
                     sustainedRun.push_back(gVertNow);
                     if (tag != M_STATION) {
+                        seedActiveAirAuditSec += dt;
+                        if (tag < M_COUNT)
+                            seedActiveAirAuditByTag[tag] += dt;
+                        if (gVertNow < 1.0f) {
+                            seedLowOneAirAuditSec += dt;
+                            if (tag < M_COUNT)
+                                seedLowOneAirAuditByTag[tag] += dt;
+                        }
+                        // Ride Forces Database's floater band begins around
+                        // +0.25 g. This is the conventional perceptible-airtime
+                        // threshold; <+1 g remains a broader light-load report.
+                        if (gVertNow < 0.25f) {
+                            seedConventionalAirAuditSec += dt;
+                            if (tag < M_COUNT)
+                                seedConventionalAirAuditByTag[tag] += dt;
+                        }
+                        if (gVertNow < 0.0f) {
+                            seedNegativeAirAuditSec += dt;
+                            if (tag < M_COUNT)
+                                seedNegativeAirAuditByTag[tag] += dt;
+                        }
                         float planned = t.plannedSpeedAt(u);
                         if (tag < M_COUNT) {
                             tagSpeedSum[tag] += v;
@@ -1225,6 +1311,20 @@ int main(int argc, char **argv) {
                 seedAverageKmh.push_back(averageSpeed * 3.6f);
                 allSpeedSum += speedSum;
                 allSpeedN += speedN;
+                activeAirAuditSec += seedActiveAirAuditSec;
+                lowOneAirAuditSec += seedLowOneAirAuditSec;
+                conventionalAirAuditSec +=
+                    seedConventionalAirAuditSec;
+                negativeAirAuditSec += seedNegativeAirAuditSec;
+                ++completedAirAuditSeeds;
+                for (int tag = 0; tag < M_COUNT; ++tag) {
+                    activeAirAuditByTag[tag] += seedActiveAirAuditByTag[tag];
+                    lowOneAirAuditByTag[tag] += seedLowOneAirAuditByTag[tag];
+                    conventionalAirAuditByTag[tag] +=
+                        seedConventionalAirAuditByTag[tag];
+                    negativeAirAuditByTag[tag] +=
+                        seedNegativeAirAuditByTag[tag];
+                }
             } else {
                 sustainedPosSum = sustainedPosSumBeforeSeed;
                 sustainedNegSum = sustainedNegSumBeforeSeed;
@@ -1277,6 +1377,20 @@ int main(int argc, char **argv) {
                    maxRollRate, maxRollRateU, maxRollRateTag,
                    maxRollAccel, maxRollAccelU, maxRollAccelTag,
                    continuityOK ? "PASS" : "FAIL");
+            if (generationOK && seedActiveAirAuditSec > 0.0)
+                printf("         true low-g: <+1g %.2fs (%.2f%%), <+0.25g "
+                       "%.2fs (%.2f%%), <0g %.2fs (%.2f%%) of %.2fs "
+                       "non-station traversal\n",
+                       seedLowOneAirAuditSec,
+                       100.0 * seedLowOneAirAuditSec /
+                           seedActiveAirAuditSec,
+                       seedConventionalAirAuditSec,
+                       100.0 * seedConventionalAirAuditSec /
+                           seedActiveAirAuditSec,
+                       seedNegativeAirAuditSec,
+                       100.0 * seedNegativeAirAuditSec /
+                           seedActiveAirAuditSec,
+                       seedActiveAirAuditSec);
             if (!hillEntryOK)
                 printf("  FAIL airtime-hill entry %.0f..%.0f km/h (contract %.0f..%.0f; first low at u%.0f)\n",
                        minHillEntry * 3.6f, maxHillEntry * 3.6f,
@@ -1316,6 +1430,67 @@ int main(int argc, char **argv) {
         printf("\n");
         printf("HILLS airtime lobes: min sustained %+.2fg, %d/%d lobes eject (sustainedNeg<-1.0g)\n",
                hillsLobeCount ? hillsLobeMin : 0.0f, hillsLobeEject, hillsLobeCount);
+        const double normalizedRideSec = genc::LAP_SOFT_MEAN_TARGET;
+        const double lowOnePct = activeAirAuditSec > 0.0
+            ? 100.0 * lowOneAirAuditSec / activeAirAuditSec : 0.0;
+        const double negativePct = activeAirAuditSec > 0.0
+            ? 100.0 * negativeAirAuditSec / activeAirAuditSec : 0.0;
+        const double conventionalPct = activeAirAuditSec > 0.0
+            ? 100.0 * conventionalAirAuditSec /
+                activeAirAuditSec : 0.0;
+        const double lowOneNormalizedSec =
+            normalizedRideSec * lowOnePct / 100.0;
+        const double conventionalNormalizedSec =
+            normalizedRideSec * conventionalPct / 100.0;
+        const double negativeNormalizedSec =
+            normalizedRideSec * negativePct / 100.0;
+        const double familyLowOneSec =
+            lowOneAirAuditByTag[M_HILLS] +
+            lowOneAirAuditByTag[M_BANKAIR] +
+            lowOneAirAuditByTag[M_FLOATSTALL];
+        const double familyNegativeSec =
+            negativeAirAuditByTag[M_HILLS] +
+            negativeAirAuditByTag[M_BANKAIR] +
+            negativeAirAuditByTag[M_FLOATSTALL];
+        const double familyConventionalSec =
+            conventionalAirAuditByTag[M_HILLS] +
+            conventionalAirAuditByTag[M_BANKAIR] +
+            conventionalAirAuditByTag[M_FLOATSTALL];
+        printf("true low-g exposure normalized to %.1fs: <+1g %.2fs (%.2f%%), "
+               "<+0.25g %.2fs (%.2f%%), <0g %.2fs (%.2f%%); airtime-family "
+               "contribution %.2fs/%.2fs/%.2fs "
+               "(%d completed 200s audit traversals)\n",
+               normalizedRideSec, lowOneNormalizedSec, lowOnePct,
+               conventionalNormalizedSec, conventionalPct,
+               negativeNormalizedSec, negativePct,
+               activeAirAuditSec > 0.0
+                   ? normalizedRideSec * familyLowOneSec /
+                         activeAirAuditSec : 0.0,
+               activeAirAuditSec > 0.0
+                   ? normalizedRideSec * familyConventionalSec /
+                         activeAirAuditSec : 0.0,
+               activeAirAuditSec > 0.0
+                   ? normalizedRideSec * familyNegativeSec /
+                         activeAirAuditSec : 0.0,
+               completedAirAuditSeeds);
+        printf("true low-g by tag (normalized <+1g/<+0.25g/<0g seconds):");
+        for (int tag = 0; tag < M_COUNT; ++tag) {
+            if (lowOneAirAuditByTag[tag] <= 0.0 &&
+                negativeAirAuditByTag[tag] <= 0.0)
+                continue;
+            printf(" %s=%.2f/%.2f/%.2f", forceTagName[tag],
+                   activeAirAuditSec > 0.0
+                       ? normalizedRideSec * lowOneAirAuditByTag[tag] /
+                             activeAirAuditSec : 0.0,
+                   activeAirAuditSec > 0.0
+                       ? normalizedRideSec *
+                             conventionalAirAuditByTag[tag] /
+                             activeAirAuditSec : 0.0,
+                   activeAirAuditSec > 0.0
+                       ? normalizedRideSec * negativeAirAuditByTag[tag] /
+                             activeAirAuditSec : 0.0);
+        }
+        printf("\n");
         printf("sustained target: approximately +10/-5g (acceptance band +9.4/-4.5g)\n");
         std::sort(seedAverageKmh.begin(), seedAverageKmh.end());
         float aggregateKmh = allSpeedN ? (float)(3.6 * allSpeedSum / allSpeedN) : 0.0f;
@@ -1344,7 +1519,7 @@ int main(int argc, char **argv) {
     static const char *const GEN_NM[M_COUNT] = {
         "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP",
         "LAUNCH","HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE",
-        "STALL","DIVELOOP"
+        "STALL","DIVELOOP","FLOATSTALL","CUTBACK"
     };
     auto printGenerationFailure = [](const char *scope, int seed, unsigned lap,
                                      const Track& t) {
@@ -1363,7 +1538,8 @@ int main(int argc, char **argv) {
                nameOf(t.lastElem),nameOf(t.prevElem),t.elems,t.elemLimit,
                t.hardInvCount,Track::INVERSION_BUDGET);
         const SegMode candidate[] = {M_HILLS,M_TURN,M_DIP,M_SCURVE,M_DIVE,
-            M_BANKAIR,M_WAVE,M_HELIX,M_LOOP,M_ROLL,M_IMMEL,M_DIVELOOP,M_STALL};
+            M_BANKAIR,M_WAVE,M_HELIX,M_LOOP,M_ROLL,M_IMMEL,M_DIVELOOP,M_STALL,
+            M_FLOATSTALL,M_CUTBACK};
         printf("%s lap candidates count/soft[eligible]:",scope);
         for (SegMode m : candidate) {
             const bool inv = Track::isBudgetInversion(m);
@@ -1414,12 +1590,23 @@ int main(int argc, char **argv) {
     // and dead element implementations are gates.
     if (argc > 1 && TextIsEqual(argv[1], "--census")) {
         int seeds = (argc > 2) ? atoi(argv[2]) : 8;
-        const int invType[] = {M_ROLL,M_LOOP,M_IMMEL,M_DIVELOOP,M_STALL};
+        const int invType[] = {M_LOOP,M_IMMEL,M_DIVELOOP,M_STALL,M_CUTBACK};
         long setType[M_COUNT] = {};
+        double subtypeTargetSum[M_COUNT] = {};
         int laps = 0, invBudgetMiss = 0, subtypeRepeat = 0;
         int inversionSpacingMiss = 0, helixGeometryMiss = 0;
         unsigned long totalEscapes = 0, totalForcedCloses = 0, totalRelaxed = 0;
-        unsigned long totalVariant = 0, totalCleanForward = 0, totalClipPublished = 0;
+        unsigned long totalVariant = 0, totalPhaseDrops = 0;
+        unsigned long totalCleanForward = 0, totalClipPublished = 0;
+        unsigned long totalHotCruiseRuns = 0;
+        unsigned long totalTurnCeilingOverrides = 0;
+        long totalRecoveryDrops = 0, totalLapCliffDives = 0;
+        double recoveryDropSeconds = 0.0, topHatDescentSeconds = 0.0;
+        double cliffDiveSeconds = 0.0, routingTurnSeconds = 0.0;
+        double connectorSeconds = 0.0;
+        double bankedSeconds = 0.0, overbankSeconds = 0.0;
+        long featureThird[3][M_COUNT] = {};
+        int turnFamilySeedOver25 = 0;
         // Phase 4: per-lap ride-seconds accumulation for the ~120 s pacing gate.
         double totalLapSeconds = 0.0; int lapSecondsN = 0;
         double minLapSeconds = 1e9, maxLapSeconds = 0.0;
@@ -1436,6 +1623,10 @@ int main(int argc, char **argv) {
         // Track::cliffDives (it reuses M_DROP kind so it is invisible to the share
         // tables -- which is the point: it must not perturb them).
         int cliffBuilt = 0, cliffPass = 0;
+        int offAxisBuilt = 0, overbankBuilt = 0, signaturePresenceMiss = 0;
+        int offAxisAttempts = 0, overbankAttempts = 0, floatStallAttempts = 0;
+        int maximumBankedRun = 0;
+        float overbankPeakDeg = 0.0f;
         for (int sd = 1; sd <= seeds; sd++) {
             g_rng = (uint32_t)sd * 2654435761u | 1u;
             Track t; t.reset();
@@ -1445,6 +1636,9 @@ int main(int argc, char **argv) {
             for (int i = 0; i < M_COUNT; ++i) observed[i] = t.lapElemCount[i];
             bool sawInversion = false, lapSpacingBad = false;
             int nonInvAtLastInversion = 0;
+            double seedLapSeconds = 0.0;
+            int seedLapN = 0;
+            long seedFeatures = 0, seedTurnFamily = 0;
             clock_t lapClk = clock();
             while (seenSerial < 3 && guard < 400000) {
                 guard++;
@@ -1486,16 +1680,60 @@ int main(int argc, char **argv) {
                     // 2026-07-23 budget decouple: the 4-budget (and this gate)
                     // covers SUSTAINED-high-g inversions only; ROLL/STALL are
                     // bounded by their own subtype lap caps (checked below).
-                    int inv = cnt[M_LOOP]+cnt[M_IMMEL]+cnt[M_DIVELOOP];
-                    int total = 0; for (int i=0;i<M_COUNT;i++) total += cnt[i];
+                    int inv = cnt[M_LOOP]+cnt[M_IMMEL]+cnt[M_DIVELOOP]+
+                              cnt[M_CUTBACK];
+                    int total = 0, controlled = 0;
+                    for (int i=0;i<M_COUNT;i++) {
+                        total += cnt[i];
+                        if (genc::SHARE_TARGET[i] > 0.0f)
+                            controlled += cnt[i];
+                    }
+                    const int lapTurnFamily = cnt[M_TURN] + cnt[M_SCURVE] +
+                                              cnt[M_DIVE] + cnt[M_WAVE];
+                    seedFeatures += controlled;
+                    seedTurnFamily += lapTurnFamily;
                     double ms = (double)(clock()-lapClk)*1000.0/CLOCKS_PER_SEC;
                     double lapSecs = t.completedLapSeconds;
-                    printf("[census] seed%d lap%u features=%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d total=%d spacing=%s} helix=%d/%d@%.1fm/rev tophat=%d rideSecs=%.1f ms/lap=%.1f\n",
+                    for (int m = 0; m < M_COUNT; ++m)
+                        subtypeTargetSum[m] +=
+                            genc::subtypeTargetForSeconds(
+                                (SegMode)m, (float)lapSecs);
+                    printf("[census] seed%d lap%u features=%d inv{ROLL=%d LOOP=%d IMMEL=%d DIVELOOP=%d STALL=%d CUTBACK=%d total=%d boundedChain=%s} air{FLOATSTALL=%d} helix=%d/%d@%.1fm/rev tophat=%d rideSecs=%.1f ms/lap=%.1f\n",
                            sd,seenSerial,total,cnt[M_ROLL],cnt[M_LOOP],cnt[M_IMMEL],
-                           cnt[M_DIVELOOP],cnt[M_STALL],inv,
-                           lapSpacingBad?"FAIL":"ok",cnt[M_HELIX],
+                           cnt[M_DIVELOOP],cnt[M_STALL],cnt[M_CUTBACK],inv,
+                           lapSpacingBad?"yes":"none",cnt[M_FLOATSTALL],cnt[M_HELIX],
                            t.completedHelixGeometryCount,t.completedMinHelixDropPerRev,
                            t.completedTopHatCount,lapSecs,ms);
+                    offAxisBuilt += t.completedOffAxisCount;
+                    overbankBuilt += t.completedOverbankCount;
+                    if (t.completedSignatureAttemptMask & Track::SIG_OFFAXIS)
+                        offAxisAttempts++;
+                    if (t.completedSignatureAttemptMask & Track::SIG_OVERBANK)
+                        overbankAttempts++;
+                    if (t.completedSignatureAttemptMask & Track::SIG_FLOATSTALL)
+                        floatStallAttempts++;
+                    maximumBankedRun = std::max(maximumBankedRun,
+                                                t.completedMaxBankedRun);
+                    overbankPeakDeg = fmaxf(overbankPeakDeg,
+                                            t.completedOverbankPeakDeg);
+                    bool signaturePass =
+                        ((t.completedSignatureMask & Track::SIG_OFFAXIS) &&
+                         t.completedOffAxisCount > 0) ||
+                        ((t.completedSignatureMask & Track::SIG_OVERBANK) &&
+                         t.completedOverbankCount > 0) ||
+                        ((t.completedSignatureMask & Track::SIG_FLOATSTALL) &&
+                         cnt[M_FLOATSTALL] > 0) ||
+                        t.completedSignatureMask == Track::SIG_NONE;
+                    if (!signaturePass) signaturePresenceMiss++;
+                    printf("[census] seed%d lap%u variants{offaxis=%d overbank=%d@%.1fdeg "
+                           "signature=0x%x attempted=0x%x %s maxBankedRun=%d}\n",
+                           sd,seenSerial,t.completedOffAxisCount,
+                           t.completedOverbankCount,
+                           t.completedOverbankPeakDeg,
+                           (unsigned)t.completedSignatureMask,
+                           (unsigned)t.completedSignatureAttemptMask,
+                           signaturePass?"present":"soft-miss",
+                           t.completedMaxBankedRun);
                     helixScaleSum += t.completedHelixScaleSum;
                     helixScaleN += t.completedHelixGeometryCount;
                     for (int m = 0; m < M_COUNT; ++m) {
@@ -1504,21 +1742,36 @@ int main(int argc, char **argv) {
                         specElemCnt[m] += cnt[m];
                         specRelYMax[m] = fmaxf(specRelYMax[m],
                                                t.completedTagRelYMax[m]);
+                        for (int third = 0; third < 3; ++third)
+                            featureThird[third][m] +=
+                                t.completedFeatureThird[third][m];
                     }
+                    totalRecoveryDrops += t.completedRecoveryDropCount;
+                    totalLapCliffDives += t.completedCliffDiveCount;
+                    recoveryDropSeconds += t.completedRecoveryDropSeconds;
+                    topHatDescentSeconds += t.completedTopHatDescentSeconds;
+                    cliffDiveSeconds += t.completedCliffDiveSeconds;
+                    routingTurnSeconds += t.completedRoutingTurnSeconds;
+                    connectorSeconds += t.completedConnectorSeconds;
+                    bankedSeconds += t.completedBankedSeconds;
+                    overbankSeconds += t.completedOverbankSeconds;
                     for (int b = 0; b < 10; ++b)
                         specRelYHist[b] += t.completedRelYHist[b];
                     totalLapSeconds += lapSecs; lapSecondsN++;
+                    seedLapSeconds += lapSecs; seedLapN++;
                     if (lapSecs < minLapSeconds) minLapSeconds = lapSecs;
                     if (lapSecs > maxLapSeconds) maxLapSeconds = lapSecs;
                     laps++;
                     if (inv > 4) invBudgetMiss++;
                     // Subtype caps read the single genc:: table the generator's
                     // Track::inversionLapCap admission enforces, so the census
-                    // can never report a stale cap (references: Tormenta runs
-                    // THREE Immelmanns; loops and paired corkscrews may appear
-                    // twice; stall and dive loop stay one-per-lap).
-                    for (int i : invType)
-                        if (cnt[i] > genc::SUBTYPE_LAP_CAP[i]) subtypeRepeat++;
+                    // can never report a stale cap (Tormenta's exact inventory
+                    // is two Immelmanns, one loop and one cutback; the project
+                    // caps are safety ceilings rather than replication quotas).
+                    for (int i = 0; i < M_COUNT; ++i)
+                        if (genc::SUBTYPE_LAP_CAP[i] != INT_MAX &&
+                            cnt[i] > genc::SUBTYPE_LAP_CAP[i])
+                            subtypeRepeat++;
                     // Adjacent inversions are design-legal in bounded chains
                     // (double corkscrew, Tormenta's Immelmann-loop sequence);
                     // only flag a lap that chains AND runs over the inversion
@@ -1533,6 +1786,25 @@ int main(int argc, char **argv) {
                     lapClk=clock();
                 }
                 while ((int)t.cp.size() > keep) t.popFront();
+            }
+            if (seedLapN) {
+                const double seedMean = seedLapSeconds / seedLapN;
+                const double seedTurnShare = seedFeatures
+                    ? 100.0 * seedTurnFamily / seedFeatures : 0.0;
+                printf("[census] seed%d lap-mean=%.1fs soft-target=%.1fs "
+                       "band=[%.1f,%.1f] %s TURN-family=%ld/%ld=%.1f%% "
+                       "(target %.1f%% hard<=%.1f%%) %s\n",
+                       sd,seedMean,genc::LAP_SOFT_MEAN_TARGET,
+                       genc::LAP_SOFT_MEAN_LO,genc::LAP_SOFT_MEAN_HI,
+                       (seedMean >= genc::LAP_SOFT_MEAN_LO &&
+                        seedMean <= genc::LAP_SOFT_MEAN_HI)?"IN":"OUT",
+                       seedTurnFamily,seedFeatures,seedTurnShare,
+                       genc::FAMILY_BANKED_TARGET,
+                       genc::FAMILY_BANKED_HARD_SEED_MAX,
+                       seedTurnShare <= genc::FAMILY_BANKED_HARD_SEED_MAX
+                           ? "PASS" : "FAIL");
+                if (seedTurnShare > genc::FAMILY_BANKED_HARD_SEED_MAX)
+                    turnFamilySeedOver25++;
             }
             if (seenSerial < 3) {
                 printf("[census] STUCK seed%d lap%u mode=%d remain=%d elems=%d/%d "
@@ -1564,8 +1836,11 @@ int main(int argc, char **argv) {
             totalForcedCloses += t.fallbackForcedLapCloses;
             totalRelaxed += t.fallbackRelaxedPicks;
             totalVariant += t.variantPicks;
+            totalPhaseDrops += t.phaseDropPicks;
             totalCleanForward += t.fallbackCleanForward;
             totalClipPublished += t.escapeClipPublished;
+            totalHotCruiseRuns += t.hotCruiseRuns;
+            totalTurnCeilingOverrides += t.turnCeilingOverrides;
             if (t.fallbackEscapes || t.fallbackForcedLapCloses ||
                 t.fallbackRelaxedPicks || t.variantPicks || t.fallbackCleanForward)
                 printf("[census] seed%d fallbacks: escapes=%u forcedLapCloses=%u "
@@ -1578,28 +1853,49 @@ int main(int argc, char **argv) {
                "0 = correctly skipped, see --cliffaudit; NOT in SHARE_TARGET so shares unperturbed)\n",
                cliffBuilt, cliffPass);
         long grand = setType[M_LOOP]+setType[M_ROLL]+setType[M_IMMEL]+
-                     setType[M_DIVELOOP]+setType[M_STALL];
-        printf("[census] set inversion totals: ROLL=%ld LOOP=%ld IMMEL=%ld DIVELOOP=%ld STALL=%ld grand=%ld\n",
+                     setType[M_DIVELOOP]+setType[M_STALL]+setType[M_CUTBACK];
+        printf("[census] set inversion totals: ROLL=%ld LOOP=%ld IMMEL=%ld DIVELOOP=%ld STALL=%ld CUTBACK=%ld grand=%ld\n",
                setType[M_ROLL],setType[M_LOOP],setType[M_IMMEL],
-               setType[M_DIVELOOP],setType[M_STALL],grand);
+               setType[M_DIVELOOP],setType[M_STALL],setType[M_CUTBACK],grand);
         bool complete = laps == seeds * 3;
-        long totalFeatures=0,bankedFeatures=0,airFeatures=0;
-        for(int i=0;i<M_COUNT;i++) totalFeatures+=setType[i];
+        long totalFeatures=0, controlledFeatures=0;
+        long bankedFeatures=0,airFeatures=0;
+        for(int i=0;i<M_COUNT;i++) {
+            totalFeatures+=setType[i];
+            if (genc::SHARE_TARGET[i] > 0.0f)
+                controlledFeatures += setType[i];
+        }
         for(int i:{M_TURN,M_HELIX,M_SCURVE,M_DIVE,M_BANKAIR,M_WAVE}) bankedFeatures+=setType[i];
-        for(int i:{M_HILLS,M_BANKAIR,M_WAVE}) airFeatures+=setType[i];
-        // Phase 4 lap-pacing report (gate 3: mean in [105,135] s over the run).
+        bankedFeatures += offAxisBuilt;  // HILLS tag, but rider-facing banked exposure
+        for(int i:{M_HILLS,M_BANKAIR,M_WAVE,M_STALL,M_FLOATSTALL}) airFeatures+=setType[i];
+        // North-star pacing review: the 102.5 s seed-mean target is soft.
         {
             double meanSecs = lapSecondsN ? totalLapSeconds / lapSecondsN : 0.0;
-            const char *lapFlag = (meanSecs >= 105.0 && meanSecs <= 135.0)
-                                  ? "IN" : "OUT";
+            const char *lapFlag =
+                (meanSecs >= genc::LAP_SOFT_MEAN_LO &&
+                 meanSecs <= genc::LAP_SOFT_MEAN_HI) ? "IN" : "OUT";
             printf("[census] lap-seconds: mean=%.1f min=%.1f max=%.1f laps=%d "
-                   "target=[105,135] %s\n",
+                   "soft-target=%.1f band=[%.1f,%.1f] %s\n",
                    meanSecs, lapSecondsN ? minLapSeconds : 0.0, maxLapSeconds,
-                   lapSecondsN, lapFlag);
+                   lapSecondsN,genc::LAP_SOFT_MEAN_TARGET,
+                   genc::LAP_SOFT_MEAN_LO,genc::LAP_SOFT_MEAN_HI,lapFlag);
         }
-        printf("[census] family share: banked=%.1f%% airtime=%.1f%% features=%ld\n",
+        printf("[census] variants: offaxis=%d/%d attempts overbank=%d/%d attempts "
+               "themedFloatstallAttempts=%d peakBank=%.1fdeg maxBankedRun=%d "
+               "signatureSoftMiss=%d/%d laps\n",
+               offAxisBuilt,offAxisAttempts,overbankBuilt,overbankAttempts,
+               floatStallAttempts,overbankPeakDeg,maximumBankedRun,
+               signaturePresenceMiss,laps);
+        printf("[census] overlapping exposure counts: banked=%.1f%% airtime=%.1f%% "
+               "(off-axis/stall may overlap; authored=%ld controlled=%ld)\n",
                totalFeatures?100.0*bankedFeatures/totalFeatures:0.0,
-               totalFeatures?100.0*airFeatures/totalFeatures:0.0,totalFeatures);
+               totalFeatures?100.0*airFeatures/totalFeatures:0.0,
+               totalFeatures,controlledFeatures);
+        printf("[census] screen-bank time: >=30deg non-inverting=%.1f%% "
+               ">90deg=%.2f%% (%.1fs/%.1fs of %.0fs ride)\n",
+               totalLapSeconds > 0.0 ? 100.0 * bankedSeconds / totalLapSeconds : 0.0,
+               totalLapSeconds > 0.0 ? 100.0 * overbankSeconds / totalLapSeconds : 0.0,
+               bankedSeconds, overbankSeconds,totalLapSeconds);
         // TIME-share (2026-07-23, user): count-shares over-weight numerous
         // short elements (a turn averages ~4 s vs an ~9 s hill chain), so the
         // composition is ALSO reported as a fraction of total ride seconds --
@@ -1610,23 +1906,65 @@ int main(int argc, char **argv) {
             double turnSecs = specElemSecs[M_TURN] + specElemSecs[M_SCURVE] +
                               specElemSecs[M_DIVE] + specElemSecs[M_WAVE];
             double airSecs  = specElemSecs[M_HILLS] + specElemSecs[M_BANKAIR] +
-                              specElemSecs[M_STALL];
+                              specElemSecs[M_STALL] + specElemSecs[M_FLOATSTALL];
             double invSecs  = specElemSecs[M_LOOP] + specElemSecs[M_IMMEL] +
-                              specElemSecs[M_ROLL] + specElemSecs[M_DIVELOOP];
+                              specElemSecs[M_ROLL] + specElemSecs[M_DIVELOOP] +
+                              specElemSecs[M_STALL] + specElemSecs[M_CUTBACK];
             double dropSecs = specElemSecs[M_DROP] + specElemSecs[M_CLIMB] +
                               specElemSecs[M_DIP];
             double helixSecs = specElemSecs[M_HELIX];
             double allSecs = 0.0;
             for (int m = 0; m < M_COUNT; ++m) allSecs += specElemSecs[m];
             const double denom = totalLapSeconds > 0.0 ? totalLapSeconds : 1.0;
-            printf("[census] time-share: turns=%.1f%% airtime=%.1f%% "
-                   "inversions=%.1f%% drops+climbs=%.1f%% helix=%.1f%% "
-                   "connective/powered=%.1f%% (of %.0fs ride)\n",
-                   100.0*turnSecs/denom, 100.0*airSecs/denom,
+            printf("[census] element-family traversal time: authored-turns=%.1f%% "
+                   "routing-turns=%.1f%% airtime-family=%.1f%% "
+                   "inversion-family=%.1f%% vertical-family=%.1f%% "
+                   "helix=%.1f%% other-connective=%.1f%% (of %.0fs ride)\n",
+                   100.0*turnSecs/denom, 100.0*routingTurnSeconds/denom,
+                   100.0*airSecs/denom,
                    100.0*invSecs/denom, 100.0*dropSecs/denom,
-                   100.0*helixSecs/denom, 100.0*(denom-allSecs)/denom,
+                   100.0*helixSecs/denom,
+                   100.0*fmax(0.0,denom-allSecs-routingTurnSeconds)/denom,
                    totalLapSeconds);
+
+            // Controlled authored-time mix: the same semantic families and
+            // exclusions as SHARE_TARGET, but weighted by the seconds riders
+            // actually spend in each committed element.  This is the direct
+            // cross-check against the count table: a few drawn-out Falcon
+            // hills should occupy more time than several compact Tormenta
+            // inversions, without silently changing their occurrence counts.
+            double controlledSecs = 0.0;
+            for (int m = 0; m < M_COUNT; ++m)
+                if (genc::SHARE_TARGET[m] > 0.0f)
+                    controlledSecs += specElemSecs[m];
+            const double controlledDenom =
+                controlledSecs > 0.0 ? controlledSecs : 1.0;
+            const double controlledAirSecs =
+                specElemSecs[M_HILLS] + specElemSecs[M_BANKAIR] +
+                specElemSecs[M_FLOATSTALL];
+            const double controlledInvSecs =
+                specElemSecs[M_LOOP] + specElemSecs[M_ROLL] +
+                specElemSecs[M_IMMEL] + specElemSecs[M_STALL] +
+                specElemSecs[M_DIVELOOP] + specElemSecs[M_CUTBACK];
+            printf("[census] controlled-time mix: TURN=%.1f%% AIRTIME=%.1f%% "
+                   "INVERSION=%.1f%% DIP=%.1f%% HELIX=%.1f%% "
+                   "(%.1fs authored)\n",
+                   100.0 * turnSecs / controlledDenom,
+                   100.0 * controlledAirSecs / controlledDenom,
+                   100.0 * controlledInvSecs / controlledDenom,
+                   100.0 * specElemSecs[M_DIP] / controlledDenom,
+                   100.0 * specElemSecs[M_HELIX] / controlledDenom,
+                   controlledSecs);
         }
+        printf("[census] drop roles: recovery=%ld/%.1fs topHatDescent=%.1fs "
+               "cliffDive=%ld/%.1fs (physical M_DROP tag retained; authored "
+               "share target none)\n",
+               totalRecoveryDrops,recoveryDropSeconds,topHatDescentSeconds,
+               totalLapCliffDives,cliffDiveSeconds);
+        printf("[census] routing: hotCruiseRuns=%lu turnCeilingOverrides=%lu "
+               "routingTurn=%.1fs otherConnector=%.1fs\n",
+               totalHotCruiseRuns,totalTurnCeilingOverrides,
+               routingTurnSeconds,connectorSeconds);
         // Phase 5X: top-hat exit ground-clearance summary (report only).  The
         // gate is per-tophat: normal (non-flagged) exits hand off at <= 10 m.
         printf("[census] tophat exits: N=%d over10(normal)=%d flagged=%d "
@@ -1639,6 +1977,25 @@ int main(int argc, char **argv) {
             printf(" %s=%ld(%.1f%%)",GEN_NM[i],setType[i],
                    totalFeatures?100.0*setType[i]/totalFeatures:0.0);
         printf("\n");
+        printf("[census] subtype occurrences/act:");
+        int subtypeOccurrenceMisses = 0;
+        for (int m = 0; m < M_COUNT; ++m) {
+            const float rate = genc::SUBTYPE_RATE_PER_60S[m];
+            if (rate <= 0.0f) continue;
+            const double actual = laps > 0 ? (double)setType[m] / laps : 0.0;
+            const double target =
+                laps > 0 ? subtypeTargetSum[m] / laps : 0.0;
+            const double lo = fmax(
+                genc::SUBTYPE_MIN_OCCURRENCES_PER_ACT,
+                genc::SUBTYPE_OCCURRENCE_BAND_LO * target);
+            const double hi = genc::SUBTYPE_OCCURRENCE_BAND_HI * target;
+            const bool in = actual >= lo && actual <= hi;
+            if (!in) subtypeOccurrenceMisses++;
+            printf(" %s=%.2f/%.2f@%.2f/min%s",
+                   GEN_NM[m], actual, target, rate,
+                   in ? "" : "!");
+        }
+        printf(" misses=%d\n", subtypeOccurrenceMisses);
         // Share-vs-target-band report (Phase 0 probe extension,
         // docs/REFACTOR_PLAN.md U3/U4 targets). Bands are 0.75x-1.75x of the
         // researched target share; denominator reuses the exact
@@ -1647,7 +2004,8 @@ int main(int argc, char **argv) {
         // invBudgetMiss/subtypeRepeat/etc. or affect the complete=yes gate.
         {
             auto shareOf = [&](long count) {
-                return totalFeatures ? 100.0 * count / totalFeatures : 0.0;
+                return controlledFeatures
+                    ? 100.0 * count / controlledFeatures : 0.0;
             };
             auto flagOf = [](double share, double lo, double hi) {
                 return share < lo ? "LOW" : share > hi ? "HIGH" : "IN";
@@ -1664,18 +2022,73 @@ int main(int argc, char **argv) {
             };
             long turnFamily = setType[M_TURN] + setType[M_SCURVE] +
                               setType[M_DIVE] + setType[M_WAVE];
-            printBand("TURN(family=TURN+SCURVE+DIVE+WAVE)", turnFamily, genc::FAMILY_BANKED_TARGET);
+            const long inversionFamily = setType[M_LOOP] + setType[M_ROLL] +
+                setType[M_IMMEL] + setType[M_STALL] + setType[M_DIVELOOP] +
+                setType[M_CUTBACK];
+            const long airtimeFamily = setType[M_HILLS] + setType[M_BANKAIR] +
+                setType[M_FLOATSTALL];
+            {
+                const double share = shareOf(turnFamily);
+                printf("[census] share TURN(family=TURN+SCURVE+DIVE+WAVE) "
+                       "%.1f%% target %.1f%% band [%.1f,%.1f] %s\n",
+                       share,genc::FAMILY_BANKED_TARGET,
+                       genc::FAMILY_BANKED_SOFT_LO,
+                       genc::FAMILY_BANKED_HARD_SEED_MAX,
+                       flagOf(share,genc::FAMILY_BANKED_SOFT_LO,
+                              genc::FAMILY_BANKED_HARD_SEED_MAX));
+            }
+            printBand("AIRTIME(family=HILLS+BANKAIR+FLOATSTALL)",
+                      airtimeFamily,genc::FAMILY_AIRTIME_TARGET);
+            printBand("INVERSION(family)",inversionFamily,
+                      genc::FAMILY_INVERSION_TARGET);
+            printf("[census] conditional DIP: %ld occurrences (%.2f/act; "
+                   "water-sited helper, excluded from controlled targets)\n",
+                   setType[M_DIP],
+                   laps ? (double)setType[M_DIP] / laps : 0.0);
+            printBand("HELIX(family)",setType[M_HELIX],
+                      genc::FAMILY_HELIX_TARGET);
             printf("[census] share TURN-family subtypes (raw, no band):");
             for (int i : {M_TURN, M_SCURVE, M_DIVE, M_WAVE})
                 printf(" %s=%.1f%%", GEN_NM[i], shareOf(setType[i]));
             printf("\n");
-            printBand("HILLS", setType[M_HILLS], genc::SHARE_TARGET[M_HILLS]);
-            printBand("DROP", setType[M_DROP], genc::SHARE_TARGET[M_DROP]);
-            printBand("IMMEL", setType[M_IMMEL], genc::SHARE_TARGET[M_IMMEL]);
-            printBand("LOOP", setType[M_LOOP], genc::SHARE_TARGET[M_LOOP]);
-            printBand("ROLL", setType[M_ROLL], genc::SHARE_TARGET[M_ROLL]);
-            printBand("SCURVE", setType[M_SCURVE], genc::SHARE_TARGET[M_SCURVE]);
-            printBand("HELIX", setType[M_HELIX], genc::SHARE_TARGET[M_HELIX]);
+            for (int m = 0; m < M_COUNT; ++m)
+                if (genc::SHARE_TARGET[m] > 0.0f)
+                    printBand(GEN_NM[m],setType[m],genc::SHARE_TARGET[m]);
+        }
+        {
+            int frontLoadWarnings = 0;
+            for (int third = 0; third < 3; ++third) {
+                long n = 0, turn = 0, air = 0, inv = 0;
+                for (int m = 0; m < M_COUNT; ++m)
+                    if (genc::SHARE_TARGET[m] > 0.0f)
+                        n += featureThird[third][m];
+                for (int m : {M_TURN,M_SCURVE,M_DIVE,M_WAVE})
+                    turn += featureThird[third][m];
+                for (int m : {M_HILLS,M_BANKAIR,M_FLOATSTALL})
+                    air += featureThird[third][m];
+                for (int m : {M_LOOP,M_ROLL,M_IMMEL,M_STALL,M_DIVELOOP,
+                              M_CUTBACK})
+                    inv += featureThird[third][m];
+                printf("[census] placement third%d controlled=%ld "
+                       "TURN=%.1f%% AIRTIME=%.1f%% INV=%.1f%%\n",
+                       third + 1,n,n?100.0*turn/n:0.0,
+                       n?100.0*air/n:0.0,n?100.0*inv/n:0.0);
+            }
+            printf("[census] front-load (>65%% in first third, n>=8):");
+            bool printed = false;
+            for (int m = 0; m < M_COUNT; ++m) {
+                const long n = featureThird[0][m] + featureThird[1][m] +
+                               featureThird[2][m];
+                if (genc::SHARE_TARGET[m] <= 0.0f || m == M_DIP || n < 8)
+                    continue;
+                const double first = 100.0 * featureThird[0][m] / n;
+                if (first > 65.0) {
+                    printf(" %s=%.0f%%",GEN_NM[m],first);
+                    printed = true;
+                    frontLoadWarnings++;
+                }
+            }
+            printf("%s warnings=%d\n",printed?"":" none",frontLoadWarnings);
         }
         // Built-scale probe: mean coil radius vs real-record reference across the
         // whole census.  The sizing window is 0.75x-1.5x; the built mean must
@@ -1684,25 +2097,38 @@ int main(int argc, char **argv) {
         printf("[census] scale HELIX mean=%.2fx n=%ld\n",
                helixScaleN ? helixScaleSum / helixScaleN : 0.0, helixScaleN);
         // SIZE-SPECTRUM LAW (user 2026-07-21): per-element built-scale spectrum.
-        // Gate intent: capViol == 0 always; for any element with n >= 6, all
-        // three window terciles populated (never a one-signature size).
+        // Cap compliance applies to every recorded dimension. The three-tercile
+        // diversity test applies only to dimensions authored by a free
+        // similarity lambda. Physics/timing-derived dimensions (loop-family
+        // radii, heartline-roll period, helix radius, felt-g turn radius) should
+        // not be independently stretched merely to manufacture histogram bins.
         {
             int capViolTotal = 0, terMiss = 0;
+            auto similarityScaled = [](int m) {
+                return m == M_CLIMB || m == M_HILLS || m == M_SCURVE ||
+                       m == M_BANKAIR || m == M_WAVE;
+            };
             for (int m = 0; m < M_COUNT; ++m) {
                 const Track::ScaleStat &sc = specScale[m];
                 if (!sc.n) continue;
+                const bool missingTercile =
+                    sc.n >= 6 && (!sc.ter[0] || !sc.ter[1] || !sc.ter[2]);
+                const char *spectrumNote = missingTercile
+                    ? (similarityScaled(m) ? "  ONE-SIGNATURE"
+                                           : "  LAW-DERIVED")
+                    : "";
                 printf("[census] spectrum %-8s n=%-3d scale %.2f/%.2f/%.2fx "
-                       "ter[lo,mid,hi]=%d/%d/%d capViol=%d%s\n",
-                       GEN_NM[m], sc.n, sc.mn, sc.sum / sc.n, sc.mx,
-                       sc.ter[0], sc.ter[1], sc.ter[2], sc.capViol,
-                       (sc.n >= 6 && (!sc.ter[0] || !sc.ter[1] || !sc.ter[2]))
-                           ? "  ONE-SIGNATURE" : "");
+                        "ter[lo,mid,hi]=%d/%d/%d capViol=%d%s\n",
+                        GEN_NM[m], sc.n, sc.mn, sc.sum / sc.n, sc.mx,
+                        sc.ter[0], sc.ter[1], sc.ter[2], sc.capViol,
+                        spectrumNote);
                 capViolTotal += sc.capViol;
-                if (sc.n >= 6 && (!sc.ter[0] || !sc.ter[1] || !sc.ter[2]))
+                if (missingTercile && similarityScaled(m))
                     terMiss++;
             }
-            printf("[census] spectrum gate: capViol=%d (need 0) oneSignature=%d"
-                   " (need 0 among n>=6)\n", capViolTotal, terMiss);
+            printf("[census] spectrum gate: capViol=%d (need 0) "
+                   "similarityOneSignature=%d (need 0 among n>=6; "
+                   "physics/timing laws report-only)\n", capViolTotal, terMiss);
             // DURATION LAW: built mean seconds per occurrence vs the real
             // reference; target mean ~0.75x, no element averaging > 1.0x.
             int durOver = 0;
@@ -1755,25 +2181,48 @@ int main(int argc, char **argv) {
             printf("[census] DEAD enabled inversion subtype: %s\n", GEN_NM[i]);
             deadSubtype++;
         }
+        if (seeds > 1 && setType[M_FLOATSTALL] == 0) {
+            printf("[census] DEAD enabled signature subtype: %s\n",
+                   GEN_NM[M_FLOATSTALL]);
+            deadSubtype++;
+        }
+        if (seeds > 1 && offAxisBuilt == 0) {
+            printf("[census] DEAD enabled HILLS variant: OFFAXIS\n");
+            deadSubtype++;
+        }
+        if (seeds > 1 && overbankBuilt == 0) {
+            printf("[census] DEAD enabled TURN variant: OVERBANK\n");
+            deadSubtype++;
+        }
         const unsigned long fallbackSum =
             totalEscapes + totalForcedCloses + totalRelaxed;
         printf("[census] fallback totals (%d seeds): escapes=%lu forcedLapCloses=%lu "
                "relaxedPicks=%lu sum=%lu (target: <=%.1f total artificial rescues)"
                " [cleanForward=%lu excluded: bare 6m-envelope forward continuation, no clip;"
                " variantPicks=%lu excluded: rhythm relaxation, clears full 6m gate;"
+               " phaseDropPicks=%lu: active beat had no physical candidate;"
                " escapeClipPublished=%lu: occupancy-off fan best still <2m]\n",
                seeds, totalEscapes, totalForcedCloses, totalRelaxed,
                fallbackSum, seeds * 0.1, totalCleanForward, totalVariant,
-               totalClipPublished);
+               totalPhaseDrops,totalClipPublished);
+        // Historical fallback target remains diagnostic: completion/geometry
+        // gates own the exit code.  Keeping this report-only is intentional
+        // until a VM census establishes a realistic post-variant baseline.
         const bool fallbackGateFail = fallbackSum > (unsigned long)(seeds * 0.1 + 0.5);
         if (fallbackGateFail)
             printf("[census] FALLBACK GATE FAIL: %lu genuine reduced-envelope/forced rescues > %.1f target\n",
                    fallbackSum, seeds * 0.1);
-        printf("[census] laps=%d invOver4=%d subtypeRepeat=%d inversionSpacing=%d helixGeometryMiss=%d deadSubtype=%d complete=%s\n",
+        printf("[census] laps=%d invOver4=%d subtypeRepeat=%d inversionSpacing=%d "
+               "helixGeometryMiss=%d subtypeOccurrenceMisses=%d deadSubtype=%d "
+               "turnFamilySeedOver25=%d "
+               "complete=%s\n",
                laps,invBudgetMiss,subtypeRepeat,inversionSpacingMiss,
-               helixGeometryMiss,deadSubtype,complete?"yes":"NO");
+               helixGeometryMiss,subtypeOccurrenceMisses,deadSubtype,
+               turnFamilySeedOver25,
+               complete?"yes":"NO");
         return (invBudgetMiss||subtypeRepeat||inversionSpacingMiss||helixGeometryMiss||
-                deadSubtype||!complete)?1:0;
+                subtypeOccurrenceMisses||deadSubtype||turnFamilySeedOver25||
+                !complete)?1:0;
     }
 
     if (argc > 1 && TextIsEqual(argv[1], "--clearance")) {
@@ -2036,7 +2485,8 @@ int main(int argc, char **argv) {
             const unsigned char tag = t.kind[(size_t)i];
             const float ground = groundTopAt(b.x, b.z);
             if (i > 3 && rollRate > maxRollRate &&
-                tag != M_ROLL && tag != M_STALL && tag != M_IMMEL) {
+                tag != M_ROLL && tag != M_STALL && tag != M_IMMEL &&
+                tag != M_CUTBACK) {
                 maxRollRate = rollRate; maxRollAt = i;
             }
             const bool powered = tag == M_LAUNCH || tag == M_BOOST ||
@@ -2214,9 +2664,11 @@ int main(int argc, char **argv) {
     if (argc > 2 && TextIsEqual(argv[1], "--gtest")) {
         struct { const char *name; SegMode mode; } forceable[] = {
             {"HILLS",M_HILLS}, {"TURN",M_TURN}, {"LOOP",M_LOOP},
-            {"ROLL",M_ROLL}, {"DIP",M_DIP}, {"HELIX",M_HELIX},
+            {"ROLL",M_ROLL}, {"CUTBACK",M_CUTBACK}, {"DIP",M_DIP},
+            {"HELIX",M_HELIX},
             {"IMMEL",M_IMMEL}, {"SCURVE",M_SCURVE}, {"DIVE",M_DIVE},
             {"BANKAIR",M_BANKAIR}, {"WAVE",M_WAVE}, {"STALL",M_STALL},
+            {"FLOATSTALL",M_FLOATSTALL},
             {"DIVELOOP",M_DIVELOOP}
         };
         for (const auto &entry : forceable)
@@ -2236,7 +2688,9 @@ int main(int argc, char **argv) {
 
     if (elemShot) {
         struct { const char *name; int mode; } EM[] = {
-            { "LOOP", M_LOOP }, { "ROLL", M_ROLL }, { "IMMEL", M_IMMEL }, { "STALL", M_STALL },
+            { "LOOP", M_LOOP }, { "ROLL", M_ROLL }, { "CUTBACK", M_CUTBACK },
+            { "IMMEL", M_IMMEL }, { "STALL", M_STALL },
+            { "FLOATSTALL", M_FLOATSTALL },
             { "DIVELOOP", M_DIVELOOP }, { "HILLS", M_HILLS },
             { "BANKAIR", M_BANKAIR }, { "DIP", M_DIP }, { "HELIX", M_HELIX },
             { "TOPHAT", M_CLIMB }, { "TOP-HAT", M_CLIMB }, { "LAUNCH", M_CLIMB }, { "CLIMB", M_CLIMB },
@@ -2258,10 +2712,12 @@ int main(int argc, char **argv) {
     if (jointShot) {
         struct { const char *name; int mode; } JM[] = {
             {"ANY", -2}, {"FLAT", M_FLAT}, {"CLIMB", M_CLIMB}, {"DROP", M_DROP},
-            {"HILLS", M_HILLS}, {"TURN", M_TURN}, {"LOOP", M_LOOP}, {"ROLL", M_ROLL},
+            {"HILLS", M_HILLS}, {"TURN", M_TURN}, {"LOOP", M_LOOP},
+            {"ROLL", M_ROLL}, {"CUTBACK", M_CUTBACK},
             {"DIP", M_DIP}, {"LAUNCH", M_LAUNCH}, {"HELIX", M_HELIX}, {"BOOST", M_BOOST},
             {"IMMEL", M_IMMEL}, {"SCURVE", M_SCURVE}, {"DIVE", M_DIVE},
             {"BANKAIR", M_BANKAIR}, {"STALL", M_STALL}, {"DIVELOOP", M_DIVELOOP},
+            {"FLOATSTALL", M_FLOATSTALL},
         };
         for (auto &e : JM) {
             if (TextIsEqual(argv[2], e.name)) { jointFrom = e.mode; jointFromName = e.name; }
@@ -2313,8 +2769,10 @@ int main(int argc, char **argv) {
     // still closer than the coaster/free cam ever gets to geometry. MUST match AO_CAM_NEAR/FAR
     // (render_fx.cpp) or the SSAO depth reconstruction misaligns.
     rlSetClipPlanes(0.2, 1200.0);
-    InitAudioDevice();
-    SetMasterVolume(getenv("MC_MUTE") ? 0.0f : 0.55f);
+    if (AUDIO_ENABLED) {
+        InitAudioDevice();
+        SetMasterVolume(getenv("MC_MUTE") ? 0.0f : 0.55f);
+    }
     gAtlas = makeAtlas();
     gTerrainMat = LoadMaterialDefault();
     gTerrainMat.maps[MATERIAL_MAP_DIFFUSE].texture = gAtlas;
@@ -2571,10 +3029,10 @@ int main(int argc, char **argv) {
         // Grayscale shadow-map dump, downsampled to 1024 for a viewable PNG.
         // Remap [dmin,1] -> [0,255] so the nearest occluder is black, empty=white.
         {
-            const int OUT=1024, step=gShadow.SM/OUT;
-            Image smImg=GenImageColor(OUT,OUT,BLACK);
+            const int outputSize=1024, step=gShadow.SM/outputSize;
+            Image smImg=GenImageColor(outputSize,outputSize,BLACK);
             double span=fmax(1e-6,1.0-dmin);
-            for(int y=0;y<OUT;++y) for(int x=0;x<OUT;++x){
+            for(int y=0;y<outputSize;++y) for(int x=0;x<outputSize;++x){
                 float d=depthPix[(size_t)(y*step)*gShadow.SM + (size_t)(x*step)];
                 int g=(int)(((d-dmin)/span)*255.0); g=g<0?0:(g>255?255:g);
                 ImageDrawPixel(&smImg,x,y,Color{(unsigned char)g,(unsigned char)g,(unsigned char)g,255});
@@ -2631,12 +3089,16 @@ int main(int argc, char **argv) {
     bool    liveBaked   = false;
     const float REBAKE_DIST = 22.0f;
 
-    Sound sndClack  = makeClackSound();
-    Sound sndWhoosh = makeWhooshSound();
-
-    AudioStream wind = LoadAudioStream(44100, 16, 1);
-    SetAudioStreamCallback(wind, windCallback);
-    PlayAudioStream(wind);
+    Sound sndClack{};
+    Sound sndWhoosh{};
+    AudioStream wind{};
+    if (AUDIO_ENABLED) {
+        sndClack = makeClackSound();
+        sndWhoosh = makeWhooshSound();
+        wind = LoadAudioStream(44100, 16, 1);
+        SetAudioStreamCallback(wind, windCallback);
+        PlayAudioStream(wind);
+    }
 
     Track trk;
     trk.reset();
@@ -2650,7 +3112,7 @@ int main(int argc, char **argv) {
         if (trk.schedulerExhaustions != 0 || trk.maxFinalU() + 0.001f < 520.0f) {
             printf("capture pre-generation failed at u=%.1f (exhaustions=%u)\n",
                    trk.maxFinalU(), trk.schedulerExhaustions);
-            CloseAudioDevice();
+            if (AUDIO_ENABLED) CloseAudioDevice();
             CloseWindow();
             return 1;
         }
@@ -2673,7 +3135,7 @@ int main(int argc, char **argv) {
                         metric = 1.0f - trk.upAt(q).y;
                     }
                     switch (elemShotElem) {
-                        case M_LOOP: case M_ROLL: case M_IMMEL:
+                        case M_LOOP: case M_ROLL: case M_IMMEL: case M_CUTBACK:
                         case M_DIVELOOP: case M_STALL:
                             metric = -trk.upAt(q).y; break;
                         case M_DIP: case M_HELIX:
@@ -3157,7 +3619,10 @@ int main(int argc, char **argv) {
 
             if (chain) {
                 clackTimer -= dt;
-                if (clackTimer <= 0) { PlaySound(sndClack); clackTimer = 0.16f; }
+                if (clackTimer <= 0) {
+                    if (AUDIO_ENABLED) PlaySound(sndClack);
+                    clackTimer = 0.16f;
+                }
             }
             whooshCD -= dt;
 
@@ -3165,7 +3630,7 @@ int main(int argc, char **argv) {
                               !(prevTag == M_LAUNCH || prevTag == M_BOOST);
             bool diveEdge   = prevSlope > -0.18f && slope <= -0.18f;
             if ((launchEdge || diveEdge) && whooshCD <= 0) {
-                PlaySound(sndWhoosh);
+                if (AUDIO_ENABLED) PlaySound(sndWhoosh);
                 whooshCD = launchEdge ? 1.2f : 2.5f;
             }
             prevSlope = slope;
@@ -3356,7 +3821,7 @@ int main(int argc, char **argv) {
                     camY = 0.0f;
                     aimY = -alt * 0.45f;
                     break;
-                case M_ROLL: case M_STALL:
+                case M_ROLL: case M_STALL: case M_FLOATSTALL: case M_CUTBACK:
                                dist = 40.0f; camY =  4.0f; aimY =  -4.0f; break;
                 case M_DIP:    dist = 34.0f; camY =  8.0f; aimY =  -6.0f; break;
                 case M_HILLS: case M_BANKAIR:
@@ -3375,9 +3840,11 @@ int main(int argc, char **argv) {
             bool onElem = fastElem || trk.tagAt(u) == (unsigned char)elemShotElem;
             float score;
             switch (elemShotElem) {
-                case M_LOOP: case M_ROLL: case M_IMMEL:
+                case M_LOOP: case M_ROLL: case M_IMMEL: case M_CUTBACK:
                 case M_DIVELOOP: case M_STALL:
                     score = -elemN.y; break;
+                case M_FLOATSTALL:
+                    score = alt; break;
                 case M_DIP:
                 case M_HELIX:
                     score = -alt;   break;
@@ -4241,6 +4708,7 @@ int main(int argc, char **argv) {
             Vector3 p = trk.cp[i];
             unsigned char tg = trk.kind[i];
             bool tightShape = (tg == M_LOOP || tg == M_ROLL || tg == M_IMMEL ||
+                               tg == M_CUTBACK ||
                                tg == M_STALL || tg == M_DIVELOOP);
             if (tightShape && trk.up[i].y < 0.35f) return false;
             float g = groundTopAt(p.x, p.z);
@@ -5184,7 +5652,8 @@ int main(int argc, char **argv) {
     if (benchMode) {
         static const char *EN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL(corkscrew)","STATION","DIP","LAUNCH",
-            "HELIX","BOOST","IMMELMANN","SCURVE","DIVE","BANKAIR","WAVE","STALL(0g)","DIVELOOP" };
+            "HELIX","BOOST","IMMELMANN","SCURVE","DIVE","BANKAIR","WAVE","STALL(0g)","DIVELOOP",
+            "FLOATSTALL","CUTBACK" };
         printf("\n=== per-element g profile (total felt g) ===\n");
         double avgSum = 0; int avgN = 0; double worstAvg = 0; const char *worstNm = "";
         for (int t = 0; t < M_COUNT; t++) {
@@ -5205,7 +5674,8 @@ int main(int argc, char **argv) {
     if (gtraceMode && (int)gtTot.size() > 4) {
         const char *EN[M_COUNT] = {
             "FLAT","CLIMB","DROP","HILLS","TURN","LOOP","ROLL","STN","DIP","LAUNCH",
-            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP" };
+            "HELIX","BOOST","IMMEL","SCURVE","DIVE","BANKAIR","WAVE","STALL","DIVELOOP",
+            "FLOATSTALL","CUTBACK" };
         const int GW = 2400, GH = 1000, X0 = 80, X1 = GW - 30, Y0 = 50, Y1 = GH - 150;
         int N = (int)gtTot.size();
         float gLo = -8.0f, gHi = 18.0f;
@@ -5279,10 +5749,12 @@ int main(int argc, char **argv) {
     }
     UnloadTexture(gAtlas);
     gAtlas = {};
-    UnloadAudioStream(wind);
-    UnloadSound(sndClack);
-    UnloadSound(sndWhoosh);
-    CloseAudioDevice();
+    if (AUDIO_ENABLED) {
+        UnloadAudioStream(wind);
+        UnloadSound(sndClack);
+        UnloadSound(sndWhoosh);
+        CloseAudioDevice();
+    }
     CloseWindow();
     return jointCaptureFailed ? 1 : 0;
 }

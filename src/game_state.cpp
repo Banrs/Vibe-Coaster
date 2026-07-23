@@ -5,8 +5,47 @@
     #define GL_SILENCE_DEPRECATION
     #include <OpenGL/gl3.h>
 #elif defined(_WIN32)
+    // Win32 exports several names that collide with raylib and the V1 geometry
+    // vocabulary, while its min/max/near/far macros break the unity build.
+    // Rename only while parsing windows.h; normal project call sites continue
+    // to resolve to raylib and our own types/functions.
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #define CloseWindow Win32CloseWindow
+    #define ShowCursor Win32ShowCursor
+    #define Rectangle Win32Rectangle
     #include <windows.h>
+    #undef CloseWindow
+    #undef ShowCursor
+    #undef Rectangle
+    #ifdef DrawText
+        #undef DrawText
+    #endif
+    #ifdef PlaySound
+        #undef PlaySound
+    #endif
+    #ifdef near
+        #undef near
+    #endif
+    #ifdef far
+        #undef far
+    #endif
     #include <GL/gl.h>
+    // The system OpenGL header intentionally stops at 1.1 on Windows. These
+    // extension enum values are consumed by entry points raylib already loads.
+    #ifndef GL_COLOR_ATTACHMENT0
+        #define GL_COLOR_ATTACHMENT0 0x8CE0
+    #endif
+    #ifndef GL_TEXTURE_COMPARE_MODE
+        #define GL_TEXTURE_COMPARE_MODE 0x884C
+    #endif
+    #ifndef GL_COMPARE_REF_TO_TEXTURE
+        #define GL_COMPARE_REF_TO_TEXTURE 0x884E
+    #endif
+    #ifndef GL_TEXTURE_COMPARE_FUNC
+        #define GL_TEXTURE_COMPARE_FUNC 0x884D
+    #endif
 #else
     #include <GL/gl.h>
 #endif
@@ -110,7 +149,8 @@ static Color mixc(Color a, Color b, float t) {
 enum SegMode { M_FLAT, M_CLIMB, M_DROP, M_HILLS, M_TURN, M_LOOP, M_ROLL,
                M_STATION, M_DIP, M_LAUNCH, M_HELIX, M_BOOST, M_IMMEL,
                M_SCURVE, M_DIVE, M_BANKAIR, M_WAVE,
-               M_STALL, M_DIVELOOP,
+               M_STALL, M_DIVELOOP, M_FLOATSTALL,
+               M_CUTBACK,
                M_COUNT };
 
 // One propulsion/energy law shared by live simulation, generator prediction,
@@ -127,7 +167,7 @@ static float applyTrackDrive(float speed, unsigned char tag, unsigned char drive
         // name.  Both powered kinds share the 1.5x Do-Dodonpa acceleration
         // contract, but their SPEED targets differ: the station LAUNCH is the
         // once-per-lap 360 km/h record peak, while in-course BOOSTers
-        // re-cruise to 292 km/h so the following coast arc still passes
+        // re-cruise to 250 km/h so the following coast arc still passes
         // through the airtime and inversion entry windows.
         const float cap = tag == M_BOOST ? BOOST_CRUISE_TARGET
                                          : V1_PROPULSION.targetSpeed;

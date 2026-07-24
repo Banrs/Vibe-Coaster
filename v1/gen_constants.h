@@ -276,7 +276,7 @@ inline constexpr float TERRAIN_DECK_CLEARANCE = 2.0f;
 // exact 1.0--1.5x geometry window rather than an unrelated speed clamp.
 // OVERAGE (2026-07-23): the -5 g crest energy solve now stretches to -5.5 g
 // (G_ELEMENT_OVERAGE 1.10), so the g-derived MAX widens by sqrt(1.10)=1.0488.
-inline constexpr float HILL_ENTRY_MIN = 48.0f; // 172.8 km/h; entering slower than the exact -5g energy solve (54.59f/196.5 km/h at 1.0x) just yields a gentler (floater) crest -- the 1.0-1.5x dimension clamp still applies -- so widen the window here so the airtime family isn't starved by near-misses.
+inline constexpr float HILL_ENTRY_MIN = 46.0f; // 172.8 km/h; entering slower than the exact -5g energy solve (54.59f/196.5 km/h at 1.0x) just yields a gentler (floater) crest -- the 1.0-1.5x dimension clamp still applies -- so widen the window here so the airtime family isn't starved by near-misses.
 inline constexpr float HILL_ENTRY_MAX = 70.11f; // 252.4 km/h at 1.5x (66.85*sqrt(1.10); -5.5g crest overage)
 
 // --- POST-BOOST SPEED-SHED CLIMB (2026-07-23) ----------------------------

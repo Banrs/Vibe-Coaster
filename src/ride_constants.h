@@ -61,7 +61,7 @@ static constexpr float FASTEST_ACCEL_REF_TIME = 1.56f;
 static constexpr float FASTEST_ACCEL_REF      = FASTEST_ACCEL_REF_V / FASTEST_ACCEL_REF_TIME;
 static constexpr PropulsionSpec V1_PROPULSION{
     360.0f/3.6f, FASTEST_ACCEL_REF, 1.50f, FASTEST_ACCEL_REF*1.50f,
-    70.0f, 2100.0f, 42.0f
+    70.0f, 1800.0f, 42.0f
 };
 // In-course boosters re-cruise, they do not re-launch: only the station launch
 // reaches the project's 360 km/h record-scale peak.
@@ -76,4 +76,11 @@ static constexpr float BOOST_CRUISE_TARGET = 250.0f / 3.6f;
 // inversion entry windows. This reserve remains a genuine anti-stall backstop:
 // a higher trigger would pre-empt the physical cadence and turn every booster
 // into an emergency section.
+// AVG-FLOOR calibration (2026-07-24, 7 configs measured): cadence 2100->1800
+// is the one clean average gain (232->239 km/h); trigger raises (46/52) and
+// plateau raises (255/260) either did nothing or tripped reshuffles onto
+// chain-crawl/stall seeds.  The HILLS supply the shorter cadence trims is
+// recovered by widening the hills window bottom (HILL_ENTRY_MIN 48->46,
+// gen_constants.h) so the remaining slow-tail meters become floater-hill
+// anchors instead of dead track.
 static float BOOST_TRIG = V1_PROPULSION.operatingReserve;

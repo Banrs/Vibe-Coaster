@@ -1,0 +1,14 @@
+[package]
+name = "vc-ride"
+description = "The ride model, the evaluator and the global solve."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vc-math = { path = "../vc-math" }
+
+[lints]
+workspace = true

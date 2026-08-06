@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "vc-math"
 version = "0.1.0"
+
+[[package]]
+name = "vc-ride"
+version = "0.1.0"
+dependencies = [
+ "vc-math",
+]

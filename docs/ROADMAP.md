@@ -10,15 +10,16 @@ wrong — fix the design rather than leaving a fixup behind.
    Actions running fmt, clippy, tests and docs with warnings denied.
 2. ~~Math foundations — frames, splines, arclength, integrators, SI units~~ — **done.** See the
    Numerics section of `ARCHITECTURE.md` for the decisions that came out of it.
-3. The ride model, complete — spec, site, vehicle. All three real from the start, even where nothing
-   consumes them yet. *Blocked on the element vocabulary: what an element is, and whether the human
-   pins forces or geometry.*
-4. Evaluator — force profile → heartline → geometry, plus measurement: forces, energy, clearance
-5. Multibody train inside the evaluator — couplers, drag, friction, propulsion and braking as
-   parameters
-6. The global solve — closure, energy, clearance, envelope, continuity, all at once
-7. Godot client — GDExtension binding, track render, free camera. *First time you see it*
-8. POV ride — true seat position, row selectable. *Rideable*
+3. ~~The ride model, complete — spec, site, vehicle~~ — **done.** Elements are force-profile
+   templates; the human pins element identity, order and height. See `MODEL.md`.
+4. ~~Evaluator — force profile → heartline → geometry, plus measurement~~ — **done.**
+5. Multibody train — **partial.** Rigid couplers and mass-weighted gravity over every row give the
+   back-row snap; elastic couplers and snatch loads are not modelled.
+6. The global solve — **partial.** Closure, energy, clearance and envelope converge together;
+   pinned apex height does not. Basin-sensitive. See `MODEL.md`.
+7. Godot client — GDExtension binding, track render, free camera. *Not started; an HTML POV viewer
+   stands in for now*
+8. ~~POV ride — true seat position, row selectable~~ — **done, in the stand-in viewer.**
 9. Analysis surfaced — envelopes, jerk, clearance, buildability cost, pacing score
 10. Falcon's Flight validation — reproduces published figures within a written-down tolerance
 11. Records and cliff terrain — feeding the model aggressive parameters and real heightmaps. Data

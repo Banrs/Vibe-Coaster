@@ -37,8 +37,10 @@ the thrill here is speed and scale). Manual spline editing as the primary mode. 
 
 ```
 cargo test --workspace
+cargo run --release -p vc-ride --bin generate && open out/ride.html
 ```
 
-Current state: roadmap steps 1–2 done — the workspace, CI, and the math foundations (`vc-math`).
-Nothing rideable yet; step 7 is the first time anything is visible. Destined for
-`github.com/Banrs/Vibe-Coaster`.
+That solves the preset ride and opens a POV of it. Current state: **rideable**, through a stand-in
+HTML viewer rather than Godot. The generator produces a closed 5.6 km circuit at 321 km/h on maglev
+running gear, inside a near-future force envelope. See [`docs/MODEL.md`](docs/MODEL.md) for what
+works, what does not, and what needs deciding. Destined for `github.com/Banrs/Vibe-Coaster`.

@@ -200,6 +200,17 @@ pub struct Element {
     /// achievable, and how, is a property of the vehicle's propulsion, not of
     /// the track.
     pub speed_control: Option<Free>,
+    /// Authored pitch, degrees, positive climbing — when present, this element
+    /// is a *geometric* section: the vertical geometry follows this channel
+    /// and the felt vertical force becomes a measurement instead of an input.
+    ///
+    /// Lifts, launch grades and brake runs need this, and not as a
+    /// convenience: a force profile cannot hold a straight grade, because
+    /// `n = cos θ` is a knife-edge — any pitch error curves the track further
+    /// from the grade, and the evaluator, asked to hold it anyway, loops.
+    /// Real practice (openFVD's section kinds) mixes geometric and
+    /// force-driven sections per element; this field is that boundary.
+    pub pitch_deg: Option<Channel>,
     /// How big this element has to be, if anything is demanded of it. An
     /// outcome the solve must hit, not an input it can set.
     pub pin: Option<Pin>,
@@ -486,6 +497,10 @@ pub struct Site {
     pub terrain: Terrain,
     /// Metres the heartline must stay above the ground.
     pub min_clearance: f64,
+    /// Vertical budget: the ride's highest point may sit at most this far
+    /// above its lowest. A design rule, not a standard — it keeps the layout
+    /// from spending the whole escarpment when one dive is the point.
+    pub max_elevation_span: f64,
     /// Air density, kg/m³. A site property, not a constant: the reference ride
     /// sits about 900 m up in desert heat, where the air is some 15% thinner
     /// than sea level and the top speed is several km/h higher for it.
@@ -695,6 +710,7 @@ mod tests {
             roll_scale: Free::fixed(1.0),
             speed_control: None,
             pin: None,
+            pitch_deg: None,
             exit_pitch_deg: 0.0,
         };
         let p = Params {
@@ -802,6 +818,7 @@ mod tests {
                 roll_scale: Free::fixed(1.0),
                 speed_control: Some(Free::new(30.0, 10.0, 40.0)),
                 pin: None,
+                pitch_deg: None,
                 exit_pitch_deg: 0.0,
             }],
         };

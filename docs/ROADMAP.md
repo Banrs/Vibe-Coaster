@@ -19,8 +19,11 @@ wrong — fix the design rather than leaving a fixup behind.
    trim sets the pitch it hands on, length sets its size — seeded by damped Newton before the
    solve, then solve/re-seed/solve. Closure reaches 18.7 m over 6.9 km. Still basin-sensitive, and
    three limits remain slightly over. See `MODEL.md`.
-7. Godot client — GDExtension binding, track render, free camera. *Not started; an HTML POV viewer
-   stands in for now*
+7. Godot client — GDExtension binding, track render, free camera — **basic client done.**
+   `vc-godot` exposes the generator through one method; `godot/` is a lean project: generate
+   button, POV ride, fly camera, terrain. The in-engine ride is bit-identical to the CLI's
+   (same `solve_two_rounds`, verified against `out/ride.json`). Dress waits for step 12; the
+   HTML viewer stays for quick looks
 8. ~~POV ride — true seat position, row selectable~~ — **done, in the stand-in viewer.**
 9. Analysis surfaced — envelopes, jerk, clearance, buildability cost, pacing score. *Candidate,
    not decided, not ratified by Daniel:* score on g-seconds rather than peak g. For a constant-speed arc `∫n dt = v·Δθ/g₀` —

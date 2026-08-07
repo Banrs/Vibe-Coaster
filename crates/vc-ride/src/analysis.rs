@@ -201,6 +201,18 @@ pub fn analyse<T: Scalar>(model: &RideModel, ride: &Ride<T>) -> Analysis<T> {
         over: T::from_f64(model.site.min_clearance) - min_clearance,
     });
 
+    let (low, high) = ride.samples.iter().fold(
+        (T::from_f64(f64::MAX), T::from_f64(f64::MIN)),
+        |(lo, hi), s| (lo.min(s.position.z), hi.max(s.position.z)),
+    );
+    checks.push(Check {
+        name: format!(
+            "elevation span (limit {:.0} m)",
+            model.site.max_elevation_span
+        ),
+        over: high - low - T::from_f64(model.site.max_elevation_span),
+    });
+
     let top_speed = ride.samples.iter().fold(T::ZERO, |m, s| m.max(s.speed));
     if let Some(limit) = model.vehicle.wheel_speed_limit {
         // A buildability limit, not a comfort one: running gear that overheats

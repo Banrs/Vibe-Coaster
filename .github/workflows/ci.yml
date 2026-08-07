@@ -27,3 +27,18 @@ jobs:
         run: cargo test --workspace --all-features
       - name: Docs
         run: cargo doc --workspace --no-deps
+
+  # Links the GDExtension cdylib on the other desktop platforms — the one
+  # thing the check job's clippy pass does not prove. No Godot needed: the
+  # godot crate compiles against a prebuilt API.
+  extension:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build extension
+        run: cargo build -p vc-godot --release

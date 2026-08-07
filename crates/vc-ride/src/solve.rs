@@ -677,6 +677,22 @@ pub fn solve(model: &RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
     )
 }
 
+/// The whole generation pipeline from a fresh spec: seed, solve, re-seed,
+/// solve.
+///
+/// Two rounds is a fixed-point iteration between seeding and solving: closure
+/// needs kilometres of correction, and finding them moves the lengths far
+/// enough that the pitches and sizes need re-establishing at the speeds the
+/// new layout actually runs at. Every front end calls this one function, so a
+/// ride generated in the Godot client is the same ride the CLI writes.
+pub fn solve_two_rounds(model: &mut RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
+    seed_geometry(model, 3);
+    let (first, _) = solve(model, max_iterations);
+    model.spec.adopt(&first.parameters);
+    seed_geometry(model, 2);
+    solve(model, max_iterations)
+}
+
 fn half_sum_squares(r: &[f64]) -> f64 {
     0.5 * r.iter().map(|v| v * v).sum::<f64>()
 }
@@ -762,6 +778,7 @@ mod tests {
                     trim: Free::fixed(0.0),
                     roll_scale: Free::fixed(1.0),
                     speed_control: None,
+                    pitch_deg: None,
                     pin: None,
                     exit_pitch_deg: 0.0,
                 }],
@@ -774,6 +791,7 @@ mod tests {
                     heights: vec![0.0; 64],
                 },
                 min_clearance: 3.0,
+                max_elevation_span: 10_000.0,
                 air_density: 1.0,
             },
             vehicle: preset::train(),

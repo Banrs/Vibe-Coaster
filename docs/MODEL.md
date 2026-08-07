@@ -13,6 +13,18 @@ open out/ride.html
 Pick a row from the dropdown — row 8 is the back, which is where the snap is.
 `chase cam` pulls the camera out behind the train.
 
+Or in the Godot client (`brew install --cask godot`, once):
+
+```
+cargo build -p vc-godot --release
+godot --path godot
+```
+
+Press Generate — the solve runs in-engine, a minute or two — then it rides
+itself. `C` toggles between the seat and a fly camera (right mouse looks,
+WASD moves, Shift is fast). The ride is bit-identical to the CLI's: both call
+`solve::solve_two_rounds`.
+
 ## What the generator produced
 
 | | this ride | Falcon's Flight | margin |
@@ -131,6 +143,8 @@ data points for the table:
 | windowed jerk as the solver's check | 513 m |
 | multiple shooting, 3 seams, defect weight ×5, wide boxes | defects never closed; forward ride ~1.2 km |
 | dual jerk: design enforced, proving advisory | **18.7 m** restored |
+| minimax split alone, old 14-element layout | 28.1 m, 21.4° — basin held, design jerk passed |
+| FF-shaped 19-element roster + geometric grades + closer | ~1.3 km — seeder does not bind pins on grade/overbank/roll elements yet |
 
 The brake-run change was a reasonable-looking tweak that made closure twenty
 times worse, and it was reverted rather than tuned around.

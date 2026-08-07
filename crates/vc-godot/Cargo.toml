@@ -1,0 +1,21 @@
+[package]
+name = "vc-godot"
+description = "GDExtension binding: the generator, callable from Godot."
+version.workspace = true
+edition.workspace = true
+# godot 0.5's MSRV; inheriting the workspace 1.85 would make the MSRV-aware
+# resolver refuse the dependency.
+rust-version = "1.94"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+vc-math = { path = "../vc-math" }
+vc-ride = { path = "../vc-ride" }
+godot = "0.5"
+
+[lints]
+workspace = true

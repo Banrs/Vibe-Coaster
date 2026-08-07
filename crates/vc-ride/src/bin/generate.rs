@@ -19,21 +19,7 @@ fn main() -> std::io::Result<()> {
     println!("--- as specified ---");
     report(&model, &evaluate(&model, &model.spec.free_parameters()));
 
-    // Size the pinned elements against their own demands before the global
-    // solve sees them. Without this the solve is asked to discover the
-    // geometry and close the circuit at the same time, and it does neither.
-    solve::seed_geometry(&mut model, 3);
-    println!("\n--- as seeded ---");
-    report(&model, &evaluate(&model, &model.spec.free_parameters()));
-
-    // Solve, re-seed, solve. Closure needs kilometres of correction, and
-    // finding them moves the lengths far enough that the pitches and sizes need
-    // re-establishing at the speeds the new layout actually runs at. Two rounds
-    // is a fixed-point iteration between the two, and it costs one more solve.
-    let (first, _) = solve::solve(&model, 60);
-    model.spec.adopt(&first.parameters);
-    solve::seed_geometry(&mut model, 2);
-    let (outcome, ride) = solve::solve(&model, 60);
+    let (outcome, ride) = solve::solve_two_rounds(&mut model, 60);
     println!("\n--- solve ---\n{}", outcome.summary());
     println!("\n--- as solved ---");
     report(&model, &ride);
@@ -86,10 +72,9 @@ fn main() -> std::io::Result<()> {
 
 /// Peak and trough of the felt vertical g across one element.
 fn extremes(ride: &Ride<f64>, index: usize) -> (f64, f64) {
-    let at = index * vc_ride::eval::STEPS_PER_ELEMENT;
-    let end = (at + vc_ride::eval::STEPS_PER_ELEMENT).min(ride.samples.len() - 1);
-    ride.samples[at..=end]
+    ride.samples
         .iter()
+        .filter(|s| s.element == index)
         .fold((f64::MIN, f64::MAX), |(u, d), s| {
             (u.max(s.normal_g), d.min(s.normal_g))
         })

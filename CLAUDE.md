@@ -9,16 +9,29 @@ not open with an implementation.
 
 ```
 cargo run --release -p vc-ride --bin generate && open out/ride.html
+cargo build -p vc-godot --release && godot --path godot   # the rideable Godot client
 cargo test --workspace --release          # 93 tests
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ## Where it stands
 
-Rideable. Roadmap steps 1–4 and 8 done, 5 and 6 partial, 7 stands in as HTML rather than Godot.
+Godot client works (steps 7 basic): `vc-godot` (GDExtension, godot-rust) runs the generator
+in-engine, `godot/` rides it — POV/chase/fly cameras, train box, terrain, ground, crossties,
+speed-FOV, and a live debug overlay (g, speed, pitch, distance, heights, element). Same
+`solve_two_rounds` as the CLI; CI cross-builds the extension on Linux and Windows.
 
-Latest run: 6,861 m, 386 km/h top, 205 km/h average, 247 m airtime hill, 206 m cliff dive, 7.3 g
-pull-out. Every record target beaten. Closure 18.7 m, 11.4° of heading error.
+**The layout is mid-rebuild and the solve is NOT currently converged.** 2026-08-07 late session
+landed, per Daniel's rulings: minimax transition split (micro-flats gone, design jerk passes on the
+old layout), a C³ septic closer bridging end→station exactly (engages under an 80 m gap), geometric
+grade sections (pitch authored, force measured — a force profile cannot hold a grade; one looped
+791° trying), gravity-aware speed demands on grades, a 320 m elevation-span check, and a new
+19-element FF-shaped roster (lift, twisted 55 m drop, airtime cluster, zero-g roll, inclined cliff
+launch+climb, rim overbank, holding brake, 197.5 m dive, 6.9 g pullout, 225 m camelback, helix,
+finale). The old 14-element layout closed at 18.7 m; the new roster sits ~1.3 km out — **the seeder
+does not yet bind pins on grade/overbank/roll elements, and that is the next session's first job.**
+Daniel also proposed dual-side anchoring (integrate from both station ends, C³ joint mid-ride);
+the closer machinery is the template for it.
 
 ## The two ideas everything rests on
 

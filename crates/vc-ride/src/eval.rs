@@ -265,13 +265,184 @@ pub fn evaluate_split<T: Scalar>(
     );
 
     close_and_measure(model, &params, &end, &mut samples, &mut results, &history);
+    append_closer(model, &end, &mut samples, &mut results);
+    let last = samples.len() - 1;
     let ride = Ride {
+        length: samples[last].s,
+        duration: samples[last].time,
         samples,
         elements: results,
-        length: end.s,
-        duration: end.time,
     };
     (ride, ends)
+}
+
+/// Steps sampled along the closer.
+const CLOSER_STEPS: usize = 400;
+
+/// Longest gap the closer will bridge, metres. While the solve is still
+/// kilometres from home a bridge would be a monster whose measured forces
+/// reshape every residual; under this length at creep speed its forces are
+/// negligible, so the solve's landscape is untouched by its appearance.
+const CLOSER_REACH: f64 = 80.0;
+
+/// Appends the closer: a septic Hermite bridge from wherever the ride ended
+/// to the station. Position, velocity, acceleration and jerk all match at
+/// both ends — C³, so nothing steps or kinks at the joins — and the circuit
+/// closes exactly by construction.
+///
+/// This is the one stretch where geometry is dictated and the felt force is
+/// an *outcome*, measured and judged against the envelope like everything
+/// else. That is honest for what it models: a train creeping home under tyre
+/// control, where the infrastructure owns the kinematics.
+fn append_closer<T: Scalar>(
+    model: &RideModel,
+    end: &Start<T>,
+    samples: &mut Vec<Sample<T>>,
+    results: &mut Vec<ElementResult<T>>,
+) {
+    let g0 = T::from_f64(G0);
+    let gravity = Vec3::new(T::ZERO, T::ZERO, -g0);
+    let station = &model.spec.station;
+    let target = Vec3::new(
+        T::from_f64(station.position.x),
+        T::from_f64(station.position.y),
+        T::from_f64(station.position.z),
+    );
+    let gap = (target - end.position).norm();
+    if !(0.5..CLOSER_REACH).contains(&gap.to_f64()) {
+        return;
+    }
+
+    // Acceleration and jerk at entry, read off the last two samples: the felt
+    // force is the proper acceleration, so a = f·g₀ + g.
+    let accel = |s: &Sample<T>| {
+        (s.frame.up * s.normal_g + s.frame.right * s.lateral_g + s.frame.tangent * s.longitudinal_g)
+            * g0
+            + gravity
+    };
+    let (last, prev) = (&samples[samples.len() - 1], &samples[samples.len() - 2]);
+    let a0 = accel(last);
+    let dt = last.time - prev.time;
+    let j0 = if dt.to_f64() > 0.0 {
+        (a0 - accel(prev)) / dt
+    } else {
+        Vec3::new(T::ZERO, T::ZERO, T::ZERO)
+    };
+
+    // The bridge in time: u ∈ [0, 1] over `span` seconds, endpoint derivatives
+    // scaled accordingly. The station end is level, straight and settled.
+    let dispatch = T::from_f64(station.dispatch_speed);
+    let span = gap / ((end.speed + dispatch) * T::from_f64(0.5)) * T::from_f64(1.1);
+    let heading = Vec3::new(
+        T::from_f64(station.heading.x),
+        T::from_f64(station.heading.y),
+        T::from_f64(station.heading.z),
+    );
+    let c0 = end.position;
+    let c1 = end.carrier.tangent * (end.speed * span);
+    let c2 = a0 * span.squared() * T::from_f64(0.5);
+    let c3 = j0 * span.squared() * span / T::from_f64(6.0);
+    let r0 = target - (c0 + c1 + c2 + c3);
+    let r1 = heading * (dispatch * span) - (c1 + c2 * T::from_f64(2.0) + c3 * T::from_f64(3.0));
+    let r2 = -(c2 * T::from_f64(2.0) + c3 * T::from_f64(6.0));
+    let r3 = -c3 * T::from_f64(6.0);
+    // Right-end conditions solved once, exactly: the inverse of the u⁴..u⁷
+    // constraint matrix at u = 1.
+    let mix = |a: f64, b: f64, c: f64, d: f64| {
+        r0 * T::from_f64(a) + r1 * T::from_f64(b) + r2 * T::from_f64(c) + r3 * T::from_f64(d)
+    };
+    let c4 = mix(35.0, -15.0, 2.5, -1.0 / 6.0);
+    let c5 = mix(-84.0, 39.0, -7.0, 0.5);
+    let c6 = mix(70.0, -34.0, 6.5, -0.5);
+    let c7 = mix(-20.0, 10.0, -2.0, 1.0 / 6.0);
+
+    let element = results.len();
+    let mut s = end.s;
+    let mut position = end.position;
+    let mut turned = T::ZERO;
+    let mut previous = end.carrier.tangent;
+    let mut zmax = (end.position.z, end.speed);
+    let min_speed = T::from_f64(MIN_SPEED);
+    for step in 1..=CLOSER_STEPS {
+        let u = T::from_f64(step as f64 / CLOSER_STEPS as f64);
+        let at = |k: usize| -> T {
+            [
+                T::ONE,
+                u,
+                u.squared(),
+                u.powi(3),
+                u.powi(4),
+                u.powi(5),
+                u.powi(6),
+                u.powi(7),
+            ][k]
+        };
+        let horner = |f: &dyn Fn(usize) -> T| {
+            c0 * f(0)
+                + c1 * f(1)
+                + c2 * f(2)
+                + c3 * f(3)
+                + c4 * f(4)
+                + c5 * f(5)
+                + c6 * f(6)
+                + c7 * f(7)
+        };
+        let p = horner(&|k| at(k));
+        let dp = horner(&|k| {
+            if k == 0 {
+                T::ZERO
+            } else {
+                at(k - 1) * T::from_f64(k as f64)
+            }
+        }) / span;
+        let ddp = horner(&|k| {
+            if k < 2 {
+                T::ZERO
+            } else {
+                at(k - 2) * T::from_f64((k * (k - 1)) as f64)
+            }
+        }) / span.squared();
+
+        let speed = dp.norm().max(min_speed);
+        let tangent = dp / speed;
+        let frame = Frame::level(tangent);
+        let felt = (ddp - gravity) / g0;
+        s += (p - position).norm();
+        position = p;
+        turned += (previous.x * tangent.y - previous.y * tangent.x)
+            .atan2(previous.x * tangent.x + previous.y * tangent.y);
+        previous = tangent;
+        if position.z.to_f64() > zmax.0.to_f64() {
+            zmax = (position.z, speed);
+        }
+        samples.push(Sample {
+            s,
+            time: end.time + u * span,
+            position,
+            frame,
+            speed,
+            normal_g: felt.dot(frame.up),
+            lateral_g: felt.dot(frame.right),
+            longitudinal_g: felt.dot(frame.tangent),
+            roll_rate: T::ZERO,
+            clearance: position.z - model.site.terrain.height(position.x, position.y),
+            element,
+        });
+    }
+    let station_z = T::from_f64(station.position.z);
+    results.push(ElementResult {
+        name: "closer",
+        length: s - end.s,
+        entry_speed: end.speed,
+        exit_speed: dispatch,
+        requested_speed: Some(dispatch),
+        apex: zmax.0 - station_z,
+        rise: T::ZERO,
+        drop: T::ZERO,
+        crest_speed: zmax.1,
+        exit_pitch: T::ZERO,
+        heading_change: vc_math::units::to_degrees(turned),
+    });
 }
 
 /// Integrates one contiguous run of elements from a given start, appending to
@@ -316,8 +487,24 @@ fn integrate<T: Scalar>(
         // requested speed. What actually comes out is whatever physics gives
         // once gravity and drag have had their say; the difference is a
         // residual the solve can see, not something corrected here.
+        //
+        // A geometric grade knows its height in advance, so that goes into
+        // the energy budget too — without it a lift asked for a lower exit
+        // speed brakes at the bottom of its own climb and stalls.
         let demand = p.exit_speed.map(|target| {
-            (target.squared() - entry_speed.squared()) / (T::from_f64(2.0) * p.length)
+            let climb = element.pitch_deg.as_ref().map_or(T::ZERO, |pitch| {
+                const SAMPLES: usize = 32;
+                let mean_sin = (0..SAMPLES)
+                    .map(|i| {
+                        let u = T::from_f64((i as f64 + 0.5) / SAMPLES as f64);
+                        vc_math::units::from_degrees(pitch.sample(u)).sin()
+                    })
+                    .fold(T::ZERO, |a, b| a + b)
+                    / T::from_f64(SAMPLES as f64);
+                p.length * mean_sin
+            });
+            (target.squared() - entry_speed.squared() + T::from_f64(2.0) * g0 * climb)
+                / (T::from_f64(2.0) * p.length)
         });
 
         for step in 0..STEPS_PER_ELEMENT {
@@ -462,7 +649,10 @@ fn close_and_measure<T: Scalar>(
     // side of it. The valley is found by walking out, not by taking a minimum
     // over a fixed window — a window reaching into the next element reports the
     // bottom of the *next* descent, which on a cliff ride is a hundred metres
-    // of somebody else's geometry.
+    // of somebody else's geometry. A geometric element measures within its own
+    // endpoints instead: its pitch is authored and monotone, and the walk out
+    // of a grade continues through the equally monotone grade before it, so a
+    // pin on one would bind the combined climb of both.
     for (i, result) in results.iter_mut().enumerate() {
         let first = i * STEPS_PER_ELEMENT;
         let last = (first + STEPS_PER_ELEMENT).min(samples.len() - 1);
@@ -470,8 +660,13 @@ fn close_and_measure<T: Scalar>(
         let peak = (first..=last)
             .max_by(|a, b| height(a).total_cmp(&height(b)))
             .unwrap_or(first);
-        result.rise = samples[peak].position.z - valley(samples, peak, -1);
-        result.drop = samples[peak].position.z - valley(samples, peak, 1);
+        if model.spec.elements[i].pitch_deg.is_some() {
+            result.rise = samples[peak].position.z - samples[first].position.z;
+            result.drop = samples[peak].position.z - samples[last].position.z;
+        } else {
+            result.rise = samples[peak].position.z - valley(samples, peak, -1);
+            result.drop = samples[peak].position.z - valley(samples, peak, 1);
+        }
         result.crest_speed = samples[peak].speed;
         result.exit_pitch = vc_math::units::to_degrees(samples[last].frame.tangent.z.asin());
 
@@ -518,11 +713,35 @@ fn derivative<T: Scalar>(
     let frame = state.carrier.rolled(bank);
     let tangent = frame.tangent;
 
-    // Curvature: the felt force, plus the part of gravity that acts across the
-    // direction of travel, divided by speed squared.
-    let felt = frame.up * (normal_g * g0) + frame.right * (lateral_g * g0);
     let gravity_across = gravity - tangent * gravity.dot(tangent);
-    let curvature = (felt + gravity_across) / speed.squared();
+    // Force-driven track bends to produce the authored force; a geometric
+    // section follows its authored pitch and the force is measured off it.
+    // Data decides which, never a name.
+    let (curvature, normal_g, lateral_g) = if let Some(pitch) = &element.pitch_deg {
+        let (_, slope) = pitch.evaluate(u);
+        let rate = vc_math::units::from_degrees(slope) / p.length;
+        let lift = {
+            let up_world = Vec3::new(T::ZERO, T::ZERO, T::ONE);
+            let perp = up_world - tangent * up_world.dot(tangent);
+            perp / perp.norm().max(T::from_f64(1e-6))
+        };
+        let curvature = lift * rate;
+        let felt = curvature * speed.squared() - gravity_across;
+        (
+            curvature,
+            felt.dot(frame.up) / g0,
+            felt.dot(frame.right) / g0,
+        )
+    } else {
+        // Curvature: the felt force, plus the part of gravity that acts
+        // across the direction of travel, divided by speed squared.
+        let felt = frame.up * (normal_g * g0) + frame.right * (lateral_g * g0);
+        (
+            (felt + gravity_across) / speed.squared(),
+            normal_g,
+            lateral_g,
+        )
+    };
 
     // Longitudinal acceleration. Gravity is averaged over the whole train, not
     // taken at the front — this is the multibody term.
@@ -699,6 +918,7 @@ mod tests {
                 heights: vec![0.0; 24 * 24],
             },
             min_clearance: 3.0,
+            max_elevation_span: 10_000.0,
             air_density: 1.0,
         }
     }
@@ -756,6 +976,7 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: speed.map(Free::fixed),
+            pitch_deg: None,
             pin: None,
             exit_pitch_deg: 0.0,
         }
@@ -801,6 +1022,7 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
+            pitch_deg: None,
             pin: None,
             exit_pitch_deg: 0.0,
         };
@@ -835,6 +1057,7 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
+            pitch_deg: None,
             pin: None,
             exit_pitch_deg: 0.0,
         };
@@ -918,6 +1141,7 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
+            pitch_deg: None,
             pin: None,
             exit_pitch_deg: 0.0,
         };
@@ -961,19 +1185,90 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
+            pitch_deg: None,
             pin: None,
             exit_pitch_deg: 0.0,
         };
         let coarse = run(&model_of(vec![turn(400.0)], 45.0));
         let fine = run(&model_of(vec![turn(200.0), turn(200.0)], 45.0));
 
-        let gap = (coarse.end().position - fine.end().position).norm();
+        // Compared at the end of the authored track, before any closer: the
+        // closer lands every ride exactly on the station by construction,
+        // which would make this comparison vacuous.
+        let end_of = |r: &Ride<f64>, e: usize| {
+            *r.samples
+                .iter()
+                .rfind(|s| s.element == e)
+                .expect("element has samples")
+        };
+        let (ce, fe) = (end_of(&coarse, 0), end_of(&fine, 1));
+        let gap = (ce.position - fe.position).norm();
         assert!(
             gap < 0.015,
             "endpoint moved {gap} m when the step was halved"
         );
-        assert!((coarse.end().speed - fine.end().speed).abs() < 1e-3);
-        assert_eq!(coarse.samples.len(), STEPS_PER_ELEMENT + 1);
+        assert!((ce.speed - fe.speed).abs() < 1e-3);
+        assert_eq!(
+            coarse.samples.iter().filter(|s| s.element == 0).count(),
+            STEPS_PER_ELEMENT + 1
+        );
+    }
+
+    #[test]
+    fn a_geometric_element_measures_its_own_rise_and_a_force_element_does_not() {
+        // Two monotone grades back to back: the valley-walk from the second's
+        // peak would descend through both, so a pin on the second would bind
+        // the combined climb. Geometric elements measure inside their own
+        // endpoints; force elements keep the walk.
+        let graded = |name: &'static str, deg: f64, length: f64| Element {
+            pitch_deg: Some(Channel::new(&[
+                (0.0, 0.0),
+                (0.25, deg),
+                (0.75, deg),
+                (1.0, 0.0),
+            ])),
+            ..level(name, length, None)
+        };
+        let dip = Element {
+            normal_g: Channel::new(&[(0.0, 1.0), (0.3, 0.8), (0.7, 1.2), (1.0, 1.0)]),
+            ..level("dip", 100.0, None)
+        };
+        let model = model_of(
+            vec![
+                graded("shallow", 6.0, 150.0),
+                graded("steep", 12.0, 150.0),
+                dip,
+            ],
+            30.0,
+        );
+        let ride = run(&model);
+        let z_at = |e: usize| {
+            let first = ride.samples.iter().position(|s| s.element == e).unwrap();
+            let last = ride.samples.iter().rposition(|s| s.element == e).unwrap();
+            (
+                ride.samples[first].position.z,
+                ride.samples[last].position.z,
+            )
+        };
+        let (z0, z1) = z_at(0);
+        let (_, z2) = z_at(1);
+        let (climb_a, climb_b) = (z1 - z0, z2 - z1);
+        assert!(climb_a > 5.0 && climb_b > 10.0, "{climb_a} {climb_b}");
+        // The steep grade's rise is its own climb, not both climbs.
+        assert!(
+            (ride.elements[1].rise - climb_b).abs() < 0.1,
+            "rise {} vs own climb {climb_b}",
+            ride.elements[1].rise
+        );
+        // The force element behind them still walks out: its peak is where it
+        // starts diving, and its valley is the bottom of the whole ascent, two
+        // elements away.
+        assert!(
+            (ride.elements[2].rise - (climb_a + climb_b)).abs() < 1.0,
+            "rise {} vs total climb {}",
+            ride.elements[2].rise,
+            climb_a + climb_b
+        );
     }
 
     #[test]

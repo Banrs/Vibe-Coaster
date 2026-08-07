@@ -1,0 +1,10 @@
+; Godot project for the rideable checkpoint. The extension is built with
+; `cargo build -p vc-godot --release` before opening this project.
+config_version=5
+
+[application]
+config/name="Vibe-Coaster"
+run/main_scene="res://main.tscn"
+
+[rendering]
+renderer/rendering_method="forward_plus"

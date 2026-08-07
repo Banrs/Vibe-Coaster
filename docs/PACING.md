@@ -1,9 +1,21 @@
 # Pacing and intensity distribution — research notes
 
-> **Status: research input, not a decision.** Gathered for roadmap step 9 (pacing score) and step 10
-> (Falcon's Flight validation). Every factual claim carries a URL. Anything derived here rather than
-> read off a source is prefixed **INFERRED** — those are arithmetic on the cited figures, not
-> published values.
+> **Status: research input. Nothing here is decided.** Gathered for roadmap step 9 (pacing score) and
+> step 10 (Falcon's Flight validation). Every factual claim carries a URL. Anything derived here
+> rather than read off a source is prefixed **INFERRED** — those are arithmetic on the cited figures,
+> not published values.
+>
+> **Before implementing any of this: review it, and ask.** These notes were assembled in one research
+> pass under a search budget that ran out (see §11), and one confidently-worded conclusion has already
+> been withdrawn on review as a category error (§2). Treat the derivations as arguments to be checked,
+> not as results to be coded. In particular, decide *with the human* — do not decide alone —
+>
+> - whether the pacing score integrates g-seconds, and over what window and axis set;
+> - whether §1's envelope is complete enough to gate on, given the ASTM tables could not be obtained;
+> - how §4's `G_total / duration` should be normalised, since the Σ|dθ| figures there are guesses;
+> - whether any of this belongs in the model at all, or only in the analysis surfaced to the user.
+>
+> Open questions are collected in §12.
 
 ## 1. Absolute limits
 
@@ -47,9 +59,11 @@ square of speed. INFERRED throughout this table:
   > *forced, not chosen*. That comparison is a category error — 163 m is a **radius** here and a
   > **height** there — and the numerical match is a coincidence carrying no evidence. The size-floor
   > claim above survives on its own; the "forced not chosen" conclusion does not, and is withdrawn.
-- INFERRED, converse: Skyrush reaches 5.0 g and −2.0 g in 63 s at 75 mph precisely because it runs
-  radii near the minimum the envelope allows. Its flat, no-build profile is the signature of a
-  layout held at the geometric limit end to end.
+- INFERRED, converse, and **unverified**: Skyrush reaches 5.0 g and −2.0 g in 63 s at 75 mph, which
+  is consistent with radii near the minimum the envelope allows — but no Skyrush radius is published,
+  so this is a hypothesis that fits, not a measurement. Reading its flat, no-build profile as "held
+  at the geometric limit end to end" is the same shape of leap the withdrawn note above made. Check
+  it against the model before relying on it.
 
 ## 3. The anti-cheat invariant — g-seconds are radius-independent
 
@@ -248,3 +262,34 @@ INFERRED: modal count is **7–12 discrete peaks in a 1:40–2:30 ride ⇒ one n
 Retrieval blockers during this session: WebSearch budget exhausted at 200/200;
 coasterforce.com, coasterpedia.net, grokipedia.com, researchgate.net and reddit all returned 403;
 arborsci returned 503.
+
+## 12. Open questions — resolve with the human before writing code
+
+Ordered roughly by how much downstream design they decide.
+
+1. **Does the pacing score belong in the model, or only in the analysis?** Step 9 is "analysis
+   surfaced", which suggests read-only measurement. But a score the solver optimises against is a
+   different thing entirely, and would touch step 6. Not answered here.
+2. **What does the g-seconds integral run over?** §3 derives the invariant for a single
+   constant-speed arc. A whole track is neither constant-speed nor a single arc. Whether to integrate
+   `|n − 1|`, signed `n`, per-axis components, or a magnitude, and whether to weight negative
+   differently from positive, are all unanswered — and the answer changes what the score rewards.
+3. **Is §1's envelope safe to gate on?** The ASTM per-axis duration tables could not be obtained. The
+   6 G / 0.8 s figure is a single secondary-source number. If the project already implements a
+   duration-scaled envelope, reconcile the two rather than replacing one with the other.
+4. **How is force density normalised?** §4's `G_total / duration` separates El Toro from Millennium
+   Force convincingly, but on Σ|dθ| values that are my estimates from element counts, not measured
+   turning. The metric may not survive real numbers. Re-derive from the model's own geometry first.
+5. **Should the archetypes in §7 be a target or an output?** They are descriptive categories drawn
+   from enthusiast writing. Whether a designer picks "escalating" and the solver honours it, or
+   whether the shape simply falls out and gets reported, is a real fork and is not decided.
+6. **Does anything here conflict with `MODEL.md`?** Elements are force-profile templates there. The
+   §2 radius floors are a *consequence* of a force profile plus a speed, so they may already be
+   implied by the existing model — in which case §2 is a cross-check, not a new constraint. Verify
+   before adding anything.
+
+Two cautions carried forward from how these notes were made. The withdrawn claim in §2 was
+confidently worded and wrong for a full draft before review caught it, so treat fluency here as no
+evidence of correctness. And §11 is long: the gaps are not incidental, several are load-bearing, and
+a fresh session with a working search budget should consider re-running the retrieval before building
+on the thinner sections.

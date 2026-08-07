@@ -385,3 +385,31 @@ mid-course, and elements should be speed-checked at 1.25× their analogue's figu
 150 km/h second launch cannot ballistically clear the 195 m cliff (v²/2g ≈ 89 m) — with 722
 stators over three sections it must be a powered climb, which the roster's launch+climb pair
 already models. No published POV telemetry with an absolute speed trace was found.
+
+## 15. Addendum, 2026-08-08 — the roster against the real ride
+
+Written-source verification of the 19-element roster against Falcon's Flight as described
+([RCDB 21315](https://rcdb.com/21315.htm), [Wikipedia](https://en.wikipedia.org/wiki/Falcons_Flight),
+[Coaster101 review](https://www.coaster101.com/2026/07/07/falcons-flight-review-six-flags-qiddiya/),
+[BYU Design Review](https://www.designreview.byu.edu/collections/the-new-worlds-tallest-roller-coaster));
+the linked POV videos are not machine-readable, so footage timing is still unclockable. Roster
+changes are Daniel's call — these are the disagreements, worst first:
+
+- **The zero-g-roll does not exist.** RCDB and Wikipedia both give **0 inversions**. It is also
+  the element the solve stalled through — the roster's ugliest wart has no real counterpart.
+- **The third launch is missing, and `pullout` misdescribes it.** The real ride boosts *during*
+  the tunnel descent ("downwards launch") — three LSM events, the roster has two.
+- **`rim-overbank` banks the wrong way.** Sources say *outward*-banked over the cliff edge —
+  opposite sign — and a "series of turns and hills at the top of the cliffs" sits between the
+  climb and the rim, which the roster skips.
+- **No helix.** The post-camelback section is "elongated turns and hills", low to the ground,
+  clearance-constrained (it crosses another coaster and passes under the entrance bridge).
+- **The airtime cluster is undercounted and turnless**: "airtime hills, turns, and a wave turn"
+  then "wave turns and camelbacks" (plural); the lift is a constant-speed LSM lift hill, not a
+  launch, and "twisted" is corroborated for the drop.
+- **The camelback is parabolic, sits at the cliff base**, crest ~32 m below the plateau
+  (163 m hill vs 195 m elevation change), with airtime through the *ascent* — a launched
+  parabola, not a crest pop. The cliff is load-bearing structure, not scenery.
+- **Mean course speed ≈ 20 m/s** including the holding-brake stop (4,250–4,325 m over
+  3:25–3:35) — a floor for the moving average. Intamin and Wikipedia disagree on where
+  250 km/h occurs (descending the camelback's far side vs before it).

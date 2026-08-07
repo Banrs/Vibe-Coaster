@@ -43,7 +43,11 @@ including the 14-element 18.7 m** — the corrected evaluator reports the 19-ele
 939.1 m / 125°, untuned, with the zero-g-roll winding 1,977°. The first job now is retuning
 the roster on honest physics, and the speed rule for that is Daniel's: **each element runs at
 1.25× its real analogue's speed** — the analogue table and the 25–27 m/s hyper/giga
-minimum-speed floor are in `PACING.md` §14. Smaller standing findings: wave-turn's Turn(0.0)
+minimum-speed floor are in `PACING.md` §14 — and the roster itself needs Daniel's re-ruling
+first: written-source verification (`PACING.md` §15) found the zero-g-roll **does not exist on
+the real ride** (0 inversions), the third launch is missing (the real one boosts *during* the
+tunnel descent), the rim turn banks outward not overbanked, and there is no helix. Smaller
+standing findings: wave-turn's Turn(0.0)
 pin cannot size its length but is load-bearing as a residual (dropping it cost 974→2,890 m on
 the old evaluator), and the seeder's derivative guard never trips on roll/overbank trims —
 their stalls are step-budget and bounds.

@@ -61,32 +61,76 @@ is an outcome.
 Quintic smoothstep interpolates every force channel. It is C² in force — hence C⁴ in position — and
 it steps nothing at element seams, which is why it is there.
 
-Its cost is peak jerk. For the smoothstep family, peak slope is `((2n+1)!/(n!)²)/4ⁿ`:
+Its cost is peak jerk. Force sits two derivatives below position (`p'' = κ ∝ n`), so force continuity
+maps directly onto position continuity. Peak slope for the smoothstep family is `((2n+1)!/(n!)²)/4ⁿ`:
 
-| | continuity in force | peak / average slope |
-|---|---|---|
-| linear — the clothoid case | C⁰ | 1.00 |
-| cubic | C¹ | 1.50 |
-| **quintic, what we use** | **C²** | **1.875** |
-| septic | C³ | 2.1875 |
+| | force | position | peak / average jerk |
+|---|---|---|---|
+| linear — the clothoid | C⁰ | **C²** | 1.00 |
+| cubic | C¹ | C³ | 1.50 |
+| **quintic, what we use** | **C²** | **C⁴** | **1.875** |
+| septic | C³ | C⁵ | 2.1875 |
 
-**Higher continuity is strictly worse for peak jerk** — smoother ends concentrate the derivative in
-the middle. It buys lower *snap*, which no standard limits (Rohde reports snap as measured, never
-capped). So the direction that helps is toward the clothoid, not away from it.
+Read the position column as the derivative it makes continuous: **C² is continuous acceleration, C³
+continuous jerk, C⁴ continuous snap.** So C⁴ is not merely "smoother than needed" — it is the order
+at which snap stops stepping, and Daniel's read is that this is what makes a transition feel organic
+rather than caught. No standard limits snap, but Rohde *measures* it (+22 / −32 g/s² on Valkyria),
+which suggests practitioners track it even unlegislated. Whether it is independently perceptible from
+jerk is not something this project has a source for.
 
-A clothoid is curvature linear in arc length, i.e. constant jerk, i.e. the minimum-peak easement for
-a given length — and it is what real practice uses. In our terms that is a **linear** force ramp with
-short high-order fillets at each end, which is exactly clothoid-with-easement.
+Do not conflate it with vibration or shimmy. A snap discontinuity is a single event at one join;
+shimmy is oscillatory and comes from running gear and track joints at a few Hz upwards. This model
+has no structural dynamics and cannot produce the latter at all.
 
-Analytic expectation if switched: 19.7 → ~10.5 g/s, inside the limit. **Not measured, and not done.**
-It moves every radius, and this solve jumps basins when provoked — verify closure has not regressed
-from 18.7 m before keeping anything.
+A clothoid gives up both: curvature is continuous but its derivative steps, so position is C² and
+jerk steps at the join. That step is the price real designers pay for minimum peak jerk.
+
+**Three options, not two.** The trade is real in both directions and unchosen:
+
+- **Keep C⁴, lengthen the transitions.** Peak jerk scales inversely with transition length, so about
+  1.31× longer clears 19.7 → 15 with snap continuity intact. Costs track length and crispness. Most
+  consistent with a ride whose premise is active suspension.
+- **Move to clothoid-with-easement** — a linear force ramp with short high-order fillets. Analytic
+  expectation 19.7 → ~10.5 g/s. Matches built practice, gives up continuous snap.
+- **Keep as is**, accept 19.7 g/s, and say so in the analysis rather than pretending otherwise.
+
+**Isolate the cause before choosing.** Two candidates were flagged and never separated: the smoothing
+law, and the brake run reaching the speed floor. If it is the stall, none of the above touches it.
+Whatever is chosen moves every radius, and this solve jumps basins when provoked — verify closure has
+not regressed from 18.7 m before keeping anything.
+
+## Keep researching — use agents
+
+Daniel wants this grounded in real sources, not reasoned from first principles alone, and expects
+subagents to be used for it. Run retrieval *before* building on any thin section. Last session's
+search budget hit 200/200, so a fresh session has a fresh one.
+
+Worth re-attempting, highest value first:
+
+1. **ASTM F2291 per-axis acceleration/duration tables.** The single biggest gap. `PACING.md` §1 gates
+   on a lone secondary-source "6 G / <0.8 s" figure; the real per-axis envelope was never obtained.
+   `preset.rs` uses Rohde's reproduction of F2291-23b instead, which is better sourced but still not
+   the standard. EN 13814's numeric tables likewise. Both paywalled — try library access, the ISO/TS
+   17929 route, or Rohde's later editions.
+2. **Coaster design principles** — clothoid and easement practice, heartlining, transition lengths.
+   Stengel's own g-vs-time diagrams were never found. This bears directly on the smoothing question
+   above, which is currently decided by analysis rather than by evidence.
+3. **Specific coasters, per-element.** No manufacturer publishes radii and no per-element g
+   breakdowns were located for Magnum, Steel Vengeance, Voyage, Maverick, Iron Gwazi, Fury 325,
+   Tormenta or Falcon's Flight. Falcon's Flight conditions in `preset.rs` are *derived* with the
+   simulator from published geometry, not sourced — worth trying to verify against anything real.
+
+`PACING.md` §11 is the full gap list with the retrieval blockers hit (403s from coasterforce,
+coasterpedia, researchgate, reddit). Use Haiku for plain fetch work; reserve stronger models for
+synthesis. Ask for figures *with the conditions they were set under* — a record height means nothing
+without the speed and g it was set at, which is the mistake that shaped this whole model.
 
 ## Questions to put to Daniel, before writing code
 
 1. Where should FVD stop and geometry-first begin? See the steer above; turns are the live case.
-2. Clothoid-with-fillets in place of quintic inside long transitions — worth the basin risk to clear
-   the jerk check, or leave the check failing and note it?
+2. Smoothing — isolate the jerk cause first, then pick from the three options above. Daniel's steer
+   so far is that continuous snap (C⁴) is worth keeping for the organic feel, which points at
+   lengthening transitions rather than dropping to the clothoid. Confirm before acting.
 3. `MODEL.md` — four decisions, including the +7/−2.5 g envelope and what the solve should optimise.
 4. `PACING.md` §12 — six open questions for step 9. The sharp one: step 9 says "analysis surfaced",
    but a score the *solver optimises against* is a step 6 concern, and that fork is unchosen.

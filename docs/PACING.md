@@ -19,14 +19,45 @@
 
 ## 1. Absolute limits
 
-| Limit | Value | Source |
+**Resolved 2026-08-07: the full F2291-23b per-axis envelope was obtained**, read off the
+standard's own figures via two independent reproductions that agree exactly —
+[Rohde, *Development of Acceleration Limits*, 2nd ed. 2024, VDV](https://www.vdv-freizeittechnologie.de/files/bilder-vdv/pdf/Rohde-Accelerationlimits-2nd-edition-2024.pdf)
+(the author chairs the ASTM F24 G-force task group) and
+[JP Research's PSPE presentation](http://pspe-philly.org/programs/PSPE_ASTM_%20presentation.pdf)
+(direct scans of ASTM FIG. 6, 11, X2.5, X2.6). Breakpoints ±0.05 g / ±0.1 s, linear between;
+EN 13814-2019's annex was harmonised to F2291 and is informative there.
+
+| Axis | Duration → limit |
+|---|---|
+| +Gz | 6.0 g @ 0.2–1.0 s → 4.0 @ 2 → 4.0 @ 4 → 3.0 @ 5 → 3.0 @ 11.8 → 2.0 beyond (max 40 s) |
+| −Gz | 2.0 g @ 0.2 → 1.5 @ 0.5–4.0 → 1.1 @ 7.0 → 1.1 flat |
+| +Gz after ≥3 s of −Gz | capped 5.0 g @ 0.2–1.5 s → 2.0 @ 2.5–6.0 s (the push-pull rule; **not modelled here**) |
+| ±Gy | 3.0 g @ 0.2–1.0 → 2.0 @ 2.0 → flat, all capped at 90 s |
+| +Gx | 6.0 g @ 0.2–1.0 → 4.0 @ 2–4 → 3.0 @ 5–11.8 → 2.5 beyond |
+| −Gx | 1.5 g flat base; 2.0 with over-shoulder restraint; 3.5 @ 0.2–2 → 2.0 @ 5 prone |
+
+Combined axes are normative via ellipses: `(ax/adm_ax)² + (ay/adm_ay)² ≤ 1`, likewise x-z, y-z.
+Signals are judged after a 5 Hz 4-pole Butterworth low-pass; event duration uses the slice
+method at the ±0.1 g level, not peak width.
+
+**Measurement conventions matter as much as the numbers.** F2291 computes onset rate (jerk) as
+a least-squares straight-line slope across a window of order 0.1 s, never as an instantaneous
+derivative — Rohde's own worked loop entry has a clothoid join whose instantaneous jerk is
+mathematically infinite and passes, "the jerk must act over a certain period of time". No
+standard states a general jerk limit; 15 g/s appears only as the proving-rig maximum (5–10 g/s
+design guidance), plus two normative uses (5 g/s headrest threshold, 15 g/s prone). A quintic
+force profile's instantaneous peak reads 1.875× its windowed slope, so comparing peaks against
+15 is a category error this project made until 2026-08-07.
+
+| Other limits | Value | Source |
 |---|---|---|
-| ASTM F24 max acceleration | 6 G, duration < 0.8 s | [coaster101](https://www.coaster101.com/2025/04/28/flip-flap-railway/) |
-| Max onset rate (jerk) | 15 g/s | [physicsworld](https://physicsworld.com/a/twists-turns-thrills-and-spills-the-physics-of-rollercoasters/) |
-| Min decay rate | 0.8 g/s — caps how long an exposure may last | same |
-| Envelope shape | magnitude-vs-duration: rise ramp, duration-capped plateau per g level, fall ramp | same |
+| Min decay rate | 0.8 g/s — caps how long an exposure may last | [physicsworld](https://physicsworld.com/a/twists-turns-thrills-and-spills-the-physics-of-rollercoasters/) |
 | Human +Gz | ~5 g LOC threshold, untrained | [wiki G-force](https://en.wikipedia.org/wiki/G-force) |
 | Human −Gz | −2 to −3 g | same |
+
+Frontier headroom, now sourced (Rohde §7.2.7 citing the Naval Flight Surgeon's Manual and
+Whinnery & Forster 2013): lateral 3–5 Gy sustained > 1 min; +Gx to 8 g; −Gz 4.5 g / 15 s;
+F2291 limits "underestimate healthy adult tolerance generally by a factor of two to three".
 
 Observed fleet ceiling sits at the *human* limit, not the ASTM one: 5.0 g Skyrush, 4.5 g Expedition
 GeForce, 4.3 g Nitro, 5.9 g Shock Wave (highest listed operational), 4.7 ± 0.2 g mean across four
@@ -241,17 +272,21 @@ INFERRED: modal count is **7–12 discrete peaks in a 1:40–2:30 ride ⇒ one n
 
 ## 11. What could not be sourced
 
-- Full ASTM F2291 per-axis acceleration/duration tables. Only the F24 6 G / 0.8 s figure is
-  reachable; astm.org and the standard itself are paywalled and no accessible reproduction of the
-  axis-by-axis envelope was found. **The §1 envelope should be treated as partial.**
-- EN 13814 numeric tables.
+- ~~Full ASTM F2291 per-axis acceleration/duration tables~~ — **obtained 2026-08-07**, see §1.
+- EN 13814 numeric tables — not read directly, but Rohde states the 2019 revision harmonised
+  its acceleration annex to F2291 and made it informative, so the gap is closed by equivalence.
 - Percent-time-above-+2 g for any coaster — no such publication appears to exist.
 - Published g-force figures for Magnum, Steel Vengeance, Voyage, Phoenix, Boulder Dash, Maverick,
   Iron Gwazi, Fury 325, Tormenta, Falcon's Flight.
 - Measured radii for any named element, so **every radius in §2 is a derived requirement, not a
   reported value.**
 - Per-element g breakdowns from any manufacturer.
-- Stengel's own g-vs-time diagrams — only the clothoid/heartlining philosophy is online.
+- Stengel's own g-vs-time diagrams — still unfound, but Rohde Fig. 9.3 is a close substitute:
+  a worked straight-to-circle vs straight-to-clothoid loop entry plotting speed, az, head ax
+  and head jerk. Same source records Stengel/Schwarzkopf introducing the clothoid loop entry
+  in 1974, borrowed from road and rail practice, and rejects force profiles with a continuous
+  second derivative "because of the manufacturing accuracy" — a tolerance argument, not a
+  comfort one, which bears directly on this project's C⁴ smoothing choice.
 - Pendrill's 2013 loop-geometry paper (IOP paywalled; the Gothenburg PDF mirror is image-only and
   not text-extractable), and Pendrill & Eager 2020, same problem.
 - Falcon's Flight rider-experience reporting — Scott Schaffer's CoasterForce POV exists but the host
@@ -293,3 +328,29 @@ confidently worded and wrong for a full draft before review caught it, so treat 
 evidence of correctness. And §11 is long: the gaps are not incidental, several are load-bearing, and
 a fresh session with a working search budget should consider re-running the retrieval before building
 on the thinner sections.
+
+## 13. Addendum, 2026-08-07 — records by category, and turn practice
+
+**Records searched by category, with their conditions.** The finding is mostly the absence: no
+record carries the speed, g or duration it was set under. Highlights that do —
+Formula Rossa's launch is 0–240 km/h in 4.9 s at 1.7 g, 4.8 g max in ride
+([Guinness](https://www.guinnessworldrecords.com/news/2026/4/formula-rossa-achieves-highest-ever-rollercoaster-launch-speed-to-extend-record-legacy));
+Do-Dodonpa's was 0–180 km/h in 1.56 s at 4.3 g, closed after 18 injuries
+([wiki](https://en.wikipedia.org/wiki/Do-Dodonpa)). Steel Vengeance's 27.2 s airtime record has
+no published magnitude; Tormenta's record loop and Immelmann have no published entry speeds;
+no operating coaster's measured jerk is public anywhere. Intamin's own Falcon's Flight page
+gives the camelback as **165 m** where this project's `preset.rs` carries 163 m structure
+height — unresolved by a metre or two, flagged rather than silently changed
+([Intamin](https://www.intamin.com/project/falcons-flight/)), and adds: 40 km/h chain lift,
+55 m twisted first drop, 150 km/h LSM launch *uphill* to the cliff top, three LSM sections.
+
+**Turn practice, from tooling rather than testimony.** openFVD's own source
+([altlenny/openFVD](https://github.com/altlenny/openFVD)) models a track as a sequence of
+sections of different kinds side by side: `secforced` (authored force curves — FVD proper),
+`seccurved` (authored **angle + radius**, with default lead-in/lead-out easements of a third of
+the arc capped at 10°, and a roll function on top), plus straight and geometric sections. Its
+force-transition vocabulary is a per-transition menu — linear, quadratic, cubic, quartic,
+quintic, sinusoidal, plateau, freeform — with **linear first-class**, not an error to be
+smoothed away. So the practitioner answer to "force-first or geometry-first" is *per element,
+by what the element is for* — turns radius-first with easements, force elements force-first —
+and transition order is chosen per transition, not globally.

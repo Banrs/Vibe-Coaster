@@ -43,6 +43,10 @@ pub struct Check<T: Scalar> {
 pub struct Analysis<T: Scalar> {
     /// Every limit, passing or failing.
     pub checks: Vec<Check<T>>,
+    /// Measurements reported but not enforced, because a check already in
+    /// `checks` provably dominates them. The solve never sees these: even a
+    /// penalty that is zero at the answer reshapes the path to it.
+    pub advisories: Vec<Check<T>>,
     /// Closest the heartline comes to the ground, metres.
     pub min_clearance: T,
     /// Fastest point, m/s.
@@ -138,23 +142,46 @@ pub fn analyse<T: Scalar>(model: &RideModel, ride: &Ride<T>) -> Analysis<T> {
     );
 
     // Jerk, taken across all three axes: the rider feels the rate of change of
-    // the whole force, not of one component.
-    let mut worst_jerk = T::ZERO;
+    // the whole force, not of one component. Two checks, because the figure
+    // has two meanings and conflating them mis-judged this ride once.
+    //
+    // The *design* check is the instantaneous slope of the authored profile
+    // against `limits.jerk` — Rohde's "5 g/s or max. 10 g/s in the design
+    // phase" guidance is about the profile as drawn, and it is also the
+    // constraint the solve feels, which keeps transition shape priced in.
+    //
+    // The *proving* check measures what the standard measures. F2291 defines
+    // onset rate as a straight-line slope across a window of the order of a
+    // tenth of a second on a low-passed signal, never a per-step derivative —
+    // Rohde's worked loop entry has a clothoid join with mathematically
+    // infinite instantaneous jerk and passes, "the jerk must act over a
+    // certain period of time". Its 15 g/s is the standard's own figure, which
+    // is why it sits here as a constant rather than in the rulebook data.
+    let mut design_jerk = T::ZERO;
     for w in ride.samples.windows(2) {
         let dt = w[1].time - w[0].time;
         if dt.to_f64() <= 0.0 {
             continue;
         }
-        let d = ((w[1].normal_g - w[0].normal_g).squared()
-            + (w[1].lateral_g - w[0].lateral_g).squared()
-            + (w[1].longitudinal_g - w[0].longitudinal_g).squared())
-        .sqrt();
-        worst_jerk = worst_jerk.max(d / dt);
+        design_jerk = design_jerk.max(felt_change(&w[1], &w[0]) / dt);
     }
     checks.push(Check {
-        name: format!("jerk (limit {:.0} g/s)", model.limits.jerk),
-        over: worst_jerk - T::from_f64(model.limits.jerk),
+        name: format!("jerk, authored (design {:.0} g/s)", model.limits.jerk),
+        over: design_jerk - T::from_f64(model.limits.jerk),
     });
+
+    // Advisory rather than enforced, and provably safe to leave so: an
+    // event-to-event mean slope is a mean of instantaneous slopes, so it can
+    // never exceed 15 without the design check above firing harder — as long
+    // as the design limit stays at or below the proving figure.
+    const JERK_PROVING_LIMIT: f64 = 15.0;
+    let proving_jerk = [&normal, &lateral, &longitudinal]
+        .into_iter()
+        .fold(T::ZERO, |m, axis| m.max(onset_rate(&times, axis)));
+    let advisories = vec![Check {
+        name: format!("jerk, proving window (limit {JERK_PROVING_LIMIT:.0} g/s)"),
+        over: proving_jerk - T::from_f64(JERK_PROVING_LIMIT),
+    }];
 
     let worst_roll = ride
         .samples
@@ -196,6 +223,7 @@ pub fn analyse<T: Scalar>(model: &RideModel, ride: &Ride<T>) -> Analysis<T> {
 
     Analysis {
         checks,
+        advisories,
         min_clearance,
         top_speed,
         average_speed: ride.length / ride.duration,
@@ -203,6 +231,75 @@ pub fn analyse<T: Scalar>(model: &RideModel, ride: &Ride<T>) -> Analysis<T> {
         track_length: ride.length,
         support_metres: support,
     }
+}
+
+/// Magnitude of the change in felt force between two samples, g, across all
+/// three axes.
+fn felt_change<T: Scalar>(b: &crate::eval::Sample<T>, a: &crate::eval::Sample<T>) -> T {
+    ((b.normal_g - a.normal_g).squared()
+        + (b.lateral_g - a.lateral_g).squared()
+        + (b.longitudinal_g - a.longitudinal_g).squared())
+    .sqrt()
+}
+
+/// Onset rate as the standard measures it: the mean slope of each monotone
+/// transition, taken between its endpoints, maximised over transitions.
+///
+/// F2291 computes onset as a straight-line slope between two events on a
+/// low-passed signal, never as a pointwise derivative. Events here are the
+/// signal's turning points, found with the same ±0.1 g band the standard's
+/// slice method uses for durations, which also keeps flat-channel noise from
+/// splitting one transition into many short steep-looking ones.
+fn onset_rate<T: Scalar>(times: &[T], values: &[T]) -> T {
+    /// The standard's slice level, g.
+    const BAND: f64 = 0.1;
+    let mut worst = T::ZERO;
+    let mut start = 0usize;
+    let mut extreme = 0usize;
+    let mut rising: Option<bool> = None;
+    for i in 1..values.len() {
+        let against = |up: bool| {
+            if up {
+                values[extreme] - values[i]
+            } else {
+                values[i] - values[extreme]
+            }
+        };
+        match rising {
+            None => {
+                if (values[i] - values[start]).abs().to_f64() > BAND {
+                    rising = Some(values[i].to_f64() > values[start].to_f64());
+                    extreme = i;
+                }
+            }
+            Some(up) => {
+                let advanced = if up {
+                    values[i].to_f64() > values[extreme].to_f64()
+                } else {
+                    values[i].to_f64() < values[extreme].to_f64()
+                };
+                if advanced {
+                    extreme = i;
+                } else if against(up).to_f64() > BAND {
+                    // The transition ended at its extreme; score it and start
+                    // the next one there.
+                    let span = times[extreme] - times[start];
+                    if span.to_f64() > 0.0 {
+                        worst = worst.max((values[extreme] - values[start]).abs() / span);
+                    }
+                    start = extreme;
+                    rising = Some(!up);
+                    extreme = i;
+                }
+            }
+        }
+    }
+    let last = values.len() - 1;
+    let span = times[last] - times[start];
+    if rising.is_some() && span.to_f64() > 0.0 {
+        worst = worst.max((values[last] - values[start]).abs() / span);
+    }
+    worst
 }
 
 /// Adds one check per duration the envelope names.

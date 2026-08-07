@@ -50,6 +50,19 @@ fn main() -> std::io::Result<()> {
             println!("  {:<48} over by {:.3}", check.name, check.over);
         }
     }
+    for check in &analysis.advisories {
+        let verdict = if check.over > 0.0 {
+            "OVER by"
+        } else {
+            "within"
+        };
+        println!(
+            "advisory: {:<38} {} {:.3}",
+            check.name,
+            verdict,
+            check.over.abs()
+        );
+    }
     println!(
         "buildability: {:.0} m of track, {:.0} support metre-metres, \
          closest approach to the ground {:.1} m",

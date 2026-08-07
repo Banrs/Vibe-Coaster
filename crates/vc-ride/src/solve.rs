@@ -30,11 +30,12 @@
 //! report ends with the worst offenders in order, so the answer to "why didn't
 //! it close" is a sentence rather than an investigation.
 
-use vc_math::{Dual, Scalar};
+use vc_math::vec3::Vec3;
+use vc_math::{Dual, Frame, Scalar};
 
 use crate::analysis::analyse;
-use crate::eval::{ElementResult, Ride, evaluate};
-use crate::model::{Pin, RideModel};
+use crate::eval::{ElementResult, Ride, STEPS_PER_ELEMENT, Start, evaluate, evaluate_split};
+use crate::model::{Pin, RideModel, Spec};
 
 /// Weights putting every residual on a comparable footing, so that no
 /// constraint dominates the solve for a reason as arbitrary as its units.
@@ -67,6 +68,13 @@ mod weight {
     /// Per unit of a parameter's range that it has drifted from the spec.
     /// Light: this only picks between rides that already satisfy everything.
     pub const REGULARISATION: f64 = 0.10;
+    /// Per metre a segment ends away from the seam the next one starts at.
+    ///
+    /// Heavier than closure, deliberately: a seam defect is not a preference
+    /// to trade against the others but the stitched ride's claim to being one
+    /// ride at all. Set at the closure weight, the solve paid defects to buy
+    /// closure and returned a ride in pieces.
+    pub const DEFECT: f64 = 10.0;
 }
 
 /// How the solve went.
@@ -105,9 +113,146 @@ impl Report {
     }
 }
 
-/// Every residual, with the name it will be blamed by.
-fn residuals<T: Scalar>(model: &RideModel, x: &[T], seed: &[f64]) -> (Vec<T>, Vec<String>) {
+/// Values carried per multiple-shooting seam: position, tangent yaw and
+/// pitch, roll about the tangent, speed and time. Arclength is not among them
+/// — it is the sum of the lengths behind the seam, already in the vector.
+const SEAM_VALUES: usize = 8;
+
+/// Where the ride is cut for multiple shooting: the element index each new
+/// segment begins at.
+///
+/// Integrated in one piece, the closure residual depends on the first
+/// element's parameters through everything downstream of them, so the
+/// Jacobian's early columns dwarf its late ones and the solve steers by the
+/// front of the ride alone. Cutting the integration and letting each cut's
+/// start state float — tied down by defect residuals — is still one
+/// simultaneous solve, but each column now reaches only to the next seam.
+///
+/// Cuts land near even quarters, snapped to a boundary the spec declares
+/// level, so the seam's yaw-pitch-roll parameterisation stays far from its
+/// vertical singularity. Derived from spec constants only: the layout is
+/// identical every evaluation, which the differentiated residual shape
+/// requires.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "shooting is wired but not yet enabled; see solve()"
+    )
+)]
+fn seam_cuts(spec: &Spec) -> Vec<usize> {
+    const SEGMENTS: usize = 4;
+    const LEVEL_ENOUGH_DEG: f64 = 30.0;
+    let n = spec.elements.len();
+    if n < 2 * SEGMENTS {
+        return Vec::new();
+    }
+    let mut cuts: Vec<usize> = (1..SEGMENTS)
+        .filter_map(|k| {
+            let target = (k * n / SEGMENTS) as i64;
+            (1..n)
+                .filter(|&i| spec.elements[i - 1].exit_pitch_deg.abs() < LEVEL_ENOUGH_DEG)
+                .min_by_key(|&i| (i as i64 - target).abs())
+        })
+        .collect();
+    cuts.dedup();
+    cuts
+}
+
+/// Rebuilds each seam's start state from its slice of the parameter vector.
+fn unpack_seams<T: Scalar>(
+    cuts: &[usize],
+    values: &[T],
+    params: &[crate::model::Params<T>],
+) -> Vec<(usize, Start<T>)> {
+    cuts.iter()
+        .enumerate()
+        .map(|(k, &element)| {
+            let v = &values[k * SEAM_VALUES..][..SEAM_VALUES];
+            let (yaw, pitch, roll) = (v[3], v[4], v[5]);
+            let tangent = Vec3::new(
+                pitch.cos() * yaw.cos(),
+                pitch.cos() * yaw.sin(),
+                pitch.sin(),
+            );
+            let s = params[..element]
+                .iter()
+                .fold(T::ZERO, |sum, p| sum + p.length);
+            (
+                element,
+                Start {
+                    position: Vec3::new(v[0], v[1], v[2]),
+                    carrier: Frame::level(tangent).rolled(roll),
+                    speed: v[6],
+                    time: v[7],
+                    s,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Seam seeds read off a single forward pass at the spec's own parameters.
+fn seed_seams(model: &RideModel, x: &[f64], cuts: &[usize]) -> Vec<f64> {
     let ride = evaluate(model, x);
+    let mut out = Vec::with_capacity(cuts.len() * SEAM_VALUES);
+    for &element in cuts {
+        // The first sample of the element is the seam state; bank is zero at
+        // every seam by authorship, so the sample's frame is the carrier.
+        let sample = &ride.samples[element * STEPS_PER_ELEMENT];
+        let t = sample.frame.tangent;
+        let level = Frame::level(t);
+        let roll = (-sample.frame.right.dot(level.up)).atan2(sample.frame.right.dot(level.right));
+        out.extend([
+            sample.position.x,
+            sample.position.y,
+            sample.position.z,
+            t.y.atan2(t.x),
+            t.z.asin(),
+            roll,
+            sample.speed,
+            sample.time,
+        ]);
+    }
+    out
+}
+
+/// Boxes for the seam unknowns, around their seeds.
+///
+/// Only the angles are truly bounded, to keep pitch and roll away from the
+/// parameterisation's vertical singularity. Positions and time must be wide
+/// open: the early iterations move the layout by kilometres, and a seam box
+/// tight enough to matter turns every such step into a clamped, bent one the
+/// line search then rejects — the solve stalls at the box, not at the answer.
+fn seam_bounds(seeds: &[f64]) -> Vec<(f64, f64)> {
+    seeds
+        .chunks_exact(SEAM_VALUES)
+        .flat_map(|v| {
+            [
+                (v[0] - 5000.0, v[0] + 5000.0),
+                (v[1] - 5000.0, v[1] + 5000.0),
+                (v[2] - 1500.0, v[2] + 1500.0),
+                (v[3] - std::f64::consts::PI, v[3] + std::f64::consts::PI),
+                (v[4] - 1.2, v[4] + 1.2),
+                (v[5] - 1.2, v[5] + 1.2),
+                (3.0, 140.0),
+                (v[7] - 200.0, v[7] + 200.0),
+            ]
+        })
+        .collect()
+}
+
+/// Every residual, with the name it will be blamed by.
+fn residuals<T: Scalar>(
+    model: &RideModel,
+    x: &[T],
+    seed: &[f64],
+    cuts: &[usize],
+) -> (Vec<T>, Vec<String>) {
+    let spec_x = &x[..x.len() - cuts.len() * SEAM_VALUES];
+    let params = model.spec.unpack(spec_x);
+    let seams = unpack_seams(cuts, &x[spec_x.len()..], &params);
+    let (ride, ends) = evaluate_split(model, spec_x, &seams);
     let end = ride.end();
     let station = &model.spec.station;
     let mut r = Vec::new();
@@ -206,10 +351,43 @@ fn residuals<T: Scalar>(model: &RideModel, x: &[T], seed: &[f64]) -> (Vec<T>, Ve
         );
     }
 
+    // Each segment must end where the next one claims to begin. These are the
+    // defect constraints that make cut-up shooting one solve rather than
+    // several; at the answer they are all zero and the seams disappear.
+    for ((&cut, (_, seam)), segment_end) in cuts.iter().zip(&seams).zip(&ends) {
+        let name = model.spec.elements[cut].name;
+        let wp = T::from_f64(weight::DEFECT);
+        let wh = T::from_f64(weight::HEADING * 2.0);
+        let wb = T::from_f64(weight::BANK * 2.0);
+        let gaps = [
+            ("", segment_end.position - seam.position, wp),
+            (
+                "heading ",
+                segment_end.carrier.tangent - seam.carrier.tangent,
+                wh,
+            ),
+            ("roll ", segment_end.carrier.right - seam.carrier.right, wb),
+        ];
+        for (what, gap, w) in gaps {
+            for (axis, component) in [("x", gap.x), ("y", gap.y), ("z", gap.z)] {
+                push(component * w, format!("defect {name} {what}{axis}"));
+            }
+        }
+        push(
+            (segment_end.speed - seam.speed) * T::from_f64(weight::SPEED * 2.0),
+            format!("defect {name} speed (m/s)"),
+        );
+        push(
+            (segment_end.time - seam.time) * T::from_f64(weight::DEFECT),
+            format!("defect {name} time (s)"),
+        );
+    }
+
     // Stay near the ride as described. This is what picks one point out of the
-    // feasible manifold; see the module note.
+    // feasible manifold; see the module note. Seam states get no such pull —
+    // they are wherever the defects put them, not part of the description.
     let bounds = model.spec.bounds();
-    for (i, (&value, (lo, hi))) in x.iter().zip(bounds).enumerate() {
+    for (i, (&value, (lo, hi))) in spec_x.iter().zip(bounds).enumerate() {
         let range = (hi - lo).max(1e-9);
         push(
             (value - T::from_f64(seed[i])) / T::from_f64(range)
@@ -350,11 +528,21 @@ fn parameter_slots(spec: &crate::model::Spec) -> Vec<(Option<usize>, Option<usiz
 /// buying anything.
 pub fn solve(model: &RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
     let seed = model.spec.free_parameters();
-    let bounds = model.spec.bounds();
-    let n = seed.len();
+    // Multiple shooting is wired end to end — segment evaluation, seam
+    // seeding, defect residuals — but not enabled: from the current seeds the
+    // solve settles on stitched optima whose defects never close, and the
+    // forward ride loses the 18.7 m closure basin outright. The attempts are
+    // tabled in MODEL.md; the machinery stays test-exercised via
+    // [`seam_cuts`] against the day the solve can use it.
+    let cuts: Vec<usize> = Vec::new();
+    let seam_seed = seed_seams(model, &seed, &cuts);
+    let mut bounds = model.spec.bounds();
+    bounds.extend(seam_bounds(&seam_seed));
     let mut x = seed.clone();
+    x.extend(seam_seed);
+    let n = x.len();
 
-    let (r0, names) = residuals(model, &x, &seed);
+    let (r0, names) = residuals(model, &x, &seed, &cuts);
     let mut cost = half_sum_squares(&r0);
     let mut residual = r0;
     let mut lambda = 1e-3;
@@ -384,7 +572,7 @@ pub fn solve(model: &RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
                     }
                 })
                 .collect();
-            let (column, _) = residuals(model, &dual, &seed);
+            let (column, _) = residuals(model, &dual, &seed, &cuts);
             for (i, value) in column.iter().enumerate() {
                 jacobian[i][j] = value.du;
             }
@@ -432,7 +620,7 @@ pub fn solve(model: &RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
                     .zip(&bounds)
                     .map(|((&v, &d), &(lo, hi))| (v + d * scale).clamp(lo, hi))
                     .collect();
-                let (trial_residual, _) = residuals(model, &trial, &seed);
+                let (trial_residual, _) = residuals(model, &trial, &seed, &cuts);
                 let trial_cost = half_sum_squares(&trial_residual);
                 if trial_cost < cost {
                     x = trial;
@@ -472,7 +660,11 @@ pub fn solve(model: &RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
         .filter(|(name, _)| !name.starts_with("drift"))
         .all(|(_, v)| v.abs() < 1.0);
 
-    let ride = evaluate(model, &x);
+    // The ride returned is the plain forward integration of the solved spec —
+    // the ride as it would actually run. The seams are solver scaffolding, and
+    // convergence required their defects to be below tolerance, so the two
+    // agree wherever the solve is worth keeping.
+    let ride = evaluate(model, &x[..seed.len()]);
     (
         Report {
             converged,
@@ -615,7 +807,10 @@ mod tests {
         // legal, and can say what is left — not that it always wins.
         let model = preset::falcon_class();
         let seed = model.spec.free_parameters();
-        let (before, _) = residuals(&model, &seed, &seed);
+        let cuts = seam_cuts(&model.spec);
+        let mut x = seed.clone();
+        x.extend(seed_seams(&model, &seed, &cuts));
+        let (before, _) = residuals(&model, &x, &seed, &cuts);
         let start_cost = half_sum_squares(&before);
 
         let (report, ride) = solve(&model, 25);
@@ -637,11 +832,38 @@ mod tests {
         // between evaluations would silently corrupt the Jacobian.
         let model = preset::falcon_class();
         let seed = model.spec.free_parameters();
-        let (a, names) = residuals(&model, &seed, &seed);
-        let nudged: Vec<f64> = seed.iter().map(|v| v * 1.15).collect();
-        let (b, names_b) = residuals(&model, &nudged, &seed);
+        let cuts = seam_cuts(&model.spec);
+        let mut x = seed.clone();
+        x.extend(seed_seams(&model, &seed, &cuts));
+        let (a, names) = residuals(&model, &x, &seed, &cuts);
+        let nudged: Vec<f64> = x.iter().map(|v| v * 1.15).collect();
+        let (b, names_b) = residuals(&model, &nudged, &seed, &cuts);
         assert_eq!(a.len(), b.len());
         assert_eq!(names, names_b);
         assert!(a.iter().all(|v| v.is_finite()) && b.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn seams_seeded_from_a_forward_pass_have_negligible_defect() {
+        // The invariant multiple shooting rests on: seam states read off the
+        // forward integration reproduce it, so at the seed the stitched ride
+        // is the plain ride and the defects sit within the solve's own
+        // tolerance. Not at zero — a segment's rows read the seam tangent for
+        // the first train length, where the plain pass reads the true track
+        // behind, and at the unsolved seed that track is not yet level. The
+        // bound that matters is the convergence tolerance: seeding must start
+        // the solve inside it.
+        let model = preset::falcon_class();
+        let seed = model.spec.free_parameters();
+        let cuts = seam_cuts(&model.spec);
+        assert!(!cuts.is_empty(), "the preset is big enough to cut");
+        let mut x = seed.clone();
+        x.extend(seed_seams(&model, &seed, &cuts));
+        let (r, names) = residuals(&model, &x, &seed, &cuts);
+        for (name, value) in names.iter().zip(&r) {
+            if name.starts_with("defect") {
+                assert!(value.abs() < 1.0, "{name} = {value} at the seed");
+            }
+        }
     }
 }

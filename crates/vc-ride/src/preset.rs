@@ -162,8 +162,11 @@ pub fn frontier_limits() -> Limits {
         normal_negative: Envelope {
             points: vec![(0.2, 2.5), (1.0, 2.5), (2.0, 2.2), (5.0, 1.8), (8.0, 1.4)],
         },
+        // Whinnery & Forster and the Naval Flight Surgeon's Manual (via Rohde
+        // §7.2.7) support 3-5 Gy sustained beyond a minute; four briefly is
+        // comfortably inside that. Ratified by Daniel 2026-08-07.
         lateral: Envelope {
-            points: vec![(0.2, 3.5), (1.0, 3.5), (2.0, 2.8), (4.0, 2.2)],
+            points: vec![(0.2, 4.0), (1.0, 4.0), (2.0, 3.0), (4.0, 2.5)],
         },
         longitudinal: Envelope {
             points: vec![(0.2, 7.0), (1.0, 7.0), (2.0, 5.0), (5.0, 4.0)],

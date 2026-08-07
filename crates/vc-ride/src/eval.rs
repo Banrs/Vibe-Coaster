@@ -166,12 +166,125 @@ struct State<T: Scalar> {
     time: T,
 }
 
+/// The state a segment of the ride starts from.
+///
+/// The station is one of these; in a multiple-shooting solve every seam is
+/// another, carried as unknowns. Bank is zero at every element seam by
+/// authorship — channels meet their neighbours at one g and level — so the
+/// carrier here is also the rider's frame.
+#[derive(Clone, Copy, Debug)]
+pub struct Start<T: Scalar> {
+    /// Heartline position.
+    pub position: Vec3<T>,
+    /// Rotation-minimising frame, before bank.
+    pub carrier: Frame<T>,
+    /// Speed, m/s.
+    pub speed: T,
+    /// Seconds since dispatch.
+    pub time: T,
+    /// Arclength already travelled, metres.
+    pub s: T,
+}
+
 /// Runs the ride described by `model` with the free parameters `x`.
 ///
 /// `x` is the flat vector from [`crate::model::Spec::free_parameters`]; pinned
 /// parameters come from the model.
 pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
+    evaluate_split(model, x, &[]).0
+}
+
+/// Runs the ride in segments, each after the first starting from a given seam
+/// state rather than from wherever the previous segment ended.
+///
+/// This is the evaluator half of multiple shooting: `seams` gives, for each
+/// cut, the element index the next segment begins at and the state it begins
+/// from. What each segment *actually* ended at comes back alongside the ride,
+/// so the solve can demand end and seam agree — the defect constraints. With
+/// no seams this is exactly the single forward pass.
+///
+/// Within a train length after a seam, the rows behind the front read the
+/// seam's own tangent — the same straight-continuation assumption the station
+/// makes for rows behind the dispatch point.
+pub fn evaluate_split<T: Scalar>(
+    model: &RideModel,
+    x: &[T],
+    seams: &[(usize, Start<T>)],
+) -> (Ride<T>, Vec<Start<T>>) {
     let params = model.spec.unpack(x);
+    let station = &model.spec.station;
+    let capacity = model.spec.elements.len() * STEPS_PER_ELEMENT + 1;
+    let mut samples = Vec::with_capacity(capacity);
+    let mut results = Vec::with_capacity(model.spec.elements.len());
+    // Tangent at every step so far, so the rows behind the front can be asked
+    // what slope they are on.
+    let mut history: Vec<(T, Vec3<T>)> = Vec::with_capacity(capacity);
+
+    let mut start = Start {
+        position: Vec3::new(
+            T::from_f64(station.position.x),
+            T::from_f64(station.position.y),
+            T::from_f64(station.position.z),
+        ),
+        carrier: Frame::level(Vec3::new(
+            T::from_f64(station.heading.x),
+            T::from_f64(station.heading.y),
+            T::from_f64(station.heading.z),
+        )),
+        speed: T::from_f64(station.dispatch_speed),
+        time: T::ZERO,
+        s: T::ZERO,
+    };
+    let mut begin = 0;
+    let mut ends = Vec::with_capacity(seams.len());
+    for &(element, seam) in seams {
+        ends.push(integrate(
+            model,
+            &params,
+            begin..element,
+            start,
+            &mut samples,
+            &mut results,
+            &mut history,
+        ));
+        // Cleared so a segment cannot see through its seam: reading the
+        // previous segment's tangents would couple the two, which is the
+        // conditioning problem shooting exists to remove.
+        history.clear();
+        begin = element;
+        start = seam;
+    }
+    let end = integrate(
+        model,
+        &params,
+        begin..model.spec.elements.len(),
+        start,
+        &mut samples,
+        &mut results,
+        &mut history,
+    );
+
+    close_and_measure(model, &params, &end, &mut samples, &mut results, &history);
+    let ride = Ride {
+        samples,
+        elements: results,
+        length: end.s,
+        duration: end.time,
+    };
+    (ride, ends)
+}
+
+/// Integrates one contiguous run of elements from a given start, appending to
+/// the shared sample, result and history lists, and returns where it ended.
+fn integrate<T: Scalar>(
+    model: &RideModel,
+    params: &[Params<T>],
+    range: std::ops::Range<usize>,
+    start: Start<T>,
+    samples: &mut Vec<Sample<T>>,
+    results: &mut Vec<ElementResult<T>>,
+    history: &mut Vec<(T, Vec3<T>)>,
+) -> Start<T> {
     let vehicle = &model.vehicle;
     let offsets = vehicle.row_offsets();
     let mass = T::from_f64(vehicle.mass());
@@ -184,29 +297,15 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
     let station_z = T::from_f64(model.spec.station.position.z);
 
     let mut state = State {
-        position: Vec3::new(
-            T::from_f64(model.spec.station.position.x),
-            T::from_f64(model.spec.station.position.y),
-            station_z,
-        ),
-        carrier: Frame::level(Vec3::new(
-            T::from_f64(model.spec.station.heading.x),
-            T::from_f64(model.spec.station.heading.y),
-            T::from_f64(model.spec.station.heading.z),
-        )),
-        energy: T::from_f64(0.5 * model.spec.station.dispatch_speed.powi(2)),
-        time: T::ZERO,
+        position: start.position,
+        carrier: start.carrier,
+        energy: start.speed.squared() * T::from_f64(0.5),
+        time: start.time,
     };
+    let mut s = start.s;
 
-    let capacity = model.spec.elements.len() * STEPS_PER_ELEMENT + 1;
-    let mut samples = Vec::with_capacity(capacity);
-    let mut results = Vec::with_capacity(model.spec.elements.len());
-    // Tangent at every step so far, so the rows behind the front can be asked
-    // what slope they are on.
-    let mut history: Vec<(T, Vec3<T>)> = Vec::with_capacity(capacity);
-    let mut s = T::ZERO;
-
-    for (index, element) in model.spec.elements.iter().enumerate() {
+    for index in range {
+        let element = &model.spec.elements[index];
         let p = params[index];
         let steps = T::from_f64(STEPS_PER_ELEMENT as f64);
         let h = p.length / steps;
@@ -231,7 +330,7 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
                 &p,
                 u0,
                 s,
-                &history,
+                history,
                 &offsets,
                 model,
                 demand,
@@ -262,7 +361,7 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
                 &p,
                 u1,
                 s + half,
-                &history,
+                history,
                 &offsets,
                 model,
                 demand,
@@ -301,16 +400,51 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
         });
     }
 
+    Start {
+        position: state.position,
+        carrier: state.carrier,
+        speed: (state.energy.max(min_energy) * T::from_f64(2.0)).sqrt(),
+        time: state.time,
+        s,
+    }
+}
+
+/// Closes the sample list on the final state and fills the whole-ride
+/// measurements that need every sample to exist first.
+fn close_and_measure<T: Scalar>(
+    model: &RideModel,
+    params: &[Params<T>],
+    end: &Start<T>,
+    samples: &mut Vec<Sample<T>>,
+    results: &mut [ElementResult<T>],
+    history: &[(T, Vec3<T>)],
+) {
+    let vehicle = &model.vehicle;
+    let offsets = vehicle.row_offsets();
+    let mass = T::from_f64(vehicle.mass());
+    let drag_factor = T::from_f64(0.5 * model.site.air_density * vehicle.cda()) / mass;
+    let thrust_cap = T::from_f64(vehicle.thrust_max) / mass;
+    let brake_cap = T::from_f64(vehicle.brake_max_decel);
+    let g0 = T::from_f64(G0);
+    let gravity = Vec3::new(T::ZERO, T::ZERO, -g0);
+    let min_energy = T::from_f64(0.5 * MIN_SPEED * MIN_SPEED);
+
     // Close the sample list on the final state, so the last sample is the end
     // of the ride rather than one step short of it.
+    let state = State {
+        position: end.position,
+        carrier: end.carrier,
+        energy: end.speed.squared() * T::from_f64(0.5),
+        time: end.time,
+    };
     let last = model.spec.elements.len() - 1;
     let (_, mut final_sample) = derivative(
         &state,
         &model.spec.elements[last],
         &params[last],
         T::ONE,
-        s,
-        &history,
+        end.s,
+        history,
         &offsets,
         model,
         None,
@@ -336,8 +470,8 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
         let peak = (first..=last)
             .max_by(|a, b| height(a).total_cmp(&height(b)))
             .unwrap_or(first);
-        result.rise = samples[peak].position.z - valley(&samples, peak, -1);
-        result.drop = samples[peak].position.z - valley(&samples, peak, 1);
+        result.rise = samples[peak].position.z - valley(samples, peak, -1);
+        result.drop = samples[peak].position.z - valley(samples, peak, 1);
         result.crest_speed = samples[peak].speed;
         result.exit_pitch = vc_math::units::to_degrees(samples[last].frame.tangent.z.asin());
 
@@ -354,13 +488,6 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
             previous = next;
         }
         result.heading_change = vc_math::units::to_degrees(turned);
-    }
-
-    Ride {
-        samples,
-        elements: results,
-        length: s,
-        duration: state.time,
     }
 }
 

@@ -100,10 +100,23 @@ delivered 59 m against a pinned 150.
 
 ## What did not work
 
-**Three limits are still broken**, all by small margins: jerk at 19.7 g/s
+**Three limits were reported broken**, all by small margins: jerk at 19.7 g/s
 against 15, peak positive g at 7.29 against 7.0 over a 0.2 s window, and ground
-clearance at 3.91 m against 4.0. The jerk traces to the brake run still reaching
-the speed floor.
+clearance at 3.91 m against 4.0. Two corrections found on review, 2026-08-07:
+
+- **The jerk did not trace to the brake run.** Measured from the exported ride,
+  the 19.7 g/s peak sits on the ejector-hop (79.5 m/s, length solved to 177 m)
+  with the pullout second at 18.6; the brake run is nowhere near. The mechanism
+  is that channel transitions are authored as fractions of element length, so
+  jerk scales as Δg·v over transition-fraction times length — and nothing
+  couples length to jerk strongly enough to beat closure. The brake run *does*
+  still stall against the speed floor; that is a separate wart, not the jerk.
+- **The 19.7 was an instantaneous peak compared against a windowed limit.**
+  F2291 defines onset rate as a straight-line slope across a ~0.1 s window on a
+  5 Hz low-passed signal, never a per-step derivative (see `PACING.md` §1). A
+  quintic profile's peak reads 1.875× its windowed slope, so 19.7 instantaneous
+  is ≈10.5 g/s as the standard measures it — inside the 15 g/s proving limit.
+  The analysis now measures jerk the way the limit is defined.
 
 **The solve remains basin-sensitive**, and this round produced two more
 data points for the table:
@@ -114,10 +127,33 @@ data points for the table:
 | free trim on straights, higher speed floor | **18.7 m** |
 | brake run: free exit speed, longer bounds | 439 m |
 | reverted | **18.7 m** |
+| arc key widths allocated ∝ Δg crossed (2026-08-07) | 18.4 m but 51° heading |
+| windowed jerk as the solver's check | 513 m |
+| multiple shooting, 3 seams, defect weight ×5, wide boxes | defects never closed; forward ride ~1.2 km |
+| dual jerk: design enforced, proving advisory | **18.7 m** restored |
 
 The brake-run change was a reasonable-looking tweak that made closure twenty
-times worse, and it was reverted rather than tuned around. Multiple shooting is
-still the recommended structural fix; nothing here has changed that.
+times worse, and it was reverted rather than tuned around.
+
+**Multiple shooting was attempted 2026-08-07 and is wired but not enabled.**
+The evaluator integrates from arbitrary seam states (`eval::evaluate_split`),
+seams are seeded from a forward pass, and defect residuals exist — all
+test-exercised. Enabled, the solve settles on stitched optima whose defects
+sit near thirty residual units and never close, across defect weights, seam
+boxes and 150-iteration budgets; the forward ride meanwhile loses the basin
+entirely. Even a *passing* extra residual reshapes the path — adding the
+proving-window jerk check as a solver penalty was alone enough to lose 18.7 m,
+which is why it is advisory. Next hypotheses, untried: eliminate seam
+variables by Gauss-Newton on the defect block (exploiting the arrow sparsity
+this dense LM ignores), or a homotopy that starts shooting from the converged
+single-shooting answer rather than from the seed.
+
+A second lesson of the same shape: the arc-key reallocation (each swing's
+width proportional to the g it crosses — the minimax split, cutting the
+authored jerk peak from 19.7 to 14.2 g/s at fixed length) is the right
+transition shape, verified by direct evaluation. It is not in the preset
+because it moves every seeded trim and the solve then lands 51° of heading
+error away. It waits on a solver that can follow it.
 
 **Falcon's Flight's own camelback shows the nonlinearity.** Worked from its
 published geometry, 69.4 m/s at the cliff valley climbing 163 m puts its crest

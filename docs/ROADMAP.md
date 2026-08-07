@@ -15,15 +15,18 @@ wrong — fix the design rather than leaving a fixup behind.
 4. ~~Evaluator — force profile → heartline → geometry, plus measurement~~ — **done.**
 5. Multibody train — **partial.** Rigid couplers and mass-weighted gravity over every row give the
    back-row snap; elastic couplers and snatch loads are not modelled.
-6. The global solve — **partial.** Closure, energy, clearance and envelope converge together;
-   pinned apex height does not. Basin-sensitive. See `MODEL.md`.
+6. The global solve — **partial.** Geometric pins now bind: each element carries two demands —
+   trim sets the pitch it hands on, length sets its size — seeded by damped Newton before the
+   solve, then solve/re-seed/solve. Closure reaches 18.7 m over 6.9 km. Still basin-sensitive, and
+   three limits remain slightly over. See `MODEL.md`.
 7. Godot client — GDExtension binding, track render, free camera. *Not started; an HTML POV viewer
    stands in for now*
 8. ~~POV ride — true seat position, row selectable~~ — **done, in the stand-in viewer.**
 9. Analysis surfaced — envelopes, jerk, clearance, buildability cost, pacing score
 10. Falcon's Flight validation — reproduces published figures within a written-down tolerance
-11. Records and cliff terrain — feeding the model aggressive parameters and real heightmaps. Data
-    work, not new features
+11. Records and cliff terrain — **mostly done as data, as predicted.** Every geometric record
+    target is beaten by feeding the model a taller escarpment, maglev running gear and 1.25x
+    figures. No new features were needed. Real heightmaps still to come
 12. Dress — speed cues, physics-driven audio, RTX
 
 ## Worth knowing

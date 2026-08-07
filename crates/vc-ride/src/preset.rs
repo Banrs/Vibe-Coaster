@@ -28,8 +28,36 @@
 use vc_math::vec3::Vec3;
 
 use crate::model::{
-    Channel, Element, Envelope, Free, Limits, RideModel, Site, Spec, Station, Terrain, Vehicle,
+    Channel, Element, Envelope, Free, Limits, Pin, RideModel, Site, Spec, Station, Terrain, Vehicle,
 };
+
+/// The standing records this ride is built to beat, and the margin it beats
+/// them by.
+///
+/// **A record figure alone is not a target.** Each was set at its own speed with
+/// its own felt g, and those three quantities are not independent: for a
+/// force-specified element every length scales as `v²/g₀` times a dimensionless
+/// shape factor, so size, speed and intensity determine one another. Pick any
+/// two and the third follows. The trap this table exists to avoid is scaling an
+/// element up at a fixed speed — that grows every radius with it and leaves the
+/// element *weaker* than the record it beats.
+///
+/// So only the **geometric** figures are scaled here. Intensity is authored into
+/// the force channels and floored so the solve cannot trade it away, and speed
+/// is an outcome of the drops and the boosters. Three quantities, three
+/// mechanisms, none of them over-specified.
+mod record {
+    /// Falcon's Flight's camelback, its high point: 163 m of structure. Note
+    /// this is *not* its headline 195 m, which is elevation change across the
+    /// whole layout, nor its 158 m first drop.
+    pub const TALLEST_HILL_M: f64 = 163.0;
+    /// Falcon's Flight's cliff dive, the tallest drop built.
+    pub const TALLEST_DROP_M: f64 = 158.0;
+    /// Falcon's Flight, the fastest built, m/s (250 km/h).
+    pub const FASTEST_MS: f64 = 69.4;
+    /// Geometric margin over the record. Applied to lengths only.
+    pub const MARGIN: f64 = 1.25;
+}
 
 /// Rider acceleration limits, duration-scaled.
 ///
@@ -73,11 +101,16 @@ pub fn astm_limits() -> Limits {
         longitudinal: Envelope {
             points: vec![(0.2, 6.0), (1.0, 6.0), (2.0, 4.0), (4.0, 4.0), (5.0, 3.0)],
         },
-        // No standard states a general jerk limit. Ten g/s is design-stage
-        // practice; fifteen is the ceiling when verifying on a test rig.
+        // No standard states a general jerk limit. Rohde, p.40: fifteen g/s is
+        // "the max. allowable value when proving the design", and designers
+        // work to "5 g/s or max. 10 g/s in the design phase". Ten here.
+        // Corroborated by ISO/TS 17929:2014; a real dive coaster's valley was
+        // measured at about seven.
         jerk: 10.0,
-        // Not codified anywhere either. Sixty to ninety degrees per second is
-        // manufacturer practice.
+        // Not codified anywhere either — Rohde, §7.6.2: "rotational
+        // accelerations are not mentioned and not measured". Eighty is the
+        // red threshold in openFVD's own colour bands, which is the closest
+        // thing to a practitioner consensus that exists.
         roll_rate: 80.0,
     }
 }
@@ -136,11 +169,24 @@ pub fn frontier_limits() -> Limits {
             points: vec![(0.2, 7.0), (1.0, 7.0), (2.0, 5.0), (5.0, 4.0)],
         },
         // A contoured seat and a supported head take onset far better than a
-        // lap bar does.
+        // lap bar does. Fifteen is not an invention: it is the figure Rohde
+        // gives as the maximum allowable when proving a design on the rig,
+        // adopted here as the design value rather than the verification one.
         jerk: 15.0,
+        // Above openFVD's red band at eighty, and deliberately. No standard
+        // states a roll-rate limit at all, so this is a position, not a
+        // reading — active restraint is the argument for it.
         roll_rate: 110.0,
     }
 }
+
+/// Height of the escarpment, metres.
+///
+/// Taller than the Tuwaiq escarpment the reference ride is cut into, and it has
+/// to be: a 198 m *rider-felt* drop is measured crest to valley, and the
+/// pull-out beneath it spends another sixty metres arresting the descent. Two
+/// hundred metres of cliff puts the valley floor underground.
+pub const CLIFF_M: f64 = 340.0;
 
 /// The escarpment: a plateau that falls away to the east.
 ///
@@ -148,11 +194,9 @@ pub fn frontier_limits() -> Limits {
 /// the same grid* a survey would fill, and it is read through the same bicubic
 /// sampler. There is no flat-ground shortcut for the solver to take.
 ///
-/// A 200 m fall over about 350 m of ground — deeper than the Tuwaiq
-/// escarpment the reference ride is cut into. A circuit has to climb back
-/// whatever it descends, so a cliff this size is only rideable because the
-/// layout spends propulsion on the way home; that is a design choice the
-/// vehicle pays for, not a limit on the site.
+/// A circuit has to climb back whatever it descends, so a cliff this size is
+/// only rideable because the layout spends propulsion on the way home; that is
+/// a design choice the vehicle pays for, not a limit on the site.
 pub fn escarpment() -> Terrain {
     let nx = 121;
     let ny = 121;
@@ -165,7 +209,7 @@ pub fn escarpment() -> Terrain {
             let y = origin.1 + j as f64 * spacing;
             // Logistic drop centred on x = 900 m, plus a gentle roll across the
             // plateau so nothing anywhere is exactly flat.
-            let cliff = 200.0 / (1.0 + ((x - 520.0) / 85.0).exp());
+            let cliff = CLIFF_M / (1.0 + ((x - 520.0) / 110.0).exp());
             let undulation = 6.0 * (y / 700.0).sin() + 4.0 * (x / 900.0).cos();
             heights.push(700.0 + cliff + undulation);
         }
@@ -219,13 +263,36 @@ pub fn train() -> Vehicle {
 /// never balances, and thirteen elements each drifting thirty metres downhill
 /// puts the nominal ride a kilometre underground — from which no solver
 /// recovers, because every gradient it can see points at a different disaster.
+/// How far either side of level a pitch trim may range, g.
+///
+/// Wide, because the trim is now the only thing aiming an element. It has to be
+/// able to swing a kilometre-long hill by tens of degrees of exit pitch.
+const TRIM_SPAN: f64 = 0.7;
+
 fn levelled(mut element: Element, span: f64) -> Element {
-    let seed = element.level_trim();
+    /// Largest pitch trim a seed may ask for, g.
+    ///
+    /// The trim is a nudge, not a redefinition of the element. A force profile
+    /// that cannot be levelled inside this is one that is *meant* to change
+    /// height — a pull-out, a dive — and flattening it cancels the very forces
+    /// it exists to deliver. Uncapped, the seed for a 6.8 g valley came out at
+    /// −2.3 g and quietly turned it into a 4.2 g one.
+    const MAX_TRIM: f64 = 0.6;
+
+    let seed = element.level_trim().clamp(-MAX_TRIM, MAX_TRIM);
     element.trim = Free::new(seed, seed - span, seed + span);
     element
 }
 
 /// A level stretch: station, launch or brake run.
+///
+/// Its trim is free even though its force profile is flat, because pitch is not
+/// the profile's business — it is whatever the previous element handed over.
+/// Left unaimed, a brake run inherits a 25-degree climb, sheds the last of its
+/// speed to gravity as well as to the brakes, and stalls; and a stalled train
+/// is where the whole model breaks, since curvature is force over speed
+/// squared. That is exactly how an earlier run spiralled a brake run through
+/// 298 degrees.
 fn straight(name: &'static str, length: Free, speed: Option<Free>) -> Element {
     Element {
         name,
@@ -234,47 +301,101 @@ fn straight(name: &'static str, length: Free, speed: Option<Free>) -> Element {
         bank_deg: Channel::flat(0.0),
         length,
         g_scale: Free::fixed(1.0),
-        trim: Free::fixed(0.0),
+        trim: Free::new(0.0, -0.3, 0.3),
         roll_scale: Free::fixed(1.0),
         speed_control: speed,
-        pin_apex_m: None,
+        pin: None,
+        exit_pitch_deg: 0.0,
     }
 }
 
-/// A hill: pull up, ease over the top at low or negative g, pull out.
+/// An arc in the vertical plane: ease into `middle_g`, hold it, ease out
+/// through `ends_g`.
 ///
-/// `crest_g` is what the rider feels over the top — below one is airtime, below
-/// zero is ejector. `pullout_g` is the pull at each end.
-fn hill(
+/// One builder covers hills and valleys, which is the architecture's claim made
+/// concrete. `middle_g` below one is a crest — below zero is ejector airtime —
+/// and `middle_g` above one is a pull-out. Nothing distinguishes them but the
+/// number, and the geometry that comes back is a crest or a valley accordingly.
+///
+/// The middle is held over a tenth of the element rather than a third. Peak g
+/// is limited by *duration*, not by magnitude: the envelope allows seven g for
+/// a moment and six for two seconds, so a brief spike buys intensity that a
+/// plateau of the same height would spend on a violation.
+fn arc(
     name: &'static str,
-    crest_g: f64,
-    pullout_g: f64,
+    middle_g: f64,
+    ends_g: f64,
     length: Free,
     speed: Option<Free>,
-    apex: Option<f64>,
+    pin: Option<Pin>,
 ) -> Element {
     levelled(
         Element {
             name,
             normal_g: Channel::new(&[
                 (0.0, 1.0),
-                (0.20, pullout_g),
-                (0.42, crest_g),
-                (0.58, crest_g),
-                (0.80, pullout_g),
+                (0.22, ends_g),
+                (0.45, middle_g),
+                (0.55, middle_g),
+                (0.78, ends_g),
                 (1.0, 1.0),
             ]),
             lateral_g: Channel::flat(0.0),
             bank_deg: Channel::flat(0.0),
             length,
-            g_scale: Free::new(1.0, 0.65, 1.35),
+            // Floored at one: the solve may firm an element up but never soften
+            // it. Softening is the cheapest way to buy closure, and it is how
+            // an earlier version of this ride ended up at 3.3 g inside a 7 g
+            // envelope — big because it was weak.
+            g_scale: Free::new(1.0, 1.0, 1.45),
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: speed,
-            pin_apex_m: apex,
+            pin,
+            // An arc is symmetric, so level in and level out is what it is for.
+            exit_pitch_deg: 0.0,
         },
-        0.45,
+        TRIM_SPAN,
     )
+}
+
+/// A dive: crest over the top and stay there.
+///
+/// One-sided, unlike [`arc`], and that is the whole point. A symmetric profile
+/// pitches down and then back up by the same amount, so it cannot dive at all —
+/// an earlier version of this preset built its cliff dive out of an arc and got
+/// an element that finished pointing 82 degrees *up*. The pull-out is the next
+/// element's job, which is also how a real layout is drawn.
+///
+/// Not levelled either: an element whose purpose is to lose two hundred metres
+/// is exactly the element a levelling trim must not touch.
+fn dive(
+    name: &'static str,
+    hold_g: f64,
+    exit_pitch_deg: f64,
+    length: Free,
+    speed: Option<Free>,
+    pin: Pin,
+) -> Element {
+    Element {
+        name,
+        // Returns to one g at the very end. Every channel in this file meets
+        // its neighbours at one g, and a dive that simply stopped at 0.15 would
+        // put a step in the felt force at the seam — unbounded jerk, which cost
+        // 177 g/s before this last key was added. Closing it back costs almost
+        // no descent: at one g on a 40-degree slope the track curves up by
+        // under two degrees over a hundred metres.
+        normal_g: Channel::new(&[(0.0, 1.0), (0.30, hold_g), (0.90, hold_g), (1.0, 1.0)]),
+        lateral_g: Channel::flat(0.0),
+        bank_deg: Channel::flat(0.0),
+        length,
+        g_scale: Free::new(1.0, 1.0, 1.45),
+        trim: Free::new(0.0, -TRIM_SPAN, TRIM_SPAN),
+        roll_scale: Free::fixed(1.0),
+        speed_control: speed,
+        pin: Some(pin),
+        exit_pitch_deg,
+    }
 }
 
 /// A banked turn. Positive bank turns left.
@@ -282,7 +403,16 @@ fn hill(
 /// The bank eases in over a third of the element rather than a fifth: bank
 /// rate is what actually sets how long a turn has to be, and rushing it breaks
 /// the roll-rate limit long before anything else complains.
-fn turn(name: &'static str, bank: f64, hold_g: f64, length: Free, roll: Free) -> Element {
+fn turn(name: &'static str, bank: f64, hold_g: f64, length: Free, roll: Free, pin: Pin) -> Element {
+    // A turn holds its altitude only when the vertical share of the felt force
+    // is one g, so `hold_g * cos(bank)` must be about one. At 78 degrees that
+    // needs 4.8 g; anything less is a descending turn wearing a level turn's
+    // name, and an earlier version of this preset paired 78 degrees with 3.2 g
+    // and wondered why the layout sank.
+    debug_assert!(
+        (hold_g * vc_math::units::from_degrees(bank).cos() - 1.0).abs() < 0.25,
+        "{name}: {hold_g} g at {bank} deg does not hold altitude"
+    );
     levelled(
         Element {
             name,
@@ -290,13 +420,14 @@ fn turn(name: &'static str, bank: f64, hold_g: f64, length: Free, roll: Free) ->
             lateral_g: Channel::flat(0.0),
             bank_deg: Channel::new(&[(0.0, 0.0), (0.30, bank), (0.70, bank), (1.0, 0.0)]),
             length,
-            g_scale: Free::new(1.0, 0.75, 1.25),
+            g_scale: Free::new(1.0, 0.9, 1.35),
             trim: Free::fixed(0.0),
             roll_scale: roll,
             speed_control: None,
-            pin_apex_m: None,
+            pin: Some(pin),
+            exit_pitch_deg: 0.0,
         },
-        0.40,
+        TRIM_SPAN,
     )
 }
 
@@ -305,7 +436,7 @@ fn turn(name: &'static str, bank: f64, hold_g: f64, length: Free, roll: Free) ->
 /// Banking one way and then the other leaves the heading roughly where it
 /// started, so this adds character to a straight leg without spending any of
 /// the layout's turning budget.
-fn wave(name: &'static str, bank: f64, length: Free, roll: Free) -> Element {
+fn wave(name: &'static str, bank: f64, length: Free, roll: Free, pin: Pin) -> Element {
     levelled(
         Element {
             name,
@@ -325,13 +456,14 @@ fn wave(name: &'static str, bank: f64, length: Free, roll: Free) -> Element {
                 (1.0, 0.0),
             ]),
             length,
-            g_scale: Free::new(1.0, 0.7, 1.3),
+            g_scale: Free::new(1.0, 1.0, 1.35),
             trim: Free::fixed(0.0),
             roll_scale: roll,
             speed_control: None,
-            pin_apex_m: None,
+            pin: Some(pin),
+            exit_pitch_deg: 0.0,
         },
-        0.40,
+        TRIM_SPAN,
     )
 }
 
@@ -344,118 +476,148 @@ fn wave(name: &'static str, bank: f64, length: Free, roll: Free) -> Element {
 /// offset the first one bought is exactly given back.
 ///
 /// Which parameters are free is the interesting part. **Lengths** are free
-/// because length buys height and heading. **Force scales** are free in a
-/// narrow band so an element can firm up or soften without becoming a
-/// different element. **Pitch trims** are free because altitude has to come
-/// from somewhere. **Bank scales** are free only on turns, since a bank
-/// multiplier on a hill is a Jacobian column that does nothing. The apex of
-/// the spine climb is pinned at 158 m — the human's one geometric demand —
-/// and everything about that element is solved to meet it.
+/// because length buys height and heading. **Force scales** are free upward
+/// only, so an element may firm up but never soften. **Pitch trims** are free
+/// because altitude has to come from somewhere. **Bank scales** are free only
+/// on turns, since a bank multiplier on a hill is a Jacobian column that does
+/// nothing.
+///
+/// ## Where the records are, and why they are where they are
+///
+/// Size and intensity cannot share an element. Radius is `v²/((n−1)g₀)`, so at
+/// the same speed a bigger element is a gentler one — which is why the records
+/// are placed rather than piled up:
+///
+/// - **Size** goes on the camelback, straight off the dive while the speed to
+///   pay for it is still there. A 204 m rise crested at ~60 m/s.
+/// - **Intensity** goes in the valley beneath it. The fastest point of the
+///   circuit is the *only* place a near-seven-g pull has a radius large enough
+///   to build; the same g at half the speed would want a quarter of the radius.
+/// - **Speed** is the dive plus a booster, and it lands where the pull-out and
+///   the camelback both need it.
+///
+/// Between them sit turns and hops that spend no records, because a ride whose
+/// every element is maximal has no shape. Propulsion is one launch and three
+/// boosters, roughly one every two kilometres.
 pub fn falcon_class() -> RideModel {
-    let plateau = 700.0 + 200.0;
+    let plateau = 700.0 + CLIFF_M;
+    let rise = record::TALLEST_HILL_M * record::MARGIN;
+    let drop_m = record::TALLEST_DROP_M * record::MARGIN;
+    let fastest = record::FASTEST_MS * 1.28;
+
     let elements = vec![
         // Drive tyres hold the train at dispatch speed; without them rolling
-        // resistance stops it before it reaches the launch.
-        straight("station", Free::fixed(45.0), Some(Free::fixed(2.0))),
-        // The real ride launches three times. The first two are here; the
-        // third is the boost on the way down the cliff.
+        // resistance stops it before the launch. Brisk, because a slow station
+        // is dead time and the average speed is a target here.
+        straight("station", Free::fixed(45.0), Some(Free::fixed(5.0))),
         straight(
-            "launch-1",
-            Free::new(150.0, 100.0, 250.0),
-            Some(Free::fixed(13.0)),
+            "launch",
+            Free::new(380.0, 260.0, 560.0),
+            Some(Free::new(62.0, 48.0, 74.0)),
         ),
-        straight(
-            "launch-2",
-            Free::new(330.0, 220.0, 520.0),
-            Some(Free::new(52.0, 40.0, 68.0)),
-        ),
-        // Up the cliff face and over the rim. The pinned one.
-        // Powered up the cliff face, as the real ride is: kinetic energy alone
-        // cannot buy a hundred metres of climb and still leave a ride at the
-        // top. This is the second of the three launches.
-        hill(
-            "spine-climb",
-            0.5,
-            1.9,
-            Free::new(430.0, 290.0, 740.0),
-            Some(Free::new(48.0, 30.0, 64.0)),
-            Some(150.0),
-        ),
-        // Down the escarpment, boosted to the fastest point on the circuit.
-        hill(
-            "cliff-drop",
-            0.25,
-            1.6,
-            Free::new(330.0, 220.0, 560.0),
-            Some(Free::new(92.0, 74.0, 99.0)),
+        // A hop over the plateau lip, handed back level.
+        arc(
+            "rim-hill",
+            0.3,
+            2.2,
+            Free::new(300.0, 150.0, 600.0),
+            None,
             None,
         ),
-        hill(
+        // The dive. Boosted on the way down: the drop alone is worth about
+        // 88 m/s and the record wants more than that.
+        dive(
+            "cliff-dive",
+            0.15,
+            -45.0,
+            Free::new(540.0, 300.0, 1300.0),
+            Some(Free::new(fastest, 76.0, 96.0)),
+            Pin::Drop(drop_m),
+        ),
+        // The valley, and the intensity record. Sized to arrive level.
+        arc(
             "pullout",
-            1.0,
-            4.4,
-            Free::new(330.0, 230.0, 560.0),
+            6.8,
+            1.8,
+            Free::new(320.0, 150.0, 700.0),
             None,
             None,
         ),
+        // The tall one, taken straight off the dive while the speed to pay for
+        // it is still there.
+        arc(
+            "camelback",
+            -0.3,
+            2.6,
+            Free::new(980.0, 400.0, 2000.0),
+            None,
+            Some(Pin::Rise(rise)),
+        ),
+        arc(
+            "ejector-hop",
+            -2.2,
+            3.2,
+            Free::new(260.0, 120.0, 600.0),
+            None,
+            None,
+        ),
+        // Two same-direction half circles are what closes a stadium: the second
+        // turn's centre falls on the other side of the track, so the sideways
+        // offset the first one bought is exactly given back.
         turn(
             "turnaround-out",
-            70.0,
-            2.9,
-            Free::new(1000.0, 620.0, 1600.0),
+            72.0,
+            3.25,
+            Free::new(900.0, 400.0, 2200.0),
             Free::new(1.0, 0.6, 1.4),
+            Pin::Turn(-180.0),
         ),
-        hill(
-            "camelback",
-            -0.9,
-            2.4,
-            Free::new(520.0, 320.0, 820.0),
-            None,
+        arc(
+            "booster-run",
+            0.2,
+            1.8,
+            Free::new(560.0, 250.0, 1000.0),
+            Some(Free::new(80.0, 62.0, 94.0)),
             None,
         ),
         wave(
             "wave-turn",
-            62.0,
-            Free::new(420.0, 250.0, 650.0),
+            68.0,
+            Free::new(420.0, 200.0, 800.0),
             Free::new(1.0, 0.5, 1.4),
+            Pin::Turn(0.0),
         ),
-        hill(
-            "ejector-hop",
-            -1.9,
-            3.0,
-            Free::new(260.0, 160.0, 420.0),
-            None,
-            None,
-        ),
-        // The third powered section. The real ride boosts on the descent; this
-        // one boosts on the way home, which is what pays for the climb back up
-        // to the station.
-        hill(
-            "airtime-run",
-            0.1,
-            1.8,
-            Free::new(540.0, 330.0, 860.0),
-            Some(Free::new(78.0, 58.0, 90.0)),
-            None,
+        // Second-tallest, and the last booster: this is what pays for the climb
+        // back up the escarpment to the station.
+        arc(
+            "speed-hill",
+            -0.6,
+            2.8,
+            Free::new(620.0, 300.0, 1200.0),
+            Some(Free::new(72.0, 56.0, 88.0)),
+            Some(Pin::Rise(120.0)),
         ),
         turn(
             "turnaround-home",
-            70.0,
-            2.9,
-            Free::new(1000.0, 620.0, 1600.0),
+            72.0,
+            3.25,
+            Free::new(900.0, 400.0, 2200.0),
             Free::new(1.0, 0.6, 1.4),
+            Pin::Turn(-180.0),
         ),
-        hill(
+        arc(
             "last-hill",
-            -0.4,
-            2.2,
-            Free::new(290.0, 170.0, 470.0),
+            -0.5,
+            2.4,
+            Free::new(300.0, 150.0, 600.0),
             None,
             None,
         ),
+        // Short and hard. A long brake run is the single largest drag on the
+        // average speed, and maglev brakes do not need the distance.
         straight(
             "brake-run",
-            Free::new(330.0, 220.0, 560.0),
+            Free::new(230.0, 170.0, 330.0),
             Some(Free::fixed(6.0)),
         ),
     ];
@@ -465,9 +627,13 @@ pub fn falcon_class() -> RideModel {
             station: Station {
                 position: Vec3::new(0.0, 0.0, plateau + 12.0),
                 heading: Vec3::new(1.0, 0.0, 0.0),
-                dispatch_speed: 2.0,
+                dispatch_speed: 5.0,
             },
             elements,
+            // 151 km/h. Falcon's Flight averages about 71 km/h over its 4,250 m
+            // in ~215 s; this asks for more than twice that, which is a demand
+            // on the whole layout rather than on any one element.
+            target_average_speed: 42.0,
         },
         site: Site {
             terrain: escarpment(),
@@ -501,12 +667,71 @@ mod tests {
     }
 
     #[test]
-    fn the_preset_reaches_a_plausible_top_speed() {
+    fn the_preset_reaches_a_record_top_speed() {
         let model = falcon_class();
         let ride = evaluate(&model, &model.spec.free_parameters());
         let top = ride.samples.iter().fold(0.0_f64, |m, s| m.max(s.speed));
-        // The real ride is quoted at 250 km/h, or about 69 m/s.
-        assert!((45.0..90.0).contains(&top), "top speed {top} m/s");
+        // The record is 69.4 m/s and this ride exists to beat it. The upper
+        // bound is not a target, just a guard: past about 130 m/s the ride has
+        // stopped being a coaster and the model has gone wrong somewhere.
+        assert!(
+            (record::FASTEST_MS..130.0).contains(&top),
+            "top speed {top} m/s"
+        );
+    }
+
+    #[test]
+    fn a_positive_bank_turns_right() {
+        // The convention, verified rather than asserted in a doc comment. It
+        // was documented backwards, and the seeder spent a turnaround through
+        // 2,819 degrees chasing the wrong sign before this was pinned down.
+        let element = turn(
+            "probe",
+            72.0,
+            3.25,
+            Free::fixed(600.0),
+            Free::fixed(1.0),
+            Pin::Turn(-180.0),
+        );
+        let mut model = falcon_class();
+        model.spec.elements = vec![element];
+        model.spec.station.dispatch_speed = 60.0;
+        let ride = evaluate(&model, &model.spec.free_parameters());
+        assert!(
+            ride.elements[0].heading_change < -10.0,
+            "positive bank turned {} degrees",
+            ride.elements[0].heading_change
+        );
+    }
+
+    #[test]
+    fn seeding_makes_a_geometric_pin_bind() {
+        // The whole point of the seeder. As authored, the camelback's length is
+        // a guess; after seeding it must actually deliver the demanded rise,
+        // because no scale factor could have been written down instead.
+        let mut model = falcon_class();
+        let index = model
+            .spec
+            .elements
+            .iter()
+            .position(|e| e.name == "camelback")
+            .expect("the preset has a camelback");
+        let Some(Pin::Rise(demanded)) = model.spec.elements[index].pin else {
+            panic!("the camelback is the pinned-rise element");
+        };
+
+        let before = evaluate(&model, &model.spec.free_parameters()).elements[index].rise;
+        crate::solve::seed_geometry(&mut model, 3);
+        let after = evaluate(&model, &model.spec.free_parameters()).elements[index].rise;
+
+        assert!(
+            (after - demanded).abs() < (before - demanded).abs(),
+            "seeding did not help: {before} then {after}, wanted {demanded}"
+        );
+        assert!(
+            (after - demanded).abs() < 15.0,
+            "rise came out at {after} against a demanded {demanded}"
+        );
     }
 
     #[test]

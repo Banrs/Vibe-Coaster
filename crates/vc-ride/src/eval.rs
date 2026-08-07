@@ -56,9 +56,14 @@ use crate::model::{Params, RideModel};
 /// solve differentiates through this.
 pub const STEPS_PER_ELEMENT: usize = 1600;
 
-/// Speed floor, m/s. Curvature divides by speed squared; this keeps a station
-/// crawl finite. Set well below any real dispatch speed so it never binds.
-const MIN_SPEED: f64 = 0.25;
+/// Speed floor, m/s.
+///
+/// Curvature divides by speed squared, so a train that stops does not merely
+/// stop — the geometry blows up, and the solve, differentiating through it,
+/// finds a landscape full of spirals it can wander into. Set below any real
+/// dispatch or brake-run speed so it never binds on a healthy ride, but high
+/// enough that an unhealthy one degrades instead of exploding.
+const MIN_SPEED: f64 = 2.0;
 
 /// One point along the ride.
 #[derive(Clone, Copy, Debug)]
@@ -102,6 +107,21 @@ pub struct ElementResult<T: Scalar> {
     pub requested_speed: Option<T>,
     /// Highest point reached, metres above the station.
     pub apex: T,
+    /// Metres climbed from the low point before this element's high point.
+    pub rise: T,
+    /// Metres descended from this element's high point to the low point after.
+    pub drop: T,
+    /// Speed at the high point, m/s. The condition the rise was delivered
+    /// under: the same shape at a different speed is a different size, so a
+    /// height figure quoted without it does not transfer.
+    pub crest_speed: T,
+    /// Pitch of the track leaving the element, degrees, positive climbing.
+    pub exit_pitch: T,
+    /// Net change in the direction of travel across the element, degrees,
+    /// positive turning left. Accumulated rather than taken end to end, so a
+    /// turnaround that goes past half a circle is not reported as a small one
+    /// the other way.
+    pub heading_change: T,
 }
 
 /// A ride, as measured.
@@ -271,6 +291,13 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
             exit_speed: (state.energy.max(min_energy) * T::from_f64(2.0)).sqrt(),
             requested_speed: p.exit_speed,
             apex,
+            // Filled once the whole ride exists; a crest's valley is usually in
+            // the next element.
+            rise: T::ZERO,
+            drop: T::ZERO,
+            crest_speed: T::ZERO,
+            exit_pitch: T::ZERO,
+            heading_change: T::ZERO,
         });
     }
 
@@ -296,6 +323,38 @@ pub fn evaluate<T: Scalar>(model: &RideModel, x: &[T]) -> Ride<T> {
     );
     final_sample.element = last;
     samples.push(final_sample);
+
+    // Rider-felt rise and drop: this element's high point to the valley either
+    // side of it. The valley is found by walking out, not by taking a minimum
+    // over a fixed window — a window reaching into the next element reports the
+    // bottom of the *next* descent, which on a cliff ride is a hundred metres
+    // of somebody else's geometry.
+    for (i, result) in results.iter_mut().enumerate() {
+        let first = i * STEPS_PER_ELEMENT;
+        let last = (first + STEPS_PER_ELEMENT).min(samples.len() - 1);
+        let height = |k: &usize| samples[*k].position.z.to_f64();
+        let peak = (first..=last)
+            .max_by(|a, b| height(a).total_cmp(&height(b)))
+            .unwrap_or(first);
+        result.rise = samples[peak].position.z - valley(&samples, peak, -1);
+        result.drop = samples[peak].position.z - valley(&samples, peak, 1);
+        result.crest_speed = samples[peak].speed;
+        result.exit_pitch = vc_math::units::to_degrees(samples[last].frame.tangent.z.asin());
+
+        // Heading, accumulated in steps small enough that none can turn far
+        // enough to wrap. Sampled coarsely: the sum is the same angle whether
+        // it is taken in a hundred pieces or in sixteen hundred, and this runs
+        // inside every Jacobian column.
+        let mut turned = T::ZERO;
+        let mut previous = samples[first].frame.tangent;
+        for step in samples[first..=last].iter().step_by(HEADING_STRIDE).skip(1) {
+            let next = step.frame.tangent;
+            turned += (previous.x * next.y - previous.y * next.x)
+                .atan2(previous.x * next.x + previous.y * next.y);
+            previous = next;
+        }
+        result.heading_change = vc_math::units::to_degrees(turned);
+    }
 
     Ride {
         samples,
@@ -386,6 +445,39 @@ fn derivative<T: Scalar>(
         },
         sample,
     )
+}
+
+/// Metres the track must climb back out of a dip before it counts as a valley
+/// rather than a wobble.
+const VALLEY_REBOUND: f64 = 3.0;
+
+/// Steps between samples when accumulating heading.
+const HEADING_STRIDE: usize = 16;
+
+/// The height of the valley reached by walking away from `peak` in `direction`.
+///
+/// Tracks the running minimum and stops once the track has climbed back out of
+/// it, so what comes back is the bottom of *this* descent and not of the one
+/// after it. Bounded to two elements' worth of travel so a monotonic run down a
+/// cliff still terminates.
+fn valley<T: Scalar>(samples: &[Sample<T>], peak: usize, direction: isize) -> T {
+    let mut low = samples[peak].position.z;
+    let mut at = peak;
+    for _ in 0..2 * STEPS_PER_ELEMENT {
+        let Ok(next) = usize::try_from(at as isize + direction) else {
+            break;
+        };
+        let Some(sample) = samples.get(next) else {
+            break;
+        };
+        at = next;
+        if sample.position.z.to_f64() < low.to_f64() {
+            low = sample.position.z;
+        } else if sample.position.z.to_f64() > low.to_f64() + VALLEY_REBOUND {
+            break;
+        }
+    }
+    low
 }
 
 /// How fully the infrastructure is engaged at progress `u`: zero at each end
@@ -518,6 +610,7 @@ mod tests {
                     dispatch_speed: dispatch,
                 },
                 elements,
+                target_average_speed: 0.0,
             },
             site: flat_site(),
             vehicle: test_vehicle(),
@@ -536,7 +629,8 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: speed.map(Free::fixed),
-            pin_apex_m: None,
+            pin: None,
+            exit_pitch_deg: 0.0,
         }
     }
 
@@ -580,7 +674,8 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
-            pin_apex_m: None,
+            pin: None,
+            exit_pitch_deg: 0.0,
         };
         let model = model_of(vec![element], v);
         let ride = run(&model);
@@ -613,7 +708,8 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
-            pin_apex_m: None,
+            pin: None,
+            exit_pitch_deg: 0.0,
         };
         let model = model_of(vec![hill], 40.0);
         let ride = run(&model);
@@ -695,7 +791,8 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
-            pin_apex_m: None,
+            pin: None,
+            exit_pitch_deg: 0.0,
         };
         let mut long_train = model_of(vec![crest.clone()], 25.0);
         long_train.vehicle.cars = 6;
@@ -737,7 +834,8 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
-            pin_apex_m: None,
+            pin: None,
+            exit_pitch_deg: 0.0,
         };
         let coarse = run(&model_of(vec![turn(400.0)], 45.0));
         let fine = run(&model_of(vec![turn(200.0), turn(200.0)], 45.0));

@@ -139,6 +139,31 @@ impl Channel {
     }
 }
 
+/// How big an element has to be. Solved for through its free **length**.
+///
+/// Sizes cannot be authored by eye, and the reason is `v²`. The pitch an
+/// element sweeps is roughly `(n̄ − 1)·g₀·L / v²`, so a thousand metres at one g
+/// of departure turns 69° at 90 m/s and **351° at 40 m/s** — the same authored
+/// element is a gentle hill where the train is fast and a spiral where it is
+/// slow. Every length has to be solved against what its element is *for*, at
+/// the speed it actually runs at.
+///
+/// This is the size half of the problem. The other half is [`Element::exit_pitch_deg`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pin {
+    /// Metres climbed from the valley before this element's high point.
+    ///
+    /// Rider-felt, deliberately: not height above the ground, because on a
+    /// two-hundred-metre cliff the terrain would supply most of that number and
+    /// pinning it would constrain almost nothing.
+    Rise(f64),
+    /// Metres descended from the high point to the valley after it.
+    Drop(f64),
+    /// Net change in the direction of travel, degrees, positive turning left —
+    /// so a bank-right turnaround pins a negative angle.
+    Turn(f64),
+}
+
 /// One stretch of track, described by what the rider feels across it.
 #[derive(Clone, Debug)]
 pub struct Element {
@@ -149,7 +174,7 @@ pub struct Element {
     /// Rider-frame lateral g. Zero is a coordinated, properly-banked turn.
     pub lateral_g: Channel,
     /// Bank angle in degrees, right-handed about the direction of travel, so
-    /// positive banks a left turn.
+    /// positive banks a **right** turn.
     pub bank_deg: Channel,
     /// Arclength of the element, metres.
     pub length: Free,
@@ -175,9 +200,23 @@ pub struct Element {
     /// achievable, and how, is a property of the vehicle's propulsion, not of
     /// the track.
     pub speed_control: Option<Free>,
-    /// Height above the station the element's high point must reach, if the
-    /// human pinned one. An outcome the solve must hit, not an input.
-    pub pin_apex_m: Option<f64>,
+    /// How big this element has to be, if anything is demanded of it. An
+    /// outcome the solve must hit, not an input it can set.
+    pub pin: Option<Pin>,
+    /// The pitch this element must hand on, degrees, positive climbing. Solved
+    /// for through its free **trim**.
+    ///
+    /// Every element needs one, and nearly all of them want zero — hand the
+    /// track back the way you found it. This is what stops a layout running
+    /// away: an element's size says nothing about where it points, and pitch
+    /// left uncontrolled accumulates until the back half of the ride is
+    /// plunging and climbing through eighty degrees.
+    ///
+    /// Pitch and size are the two things an element must get right, and it has
+    /// exactly two free parameters that move them independently — the trim
+    /// shifts the whole force profile up or down, the length scales how long it
+    /// acts for. One demand each, and the pair is well posed.
+    pub exit_pitch_deg: f64,
 }
 
 /// Fraction of an element over which the pitch trim eases in and out.
@@ -285,6 +324,13 @@ pub struct Spec {
     pub station: Station,
     /// The elements, in order.
     pub elements: Vec<Element>,
+    /// Average speed the layout is asked to hold, m/s.
+    ///
+    /// A pacing demand, not a limit. Top speed is a moment; the average is what
+    /// decides whether a ride is fast or merely has a fast bit, and it is the
+    /// number that suffers first when a layout is allowed to crawl over its
+    /// tall elements.
+    pub target_average_speed: f64,
 }
 
 impl Spec {
@@ -297,6 +343,32 @@ impl Spec {
     /// has to work around.
     pub fn free_parameters(&self) -> Vec<f64> {
         self.each_free().map(|(_, f)| f.value).collect()
+    }
+
+    /// Writes solved values back over the free parameters.
+    ///
+    /// The exact inverse of [`Self::free_parameters`], and what lets a solved
+    /// ride be re-seeded and solved again: without it the solve's answer lives
+    /// only in a loose vector, and the seeder has nothing to work from.
+    pub fn adopt(&mut self, x: &[f64]) {
+        let mut next = x.iter().copied();
+        for element in &mut self.elements {
+            for free in [
+                Some(&mut element.length),
+                Some(&mut element.g_scale),
+                Some(&mut element.trim),
+                Some(&mut element.roll_scale),
+                element.speed_control.as_mut(),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|f| f.is_free())
+            {
+                if let Some(value) = next.next() {
+                    free.value = value;
+                }
+            }
+        }
     }
 
     /// Bounds matching [`Self::free_parameters`].
@@ -622,7 +694,8 @@ mod tests {
             trim: Free::fixed(0.0),
             roll_scale: Free::fixed(1.0),
             speed_control: None,
-            pin_apex_m: None,
+            pin: None,
+            exit_pitch_deg: 0.0,
         };
         let p = Params {
             length: 40.0,
@@ -717,6 +790,7 @@ mod tests {
                 heading: Vec3::new(1.0, 0.0, 0.0),
                 dispatch_speed: 2.0,
             },
+            target_average_speed: 0.0,
             elements: vec![Element {
                 name: "hill",
                 normal_g: Channel::flat(1.0),
@@ -727,7 +801,8 @@ mod tests {
                 trim: Free::fixed(0.0),
                 roll_scale: Free::fixed(1.0),
                 speed_control: Some(Free::new(30.0, 10.0, 40.0)),
-                pin_apex_m: None,
+                pin: None,
+                exit_pitch_deg: 0.0,
             }],
         };
         assert_eq!(spec.free_parameters(), vec![100.0, 30.0]);

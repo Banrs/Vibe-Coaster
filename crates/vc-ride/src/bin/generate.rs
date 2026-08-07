@@ -9,24 +9,38 @@
 
 use std::fs;
 
-use vc_ride::analysis::analyse;
-use vc_ride::eval::evaluate;
-use vc_ride::{export, preset, solve};
+use vc_ride::analysis::{Analysis, analyse};
+use vc_ride::eval::{Ride, evaluate};
+use vc_ride::{RideModel, export, preset, solve};
 
 fn main() -> std::io::Result<()> {
-    let model = preset::falcon_class();
-    let seed = model.spec.free_parameters();
+    let mut model = preset::falcon_class();
 
-    println!("{} free parameters", seed.len());
-    println!("\n--- as specified ---");
-    report(&model, &evaluate(&model, &seed));
+    println!("--- as specified ---");
+    report(&model, &evaluate(&model, &model.spec.free_parameters()));
 
-    let (report_out, ride) = solve::solve(&model, 90);
-    println!("\n--- solve ---\n{}", report_out.summary());
+    // Size the pinned elements against their own demands before the global
+    // solve sees them. Without this the solve is asked to discover the
+    // geometry and close the circuit at the same time, and it does neither.
+    solve::seed_geometry(&mut model, 3);
+    println!("\n--- as seeded ---");
+    report(&model, &evaluate(&model, &model.spec.free_parameters()));
+
+    // Solve, re-seed, solve. Closure needs kilometres of correction, and
+    // finding them moves the lengths far enough that the pitches and sizes need
+    // re-establishing at the speeds the new layout actually runs at. Two rounds
+    // is a fixed-point iteration between the two, and it costs one more solve.
+    let (first, _) = solve::solve(&model, 60);
+    model.spec.adopt(&first.parameters);
+    solve::seed_geometry(&mut model, 2);
+    let (outcome, ride) = solve::solve(&model, 60);
+    println!("\n--- solve ---\n{}", outcome.summary());
     println!("\n--- as solved ---");
     report(&model, &ride);
 
     let analysis = analyse(&model, &ride);
+    scorecard(&model, &ride, &analysis);
+
     let failures = analysis.failures();
     if failures.is_empty() {
         println!("\nevery comfort and clearance limit met");
@@ -37,15 +51,15 @@ fn main() -> std::io::Result<()> {
         }
     }
     println!(
-        "\nbuildability: {:.0} m of track, {:.0} support metre-metres, \
+        "buildability: {:.0} m of track, {:.0} support metre-metres, \
          closest approach to the ground {:.1} m",
         analysis.track_length, analysis.support_metres, analysis.min_clearance
     );
 
-    let note = if report_out.converged {
+    let note = if outcome.converged {
         "solved".to_string()
     } else {
-        format!("UNCONVERGED - {}", report_out.worst[0].0)
+        format!("UNCONVERGED - {}", outcome.worst[0].0)
     };
     let json = export::to_json(&model, &ride, &analysis, &note);
 
@@ -57,37 +71,50 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn report(model: &vc_ride::RideModel, ride: &vc_ride::Ride<f64>) {
+/// Peak and trough of the felt vertical g across one element.
+fn extremes(ride: &Ride<f64>, index: usize) -> (f64, f64) {
+    let at = index * vc_ride::eval::STEPS_PER_ELEMENT;
+    let end = (at + vc_ride::eval::STEPS_PER_ELEMENT).min(ride.samples.len() - 1);
+    ride.samples[at..=end]
+        .iter()
+        .fold((f64::MIN, f64::MAX), |(u, d), s| {
+            (u.max(s.normal_g), d.min(s.normal_g))
+        })
+}
+
+fn report(model: &RideModel, ride: &Ride<f64>) {
     println!(
-        "{:<14} {:>7} {:>7} {:>7} {:>7} {:>8} {:>8}",
-        "element", "len", "enter", "exit", "apex", "min z", "max z"
+        "{:<16} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7} {:>7} {:>6} {:>6}",
+        "element", "len", "enter", "exit", "rise", "drop", "pitch", "turn", "+g", "-g"
     );
-    let mut at = 0usize;
     for (i, result) in ride.elements.iter().enumerate() {
-        let end = (at + vc_ride::eval::STEPS_PER_ELEMENT).min(ride.samples.len() - 1);
-        let span = &ride.samples[at..=end];
-        let lo = span.iter().fold(f64::MAX, |m, s| m.min(s.position.z));
-        let hi = span.iter().fold(f64::MIN, |m, s| m.max(s.position.z));
+        let (up, down) = extremes(ride, i);
         println!(
-            "{:<14} {:>7.0} {:>7.1} {:>7.1} {:>7.1} {:>8.1} {:>8.1}",
-            result.name, result.length, result.entry_speed, result.exit_speed, result.apex, lo, hi
+            "{:<16} {:>6.0} {:>6.1} {:>6.1} {:>7.1} {:>7.1} {:>7.1} {:>7.1} {:>6.2} {:>6.2}",
+            result.name,
+            result.length,
+            result.entry_speed,
+            result.exit_speed,
+            result.rise,
+            result.drop,
+            result.exit_pitch,
+            result.heading_change,
+            up,
+            down
         );
-        at = end;
-        let _ = i;
     }
     let top = ride.samples.iter().fold(0.0_f64, |m, s| m.max(s.speed));
-    let station = model.spec.station.position;
     let end = ride.end();
     println!(
-        "total {:.0} m, {:.0} s, top speed {:.1} m/s ({:.0} km/h)",
+        "total {:.0} m, {:.0} s, top {:.0} km/h, average {:.0} km/h",
         ride.length,
         ride.duration,
-        top,
-        top * 3.6
+        top * 3.6,
+        ride.length / ride.duration * 3.6
     );
     println!(
         "closure gap {:.1} m, heading error {:.1} deg",
-        (end.position - station).norm(),
+        (end.position - model.spec.station.position).norm(),
         end.frame
             .tangent
             .dot(model.spec.station.heading / model.spec.station.heading.norm())
@@ -95,4 +122,49 @@ fn report(model: &vc_ride::RideModel, ride: &vc_ride::Ride<f64>) {
             .acos()
             .to_degrees()
     );
+}
+
+/// The records this ride exists to beat, checked against what it produced.
+///
+/// Printed rather than left to the reader: a generator aimed at records that
+/// does not say whether it hit them is asking to be believed.
+fn scorecard(model: &RideModel, ride: &Ride<f64>, analysis: &Analysis<f64>) {
+    let of = |name: &str, pick: fn(&vc_ride::eval::ElementResult<f64>) -> f64| {
+        ride.elements
+            .iter()
+            .find(|e| e.name == name)
+            .map_or(0.0, pick)
+    };
+    let (peak_up, peak_down) = (0..ride.elements.len())
+        .map(|i| extremes(ride, i))
+        .fold((f64::MIN, f64::MAX), |(u, d), (a, b)| (u.max(a), d.min(b)));
+
+    println!("\n--- records ---");
+    println!("{:<22} {:>10} {:>10}", "", "got", "target");
+    for (label, got, target, unit) in [
+        (
+            "tallest hill (rise)",
+            of("camelback", |e| e.rise),
+            163.0 * 1.25,
+            "m",
+        ),
+        (
+            "tallest drop",
+            of("cliff-dive", |e| e.drop),
+            158.0 * 1.25,
+            "m",
+        ),
+        ("top speed", analysis.top_speed * 3.6, 250.0 * 1.28, "km/h"),
+        (
+            "average speed",
+            analysis.average_speed * 3.6,
+            model.spec.target_average_speed * 3.6,
+            "km/h",
+        ),
+        ("peak positive g", peak_up, 5.9, "g"),
+        ("peak airtime g", -peak_down, 2.0, "g"),
+    ] {
+        let mark = if got >= target { "beaten" } else { "MISSED" };
+        println!("{label:<22} {got:>10.1} {target:>10.1} {unit:<5} {mark}");
+    }
 }

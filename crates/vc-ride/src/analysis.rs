@@ -47,6 +47,9 @@ pub struct Analysis<T: Scalar> {
     pub min_clearance: T,
     /// Fastest point, m/s.
     pub top_speed: T,
+    /// Track length over ride time, m/s. The pacing number: a ride that touches
+    /// its top speed once and crawls the rest is slow, and only this notices.
+    pub average_speed: T,
     /// Highest point above the station, metres.
     pub highest: T,
     /// Track length, metres. The first term of what it costs to build.
@@ -195,6 +198,7 @@ pub fn analyse<T: Scalar>(model: &RideModel, ride: &Ride<T>) -> Analysis<T> {
         checks,
         min_clearance,
         top_speed,
+        average_speed: ride.length / ride.duration,
         highest: ride.elements.iter().fold(T::ZERO, |m, e| m.max(e.apex)),
         track_length: ride.length,
         support_metres: support,

@@ -5,7 +5,7 @@
 A roller-coaster simulator built on real design math. You describe the ride you want, a solver
 generates real geometry from real force math, and you ride it.
 
-Reference point: **Falcon's Flight** — steel, four-across, LSM-launched. It's the floor, not the ceiling.
+Reference point: **Falcon's Flight** — steel, two-across in seven rows, three LSM launches. It's the floor, not the ceiling.
 
 ## Pillars
 
@@ -41,6 +41,7 @@ cargo run --release -p vc-ride --bin generate && open out/ride.html
 ```
 
 That solves the preset ride and opens a POV of it. Current state: **rideable**, through a stand-in
-HTML viewer rather than Godot. The generator produces a closed 5.6 km circuit at 321 km/h on maglev
-running gear, inside a near-future force envelope. See [`docs/MODEL.md`](docs/MODEL.md) for what
+HTML viewer rather than Godot. The generator produces a 6.9 km circuit at 386 km/h averaging
+205 km/h, with a 247 m airtime hill and a 206 m cliff dive — every geometric record target beaten by
+1.25x or more, inside a near-future force envelope. See [`docs/MODEL.md`](docs/MODEL.md) for what
 works, what does not, and what needs deciding. Destined for `github.com/Banrs/Vibe-Coaster`.

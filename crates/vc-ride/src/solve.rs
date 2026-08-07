@@ -33,8 +33,8 @@
 use vc_math::{Dual, Scalar};
 
 use crate::analysis::analyse;
-use crate::eval::{Ride, evaluate};
-use crate::model::RideModel;
+use crate::eval::{ElementResult, Ride, evaluate};
+use crate::model::{Pin, RideModel};
 
 /// Weights putting every residual on a comparable footing, so that no
 /// constraint dominates the solve for a reason as arbitrary as its units.
@@ -48,10 +48,19 @@ mod weight {
     pub const HEADING: f64 = 60.0;
     /// Per unit of frame roll at the station.
     pub const BANK: f64 = 60.0;
-    /// Per metre a pinned apex is missed by.
-    pub const APEX: f64 = 1.0;
+    /// Per metre a pinned rise or drop is missed by.
+    pub const PIN: f64 = 1.0;
     /// Per m/s the infrastructure fails to deliver.
     pub const SPEED: f64 = 3.0;
+    /// Per m/s the ride's average speed falls short of the pacing target.
+    /// One-sided — running faster than asked costs nothing.
+    pub const PACE: f64 = 2.0;
+    /// Per degree a structural demand — exit pitch, net turn — is missed by.
+    ///
+    /// Comparable to the closure weights, deliberately. Set light, the solve
+    /// simply spends the layout: at 0.5 it span a brake run through 1,760
+    /// degrees and left a hill climbing at 47 to buy closure it never got.
+    pub const STRUCTURE: f64 = 3.0;
     /// Per unit over a comfort or clearance limit. Heavy: these are the
     /// constraints that must not be traded away.
     pub const PENALTY: f64 = 50.0;
@@ -146,12 +155,32 @@ fn residuals<T: Scalar>(model: &RideModel, x: &[T], seed: &[f64]) -> (Vec<T>, Ve
 
     // What the human pinned, and what the infrastructure was asked for.
     for (element, result) in model.spec.elements.iter().zip(&ride.elements) {
-        if let Some(pin) = element.pin_apex_m {
-            push(
-                (result.apex - T::from_f64(pin)) * T::from_f64(weight::APEX),
-                format!("{} apex (m, pinned {pin:.0})", element.name),
-            );
+        match element.pin {
+            Some(Pin::Rise(m)) => push(
+                (result.rise - T::from_f64(m)) * T::from_f64(weight::PIN),
+                format!("{} rise (m, pinned {m:.0})", element.name),
+            ),
+            Some(Pin::Drop(m)) => push(
+                (result.drop - T::from_f64(m)) * T::from_f64(weight::PIN),
+                format!("{} drop (m, pinned {m:.0})", element.name),
+            ),
+            // Held lightly. Seeding a turnaround is not enough on its own:
+            // nothing else in the residual set knows it is meant to be a half
+            // circle, and the solve will happily spin one through 595 degrees
+            // to buy a few metres of closure.
+            Some(Pin::Turn(deg)) => push(
+                (result.heading_change - T::from_f64(deg)) * T::from_f64(weight::STRUCTURE),
+                format!("{} turn (deg)", element.name),
+            ),
+            None => {}
         }
+        // Where the element points when it hands over. Every element has one,
+        // and between them they are what keeps the layout from running away.
+        push(
+            (result.exit_pitch - T::from_f64(element.exit_pitch_deg))
+                * T::from_f64(weight::STRUCTURE),
+            format!("{} exit pitch (deg)", element.name),
+        );
         if let Some(requested) = result.requested_speed {
             push(
                 (result.exit_speed - requested) * T::from_f64(weight::SPEED),
@@ -159,6 +188,14 @@ fn residuals<T: Scalar>(model: &RideModel, x: &[T], seed: &[f64]) -> (Vec<T>, Ve
             );
         }
     }
+
+    // Pacing. A ride that reaches its top speed once and crawls everywhere else
+    // is not fast, and the average is the only number that notices.
+    push(
+        (T::from_f64(model.spec.target_average_speed) - ride.length / ride.duration).max(T::ZERO)
+            * T::from_f64(weight::PACE),
+        "average speed shortfall (m/s)".into(),
+    );
 
     // Comfort, clearance and running gear. Zero unless broken.
     let analysis = analyse(model, &ride);
@@ -182,6 +219,129 @@ fn residuals<T: Scalar>(model: &RideModel, x: &[T], seed: &[f64]) -> (Vec<T>, Ve
     }
 
     (r, names)
+}
+
+/// Sizes and aims every element against its own demand, before the global
+/// solve runs.
+///
+/// Two demands per element, and two parameters to meet them with. The **trim**
+/// shifts the whole force profile up or down, so it controls the pitch the
+/// element hands on; the **length** scales how long that profile acts for, so
+/// it controls how big the element is. They move the two independently, which
+/// makes the pair well posed.
+///
+/// Neither can be authored by eye. No scale factor turns "make this hill a
+/// quarter taller" into a length: rise grows with the square of the pitch angle
+/// swept while arclength grows with the angle itself, and the train slows as it
+/// climbs, so the radius tightens on the way up and the top of a tall hill is a
+/// different shape from its bottom. The reference ride shows it plainly — its
+/// camelback runs a ~610 m radius at the valley and ~206 m at the crest.
+///
+/// The derivatives, however, are exact and free, so a few damped Newton steps
+/// find both. This is what makes a pin bind. Asking the global solve to
+/// discover two hundred metres of height *and* close a multi-kilometre circuit
+/// from an arbitrary guess is what left an earlier apex pin at a third of its
+/// target.
+pub fn seed_geometry(model: &mut RideModel, sweeps: usize) {
+    let slots = parameter_slots(&model.spec);
+    // Sweeps, because elements are coupled through speed: lengthening a drop
+    // feeds the hill after it, which then wants a different length itself.
+    for _ in 0..sweeps {
+        for (i, &(length, trim)) in slots.iter().enumerate() {
+            // Pitch first. A size measured on an element that points the wrong
+            // way is a measurement of the wrong thing.
+            if let Some(slot) = trim {
+                let target = model.spec.elements[i].exit_pitch_deg;
+                converge(model, i, slot, Knob::Trim, target, |r| r.exit_pitch);
+            }
+            let (Some(slot), Some(pin)) = (length, model.spec.elements[i].pin) else {
+                continue;
+            };
+            match pin {
+                Pin::Rise(m) => converge(model, i, slot, Knob::Length, m, |r| r.rise),
+                Pin::Drop(m) => converge(model, i, slot, Knob::Length, m, |r| r.drop),
+                Pin::Turn(d) => converge(model, i, slot, Knob::Length, d, |r| r.heading_change),
+            }
+        }
+    }
+}
+
+/// Which of an element's parameters a seeding pass may move.
+enum Knob {
+    Length,
+    Trim,
+}
+
+/// Damped Newton on one parameter of one element against one measurement.
+///
+/// Damped because none of these maps is linear, and an undamped step on a
+/// shallow gradient lands outside the bounds every time.
+fn converge(
+    model: &mut RideModel,
+    element: usize,
+    slot: usize,
+    knob: Knob,
+    target: f64,
+    measure: fn(&ElementResult<Dual>) -> Dual,
+) {
+    const STEPS: usize = 8;
+    /// Close enough, in metres or degrees as the demand requires.
+    const TOLERANCE: f64 = 0.4;
+    /// Largest fraction of its own value one step may move a parameter.
+    const DAMPING: f64 = 0.3;
+    /// Step floor, so a trim sitting at zero can still move.
+    const FLOOR: f64 = 0.25;
+
+    for _ in 0..STEPS {
+        let x: Vec<Dual> = model
+            .spec
+            .free_parameters()
+            .iter()
+            .enumerate()
+            .map(|(k, &v)| {
+                if k == slot {
+                    Dual::variable(v)
+                } else {
+                    Dual::constant(v)
+                }
+            })
+            .collect();
+        let got = measure(&evaluate(model, &x).elements[element]);
+        let error = got.re - target;
+        if error.abs() < TOLERANCE || got.du.abs() < 1e-9 {
+            break;
+        }
+        let free = match knob {
+            Knob::Length => &mut model.spec.elements[element].length,
+            Knob::Trim => &mut model.spec.elements[element].trim,
+        };
+        let reach = DAMPING * free.value.abs().max(FLOOR);
+        free.value = (free.value - (error / got.du).clamp(-reach, reach)).clamp(free.lo, free.hi);
+    }
+}
+
+/// Where each element's length and trim sit in the free-parameter vector.
+///
+/// Counted rather than looked up by name, because two elements may share a name
+/// and a silent mismatch here would seed the wrong element.
+fn parameter_slots(spec: &crate::model::Spec) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut next = 0;
+    let mut take = |free: bool| {
+        let slot = free.then_some(next);
+        next += usize::from(free);
+        slot
+    };
+    spec.elements
+        .iter()
+        .map(|e| {
+            let length = take(e.length.is_free());
+            take(e.g_scale.is_free());
+            let trim = take(e.trim.is_free());
+            take(e.roll_scale.is_free());
+            take(e.speed_control.is_some_and(|f| f.is_free()));
+            (length, trim)
+        })
+        .collect()
 }
 
 /// Solves the model, returning the report and the ride it settled on.
@@ -399,6 +559,7 @@ mod tests {
                     heading: Vec3::new(1.0, 0.0, 0.0),
                     dispatch_speed: 20.0,
                 },
+                target_average_speed: 0.0,
                 elements: vec![Element {
                     name: "straight",
                     normal_g: Channel::flat(1.0),
@@ -409,7 +570,8 @@ mod tests {
                     trim: Free::fixed(0.0),
                     roll_scale: Free::fixed(1.0),
                     speed_control: None,
-                    pin_apex_m: None,
+                    pin: None,
+                    exit_pitch_deg: 0.0,
                 }],
             },
             site: Site {

@@ -15,140 +15,146 @@ Pick a row from the dropdown — row 8 is the back, which is where the snap is.
 
 ## What the generator produced
 
-| | this ride | Falcon's Flight |
-|---|---|---|
-| track length | **5,596 m** | 4,250 m |
-| top speed | **321 km/h** | 250 km/h |
-| duration | 245 s | ~215 s |
-| running gear | maglev | urethane wheels |
-| envelope | +7 / −2.5 g | +6 / −2 g |
+| | this ride | Falcon's Flight | margin |
+|---|---|---|---|
+| tallest hill, rider-felt rise | **247 m** | 163 m | 1.52× |
+| tallest drop, rider-felt | **206 m** | 158 m | 1.30× |
+| top speed | **386 km/h** | 250 km/h | 1.54× |
+| average speed | **205 km/h** | ~71 km/h | 2.9× |
+| peak positive g | **7.3** | ~5.9 (Shock Wave) | 1.24× |
+| peak airtime g | **−2.5** | −2 typical | 1.25× |
+| track length | 6,861 m | 4,250 m | 1.61× |
+| duration | 120 s | ~215 s | — |
 
-Station closure came in at **1.8 m over 5.6 km, with 0.6° of heading error**,
-and every comfort and clearance limit is met. One constraint is not: the
-pinned apex. See "what did not work".
+Every record target is beaten. Station closure came in at **18.7 m over 6.9 km
+with 11.4° of heading error**. Three limits are still broken, all small; see
+"what did not work".
 
-## How an element works
+## Why a record figure is not a target
 
-Every element is the same object. Force Vector Design says a ride is specified,
-at each point, by the vertical g the rider feels, the lateral g they feel, and
-the bank angle — exactly three numbers, which is exactly the three components
-of the track frame's rotation rate. Two would leave the roll undetermined; four
-would over-specify it. Geometry is then solved from those three:
+A table of records cannot be demanded of one ride, because each record was set
+at its own speed with its own felt g. For a force-specified element every length
+scales as `v²/g₀` times a dimensionless shape factor, so **size, speed and
+intensity determine one another** — pick any two and the third follows.
 
-```
-kappa = (n·g₀·up + l·g₀·right + g − (g·t)t) / v²
-```
+The trap that falls out of this: scaling an element up at a fixed speed grows
+every radius with it and leaves the element *weaker* than the record it beats.
+An earlier version of this ride was big because it was weak — 3.3 g inside a 7 g
+envelope.
 
-A top hat and an airtime hill differ only in the numbers in those three curves.
-Nothing in the crate branches on an element's name.
+So the three are controlled by three different mechanisms, none over-specified:
 
-Four scalars per element are free for the solve:
+- **geometry** — pinned per element as rider-felt rise or drop, at 1.25× the
+  record's geometric figure
+- **intensity** — authored into the force channels, with `g_scale` floored at
+  1.0 so the solve may firm an element up but never soften it
+- **speed** — an outcome of the drops and four propulsion sections
 
-- **length** — buys height and heading
-- **g_scale** — multiplies the *departure* from level, so scaling never bends
-  straight track
-- **trim** — a constant added to the vertical force, which is what decides
-  whether an element climbs, holds or descends
-- **roll_scale** — turns only; a bank multiplier on a hill is a Jacobian column
-  that does nothing
+Not every record is chased. Overbanked turns, inversions and airtime *duration*
+are left alone: a layout whose every element is maximal has no shape.
 
-Plus an optional **exit speed** wherever infrastructure drives the train, and an
-optional **pinned apex**, which is the human's one geometric demand.
+## Two demands per element
 
-## Decisions that need your ruling
+The load-bearing change this round. Each element has two free parameters that
+matter and now carries two demands to match:
 
-**1. The envelope is now a near-future one, and it is fiction.** `frontier_limits()`
-allows +7 g / −2.5 g against ASTM's +6 / −2, on the argument that current limits
-are set by restraint hardware rather than physiology: a lap bar cannot hold a
-slumping rider, and a passive seat cannot support a head at 7 g. Active
-restraint and a reclined contoured seat change those premises. The reference
-points are aviation and centrifuge, not amusement rides. `astm_limits()` is kept
-alongside it for step 10 validation. **Is +7 / −2.5 the number you want, and is
-the reasoning the one you want on record?**
+- **trim → the pitch it hands on.** Nearly always zero: give the track back the
+  way you found it.
+- **length → how big it is.** A rise, a drop, or a net turn.
 
-**2. The solve's objective is "stay closest to the ride as described."** Closure
-plus pins is about a dozen equations against 25 free parameters, so the feasible
-set is a manifold and something must pick a point on it. A light residual pulls
-each parameter back towards its spec value. That keeps the spec a steering wheel.
-The alternative is maximising pacing — which would make the pacing score
-load-bearing at step 6 rather than a step-9 readout. **Provisional; your call.**
+Neither can be authored by eye, and the reason is `v²`. The pitch an element
+sweeps is roughly `(n̄ − 1)·g₀·L / v²`, so a thousand metres at one g of
+departure turns **69° at 90 m/s and 351° at 40 m/s** — the same authored element
+is a gentle hill where the train is fast and a spiral where it is slow.
 
-**3. Falcon's Flight is two-across in seven rows, not four.** The README says
-four-across. Its headline "195 m" is elevation change, not structure height —
-that is 163 m, with a 158 m drop. The preset uses the researched figures.
+A seeder solves both with damped Newton steps, using the exact derivatives the
+dual numbers already provide. Then: solve, re-seed, solve. Closure needs
+kilometres of correction, and finding them moves the lengths far enough that the
+pitches and sizes need re-establishing at the speeds the new layout actually
+runs at.
 
-**4. Force envelope numbers come from a reproduction, not the standard.** Both
-EN 13814 and ASTM F2291 are paywalled and were not read. The tables come from
-Rohde's VDV paper, whose author sits on the ASTM F24 g-force task group and
-which reprints F2291's own figures; ramp breakpoints were read off graphs, so
-±0.5 s. Two known gaps make the tables *permissive*: the standards measure at
-the seat through a 5 Hz low-pass where this reads an idealised point, and
-combined-axis loading is judged by an ellipsoid criterion that per-axis checks
-cannot express.
+This is what made the pins bind. The previous checkpoint asked the global solve
+to discover the height *and* close the circuit from an arbitrary guess, and it
+delivered 59 m against a pinned 150.
+
+## Bugs this round, all found by disbelieving a number
+
+- **A symmetric force profile cannot dive.** Its second half undoes its first,
+  so the cliff dive finished pointing 82° *up*. Dives are now one-sided; the
+  pull-out is the next element's job, as in a real layout.
+- **Positive bank turns right, not left.** `frame.rs` documented the opposite.
+  The seeder pushed a turnaround the wrong way until it spiralled through
+  2,819°. Now verified by a test rather than asserted in a comment.
+- **A dive that stops at 0.15 g steps the force at the seam** — unbounded jerk,
+  177 g/s. Every channel now meets its neighbours at 1 g.
+- **The trim was eating the intensity.** `level_trim()` tries to make every
+  element altitude-neutral; for a 6.8 g pull-out it asked for −2.3 g and
+  delivered 4.2. A valley *cannot* be altitude-neutral. Trim seeds are capped.
+- **A stalled train explodes the geometry.** Curvature is force over speed
+  squared, so a brake run that reaches a standstill spirals — and the solve,
+  differentiating through it, finds a landscape full of those. Straights now
+  have a free trim so they can level themselves, and the speed floor is high
+  enough that an unhealthy ride degrades instead of exploding.
+- **The cliff was too short.** A 198 m rider-felt drop plus its pull-out needs
+  ~260 m of fall; 200 m of escarpment put the track 45 m underground.
 
 ## What did not work
 
-**The pinned apex is missed, badly.** 59 m against a pinned 150 m. Everything
-else converges; this does not. It is the one place the generator fails to
-deliver what the human asked for, which makes it the most important open item —
-the pin is the primary input.
+**Three limits are still broken**, all by small margins: jerk at 19.7 g/s
+against 15, peak positive g at 7.29 against 7.0 over a 0.2 s window, and ground
+clearance at 3.91 m against 4.0. The jerk traces to the brake run still reaching
+the speed floor.
 
-The cause is not obviously a bug. The element has the length and trim authority
-to climb 150 m on paper, but the solve settles elsewhere. Two suspects: the
-apex residual is fighting the closure residuals through the same parameters,
-and the solve is basin-sensitive.
+**The solve remains basin-sensitive**, and this round produced two more
+data points for the table:
 
-**The solve is basin-sensitive, and residual weights behave like
-hyperparameters.** Three tuning attempts made it *worse*, each time by a lot:
+| change | closure gap |
+|---|---|
+| per-element pitch and size seeding | 419 m |
+| free trim on straights, higher speed floor | **18.7 m** |
+| brake run: free exit speed, longer bounds | 439 m |
+| reverted | **18.7 m** |
 
-| change | closure gap | cost |
-|---|---|---|
-| baseline | 13 m | 3.6e3 |
-| widen trim and roll bounds | 339 m | — |
-| raise apex weight 1 → 4 | 367 m | 1.4e6 |
-| add backtracking line search | **1.8 m** | 4.5e3 |
+The brake-run change was a reasonable-looking tweak that made closure twenty
+times worse, and it was reverted rather than tuned around. Multiple shooting is
+still the recommended structural fix; nothing here has changed that.
 
-Only the line search helped, and it helped enormously — the solve had been
-stalling the moment any parameter touched a bound. But "widen the bounds and
-get a worse answer" is exactly the failure mode the architecture doc warned
-about, and it means the current result is not robust. Multiple shooting is
-still the recommended structural fix.
+**Falcon's Flight's own camelback shows the nonlinearity.** Worked from its
+published geometry, 69.4 m/s at the cliff valley climbing 163 m puts its crest
+at ~40 m/s — a ~610 m radius at the bottom and ~206 m at the top. The hill
+*tightens* as it climbs. No linear scale factor could have been written down.
 
-**The forces are conservative.** Peak vertical g came out at 3.3 against a 7 g
-envelope. The ride breaks records on height, speed and length but not on
-intensity — the solver softens `g_scale` to buy closure. If the point is to
-push human limits, the templates need to demand more and the intensity needs
-protecting from being traded away.
+## Decisions that need your ruling
+
+**1. The envelope is a near-future one, and it is a position, not a reading.**
++7 g / −2.5 g against ASTM's +6 / −2, arguing that current limits are set by
+restraint hardware rather than physiology. The jerk figure is now sourced
+verbatim: Rohde p.40 gives 15 g/s as "the max. allowable value when proving the
+design", with 5–10 g/s in the design phase. Roll rate has *no* standard at all —
+Rohde §7.6.2, "rotational accelerations are not mentioned and not measured" — so
+the 110 deg/s here sits above openFVD's own red band of 80, deliberately.
+
+**2. The solve's objective is still "stay closest to the ride as described."**
+A light residual pulls each parameter back towards its spec value. Provisional.
+
+**3. Falcon's Flight is two-across in seven rows, not four.** The README says
+four. Its headline 195 m is elevation change; structure height is 163 m and the
+drop 158 m.
+
+**4. Per-element speed and g conditions for the records are not published.**
+Researched and confirmed absent — RCDB and manufacturer sheets give height,
+speed and angle only, and no manufacturer publishes track radii. The conditions
+in this file are therefore *derived* from published geometry with the simulator,
+not sourced. Fan-forum estimates were deliberately not used.
 
 ## Deviations from the roadmap, deliberate
 
-- **The viewer is HTML, not Godot.** Godot is not installed and could not be
-  reviewed while you were asleep; the roadmap already sanctions "a throwaway
-  centreline viewer" as the cheap fix. It renders real solved geometry with
-  real per-row forces. Godot remains the plan for step 7 — `brew install --cask
-  godot` when you want it.
+- **The viewer is HTML, not Godot.** The roadmap sanctions a stand-in.
+  `brew install --cask godot` when you want the real thing.
 - **One crate, `vc-ride`, not three.** `model`, `eval`, `solve` are modules.
-  Splitting later is mechanical; three crates now was ceremony.
-- **Multibody is rigid-coupler.** Cars sit at fixed arclength offsets and the
-  longitudinal acceleration is the mass-weighted mean of gravity over every
-  row. That is the real effect — the lead cars pull the back over a crest — but
-  elastic couplers, and therefore snatch loads, are not modelled.
-- **Forces are on the heartline only.** Rail offset is carried as a vehicle
-  parameter but not yet used, so the buildability cusp check
+- **Multibody is rigid-coupler.** Elastic couplers and snatch loads are not
+  modelled.
+- **Forces are on the heartline only**, so the buildability cusp check
   (`1 + h·κ ≤ 0`) is missing.
-- **No pacing score.** It is the least-defined thing in the architecture and
-  building it uninstructed seemed worse than leaving the gap.
-
-## Things the research changed
-
-- **Curvature divides by v².** A ride specified purely by force is singular at
-  a standstill, so the station has a real dispatch speed and drive tyres that
-  hold it.
-- **Gravity must be subtracted in the instantaneous frame.** Treating force and
-  curvature as a pointwise algebraic map gets the bank silently wrong
-  everywhere.
-- **Infrastructure force has to ramp.** Switching propulsion on at an element
-  seam is a step in force, and a step in force is unbounded jerk. That artefact
-  alone was dominating the solve's cost and starving closure.
-- **A constant trim steps at element seams too** — same problem, same fix. The
-  trim is windowed to zero at both ends.
+- **No pacing score.** Average speed is now a solve target, which is the part of
+  pacing that could be defined without guessing.

@@ -125,7 +125,9 @@ impl<T: Scalar> Frame<T> {
     /// right-handed about the direction of travel.
     ///
     /// Right-handed about `+tangent` tilts the rider's up towards the rider's
-    /// *right*, which is the bank of a **left**-hand turn.
+    /// *right*. The felt force points along up, so it gains a rightward
+    /// component and the track curves that way: a positive angle is the bank of
+    /// a **right**-hand turn.
     #[inline]
     pub fn rolled(self, angle: T) -> Self {
         Self {

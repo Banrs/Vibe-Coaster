@@ -40,10 +40,31 @@ is an outcome.
 1. **The solve is basin-sensitive.** A brake-run tweak took closure from 18.7 m to 439 m and was
    reverted rather than tuned around. Residual weights behave like hyperparameters. Multiple shooting
    is the recommended structural fix. Table of attempts in `MODEL.md`.
-2. **Three limits still slightly over:** jerk 19.7 vs 15 g/s (the brake run reaches the speed floor),
-   peak +g 7.29 vs 7.0 over 0.2 s, clearance 3.91 vs 4.0 m.
-3. **Doc comments are heavier than Daniel wants.** He has asked for lean, minimal code three times
+2. **Three limits still slightly over:** jerk 19.7 vs 15 g/s, peak +g 7.29 vs 7.0 over 0.2 s,
+   clearance 3.91 vs 4.0 m. Two candidate causes for the jerk, not yet isolated: the brake run
+   reaching the speed floor, and the point below.
+3. **Quintic is used for every transition, and it costs peak jerk.** `f'(x) = 30x²(1−x)²` peaks at
+   **1.875×** its own average, where a clothoid — curvature linear in arc length, which is what real
+   practice uses — has constant jerk and so peaks at 1.0×. Same transition, ~87% more peak jerk.
+   Quintic earns its place at element *seams*, where a linear ramp would step the jerk; inside long
+   transitions it does not. Expected gain from switching: 19.7 → ~10.5 g/s, inside the limit.
+4. **Doc comments are heavier than Daniel wants.** He has asked for lean, minimal code three times
    and a trimming pass on the prose is still outstanding.
+
+## Next session, in order
+
+1. Clothoid ramps inside long transitions, quintic kept at the seams (problem 3). Re-solve and
+   expect a basin jump — check closure did not regress from 18.7 m before keeping it.
+2. Multiple shooting for the solve (problem 1). The structural fix, recommended since the first
+   checkpoint and still not attempted.
+3. Ask Daniel the rulings in `MODEL.md` and `PACING.md` §12 before building the pacing score.
+
+Not modelled, and an engineer would ask: structural load cases (none), elastic couplers and snatch
+loads, and the rail-offset cusp check `1 + h·κ ≤ 0` — that last one measures 0.006 at the pull-out's
+162 m radius, so its absence is currently hiding nothing. Peak propulsion power is ~44 MW at the
+thrust knee, burst-only, implying stored energy rather than grid draw; and 520 kN on a 6,200 kg train
+is 8.5 g, *above* the 7 g longitudinal envelope. The envelope binds first, which is the right way
+round, but by accident rather than by a check.
 
 ## Awaiting Daniel's ruling
 

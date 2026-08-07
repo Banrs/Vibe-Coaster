@@ -687,12 +687,15 @@ pub fn falcon_class() -> RideModel {
         zero_g_roll("zero-g-roll", Free::new(250.0, 190.0, 400.0)),
         // Up the face in one sustained LSM push, the way the original takes
         // its 150 km/h cliff launch.
+        // Pinned at the height budget's number: the plateau needs ~62 m more
+        // climb than the lift and cliff-climb supply, and at 12 degrees that
+        // is ~375 m of track — hence the widened upper bound.
         grade(
             "cliff-launch",
             12.0,
-            Free::new(240.0, 160.0, 380.0),
+            Free::new(240.0, 160.0, 450.0),
             Some(Free::new(41.7, 34.0, 46.0)),
-            None,
+            Some(Pin::Rise(60.0)),
         ),
         grade(
             "cliff-climb",
@@ -892,6 +895,42 @@ mod tests {
             (after - demanded).abs() < 15.0,
             "rise came out at {after} against a demanded {demanded}"
         );
+    }
+
+    #[test]
+    fn seeding_binds_consecutive_grade_pins_to_their_own_climbs() {
+        // Two back-to-back monotone grades, each pinned: each pin must bind
+        // its own element's climb, not the pair's combined one — the failure
+        // mode the per-element rise measurement exists to prevent. Isolated
+        // from the preset so a broken element upstream cannot mask the
+        // mechanism.
+        let mut model = falcon_class();
+        model.spec.elements = vec![
+            grade(
+                "shallow",
+                8.0,
+                Free::new(200.0, 100.0, 500.0),
+                None,
+                Some(Pin::Rise(25.0)),
+            ),
+            grade(
+                "steep",
+                20.0,
+                Free::new(300.0, 100.0, 800.0),
+                None,
+                Some(Pin::Rise(60.0)),
+            ),
+        ];
+        model.spec.station.dispatch_speed = 45.0;
+        crate::solve::seed_geometry(&mut model, 3);
+        let ride = evaluate(&model, &model.spec.free_parameters());
+        for (index, demanded) in [(0, 25.0), (1, 60.0)] {
+            let rise = ride.elements[index].rise;
+            assert!(
+                (rise - demanded).abs() < 5.0,
+                "element {index} rise came out at {rise} against a demanded {demanded}"
+            );
+        }
     }
 
     #[test]

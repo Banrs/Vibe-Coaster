@@ -432,16 +432,38 @@ pub fn seed_geometry(model: &mut RideModel, sweeps: usize) {
                 let target = model.spec.elements[i].exit_pitch_deg;
                 converge(model, i, slot, Knob::Trim, target, |r| r.exit_pitch);
             }
-            let (Some(slot), Some(pin)) = (length, model.spec.elements[i].pin) else {
-                continue;
-            };
-            match pin {
-                Pin::Rise(m) => converge(model, i, slot, Knob::Length, m, |r| r.rise),
-                Pin::Drop(m) => converge(model, i, slot, Knob::Length, m, |r| r.drop),
-                Pin::Turn(d) => converge(model, i, slot, Knob::Length, d, |r| r.heading_change),
+            let Some(slot) = length else { continue };
+            match model.spec.elements[i].pin {
+                Some(Pin::Rise(m)) => converge(model, i, slot, Knob::Length, m, |r| r.rise),
+                Some(Pin::Drop(m)) => converge(model, i, slot, Knob::Length, m, |r| r.drop),
+                Some(Pin::Turn(d)) => {
+                    converge(model, i, slot, Knob::Length, d, |r| r.heading_change);
+                }
+                None => seed_roll_length(model, i),
             }
         }
     }
+}
+
+/// Sizes a pinless rolling element from the roll-rate limit.
+///
+/// A roll has no rise, drop or turn to pin, but it does have a ceiling. The
+/// bank sweeps a fixed number of degrees whatever the length, so the rate it
+/// sweeps them at is its slope times speed over length; setting the steepest
+/// of those to the limit is the length. Elements that do not roll are left
+/// alone.
+fn seed_roll_length(model: &mut RideModel, element: usize) {
+    let bank = &model.spec.elements[element].bank_deg;
+    let net = (bank.sample(1.0f64) - bank.sample(0.0f64)).abs();
+    let peak_slope = bank.peak_slope();
+    if net <= 1.0 {
+        return;
+    }
+    let x = model.spec.free_parameters();
+    let speed = evaluate(model, &x).elements[element].entry_speed;
+    let limit = model.limits.roll_rate;
+    let free = &mut model.spec.elements[element].length;
+    free.value = (peak_slope * speed / limit).clamp(free.lo, free.hi);
 }
 
 /// Which of an element's parameters a seeding pass may move.
@@ -842,6 +864,30 @@ mod tests {
         }
         assert!(ride.samples.iter().all(|s| s.speed.is_finite()));
         assert!(!report.worst.is_empty(), "no diagnosis offered");
+    }
+
+    #[test]
+    fn a_pinless_roll_is_sized_by_the_roll_rate_limit() {
+        // Nothing pins a roll's size, so the limit does: at the seeded length
+        // the steepest bank slope rolls at exactly the ceiling.
+        let mut model = preset::falcon_class();
+        seed_geometry(&mut model, 3);
+        let i = model
+            .spec
+            .elements
+            .iter()
+            .position(|e| e.name == "zero-g-roll")
+            .unwrap();
+        let x = model.spec.free_parameters();
+        let speed = evaluate(&model, &x).elements[i].entry_speed;
+        let element = &model.spec.elements[i];
+        let want = (element.bank_deg.peak_slope() * speed / model.limits.roll_rate)
+            .clamp(element.length.lo, element.length.hi);
+        assert!(
+            (element.length.value - want).abs() < 1.0,
+            "{} vs {want}",
+            element.length.value
+        );
     }
 
     #[test]

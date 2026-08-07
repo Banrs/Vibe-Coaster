@@ -128,6 +128,17 @@ impl Channel {
             / SAMPLES as f64
     }
 
+    /// The steepest slope with respect to progress anywhere on the curve.
+    ///
+    /// Used to seed a roll's length: the bank slope times speed over length is
+    /// the roll rate, so the peak slope is what the limit binds.
+    pub fn peak_slope(&self) -> f64 {
+        const SAMPLES: usize = 64;
+        (0..SAMPLES)
+            .map(|i| self.evaluate((i as f64 + 0.5) / SAMPLES as f64).1.abs())
+            .fold(0.0, f64::max)
+    }
+
     /// Index of the last key at or below `u`, by value.
     fn segment(&self, u: f64) -> usize {
         let last = self.keys.len() - 1;

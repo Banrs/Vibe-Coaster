@@ -684,7 +684,7 @@ pub fn falcon_class() -> RideModel {
             Free::new(1.0, 0.6, 1.3),
             Pin::Turn(0.0),
         ),
-        zero_g_roll("zero-g-roll", Free::new(250.0, 190.0, 400.0)),
+        zero_g_roll("zero-g-roll", Free::new(250.0, 190.0, 500.0)),
         // Up the face in one sustained LSM push, the way the original takes
         // its 150 km/h cliff launch.
         // Pinned at the height budget's number: the plateau needs ~62 m more

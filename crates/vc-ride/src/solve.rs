@@ -113,6 +113,15 @@ impl Report {
     }
 }
 
+/// Anchor both ends of the ride at the station and close in the middle.
+///
+/// The seven station-closure residuals give way to eight joint residuals at a
+/// mid-ride boundary: the forward half leaves the station, the reverse half
+/// arrives at it, and each boundary holds by construction. One extra unknown,
+/// the arrival speed. Unlike multiple shooting there are no free seam states
+/// for the solve to trade the answer against.
+const DUAL_ANCHOR: bool = false;
+
 /// Values carried per multiple-shooting seam: position, tangent yaw and
 /// pitch, roll about the tangent, speed and time. Arclength is not among them
 /// — it is the sum of the lengths behind the seam, already in the vector.
@@ -157,6 +166,22 @@ fn seam_cuts(spec: &Spec) -> Vec<usize> {
         .collect();
     cuts.dedup();
     cuts
+}
+
+/// Where the two anchored halves are asked to meet: the element index the
+/// reverse pass integrates back to.
+///
+/// Chosen the way [`seam_cuts`] chooses its cuts, but singular — the boundary
+/// nearest the middle whose preceding element hands over near level, so the
+/// joint compares frames far from vertical. Derived from spec constants only.
+fn anchor_joint(spec: &Spec) -> usize {
+    const LEVEL_ENOUGH_DEG: f64 = 30.0;
+    let n = spec.elements.len();
+    let target = (n / 2) as i64;
+    (1..n)
+        .filter(|&i| spec.elements[i - 1].exit_pitch_deg.abs() < LEVEL_ENOUGH_DEG)
+        .min_by_key(|&i| (i as i64 - target).abs())
+        .unwrap_or(n / 2)
 }
 
 /// Rebuilds each seam's start state from its slice of the parameter vector.
@@ -249,7 +274,8 @@ fn residuals<T: Scalar>(
     seed: &[f64],
     cuts: &[usize],
 ) -> (Vec<T>, Vec<String>) {
-    let spec_x = &x[..x.len() - cuts.len() * SEAM_VALUES];
+    let anchor = DUAL_ANCHOR.then(|| anchor_joint(&model.spec));
+    let spec_x = &x[..x.len() - cuts.len() * SEAM_VALUES - usize::from(DUAL_ANCHOR)];
     let params = model.spec.unpack(spec_x);
     let seams = unpack_seams(cuts, &x[spec_x.len()..], &params);
     let (ride, ends) = evaluate_split(model, spec_x, &seams);
@@ -262,41 +288,69 @@ fn residuals<T: Scalar>(
         names.push(name);
     };
 
-    // Station closure: back to the same place, pointing the same way, level.
-    let w = T::from_f64(weight::POSITION);
-    push(
-        (end.position.x - T::from_f64(station.position.x)) * w,
-        "closure x (m)".into(),
-    );
-    push(
-        (end.position.y - T::from_f64(station.position.y)) * w,
-        "closure y (m)".into(),
-    );
-    push(
-        (end.position.z - T::from_f64(station.position.z)) * w,
-        "closure z (m)".into(),
-    );
+    if let Some(joint) = anchor {
+        // Both ends already sit at the station, so what is left to close is the
+        // middle: the forward half's state at the joint against the reverse
+        // half's, carried back there from the imposed arrival.
+        let arrival = *x.last().expect("solve appends the arrival speed");
+        let fwd = &ride.samples[joint * STEPS_PER_ELEMENT];
+        let back = crate::eval::integrate_reverse(model, &params, &ride.elements, joint, arrival);
+        let w = T::from_f64(weight::POSITION);
+        let gap = fwd.position - back.position;
+        push(gap.x * w, "joint x (m)".into());
+        push(gap.y * w, "joint y (m)".into());
+        push(gap.z * w, "joint z (m)".into());
 
-    let heading = station.heading;
-    let unit = heading / heading.norm();
-    let wh = T::from_f64(weight::HEADING);
-    push(
-        (end.frame.tangent.x - T::from_f64(unit.x)) * wh,
-        "closure heading x".into(),
-    );
-    push(
-        (end.frame.tangent.y - T::from_f64(unit.y)) * wh,
-        "closure heading y".into(),
-    );
-    push(
-        (end.frame.tangent.z - T::from_f64(unit.z)) * wh,
-        "closure heading z".into(),
-    );
-    // The rider's right must be horizontal, or the train arrives banked.
-    push(
-        end.frame.right.z * T::from_f64(weight::BANK),
-        "closure bank".into(),
-    );
+        let wh = T::from_f64(weight::HEADING);
+        let turn = fwd.frame.tangent - back.carrier.tangent;
+        push(turn.x * wh, "joint heading x".into());
+        push(turn.y * wh, "joint heading y".into());
+        push(turn.z * wh, "joint heading z".into());
+        push(
+            (fwd.frame.right.z - back.carrier.right.z) * T::from_f64(weight::BANK),
+            "joint bank".into(),
+        );
+        push(
+            (fwd.speed - back.speed) * T::from_f64(weight::SPEED),
+            "joint speed (m/s)".into(),
+        );
+    } else {
+        // Station closure: back to the same place, pointing the same way, level.
+        let w = T::from_f64(weight::POSITION);
+        push(
+            (end.position.x - T::from_f64(station.position.x)) * w,
+            "closure x (m)".into(),
+        );
+        push(
+            (end.position.y - T::from_f64(station.position.y)) * w,
+            "closure y (m)".into(),
+        );
+        push(
+            (end.position.z - T::from_f64(station.position.z)) * w,
+            "closure z (m)".into(),
+        );
+
+        let heading = station.heading;
+        let unit = heading / heading.norm();
+        let wh = T::from_f64(weight::HEADING);
+        push(
+            (end.frame.tangent.x - T::from_f64(unit.x)) * wh,
+            "closure heading x".into(),
+        );
+        push(
+            (end.frame.tangent.y - T::from_f64(unit.y)) * wh,
+            "closure heading y".into(),
+        );
+        push(
+            (end.frame.tangent.z - T::from_f64(unit.z)) * wh,
+            "closure heading z".into(),
+        );
+        // The rider's right must be horizontal, or the train arrives banked.
+        push(
+            end.frame.right.z * T::from_f64(weight::BANK),
+            "closure bank".into(),
+        );
+    }
 
     // What the human pinned, and what the infrastructure was asked for.
     for (element, result) in model.spec.elements.iter().zip(&ride.elements) {
@@ -556,12 +610,20 @@ pub fn solve(model: &RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
     // forward ride loses the 18.7 m closure basin outright. The attempts are
     // tabled in MODEL.md; the machinery stays test-exercised via
     // [`seam_cuts`] against the day the solve can use it.
+    // Dual-side anchoring and shooting do not compose — the anchor's reverse
+    // half integrates the tail in one piece — so the cuts stay empty for it.
     let cuts: Vec<usize> = Vec::new();
     let seam_seed = seed_seams(model, &seed, &cuts);
     let mut bounds = model.spec.bounds();
     bounds.extend(seam_bounds(&seam_seed));
     let mut x = seed.clone();
     x.extend(seam_seed);
+    if DUAL_ANCHOR {
+        // The one unknown the anchor adds: how fast the train arrives, which
+        // the reverse half needs and no forward pass can be asked for.
+        x.push(evaluate(model, &seed).end().speed);
+        bounds.push((3.0, 140.0));
+    }
     let n = x.len();
 
     let (r0, names) = residuals(model, &x, &seed, &cuts);
@@ -687,6 +749,11 @@ pub fn solve(model: &RideModel, max_iterations: usize) -> (Report, Ride<f64>) {
     // convergence required their defects to be below tolerance, so the two
     // agree wherever the solve is worth keeping.
     let ride = evaluate(model, &x[..seed.len()]);
+    if DUAL_ANCHOR {
+        // The arrival speed is solver scaffolding; adopt() would read it as a
+        // spec parameter.
+        x.truncate(seed.len());
+    }
     (
         Report {
             converged,
@@ -905,6 +972,44 @@ mod tests {
         assert_eq!(a.len(), b.len());
         assert_eq!(names, names_b);
         assert!(a.iter().all(|v| v.is_finite()) && b.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn the_anchor_joint_lands_mid_ride_on_a_level_boundary() {
+        let spec = preset::falcon_class().spec;
+        let joint = anchor_joint(&spec);
+        assert!((5..=14).contains(&joint), "joint {joint} is not mid-ride");
+        assert!(spec.elements[joint - 1].exit_pitch_deg.abs() < 30.0);
+    }
+
+    /// Two level straights, so the reverse pass's answer is arithmetic.
+    fn two_straight_model() -> RideModel {
+        let mut model = trivial_model();
+        model.spec.station.position = Vec3::new(0.0, 0.0, 100.0);
+        let first = model.spec.elements[0].clone();
+        model.spec.elements.push(Element {
+            name: "second",
+            ..first
+        });
+        model
+    }
+
+    #[test]
+    fn joint_residuals_measure_the_gap_between_the_halves() {
+        // On open track the two halves are 200 m apart at the joint — the whole
+        // closure error, moved to the middle. Heading and speed already agree,
+        // which is what makes the position gap the thing the solve steers.
+        let model = two_straight_model();
+        let x = model.spec.free_parameters();
+        let params = model.spec.unpack(&x);
+        let ride = evaluate(&model, &x);
+        let back =
+            crate::eval::integrate_reverse(&model, &params, &ride.elements, 1, ride.end().speed);
+        let fwd = &ride.samples[STEPS_PER_ELEMENT];
+        let gap = (fwd.position - back.position).norm();
+        assert!((gap - 200.0).abs() < 0.5, "gap {gap}");
+        assert!((fwd.frame.tangent - back.carrier.tangent).norm() < 1e-6);
+        assert!((fwd.speed - back.speed).abs() < 1e-6);
     }
 
     #[test]

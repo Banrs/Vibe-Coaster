@@ -596,6 +596,141 @@ fn integrate<T: Scalar>(
     }
 }
 
+/// Integrates the tail of the ride backward from the station's arrival side.
+///
+/// The arrival state is imposed rather than reached — station position, level
+/// heading, bank zero — so that boundary holds by construction and the closure
+/// error moves to a mid-ride joint the forward half can be asked to meet. It is
+/// the same derivative field with a negated step, so drag hands energy back and
+/// gravity flips with the slope without a special case anywhere. Records
+/// nothing: it only carries state to the entry boundary of element `from`.
+pub fn integrate_reverse<T: Scalar>(
+    model: &RideModel,
+    params: &[Params<T>],
+    forward: &[ElementResult<T>],
+    from: usize,
+    arrival_speed: T,
+) -> Start<T> {
+    let vehicle = &model.vehicle;
+    let offsets = vehicle.row_offsets();
+    let mass = T::from_f64(vehicle.mass());
+    let drag_factor = T::from_f64(0.5 * model.site.air_density * vehicle.cda()) / mass;
+    let thrust_cap = T::from_f64(vehicle.thrust_max) / mass;
+    let brake_cap = T::from_f64(vehicle.brake_max_decel);
+    let g0 = T::from_f64(G0);
+    let gravity = Vec3::new(T::ZERO, T::ZERO, -g0);
+    let min_energy = T::from_f64(0.5 * MIN_SPEED * MIN_SPEED);
+    let station = &model.spec.station;
+
+    let mut state = State {
+        position: Vec3::new(
+            T::from_f64(station.position.x),
+            T::from_f64(station.position.y),
+            T::from_f64(station.position.z),
+        ),
+        carrier: Frame::level(Vec3::new(
+            T::from_f64(station.heading.x),
+            T::from_f64(station.heading.y),
+            T::from_f64(station.heading.z),
+        )),
+        energy: arrival_speed.squared() * T::from_f64(0.5),
+        time: T::ZERO,
+    };
+    let mut s = params.iter().fold(T::ZERO, |a, p| a + p.length);
+
+    for index in (from..model.spec.elements.len()).rev() {
+        let element = &model.spec.elements[index];
+        let p = params[index];
+        let steps = T::from_f64(STEPS_PER_ELEMENT as f64);
+        let step = -(p.length / steps);
+        // The entry speed is what the backward pass is on its way to finding,
+        // so it borrows the forward pass's — exact once the two halves agree,
+        // which is the joint residual's whole job.
+        let entry_speed = forward[index].entry_speed;
+
+        let demand = p.exit_speed.map(|target| {
+            let climb = element.pitch_deg.as_ref().map_or(T::ZERO, |pitch| {
+                const SAMPLES: usize = 32;
+                let mean_sin = (0..SAMPLES)
+                    .map(|i| {
+                        let u = T::from_f64((i as f64 + 0.5) / SAMPLES as f64);
+                        vc_math::units::from_degrees(pitch.sample(u)).sin()
+                    })
+                    .fold(T::ZERO, |a, b| a + b)
+                    / T::from_f64(SAMPLES as f64);
+                p.length * mean_sin
+            });
+            (target.squared() - entry_speed.squared() + T::from_f64(2.0) * g0 * climb)
+                / (T::from_f64(2.0) * p.length)
+        });
+
+        for k in 0..STEPS_PER_ELEMENT {
+            let left = T::from_f64((STEPS_PER_ELEMENT - k) as f64);
+            let u0 = left / steps;
+            let u1 = (left - T::from_f64(0.5)) / steps;
+
+            let (d0, _) = derivative(
+                &state,
+                element,
+                &p,
+                u0,
+                s,
+                &[],
+                &offsets,
+                model,
+                demand,
+                g0,
+                gravity,
+                drag_factor,
+                thrust_cap,
+                brake_cap,
+                min_energy,
+            );
+
+            let half = step * T::from_f64(0.5);
+            let mid = State {
+                position: state.position + d0.tangent * half,
+                carrier: state.carrier.transport_to(d0.tangent + d0.curvature * half),
+                energy: state.energy + d0.energy * half,
+                time: state.time + d0.time * half,
+            };
+            let (d1, _) = derivative(
+                &mid,
+                element,
+                &p,
+                u1,
+                s + half,
+                &[],
+                &offsets,
+                model,
+                demand,
+                g0,
+                gravity,
+                drag_factor,
+                thrust_cap,
+                brake_cap,
+                min_energy,
+            );
+
+            state = State {
+                position: state.position + d1.tangent * step,
+                carrier: state.carrier.transport_to(d1.tangent + d1.curvature * step),
+                energy: state.energy + d1.energy * step,
+                time: state.time + d1.time * step,
+            };
+            s += step;
+        }
+    }
+
+    Start {
+        position: state.position,
+        carrier: state.carrier,
+        speed: (state.energy.max(min_energy) * T::from_f64(2.0)).sqrt(),
+        time: state.time,
+        s,
+    }
+}
+
 /// Closes the sample list on the final state and fills the whole-ride
 /// measurements that need every sample to exist first.
 fn close_and_measure<T: Scalar>(
@@ -1268,6 +1403,53 @@ mod tests {
             "rise {} vs total climb {}",
             ride.elements[2].rise,
             climb_a + climb_b
+        );
+    }
+
+    #[test]
+    fn reverse_integration_of_level_track_retraces_the_forward_pass() {
+        // An open straight cannot both leave and arrive at the station, so the
+        // backward pass — which imposes the station as its arrival — lands one
+        // whole track length behind it along the heading.
+        let model = model_of(vec![level("a", 100.0, None), level("b", 100.0, None)], 30.0);
+        let ride = run(&model);
+        let params = model.spec.unpack(&model.spec.free_parameters());
+        let back = integrate_reverse(&model, &params, &ride.elements, 0, ride.end().speed);
+        assert!(
+            (back.position - Vec3::new(-200.0, 0.0, 100.0)).norm() < 1e-3,
+            "{:?}",
+            back.position
+        );
+        assert!((back.carrier.tangent - Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-6);
+        assert!((back.speed - 30.0).abs() < 1e-6, "speed {}", back.speed);
+        assert!(back.s.abs() < 1e-6, "s {}", back.s);
+    }
+
+    #[test]
+    fn reverse_integration_gains_back_the_speed_a_climb_costs() {
+        // Run backward down the same grade the forward pass climbed: the energy
+        // the climb took must come back, and the track must descend by the
+        // climb it undoes.
+        let climb = Element {
+            pitch_deg: Some(Channel::new(&[
+                (0.0, 0.0),
+                (0.25, 10.0),
+                (0.75, 10.0),
+                (1.0, 0.0),
+            ])),
+            ..level("climb", 150.0, None)
+        };
+        let model = model_of(vec![climb], 35.0);
+        let ride = run(&model);
+        let params = model.spec.unpack(&model.spec.free_parameters());
+        let back = integrate_reverse(&model, &params, &ride.elements, 0, ride.end().speed);
+        assert!((back.speed - 35.0).abs() < 0.1, "speed {}", back.speed);
+        let rise = ride.elements[0].rise;
+        assert!(rise > 15.0, "the grade barely climbed: {rise}");
+        assert!(
+            (back.position.z - (100.0 - rise)).abs() < 0.5,
+            "z {} vs station minus a climb of {rise}",
+            back.position.z
         );
     }
 

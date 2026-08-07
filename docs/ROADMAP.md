@@ -22,7 +22,10 @@ wrong — fix the design rather than leaving a fixup behind.
 7. Godot client — GDExtension binding, track render, free camera. *Not started; an HTML POV viewer
    stands in for now*
 8. ~~POV ride — true seat position, row selectable~~ — **done, in the stand-in viewer.**
-9. Analysis surfaced — envelopes, jerk, clearance, buildability cost, pacing score
+9. Analysis surfaced — envelopes, jerk, clearance, buildability cost, pacing score. **Score on
+   g-seconds, not peak g.** For a constant-speed arc `∫n dt = v·Δθ/g₀` — the radius cancels, so
+   tightening a radius raises peak g and shortens dwell in exact inverse proportion. Any score built
+   on maxima is gameable by tightening; one built on the integral is not. See `PACING.md`
 10. Falcon's Flight validation — reproduces published figures within a written-down tolerance
 11. Records and cliff terrain — **mostly done as data, as predicted.** Every geometric record
     target is beaten by feeding the model a taller escarpment, maglev running gear and 1.25x

@@ -17,8 +17,9 @@ wrong — fix the design rather than leaving a fixup behind.
    back-row snap; elastic couplers and snatch loads are not modelled.
 6. The global solve — **partial.** Geometric pins now bind: each element carries two demands —
    trim sets the pitch it hands on, length sets its size — seeded by damped Newton before the
-   solve, then solve/re-seed/solve. Closure reaches 18.7 m over 6.9 km. Still basin-sensitive, and
-   three limits remain slightly over. See `MODEL.md`.
+   solve, then solve/re-seed/solve. The 14-element layout closed at 18.7 m over 6.9 km; the
+   19-element roster stands at 1,085.7 m and 22.3° after the seeder learned grade and roll
+   sizing, with dual-side anchoring wired but disabled. Still basin-sensitive. See `MODEL.md`.
 7. Godot client — GDExtension binding, track render, free camera — **basic client done.**
    `vc-godot` exposes the generator through one method; `godot/` is a lean project: generate
    button, POV ride, fly camera, terrain. The in-engine ride is bit-identical to the CLI's

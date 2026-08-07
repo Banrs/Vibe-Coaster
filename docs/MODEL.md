@@ -25,7 +25,11 @@ itself. `C` toggles between the seat and a fly camera (right mouse looks,
 WASD moves, Shift is fast). The ride is bit-identical to the CLI's: both call
 `solve::solve_two_rounds`.
 
-## What the generator produced
+## What the generator produced — last converged checkpoint, 14-element layout
+
+The 19-element rebuild has not reconverged; it stands at 1,085.7 m of closure
+gap and 22.3° of heading error after the 2026-08-08 seeder work (table below).
+These figures are the 14-element layout's, kept as the standard to get back to.
 
 | | this ride | Falcon's Flight | margin |
 |---|---|---|---|
@@ -145,6 +149,11 @@ data points for the table:
 | dual jerk: design enforced, proving advisory | **18.7 m** restored |
 | minimax split alone, old 14-element layout | 28.1 m, 21.4° — basin held, design jerk passed |
 | FF-shaped 19-element roster + geometric grades + closer | ~1.3 km — seeder does not bind pins on grade/overbank/roll elements yet |
+| geometric elements measure rise inside their own endpoints (2026-08-08) | 974.1 m, 88.7° |
+| wave-turn's Turn(0.0) pin dropped | 2,889.6 m — reverted; useless for sizing, load-bearing as a residual |
+| cliff-launch pinned Rise(60), length bound to 450 | 514.8 m, 82.5° — but cost 2.25e8, limits badly broken |
+| zero-g-roll length seeded from the roll-rate limit | 1,085.7 m but 22.3°, cost 4.6e6; roll-rate violation cleared, jerk 379→16, clearance 258→2.6; the solve near-stalls the train through the roll (8→2 m/s) |
+| dual-side anchoring enabled | joint stayed 434 m open; forward ride 1,805 m, 135.3°, cost 5.7e7 — reverted to flag-off |
 
 The brake-run change was a reasonable-looking tweak that made closure twenty
 times worse, and it was reverted rather than tuned around.
@@ -161,6 +170,21 @@ which is why it is advisory. Next hypotheses, untried: eliminate seam
 variables by Gauss-Newton on the defect block (exploiting the arrow sparsity
 this dense LM ignores), or a homotopy that starts shooting from the converged
 single-shooting answer rather than from the seed.
+
+**Dual-side anchoring was tried 2026-08-08 and joins it: wired, tested,
+disabled** (`DUAL_ANCHOR` in `solve.rs`). `eval::integrate_reverse` runs the
+same derivative field backward from the imposed arrival state, and eight joint
+residuals at a mid-ride boundary replace station closure, with one extra
+unknown (arrival speed) and no free seam states. Enabled, the joint stayed
+434 m open and the forward ride lost the basin (table above). Its structural
+advantage over shooting — one matching condition, both halves anchored — was
+not enough from current seeds.
+
+Seeder diagnostics the same day settled a handoff claim: the trim passes on
+zero-g-roll and rim-overbank never trip the near-zero-derivative guard (du
+5–80, not ~0); their exit-pitch errors stall on the 8-step budget and bounds.
+And the cliff grade pins do bind in situ — err → 0 — but only on the second
+seeding round, after the first solve levels the pitch upstream of them.
 
 A second lesson of the same shape: the arc-key reallocation (each swing's
 width proportional to the g it crosses — the minimax split, cutting the
@@ -199,8 +223,8 @@ not sourced. Fan-forum estimates were deliberately not used.
 
 ## Deviations from the roadmap, deliberate
 
-- **The viewer is HTML, not Godot.** The roadmap sanctions a stand-in.
-  `brew install --cask godot` when you want the real thing.
+- **The Godot client is basic-done** (`vc-godot` + `godot/`); the HTML viewer
+  stays for quick looks.
 - **One crate, `vc-ride`, not three.** `model`, `eval`, `solve` are modules.
 - **Multibody is rigid-coupler.** Elastic couplers and snatch loads are not
   modelled.

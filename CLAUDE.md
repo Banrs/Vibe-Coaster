@@ -1,7 +1,6 @@
 # Vibe-Coaster — start here
 
-**Read before you build, and ask before you decide.** Daniel directs vision and architecture; he does
-not read code. Everything in this file and in `docs/` is a *guide*, not a constraint — including the
+**Read before you build, and ask before you decide.** Daniel directs vision and architecture; Everything in this file and in `docs/` is a *guide*, not a constraint — including the
 parts that sound confident. Nothing here has been ratified by him.
 
 The first thing a new session should do is read, form a view, and **come back with questions**. Do
@@ -10,9 +9,11 @@ not open with an implementation.
 ```
 cargo run --release -p vc-ride --bin generate && open out/ride.html
 cargo build -p vc-godot --release && godot --path godot   # the rideable Godot client
-cargo test --workspace --release          # 93 tests
+cargo test --workspace --release          # 100 tests
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+# Please check the global claude.md from .claude
 
 ## Where it stands
 
@@ -28,10 +29,20 @@ grade sections (pitch authored, force measured — a force profile cannot hold a
 791° trying), gravity-aware speed demands on grades, a 320 m elevation-span check, and a new
 19-element FF-shaped roster (lift, twisted 55 m drop, airtime cluster, zero-g roll, inclined cliff
 launch+climb, rim overbank, holding brake, 197.5 m dive, 6.9 g pullout, 225 m camelback, helix,
-finale). The old 14-element layout closed at 18.7 m; the new roster sits ~1.3 km out — **the seeder
-does not yet bind pins on grade/overbank/roll elements, and that is the next session's first job.**
-Daniel also proposed dual-side anchoring (integrate from both station ends, C³ joint mid-ride);
-the closer machinery is the template for it.
+finale). The old 14-element layout closed at 18.7 m.
+
+The 2026-08-08 session did the seeder work: geometric elements measure rise inside their own
+endpoints (consecutive grades no longer share a pin's measurement), cliff-launch is pinned
+Rise(60), and a pinless roll's length is seeded from the roll-rate limit. The roster now stands
+at **1,085.7 m and 22.3° heading error, cost 4.6e6** — from ~1.3 km and 149° — with the
+roll-rate violation cleared and jerk/clearance violations collapsed (379→16, 258→2.6). The
+solve buys part of this by near-stalling the train through the zero-g-roll (8→2 m/s, 607° of
+heading); that stall is the ugliest thing in the current answer. Dual-side anchoring was built
+and measured (`DUAL_ANCHOR` in `solve.rs`, `eval::integrate_reverse`): the joint stayed 434 m
+open and the forward ride lost the basin, so it is wired, test-exercised and off — same status
+as multiple shooting. Two smaller findings: wave-turn's Turn(0.0) pin cannot size its length
+but is load-bearing as a residual (dropping it cost 974→2,890 m), and the seeder's derivative
+guard never trips on the roll/overbank trims — their stalls are step-budget and bounds.
 
 ## The two ideas everything rests on
 

@@ -9,7 +9,7 @@ not open with an implementation.
 ```
 cargo run --release -p vc-ride --bin generate && open out/ride.html
 cargo build -p vc-godot --release && godot --path godot   # the rideable Godot client
-cargo test --workspace --release          # 100 tests
+cargo test --workspace --release          # 103 tests
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
@@ -31,18 +31,22 @@ grade sections (pitch authored, force measured — a force profile cannot hold a
 launch+climb, rim overbank, holding brake, 197.5 m dive, 6.9 g pullout, 225 m camelback, helix,
 finale). The old 14-element layout closed at 18.7 m.
 
-The 2026-08-08 session did the seeder work: geometric elements measure rise inside their own
-endpoints (consecutive grades no longer share a pin's measurement), cliff-launch is pinned
-Rise(60), and a pinless roll's length is seeded from the roll-rate limit. The roster now stands
-at **1,085.7 m and 22.3° heading error, cost 4.6e6** — from ~1.3 km and 149° — with the
-roll-rate violation cleared and jerk/clearance violations collapsed (379→16, 258→2.6). The
-solve buys part of this by near-stalling the train through the zero-g-roll (8→2 m/s, 607° of
-heading); that stall is the ugliest thing in the current answer. Dual-side anchoring was built
-and measured (`DUAL_ANCHOR` in `solve.rs`, `eval::integrate_reverse`): the joint stayed 434 m
-open and the forward ride lost the basin, so it is wired, test-exercised and off — same status
-as multiple shooting. Two smaller findings: wave-turn's Turn(0.0) pin cannot size its length
-but is load-bearing as a residual (dropping it cost 974→2,890 m), and the seeder's derivative
-guard never trips on the roll/overbank trims — their stalls are step-budget and bounds.
+The 2026-08-08 session did the seeder work (per-element rise measurement, cliff-launch pinned
+Rise(60), roll length seeded from the roll-rate limit; the roster reached 1,085.7 m / 22.3°),
+built dual-side anchoring (`DUAL_ANCHOR` in `solve.rs`, wired-tested-off like multiple
+shooting), and then — chasing a lift that stalled on a feasible 11 m/s demand — found that
+**the integrator over-rotated every element by exactly 1.5× per step**, both branches, at any
+step size (`MODEL.md`, bugs section). That is fixed, with mid-element regression tests, and a
+second fix sizes speed demands through the engagement window's mean so infrastructure delivers
+the impulse it is asked for. **Every closure figure ever measured before the fix is void,
+including the 14-element 18.7 m** — the corrected evaluator reports the 19-element roster at
+939.1 m / 125°, untuned, with the zero-g-roll winding 1,977°. The first job now is retuning
+the roster on honest physics, and the speed rule for that is Daniel's: **each element runs at
+1.25× its real analogue's speed** — the analogue table and the 25–27 m/s hyper/giga
+minimum-speed floor are in `PACING.md` §14. Smaller standing findings: wave-turn's Turn(0.0)
+pin cannot size its length but is load-bearing as a residual (dropping it cost 974→2,890 m on
+the old evaluator), and the seeder's derivative guard never trips on roll/overbank trims —
+their stalls are step-budget and bounds.
 
 ## The two ideas everything rests on
 

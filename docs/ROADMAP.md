@@ -12,14 +12,17 @@ wrong — fix the design rather than leaving a fixup behind.
    Numerics section of `ARCHITECTURE.md` for the decisions that came out of it.
 3. ~~The ride model, complete — spec, site, vehicle~~ — **done.** Elements are force-profile
    templates; the human pins element identity, order and height. See `MODEL.md`.
-4. ~~Evaluator — force profile → heartline → geometry, plus measurement~~ — **done.**
+4. ~~Evaluator — force profile → heartline → geometry, plus measurement~~ — **done**, and
+   re-verified 2026-08-08 after a 1.5× frame over-rotation bug (every element, both branches,
+   step-size independent) was found and fixed; geometry now measures correct mid-element.
 5. Multibody train — **partial.** Rigid couplers and mass-weighted gravity over every row give the
    back-row snap; elastic couplers and snatch loads are not modelled.
 6. The global solve — **partial.** Geometric pins now bind: each element carries two demands —
    trim sets the pitch it hands on, length sets its size — seeded by damped Newton before the
-   solve, then solve/re-seed/solve. The 14-element layout closed at 18.7 m over 6.9 km; the
-   19-element roster stands at 1,085.7 m and 22.3° after the seeder learned grade and roll
-   sizing, with dual-side anchoring wired but disabled. Still basin-sensitive. See `MODEL.md`.
+   solve, then solve/re-seed/solve. All pre-fix closure figures (14-element 18.7 m, 19-element
+   1,085.7 m) were measured on the over-rotating evaluator and are void; the corrected
+   evaluator reports 939.1 m / 125° on the untuned roster. Dual-side anchoring is wired but
+   disabled. Still basin-sensitive. See `MODEL.md`.
 7. Godot client — GDExtension binding, track render, free camera — **basic client done.**
    `vc-godot` exposes the generator through one method; `godot/` is a lean project: generate
    button, POV ride, fly camera, terrain. The in-engine ride is bit-identical to the CLI's

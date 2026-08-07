@@ -354,3 +354,34 @@ quintic, sinusoidal, plateau, freeform — with **linear first-class**, not an e
 smoothed away. So the practitioner answer to "force-first or geometry-first" is *per element,
 by what the element is for* — turns radius-first with easements, force elements force-first —
 and transition order is chosen per transition, not globally.
+
+## 14. Addendum, 2026-08-08 — per-element speeds, and the minimum-speed floor
+
+Daniel's authoring rule: **element traversal speeds follow the real coaster that has the
+element, times the 1.25 frontier factor** — speed is no longer purely an outcome to be
+accepted, it is checked per element against its analogue. The figures below are the analogue
+table (energy-derived figures are frictionless upper bounds from published heights; real values
+run a few per cent lower).
+
+| element | analogue | speed m/s | basis |
+|---|---|---|---|
+| zero-g roll | Incredible Hulk (only derivable case) | 16.4–17.9 | published launch + drop ([wiki](https://en.wikipedia.org/wiki/The_Incredible_Hulk_Coaster)) |
+| floater hill 55 m | Millennium Force crest | 25.3 | derived, 93 mph base ([wiki](https://en.wikipedia.org/wiki/Millennium_Force)) |
+| ejector hills | El Toro hills 2–4 | 17.6–22.1 | derived from 70 mph valley ([Coasterpedia](https://coasterpedia.net/wiki/El_Toro_(Six_Flags_Great_Adventure))) |
+| airtime hill 46 m | Intimidator 305 | 26.9 | derived, 90 mph base ([wiki](https://en.wikipedia.org/wiki/Intimidator_305)) |
+| overbank | Millennium Force / Fury 325 | 25.8–29.4 | derived ([wiki](https://en.wikipedia.org/wiki/Fury_325)) |
+| helix | Millennium Force / Helix Liseberg | ≤27.8–34.8 | derived / published ([physics.gu.se](https://physics.gu.se/LISEBERG/helix/index_E.html)) |
+| twisted first drop exit | Zadra, Iron Gwazi, FF derived | 33.6–34.7 | published ([Zadra](https://en.wikipedia.org/wiki/Zadra_(roller_coaster))) |
+| FF lift / launch 2 / launch 3 | Falcon's Flight | 11.1 / 41.7 / 69.4 | published ([Intamin](https://www.intamin.com/project/falcons-flight/)) |
+| FF camelback crest | derived from 165 m, 69.4 base | 39.7–40.2 | derived |
+
+**The minimum-speed floor is structural.** Across MF, Fury 325, I305 and El Toro, the slowest
+mid-course point is the crest of the tallest post-drop element, consistently **50–64 % of the
+drop height**, giving **25–27 m/s minimum sustained** for the hyper/giga class (0.61–0.67 of
+drop-bottom speed). The slowest genuine mid-course figure found anywhere is the Hulk roll's
+16.4–17.9 m/s, on a deliberately low-energy launch hill. A train at 2–8 m/s mid-course has no
+real-world analogue; at 1.25× the class floor, this ride should never sit below ~31 m/s
+mid-course, and elements should be speed-checked at 1.25× their analogue's figure. FF's
+150 km/h second launch cannot ballistically clear the 195 m cliff (v²/2g ≈ 89 m) — with 722
+stators over three sections it must be a powered climb, which the roster's launch+climb pair
+already models. No published POV telemetry with an absolute speed trace was found.

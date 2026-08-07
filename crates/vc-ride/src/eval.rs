@@ -47,7 +47,7 @@ use vc_math::units::G0;
 use vc_math::vec3::Vec3;
 use vc_math::{Frame, Scalar};
 
-use crate::model::{Params, RideModel};
+use crate::model::{Element, Params, RideModel};
 
 /// Integration steps per element.
 ///
@@ -462,6 +462,7 @@ fn integrate<T: Scalar>(
     let drag_factor = T::from_f64(0.5 * model.site.air_density * vehicle.cda()) / mass;
     let thrust_cap = T::from_f64(vehicle.thrust_max) / mass;
     let brake_cap = T::from_f64(vehicle.brake_max_decel);
+    let ramp = T::from_f64(vehicle.force_ramp);
     let g0 = T::from_f64(G0);
     let gravity = Vec3::new(T::ZERO, T::ZERO, -g0);
     let min_energy = T::from_f64(0.5 * MIN_SPEED * MIN_SPEED);
@@ -483,29 +484,7 @@ fn integrate<T: Scalar>(
         let entry_speed = (state.energy.max(min_energy) * T::from_f64(2.0)).sqrt();
         let mut apex = state.position.z - station_z;
 
-        // Constant specific force across the element, sized to reach the
-        // requested speed. What actually comes out is whatever physics gives
-        // once gravity and drag have had their say; the difference is a
-        // residual the solve can see, not something corrected here.
-        //
-        // A geometric grade knows its height in advance, so that goes into
-        // the energy budget too — without it a lift asked for a lower exit
-        // speed brakes at the bottom of its own climb and stalls.
-        let demand = p.exit_speed.map(|target| {
-            let climb = element.pitch_deg.as_ref().map_or(T::ZERO, |pitch| {
-                const SAMPLES: usize = 32;
-                let mean_sin = (0..SAMPLES)
-                    .map(|i| {
-                        let u = T::from_f64((i as f64 + 0.5) / SAMPLES as f64);
-                        vc_math::units::from_degrees(pitch.sample(u)).sin()
-                    })
-                    .fold(T::ZERO, |a, b| a + b)
-                    / T::from_f64(SAMPLES as f64);
-                p.length * mean_sin
-            });
-            (target.squared() - entry_speed.squared() + T::from_f64(2.0) * g0 * climb)
-                / (T::from_f64(2.0) * p.length)
-        });
+        let demand = speed_demand(element, &p, entry_speed, g0, ramp);
 
         for step in 0..STEPS_PER_ELEMENT {
             let u0 = T::from_f64(step as f64) / steps;
@@ -562,7 +541,12 @@ fn integrate<T: Scalar>(
 
             state = State {
                 position: state.position + d1.tangent * h,
-                carrier: state.carrier.transport_to(d1.tangent + d1.curvature * h),
+                // Midpoint update: rotate the tangent the step STARTED with by
+                // the midpoint curvature. d1.tangent is already half a step
+                // rotated, so adding a full step to it over-rotates every
+                // element by exactly 1.5x — an error independent of step size,
+                // which is how it survived: a 23-degree lift rode at 34.5.
+                carrier: state.carrier.transport_to(d0.tangent + d1.curvature * h),
                 energy: state.energy + d1.energy * h,
                 time: state.time + d1.time * h,
             };
@@ -617,6 +601,7 @@ pub fn integrate_reverse<T: Scalar>(
     let drag_factor = T::from_f64(0.5 * model.site.air_density * vehicle.cda()) / mass;
     let thrust_cap = T::from_f64(vehicle.thrust_max) / mass;
     let brake_cap = T::from_f64(vehicle.brake_max_decel);
+    let ramp = T::from_f64(vehicle.force_ramp);
     let g0 = T::from_f64(G0);
     let gravity = Vec3::new(T::ZERO, T::ZERO, -g0);
     let min_energy = T::from_f64(0.5 * MIN_SPEED * MIN_SPEED);
@@ -648,21 +633,7 @@ pub fn integrate_reverse<T: Scalar>(
         // which is the joint residual's whole job.
         let entry_speed = forward[index].entry_speed;
 
-        let demand = p.exit_speed.map(|target| {
-            let climb = element.pitch_deg.as_ref().map_or(T::ZERO, |pitch| {
-                const SAMPLES: usize = 32;
-                let mean_sin = (0..SAMPLES)
-                    .map(|i| {
-                        let u = T::from_f64((i as f64 + 0.5) / SAMPLES as f64);
-                        vc_math::units::from_degrees(pitch.sample(u)).sin()
-                    })
-                    .fold(T::ZERO, |a, b| a + b)
-                    / T::from_f64(SAMPLES as f64);
-                p.length * mean_sin
-            });
-            (target.squared() - entry_speed.squared() + T::from_f64(2.0) * g0 * climb)
-                / (T::from_f64(2.0) * p.length)
-        });
+        let demand = speed_demand(element, &p, entry_speed, g0, ramp);
 
         for k in 0..STEPS_PER_ELEMENT {
             let left = T::from_f64((STEPS_PER_ELEMENT - k) as f64);
@@ -714,7 +685,9 @@ pub fn integrate_reverse<T: Scalar>(
 
             state = State {
                 position: state.position + d1.tangent * step,
-                carrier: state.carrier.transport_to(d1.tangent + d1.curvature * step),
+                // Same midpoint update as the forward pass: full-step rotation
+                // is applied to the step's starting tangent, not the midpoint's.
+                carrier: state.carrier.transport_to(d0.tangent + d1.curvature * step),
                 energy: state.energy + d1.energy * step,
                 time: state.time + d1.time * step,
             };
@@ -961,6 +934,39 @@ fn valley<T: Scalar>(samples: &[Sample<T>], peak: usize, direction: isize) -> T 
     low
 }
 
+/// Specific force to ask of the infrastructure so the element exits at its
+/// requested speed: the kinetic change, plus the climb a geometric grade
+/// already knows about, divided through the engagement window's mean — the
+/// window eases to zero at each end, so a demand sized as if it held
+/// everywhere under-delivers by exactly the ramp fraction, which is what
+/// stalled a lift asked for a feasible speed. Drag and rolling still have
+/// their say; that difference is a residual the solve can see, not something
+/// corrected here.
+fn speed_demand<T: Scalar>(
+    element: &Element,
+    p: &Params<T>,
+    entry_speed: T,
+    g0: T,
+    ramp: T,
+) -> Option<T> {
+    p.exit_speed.map(|target| {
+        let climb = element.pitch_deg.as_ref().map_or(T::ZERO, |pitch| {
+            const SAMPLES: usize = 32;
+            let mean_sin = (0..SAMPLES)
+                .map(|i| {
+                    let u = T::from_f64((i as f64 + 0.5) / SAMPLES as f64);
+                    vc_math::units::from_degrees(pitch.sample(u)).sin()
+                })
+                .fold(T::ZERO, |a, b| a + b)
+                / T::from_f64(SAMPLES as f64);
+            p.length * mean_sin
+        });
+        let delivered = T::ONE - (ramp / p.length).clamp(T::from_f64(1e-6), T::from_f64(0.45));
+        (target.squared() - entry_speed.squared() + T::from_f64(2.0) * g0 * climb)
+            / (T::from_f64(2.0) * p.length * delivered)
+    })
+}
+
 /// How fully the infrastructure is engaged at progress `u`: zero at each end
 /// of the element, one in the middle, easing quintically over `ramp` metres.
 fn engagement<T: Scalar>(u: T, length: T, ramp: T) -> T {
@@ -1178,6 +1184,80 @@ mod tests {
     }
 
     #[test]
+    fn a_geometric_grade_holds_its_authored_pitch() {
+        // The regression that catches integrator over-rotation: the climb an
+        // authored pitch profile implies is exactly the climb the track makes.
+        // The 1.5x frame bug rode this 23-degree ramp at 34.5 degrees.
+        let mut ramp = level("ramp", 230.0, None);
+        ramp.pitch_deg = Some(Channel::new(&[
+            (0.0, 0.0),
+            (0.1, 23.0),
+            (0.9, 23.0),
+            (1.0, 0.0),
+        ]));
+        let expected = 230.0
+            * (0..64)
+                .map(|i| {
+                    ramp.pitch_deg
+                        .as_ref()
+                        .unwrap()
+                        .sample((i as f64 + 0.5) / 64.0)
+                        .to_radians()
+                        .sin()
+                })
+                .sum::<f64>()
+            / 64.0;
+        let model = model_of(vec![ramp], 60.0);
+        let ride = run(&model);
+        let rise = ride.end().position.z - 100.0;
+        assert!((rise - expected).abs() < 0.5, "rise {rise} vs {expected}");
+    }
+
+    #[test]
+    fn a_fast_turn_has_the_radius_theory_says_mid_element() {
+        // Measured mid-element, where an over-rotating integrator has had
+        // room to accumulate — the near-start radius check cannot see that.
+        // At 200 m/s on a 90-degree bank the felt force is horizontal, so the
+        // horizontal path radius is v^2/(n g0); gravity only adds a shallow
+        // vertical drift that the horizontal projection ignores.
+        let n = 2.5;
+        let v = 200.0;
+        let element = Element {
+            name: "turn",
+            normal_g: Channel::flat(n),
+            lateral_g: Channel::flat(0.0),
+            bank_deg: Channel::flat(90.0),
+            length: Free::fixed(400.0),
+            g_scale: Free::fixed(1.0),
+            trim: Free::fixed(0.0),
+            roll_scale: Free::fixed(1.0),
+            speed_control: None,
+            pitch_deg: None,
+            pin: None,
+            exit_pitch_deg: 0.0,
+        };
+        let model = model_of(vec![element], v);
+        let ride = run(&model);
+        let m = ride.samples.len() / 2;
+        let (p0, p1, p2) = (
+            ride.samples[m - 200].position,
+            ride.samples[m].position,
+            ride.samples[m + 200].position,
+        );
+        let (a, b, c) = ((p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y));
+        let d2 = 2.0 * (a.0 * (b.1 - c.1) + b.0 * (c.1 - a.1) + c.0 * (a.1 - b.1));
+        let sq = |p: (f64, f64)| p.0 * p.0 + p.1 * p.1;
+        let ux = (sq(a) * (b.1 - c.1) + sq(b) * (c.1 - a.1) + sq(c) * (a.1 - b.1)) / d2;
+        let uy = (sq(a) * (c.0 - b.0) + sq(b) * (a.0 - c.0) + sq(c) * (b.0 - a.0)) / d2;
+        let radius = ((a.0 - ux).powi(2) + (a.1 - uy).powi(2)).sqrt();
+        let expected = v * v / (n * G0);
+        assert!(
+            (radius - expected).abs() < expected * 0.03,
+            "radius {radius} vs {expected}"
+        );
+    }
+
+    #[test]
     fn energy_is_conserved_when_nothing_takes_any() {
         // No drag, no rolling resistance, no propulsion: speed at the bottom
         // must match the drop exactly. This is the test that catches a sign
@@ -1226,6 +1306,29 @@ mod tests {
     }
 
     #[test]
+    fn a_steep_lift_reaches_the_speed_it_was_asked_for() {
+        // The demand must be sized through the engagement window's mean.
+        // Without that a lift whose climb dominates its energy budget
+        // under-delivers by the ramp fraction and sags to the speed floor
+        // instead of reaching a plainly feasible target.
+        let mut lift = level("lift", 230.0, Some(11.0));
+        lift.pitch_deg = Some(Channel::new(&[
+            (0.0, 0.0),
+            (0.1, 23.0),
+            (0.9, 23.0),
+            (1.0, 0.0),
+        ]));
+        let mut model = model_of(vec![level("station", 40.0, None), lift], 5.0);
+        model.vehicle.force_ramp = 22.0;
+        let ride = run(&model);
+        assert!(
+            (ride.elements[1].exit_speed - 11.0).abs() < 0.5,
+            "exit {}",
+            ride.elements[1].exit_speed
+        );
+    }
+
+    #[test]
     fn a_brake_run_sheds_the_speed_it_can() {
         // Asked for something the brakes can do in the distance available.
         let model = model_of(
@@ -1233,11 +1336,8 @@ mod tests {
             50.0,
         );
         let ride = run(&model);
-        // Not exact: the brakes ease in and out over the ends of the element,
-        // so they deliver slightly less than a constant force would. That gap
-        // is real and the solve sees it as a residual.
         assert!(
-            (ride.elements[1].exit_speed - 5.0).abs() < 1.5,
+            (ride.elements[1].exit_speed - 5.0).abs() < 0.5,
             "exit {}",
             ride.elements[1].exit_speed
         );

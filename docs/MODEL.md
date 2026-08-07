@@ -27,9 +27,14 @@ WASD moves, Shift is fast). The ride is bit-identical to the CLI's: both call
 
 ## What the generator produced — last converged checkpoint, 14-element layout
 
-The 19-element rebuild has not reconverged; it stands at 1,085.7 m of closure
-gap and 22.3° of heading error after the 2026-08-08 seeder work (table below).
-These figures are the 14-element layout's, kept as the standard to get back to.
+**Every figure in this table predates the integrator fix below and is void as
+a benchmark.** The evaluator that produced them over-rotated the frame by
+exactly 1.5× per step — the ride it reported was not the ride its forces
+authored. The table is kept as the record of what the *solve* could do: a
+closed circuit at 18.7 m over 6.9 km is the convergence standard to get back
+to, now on honest physics. The 19-element roster on the corrected evaluator
+stands at 939.1 m of closure gap and 125° of heading error, unconverged and
+untuned (table below).
 
 | | this ride | Falcon's Flight | margin |
 |---|---|---|---|
@@ -113,6 +118,21 @@ delivered 59 m against a pinned 150.
   enough that an unhealthy ride degrades instead of exploding.
 - **The cliff was too short.** A 198 m rider-felt drop plus its pull-out needs
   ~260 m of fall; 200 m of escarpment put the track 45 m underground.
+- **The integrator over-rotated every element by exactly 1.5× (2026-08-08).**
+  The midpoint update rotated the frame from the *midpoint's* tangent — which
+  already carries half a step of rotation — instead of the step's start, so
+  every curvature was applied 1.5 times over, independent of step size, in
+  both the force and geometric branches. A 23° lift rode at 34.5°; a turn
+  authored for a 1,631 m radius rode at 1,019 m. It survived because the
+  radius test measured 1.25 m from the element start, where the deviation is
+  millimetres — found by disbelieving a lift that stalled on a feasible
+  demand. Both regression tests now measure mid-element.
+- **A speed demand sized as if it held everywhere under-delivers by the ramp
+  fraction.** Infrastructure force eases in and out over `force_ramp` metres,
+  so the delivered impulse is the demand times the window's mean — on a steep
+  lift the shortfall exceeded the whole margin over gravity and the train
+  sagged to the speed floor. The demand is now sized through its own delivery
+  shape; drag and rolling still land in the residual, as before.
 
 ## What did not work
 
@@ -154,6 +174,7 @@ data points for the table:
 | cliff-launch pinned Rise(60), length bound to 450 | 514.8 m, 82.5° — but cost 2.25e8, limits badly broken |
 | zero-g-roll length seeded from the roll-rate limit | 1,085.7 m but 22.3°, cost 4.6e6; roll-rate violation cleared, jerk 379→16, clearance 258→2.6; the solve near-stalls the train through the roll (8→2 m/s) |
 | dual-side anchoring enabled | joint stayed 434 m open; forward ride 1,805 m, 135.3°, cost 5.7e7 — reverted to flag-off |
+| **integrator over-rotation fixed** (1.5×/step, both branches) | 939.1 m, 125° — and every row above was measured on the broken evaluator; the layout must be retuned on honest physics |
 
 The brake-run change was a reasonable-looking tweak that made closure twenty
 times worse, and it was reverted rather than tuned around.

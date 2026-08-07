@@ -872,6 +872,8 @@ mod tests {
         // The whole point of the seeder. As authored, the camelback's length is
         // a guess; after seeding it must actually deliver the demanded rise,
         // because no scale factor could have been written down instead.
+        // Isolated at its post-dive entry speed so the rest of the layout's
+        // state of tune cannot mask the mechanism.
         let mut model = falcon_class();
         let index = model
             .spec
@@ -882,10 +884,12 @@ mod tests {
         let Some(Pin::Rise(demanded)) = model.spec.elements[index].pin else {
             panic!("the camelback is the pinned-rise element");
         };
+        model.spec.elements = vec![model.spec.elements[index].clone()];
+        model.spec.station.dispatch_speed = 90.0;
 
-        let before = evaluate(&model, &model.spec.free_parameters()).elements[index].rise;
+        let before = evaluate(&model, &model.spec.free_parameters()).elements[0].rise;
         crate::solve::seed_geometry(&mut model, 3);
-        let after = evaluate(&model, &model.spec.free_parameters()).elements[index].rise;
+        let after = evaluate(&model, &model.spec.free_parameters()).elements[0].rise;
 
         assert!(
             (after - demanded).abs() < (before - demanded).abs(),

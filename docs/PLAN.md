@@ -74,7 +74,7 @@ uniform multiplier, and not "slightly beyond record."
 
 ## Research digest (all researched this session; sources in agent reports)
 
-**Falcon's Flight** (Intamin, Qiddiya) — open Dec 31, 2025; real POV exists, use it (not CGI).
+**Falcon's Flight** (Intamin, Qiddiya) — open Dec 31, 2025; real POV exists, use it (though the CGI videos are allowed for 3rd person geometry research/analysis though - should be essentially 1:1).
 163 m structure / 195 m elevation change via the 200 m Tuwaiq step, 158 m 90° terrain-assisted
 drop, 250 km/h via 3rd of 3 LSM launches (>700 water-cooled modules), 4,250 m, 3:35, 0
 inversions. Phases: station → LSM1 ~40 km/h up → ~55 m twisted drop → lower airtime hills +

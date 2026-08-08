@@ -1,5 +1,10 @@
 # Falcon Flightline — start here
 
+> **DEFUNCT CONTRACT (Step 0, 2026-08-08): everything below describes the RETIRED checkpoint.
+> Do NOT follow the route contract or envelope in this file. The rewrite is governed by
+> `docs/PLAN.md` (with its Step-0 corrections) and `docs/RESEARCH.md`; this file gets rewritten
+> during the rewrite session per PLAN.md. The run/verify commands below are still valid.**
+
 This repository is a lean Godot riding checkpoint, not a general coaster optimizer.
 
 Run both checks before and after route changes:

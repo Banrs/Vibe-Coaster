@@ -90,22 +90,32 @@ uniform multiplier, and not "slightly beyond record."
 > stands; canonical numbers = RCDB/Wikipedia set. Suspense/clifftop elements scale from
 > reference geometry only, never toward records (user rule).
 
-**Falcon's Flight** (Intamin, Qiddiya) — open Dec 31, 2025; real POV exists, use it (though the CGI videos are allowed for 3rd person geometry research/analysis though - should be essentially 1:1).
-163 m structure / 195 m elevation change via the 200 m Tuwaiq step, 158 m 90° terrain-assisted
-drop, 250 km/h via 3rd of 3 LSM launches (>700 water-cooled modules), 4,250 m, 3:35, 0
-inversions. Phases: station → LSM1 ~40 km/h up → ~55 m twisted drop → lower airtime hills +
-wave turn → LSM2 up-cliff to ~160 km/h (accel-vs-constant unsettled in print — POV decides) →
-clifftop turns/hops + outward-banked rim turn → holding brake at lip → 90° cliff dive into
-tunnel → LSM3 → 250 → 163 m camelback → long high-speed return (late boost) → brakes.
+**Falcon's Flight** (Intamin, Qiddiya) — open Dec 31, 2025; real POV analyzed in Step 0 (CGI
+allowed for 3rd-person geometry — essentially 1:1).
+163 m record structure height / 195 m elevation change via the ~195 m Tuwaiq cliff ("200 m
+step" was unverifiable); **camelback structurally 165 m carrying the recorded 158 m drop;
+separate ~160 m 90° cliff drop**; 250 km/h via the last of 3 LSM sections (constant-speed
+40 km/h lift + cliff launch + post-tunnel launch; >700 water-cooled modules), 4,250 m, 3:35,
+0 inversions. Phases (POV-verified): station → LSM lift (constant ~40 km/h) → ~55 m twisted
+drop → ~27 s terrain-hugging airtime hills + wave turn → cliff launch (launched at base then
+decelerating up, ~19 s, 150–160 km/h) → crest crawl/hold ~3 s → clifftop turns + outward-banked
+rim turn, accelerating monotonically (no pause at the lip) → 90° cliff drop into short tunnel →
+LSM3 to 250 → camelback (trimmed in current operation) → ~36 s high-speed return (no late
+boost) → brakes.
 
-**Tormenta: Rampaging Run** (B&M giga dive, Six Flags Over Texas) — open Jul 2026. 94 m, 87 m
-drop @ 95° with 3 s crest hold, 140 km/h, inversions incl. 218 ft Immelmann (tallest) and
-179 ft vertical loop (tallest), cutback around the drop tower. "Rampaging Run" is the ride's
-name, not a section; "hybrid" here means hybridizing the two rides.
+**Tormenta: Rampaging Run** (B&M Dive Coaster, "giga dive" is marketing; Six Flags Over
+Texas) — open Jul 9, 2026. 94 m (309 ft), 87 m drop @ 95° with crest hold (official 3 s;
+measured ~1.7 s dead stop after ~4 s pitch-over crawl), 140 km/h, inversions incl. 218 ft
+Immelmann (tallest *Immelmann* only — Spitfire's 73 m inverted top hat remains the tallest
+inversion) and 179 ft vertical loop (tallest loop), **cutback around its own first drop** (not
+the park's drop tower). It DOES have a mid-course brake + second drop — our exclusion of both
+is a deliberate deviation, reaffirmed in Step 0. "Rampaging Run" is the ride's name, not a
+section; "hybrid" here means hybridizing the two rides.
 
-**Records baseline** (2026-08): speed 250 / structure 163 m / drop 158 m (terrain) / length
-4,250 m — all Falcon's Flight; launch-speed 240 km/h in 4.9 s (Formula Rossa, Guinness
-"speed attained by launch"); launch-accel 3.3 g (Do-Dodonpa 0–180 in 1.56 s — ride closed,
+**Records baseline** (2026-08): speed 250 / structure 163 m / drop 158 m (camelback; de facto,
+not a formally tracked record) / length 4,250 m — all Falcon's Flight; launch-speed 240 km/h
+in 4.9 s (Formula Rossa, Guinness "highest speed achieved by a rollercoaster launch");
+launch-accel 3.3 g (Do-Dodonpa 0–180 in 1.56 s — ride closed,
 record vacant in practice); tallest inversion 73 m (Spitfire, Qiddiya). Inversion-class
 elements should scale proportionally past 66–73 m by the practical structure factor (~1.3–1.5)
 rather than to a fixed number.
@@ -157,7 +167,7 @@ pitch ≈ 0, seam pitch/roll handoff, envelope, onset, roll rate, C4.
   principle, flow rules, terrain/self clearance, element-shape sanity (camelback symmetry,
   drop steepness, inversion geometry). Project CLAUDE.md gets rewritten to match all of this.
 
-## Repo handoff (do first, on this PC, so the new device gets everything via GitHub)
+## Repo handoff (DONE 2025-08 on the old PC — historical)
 
 The continuation runs on a different PC cloned from the `vibe-coaster` GitHub repo, so the repo
 must carry everything needed and nothing else:
@@ -177,6 +187,10 @@ must carry everything needed and nothing else:
   must live in the repo docs.
 
 ## Step 0 of the implementation session (new PC, before any code)
+
+> **STEP 0 COMPLETED 2026-08-08 — results in `docs/RESEARCH.md` (do not redo the video/fact
+> research). One open item remains for the rewrite session's start: structure-vs-terrain
+> sanity (~250 m provisional structure vs ~300 m Fihrayn relief) — see RESEARCH.md §6.**
 
 **First: review this plan with the user and ask questions — do not start coding straight away.**
 The new session reads docs/PLAN.md, surfaces anything stale or ambiguous, and confirms the open

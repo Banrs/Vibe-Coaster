@@ -1,5 +1,11 @@
 # Falcon's Flight reference decisions
 
+> **RETIRED-CHECKPOINT DOCUMENT (Step 0, 2026-08-08): kept only for the rationale behind the
+> load-verification toolkit that survives the rewrite. Its route targets, source interpretation,
+> and its envelope table (+7.0/−2.5 Gz · ±4.0 Gy · ±7.0 Gx · 15 g/s · 110°/s) are the OLD
+> checkpoint's — do not confuse with the rewrite envelope (+7.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx ·
+> ~25 g/s · ~120°/s, see `docs/PLAN.md` and `docs/RESEARCH.md` §5).**
+
 Falcon Flightline borrows Falcon's Flight's macro sequence and visual language, then scales the
 experience into a frontier concept. It does not claim survey-grade coordinates, an exact replica,
 or a buildable engineering design.

@@ -1,5 +1,8 @@
 # Falcon Flightline
 
+> **This README describes the retired checkpoint and is pending rewrite. Current direction:
+> `docs/PLAN.md` + `docs/RESEARCH.md`.**
+
 A deterministic, rideable Godot checkpoint inspired by the scale and pacing of Intamin's
 Falcon's Flight. The project opens directly into a moving seven-row train; route generation,
 analysis, rendering, and rider cameras are all native GDScript.

@@ -79,7 +79,8 @@ uniform multiplier, and not "slightly beyond record."
 
 > **STEP 0 COMPLETE (2026-08-08): this digest has been re-verified and partially corrected —
 > `docs/RESEARCH.md` supersedes it wherever they disagree.** Key overrides: the 158 m drop is
-> the **camelback's**, not the cliff dive's (the 90° cliff dive is a separate ~160 m element);
+> the **camelback's** (structurally 165 m), not the cliff dive's — the 90° cliff drop is a
+> separate ~160 m element;
 > LSM1 is a constant-speed lift, not a launch; the cliff climb is a launch at the base then
 > **gradual deceleration up** (~19 s); the hold (~3 s) comes **before** the cliff-edge
 > traverse and there is **no pause at the dive lip**; there is **no late boost** on the return

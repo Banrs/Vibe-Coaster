@@ -9,7 +9,8 @@ confirmed in-session on 2026-08-08.
 
 **Canonical number set (user decision): RCDB/Wikipedia** (internally consistent, carries the
 records). Intamin's own figures conflict on several values and are recorded as footnoted
-alternates. No Guinness adjudication page exists for any Falcon's Flight record — all record
+alternates. One carve-out: the camelback is **structurally 165 m** (Intamin; user decision) —
+163 m (RCDB 534.8 ft) is the database/record figure for the same structure. No Guinness adjudication page exists for any Falcon's Flight record — all record
 language traces to Six Flags/Intamin marketing and enthusiast media.
 
 ---
@@ -23,13 +24,13 @@ language traces to Six Flags/Intamin marketing and enthusiast media.
 | Open Dec 31, 2025; real POV exists | CONFIRMED | Soft 12-30, official 12-31-2025; operating (first-hand review 2026-07-07). Early-2026: only 3 of 6 trains at times; slow dispatches |
 | 163 m structure / 195 m elevation change | CONFIRMED | RCDB 534.8 ft structure; ~195 m elevation change. **Beware: Intamin's own copy calls 195 m the "height"** — most press repeats this error |
 | via "the 200 m Tuwaiq step" | UNVERIFIABLE | No source gives a cliff-face height; Intamin implies ~195 m. Do not assert 200 m |
-| **158 m 90° terrain-assisted drop** | **CORRECTED** | **Conflates two elements.** 158 m (518.4 ft) is the **camelback's** drop (RCDB: "534.8 ft tall Hill with a 518.4 ft drop"). The **90° cliff dive is a separate, earlier element, ~160 m / 525 ft** into the tunnel |
+| **158 m 90° terrain-assisted drop** | **CORRECTED** | Two distinct elements: the **camelback (structurally 165 m)** carries the recorded **158 m (518.4 ft) drop**; the **cliff drop is a separate ~160 m element at 90°** into the tunnel |
 | 250 km/h via 3rd of 3 LSM launches | CONFIRMED / nuance | Speed confirmed (155.3 mph). But RCDB's element taxonomy is **1 "LSM Lift Hill" + 2 "LSM Boost"** — LSM1 is a **constant-speed 40 km/h lift**, not a launch; "three launches" is marketing |
 | >700 water-cooled LSM modules | CONFIRMED | blooloop ">700 modules with water cooling"; Intamin ">722 LSM stators across the three launch sections". (Wheel cooling is separate: air-cooled ventilated rims) |
 | 4,250 m / 3:35 / 0 inversions | CONFIRMED w/ dispute | 4,250 m (RCDB/Wiki) vs **4,325 m (Intamin)**; 3:35 (Wiki) vs **3:25 (Intamin)**; 0 inversions confirmed |
 | Phase list (station→…→brakes) | MOSTLY CONFIRMED | Corrections in §2. Biggest: **the "late boost" on the return run does not exist** (RCDB lists exactly 3 LSM elements, all consumed; POV confirms monotonic speed bleed) |
 | LSM2 up-cliff "to ~160 km/h", accel-vs-constant unsettled | RESOLVED by POV | It is a **launch at the base, then gradual deceleration up the cliff** (~19 s total). Speed disputed: **150 km/h (Intamin) vs 160 km/h (Wiki/others)** |
-| Camelback | note | 163 m (RCDB) vs 165 m (Intamin). **Currently trimmed in real operation** ("you do float on the way back down" — CoasterForce); POV could neither confirm nor refute fins |
+| Camelback | note | Structurally **165 m** (RCDB records the same structure as 534.8 ft ≈ 163 m). **Currently trimmed in real operation** ("you do float on the way back down" — CoasterForce); POV could neither confirm nor refute fins |
 | Holding brake at lip → dive | **CORRECTED ORDER** | Real order (POV, high confidence): climb → **crest crawl/hold ~3–4 s** → clifftop traverse incl. out-over-the-edge → **monotonic acceleration into the dive — no second pause at the lip** |
 
 ### Tormenta: Rampaging Run (B&M Dive Coaster / Custom Wide, Six Flags Over Texas)

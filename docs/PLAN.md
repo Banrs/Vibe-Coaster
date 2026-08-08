@@ -55,11 +55,12 @@ uniform multiplier, and not "slightly beyond record."
   real onride POV in Step 0 (non-Fable agent). No sustained boost to game average speed; no
   numeric average-speed contract.
 - **Envelope (~2041, derived from researched tech credits, duration-structured like ASTM
-  F2291):** ≈ **+7.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** (user
+  F2291):** ≈ **+8.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** (user
   judgment caps −Gz at −3.0; deeper negative isn't credible for unscreened riders.
-  **Step-0 correction 2026-08-08: +Gz lowered 8.0 → 7.0 by user decision after F2291/physiology
-  research — see docs/RESEARCH.md §5 for the actual F2291 duration curves and per-axis
-  credibility caveats**).
+  **Step-0 note: +8.0 Gz is credited to riders wearing anti-G suits (user decision 2026-08-09;
+  aviation suits add ~1.0–1.5 g of relaxed tolerance) on top of recline/vests/MR seats — valid
+  as a brief peak; sustained +Gz still follows the duration curve. See docs/RESEARCH.md §5 for
+  the actual F2291 curves and per-axis credibility caveats**).
   Derivation per axis: ASTM brief baseline (≈+6/−2 Gz) + seat recline (+Gz), load-distributing
   vest restraints (−Gz, ±Gy, ±Gx), semi-active MR seats (onset/jerk — the axis that stretches
   most), interpolated between the researched mid-2030s and ~2050 syntheses. Lateral and roll

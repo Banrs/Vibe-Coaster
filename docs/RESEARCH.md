@@ -217,14 +217,17 @@ as track-frame onset with rider-frame ≤15 g/s) > **+8 Gz (least credible: abov
 G-LOC floor; F2291's Gz is spine-parallel/body-frame, so seat recline re-projects load into
 +Gx rather than raising Gz; recline at 30° buys only ~0.5 g)**.
 
-### FINAL ENVELOPE (user decision, 2026-08-08)
-> **≈ +7.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** — duration-structured
+### FINAL ENVELOPE (user decisions, 2026-08-08/09)
+> **≈ +8.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** — duration-structured
 > like F2291 (scale the curve shapes above, not flat plateaus).
 
-User modified +Gz from 8.0 → **7.0**; all other axes kept per original plan judgment. The
-research caveats above stand as documented risk notes (esp.: +7 Gz is credible only as a
-brief, <1–2 s peak; ±4.7 Gy presumes head-restraining vests; 25 g/s presumes MR-seat
-attenuation to a lower rider-frame onset).
+History: user first lowered +Gz 8.0 → 7.0 (2026-08-08) on the physiology findings, then
+restored **8.0** (2026-08-09) by adding a tech credit: **riders wear anti-G suits**. Grounding:
+aviation anti-G suits add ~1.0–1.5 g of relaxed tolerance — stacked on the recline/vest/MR-seat
+credits this makes a brief +8 Gz defensible as design fiction. The research caveats stand as
+risk notes: +8 Gz is credible only as a brief, <~2 s peak inside the ~5 s cerebral buffer
+(sustained +Gz must follow the duration curve); ±4.7 Gy presumes head-restraining vests;
+25 g/s presumes MR-seat attenuation to a lower rider-frame onset.
 
 ---
 

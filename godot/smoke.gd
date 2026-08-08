@@ -33,6 +33,7 @@ func _initialize() -> void:
 	errors.append_array(_verify_errors())
 	errors.append_array(_frame_core_errors())
 	errors.append_array(_template_errors())
+	errors.append_array(_rolled_template_errors())
 	var rails: ArrayMesh = Coaster.build_rail_mesh(route)
 	var terrain: ArrayMesh = Coaster.build_terrain_mesh(route)
 	var elapsed := Time.get_ticks_msec() - started
@@ -383,6 +384,131 @@ func _hill_errors(
 	_expect(errors, absf(_pitch_deg(state.tangent) + pullout_pitch) <= 5.0, "%s exits at %.1f°, not %.0f" % [label, _pitch_deg(state.tangent), -pullout_pitch])
 	_expect(errors, absf(ascent - descent) / maxf(ascent, descent) <= asymmetry, "%s ascent and descent differ by %.0f%%" % [label, 100.0 * absf(ascent - descent) / maxf(ascent, descent)])
 	return errors
+
+
+## The rolled and inverting templates. These are the ones the old level-up-plus-bank-angle model
+## could not express at all: a bank carried through a dive, a train hanging at the top of a loop,
+## and a roll taken past vertical. Each probe is built twice to prove the solves are deterministic.
+func _rolled_template_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	for kind in ["twisted drop", "wave turn", "loop", "immelmann", "cutback"]:
+		var probe: Dictionary = _rolled_probe(kind)
+		errors.append_array(_rolled_checks(kind, probe))
+		if probe.route.positions != _rolled_probe(kind).route.positions:
+			errors.append("%s probe is not deterministic" % kind)
+	return errors
+
+
+func _rolled_probe(kind: String) -> Dictionary:
+	var state: Dictionary
+	var route: Dictionary
+	var sections: Array = []
+	var first := 1
+	var group: Array = []
+	match kind:
+		"twisted drop":
+			state = _template_state(18.0, 84.0)
+			route = _seed_route(state)
+			group = Elements.author_twisted_drop(route, state, {
+				"target_pitch_deg": -48.0, "peak_bank_deg": 50.0, "lateral_g": 0.4,
+			})
+		"wave turn":
+			state = _template_state(33.0, 0.0)
+			route = _seed_route(state)
+			_run_group(route, state, Elements.author_pullout(route, state, {
+				"exit_pitch_deg": 35.0, "peak_g": 3.2,
+			}), sections)
+			first = route.positions.size()
+			group = Elements.author_wave_turn(route, state, {
+				"rise": 20.0, "crown_g": 0.2, "peak_bank_deg": 60.0, "lateral_g": 0.6,
+			})
+		"loop":
+			state = _template_state(40.0, 0.0)
+			route = _seed_route(state)
+			group = Elements.author_loop(route, state, {"height": 55.0, "peak_g": 4.2})
+		"immelmann":
+			state = _template_state(52.0, 0.0)
+			route = _seed_route(state)
+			group = Elements.author_immelmann(route, state, {"peak_g": 3.8, "exit_pullout_g": 2.5})
+		"cutback":
+			state = _pitched_state(30.0, 25.0)
+			route = _seed_route(state)
+			group = Elements.author_cutback(route, state, {"peak_g": 2.2, "peak_bank_deg": 140.0})
+	var entry_height: float = route.positions[first - 1].y
+	var entry_tangent: Vector3 = route.tangents[first - 1]
+	_run_group(route, state, group, sections)
+	Elements.measure_roll_rates(route)
+	return {
+		"route": route, "state": state, "first": first, "group": group,
+		"entry_height": entry_height, "entry_tangent": entry_tangent,
+	}
+
+
+func _rolled_checks(kind: String, probe: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var route: Dictionary = probe.route
+	var state: Dictionary = probe.state
+	var first: int = probe.first
+	var lowest_up := 1.0
+	var peak_bank := 0.0
+	var peak_rate := 0.0
+	var apex := first
+	for i in range(first, route.positions.size()):
+		lowest_up = minf(lowest_up, route.ups[i].y)
+		peak_bank = maxf(peak_bank, absf(route.banks[i]))
+		peak_rate = maxf(peak_rate, absf(route.roll_rates[i]))
+		if route.positions[i].y > route.positions[apex].y:
+			apex = i
+	var pitch := _pitch_deg(state.tangent)
+	var heading: float = Elements._heading_change_deg(route, first)
+	var exit_bank: float = route.banks[-1]
+	var rise: float = route.positions[apex].y - probe.entry_height
+	var frame := _frame_error(route)
+	match kind:
+		"twisted drop":
+			_expect(errors, absf(pitch + 48.0) <= 2.0, "twisted drop exits pitched %.1f°, not -48" % pitch)
+			_expect(errors, absf(heading) >= 35.0, "twisted drop only sweeps %.1f° of heading" % heading)
+			_expect(errors, lowest_up > 0.2, "twisted drop rolls over (lowest up.y %.3f)" % lowest_up)
+			_expect(errors, absf(exit_bank) <= 6.0, "twisted drop exits banked %.1f°" % exit_bank)
+			_expect(errors, frame <= 0.002, "twisted drop frames are not orthonormal (%.5f)" % frame)
+		"wave turn":
+			_expect(errors, absf(rise - 20.0) <= 2.0, "wave turn rises %.1f m, not 20" % rise)
+			_expect(errors, absf(route.banks[apex]) >= 45.0, "wave turn crests banked only %.1f°" % route.banks[apex])
+			_expect(errors, absf(heading) >= 15.0, "wave turn only sweeps %.1f° of heading" % heading)
+			_expect(errors, absf(pitch + 35.0) <= 6.0, "wave turn exits pitched %.1f°, not -35" % pitch)
+		"loop":
+			var valley := 0.0
+			for i in range(first, first + maxi((route.positions.size() - first) / 5, 1)):
+				valley = maxf(valley, route.curvatures[i].length())
+			var apex_curvature: float = route.curvatures[apex].length()
+			var closure: float = state.tangent.dot(probe.entry_tangent)
+			_expect(errors, absf(rise - 55.0) <= 2.0, "loop stands %.1f m, not 55" % rise)
+			_expect(errors, lowest_up < -0.9, "loop never hangs the train (lowest up.y %.3f)" % lowest_up)
+			_expect(errors, closure > 0.995, "loop exit tangent misses the entry (%.4f)" % closure)
+			_expect(errors, absf(pitch) <= 2.0, "loop exits pitched %.1f°" % pitch)
+			_expect(errors, apex_curvature > valley, "loop is not a teardrop (apex %.4f, valley %.4f)" % [apex_curvature, valley])
+		"immelmann":
+			var swept: float = absf(probe.group[0].element.heading_change_deg)
+			_expect(errors, absf(swept - 180.0) <= 8.0, "immelmann reverses %.1f°, not 180" % swept)
+			_expect(errors, lowest_up < -0.9, "immelmann never inverts (lowest up.y %.3f)" % lowest_up)
+			_expect(errors, absf(pitch) <= 3.0, "immelmann exits pitched %.1f°" % pitch)
+			_expect(errors, peak_rate <= 120.0, "immelmann rolls at %.1f°/s" % peak_rate)
+			_expect(errors, route.ups[-1].y > 0.9, "immelmann exits upside down (up.y %.3f)" % route.ups[-1].y)
+		"cutback":
+			var reversal: float = absf(probe.group[0].element.heading_change_deg)
+			_expect(errors, absf(reversal - 180.0) <= 8.0, "cutback reverses %.1f°, not 180" % reversal)
+			_expect(errors, peak_bank >= 110.0, "cutback only reaches %.1f° of bank" % peak_bank)
+			_expect(errors, absf(exit_bank) <= 6.0, "cutback exits banked %.1f°" % exit_bank)
+			_expect(errors, frame <= 0.002, "cutback frames are not orthonormal (%.5f)" % frame)
+	return errors
+
+
+func _pitched_state(speed: float, pitch: float) -> Dictionary:
+	var state := _template_state(speed, 0.0)
+	var tangent := Vector3(0, sin(deg_to_rad(pitch)), -cos(deg_to_rad(pitch))).normalized()
+	state["tangent"] = tangent
+	state["up"] = (Vector3.UP - tangent * tangent.y).normalized()
+	return state
 
 
 func _expect(errors: PackedStringArray, condition: bool, message: String) -> void:

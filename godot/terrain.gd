@@ -2,28 +2,34 @@ class_name RideTerrain
 extends RefCounted
 
 ## Seeded analytic heightfield: a desert plain meeting one escarpment of ~300 m-class relief.
-## The plateau fills the half-plane past an edge line whose direction, position, and wobble are
-## seed-varied. Everything is a pure function of the params dictionary, so the same seed gives
-## bit-identical terrain and any caller (generator placement, clearance checks, meshes) shares
-## one height field.
+## The rise is two-part, like the real Tuwaiq-class escarpments: a gentle lower apron carrying
+## ~20% of the relief, then a near-vertical upper face carrying the rest — the cliff the dive
+## uses is deliberately smaller than the total elevation change. Everything is a pure function
+## of the params dictionary, so the same seed gives bit-identical terrain and any caller
+## (generator placement, clearance checks, meshes) shares one height field.
 
 
 static func generate(rng: RandomNumberGenerator) -> Dictionary:
 	var edge_angle := rng.randf_range(-0.35, 0.35)
+	var relief := rng.randf_range(285.0, 315.0)
+	var face_share := rng.randf_range(0.78, 0.85)
 	return {
-		"relief": rng.randf_range(285.0, 315.0),
+		"relief": relief,
+		"face_height": relief * face_share,
+		"apron_height": relief * (1.0 - face_share),
 		"edge_normal": Vector2(sin(edge_angle), -cos(edge_angle)),
 		"edge_offset": rng.randf_range(-40.0, 40.0),
-		"face_width": rng.randf_range(90.0, 140.0),
-		"wobble_amplitude": rng.randf_range(20.0, 45.0),
+		"apron_width": rng.randf_range(180.0, 280.0),
+		"face_width": rng.randf_range(38.0, 58.0),
+		"wobble_amplitude": rng.randf_range(14.0, 28.0),
 		"wobble_wavelength": rng.randf_range(420.0, 700.0),
 		"detail_amplitude": rng.randf_range(1.8, 3.2),
 		"noise_seed": rng.randi(),
 	}
 
 
-## Signed distance from the (wobbled) cliff base line: negative on the plain, positive toward
-## and beyond the face. The face spans [0, face_width].
+## Signed distance from the (wobbled) apron base line: negative on the plain, positive toward
+## the plateau. The apron spans [0, apron_width], the steep face the next face_width beyond it.
 static func edge_distance(terrain: Dictionary, x: float, z: float) -> float:
 	var normal: Vector2 = terrain.edge_normal
 	var along := Vector2(-normal.y, normal.x).dot(Vector2(x, z))
@@ -35,12 +41,15 @@ static func edge_distance(terrain: Dictionary, x: float, z: float) -> float:
 
 static func height(terrain: Dictionary, x: float, z: float) -> float:
 	var s := edge_distance(terrain, x, z)
-	var face: float = terrain.relief * _smoothstep01(s / terrain.face_width)
+	var apron: float = terrain.apron_height * _smoothstep01(s / terrain.apron_width)
+	var face: float = terrain.face_height * _smoothstep01(
+		(s - terrain.apron_width) / terrain.face_width
+	)
 	var detail: float = terrain.detail_amplitude * (
 		_value_noise(x / 71.0, z / 71.0, terrain.noise_seed + 1)
 		+ 0.4 * _value_noise(x / 23.0, z / 23.0, terrain.noise_seed + 2)
 	)
-	return face + detail
+	return apron + face + detail
 
 
 static func _smoothstep01(x: float) -> float:

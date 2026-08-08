@@ -848,17 +848,45 @@ static func author_wave_turn(route: Dictionary, state: Dictionary, p: Dictionary
 ## Vertical teardrop loop. Length alone cannot hold both closure and a height, so the length closes
 ## on a full 360° of in-plane rotation and the sustained g closes on the height: raising the g
 ## tightens the top, which is exactly what makes the shape a teardrop rather than a circle.
+## Flown perfectly planar the two legs cross — measured, they pass 0.6 to 1.4 m apart for any height
+## in band at act-one speeds — so an optional lateral profile threads through the shape and walks
+## the exit leg sideways off the entry leg. That offset is what a real loop's legs are built with,
+## and it makes this one a slightly helical teardrop rather than a flat one.
+##
+## The profile has to reverse at the top, and that is not a stylistic choice. Lateral support acts
+## along `right`, which a loop holds very nearly fixed in world space, but the rotation it induces
+## is about the rider's own up — and that inverts through the loop. Measured: a lateral held one way
+## throughout bulges the shape 3 m to the side at the middle and brings it back to 0.8 m of the
+## entry leg at the exit, because the crossing legs are displaced by the same amount in the same
+## direction. Reversed at the top, the same amplitude separates them: at 0.5 g the legs stand 4 to
+## 5 m apart, against 0.7 m planar.
 static func author_loop(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
 	var height: float = p.height
+	var lateral: float = p.get("lateral_g", 0.0)
+	var lateral_keys: Array = _flat(0.0)
+	if not is_zero_approx(lateral):
+		lateral_keys = [
+			Vector2(0, 0), Vector2(0.15, lateral), Vector2(0.35, lateral), Vector2(0.5, 0),
+			Vector2(0.65, -lateral), Vector2(0.85, -lateral), Vector2(1, 0),
+		]
 	var first: int = route.positions.size()
 	var entry_height: float = state.position.y
 	var entry_tangent: Vector3 = state.tangent
 	var heading := Vector2(entry_tangent.x, entry_tangent.z).normalized()
 	var shape := {"length": maxf(3.2 * height, 40.0)}
+	## Equal lateral lobes do not leave the frame level: measured, the loop exits fifteen to twenty
+	## degrees banked whatever their relative size, because the rotation the lateral induces runs
+	## about the rider's own up and that inverts halfway through. Handed to the short correction turn
+	## behind it, that bank is what the turn snaps out at 150°/s. So the loop takes its own tilt back
+	## out over the descending leg, at an amplitude measured rather than derived.
+	var roll := {"rate": 0.0}
 	var build := func(length: float, peak: float) -> Dictionary:
 		return fvd_section("loop", length, [
 			Vector2(0, 1), Vector2(0.2, peak), Vector2(0.75, peak), Vector2(1, 1),
-		], _flat(0.0), _flat(0.0))
+		], lateral_keys, [
+			Vector2(0, 0), Vector2(0.6, 0), Vector2(0.72, roll["rate"]),
+			Vector2(0.88, roll["rate"]), Vector2(1, 0),
+		])
 	var closure := func(trial_route: Dictionary, _trial_state: Dictionary) -> float:
 		return _plane_rotation_deg(trial_route, first, heading)
 	var height_of := func(trial_route: Dictionary, _trial_state: Dictionary) -> float:
@@ -873,6 +901,27 @@ static func author_loop(route: Dictionary, state: Dictionary, p: Dictionary) -> 
 	var peak := solve_scalar(
 		route, state, factory, height_of, height, p.peak_g, p.peak_g * 1.12, maxf(0.5, height * 0.01)
 	)
+	## Exit bank is near enough affine in the roll amplitude, so a short secant lands it. This runs
+	## after the two shape knobs and does not disturb them — the roll only starts once the descending
+	## leg is under way, by which point the height and the closure are already spent.
+	if not is_zero_approx(lateral):
+		var exit_bank_at := func(rate: float) -> float:
+			roll["rate"] = rate
+			return _trial(route, state, build.call(shape["length"], peak)).route.banks[-1]
+		var low := 0.0
+		var low_bank: float = exit_bank_at.call(low)
+		var high: float = -low_bank * 0.4
+		for _iteration in 4:
+			var high_bank: float = exit_bank_at.call(high)
+			if absf(high_bank) <= 0.5:
+				break
+			var slope := (high_bank - low_bank) / (high - low)
+			if absf(slope) < 0.000001:
+				break
+			low = high
+			low_bank = high_bank
+			high -= high_bank / slope
+		roll["rate"] = high
 	var solved: Dictionary = factory.call(peak)
 	var final := _trial(route, state, solved)
 	var apex := _apex_index(final.route, first)
@@ -881,11 +930,32 @@ static func author_loop(route: Dictionary, state: Dictionary, p: Dictionary) -> 
 		"height": final.route.positions[apex].y - entry_height,
 		"target_height": height,
 		"peak_g": peak,
+		"lateral_g": lateral,
+		"roll_rate_deg_s": roll["rate"],
+		"exit_bank_deg": final.route.banks[-1],
 		"rotation_deg": _plane_rotation_deg(final.route, first, heading),
 		"closure": final.state.tangent.dot(entry_tangent),
 		"apex_curvature": final.route.curvatures[apex].length(),
+		"leg_separation": _leg_separation(final.route, first),
 	}
 	return [solved]
+
+
+## Closest the entry leg and the exit leg come to each other. The outer fifteen per cent at each
+## end is the shared valley — the same track by construction — so the measure reads the first and
+## last thirds inside that, which is where a planar teardrop crosses itself.
+static func _leg_separation(route: Dictionary, first: int) -> float:
+	var last: int = route.positions.size() - 1
+	var count := last - first + 1
+	if count < 12:
+		return 0.0
+	var margin := floori(count * 0.15)
+	var third := floori(count / 3.0)
+	var best := INF
+	for i in range(first + margin, first + third):
+		for j in range(last - third, last - margin + 1):
+			best = minf(best, route.positions[i].distance_to(route.positions[j]))
+	return best
 
 
 ## Half loop to inverted level flight, a lazy half roll back upright, and a pullout if the roll

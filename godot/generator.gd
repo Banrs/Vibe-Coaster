@@ -33,8 +33,15 @@ const CUTBACK_MAX_LENGTH := 500.0
 const CUTBACK_HEADING_TOLERANCE := 12.0
 const CUTBACK_MAX_SPEED := 46.0
 ## How tall a loop this ride is willing to call a loop. Outside it the shape is out of scale for the
-## beat, and the act rotates past it rather than flying something else under its name.
-const LOOP_BAND := Vector2(58.0, 78.0)
+## beat, and the act rotates past it rather than flying something else under its name. The band is
+## the ladder's, not the old provisional one: act one is entered forty-odd metres a second now, and
+## a loop sized off that speed at the 3.5 g ceiling lands here.
+const LOOP_BAND := Vector2(52.0, 68.0)
+## Corridor the beats on the run home need at the eighty metres a second it is flown at. The marquee
+## is an overbank or a wave turn; the aim allowance is one correction turn, which costs about 350 m
+## per fifty degrees at that speed. A pullout-and-hill pair is trialled rather than estimated.
+const RETURN_MARQUEE_ROOM := 500.0
+const RETURN_AIM_ROOM := 350.0
 
 ## What each element is for, what it may not share with another headline beat, and which act it is
 ## allowed to appear in. Pure data — nothing in this file reads it. It is the seam a configurable
@@ -69,7 +76,7 @@ const REGISTRY := {
 	"wave_turn": {
 		"size_class": "reference",
 		"signature": "airtime crest on edge",
-		"slots": ["low"],
+		"slots": ["low", "return"],
 	},
 	"turn": {
 		"size_class": "reference",
@@ -94,7 +101,25 @@ const REGISTRY := {
 	"dive": {
 		"size_class": "marquee",
 		"signature": "vertical cliff face drop",
-		"slots": ["cliff"],
+		"slots": ["cliff", "payback"],
+	},
+	## The grammar between the beats. Nothing selects these — a template emits them to hand the next
+	## element the attitude it needs — but they are flown, so they are listed: the check is that
+	## every kind on the built ride is a kind this table knows.
+	"pushover": {
+		"size_class": "grammar",
+		"signature": "crest onto free-fall support",
+		"slots": ["any"],
+	},
+	"fall": {
+		"size_class": "grammar",
+		"signature": "straight held attitude",
+		"slots": ["any"],
+	},
+	"pullout": {
+		"size_class": "grammar",
+		"signature": "sustained-g arc to an attitude",
+		"slots": ["any"],
 	},
 }
 
@@ -129,7 +154,7 @@ static func build(seed_value: int) -> Dictionary:
 	_cliff_climb(layout, plan, route, state, sections)
 	_clifftop(layout, plan, route, state, sections)
 	_dive_and_tunnel(layout, plan, route, state, sections, tunnel)
-	_camelback(plan, route, state, sections)
+	_camelback(layout, plan, route, state, sections)
 	_return_run(layout, plan, route, state, sections, station_position, station_tangent)
 	RideElements.append_closure(route, state, sections, station_position, station_tangent, STATION_SPEED)
 	RideElements.measure_roll_rates(route)
@@ -163,8 +188,10 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 	plan["lift_speed"] = rng.randf_range(15.5, 16.5)
 	## Height the crest stands at. Everything downstream of the twisted drop is bought with it: the
 	## drop to the plain is crest − drop_bottom_height, and the valley speed that sizes the loop and
-	## the Immelmann is the square root of twice g times that.
-	plan["lift_crest_height"] = rng.randf_range(156.0, 162.0)
+	## the Immelmann is the square root of twice g times that. The ladder sets it, not the other way
+	## round — act one is entered at the speed the two inversions are both in scale at, and a crest
+	## chosen for the drop alone puts the Immelmann's apex out past anything that has been built.
+	plan["lift_crest_height"] = rng.randf_range(122.0, 132.0)
 	plan["drop_bottom_height"] = rng.randf_range(18.0, 22.0)
 	plan["drop_pitch_deg"] = -rng.randf_range(44.0, 54.0)
 	plan["drop_bank_deg"] = rng.randf_range(40.0, 48.0)
@@ -182,7 +209,15 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 	## Jog between the two inversions so the second is not flown down the first's own corridor.
 	plan["dogleg"] = rng.randf_range(-20.0, 20.0)
 	plan["immelmann"] = {"peak_g": rng.randf_range(3.6, 4.0)}
-	plan["loop"] = {"height": rng.randf_range(60.0, 72.0), "peak_g": rng.randf_range(4.0, 4.4)}
+	## lateral_g is what stops the two legs crossing: threaded through the shape it walks the exit leg
+	## off the entry leg, which is the offset a real loop's legs are built with. The amplitude is set
+	## by what the clearance check reads — measured, leg separation runs about 13 m per g of it, so
+	## this band is the four metres the corridor wants with margin to spare.
+	plan["loop"] = {
+		"height": rng.randf_range(56.0, 66.0),
+		"peak_g": rng.randf_range(4.0, 4.4),
+		"lateral_g": rng.randf_range(0.35, 0.45),
+	}
 	## An Immelmann is half a loop: it exits level but ninety metres up and twenty metres a second
 	## slower, and nothing downstream of it works from there. The act gives that altitude back as a
 	## drop, which is also what puts the airtime hills back at the speed they are sized for. The
@@ -267,6 +302,12 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 	## The whole return run sits on this: a past-vertical overbank at 85 m/s drops thirty metres by
 	## construction, so the high-speed half of the ride has to leave the tunnel above that.
 	plan["tunnel_end_height"] = rng.randf_range(28.0, 32.0)
+	## The marquee corridor turns off the dive's line as soon as the tunnel ends. Run straight out,
+	## the camelback and the run home are the same corridor twice — the return leg retraces the
+	## outbound one and the whole second act reads as one line. Doglegged, the camelback runs
+	## diagonally across the plain and the run home comes back on the offset line beside it. The sign
+	## is fixed in the terrain frame, which is what makes the seed mirror flip it.
+	plan["post_tunnel_dogleg"] = rng.randf_range(35.0, 55.0)
 	## Apex above the valley the entry pullout was entered from, not the rise handed to author_hill:
 	## at 90 m/s the pullout alone climbs a hundred metres, so a rise target says nothing about how
 	## tall the structure ends up. The rise is solved from this once the pullout is integrated.
@@ -278,25 +319,47 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 		"exit_peak_g": rng.randf_range(4.6, 5.0),
 	}
 	plan["turnaround_bank_deg"] = rng.randf_range(65.0, 75.0)
+	## One marquee beat opens the run home, and which one is the seed's. Both parameter sets are
+	## drawn either way so the branch cannot shift the stream.
+	plan["return_marquee"] = "overbank" if rng.randf() < 0.5 else "wave_turn"
 	plan["overbank"] = {
 		"heading_change_deg": rng.randf_range(80.0, 100.0),
 		"bank_deg": rng.randf_range(88.0, 96.0),
 		"peak_g": rng.randf_range(2.4, 2.8),
 	}
-	## One pair. At 80 m/s a pullout and a hill are four hundred metres between them, and the return
-	## run has a turnaround, an overbank and a brake run to fit into the same corridor.
-	plan["return_pullout"] = {
-		"exit_pitch_deg": rng.randf_range(12.0, 18.0), "peak_g": rng.randf_range(3.0, 3.4),
+	plan["return_wave_entry"] = {
+		"exit_pitch_deg": rng.randf_range(14.0, 18.0), "peak_g": rng.randf_range(3.0, 3.4),
 	}
-	plan["return_hill"] = {"rise": rng.randf_range(10.0, 18.0), "crown_g": -rng.randf_range(0.5, 0.8)}
+	plan["return_wave"] = {
+		"rise": rng.randf_range(14.0, 22.0),
+		"crown_g": rng.randf_range(0.1, 0.3),
+		"peak_bank_deg": rng.randf_range(45.0, 55.0),
+		"lateral_g": rng.randf_range(0.5, 0.7),
+	}
+	## Two pairs. The run home was a marquee beat and then two and a half kilometres of nothing —
+	## a pacing failure, not a length saving. The length comes back off the post-tunnel dogleg and
+	## the shorter act one, so the beats stay.
+	var return_pullouts := []
+	var return_hills := []
+	for _i in 2:
+		return_pullouts.append({
+			"exit_pitch_deg": rng.randf_range(12.0, 18.0), "peak_g": rng.randf_range(3.0, 3.4),
+		})
+		return_hills.append({
+			"rise": rng.randf_range(10.0, 18.0), "crown_g": -rng.randf_range(0.5, 0.8),
+		})
+	plan["return_pullouts"] = return_pullouts
+	plan["return_hills"] = return_hills
 	plan["brake_length"] = rng.randf_range(220.0, 280.0)
 	plan["approach_lead"] = rng.randf_range(180.0, 220.0)
 	## What the assembly is aiming for, in the units the checks read. Written here rather than
 	## measured afterwards so a failure reads as a miss against an intention, not as a moved band.
 	plan["expectations"] = {
 		"camelback_structure": plan.camelback.structure,
-		"immelmann_apex": [88.0, 118.0],
+		"route_length": [7200.0, 9800.0],
+		"immelmann_apex": [75.0, 95.0],
 		"loop_height": [LOOP_BAND.x, LOOP_BAND.y],
+		"loop_leg_separation": 4.0,
 		"dive_steepest_pitch_deg": -88.0,
 		"cutback_slot": plan.cutback_slot,
 	}
@@ -411,6 +474,7 @@ static func _inversion_act(
 						RideElements.author_loop(route, state, {
 							"height": _loop_height(plan, state.speed),
 							"peak_g": plan.loop.peak_g,
+							"lateral_g": layout.turn_sign * plan.loop.lateral_g,
 						})
 					):
 						notes.append("loop rejected by the corridor at %.1f m/s" % state.speed)
@@ -430,8 +494,12 @@ static func _inversion_act(
 static func _settle_to_plain(
 	plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
 ) -> void:
+	## Eight metres, not twenty. A helical loop exits ten to twenty-four metres above the valley it
+	## left, and that height is exactly the four metres a second the next inversion is then missing:
+	## an Immelmann's apex is measured from its own entry, so altitude carried into it buys nothing
+	## and the speed it cost is the whole of what sizes the shape.
 	var owed: float = state.position.y - plan.drop_bottom_height
-	if owed < 20.0:
+	if owed < 8.0:
 		return
 	## The crest angle is solved from the height, not chosen. A pushover and the pullout that closes
 	## it each spend r·(1 − cos θ), and r is v² over half a g, so a pitch picked flat overshoots by
@@ -732,8 +800,20 @@ static func _dive_and_tunnel(
 ## hill has started, so what the ride is judged on is the apex above the valley it left, and the
 ## rise handed to author_hill is whatever is left of that once the pullout has been integrated.
 static func _camelback(
-	plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
+	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
 ) -> void:
+	## The dogleg off the dive's line. The tunnel leaves pointed straight out from the escarpment at
+	## -90°, and everything after it — the camelback, the turnaround, the run home — then lives on
+	## that one line, out and back. Turned here, the marquee corridor runs diagonally across the
+	## plain and the return leg comes home beside it rather than down it. It turns toward the
+	## station's own side: act one already marches the better part of two kilometres along the cliff,
+	## so the second act either walks that back or the brake run does, and the brake run is straight
+	## track that pays for it twice.
+	_align(
+		layout, route, state, sections,
+		-90.0 - plan.post_tunnel_dogleg, plan.turnaround_bank_deg, 3.0
+	)
+	_level(route, state, sections, plan.level_g)
 	var target: float = plan.camelback.structure
 	if state.speed < sqrt(2.0 * RideElements.G0 * target) + 4.0:
 		return
@@ -800,8 +880,9 @@ static func _camelback_structure(
 	return apex - valley
 
 
-## Home run: turn back toward the station, a past-vertical overbank, and return airtime. The final
-## heading points at a spot short of the station so the C4 closure has a straight approach.
+## Home run: turn back toward the station, one seeded marquee beat, and up to two pullout-and-hill
+## pairs of return airtime. The final heading points at a spot short of the station so the C4
+## closure has a straight approach, and every beat is gated on the corridor still left to it.
 static func _return_run(
 	layout: Dictionary,
 	plan: Dictionary,
@@ -829,14 +910,24 @@ static func _return_run(
 			}))
 		else:
 			_align(layout, route, state, sections, home, plan.turnaround_bank_deg)
-	## Past vertical at 83 m/s the support is gone for the whole element, and the roll-rate limit
-	## forces it to be long: ninety degrees of it is 480 m of track and eighty metres of descent.
-	## The corridor either has that height under it or the beat does not happen here.
-	_add_if_sound(layout, route, state, sections, RideElements.author_overbank(route, state, {
-		"heading_change_deg": layout.turn_sign * plan.overbank.heading_change_deg,
-		"bank_deg": plan.overbank.bank_deg,
-		"peak_g": plan.overbank.peak_g,
-	}))
+	## One marquee beat opens the run home. Past vertical at 83 m/s the support is gone for the whole
+	## element, and the roll-rate limit forces it to be long: ninety degrees of it is 480 m of track
+	## and eighty metres of descent. The corridor either has that height under it or the beat does
+	## not happen here — and on the seeds that draw the wave turn instead, the beat is an airtime
+	## crest flown on edge, which costs the corridor nothing but the hill.
+	if _return_room(plan, state, approach, RETURN_MARQUEE_ROOM):
+		if plan.return_marquee == "overbank":
+			_add_if_sound(layout, route, state, sections, RideElements.author_overbank(route, state, {
+				"heading_change_deg": layout.turn_sign * plan.overbank.heading_change_deg,
+				"bank_deg": plan.overbank.bank_deg,
+				"peak_g": plan.overbank.peak_g,
+			}))
+		else:
+			_return_wave(layout, plan, route, state, sections)
+	else:
+		plan["marquee_note"] = "%s skipped: %.0f m of corridor left" % [
+			plan.return_marquee, state.position.distance_to(approach)
+		]
 	## Every element here is hundreds of metres long at 80 m/s, so the run is kept pointed home
 	## between them: a corridor walked the wrong way costs a kilometre of turn to walk back. A turn
 	## carries whatever pitch it is handed, so each one is entered level or it flies the ride down.
@@ -844,10 +935,32 @@ static func _return_run(
 	## Aimed loosely between the beats and tightly only before the brake run. A correction turn at
 	## 84 m/s costs three hundred metres per ten degrees, and ten degrees of heading is something the
 	## next aim absorbs for nothing — so the run is pointed roughly home here and squared up later.
-	_align(layout, route, state, sections, _aim_heading(layout, state.position, approach), 60.0, 12.0)
-	_add(route, state, sections, RideElements.author_pullout(route, state, plan.return_pullout))
-	_add(route, state, sections, RideElements.author_hill(route, state, plan.return_hill))
-	_level(route, state, sections, plan.level_g)
+	var pairs := 0
+	for i in 2:
+		_align(
+			layout, route, state, sections,
+			_aim_heading(layout, state.position, approach), 60.0, 12.0
+		)
+		## The pair is trialled rather than estimated. Its length is whatever the templates solve for
+		## at the speed the run happens to be carrying, and what matters is not that length but the
+		## corridor it leaves: a beat that lands the train on top of the approach point turns the two
+		## tight pre-brake aims into kilometre-long turns chasing a point already behind it.
+		var pullout: Dictionary = RideElements.author_pullout(route, state, plan.return_pullouts[i])[0]
+		var crest: Dictionary = RideElements._trial(route, state, pullout)
+		var hill: Dictionary = RideElements.author_hill(crest.route, crest.state, plan.return_hills[i])[0]
+		var landed: Dictionary = RideElements._trial(crest.route, crest.state, hill)
+		var left: float = landed.state.position.distance_to(approach)
+		if left < RETURN_AIM_ROOM + plan.brake_length:
+			plan["return_note"] = "%d of 2 return pairs flown: pair %d would leave %.0f m, %.0f needed" % [
+				pairs, i + 1, left, RETURN_AIM_ROOM + plan.brake_length,
+			]
+			break
+		_add(route, state, sections, [pullout])
+		_add(route, state, sections, [hill])
+		_level(route, state, sections, plan.level_g)
+		pairs += 1
+	if pairs == 2:
+		plan["return_note"] = "2 of 2 return pairs flown"
 	## Aimed twice, and tightly: a turn at 75 m/s is hundreds of metres long, so the point it was
 	## aimed at has moved a long way behind the train by the time it comes out of the first one — and
 	## the brake run that follows is a kilometre and a half of straight track, so four degrees of
@@ -862,8 +975,13 @@ static func _return_run(
 	## element — grows past its own 8 % budget; run all the way onto the approach point, the same
 	## bezier has only the lead left to take out the heading it was handed, and a nine-control curve
 	## asked to turn inside its own handles folds into a cusp the lateral limit reads at seven g.
+	## It also never runs longer than the corridor actually has. Driven past the approach point the
+	## closure is a nine-control bezier asked to turn back inside its own handles, which it does as a
+	## cusp — measured on a seed whose return run came home 24 m short of the aim, ten g of lateral.
+	var run_home: float = state.position.distance_to(approach)
 	var brake_length: float = maxf(
-		state.position.distance_to(approach) - plan.approach_lead, plan.brake_length
+		clampf(plan.brake_length, 120.0, maxf(run_home - 60.0, 120.0)),
+		run_home - plan.approach_lead
 	)
 	var brake_pitch := rad_to_deg(asin(clampf(
 		(state.position.y - STATION_HEIGHT) / (RAMP_DELIVERY * brake_length), -0.35, 0.35
@@ -876,6 +994,47 @@ static func _return_run(
 		],
 		7.0
 	)])
+
+
+## Whether the run home still has corridor for a beat of this size. Everything on this run is
+## hundreds of metres long at eighty metres a second, so a beat flown without the room behind it
+## carries the train past the approach point — and from there the two tight pre-brake aims are
+## kilometre-long turns chasing a point already behind the train, and the C4 closure is a bezier
+## asked to turn back inside its own handles, which it does as a cusp at ten g of lateral. So each
+## beat is asked for its own length, one correction turn, and the whole brake run before it is
+## committed, and the run records what it dropped.
+static func _return_room(
+	plan: Dictionary, state: Dictionary, approach: Vector3, beat_room: float
+) -> bool:
+	return (
+		state.position.distance_to(approach)
+		>= beat_room + RETURN_AIM_ROOM + plan.brake_length
+	)
+
+
+## The wave turn's half of the return marquee: an airtime crest flown on edge. It has to be entered
+## climbing — handed level track its rise solve has nothing to work against — and the bank it can
+## hold is whatever the roll budget leaves once the rise has fixed its length.
+static func _return_wave(
+	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
+) -> void:
+	_add(route, state, sections, RideElements.author_pullout(route, state, {
+		"exit_pitch_deg": plan.return_wave_entry.exit_pitch_deg,
+		"peak_g": _peak_for(
+			state.speed, plan.return_wave_entry.exit_pitch_deg, plan.return_wave_entry.peak_g
+		),
+	}))
+	var span: float = 1.7 * plan.return_wave.rise / maxf(
+		sin(deg_to_rad(absf(RideElements.exit_pitch_deg(state)))), 0.15
+	)
+	_add(route, state, sections, RideElements.author_wave_turn(route, state, {
+		"rise": plan.return_wave.rise,
+		"crown_g": plan.return_wave.crown_g,
+		"peak_bank_deg": layout.turn_sign * minf(
+			plan.return_wave.peak_bank_deg, ROLL_BUDGET * 0.16 * span / state.speed
+		),
+		"lateral_g": plan.return_wave.lateral_g,
+	}))
 
 
 ## ------------------------------------------------------------------------------ assembly helpers

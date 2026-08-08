@@ -220,6 +220,13 @@ G-LOC floor; F2291's Gz is spine-parallel/body-frame, so seat recline re-project
 ### FINAL ENVELOPE (user decisions, 2026-08-08/09)
 > **≈ +8.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** — duration-structured
 > like F2291 (scale the curve shapes above, not flat plateaus).
+>
+> **Duration rule (explicit): the limit is a proportionally stretched F2291 curve, not a set
+> value.** Per axis: `limit(t) = stretch × F2291_limit(t)`, where `stretch` = envelope brief
+> peak ÷ F2291 brief peak (0.2–1 s value). E.g. +Gz stretch = 8.0/6.0 ≈ 1.33 → 8.0 g brief,
+> ~5.3 g at 2–4 s, ~4.0 g at 5–11.8 s, ~2.7 g beyond. Same construction for −Gz (vs −2.0),
+> ±Gy (vs ±3.0), ±Gx (vs +6.0/−2.0 base). The old checkpoint's flat per-duration tables in
+> ride_model.gd are the negative example — replace, don't scale, them.
 
 History: user first lowered +Gz 8.0 → 7.0 (2026-08-08) on the physiology findings, then
 restored **8.0** (2026-08-09) by adding a tech credit: **riders wear anti-G suits**. Grounding:

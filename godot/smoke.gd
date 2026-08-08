@@ -2,6 +2,7 @@ extends SceneTree
 
 const Coaster := preload("res://main.gd")
 const Model := preload("res://ride_model.gd")
+const Terrain := preload("res://terrain.gd")
 
 const DETERMINISTIC_FIELDS := [
 	"positions", "tangents", "ups", "rights", "curvatures", "banks", "speeds",
@@ -25,6 +26,7 @@ func _initialize() -> void:
 			errors.append(error)
 	if not _same_route(route, repeat):
 		errors.append("route generation is not deterministic")
+	errors.append_array(_terrain_errors())
 	var rails: ArrayMesh = Coaster.build_rail_mesh(route)
 	var terrain: ArrayMesh = Coaster.build_terrain_mesh(route)
 	var elapsed := Time.get_ticks_msec() - started
@@ -50,6 +52,37 @@ func _initialize() -> void:
 	for error in errors:
 		printerr(error)
 	quit(0 if errors.is_empty() else 1)
+
+
+func _terrain_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	for seed_value in [1, 7, 20260809]:
+		var first := _terrain_for_seed(seed_value)
+		var repeat := _terrain_for_seed(seed_value)
+		if first != repeat:
+			errors.append("terrain params are not deterministic for seed %d" % seed_value)
+			continue
+		var relief_reached := 0.0
+		for i in 400:
+			var x := float((i * 631) % 4001) - 2000.0
+			var z := float((i * 269) % 4001) - 2000.0
+			var h: float = Terrain.height(first, x, z)
+			var h_repeat: float = Terrain.height(repeat, x, z)
+			if h != h_repeat or not is_finite(h):
+				errors.append("terrain heights are not deterministic for seed %d" % seed_value)
+				break
+			relief_reached = maxf(relief_reached, h)
+		if relief_reached < first.relief * 0.95:
+			errors.append("seed %d terrain never reaches its plateau relief" % seed_value)
+		if absf(Terrain.height(first, 0.0, 0.0) - Terrain.height(repeat, 0.0, 0.0)) > 0.0:
+			errors.append("terrain origin height differs between identical seeds")
+	return errors
+
+
+func _terrain_for_seed(seed_value: int) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value
+	return Terrain.generate(rng)
 
 
 func _same_route(first: Dictionary, second: Dictionary) -> bool:

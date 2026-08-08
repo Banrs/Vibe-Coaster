@@ -1,5 +1,11 @@
 # Vibe-Coaster rewrite — near-future seeded coaster generator
 
+> **EXECUTED (2026-08-09): the rewrite this plan describes has been implemented — see the
+> repo root CLAUDE.md and README.md for what was built, and git history for how each
+> milestone landed. Where implementation measurements contradicted this plan's provisional
+> numbers (inversion act placement and sizes, total length, lift height), the measurements
+> won, per this plan's own working rule. Kept as design history.**
+
 *(Approved plan, 2026-08-08. This is a guidance document capturing intent — not an execution
 script, and NOTHING in it is fixed: every number and choice is provisional and expected to move
 with better research. Implementation happens in a NEW session on a NEW PC, starting from a

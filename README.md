@@ -1,49 +1,44 @@
-# Falcon Flightline
+# Vibe-Coaster
 
-> **This README describes the retired checkpoint and is pending rewrite. Current direction:
-> `docs/PLAN.md` + `docs/RESEARCH.md`.**
+A seed-based, one-shot roller-coaster generator in pure GDScript (Godot 4.7). Every seed is a
+complete, rideable, physically validated ride: a near-future (~2041) hybrid of Intamin's
+Falcon's Flight and B&M's Tormenta: Rampaging Run, on a seeded desert escarpment of ~300 m
+relief. Same seed, same ride — bit for bit.
 
-A deterministic, rideable Godot checkpoint inspired by the scale and pacing of Intamin's
-Falcon's Flight. The project opens directly into a moving seven-row train; route generation,
-analysis, rendering, and rider cameras are all native GDScript.
+This is an engineering-sim concept, not a survey reconstruction or a certified design.
+Physics, generation, and validation are the product; the visuals are a deliberately generic
+inspection layer (placeholder train, simple track and pillars).
 
-This is a frontier concept, not a survey reconstruction or a certified ride design. Its acceptance
-contract is:
+## What a seed contains
 
-- 5.4–5.6 km of track, centred on 5.5 km
-- 319–321 km/h top speed, 158–165 seconds elapsed, and at least 120 km/h elapsed average speed
-- signature geometry near 1.25× current records: about a 198 m main drop and 206 m camelback
-- three visible LSM zones, zero inversions, no helix, an outward-banked rim turn, and a distinct
-  non-inverting opening side-drop
-- a deliberately used frontier force envelope of +7.0/−2.5 vertical g, ±4.0 lateral g,
-  ±7.0 longitudinal g, 15 g/s onset, and 110°/s roll rate
+- Records chased honestly: ~340 km/h via a downhill tunnel launch, a ~250 m camelback
+  (structure above its valley), a ~90° cliff dive down ~0.8× the escarpment relief, a
+  75–95 m Immelmann (tallest-inversion class), a helical-leg vertical loop, a cutback,
+  9–10.5 km of track.
+- Falcon's Flight's skeleton — constant-speed LSM lift, twisted non-inverting side-drop,
+  terrain-hugging airtime, launched-then-decelerating cliff climb, crest crawl/hold, outward-
+  banked rim turn, monotonic 90° dive into a tunnel, high-speed return — with Tormenta's
+  inversion act grafted where its physics belongs (act one, at 42–50 m/s).
+- Exactly three LSM zones, no mid-course brake, one continuous energy arc after the tunnel
+  launch, and one deliberate slow beat (the crest hold).
+- A ~2041 human-load envelope: duration-stretched ASTM F2291 curves at +8.0/−3.0 Gz ·
+  ±4.7 Gy · +8.0/−6.0 Gx · 25 g/s onset · 120°/s roll (anti-G-suit and restraint-tech
+  credits — design fiction grounded in `docs/RESEARCH.md` §5).
 
-Thrill track—including high-speed banked turns—is force-vector designed. Geometry-driven sections
-are reserved for the station, lifts, launches, brakes, and the explicit station return. Smooth force
-and bank profiles plus the degree-nine return preserve C4 position continuity without hiding a
-late correction. See [the reference decisions](docs/REFERENCE.md) for the source interpretation and
-model boundary.
-
-The current validated build is 5.577 km in 163.8 seconds, peaks at 320.1 km/h, and averages
-122.6 km/h including the physical low-speed cliff holding-brake crawl. Its 198 m main drop and
-210.5 m camelback use train-averaged energy, and all seven rows remain inside the filtered frontier
-envelope while deliberately approaching its vertical, combined-axis, onset, and roll-rate limits.
+Every seed passes: frame orthonormality and C4 seam continuity, terrain and self clearance,
+per-row (7 rows) filtered envelope usage on the duration curves, push-pull, the 0.2 s
+reversal rule, pairwise combined-axis ellipses, onset and roll-rate limits, element-shape
+expectations (camelback structure, inversion heights, dive steepness), and determinism.
 
 ## Run
-
-Godot 4.7 or newer:
 
 ```sh
 godot --path godot
 ```
 
-Controls:
-
-- `C`: POV → chase → overview → fly camera
-- `1`–`7`: choose a row
-- `Space`: pause
-- `R`: restart
-- `[` / `]`: playback speed
+- `N`: generate a new seed (the HUD shows the current one)
+- `C`: POV → chase → overview → fly camera; `1`–`7`: choose a row
+- `Space`: pause · `R`: restart · `[` / `]`: playback speed
 - Fly camera: right mouse + mouse look, `WASD`, `Q/E`, Shift
 
 ## Verify
@@ -53,9 +48,9 @@ godot --headless --path godot --editor --quit
 godot --headless --path godot --script res://smoke.gd
 ```
 
-The smoke test builds the model twice to prove deterministic output, runs the model's geometry,
-continuity, pacing, and human-load validation, then constructs the rail and terrain meshes.
+The smoke gate self-tests the verification toolkit against synthetic signals, probes every
+element template against its closure contract, and builds multiple seeds twice — identical
+output, all checks green, on CI's ubuntu baseline as the performance floor.
 
-The force limits are a concept-design envelope informed by amusement-ride practice, not a claim of
-ASTM certification. Restraints, seats, suspension, structures, evacuation, and detailed vehicle
-dynamics are intentionally not modelled yet.
+Design history: `docs/PLAN.md` (the executed rewrite plan), `docs/RESEARCH.md` (fact-checks,
+POV analysis, envelope grounding), `docs/REFERENCE.md` (retired checkpoint rationale).

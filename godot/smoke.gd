@@ -3,20 +3,9 @@ extends SceneTree
 const Coaster := preload("res://main.gd")
 const Elements := preload("res://elements.gd")
 const Generator := preload("res://generator.gd")
-const Model := preload("res://ride_model.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
 
-const DETERMINISTIC_FIELDS := [
-	"positions", "tangents", "ups", "rights", "curvatures", "banks", "speeds",
-	"normal_g", "lateral_g", "longitudinal_g", "roll_rates", "distances", "times",
-	"section_indices", "lsm_ids",
-]
-const SECTION_FIELDS := [
-	"name", "kind", "length", "lsm", "start_index", "end_index", "start_distance",
-	"end_distance", "start_time", "end_time", "start_height", "end_height", "entry_speed",
-	"exit_speed",
-]
 const MINI_STATION := Vector3.ZERO
 ## Beats the pacing rule is about. Pullouts, pushovers, falls and correction turns are the grammar
 ## between them — a valley followed by a valley is how a ride is written, two hills in a row with
@@ -37,20 +26,18 @@ const LENGTH_CHECK := Vector2(9100.0, 10500.0)
 
 
 func _initialize() -> void:
-	var started := Time.get_ticks_msec()
-	var route: Dictionary = Model.build()
-	var repeat: Dictionary = Model.build()
-	var errors: PackedStringArray = Model.validate(route)
-	for error in Coaster.validate_route(route):
-		if not errors.has(error):
-			errors.append(error)
-	if not _same_route(route, repeat):
-		errors.append("route generation is not deterministic")
+	var errors := PackedStringArray()
 	errors.append_array(_terrain_errors())
 	errors.append_array(_verify_errors())
 	errors.append_array(_frame_core_errors())
 	errors.append_array(_template_errors())
 	errors.append_array(_rolled_template_errors())
+	errors.append_array(_generator_errors())
+	## What the viewer itself does on boot: one seeded build, the viewer's validation, its meshes.
+	var started := Time.get_ticks_msec()
+	var route: Dictionary = Generator.build(42)
+	var analysis: Dictionary = Verify.analyze(route, Elements.ROW_OFFSETS)
+	errors.append_array(Coaster.validate_route(route, analysis))
 	var rails: ArrayMesh = Coaster.build_rail_mesh(route)
 	var terrain: ArrayMesh = Coaster.build_terrain_mesh(route)
 	var elapsed := Time.get_ticks_msec() - started
@@ -60,19 +47,11 @@ func _initialize() -> void:
 		errors.append("terrain mesh is empty")
 	if floori(route.length / Coaster.TIE_SPACING) < 1000:
 		errors.append("track has too few visual speed cues")
-	if elapsed > 10_000:
-		errors.append("two model builds and meshes took %d ms" % elapsed)
-	errors.append_array(_generator_errors())
+	if elapsed > 15_000:
+		errors.append("the viewer build, validation and meshes took %d ms" % elapsed)
 	print(
-		"route: %.1f m, %.1f s, %d samples, %.1f km/h top, %.1f km/h average, %d ms"
-		% [
-			route.length,
-			route.duration,
-			route.positions.size(),
-			route.analysis.top_speed * 3.6,
-			route.analysis.average_speed * 3.6,
-			elapsed,
-		]
+		"seed 42 viewer route: %.1f m, %.1f s, %d samples, %.1f km/h top, %d ms"
+		% [route.length, route.duration, route.positions.size(), analysis.top_speed * 3.6, elapsed]
 	)
 	for error in errors:
 		printerr(error)
@@ -683,18 +662,3 @@ func _terrain_for_seed(seed_value: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_value
 	return Terrain.generate(rng)
-
-
-func _same_route(first: Dictionary, second: Dictionary) -> bool:
-	if first.length != second.length or first.duration != second.duration:
-		return false
-	for field in DETERMINISTIC_FIELDS:
-		if first[field] != second[field]:
-			return false
-	if first.sections.size() != second.sections.size():
-		return false
-	for i in first.sections.size():
-		for field in SECTION_FIELDS:
-			if first.sections[i][field] != second.sections[i][field]:
-				return false
-	return first.analysis == second.analysis

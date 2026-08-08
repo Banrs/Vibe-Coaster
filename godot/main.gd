@@ -1,14 +1,17 @@
 extends Node3D
 
-const Model := preload("res://ride_model.gd")
 const RAIL_DROP := 1.05
 const RAIL_GAUGE := 1.90
 const TIE_SPACING := 4.0
 const SUPPORT_SPACING := 32.0
-const ROW_OFFSETS := Model.ROW_OFFSETS
+const TUNNEL_SPACING := 12.0
+const DEFAULT_SEED := 42
+const ROW_OFFSETS := RideElements.ROW_OFFSETS
 const CAMERA_NAMES := ["POV", "Chase", "Overview", "Fly"]
 
 var route: Dictionary
+var analysis: Dictionary
+var seed_picker := RandomNumberGenerator.new()
 var ride_time := 0.0
 var playback_rate := 1.0
 var selected_row := 0
@@ -22,56 +25,44 @@ var overview_radius := 1200.0
 @onready var metrics: Label = $UI/Margin/Panel/Content/Metrics
 @onready var row_picker: OptionButton = $UI/Margin/Panel/Content/Selectors/Row
 @onready var rate_picker: OptionButton = $UI/Margin/Panel/Content/Selectors/Rate
+@onready var controls: Label = $UI/Margin/Panel/Content/Controls
 
 
 func _ready() -> void:
 	_configure_world()
 	_populate_controls()
-	route = build_route()
-	var errors := validate_route(route)
+	cameras = [$PovCamera, $ChaseCamera, $OverviewCamera, $FlyCamera]
+	_set_camera(0)
+	_rebuild(DEFAULT_SEED)
+
+
+## One seed is one ride: everything the viewer shows is rebuilt from the generator, synchronously.
+func _rebuild(seed_value: int) -> void:
+	_clear_world()
+	route = RideGenerator.build(seed_value)
+	analysis = RideVerify.analyze(route, ROW_OFFSETS)
+	ride_time = 0.0
+	var errors := validate_route(route, analysis)
 	if not errors.is_empty():
 		metrics.text = "ROUTE INVALID\n" + "\n".join(errors)
 		for error in errors:
 			push_error(error)
 		return
 	_build_world()
-	cameras = [$PovCamera, $ChaseCamera, $OverviewCamera, $FlyCamera]
-	_set_camera(0)
 	_update_ride(0.0)
 
 
-static func build_route() -> Dictionary:
-	return Model.build()
+func terrain_height(x: float, z: float) -> float:
+	return RideTerrain.height(route.terrain, x, z)
 
 
-static func terrain_height(x: float, z: float) -> float:
-	var mesa := (
-		222.0
-		* smoothstep(-180.0, -60.0, z)
-		* (1.0 - smoothstep(310.0, 500.0, z))
-		* smoothstep(-120.0, 50.0, x)
-		* (1.0 - smoothstep(300.0, 390.0, x))
-	)
-	var detail := 1.8 * sin(x * 0.014) + 1.6 * sin(z * 0.011) + 0.7 * sin((x + z) * 0.025)
-	return maxf(0.0, mesa) + detail
-
-
-static func validate_route(built: Dictionary) -> PackedStringArray:
-	var errors: PackedStringArray = Model.validate(built)
-	var minimum_clearance := INF
-	var minimum_index := 0
-	for i in built.positions.size():
-		var rail: Vector3 = built.positions[i] - built.ups[i] * RAIL_DROP
-		var clearance := rail.y - terrain_height(rail.x, rail.z)
-		if clearance < minimum_clearance:
-			minimum_clearance = clearance
-			minimum_index = i
-	if minimum_clearance < 2.0:
-		var nearest: Vector3 = built.positions[minimum_index]
-		errors.append(
-			"terrain intersects track near %s at (%.0f, %.0f): %.2f m minimum clearance"
-			% [built.sections[built.section_indices[minimum_index]].name, nearest.x, nearest.z, minimum_clearance]
-		)
+static func validate_route(built: Dictionary, built_analysis: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	RideVerify.validate_structure(built, errors)
+	RideVerify.validate_seams(built, errors)
+	RideVerify.validate_clearance(built, built.terrain, built.tunnel_sections, errors)
+	RideVerify.validate_self_clearance(built, errors)
+	RideVerify.validate_loads(built_analysis, errors)
 	if ROW_OFFSETS.size() != 7:
 		errors.append("viewer requires seven selectable rows")
 	return errors
@@ -114,6 +105,7 @@ static func build_rail_mesh(built: Dictionary) -> ArrayMesh:
 
 static func build_terrain_mesh(built: Dictionary) -> ArrayMesh:
 	const STEP := 22.5
+	var terrain: Dictionary = built.terrain
 	var bounds: AABB = built.bounds.grow(260.0)
 	var nx := ceili(bounds.size.x / STEP) + 1
 	var nz := ceili(bounds.size.z / STEP) + 1
@@ -125,12 +117,12 @@ static func build_terrain_mesh(built: Dictionary) -> ArrayMesh:
 		for x_index in nx:
 			var x: float = bounds.position.x + x_index * STEP
 			var z: float = bounds.position.z + z_index * STEP
-			var height := terrain_height(x, z)
+			var height: float = RideTerrain.height(terrain, x, z)
 			vertices.append(Vector3(x, height, z))
-			var dx := terrain_height(x + 1.0, z) - terrain_height(x - 1.0, z)
-			var dz := terrain_height(x, z + 1.0) - terrain_height(x, z - 1.0)
+			var dx: float = RideTerrain.height(terrain, x + 1.0, z) - RideTerrain.height(terrain, x - 1.0, z)
+			var dz: float = RideTerrain.height(terrain, x, z + 1.0) - RideTerrain.height(terrain, x, z - 1.0)
 			normals.append(Vector3(-dx * 0.5, 1.0, -dz * 0.5).normalized())
-			colors.append(Color("c7833f").lerp(Color("765038"), clampf(height / 230.0, 0, 1)))
+			colors.append(Color("c7833f").lerp(Color("765038"), clampf(height / terrain.relief, 0, 1)))
 	for z_index in nz - 1:
 		for x_index in nx - 1:
 			var a := z_index * nx + x_index
@@ -206,6 +198,20 @@ func _populate_controls() -> void:
 	rate_picker.select(1)
 	row_picker.item_selected.connect(_on_row_selected)
 	rate_picker.item_selected.connect(_on_rate_selected)
+	controls.text += "   ·   N seed"
+
+
+## Everything _build_world made, dropped before the next seed builds its own.
+func _clear_world() -> void:
+	train_rows = null
+	$Terrain.mesh = null
+	$Track/Rails.mesh = null
+	for node in [$Track/Ties, $Track/Supports, $Track/LSM1, $Track/LSM2, $Track/LSM3, $Train]:
+		node.multimesh = null
+	for parent in [$Scenery/Station, $Scenery/Tunnel]:
+		for child in parent.get_children():
+			parent.remove_child(child)
+			child.queue_free()
 
 
 func _build_world() -> void:
@@ -305,37 +311,44 @@ func _build_train() -> void:
 
 func _build_scenery() -> void:
 	var station := $Scenery/Station
-	var center: Vector3 = Model.STATION_POSITION + Vector3(0, -2.7, -21.0)
-	_add_box(station, Vector3(4.0, 0.6, 64.0), center + Vector3(-4.0, 0, 0), Color("b6a98f"))
-	_add_box(station, Vector3(4.0, 0.6, 64.0), center + Vector3(4.0, 0, 0), Color("b6a98f"))
-	_add_box(station, Vector3(14.0, 0.5, 60.0), center + Vector3(0, 9.2, 0), Color("e9e4d8"))
+	var forward: Vector3 = route.tangents[0]
+	forward.y = 0.0
+	forward = forward.normalized() if forward.length_squared() > 0.001 else Vector3.FORWARD
+	var right := forward.cross(Vector3.UP).normalized()
+	var station_basis := Basis(right, Vector3.UP, -forward)
+	var center: Vector3 = route.positions[0] + station_basis * Vector3(0, -2.7, -21.0)
+	_add_box(station, Vector3(4.0, 0.6, 64.0), center + station_basis * Vector3(-4.0, 0, 0), Color("b6a98f"), station_basis)
+	_add_box(station, Vector3(4.0, 0.6, 64.0), center + station_basis * Vector3(4.0, 0, 0), Color("b6a98f"), station_basis)
+	_add_box(station, Vector3(14.0, 0.5, 60.0), center + station_basis * Vector3(0, 9.2, 0), Color("e9e4d8"), station_basis)
 	for z_offset in [-27.0, 0.0, 27.0]:
 		for x_offset in [-6.0, 6.0]:
-			_add_box(station, Vector3(0.55, 9.0, 0.55), center + Vector3(x_offset, 4.5, z_offset), Color("d8d1c4"))
+			_add_box(station, Vector3(0.55, 9.0, 0.55), center + station_basis * Vector3(x_offset, 4.5, z_offset), Color("d8d1c4"), station_basis)
 	_build_tunnel()
 
 
+## Crude rock boxes following the track frame through whichever sections the generator buried.
 func _build_tunnel() -> void:
-	var tunnel: Dictionary = _section_named("Tunnel · downhill LSM 3")
-	var a: Vector3 = route.positions[tunnel.start_index]
-	var b: Vector3 = route.positions[tunnel.end_index]
-	var forward := (b - a).normalized()
-	var right := forward.cross(Vector3.UP).normalized()
-	var up := right.cross(forward).normalized()
-	var tunnel_basis := Basis(right, up, -forward)
-	var middle := a.lerp(b, 0.5)
-	var length := a.distance_to(b)
 	var rock := Color("5c4638")
-	_add_box($Scenery/Tunnel, Vector3(0.7, 6.2, length), middle - right * 3.25 + up, rock, tunnel_basis)
-	_add_box($Scenery/Tunnel, Vector3(0.7, 6.2, length), middle + right * 3.25 + up, rock, tunnel_basis)
-	_add_box($Scenery/Tunnel, Vector3(7.2, 0.7, length), middle + up * 4.0, rock, tunnel_basis)
-
-
-func _section_named(section_name: String) -> Dictionary:
-	for section in route.sections:
-		if section.name == section_name:
-			return section
-	return {}
+	for index in route.tunnel_sections:
+		var section: Dictionary = route.sections[index]
+		var start: int = section.start_index
+		var end: int = section.end_index
+		var spacing: float = route.distances[start + 1] - route.distances[start]
+		var step := maxi(1, roundi(TUNNEL_SPACING / maxf(spacing, 0.1)))
+		var i := start
+		while i < end:
+			var next := mini(i + step, end)
+			var a: Vector3 = route.positions[i]
+			var b: Vector3 = route.positions[next]
+			var length := a.distance_to(b)
+			var up: Vector3 = route.ups[i]
+			var right: Vector3 = route.rights[i]
+			var box_basis := Basis(right, up, -route.tangents[i])
+			var middle := a.lerp(b, 0.5)
+			_add_box($Scenery/Tunnel, Vector3(0.7, 6.2, length), middle - right * 3.25 + up, rock, box_basis)
+			_add_box($Scenery/Tunnel, Vector3(0.7, 6.2, length), middle + right * 3.25 + up, rock, box_basis)
+			_add_box($Scenery/Tunnel, Vector3(7.2, 0.7, length), middle + up * 4.0, rock, box_basis)
+			i = next
 
 
 func _process(delta: float) -> void:
@@ -358,11 +371,11 @@ func _update_ride(delta: float) -> void:
 	var row_distance: float = front_distance - ROW_OFFSETS[selected_row]
 	var row_pose := pose_at_distance(route, row_distance)
 	var row_sample := _lower_index(route.distances, fposmod(row_distance, float(route.length)))
-	var force: Dictionary = Model.row_forces_at(
+	var force: Dictionary = RideVerify.row_forces_at(
 		route, front_distance, speed, ROW_OFFSETS[selected_row]
 	)
 	$PovCamera.global_transform = Transform3D(row_pose.basis, row_pose.origin + row_pose.basis.y * 0.35)
-	$PovCamera.fov = lerpf(72.0, 90.0, clampf(speed / Model.TARGET_TOP_SPEED, 0, 1))
+	$PovCamera.fov = lerpf(72.0, 90.0, clampf(speed / analysis.top_speed, 0, 1))
 	var chase_target := front_pose.origin + front_pose.basis.z * 24.0 + Vector3.UP * 10.0
 	$ChaseCamera.global_position = chase_target if delta <= 0.0 else $ChaseCamera.global_position.lerp(
 		chase_target, 1.0 - exp(-4.0 * delta)
@@ -377,16 +390,16 @@ func _update_ride(delta: float) -> void:
 	$OverviewCamera.look_at(overview_center, Vector3.UP)
 	var section: Dictionary = route.sections[route.section_indices[row_sample]]
 	var altitude := row_pose.origin.y - terrain_height(row_pose.origin.x, row_pose.origin.z)
-	var analysis: Dictionary = route.analysis
 	var row_analysis: Dictionary = analysis.rows[selected_row]
+	var element_kind: String = section.get("element", {}).get("kind", "")
 	metrics.text = (
-		"%s  ·  %s\n" % [section.name, section.kind]
+		"Seed %d  ·  %s  ·  %s\n" % [route.seed, section.name, element_kind if not element_kind.is_empty() else section.kind]
 		+ "%.0f km/h  ·  %.0f m AGL  ·  Row %d  ·  Bank %+.0f°  ·  Roll %+.0f°/s\n"
 		% [speed * 3.6, altitude, selected_row + 1, route.banks[row_sample], force.roll_rate]
 		+ "Gz %+.2f  ·  Gy %+.2f  ·  Gx %+.2f  ·  envelope +%.0f%% / −%.0f%%\n"
 		% [force.normal, force.lateral, force.longitudinal, row_analysis.positive_envelope.usage * 100.0, row_analysis.negative_envelope.usage * 100.0]
-		+ "%.2f km  ·  %.0f s  ·  avg %.0f km/h  ·  %s%s"
-		% [route.length / 1000.0, route.duration, analysis.average_speed * 3.6, CAMERA_NAMES[camera_index], "  ·  PAUSED" if paused else ""]
+		+ "%.2f km  ·  %.0f s  ·  avg %.0f km/h  ·  top %.0f km/h  ·  %s%s"
+		% [route.length / 1000.0, route.duration, analysis.average_speed * 3.6, analysis.top_speed * 3.6, CAMERA_NAMES[camera_index], "  ·  PAUSED" if paused else ""]
 	)
 
 
@@ -400,6 +413,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			paused = not paused
 		KEY_R:
 			ride_time = 0.0
+		KEY_N:
+			_rebuild(seed_picker.randi_range(1, 1_000_000_000))
 		KEY_BRACKETLEFT:
 			_set_rate(maxf(0.5, playback_rate * 0.5))
 		KEY_BRACKETRIGHT:

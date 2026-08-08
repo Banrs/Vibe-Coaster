@@ -1,8 +1,19 @@
 extends Camera3D
-## Free-fly camera: hold right mouse to look, WASD moves, Q/E down/up,
-## Shift is fast.
 
 var looking := false
+var yaw := 0.0
+var pitch := 0.0
+
+
+func adopt(source: Transform3D) -> void:
+	global_transform = source
+	yaw = rotation.y
+	pitch = rotation.x
+
+
+func release_look() -> void:
+	looking = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -12,8 +23,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		looking = event.pressed
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if looking else Input.MOUSE_MODE_VISIBLE
 	elif event is InputEventMouseMotion and looking:
-		rotate_y(-event.relative.x * 0.003)
-		rotate_object_local(Vector3.RIGHT, -event.relative.y * 0.003)
+		yaw -= event.relative.x * 0.003
+		pitch = clampf(pitch - event.relative.y * 0.003, -1.5, 1.5)
+		rotation = Vector3(pitch, yaw, 0)
 
 
 func _process(delta: float) -> void:
@@ -33,5 +45,5 @@ func _process(delta: float) -> void:
 	if Input.is_key_pressed(KEY_E):
 		direction += Vector3.UP
 	if direction != Vector3.ZERO:
-		var speed := 400.0 if Input.is_key_pressed(KEY_SHIFT) else 80.0
+		var speed := 260.0 if Input.is_key_pressed(KEY_SHIFT) else 70.0
 		global_position += direction.normalized() * speed * delta

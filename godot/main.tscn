@@ -1,52 +1,106 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
-[ext_resource type="Script" path="res://main.gd" id="1"]
-[ext_resource type="Script" path="res://fly_camera.gd" id="2"]
+[ext_resource type="Script" path="res://main.gd" id="1_main"]
+[ext_resource type="Script" path="res://fly_camera.gd" id="2_fly"]
+
+[sub_resource type="StyleBoxFlat" id="Panel"]
+bg_color = Color(0.035, 0.055, 0.075, 0.88)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.25, 0.75, 0.9, 0.55)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
 
 [node name="Main" type="Node3D"]
-script = ExtResource("1")
+script = ExtResource("1_main")
+
+[node name="World" type="WorldEnvironment" parent="."]
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
+directional_shadow_max_distance = 2600.0
 
 [node name="Terrain" type="MeshInstance3D" parent="."]
 
-[node name="Ground" type="MeshInstance3D" parent="."]
+[node name="Track" type="Node3D" parent="."]
 
-[node name="Track" type="MeshInstance3D" parent="."]
+[node name="Rails" type="MeshInstance3D" parent="Track"]
 
-[node name="Ties" type="MeshInstance3D" parent="."]
+[node name="Ties" type="MultiMeshInstance3D" parent="Track"]
 
-[node name="Train" type="MeshInstance3D" parent="."]
+[node name="Supports" type="MultiMeshInstance3D" parent="Track"]
+
+[node name="LSM1" type="MultiMeshInstance3D" parent="Track"]
+
+[node name="LSM2" type="MultiMeshInstance3D" parent="Track"]
+
+[node name="LSM3" type="MultiMeshInstance3D" parent="Track"]
+
+[node name="Scenery" type="Node3D" parent="."]
+
+[node name="Station" type="Node3D" parent="Scenery"]
+
+[node name="Tunnel" type="Node3D" parent="Scenery"]
+
+[node name="Train" type="MultiMeshInstance3D" parent="."]
+layers = 2
 
 [node name="PovCamera" type="Camera3D" parent="."]
-far = 12000.0
+cull_mask = 1
+near = 0.08
+far = 5000.0
 current = true
 
 [node name="ChaseCamera" type="Camera3D" parent="."]
-far = 12000.0
+near = 0.1
+far = 5000.0
+
+[node name="OverviewCamera" type="Camera3D" parent="."]
+near = 0.2
+far = 5000.0
 
 [node name="FlyCamera" type="Camera3D" parent="."]
-far = 12000.0
-script = ExtResource("2")
+near = 0.1
+far = 5000.0
+script = ExtResource("2_fly")
 
 [node name="UI" type="CanvasLayer" parent="."]
 
-[node name="GenerateButton" type="Button" parent="UI"]
-offset_left = 10.0
-offset_top = 10.0
-offset_right = 120.0
-offset_bottom = 42.0
-text = "Generate"
+[node name="Margin" type="MarginContainer" parent="UI"]
+offset_left = 18.0
+offset_top = 18.0
+offset_right = 620.0
+offset_bottom = 230.0
 
-[node name="Status" type="Label" parent="UI"]
-offset_left = 130.0
-offset_top = 14.0
-offset_right = 1100.0
-offset_bottom = 38.0
-text = "press Generate — the solve takes a moment"
+[node name="Panel" type="PanelContainer" parent="UI/Margin"]
+theme_override_styles/panel = SubResource("Panel")
 
-[node name="Debug" type="Label" parent="UI"]
-offset_left = 10.0
-offset_top = 52.0
-offset_right = 560.0
-offset_bottom = 300.0
+[node name="Content" type="VBoxContainer" parent="UI/Margin/Panel"]
+theme_override_constants/separation = 8
+
+[node name="Title" type="Label" parent="UI/Margin/Panel/Content"]
+theme_override_colors/font_color = Color(0.42, 0.9, 1, 1)
+theme_override_font_sizes/font_size = 22
+text = "FALCON FLIGHTLINE · FRONTIER 320"
+
+[node name="Metrics" type="Label" parent="UI/Margin/Panel/Content"]
+custom_minimum_size = Vector2(570, 86)
+theme_override_colors/font_color = Color(0.93, 0.96, 0.98, 1)
+theme_override_font_sizes/font_size = 15
+text = "Building deterministic route…"
+
+[node name="Selectors" type="HBoxContainer" parent="UI/Margin/Panel/Content"]
+theme_override_constants/separation = 8
+
+[node name="Row" type="OptionButton" parent="UI/Margin/Panel/Content/Selectors"]
+custom_minimum_size = Vector2(165, 34)
+
+[node name="Rate" type="OptionButton" parent="UI/Margin/Panel/Content/Selectors"]
+custom_minimum_size = Vector2(90, 34)
+
+[node name="Controls" type="Label" parent="UI/Margin/Panel/Content"]
+theme_override_colors/font_color = Color(0.68, 0.76, 0.8, 1)
+text = "C camera   ·   1–7 row   ·   Space pause   ·   R restart   ·   [ ] speed"

@@ -1,5 +1,6 @@
-/target
 .DS_Store
-/out
-/godot/.godot
-graphify-out/
+godot/.godot/
+*.log
+/out/
+/target/
+/graphify-out/

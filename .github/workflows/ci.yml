@@ -5,40 +5,19 @@ on:
     branches: [main]
   pull_request:
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-  RUSTDOCFLAGS: -D warnings
-
 jobs:
-  check:
+  godot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: chickensoft-games/setup-godot@v2
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Format
-        run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test --workspace --all-features
-      - name: Docs
-        run: cargo doc --workspace --no-deps
-
-  # Links the GDExtension cdylib on the other desktop platforms — the one
-  # thing the check job's clippy pass does not prove. No Godot needed: the
-  # godot crate compiles against a prebuilt API.
-  extension:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build extension
-        run: cargo build -p vc-godot --release
+          version: 4.7.1
+          use-dotnet: false
+          include-templates: false
+      - name: Import project
+        run: godot --headless --path godot --editor --quit
+      - name: Validate ride and meshes
+        run: godot --headless --path godot --script res://smoke.gd
+      - name: Exercise viewer runtime
+        run: godot --headless --path godot --quit-after 120

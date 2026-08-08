@@ -1,187 +1,482 @@
 extends Node3D
-## The rideable checkpoint: generate in-engine, then ride what came out.
-## All scene construction lives here; the extension hands over arrays only.
 
-const BASE_FOV := 75.0
-const TRAIN_SIZE := Vector3(3.0, 2.2, 12.0)
+const Model := preload("res://ride_model.gd")
+const RAIL_DROP := 1.05
+const RAIL_GAUGE := 1.90
+const TIE_SPACING := 4.0
+const SUPPORT_SPACING := 32.0
+const ROW_OFFSETS := Model.ROW_OFFSETS
+const CAMERA_NAMES := ["POV", "Chase", "Overview", "Fly"]
 
-var times: PackedFloat32Array
-var positions: PackedVector3Array
-var tangents: PackedVector3Array
-var ups: PackedVector3Array
-var speeds: PackedFloat32Array
-var dists: PackedFloat32Array
-var gn: PackedFloat32Array
-var gl: PackedFloat32Array
-var gx: PackedFloat32Array
-var element_index: PackedInt32Array
-var element_names: PackedStringArray
-var element_top: PackedFloat32Array
-var element_bottom: PackedFloat32Array
-var duration := 0.0
-var total_length := 0.0
-var max_speed := 0.0
-var base_y := 0.0
-var span := 0.0
-var t := 0.0
-var riding := false
-var generator: RideGenerator
+var route: Dictionary
+var ride_time := 0.0
+var playback_rate := 1.0
+var selected_row := 0
+var camera_index := 0
+var paused := false
+var train_rows: MultiMesh
+var cameras: Array[Camera3D]
+var overview_center := Vector3.ZERO
+var overview_radius := 1200.0
 
-@onready var cameras: Array[Camera3D] = [$PovCamera, $ChaseCamera, $FlyCamera]
+@onready var metrics: Label = $UI/Margin/Panel/Content/Metrics
+@onready var row_picker: OptionButton = $UI/Margin/Panel/Content/Selectors/Row
+@onready var rate_picker: OptionButton = $UI/Margin/Panel/Content/Selectors/Rate
 
 
 func _ready() -> void:
-	$Sun.rotation_degrees = Vector3(-55, 30, 0)
-	$UI/GenerateButton.pressed.connect(_on_generate)
-	var box := BoxMesh.new()
-	box.size = TRAIN_SIZE
-	box.material = _material(Color(0.15, 0.15, 0.2))
-	$Train.mesh = box
-	$Train.visible = false
+	_configure_world()
+	_populate_controls()
+	route = build_route()
+	var errors := validate_route(route)
+	if not errors.is_empty():
+		metrics.text = "ROUTE INVALID\n" + "\n".join(errors)
+		for error in errors:
+			push_error(error)
+		return
+	_build_world()
+	cameras = [$PovCamera, $ChaseCamera, $OverviewCamera, $FlyCamera]
+	_set_camera(0)
+	_update_ride(0.0)
 
 
-func _on_generate() -> void:
-	# The solve runs a minute or more. The extension carries it on a Rust
-	# thread — engine calls stay on this one — and poll() collects it.
-	$UI/Status.text = "solving… (takes a minute or two)"
-	$UI/GenerateButton.disabled = true
-	generator = RideGenerator.new()
-	generator.start()
+static func build_route() -> Dictionary:
+	return Model.build()
 
 
-func _apply(ride: Dictionary) -> void:
-	positions = ride.positions
-	tangents = ride.tangents
-	ups = ride.ups
-	times = ride.times
-	speeds = ride.speeds
-	dists = ride.dists
-	total_length = ride.length
-	gn = ride.gn
-	gl = ride.gl
-	gx = ride.gx
-	element_index = ride.element_index
-	element_names = ride.element_names
-	element_top = ride.element_top
-	element_bottom = ride.element_bottom
-	duration = ride.duration
-	max_speed = 0.0
-	for v in speeds:
-		max_speed = maxf(max_speed, v)
-	var top_y := -INF
-	base_y = INF
-	for p in positions:
-		base_y = minf(base_y, p.y)
-		top_y = maxf(top_y, p.y)
-	span = top_y - base_y
-	_build_track()
-	_build_terrain(ride.terrain_vertices, ride.terrain_nx, ride.terrain_ny)
-	$UI/Status.text = "%s — %s   [C] cycles camera" % [ride.note, ride.stats]
-	$UI/GenerateButton.disabled = false
-	$Train.visible = true
-	t = 0.0
-	riding = true
+static func terrain_height(x: float, z: float) -> float:
+	var mesa := (
+		222.0
+		* smoothstep(-180.0, -60.0, z)
+		* (1.0 - smoothstep(310.0, 500.0, z))
+		* smoothstep(-120.0, 50.0, x)
+		* (1.0 - smoothstep(300.0, 390.0, x))
+	)
+	var detail := 1.8 * sin(x * 0.014) + 1.6 * sin(z * 0.011) + 0.7 * sin((x + z) * 0.025)
+	return maxf(0.0, mesa) + detail
+
+
+static func validate_route(built: Dictionary) -> PackedStringArray:
+	var errors: PackedStringArray = Model.validate(built)
+	var minimum_clearance := INF
+	var minimum_index := 0
+	for i in built.positions.size():
+		var rail: Vector3 = built.positions[i] - built.ups[i] * RAIL_DROP
+		var clearance := rail.y - terrain_height(rail.x, rail.z)
+		if clearance < minimum_clearance:
+			minimum_clearance = clearance
+			minimum_index = i
+	if minimum_clearance < 2.0:
+		var nearest: Vector3 = built.positions[minimum_index]
+		errors.append(
+			"terrain intersects track near %s at (%.0f, %.0f): %.2f m minimum clearance"
+			% [built.sections[built.section_indices[minimum_index]].name, nearest.x, nearest.z, minimum_clearance]
+		)
+	if ROW_OFFSETS.size() != 7:
+		errors.append("viewer requires seven selectable rows")
+	return errors
+
+
+static func build_rail_mesh(built: Dictionary) -> ArrayMesh:
+	var positions: PackedVector3Array = built.positions
+	var rights: PackedVector3Array = built.rights
+	var ups: PackedVector3Array = built.ups
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var tubes := [Vector3(-RAIL_GAUGE * 0.5, -RAIL_DROP, 0.14), Vector3(RAIL_GAUGE * 0.5, -RAIL_DROP, 0.14), Vector3(0, -1.55, 0.24)]
+	const SIDES := 8
+	for tube in tubes:
+		var base := vertices.size()
+		for i in positions.size():
+			for side in SIDES:
+				var angle := TAU * side / SIDES
+				var radial := rights[i] * cos(angle) + ups[i] * sin(angle)
+				vertices.append(positions[i] + rights[i] * tube.x + ups[i] * tube.y + radial * tube.z)
+				normals.append(radial)
+		for i in positions.size() - 1:
+			for side in SIDES:
+				var next_side := (side + 1) % SIDES
+				var a := base + i * SIDES + side
+				var b := base + (i + 1) * SIDES + side
+				var c := base + (i + 1) * SIDES + next_side
+				var d := base + i * SIDES + next_side
+				indices.append_array(PackedInt32Array([a, b, c, a, c, d]))
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+static func build_terrain_mesh(built: Dictionary) -> ArrayMesh:
+	const STEP := 22.5
+	var bounds: AABB = built.bounds.grow(260.0)
+	var nx := ceili(bounds.size.x / STEP) + 1
+	var nz := ceili(bounds.size.z / STEP) + 1
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var colors := PackedColorArray()
+	var indices := PackedInt32Array()
+	for z_index in nz:
+		for x_index in nx:
+			var x: float = bounds.position.x + x_index * STEP
+			var z: float = bounds.position.z + z_index * STEP
+			var height := terrain_height(x, z)
+			vertices.append(Vector3(x, height, z))
+			var dx := terrain_height(x + 1.0, z) - terrain_height(x - 1.0, z)
+			var dz := terrain_height(x, z + 1.0) - terrain_height(x, z - 1.0)
+			normals.append(Vector3(-dx * 0.5, 1.0, -dz * 0.5).normalized())
+			colors.append(Color("c7833f").lerp(Color("765038"), clampf(height / 230.0, 0, 1)))
+	for z_index in nz - 1:
+		for x_index in nx - 1:
+			var a := z_index * nx + x_index
+			indices.append_array(PackedInt32Array([a, a + nx, a + 1, a + 1, a + nx, a + nx + 1]))
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+static func pose_at_distance(built: Dictionary, distance: float) -> Transform3D:
+	var distances: PackedFloat32Array = built.distances
+	var wrapped := fposmod(distance, float(built.length))
+	var index := _lower_index(distances, wrapped)
+	var amount := inverse_lerp(distances[index], distances[index + 1], wrapped)
+	var p0: Vector3 = built.positions[index]
+	var p1: Vector3 = built.positions[index + 1]
+	var basis0 := Basis(built.rights[index], built.ups[index], -built.tangents[index])
+	var basis1 := Basis(built.rights[index + 1], built.ups[index + 1], -built.tangents[index + 1])
+	var orientation := basis0.get_rotation_quaternion().slerp(basis1.get_rotation_quaternion(), amount)
+	return Transform3D(Basis(orientation).orthonormalized(), p0.lerp(p1, amount))
+
+
+static func distance_at_time(built: Dictionary, time: float) -> float:
+	var times: PackedFloat32Array = built.times
+	var wrapped := fposmod(time, float(built.duration))
+	var index := _lower_index(times, wrapped)
+	return lerpf(
+		built.distances[index],
+		built.distances[index + 1],
+		inverse_lerp(times[index], times[index + 1], wrapped)
+	)
+
+
+static func _lower_index(values: PackedFloat32Array, value: float) -> int:
+	var low := 0
+	var high := values.size() - 1
+	while high - low > 1:
+		var middle := floori((low + high) * 0.5)
+		if values[middle] <= value:
+			low = middle
+		else:
+			high = middle
+	return low
+
+
+func _configure_world() -> void:
+	var environment := Environment.new()
+	environment.background_mode = Environment.BG_COLOR
+	environment.background_color = Color("5799c4")
+	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	environment.ambient_light_color = Color("b9ccd5")
+	environment.ambient_light_energy = 0.42
+	environment.tonemap_mode = Environment.TONE_MAPPER_ACES
+	environment.fog_enabled = false
+	$World.environment = environment
+	$Sun.rotation_degrees = Vector3(-48, -28, 0)
+	$Sun.light_color = Color("ffe0b0")
+	$Sun.light_energy = 0.78
+	$Sun.shadow_enabled = true
+
+
+func _populate_controls() -> void:
+	for row in ROW_OFFSETS.size():
+		row_picker.add_item("Row %d%s" % [row + 1, " · Front" if row == 0 else (" · Back" if row == 6 else "")])
+	for label in ["0.5×", "1×", "2×", "4×"]:
+		rate_picker.add_item(label)
+	rate_picker.select(1)
+	row_picker.item_selected.connect(_on_row_selected)
+	rate_picker.item_selected.connect(_on_rate_selected)
+
+
+func _build_world() -> void:
+	overview_center = route.bounds.get_center()
+	overview_center.y = 95.0
+	overview_radius = maxf(route.bounds.size.x, route.bounds.size.z) * 0.55
+	$Terrain.mesh = build_terrain_mesh(route)
+	$Terrain.material_override = _material(Color.WHITE, 0.0, 0.95, true)
+	$Track/Rails.mesh = build_rail_mesh(route)
+	$Track/Rails.material_override = _material(Color("e7dfcf"), 0.35, 0.48)
+	_build_ties()
+	_build_supports()
+	_build_launches()
+	_build_train()
+	_build_scenery()
+
+
+func _build_ties() -> void:
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(2.65, 0.12, 0.24)
+	mesh.material = _material(Color("858e92"), 0.55, 0.42)
+	var count := floori(route.length / TIE_SPACING)
+	var multimesh := _new_multimesh(mesh, count)
+	for i in count:
+		var pose := pose_at_distance(route, i * TIE_SPACING)
+		pose.origin -= pose.basis.y * 1.18
+		multimesh.set_instance_transform(i, pose)
+	$Track/Ties.multimesh = multimesh
+
+
+func _build_supports() -> void:
+	var transforms: Array[Transform3D] = []
+	var count := floori(route.length / SUPPORT_SPACING)
+	for i in count:
+		var pose := pose_at_distance(route, i * SUPPORT_SPACING)
+		var up := pose.basis.y
+		var tangent := -pose.basis.z
+		if absf(tangent.y) > 0.72:
+			continue
+		var rail := pose.origin - up * 1.45
+		var ground := terrain_height(rail.x, rail.z)
+		var height := rail.y - ground
+		if height < 4.0:
+			continue
+		var spread := clampf(2.0 + height * 0.055, 2.5, 10.0)
+		for side in [-1.0, 1.0]:
+			var side_factor := float(side)
+			var top: Vector3 = rail + pose.basis.x * side_factor * 0.70
+			var foot_xz: Vector3 = rail + pose.basis.x * side_factor * spread
+			var bottom := Vector3(foot_xz.x, terrain_height(foot_xz.x, foot_xz.z), foot_xz.z)
+			transforms.append(_between(bottom, top))
+	var mesh := CylinderMesh.new()
+	mesh.height = 1.0
+	mesh.top_radius = 0.22
+	mesh.bottom_radius = 0.34
+	mesh.radial_segments = 8
+	mesh.rings = 1
+	mesh.material = _material(Color("9c978b"), 0.35, 0.58)
+	var multimesh := _new_multimesh(mesh, transforms.size())
+	for i in transforms.size():
+		multimesh.set_instance_transform(i, transforms[i])
+	$Track/Supports.multimesh = multimesh
+
+
+func _build_launches() -> void:
+	var material := _material(Color("29d9ff"), 0.65, 0.24)
+	material.emission_enabled = true
+	material.emission = Color("1589c7")
+	material.emission_energy_multiplier = 1.6
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(0.52, 0.12, 0.85)
+	mesh.material = material
+	for launch in range(1, 4):
+		var poses: Array[Transform3D] = []
+		var distance := 0.0
+		while distance < route.length:
+			var index := _lower_index(route.distances, distance)
+			if route.lsm_ids[index] == launch:
+				var pose := pose_at_distance(route, distance)
+				pose.origin -= pose.basis.y * 0.94
+				poses.append(pose)
+			distance += 3.0
+		var multimesh := _new_multimesh(mesh, poses.size())
+		for i in poses.size():
+			multimesh.set_instance_transform(i, poses[i])
+		get_node("Track/LSM%d" % launch).multimesh = multimesh
+
+
+func _build_train() -> void:
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(2.30, 0.82, 1.75)
+	mesh.material = _material(Color("173b72"), 0.7, 0.25)
+	train_rows = _new_multimesh(mesh, ROW_OFFSETS.size())
+	$Train.multimesh = train_rows
+	$Train.layers = 2
+
+
+func _build_scenery() -> void:
+	var station := $Scenery/Station
+	var center: Vector3 = Model.STATION_POSITION + Vector3(0, -2.7, -21.0)
+	_add_box(station, Vector3(4.0, 0.6, 64.0), center + Vector3(-4.0, 0, 0), Color("b6a98f"))
+	_add_box(station, Vector3(4.0, 0.6, 64.0), center + Vector3(4.0, 0, 0), Color("b6a98f"))
+	_add_box(station, Vector3(14.0, 0.5, 60.0), center + Vector3(0, 9.2, 0), Color("e9e4d8"))
+	for z_offset in [-27.0, 0.0, 27.0]:
+		for x_offset in [-6.0, 6.0]:
+			_add_box(station, Vector3(0.55, 9.0, 0.55), center + Vector3(x_offset, 4.5, z_offset), Color("d8d1c4"))
+	_build_tunnel()
+
+
+func _build_tunnel() -> void:
+	var tunnel: Dictionary = _section_named("Tunnel · downhill LSM 3")
+	var a: Vector3 = route.positions[tunnel.start_index]
+	var b: Vector3 = route.positions[tunnel.end_index]
+	var forward := (b - a).normalized()
+	var right := forward.cross(Vector3.UP).normalized()
+	var up := right.cross(forward).normalized()
+	var tunnel_basis := Basis(right, up, -forward)
+	var middle := a.lerp(b, 0.5)
+	var length := a.distance_to(b)
+	var rock := Color("5c4638")
+	_add_box($Scenery/Tunnel, Vector3(0.7, 6.2, length), middle - right * 3.25 + up, rock, tunnel_basis)
+	_add_box($Scenery/Tunnel, Vector3(0.7, 6.2, length), middle + right * 3.25 + up, rock, tunnel_basis)
+	_add_box($Scenery/Tunnel, Vector3(7.2, 0.7, length), middle + up * 4.0, rock, tunnel_basis)
+
+
+func _section_named(section_name: String) -> Dictionary:
+	for section in route.sections:
+		if section.name == section_name:
+			return section
+	return {}
 
 
 func _process(delta: float) -> void:
-	if generator:
-		var ride: Dictionary = generator.poll()
-		if not ride.is_empty():
-			generator = null
-			_apply(ride)
-	if not riding:
+	if route.is_empty() or train_rows == null:
 		return
-	t = fmod(t + delta, duration)
-	var i := clampi(times.bsearch(t), 1, times.size() - 1)
-	var f := inverse_lerp(times[i - 1], times[i], t)
-	var pos := positions[i - 1].lerp(positions[i], f)
-	var tangent := tangents[i - 1].lerp(tangents[i], f).normalized()
-	var up := ups[i - 1].lerp(ups[i], f).normalized()
-	var right := tangent.cross(up).normalized()
-	up = right.cross(tangent)
-	var speed := lerpf(speeds[i - 1], speeds[i], f)
+	if not paused:
+		ride_time = fposmod(ride_time + delta * playback_rate, route.duration)
+	_update_ride(delta)
 
-	$Train.global_transform = Transform3D(Basis(right, up, -tangent), pos)
-	var e := element_index[i]
-	$UI/Debug.text = (
-		"element  %s\n" % element_names[e]
-		+ "speed    %.0f km/h  (avg %.0f, max %.0f)\n"
-		% [speed * 3.6, total_length / duration * 3.6, max_speed * 3.6]
-		+ "g        n %+.2f   lat %+.2f   long %+.2f\n"
-		% [lerpf(gn[i - 1], gn[i], f), lerpf(gl[i - 1], gl[i], f), lerpf(gx[i - 1], gx[i], f)]
-		+ "pitch    %+.1f deg\n" % rad_to_deg(asin(clampf(tangent.y, -1.0, 1.0)))
-		+ "distance %.0f / %.0f m\n" % [lerpf(dists[i - 1], dists[i], f), total_length]
-		+ "height   %.0f m up  (element spans %.0f m, ride spans %.0f m)"
-		% [pos.y - base_y, element_top[e] - element_bottom[e], span]
+
+func _update_ride(delta: float) -> void:
+	var front_distance := distance_at_time(route, ride_time)
+	var front_pose := pose_at_distance(route, front_distance)
+	var front_sample := _lower_index(route.distances, front_distance)
+	var speed: float = route.speeds[front_sample]
+	for row in ROW_OFFSETS.size():
+		var pose := pose_at_distance(route, front_distance - ROW_OFFSETS[row])
+		pose.origin -= pose.basis.y * 0.30
+		train_rows.set_instance_transform(row, pose)
+	var row_distance: float = front_distance - ROW_OFFSETS[selected_row]
+	var row_pose := pose_at_distance(route, row_distance)
+	var row_sample := _lower_index(route.distances, fposmod(row_distance, float(route.length)))
+	var force: Dictionary = Model.row_forces_at(
+		route, front_distance, speed, ROW_OFFSETS[selected_row]
 	)
-	# Seat just ahead of the train box, so the box reads as the car in front.
-	$PovCamera.global_transform = Transform3D(
-		Basis(right, up, -tangent), pos + tangent * (TRAIN_SIZE.z * 0.5 + 1.0)
+	$PovCamera.global_transform = Transform3D(row_pose.basis, row_pose.origin + row_pose.basis.y * 0.35)
+	$PovCamera.fov = lerpf(72.0, 90.0, clampf(speed / Model.TARGET_TOP_SPEED, 0, 1))
+	var chase_target := front_pose.origin + front_pose.basis.z * 24.0 + Vector3.UP * 10.0
+	$ChaseCamera.global_position = chase_target if delta <= 0.0 else $ChaseCamera.global_position.lerp(
+		chase_target, 1.0 - exp(-4.0 * delta)
 	)
-	$PovCamera.fov = BASE_FOV + clampf(speed, 0.0, 110.0) * 0.25
-	var chase_target := pos - tangent * 30.0 + Vector3.UP * 10.0
-	$ChaseCamera.global_position = $ChaseCamera.global_position.lerp(
-		chase_target, 1.0 - exp(-5.0 * delta)
+	$ChaseCamera.look_at(front_pose.origin, Vector3.UP)
+	var angle := ride_time * 0.018
+	$OverviewCamera.global_position = overview_center + Vector3(
+		cos(angle) * overview_radius,
+		maxf(500.0, overview_radius * 0.48),
+		sin(angle) * overview_radius
 	)
-	$ChaseCamera.look_at(pos, Vector3.UP)
+	$OverviewCamera.look_at(overview_center, Vector3.UP)
+	var section: Dictionary = route.sections[route.section_indices[row_sample]]
+	var altitude := row_pose.origin.y - terrain_height(row_pose.origin.x, row_pose.origin.z)
+	var analysis: Dictionary = route.analysis
+	var row_analysis: Dictionary = analysis.rows[selected_row]
+	metrics.text = (
+		"%s  ·  %s\n" % [section.name, section.kind]
+		+ "%.0f km/h  ·  %.0f m AGL  ·  Row %d  ·  Bank %+.0f°  ·  Roll %+.0f°/s\n"
+		% [speed * 3.6, altitude, selected_row + 1, route.banks[row_sample], force.roll_rate]
+		+ "Gz %+.2f  ·  Gy %+.2f  ·  Gx %+.2f  ·  envelope +%.0f%% / −%.0f%%\n"
+		% [force.normal, force.lateral, force.longitudinal, row_analysis.positive_envelope.usage * 100.0, row_analysis.negative_envelope.usage * 100.0]
+		+ "%.2f km  ·  %.0f s  ·  avg %.0f km/h  ·  %s%s"
+		% [route.length / 1000.0, route.duration, analysis.average_speed * 3.6, CAMERA_NAMES[camera_index], "  ·  PAUSED" if paused else ""]
+	)
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and event.keycode == KEY_C:
-		var next := (cameras.find(get_viewport().get_camera_3d()) + 1) % cameras.size()
-		if cameras[next] == $FlyCamera:
-			$FlyCamera.global_transform = get_viewport().get_camera_3d().global_transform
-		cameras[next].current = true
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	match event.keycode:
+		KEY_C:
+			_set_camera((camera_index + 1) % cameras.size())
+		KEY_SPACE:
+			paused = not paused
+		KEY_R:
+			ride_time = 0.0
+		KEY_BRACKETLEFT:
+			_set_rate(maxf(0.5, playback_rate * 0.5))
+		KEY_BRACKETRIGHT:
+			_set_rate(minf(4.0, playback_rate * 2.0))
+		_:
+			if event.keycode >= KEY_1 and event.keycode <= KEY_7:
+				selected_row = event.keycode - KEY_1
+				row_picker.select(selected_row)
 
 
-func _material(color: Color) -> StandardMaterial3D:
+func _set_camera(index: int) -> void:
+	var previous := get_viewport().get_camera_3d()
+	camera_index = index
+	if previous == $FlyCamera and cameras[index] != $FlyCamera:
+		$FlyCamera.release_look()
+	if cameras[index] == $FlyCamera and previous:
+		$FlyCamera.adopt(previous.global_transform)
+	cameras[index].make_current()
+
+
+func _on_row_selected(index: int) -> void:
+	selected_row = index
+
+
+func _on_rate_selected(index: int) -> void:
+	_set_rate([0.5, 1.0, 2.0, 4.0][index])
+
+
+func _set_rate(rate: float) -> void:
+	playback_rate = rate
+	var rates := [0.5, 1.0, 2.0, 4.0]
+	rate_picker.select(rates.find(rate))
+
+
+func _new_multimesh(mesh: Mesh, count: int) -> MultiMesh:
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.mesh = mesh
+	multimesh.instance_count = count
+	multimesh.custom_aabb = route.bounds.grow(300.0)
+	return multimesh
+
+
+func _between(start: Vector3, end: Vector3) -> Transform3D:
+	var y := end - start
+	var y_axis := y.normalized()
+	var x_axis := y_axis.cross(Vector3.FORWARD)
+	if x_axis.length_squared() < 0.001:
+		x_axis = y_axis.cross(Vector3.RIGHT)
+	x_axis = x_axis.normalized()
+	var z_axis := x_axis.cross(y_axis).normalized()
+	return Transform3D(Basis(x_axis, y_axis * y.length(), z_axis), start.lerp(end, 0.5))
+
+
+func _add_box(
+	parent: Node3D,
+	size: Vector3,
+	location: Vector3,
+	color: Color,
+	orientation: Basis = Basis.IDENTITY
+) -> void:
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mesh.material = _material(color, 0.1, 0.75)
+	var instance := MeshInstance3D.new()
+	instance.mesh = mesh
+	instance.transform = Transform3D(orientation, location)
+	parent.add_child(instance)
+
+
+func _material(
+	color: Color, metallic: float = 0.0, roughness: float = 0.65, vertex_color: bool = false
+) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.albedo_color = color
+	material.metallic = metallic
+	material.roughness = roughness
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.vertex_color_use_as_albedo = vertex_color
 	return material
-
-
-func _build_track() -> void:
-	var rail := SurfaceTool.new()
-	rail.begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
-	rail.set_material(_material(Color(0.85, 0.2, 0.1)))
-	var ties := SurfaceTool.new()
-	ties.begin(Mesh.PRIMITIVE_TRIANGLES)
-	ties.set_material(_material(Color(0.25, 0.12, 0.08)))
-	for i in positions.size():
-		var right := tangents[i].cross(ups[i]).normalized()
-		rail.set_normal(ups[i])
-		rail.add_vertex(positions[i] - right * 1.5)
-		rail.set_normal(ups[i])
-		rail.add_vertex(positions[i] + right * 1.5)
-		# A crosstie per sample: the near-field cue that makes speed read.
-		var c := positions[i] - ups[i] * 0.35
-		var a := tangents[i] * 0.35
-		var b := right * 2.2
-		for v in [c - a - b, c - a + b, c + a - b, c - a + b, c + a + b, c + a - b]:
-			ties.set_normal(ups[i])
-			ties.add_vertex(v)
-	$Track.mesh = rail.commit()
-	$Ties.mesh = ties.commit()
-
-
-func _build_terrain(vertices: PackedVector3Array, nx: int, ny: int) -> void:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	st.set_material(_material(Color(0.45, 0.5, 0.35)))
-	var base := INF
-	for j in ny - 1:
-		for i in nx - 1:
-			var a := j * nx + i
-			for k in [a, a + 1, a + nx, a + 1, a + nx + 1, a + nx]:
-				st.add_vertex(vertices[k])
-				base = minf(base, vertices[k].y)
-	st.generate_normals()
-	$Terrain.mesh = st.commit()
-
-	# A wide ground plane under everything, so there is always a floor.
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(40000, 40000)
-	plane.material = _material(Color(0.55, 0.5, 0.38))
-	$Ground.mesh = plane
-	$Ground.global_position = Vector3(0, base - 1.0, 0)

@@ -529,7 +529,9 @@ static func solve_scalar(
 	target: float,
 	k0: float,
 	k1: float,
-	tolerance: float
+	tolerance: float,
+	k_low: float = -1.0,
+	k_high: float = -1.0
 ) -> float:
 	var a := k0
 	var trial := _trial(route, state, factory.call(a))
@@ -555,7 +557,10 @@ static func solve_scalar(
 		fa = fb
 		## Keep a runaway secant inside a band around the seed: k is always a length here, and an
 		## unreachable target must fail as "closest we got", not as an unbounded integration.
-		b = clampf(next, maxf(k0, 1.0) * 0.05, maxf(k0, 1.0) * 30.0)
+		## Callers whose measure has a second root pass explicit bounds to stay on their root.
+		var low := k_low if k_low > 0.0 else maxf(k0, 1.0) * 0.05
+		var high := k_high if k_high > 0.0 else maxf(k0, 1.0) * 30.0
+		b = clampf(next, low, high)
 	return best
 
 
@@ -961,9 +966,14 @@ static func author_cutback(route: Dictionary, state: Dictionary, p: Dictionary) 
 		return _heading_change_deg(trial_route, first)
 	var load := absf(peak * sin(deg_to_rad(bank)))
 	var length: float = maxf(deg_to_rad(absf(heading_change)) * state.speed * state.speed / (maxf(load, 0.05) * G0), 20.0)
+	## CALLER CONTRACT: entry pitch must stay ≤ ~22°. Past that the crest nears vertical, the
+	## horizontal heading measure degrades to noise, and the solve can land on a distant giant-arc
+	## root that also sweeps 180° (measured: 26° entry → 2.3 km element).
 	var correct := func(k: float) -> void:
 		var trial := _trial(route, state, factory.call(k))
 		var count: int = trial.route.banks.size() - first
+		if count < 4:
+			return
 		var mid: float = trial.route.banks[first + roundi(0.5 * count)]
 		var exit_bank: float = trial.route.banks[-1]
 		if absf(mid) > 1.0:
@@ -1078,6 +1088,8 @@ static func _correct_roll(
 ) -> void:
 	var trial := _trial(route, state, factory.call(length))
 	var count: int = trial.route.banks.size() - first
+	if count < 4:
+		return
 	var hold: float = trial.route.banks[first + roundi(0.32 * count)]
 	var release: float = trial.route.banks[first + roundi(0.68 * count)]
 	var exit_bank: float = trial.route.banks[-1]

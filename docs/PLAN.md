@@ -55,8 +55,11 @@ uniform multiplier, and not "slightly beyond record."
   real onride POV in Step 0 (non-Fable agent). No sustained boost to game average speed; no
   numeric average-speed contract.
 - **Envelope (~2041, derived from researched tech credits, duration-structured like ASTM
-  F2291):** ≈ **+8.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** (user
-  judgment caps −Gz at −3.0; deeper negative isn't credible for unscreened riders).
+  F2291):** ≈ **+7.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** (user
+  judgment caps −Gz at −3.0; deeper negative isn't credible for unscreened riders.
+  **Step-0 correction 2026-08-08: +Gz lowered 8.0 → 7.0 by user decision after F2291/physiology
+  research — see docs/RESEARCH.md §5 for the actual F2291 duration curves and per-axis
+  credibility caveats**).
   Derivation per axis: ASTM brief baseline (≈+6/−2 Gz) + seat recline (+Gz), load-distributing
   vest restraints (−Gz, ±Gy, ±Gx), semi-active MR seats (onset/jerk — the axis that stretches
   most), interpolated between the researched mid-2030s and ~2050 syntheses. Lateral and roll
@@ -73,6 +76,18 @@ uniform multiplier, and not "slightly beyond record."
   when the answer is obvious.
 
 ## Research digest (all researched this session; sources in agent reports)
+
+> **STEP 0 COMPLETE (2026-08-08): this digest has been re-verified and partially corrected —
+> `docs/RESEARCH.md` supersedes it wherever they disagree.** Key overrides: the 158 m drop is
+> the **camelback's**, not the cliff dive's (the 90° cliff dive is a separate ~160 m element);
+> LSM1 is a constant-speed lift, not a launch; the cliff climb is a launch at the base then
+> **gradual deceleration up** (~19 s); the hold (~3 s) comes **before** the cliff-edge
+> traverse and there is **no pause at the dive lip**; there is **no late boost** on the return
+> run; Tormenta's cutback wraps its own first drop (not the drop tower) and Tormenta **does**
+> have a mid-course brake + second drop (our exclusion is a deliberate deviation, reaffirmed);
+> "tallest inversion" claim for Tormenta is Immelmann-class only — Spitfire's 73 m still
+> stands; canonical numbers = RCDB/Wikipedia set. Suspense/clifftop elements scale from
+> reference geometry only, never toward records (user rule).
 
 **Falcon's Flight** (Intamin, Qiddiya) — open Dec 31, 2025; real POV exists, use it (though the CGI videos are allowed for 3rd person geometry research/analysis though - should be essentially 1:1).
 163 m structure / 195 m elevation change via the 200 m Tuwaiq step, 158 m 90° terrain-assisted

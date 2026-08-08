@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Coaster := preload("res://main.gd")
+const Elements := preload("res://elements.gd")
 const Model := preload("res://ride_model.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
@@ -15,6 +16,7 @@ const SECTION_FIELDS := [
 	"end_distance", "start_time", "end_time", "start_height", "end_height", "entry_speed",
 	"exit_speed",
 ]
+const MINI_STATION := Vector3.ZERO
 
 
 func _initialize() -> void:
@@ -29,6 +31,7 @@ func _initialize() -> void:
 		errors.append("route generation is not deterministic")
 	errors.append_array(_terrain_errors())
 	errors.append_array(_verify_errors())
+	errors.append_array(_frame_core_errors())
 	var rails: ArrayMesh = Coaster.build_rail_mesh(route)
 	var terrain: ArrayMesh = Coaster.build_terrain_mesh(route)
 	var elapsed := Time.get_ticks_msec() - started
@@ -150,6 +153,126 @@ func _verify_errors() -> PackedStringArray:
 	if absf(Verify.peak_onset(ramp) - 25.0) > 0.5:
 		errors.append("least-squares onset misreads a 25 g/s ramp (%.2f)" % Verify.peak_onset(ramp))
 	return errors
+
+
+## The rewrite's integrator core: a closed infrastructure route through elements.gd, plus the
+## explicit-frame behaviours ride_model.gd could not express (inversion, authored roll).
+func _frame_core_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	var route: Dictionary = _mini_route()
+	var repeat: Dictionary = _mini_route()
+	var closure_error: float = route.positions[-1].distance_to(MINI_STATION)
+	if closure_error > 0.001:
+		errors.append("mini route misses the station by %.4f m" % closure_error)
+	for field in ["positions", "speeds", "times"]:
+		if route[field] != repeat[field]:
+			errors.append("mini route %s are not deterministic" % field)
+	var issues := PackedStringArray()
+	Verify.validate_structure(route, issues)
+	Verify.validate_seams(route, issues)
+	Verify.validate_self_clearance(route, issues)
+	for issue in issues:
+		errors.append("mini route: %s" % issue)
+
+	var straight: Dictionary = _fvd_probe(30.0, Elements.fvd_section(
+		"straight", 150.0,
+		[Vector2(0, 1), Vector2(1, 1)],
+		[Vector2(0, 0), Vector2(1, 0)],
+		[Vector2(0, 0), Vector2(1, 0)]
+	))
+	var exit_tangent: Vector3 = straight.tangents[-1]
+	var heading := absf(rad_to_deg(Vector2(exit_tangent.x, exit_tangent.z).angle_to(Vector2.UP)))
+	if absf(exit_tangent.y) > 0.02 or heading > 1.0:
+		errors.append("1 g support on straight track drifts (pitch %.3f, heading %.2f°)" % [exit_tangent.y, heading])
+
+	var loop: Dictionary = _fvd_probe(42.0, Elements.fvd_section(
+		"loop", 260.0,
+		[Vector2(0, 1), Vector2(0.15, 4.2), Vector2(0.85, 4.2), Vector2(1, 1)],
+		[Vector2(0, 0), Vector2(1, 0)],
+		[Vector2(0, 0), Vector2(1, 0)]
+	))
+	var lowest_up := INF
+	for up in loop.ups:
+		lowest_up = minf(lowest_up, up.y)
+	if lowest_up > -0.5:
+		errors.append("sustained 4.2 g never inverts the frame (lowest up.y %.3f)" % lowest_up)
+	if _frame_error(loop) > 0.002:
+		errors.append("inverting frames are not orthonormal (%.5f)" % _frame_error(loop))
+
+	var rolled: Dictionary = _fvd_probe(45.0, Elements.fvd_section(
+		"roll", 90.0,
+		[Vector2(0, 1), Vector2(1, 1)],
+		[Vector2(0, 0), Vector2(1, 0)],
+		[Vector2(0, 0), Vector2(0.3, 60), Vector2(0.7, 60), Vector2(1, 0)]
+	))
+	if absf(rolled.banks[-1]) < 45.0:
+		errors.append("authored roll only reaches %.1f°" % rolled.banks[-1])
+	if _frame_error(rolled) > 0.002:
+		errors.append("rolled frames are not orthonormal (%.5f)" % _frame_error(rolled))
+	var back := {
+		"position": rolled.positions[-1],
+		"tangent": rolled.tangents[-1],
+		"up": rolled.ups[-1],
+		"speed": rolled.speeds[-1],
+		"distance": rolled.distances[-1],
+		"time": rolled.times[-1],
+	}
+	Elements.integrate_fvd(rolled, back, Elements.fvd_section(
+		"unroll", 90.0,
+		[Vector2(0, 1), Vector2(1, 1)],
+		[Vector2(0, 0), Vector2(1, 0)],
+		[Vector2(0, 0), Vector2(0.3, -60), Vector2(0.7, -60), Vector2(1, 0)]
+	), 0)
+	if absf(rolled.banks[-1]) > 5.0:
+		errors.append("mirrored roll leaves %.1f° of bank" % rolled.banks[-1])
+	return errors
+
+
+func _mini_route() -> Dictionary:
+	var sections: Array = [
+		Elements.grade_section("Station", 45.0, [Vector2(0, 0), Vector2(1, 0)], 13.9),
+		Elements.grade_section("Lift", 350.0, [Vector2(0, 0), Vector2(0.5, 22), Vector2(1, 0)], 13.9),
+		Elements.grade_section("Descent", 350.0, [Vector2(0, 0), Vector2(0.5, -22), Vector2(1, 0)], 24.0),
+		Elements.fvd_section(
+			"Turnaround",
+			150.0,
+			[Vector2(0, 1), Vector2(1, 1)],
+			[Vector2(0, 0), Vector2(0.2, 1.5), Vector2(0.8, 1.5), Vector2(1, 0)],
+			[Vector2(0, 0), Vector2(1, 0)]
+		),
+		Elements.grade_section("Brake", 180.0, [Vector2(0, 0), Vector2(1, 0)], 6.0, 0, 4.0),
+	]
+	return Elements.build_route(sections, MINI_STATION, Vector3.FORWARD, 6.0)
+
+
+func _fvd_probe(speed: float, section: Dictionary) -> Dictionary:
+	var route: Dictionary = Elements.new_route()
+	var state := {
+		"position": Vector3.ZERO,
+		"tangent": Vector3.FORWARD,
+		"up": Vector3.UP,
+		"speed": speed,
+		"distance": 0.0,
+		"time": 0.0,
+	}
+	Elements.append_state(route, state, 0, 1.0, 0.0, 0.0, 0, Vector3.ZERO)
+	Elements.integrate_fvd(route, state, section, 0)
+	return route
+
+
+func _frame_error(route: Dictionary) -> float:
+	var worst := 0.0
+	for i in route.positions.size():
+		var tangent: Vector3 = route.tangents[i]
+		var up: Vector3 = route.ups[i]
+		var right: Vector3 = route.rights[i]
+		worst = maxf(worst, absf(tangent.length_squared() - 1.0))
+		worst = maxf(worst, absf(up.length_squared() - 1.0))
+		worst = maxf(worst, absf(right.length_squared() - 1.0))
+		worst = maxf(worst, absf(tangent.dot(up)))
+		worst = maxf(worst, absf(tangent.dot(right)))
+		worst = maxf(worst, absf(up.dot(right)))
+	return worst
 
 
 func _terrain_for_seed(seed_value: int) -> Dictionary:

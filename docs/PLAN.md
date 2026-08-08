@@ -55,8 +55,10 @@ uniform multiplier, and not "slightly beyond record."
   real onride POV in Step 0 (non-Fable agent). No sustained boost to game average speed; no
   numeric average-speed contract.
 - **Envelope (~2041, derived from researched tech credits, duration-structured like ASTM
-  F2291):** ≈ **+8.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** (user
-  judgment caps −Gz at −3.0; deeper negative isn't credible for unscreened riders.
+  F2291):** ≈ **+8.0/−3.0 Gz · ±4.7 Gy · +8.0/−6.0 Gx · ~25 g/s onset · ~120°/s roll** (user
+  judgment caps −Gz at −3.0; deeper negative isn't credible for unscreened riders. Gx is
+  asymmetric — eyes-back tolerance far exceeds eyes-front even well-restrained (Step-0
+  research; F2291 itself is +6.0 vs −1.5/−2.0/−3.5 by restraint class).
   **Step-0 note: +8.0 Gz is credited to riders wearing anti-G suits (user decision 2026-08-09;
   aviation suits add ~1.0–1.5 g of relaxed tolerance) on top of recline/vests/MR seats — valid
   as a brief peak; sustained +Gz still follows the duration curve. See docs/RESEARCH.md §5 for

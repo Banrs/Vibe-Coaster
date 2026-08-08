@@ -218,18 +218,23 @@ G-LOC floor; F2291's Gz is spine-parallel/body-frame, so seat recline re-project
 +Gx rather than raising Gz; recline at 30° buys only ~0.5 g)**.
 
 ### FINAL ENVELOPE (user decisions, 2026-08-08/09)
-> **≈ +8.0/−3.0 Gz · ±4.7 Gy · ±8.0 Gx · ~25 g/s onset · ~120°/s roll** — duration-structured
-> like F2291 (scale the curve shapes above, not flat plateaus).
+> **≈ +8.0/−3.0 Gz · ±4.7 Gy · +8.0/−6.0 Gx · ~25 g/s onset · ~120°/s roll** —
+> duration-structured like F2291 (scale the curve shapes above, not flat plateaus).
 >
 > **Duration rule (explicit): the limit is a proportionally stretched F2291 curve, not a set
 > value.** Per axis: `limit(t) = stretch × F2291_limit(t)`, where `stretch` = envelope brief
-> peak ÷ F2291 brief peak (0.2–1 s value). E.g. +Gz stretch = 8.0/6.0 ≈ 1.33 → 8.0 g brief,
-> ~5.3 g at 2–4 s, ~4.0 g at 5–11.8 s, ~2.7 g beyond. Same construction for −Gz (vs −2.0),
-> ±Gy (vs ±3.0), ±Gx (vs +6.0/−2.0 base). The old checkpoint's flat per-duration tables in
-> ride_model.gd are the negative example — replace, don't scale, them.
+> peak ÷ that axis's F2291 brief peak (0.2–1 s value). E.g. +Gz stretch = 8.0/6.0 ≈ 1.33 →
+> 8.0 g brief, ~5.3 g at 2–4 s, ~4.0 g at 5–11.8 s, ~2.7 g beyond. Same construction for −Gz
+> (vs −2.0), ±Gy (vs ±3.0), +Gx (vs +6.0). **−Gx is asymmetric (−6.0, user-adopted from the
+> research recommendation) and stretches the prone/upper-torso-restraint curve** (−3.5 brief →
+> −2.5 @3–4 s → −2.0 @5 s+; stretch 6.0/3.5 ≈ 1.71 → −6.0 brief, ~−4.3 @3–4 s, ~−3.4
+> sustained) — never the −1.5/−2.0 lap-bar bases, which would imply an incredible 3–4×
+> stretch. The old checkpoint's flat per-duration tables in ride_model.gd are the negative
+> example — replace, don't scale, them.
 
 History: user first lowered +Gz 8.0 → 7.0 (2026-08-08) on the physiology findings, then
-restored **8.0** (2026-08-09) by adding a tech credit: **riders wear anti-G suits**. Grounding:
+restored **8.0** (2026-08-09) by adding a tech credit: **riders wear anti-G suits**; Gx made
+asymmetric **+8.0/−6.0** (2026-08-09, adopting the research recommendation). Grounding:
 aviation anti-G suits add ~1.0–1.5 g of relaxed tolerance — stacked on the recline/vest/MR-seat
 credits this makes a brief +8 Gz defensible as design fiction. The research caveats stand as
 risk notes: +8 Gz is credible only as a brief, <~2 s peak inside the ~5 s cerebral buffer

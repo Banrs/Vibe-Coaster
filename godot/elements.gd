@@ -12,6 +12,11 @@ const SAMPLE_SPACING := 1.5
 const DRAG_FACTOR := 0.000064
 const ROLLING_FACTOR := 0.0015
 const ROW_OFFSETS := [0.0, 2.15, 4.30, 6.45, 8.60, 10.75, 12.90]
+const ROLL_SHAPE := [
+	Vector2(0, 0), Vector2(0.18, 1), Vector2(0.32, 0),
+	Vector2(0.68, 0), Vector2(0.82, -1), Vector2(1, 0),
+]
+const TURN_KEYS := [0.0, 0.08, 0.16, 0.24, 0.32, 0.68, 0.76, 0.84, 0.92, 1.0]
 
 
 ## ------------------------------------------------------------------------ section constructors
@@ -491,6 +496,350 @@ static func _bezier(points: PackedVector3Array, u: float) -> Vector3:
 		for i in level:
 			work[i] = (work[i] as Vector3).lerp(work[i + 1], u)
 	return work[0]
+
+
+## ------------------------------------------------------------------------- scalar closure solve
+
+
+static func exit_pitch_deg(state: Dictionary) -> float:
+	return rad_to_deg(asin(clampf(state.tangent.y, -1.0, 1.0)))
+
+
+static func _trial(route: Dictionary, state: Dictionary, section: Dictionary) -> Dictionary:
+	var trial_route: Dictionary = route.duplicate(true)
+	var trial_state: Dictionary = state.duplicate(true)
+	integrate_fvd(trial_route, trial_state, section, -1)
+	return {"route": trial_route, "state": trial_state}
+
+
+## Secant on a single scalar k. `factory` turns k into an FVD section, `measure` reads the quantity
+## being closed off the trial route and state. Replaces the old per-section trim hack.
+static func solve_scalar(
+	route: Dictionary,
+	state: Dictionary,
+	factory: Callable,
+	measure: Callable,
+	target: float,
+	k0: float,
+	k1: float,
+	tolerance: float
+) -> float:
+	var a := k0
+	var trial := _trial(route, state, factory.call(a))
+	var fa: float = measure.call(trial.route, trial.state) - target
+	var best := a
+	var best_error := absf(fa)
+	var b := k1
+	for _iteration in 12:
+		if best_error <= tolerance:
+			break
+		trial = _trial(route, state, factory.call(b))
+		var fb: float = measure.call(trial.route, trial.state) - target
+		if absf(fb) < best_error:
+			best_error = absf(fb)
+			best = b
+		var denominator := fb - fa
+		if absf(denominator) < 0.000001:
+			break
+		var next: float = b - fb * (b - a) / denominator
+		if not is_finite(next):
+			break
+		a = b
+		fa = fb
+		## Keep a runaway secant inside a band around the seed: k is always a length here, and an
+		## unreachable target must fail as "closest we got", not as an unbounded integration.
+		b = clampf(next, maxf(k0, 1.0) * 0.05, maxf(k0, 1.0) * 30.0)
+	return best
+
+
+## ----------------------------------------------------------------------------- element templates
+##
+## Every author_* returns solved FVD sections ready to integrate in order. Group boundaries hold
+## normal 1.0, lateral 0.0 and roll rate 0.0 (bank angle may carry, its rate may not); sections
+## inside a group match values exactly at the seam, which the zero-slope quintic keys turn into C2
+## force and C4 position. Nothing is speed- or pitch-specific: curvature scales as g/v² by itself.
+
+
+## Crest that pitches the train over from its current attitude toward target_pitch_deg. The last
+## key sits at cos(target) — free-fall support — so a fall can continue it without a force step.
+static func author_pushover(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var target: float = p.target_pitch_deg
+	var edge_g: float = p.get("edge_g", 0.15)
+	var cos_target := cos(deg_to_rad(target))
+	## Support has to stay under cos(pitch) all the way down or the crest stalls where the two
+	## meet, and the train speeds up as it falls, so a near-vertical target needs real margin.
+	var floor_g: float = minf(edge_g, cos_target - 1.2 * (1.0 - cos_target) * (1.0 - cos_target))
+	var normal := [
+		Vector2(0, 1),
+		Vector2(0.3, edge_g),
+		Vector2(0.72, floor_g),
+		Vector2(1, cos_target),
+	]
+	var entry := exit_pitch_deg(state)
+	var heading := Vector2(state.tangent.x, state.tangent.z).normalized()
+	var seed: float = maxf(deg_to_rad(absf(target - entry)) * state.speed * state.speed / (0.45 * G0), 20.0)
+	var factory := func(k: float) -> Dictionary:
+		return fvd_section("pushover", k, normal, _flat(0.0), _flat(0.0))
+	## asin folds at vertical, which turns the solve into a search across a crease; measuring
+	## against the entry heading keeps past-vertical readings monotone.
+	var measure := func(_trial_route: Dictionary, trial_state: Dictionary) -> float:
+		var tangent: Vector3 = trial_state.tangent
+		return rad_to_deg(atan2(tangent.y, Vector2(tangent.x, tangent.z).dot(heading)))
+	var length := solve_scalar(route, state, factory, measure, target, seed, seed * 1.4, 0.5)
+	var element := {"kind": "pushover", "target_pitch_deg": target, "edge_g": edge_g}
+	return [fvd_section("pushover", length, normal, _flat(0.0), _flat(0.0), element)]
+
+
+## Straight segment held at the attitude the state already has: normal cos(pitch) cancels exactly.
+static func author_fall(_route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var pitch := deg_to_rad(exit_pitch_deg(state))
+	var length: float = p.drop / maxf(absf(sin(pitch)), 0.05)
+	var element := {"kind": "fall", "drop": p.drop, "pitch_deg": rad_to_deg(pitch)}
+	return [fvd_section("fall", maxf(length, 1.0), _flat(cos(pitch)), _flat(0.0), _flat(0.0), element)]
+
+
+## Sustained-g arc back to exit_pitch_deg, ending at 1 g so it can close a group.
+static func author_pullout(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var target: float = p.exit_pitch_deg
+	var peak: float = p.peak_g
+	var entry := exit_pitch_deg(state)
+	var normal := [Vector2(0, cos(deg_to_rad(entry))), Vector2(0.3, peak), Vector2(0.7, peak), Vector2(1, 1)]
+	var seed: float = maxf(deg_to_rad(absf(target - entry)) * state.speed * state.speed / (maxf(peak - 1.0, 0.3) * G0), 20.0)
+	var factory := func(k: float) -> Dictionary:
+		return fvd_section("pullout", k, normal, _flat(0.0), _flat(0.0))
+	var measure := func(_trial_route: Dictionary, trial_state: Dictionary) -> float:
+		return exit_pitch_deg(trial_state)
+	var length := solve_scalar(route, state, factory, measure, target, seed, seed * 1.4, 0.5)
+	var element := {"kind": "pullout", "exit_pitch_deg": target, "peak_g": peak}
+	return [fvd_section("pullout", length, normal, _flat(0.0), _flat(0.0), element)]
+
+
+## Pushover → fall → pullout sized so the group loses `height` in total. The fall absorbs whatever
+## the two shaped ends do not, measured from trial integrations rather than assumed.
+static func author_dive(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var height: float = p.height
+	var max_pitch: float = p.get("max_pitch_deg", -90.0)
+	var exit_pitch: float = p.get("exit_pitch_deg", 0.0)
+	var pushover: Dictionary = author_pushover(route, state, {"target_pitch_deg": max_pitch})[0]
+	var after_push := _trial(route, state, pushover)
+	var crest_loss: float = state.position.y - after_push.state.position.y
+	var fall: Dictionary = {}
+	var pullout: Dictionary = {}
+	var after_pullout: Dictionary = after_push
+	## The pullout's own height cost grows with the speed the fall delivers, so the drop is a
+	## fixed point, not a subtraction. d(total)/d(drop) is near 1.4, which Newtons it out fast.
+	var drop := maxf(height - crest_loss, 0.0) * 0.6
+	var achieved := 0.0
+	for _pass in 6:
+		fall = author_fall(after_push.route, after_push.state, {"drop": drop})[0]
+		var after_fall := _trial(after_push.route, after_push.state, fall)
+		pullout = author_pullout(
+			after_fall.route, after_fall.state, {"exit_pitch_deg": exit_pitch, "peak_g": p.peak_g}
+		)[0]
+		after_pullout = _trial(after_fall.route, after_fall.state, pullout)
+		achieved = state.position.y - after_pullout.state.position.y
+		if absf(achieved - height) < 0.5:
+			break
+		drop = maxf(drop - (achieved - height) / 1.4, 0.0)
+	var group := [pushover, fall, pullout]
+	for section in group:
+		section.element["dive_height"] = achieved
+		section.element["dive_target_height"] = height
+	return group
+
+
+## Airtime hill entered pitched up. Length alone cannot hold both a target rise and a symmetric
+## profile, so the length closes on symmetry (exit pitch mirrors entry) and the crown span — how
+## much of the section is spent ramping into the crown — closes on the rise.
+static func author_hill(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var rise: float = p.rise
+	var crown: float = p.crown_g
+	var first: int = route.positions.size()
+	var entry_height: float = state.position.y
+	var entry_pitch := exit_pitch_deg(state)
+	var shape := {"length": maxf(2.0 * rise / maxf(sin(deg_to_rad(entry_pitch)), 0.1), 20.0)}
+	var symmetry := func(_trial_route: Dictionary, trial_state: Dictionary) -> float:
+		return exit_pitch_deg(trial_state)
+	var rise_of := func(trial_route: Dictionary, _trial_state: Dictionary) -> float:
+		return trial_route.positions[_apex_index(trial_route, first)].y - entry_height
+	var factory := func(span: float) -> Dictionary:
+		var inner := func(k: float) -> Dictionary:
+			return _hill_section(k, span, crown, {})
+		shape["length"] = solve_scalar(
+			route, state, inner, symmetry, -entry_pitch, shape["length"], shape["length"] * 1.15, 0.5
+		)
+		return _hill_section(shape["length"], span, crown, {})
+	var span := solve_scalar(route, state, factory, rise_of, rise, 0.25, 0.33, maxf(0.5, rise * 0.01))
+	var solved: Dictionary = factory.call(span)
+	var apex := _trial(route, state, solved)
+	var apex_index := _apex_index(apex.route, first)
+	solved["element"] = {
+		"kind": "hill",
+		"rise": apex.route.positions[apex_index].y - entry_height,
+		"target_rise": rise,
+		"crown_g": crown,
+		"crown_span": span,
+		"apex_pitch_deg": rad_to_deg(asin(clampf(apex.route.tangents[apex_index].y, -1.0, 1.0))),
+	}
+	return [solved]
+
+
+static func _hill_section(length: float, span: float, crown: float, element: Dictionary) -> Dictionary:
+	var edge := clampf(span, 0.05, 0.48)
+	var normal := [Vector2(0, 1), Vector2(edge, crown), Vector2(1.0 - edge, crown), Vector2(1, 1)]
+	return fvd_section("hill", length, normal, _flat(0.0), _flat(0.0), element)
+
+
+## Coordinated turn: the bank carries the whole load, so the rider feels no lateral g.
+static func author_turn(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var bank: float = absf(p.bank_deg) * signf(p.heading_change_deg)
+	return _banked_turn(route, state, "turn", p.heading_change_deg, bank, 0.0, 0.0, true, 1.5, {
+		"kind": "turn", "heading_change_deg": p.heading_change_deg, "bank_deg": bank,
+	})
+
+
+## Suspense turn: banked away from the corner, the lateral load carries the turn and the normal
+## drops to whatever holds altitude at that bank. The heading sign owns the direction; the bank
+## and lateral parameters contribute magnitude only.
+static func author_rim_turn(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var direction := signf(p.heading_change_deg)
+	var bank: float = -absf(p.outward_bank_deg) * direction
+	var lateral: float = absf(p.lateral_g) * direction
+	return _banked_turn(route, state, "rim turn", p.heading_change_deg, bank, lateral, 0.0, true, 1.5, {
+		"kind": "rim_turn", "heading_change_deg": p.heading_change_deg, "bank_deg": bank,
+		"lateral_g": lateral,
+	})
+
+
+## Past-vertical turn. No bank holds altitude beyond 90°, so the normal peak is authored directly
+## and the element descends by construction.
+static func author_overbank(route: Dictionary, state: Dictionary, p: Dictionary) -> Array:
+	var bank: float = absf(p.bank_deg) * signf(p.heading_change_deg)
+	return _banked_turn(route, state, "overbank", p.heading_change_deg, bank, 0.0, p.peak_g, false, 2.0, {
+		"kind": "overbank", "heading_change_deg": p.heading_change_deg, "bank_deg": bank,
+		"peak_normal_g": p.peak_g,
+	})
+
+
+## Shared turn body. Normal and lateral keys are placed on the roll schedule itself, so support
+## tracks the bank as it builds instead of leaving a vertical imbalance across the roll-in; the
+## roll amplitude is carried as bank·speed per unit length so solving the length cannot disturb
+## the bank it reaches. Length closes on heading change, roll amplitude on the bank measured.
+static func _banked_turn(
+	route: Dictionary,
+	state: Dictionary,
+	name: String,
+	heading_change: float,
+	bank: float,
+	lateral: float,
+	peak_normal: float,
+	hold_altitude: bool,
+	tolerance: float,
+	element: Dictionary
+) -> Array:
+	var normal := []
+	var lateral_keys := []
+	for u in TURN_KEYS:
+		var f := _bank_fraction(u)
+		normal.append(Vector2(u, _turn_normal(f, bank, lateral, peak_normal, hold_altitude)))
+		lateral_keys.append(Vector2(u, lateral * f))
+	var tuning := {"in": 0.0, "out": 0.0}
+	var first: int = route.positions.size()
+	var factory := func(k: float) -> Dictionary:
+		return fvd_section(name, k, normal, lateral_keys, [
+			Vector2(0, 0), Vector2(0.18, tuning["in"] / k), Vector2(0.32, 0),
+			Vector2(0.68, 0), Vector2(0.82, tuning["out"] / k), Vector2(1, 0),
+		])
+	var measure := func(trial_route: Dictionary, _trial_state: Dictionary) -> float:
+		return _heading_change_deg(trial_route, first)
+	var hold: float = _turn_normal(1.0, bank, lateral, peak_normal, hold_altitude)
+	var load := absf(hold * sin(deg_to_rad(bank)) + lateral * cos(deg_to_rad(bank)))
+	var length: float = maxf(deg_to_rad(absf(heading_change)) * state.speed * state.speed / (maxf(load, 0.05) * G0), 20.0)
+	tuning["in"] = bank * state.speed / 0.16
+	tuning["out"] = -tuning["in"]
+	for _pass in 3:
+		length = solve_scalar(route, state, factory, measure, heading_change, length, length * 1.3, tolerance)
+		_correct_roll(route, state, factory, tuning, bank, first, length)
+	length = solve_scalar(route, state, factory, measure, heading_change, length, length * 1.05, tolerance)
+	for _pass in 2:
+		_correct_roll(route, state, factory, tuning, bank, first, length)
+	element["peak_normal_g"] = hold
+	element["roll_rate_in"] = tuning["in"] / length
+	element["roll_rate_out"] = tuning["out"] / length
+	var section: Dictionary = factory.call(length)
+	section["element"] = element
+	return [section]
+
+
+## Rescale roll-in against the bank actually held and roll-out against the bank it actually takes
+## back out. Heading change and speed both couple into the frame, so this is measured, not derived.
+static func _correct_roll(
+	route: Dictionary,
+	state: Dictionary,
+	factory: Callable,
+	tuning: Dictionary,
+	bank: float,
+	first: int,
+	length: float
+) -> void:
+	var trial := _trial(route, state, factory.call(length))
+	var count: int = trial.route.banks.size() - first
+	var hold: float = trial.route.banks[first + roundi(0.32 * count)]
+	var release: float = trial.route.banks[first + roundi(0.68 * count)]
+	var exit_bank: float = trial.route.banks[-1]
+	if absf(hold) > 1.0:
+		tuning["in"] *= bank / hold
+	if absf(exit_bank - release) > 1.0:
+		tuning["out"] *= -release / (exit_bank - release)
+
+
+## Support that keeps a banked turn level, or a plain ramp to an authored peak when no bank can.
+static func _turn_normal(
+	fraction: float, bank: float, lateral: float, peak_normal: float, hold_altitude: bool
+) -> float:
+	if not hold_altitude:
+		return 1.0 + (peak_normal - 1.0) * fraction
+	var angle := deg_to_rad(bank * fraction)
+	return (1.0 + lateral * fraction * sin(angle)) / maxf(cos(angle), 0.15)
+
+
+## Fraction of full bank reached at u, from the canonical roll shape. Zero at both ends, so the
+## normal and lateral keys derived from it honour the group boundary contract exactly.
+static func _bank_fraction(u: float) -> float:
+	const STEPS := 400
+	var keys := PackedVector2Array(ROLL_SHAPE)
+	var partial := 0.0
+	var total := 0.0
+	for i in STEPS:
+		var x := (i + 0.5) / STEPS
+		var value: float = _profile(keys, x).x / STEPS
+		if x <= 0.5:
+			total += value
+		if x <= u:
+			partial += value
+	return partial / maxf(total, 0.000001)
+
+
+static func _flat(value: float) -> Array:
+	return [Vector2(0, value), Vector2(1, value)]
+
+
+static func _apex_index(route: Dictionary, first: int) -> int:
+	var best := first
+	for i in range(first, route.positions.size()):
+		if route.positions[i].y > route.positions[best].y:
+			best = i
+	return best
+
+
+## Signed heading swept from sample `first - 1` onward, accumulated so turns past 180° read true.
+static func _heading_change_deg(route: Dictionary, first: int) -> float:
+	var total := 0.0
+	for i in range(first, route.tangents.size()):
+		var a := Vector2(route.tangents[i - 1].x, route.tangents[i - 1].z).normalized()
+		var b := Vector2(route.tangents[i].x, route.tangents[i].z).normalized()
+		total += atan2(a.x * b.y - a.y * b.x, a.dot(b))
+	return rad_to_deg(total)
 
 
 ## ---------------------------------------------------------------------------------- primitives

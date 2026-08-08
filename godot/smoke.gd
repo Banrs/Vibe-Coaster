@@ -32,6 +32,7 @@ func _initialize() -> void:
 	errors.append_array(_terrain_errors())
 	errors.append_array(_verify_errors())
 	errors.append_array(_frame_core_errors())
+	errors.append_array(_template_errors())
 	var rails: ArrayMesh = Coaster.build_rail_mesh(route)
 	var terrain: ArrayMesh = Coaster.build_terrain_mesh(route)
 	var elapsed := Time.get_ticks_msec() - started
@@ -246,18 +247,147 @@ func _mini_route() -> Dictionary:
 
 
 func _fvd_probe(speed: float, section: Dictionary) -> Dictionary:
-	var route: Dictionary = Elements.new_route()
-	var state := {
-		"position": Vector3.ZERO,
+	var state := _template_state(speed, 0.0)
+	var route := _seed_route(state)
+	Elements.integrate_fvd(route, state, section, 0)
+	return route
+
+
+func _template_state(speed: float, height: float) -> Dictionary:
+	return {
+		"position": Vector3(0, height, 0),
 		"tangent": Vector3.FORWARD,
 		"up": Vector3.UP,
 		"speed": speed,
 		"distance": 0.0,
 		"time": 0.0,
 	}
+
+
+func _seed_route(state: Dictionary) -> Dictionary:
+	var route: Dictionary = Elements.new_route()
 	Elements.append_state(route, state, 0, 1.0, 0.0, 0.0, 0, Vector3.ZERO)
-	Elements.integrate_fvd(route, state, section, 0)
 	return route
+
+
+func _run_group(route: Dictionary, state: Dictionary, sections: Array, all: Array) -> void:
+	for section in sections:
+		section["start_index"] = route.positions.size() - 1
+		Elements.integrate_fvd(route, state, section, all.size())
+		section["end_index"] = route.positions.size() - 1
+		all.append(section)
+
+
+func _pitch_deg(tangent: Vector3) -> float:
+	return rad_to_deg(asin(clampf(tangent.y, -1.0, 1.0)))
+
+
+## The element templates: each author_* resolves its own targets from whatever attitude and speed
+## the state carries, and hands the next element a clean group boundary.
+func _template_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	errors.append_array(_dive_errors())
+	errors.append_array(_hill_errors(90.0, 62.0, 5.2, 235.0, -0.3, 4.0, 3.0, 0.12, "camelback"))
+	errors.append_array(_hill_errors(38.0, 30.0, 3.5, 12.0, -1.2, 1.5, 90.0, 1.0, "ejector"))
+
+	var turn_state := _template_state(70.0, 0.0)
+	var turn_route := _seed_route(turn_state)
+	var turn: Array = []
+	_run_group(turn_route, turn_state, Elements.author_turn(turn_route, turn_state, {"heading_change_deg": 180.0, "bank_deg": 70.0}), turn)
+	var turn_mid: float = turn_route.banks[turn_route.banks.size() / 2]
+	_expect(errors, absf(Elements._heading_change_deg(turn_route, 1) - 180.0) <= 3.0, "turn sweeps %.1f°, not 180" % Elements._heading_change_deg(turn_route, 1))
+	_expect(errors, absf(turn_route.banks[-1]) <= 3.0, "turn exits banked %.1f°" % turn_route.banks[-1])
+	_expect(errors, absf(turn_mid) >= 60.0, "turn only holds %.1f° of bank" % turn_mid)
+	_expect(errors, _frame_error(turn_route) <= 0.002, "turn frames are not orthonormal (%.5f)" % _frame_error(turn_route))
+
+	var rim_state := _template_state(16.0, 0.0)
+	var rim_route := _seed_route(rim_state)
+	var rim: Array = []
+	_run_group(rim_route, rim_state, Elements.author_rim_turn(rim_route, rim_state, {"heading_change_deg": 120.0, "outward_bank_deg": 25.0, "lateral_g": -1.0}), rim)
+	var rim_mid: float = rim_route.banks[rim_route.banks.size() / 2]
+	_expect(errors, absf(Elements._heading_change_deg(rim_route, 1) - 120.0) <= 3.0, "rim turn sweeps %.1f°, not 120" % Elements._heading_change_deg(rim_route, 1))
+	_expect(errors, rim_mid * turn_mid < 0.0, "rim turn banks %.1f°, not away from the corner" % rim_mid)
+
+	var over_state := _template_state(55.0, 0.0)
+	var over_route := _seed_route(over_state)
+	var over: Array = []
+	_run_group(over_route, over_state, Elements.author_overbank(over_route, over_state, {"heading_change_deg": 150.0, "bank_deg": 95.0, "peak_g": 2.6}), over)
+	var peak_bank := 0.0
+	for bank in over_route.banks:
+		peak_bank = maxf(peak_bank, absf(bank))
+	_expect(errors, absf(Elements._heading_change_deg(over_route, 1) - 150.0) <= 4.0, "overbank sweeps %.1f°, not 150" % Elements._heading_change_deg(over_route, 1))
+	_expect(errors, peak_bank >= 88.0, "overbank only reaches %.1f° of bank" % peak_bank)
+	_expect(errors, absf(over_route.banks[-1]) <= 3.0, "overbank exits banked %.1f°" % over_route.banks[-1])
+	return errors
+
+
+func _dive_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	var state := _template_state(12.0, 250.0)
+	var route := _seed_route(state)
+	var sections: Array = []
+	var dive: Array = Elements.author_dive(route, state, {"height": 240.0, "peak_g": 5.5})
+	_run_group(route, state, dive, sections)
+	var steepest := 0.0
+	for tangent in route.tangents:
+		steepest = maxf(steepest, absf(_pitch_deg(tangent)))
+	var drop: float = 250.0 - state.position.y
+	_expect(errors, absf(drop - 240.0) <= 5.0, "dive drops %.1f m, not 240" % drop)
+	_expect(errors, steepest >= 88.0, "dive only reaches %.1f° of pitch" % steepest)
+	_expect(errors, absf(_pitch_deg(state.tangent)) <= 2.0, "dive exits pitched %.1f°" % _pitch_deg(state.tangent))
+	_expect(errors, state.speed >= 62.0 and state.speed <= 70.0, "dive exits at %.1f m/s" % state.speed)
+	_expect(errors, _frame_error(route) <= 0.002, "dive frames are not orthonormal (%.5f)" % _frame_error(route))
+	route["sections"] = sections
+	route["length"] = state.distance
+	var issues := PackedStringArray()
+	Verify.validate_seams(route, issues)
+	for issue in issues:
+		errors.append("dive group: %s" % issue)
+	var repeat_state := _template_state(12.0, 250.0)
+	var repeat: Array = Elements.author_dive(_seed_route(repeat_state), repeat_state, {"height": 240.0, "peak_g": 5.5})
+	for i in dive.size():
+		_expect(errors, dive[i].length == repeat[i].length, "dive section %d is not deterministic" % i)
+	return errors
+
+
+## Pullout into an airtime hill — the camelback and ejector shapes differ only in their numbers.
+func _hill_errors(
+	speed: float,
+	pullout_pitch: float,
+	peak_g: float,
+	rise: float,
+	crown_g: float,
+	rise_tolerance: float,
+	apex_tolerance: float,
+	asymmetry: float,
+	label: String
+) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var state := _template_state(speed, 0.0)
+	var route := _seed_route(state)
+	var sections: Array = []
+	_run_group(route, state, Elements.author_pullout(route, state, {"exit_pitch_deg": pullout_pitch, "peak_g": peak_g}), sections)
+	var first: int = route.positions.size()
+	var entry_height: float = state.position.y
+	var entry_distance: float = state.distance
+	_run_group(route, state, Elements.author_hill(route, state, {"rise": rise, "crown_g": crown_g}), sections)
+	var apex := first
+	for i in range(first, route.positions.size()):
+		if route.positions[i].y > route.positions[apex].y:
+			apex = i
+	var ascent: float = route.distances[apex] - entry_distance
+	var descent: float = state.distance - route.distances[apex]
+	var achieved: float = route.positions[apex].y - entry_height
+	_expect(errors, absf(achieved - rise) <= rise_tolerance, "%s rises %.1f m, not %.0f" % [label, achieved, rise])
+	_expect(errors, absf(_pitch_deg(route.tangents[apex])) <= apex_tolerance, "%s apex is pitched %.1f°" % [label, _pitch_deg(route.tangents[apex])])
+	_expect(errors, absf(_pitch_deg(state.tangent) + pullout_pitch) <= 5.0, "%s exits at %.1f°, not %.0f" % [label, _pitch_deg(state.tangent), -pullout_pitch])
+	_expect(errors, absf(ascent - descent) / maxf(ascent, descent) <= asymmetry, "%s ascent and descent differ by %.0f%%" % [label, 100.0 * absf(ascent - descent) / maxf(ascent, descent)])
+	return errors
+
+
+func _expect(errors: PackedStringArray, condition: bool, message: String) -> void:
+	if not condition:
+		errors.append(message)
 
 
 func _frame_error(route: Dictionary) -> float:

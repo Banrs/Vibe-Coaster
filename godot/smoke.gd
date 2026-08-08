@@ -2,6 +2,7 @@ extends SceneTree
 
 const Coaster := preload("res://main.gd")
 const Elements := preload("res://elements.gd")
+const Generator := preload("res://generator.gd")
 const Model := preload("res://ride_model.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
@@ -45,6 +46,7 @@ func _initialize() -> void:
 		errors.append("track has too few visual speed cues")
 	if elapsed > 10_000:
 		errors.append("two model builds and meshes took %d ms" % elapsed)
+	errors.append_array(_generator_errors())
 	print(
 		"route: %.1f m, %.1f s, %d samples, %.1f km/h top, %.1f km/h average, %d ms"
 		% [
@@ -59,6 +61,48 @@ func _initialize() -> void:
 	for error in errors:
 		printerr(error)
 	quit(0 if errors.is_empty() else 1)
+
+
+## The seeded generator: one seed is one ride, the same ride every time, and every seed's ride
+## passes the same parametric checks the old route does. The route-level bands are the M6a
+## envelope — deliberately loose, and measured rather than wished for.
+func _generator_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	for seed_value in [11, 42, 20260809]:
+		var started := Time.get_ticks_msec()
+		var route: Dictionary = Generator.build(seed_value)
+		var elapsed := Time.get_ticks_msec() - started
+		var repeat: Dictionary = Generator.build(seed_value)
+		var issues := PackedStringArray()
+		for field in ["positions", "speeds", "times"]:
+			if route[field] != repeat[field]:
+				issues.append("%s are not deterministic" % field)
+		Verify.validate_structure(route, issues)
+		Verify.validate_seams(route, issues)
+		Verify.validate_clearance(route, route.terrain, route.tunnel_sections, issues)
+		Verify.validate_self_clearance(route, issues)
+		var analysis: Dictionary = Verify.analyze(route, Elements.ROW_OFFSETS)
+		Verify.validate_loads(analysis, issues)
+		_expect(issues, route.length >= 5200.0 and route.length <= 8600.0, "route is %.0f m long" % route.length)
+		_expect(issues, analysis.top_speed * 3.6 >= 320.0 and analysis.top_speed * 3.6 <= 350.0, "top speed is %.1f km/h" % (analysis.top_speed * 3.6))
+		_expect(issues, analysis.elevation_span >= 270.0 and analysis.elevation_span <= 370.0, "elevation span is %.0f m" % analysis.elevation_span)
+		var lsm_runs := PackedInt32Array()
+		var last_lsm := 0
+		for lsm in route.lsm_ids:
+			if lsm != last_lsm and lsm != 0:
+				lsm_runs.append(lsm)
+			last_lsm = lsm
+		_expect(issues, lsm_runs == PackedInt32Array([1, 2, 3]), "LSM zones read %s, not three contiguous zones in order" % str(lsm_runs))
+		var closure: Dictionary = route.sections[-1]
+		_expect(issues, closure.kind == "CLOSURE", "last section is '%s', not the station closure" % closure.name)
+		_expect(issues, closure.length <= route.length * 0.08, "closure is %.0f m of %.0f" % [closure.length, route.length])
+		for issue in issues:
+			errors.append("seed %d: %s" % [seed_value, issue])
+		print(
+			"seed %d: %.0f m, %.1f s, %.1f km/h top, %d samples, %d ms"
+			% [seed_value, route.length, route.duration, analysis.top_speed * 3.6, route.positions.size(), elapsed]
+		)
+	return errors
 
 
 func _terrain_errors() -> PackedStringArray:

@@ -406,10 +406,10 @@ static func append_closure(
 	var delivered: float = 1.0 - 0.5 * (ramps.x + ramps.y)
 	var drive: float = (0.5 * (station_speed * station_speed - state.speed * state.speed) - mean_gravity * estimate + average_drag * estimate) / (estimate * delivered)
 	for _iteration in 6:
-		var error := _closure_exit_speed2(route, controls, count, section.entry_speed, drive, state.distance) - station_speed * station_speed
+		var error := _closure_exit_speed2(route, controls, count, section.entry_speed, drive, state.distance, station_speed * station_speed) - station_speed * station_speed
 		if absf(error) < 0.01:
 			break
-		var shifted := _closure_exit_speed2(route, controls, count, section.entry_speed, drive + 0.05, state.distance)
+		var shifted := _closure_exit_speed2(route, controls, count, section.entry_speed, drive + 0.05, state.distance, station_speed * station_speed)
 		var gradient := (shifted - error - station_speed * station_speed) / 0.05
 		if absf(gradient) < 0.01:
 			break
@@ -432,7 +432,14 @@ static func append_closure(
 		var drag: float = DRAG_FACTOR * state.speed * state.speed + ROLLING_FACTOR * absf(middle_proper.dot(middle_up))
 		var acceleration: float = gravity_along + drive * _engagement(um, ramps) - drag
 		var speed_start: float = state.speed
-		var speed_end := sqrt(maxf(0.04, state.speed * state.speed + 2.0 * acceleration * chord))
+		## Floored at the station's own speed, and that is what the closure physically is: the tail of
+		## the brake run and the transfer track through the platform, which is driven. A solved drive
+		## that has to take out both the last of the speed and the last of the height puts its braking
+		## in the middle of the curve, and unfloored the train stops there — which reads as a stalled
+		## route rather than as what it is, a station transfer being asked to coast.
+		var speed_end := maxf(
+			sqrt(maxf(0.04, state.speed * state.speed + 2.0 * acceleration * chord)), station_speed
+		)
 		var curvature := _bezier_curvature(controls, u)
 		state.position = point
 		state.tangent = tangent
@@ -458,13 +465,16 @@ static func append_closure(
 	sections.append(section)
 
 
+## Mirrors the floor the integration itself holds, so the drive the secant lands on is the drive the
+## closure is actually flown at.
 static func _closure_exit_speed2(
 	route: Dictionary,
 	controls: PackedVector3Array,
 	count: int,
 	entry_speed: float,
 	drive: float,
-	start_distance: float
+	start_distance: float,
+	entry_floor: float = 0.04
 ) -> float:
 	var history: Dictionary = route.duplicate(true)
 	var speed2 := entry_speed * entry_speed
@@ -488,7 +498,10 @@ static func _closure_exit_speed2(
 		var gravity_along := _mean_train_gravity(history, distance + chord * 0.5, tangent)
 		var proper := curvature * speed2 - (GRAVITY - tangent * front_gravity)
 		var drag := DRAG_FACTOR * speed2 + ROLLING_FACTOR * absf(proper.dot(up))
-		speed2 = maxf(0.04, speed2 + 2.0 * (gravity_along + drive * _engagement(um, _ramp_fractions(length, Vector2.ZERO)) - drag) * chord)
+		speed2 = maxf(
+			entry_floor,
+			speed2 + 2.0 * (gravity_along + drive * _engagement(um, _ramp_fractions(length, Vector2.ZERO)) - drag) * chord
+		)
 		distance += chord
 		history.distances.append(distance)
 		history.tangents.append(_bezier9_derivative(controls, u).normalized())
@@ -665,7 +678,9 @@ static func author_dive(route: Dictionary, state: Dictionary, p: Dictionary) -> 
 	var height: float = p.height
 	var max_pitch: float = p.get("max_pitch_deg", -90.0)
 	var exit_pitch: float = p.get("exit_pitch_deg", 0.0)
-	var pushover: Dictionary = author_pushover(route, state, {"target_pitch_deg": max_pitch})[0]
+	var pushover: Dictionary = author_pushover(route, state, {
+		"target_pitch_deg": max_pitch, "edge_g": p.get("edge_g", 0.15),
+	})[0]
 	var after_push := _trial(route, state, pushover)
 	var crest_loss: float = state.position.y - after_push.state.position.y
 	var fall: Dictionary = {}

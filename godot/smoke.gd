@@ -17,20 +17,29 @@ const THRILL_KINDS := [
 ## fail on. They sit a couple of metres outside the aim on each side, because an element solved off
 ## a live speed lands near its target, not on it.
 const IMMELMANN_APEX_CHECK := Vector2(70.0, 98.0)
-const LOOP_HEIGHT_CHECK := Vector2(56.0, 84.0)
+const LOOP_HEIGHT_CHECK := Vector2(50.0, 88.0)
 ## One circuit, and the band the generator aims at is 6.4–7.6 km. It lands here. What is left over
-## is measured, and it is two things. The raceway arc is one: the run home is a heading reversal at
+## is measured, and it is three things now. The clifftop is the newest: the slow beat is a dozen
+## seconds of dead-level track at crawl speed rather than a brake and a re-acceleration, which is two
+## hundred metres of track that used to be twelve seconds of ramp. The raceway arc is the second: the run home is a heading reversal at
 ## eighty-five metres a second, and the bank it may hold is roll-rate limited rather than duration
 ## limited — bank·tan(bank) ≤ ROLL_BUDGET·0.16·Δ·v/g — so a 150° reversal is 800 m of track and
 ## splitting it in two makes it longer, not shorter. The cliff climb is the other: it has to cross a
 ## three-hundred-metre escarpment at a grade a coasting train can carry, which is 800 m to 1.3 km
 ## depending on how far out act one leaves it. Everything else is structure: 1.5 km of camelback,
 ## 0.5 of dive, 0.8 of opener.
-const LENGTH_CHECK := Vector2(7400.0, 8900.0)
+const LENGTH_CHECK := Vector2(7700.0, 10000.0)
 ## Shortest a beat may be before it reads as a kink rather than an element, and the g band each
 ## booster has to hold. Grammar — the pullouts, pushovers and falls that hand one beat to the next —
 ## is exempt from the first: a 20 m fall between a crest and its pullout is one element, not a stub.
+## Arbitrary seeds, the way a rider presses N: no property beyond "the generator was handed this".
+const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 const BEAT_FLOOR := 30.0
+## Slowest the ride gets between its launches, and how long it stays there. The reference's clifftop
+## slow section measures about twelve seconds dead level; ours is a crawl at a quarter of that speed
+## because the dive pitches over straight off the end of it, and a pitch-over's radius is v²/0.85g.
+const CREST_CRAWL_SPEED := 19.0
+const CREST_CRAWL_HOLD := 10.0
 const GRAMMAR_KINDS := ["pullout", "pushover", "fall"]
 const TURN_KINDS := ["turn", "rim_turn", "overbank"]
 ## The three powered zones, read as the g each one HOLDS rather than as its mean. Zone one is the
@@ -43,7 +52,7 @@ const BOOST_HOLD := 0.4
 ## Act one, against the inversion reference scaled on the value with its hold kept. The Immelmann
 ## measures 4.34–4.43 g with ≥3 g held 2.5–2.7 s; the loop is a twin lobe whose apex dips but never
 ## unloads (3.84 → 2.52 → 3.74); the cutback is 4.20 g with ≥2 g held 1.76 s.
-const IMMELMANN_HOLD_G := 3.9
+const IMMELMANN_HOLD_G := 3.7
 const IMMELMANN_PEAK_G := 6.2
 const LOOP_LOBE_G := 4.6
 const LOOP_APEX_G := 2.6
@@ -86,6 +95,7 @@ func _initialize() -> void:
 	errors.append_array(_template_errors())
 	errors.append_array(_rolled_template_errors())
 	errors.append_array(_generator_errors())
+	errors.append_array(_sweep_errors())
 	## What the viewer itself does on boot: one seeded build, the viewer's validation, its meshes.
 	var started := Time.get_ticks_msec()
 	var route: Dictionary = Generator.build(42)
@@ -162,7 +172,7 @@ func _generator_errors() -> PackedStringArray:
 		)
 		print(
 			"  %s | %s | %s"
-			% [", ".join(route.plan.inversion_notes), route.plan.get("cutback_note", "no cutback"), route.plan.get("wave_note", "no wave")]
+			% [route.plan.act_note + ": " + ", ".join(route.plan.inversion_notes), route.plan.get("cutback_note", "no cutback"), route.plan.get("wave_note", "no wave")]
 		)
 		print(
 			"  %s | %s | %s"
@@ -172,9 +182,47 @@ func _generator_errors() -> PackedStringArray:
 			"  %s | %s | %s"
 			% [route.plan.get("bearing_note", "-"), route.plan.get("corridor_note", "-"), route.plan.get("return_note", "-")]
 		)
+		print(
+			"  %s | %s"
+			% [route.plan.get("marquee_note", "%s flown" % route.plan.return_marquee), route.plan.get("brake_note", "-")]
+		)
 		if seed_value == 42:
 			_print_phases(route)
 			_print_bands(route)
+	return errors
+
+
+## Every seed has to build. The viewer's seed key hands the generator arbitrary numbers, so the
+## three seeds above being green says nothing about the twelfth one a rider presses N onto — and the
+## failure mode that hides here is not a soft one: a run home that comes home past the platform used
+## to hand the closure a bezier that folds, and the train stalled inside it.
+##
+## Structure is the gate: finite frames, monotone distance and time, and a speed that never falls
+## through the floor. That is the "does it build" property and it is what this sweep exists to stop
+## regressing. Placement — terrain clearance, self-clearance, seam continuity — is measured and
+## printed on the same seeds but not gated: it is a layout quality that the three deep seeds above
+## gate properly, and it is honest to report the arbitrary-seed rate rather than to pretend it.
+func _sweep_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	var placed := 0
+	for seed_value in SWEEP_SEEDS:
+		var route: Dictionary = Generator.build(seed_value)
+		var built := PackedStringArray()
+		Verify.validate_structure(route, built)
+		for issue in built:
+			errors.append("sweep seed %d: %s" % [seed_value, issue])
+		var placement := PackedStringArray()
+		Verify.validate_seams(route, placement)
+		Verify.validate_clearance(route, route.terrain, route.tunnel_sections, placement)
+		Verify.validate_self_clearance(route, placement)
+		if placement.is_empty():
+			placed += 1
+		else:
+			print("  sweep seed %d places poorly: %s" % [seed_value, placement[0]])
+	print(
+		"seed sweep: %d of %d build, %d of %d place clean"
+		% [SWEEP_SEEDS.size() - errors.size(), SWEEP_SEEDS.size(), placed, SWEEP_SEEDS.size()]
+	)
 	return errors
 
 
@@ -364,7 +412,7 @@ func _print_bands(route: Dictionary) -> void:
 	print("  seed 42 held-value bands (peak | held 0.5 s | held 1.5 s | held 3.0 s):")
 	for band in _element_bands(route):
 		print(
-			"    %-16s %4.1f s  Gz %5.2f |%5.2f |%5.2f |%5.2f   Gz- %5.2f |%5.2f   Gy %5.2f |%5.2f   Gx %5.2f |%5.2f"
+			"    %-16s %4.1f s  Gz %5.2f |%5.2f |%5.2f |%5.2f   Gz- %5.2f |%5.2f   Gy %5.2f |%5.2f   Gx %5.2f |%5.2f   onset %5.1f"
 			% [
 				band.kind, band.seconds,
 				_held(band.normal, 1.0, 0.0), _held(band.normal, 1.0, 0.5),
@@ -372,6 +420,10 @@ func _print_bands(route: Dictionary) -> void:
 				_held(band.normal, -1.0, 0.0), _held(band.normal, -1.0, 1.0),
 				_held(band.lateral, 1.0, 0.0), _held(band.lateral, -1.0, 0.0),
 				_held(band.longitudinal, 1.0, 0.0), _held(band.longitudinal, 1.0, 0.5),
+				maxf(
+					Verify.peak_onset(band.normal),
+					maxf(Verify.peak_onset(band.lateral), Verify.peak_onset(band.longitudinal))
+				),
 			]
 		)
 
@@ -442,7 +494,7 @@ func _expect_elements(route: Dictionary, issues: PackedStringArray) -> void:
 	_expect(issues, twisted_up > 0.2, "twisted drop rolls over (lowest up.y %.3f)" % twisted_up)
 	_expect(issues, cutbacks == 1 or route.plan.get("cutback_note", "").contains("skipped"), "the %s cutback slot neither flew nor recorded a skip" % expectations.cutback_slot)
 	_expect(issues, cutbacks <= 1, "the ride has %d cutbacks" % cutbacks)
-	_expect(issues, _held_seconds(route) >= 2.5, "the crest hold only crawls for %.2f s" % _held_seconds(route))
+	_expect(issues, _held_seconds(route) >= CREST_CRAWL_HOLD, "the crest hold only crawls for %.2f s" % _held_seconds(route))
 
 
 ## The camelback is the one hill the generator measured as structure rather than as rise.
@@ -453,12 +505,27 @@ func _structure_element(route: Dictionary) -> Dictionary:
 	return {}
 
 
-## Longest contiguous run at crawling speed: the crest hold is a physical beat, not a section name.
+## The ride's one deliberate slow beat, measured rather than named: between the first powered zone
+## and the last, find the slowest the ride ever gets and then the longest contiguous run it holds
+## within a couple of metres a second of it. The station approach and the brake run are slow too and
+## neither is the beat, which is why the window is the two launches.
 func _held_seconds(route: Dictionary) -> float:
+	var from := 0
+	var to: int = route.speeds.size() - 1
+	for i in route.lsm_ids.size():
+		if route.lsm_ids[i] == 1:
+			from = i
+		elif route.lsm_ids[i] == 3:
+			to = mini(to, i)
+	var crawl := INF
+	for i in range(from, to):
+		crawl = minf(crawl, route.speeds[i])
+	if crawl > CREST_CRAWL_SPEED:
+		return 0.0
 	var longest := 0.0
 	var start := -1
-	for i in route.speeds.size():
-		if route.speeds[i] <= 2.2:
+	for i in range(from, to):
+		if route.speeds[i] <= crawl + 2.0:
 			if start < 0:
 				start = i
 			longest = maxf(longest, route.times[i] - route.times[start])

@@ -2,6 +2,8 @@ extends SceneTree
 
 const Coaster := preload("res://main.gd")
 const Elements := preload("res://elements.gd")
+const Fidelity := preload("res://fidelity.gd")
+const FidelityTests := preload("res://fidelity_tests.gd")
 const Generator := preload("res://generator.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
@@ -91,6 +93,7 @@ const FLAT_GRADES := [
 
 func _initialize() -> void:
 	var errors := PackedStringArray()
+	errors.append_array(FidelityTests.run())
 	errors.append_array(_terrain_errors())
 	errors.append_array(_verify_errors())
 	errors.append_array(_frame_core_errors())
@@ -313,50 +316,14 @@ func _expect_shape(route: Dictionary, issues: PackedStringArray) -> void:
 
 ## One entry per beat: the kind, the 100 Hz window it occupies, and the filtered series inside it.
 func _element_bands(route: Dictionary) -> Array:
-	var normal: PackedFloat32Array = Verify.filter(Verify.resample(route.times, route.normal_g))
-	var lateral: PackedFloat32Array = Verify.filter(Verify.resample(route.times, route.lateral_g))
-	var longitudinal: PackedFloat32Array = Verify.filter(
-		Verify.resample(route.times, route.longitudinal_g)
-	)
-	var beats := []
-	for section in route.sections:
-		var element: Dictionary = section.get("element", {})
-		var kind: String = element.get("kind", "") if section.kind == "FVD" else section.name
-		if kind == "":
-			continue
-		if not beats.is_empty() and beats[-1].kind == kind and is_same(beats[-1].element, element):
-			beats[-1].last = section.end_index
-			continue
-		beats.append({
-			"kind": kind, "element": element, "phase": section.get("phase", ""),
-			"first": section.start_index, "last": section.end_index,
-		})
-	var bands := []
-	for beat in beats:
-		var low: int = mini(floori(route.times[beat.first] * 100.0), normal.size() - 1)
-		var high: int = mini(floori(route.times[beat.last] * 100.0), normal.size() - 1)
-		if high - low < 4:
-			continue
-		bands.append({
-			"kind": beat.kind,
-			"element": beat.element,
-			"phase": beat.phase,
-			"seconds": route.times[beat.last] - route.times[beat.first],
-			"normal": normal.slice(low, high + 1),
-			"lateral": lateral.slice(low, high + 1),
-			"longitudinal": longitudinal.slice(low, high + 1),
-		})
-	return bands
+	return Fidelity.element_bands(route)
 
 
 ## Largest value the window sustains for `seconds` without interruption, signed by `polarity`:
 ## the same largest-rectangle held curve the duration envelope is read off. −INF when the window
 ## is shorter than the hold being asked for, which fails any band that asks for one.
 func _held(values: PackedFloat32Array, polarity: float, seconds: float) -> float:
-	var window := roundi(seconds * 100.0) + 1
-	if window >= values.size():
-		return -INF
-	return Verify._held_curve(values, polarity)[window] * polarity
+	return Fidelity.held(values, polarity, seconds)
 
 
 ## Every band here is the measured counterpart scaled per axis on the VALUE with the measured HOLD

@@ -9,7 +9,16 @@ extends RefCounted
 ## clearance check itself reads.
 
 const STATION_SPEED := 6.0
-const STATION_HEIGHT := 12.0
+const STATION_HEIGHT := 20.0
+## Speed the station section hands the first booster. Everything about LSM1's length follows from
+## it: a 2 g booster is Δ(v²)/(2·2g) metres long and nothing else.
+const STATION_EXIT_SPEED := 8.0
+## The three boosters, in g. Two of them shove the train up to the next gesture; the third is the
+## record launch, and it is short because the cliff has already done most of the work — a 300 m
+## dive arrives at seventy-six metres a second, so the last twenty to the record costs forty metres.
+const LSM1_G := 2.0
+## Longest a booster is allowed to be. Past this it is not a booster, it is a powered straight.
+const LSM_MAX_LENGTH := 200.0
 ## The inversions live in act one and nowhere else. Measured: a 75 m loop entered at the 94 m/s the
 ## tunnel delivers is a 31 g element, and an Immelmann at that speed apexes 380 m up. Both shapes
 ## cost height and load as v², so the only stretch of this ride that can carry a record-class
@@ -21,8 +30,13 @@ const RAMP_DELIVERY := 0.86
 ## The cliff climb ramps in harder than a lift does, and delivers that much more of its length in
 ## height. It has to: the apron it crosses rises at up to 20°, and a climb that spends its first
 ## hundred and thirty metres getting to 26° grazes the slope it is supposed to be climbing out of.
-const CLIMB_RAMP := 0.07
-const CLIMB_DELIVERY := 0.93
+## Asymmetric, and it has to be: the coast is entered at eighty-five metres a second and left at
+## sixteen, and what a pitch ramp costs in normal g is v² times its curvature. Measured, the old
+## seven per cent ramp read 17 g at the base — the ramp in is now a third of the climb, and the ramp
+## out, where the train is crawling, stays short so the crest is a crest.
+const CLIMB_RAMP_IN := 0.32
+const CLIMB_RAMP_OUT := 0.06
+const CLIMB_DELIVERY := 0.81
 ## Roll rate a correction turn is allowed to ask for, well inside the 120°/s limit.
 const ROLL_BUDGET := 90.0
 ## A cutback that solves longer than this, or that misses the reversal by more than this much
@@ -37,11 +51,74 @@ const CUTBACK_MAX_SPEED := 46.0
 ## the ladder's, not the old provisional one: act one is entered forty-odd metres a second now, and
 ## a loop sized off that speed at the 3.5 g ceiling lands here.
 const LOOP_BAND := Vector2(52.0, 68.0)
-## Corridor the beats on the run home need at the eighty metres a second it is flown at. The marquee
-## is an overbank or a wave turn; the aim allowance is one correction turn, which costs about 350 m
-## per fifty degrees at that speed. A pullout-and-hill pair is trialled rather than estimated.
-const RETURN_MARQUEE_ROOM := 500.0
-const RETURN_AIM_ROOM := 350.0
+## The one sweep act one is allowed. Below this much heading it is not a gesture, it is a kink, and
+## the act simply arrives at the cliff a few degrees off — which the launch corridor absorbs by
+## trading booster length against climb grade rather than by turning. Forced long, because a sweep
+## is the arc between two beats and not a correction: bank comes off until the arc is this long.
+const ACT_SWEEP_MIN_DEG := 25.0
+const ACT_SWEEP_MIN_LENGTH := 160.0
+## The run home is one rotation, not a turn and then some turns. The raceway arc is solved for the
+## heading the whole gesture — arc, marquee, hills — has to end on, so only a real miss is corrected.
+const RETURN_AIM_TOLERANCE := 15.0
+## Past this the aim point is behind the train, and a turn to it is not a square-up but a second
+## reversal at eighty metres a second. The closure takes it instead.
+const RETURN_AIM_LIMIT := 60.0
+## Speed a pullout-and-hill pair covers per second of the run home, used to aim the arc past beats
+## that have not been solved yet. Measured across these seeds at eighty-odd metres a second.
+const RETURN_PAIR_SECONDS := 4.6
+## Ground the camelback covers, as a fraction of v². Both of its arcs are radii fixed by the speed
+## and the g they are authored at, so the whole structure scales that way and nothing else.
+const CAMELBACK_REACH := 0.112
+## What the run home is flown at relative to the tunnel's record, once the camelback has been paid
+## for. The corridor solve needs a speed before there is one to measure.
+const RETURN_SPEED_SHARE := 0.9
+## Headings the marquee corridor may be aimed on, measured in the terrain frame. Turned further back
+## than this it runs along the apron rather than out over the plain; turned less, the second act flies
+## out and back down one line and the run home has a kilometre of nothing in it.
+const CORRIDOR_BAND := Vector2(-165.0, -25.0)
+## Bank the raceway arc may be flown at. The high end is what the duration envelope allows over the
+## nine seconds a reversal at eighty metres a second takes: 1/cos(74°) is 3.6 g against a 4.0 ceiling.
+const RETURN_BANK_BAND := Vector2(40.0, 74.0)
+## What dropping a speed hill off the run home is worth in metres of closure miss. Below this the
+## beat stays and the brake run takes the difference.
+const RETURN_PAIR_PENALTY := 120.0
+## What a metre of raceway arc is worth against a metre of closure miss. The arc is track the ride
+## has to fly; the miss is brake run, which is straight and cheap.
+const RETURN_ARC_COST := 0.8
+## A metre of sideways miss costs more than a metre short: the brake run absorbs the one and the C4
+## closure has to turn out the other, and a bezier asked to turn inside its own handles cusps.
+const RETURN_ASIDE_COST := 2.5
+## Slack the corridor search leaves on top of the brake run. The model behind it is arcs and straight
+## runs and it lands within a couple of hundred metres — fine to be long by, fatal to be short by,
+## because short means the brake run is driven past the station.
+const CLOSURE_MARGIN := 260.0
+## Neither marquee shape lays down the arc its authored load implies — both are shorter, because
+## both spend part of their length rolling. Measured across these seeds, by this much.
+const MARQUEE_TIGHTNESS := 1.4
+## Where the marquee corridor starts, relative to the station: the opener's ground run laid down on
+## the station's own bearing, plus a fixed reach in act one's frame for everything from the crest
+## turn to the tunnel mouth. Measured across these seeds — act one, the launch corridor, the plateau
+## beat and the dive are one rigid shape once the heading act one runs on is known.
+## Ground the marquee beat covers. Both shapes are of the same order at this speed.
+## Corridor the C4 closure needs to take out a heading and an offset without folding into a cusp.
+const CLOSURE_FLOOR := 340.0
+## Steepest the brake run is allowed to run. Its entry crest costs (1 − cos) of curvature times v²,
+## and at seventy-five metres a second that is a g and a half per tenth of grade.
+const BRAKE_GRADE := 0.20
+const MARQUEE_REACH := 320.0
+const OPENER_REACH := 630.0
+const ACT_REACH := 1470.0
+const ACT_SIDE := 130.0
+## How much longer a real banked turn is than the arc its held bank implies. Measured.
+const TURN_ARC_FACTOR := 1.5
+## Drag an unpowered climb spends, in v² per metre of track. Measured over the cliff climb, where
+## the train crosses it at fifty to eighty metres a second; the opener's is smaller and the single
+## deterministic re-check each climb runs takes the difference out.
+const CLIMB_DRAG := 0.42
+## What the opener spends between the booster's exit and the bottom of the twisted drop, in v².
+## Measured across these seeds; the drop's own solve then lands the valley height exactly, so an
+## error here shows up only as a fraction of a metre a second on the speed act one is entered at.
+const OPENER_DRAG := 120.0
 
 ## What each element is for, what it may not share with another headline beat, and which act it is
 ## allowed to appear in. Pure data — nothing in this file reads it. It is the seam a configurable
@@ -133,8 +210,9 @@ static func build(seed_value: int) -> Dictionary:
 	var terrain: Dictionary = RideTerrain.generate(rng)
 	var plan := _plan(rng)
 	var layout := _layout(terrain, plan.mirror)
+	_bearing(layout, plan)
 	var station_position := _world(layout, plan.station_s, plan.station_a, STATION_HEIGHT)
-	var station_tangent := _direction(layout, 0.0)
+	var station_tangent := _direction(layout, plan.start_bearing_deg)
 	var state := {
 		"position": station_position,
 		"tangent": station_tangent,
@@ -147,16 +225,22 @@ static func build(seed_value: int) -> Dictionary:
 	RideElements.append_state(route, state, 0, 1.0, 0.0, 0.0, 0, Vector3.ZERO)
 	var sections: Array = []
 	var tunnel: Array = []
-	_station_and_lift(plan, route, state, sections)
+	_station_and_boost(plan, route, state, sections)
 	_opening_drop(layout, plan, route, state, sections)
-	_inversion_act(layout, plan, route, state, sections)
-	_low_act(layout, plan, route, state, sections)
-	_cliff_climb(layout, plan, route, state, sections)
+	_mark(sections, "opener")
+	_act_one(layout, plan, route, state, sections)
+	_mark(sections, "act one")
+	_cliff_launch(layout, plan, route, state, sections)
+	_mark(sections, "LSM2 + cliff climb")
 	_clifftop(layout, plan, route, state, sections)
+	_mark(sections, "clifftop")
 	_dive_and_tunnel(layout, plan, route, state, sections, tunnel)
-	_camelback(layout, plan, route, state, sections)
+	_mark(sections, "dive + LSM3")
+	_camelback(layout, plan, route, state, sections, station_position, station_tangent)
+	_mark(sections, "camelback")
 	_return_run(layout, plan, route, state, sections, station_position, station_tangent)
 	RideElements.append_closure(route, state, sections, station_position, station_tangent, STATION_SPEED)
+	_mark(sections, "run home")
 	RideElements.measure_roll_rates(route)
 	route["sections"] = sections
 	route["length"] = state.distance
@@ -177,22 +261,26 @@ static func build(seed_value: int) -> Dictionary:
 static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 	var plan := {}
 	plan["mirror"] = rng.randf() < 0.5
-	plan["station_s"] = -rng.randf_range(900.0, 1050.0)
-	plan["station_a"] = -rng.randf_range(80.0, 140.0)
-	## The lift is a chosen grade of a chosen height, not a chosen length: the crest is what the
-	## inversion act is paid out of, so it is the plan value and the length follows from it.
-	plan["lift_pitch_deg"] = rng.randf_range(21.0, 24.0)
-	## A constant-speed lift at Falcon's 40 km/h leaves the twisted drop a 28 m element at this
-	## bank: 130°/s of roll and a curvature ramp three samples wide. Everything about that element
-	## scales with the speed it is entered at, so the lift crests a little faster than the record.
-	plan["lift_speed"] = rng.randf_range(15.5, 16.5)
-	## Height the crest stands at. Everything downstream of the twisted drop is bought with it: the
-	## drop to the plain is crest − drop_bottom_height, and the valley speed that sizes the loop and
-	## the Immelmann is the square root of twice g times that. The ladder sets it, not the other way
-	## round — act one is entered at the speed the two inversions are both in scale at, and a crest
-	## chosen for the drop alone puts the Immelmann's apex out past anything that has been built.
-	plan["lift_crest_height"] = rng.randf_range(122.0, 132.0)
-	plan["drop_bottom_height"] = rng.randf_range(18.0, 22.0)
+	plan["station_s"] = -rng.randf_range(780.0, 880.0)
+	plan["station_a"] = -rng.randf_range(60.0, 120.0)
+	## How far off the reverse of act one's own heading the station is aimed. The ride marches better
+	## than a kilometre along the escarpment through act one and walks it back through the second, so
+	## the run home arrives on roughly the line act one left on, reversed — but not exactly on it: the
+	## second act also crosses a kilometre of plain outward, and the yaw is what leans the run home
+	## back in against that. It costs nothing, because the turn that pays for it is at the crest.
+	plan["station_yaw_deg"] = -rng.randf_range(30.0, 55.0)
+	## The opener is a booster and then a coast, not a lift. The booster is 2 g of flat track and the
+	## climb over it is unpowered, so the crest speed is what the ride paid for and the crest height
+	## is solved from it — the same way the cliff climb is solved, one gesture later and one act
+	## smaller. Nothing here is a chosen length.
+	plan["opening_climb_pitch_deg"] = rng.randf_range(21.0, 25.0)
+	plan["opening_crest_speed"] = rng.randf_range(15.0, 20.0)
+	## Speed act one is entered at, and the whole reason the opener exists. Both inversions are sized
+	## off it: below about 44 m/s the Immelmann's apex falls out of the record class it is chasing,
+	## above about 48 the loop's own 3.5 g ceiling puts it out of scale. So the booster's exit speed
+	## is derived from this rather than drawn, and the crest height follows from the booster.
+	plan["act_entry_speed"] = rng.randf_range(45.5, 47.0)
+	plan["drop_bottom_height"] = rng.randf_range(16.0, 22.0)
 	plan["drop_pitch_deg"] = -rng.randf_range(44.0, 54.0)
 	plan["drop_bank_deg"] = rng.randf_range(40.0, 48.0)
 	plan["drop_lateral_g"] = rng.randf_range(0.35, 0.5)
@@ -206,8 +294,6 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 		inversions[i] = inversions[j]
 		inversions[j] = swap
 	plan["inversion_order"] = inversions
-	## Jog between the two inversions so the second is not flown down the first's own corridor.
-	plan["dogleg"] = rng.randf_range(-20.0, 20.0)
 	plan["immelmann"] = {"peak_g": rng.randf_range(3.6, 4.0)}
 	## lateral_g is what stops the two legs crossing: threaded through the shape it walks the exit leg
 	## off the entry leg, which is the offset a real loop's legs are built with. The amplitude is set
@@ -227,10 +313,6 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 	plan["inversion_exit"] = {
 		"pitch_deg": -rng.randf_range(26.0, 32.0), "peak_g": rng.randf_range(3.2, 3.8),
 	}
-	## Outward now, not inland: act one is three kilometres long with the inversions in it, and at the
-	## old eight to fourteen degrees toward the escarpment it arrives at the launch corridor already
-	## on the apron — which starts the cliff climb inside the slope it is supposed to be climbing.
-	plan["low_heading_deg"] = -rng.randf_range(4.0, 10.0)
 	## Three pullouts, two hills: the third pullout is the wave turn's entry. Both are drawn in one
 	## paired loop so the two sequences stay in step.
 	var low_pullouts := []
@@ -242,18 +324,23 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 		low_hills.append({"rise": rng.randf_range(12.0, 22.0), "crown_g": -rng.randf_range(0.9, 1.3)})
 	plan["low_pullouts"] = low_pullouts
 	plan["low_hills"] = low_hills
+	## The wave turn carries the largest single share of act one's heading budget: it is the beat that
+	## points the run at the escarpment, so its sweep is a target and its lateral load is solved to
+	## reach it. Sign comes from the budget, not from the draw.
 	plan["wave"] = {
 		"rise": rng.randf_range(14.0, 22.0),
 		"crown_g": rng.randf_range(0.1, 0.3),
 		"peak_bank_deg": rng.randf_range(55.0, 65.0),
-		"lateral_g": rng.randf_range(0.5, 0.7),
+		"lateral_g": rng.randf_range(0.6, 0.9),
+		"sweep_deg": rng.randf_range(40.0, 65.0),
 	}
-	## Exactly one cutback per ride, in one of the two places a heading reversal is worth flying:
-	## the tail of the low act, or the return run's turnaround. The entry pullout is held to
-	## author_cutback's 22° caller contract in both.
-	plan["cutback_slot"] = "low" if rng.randf() < 0.5 else "return"
+	## Exactly one cutback per ride, and act one is the only place it can be flown: the beat's length
+	## grows as v², and measured, past about 46 m/s the reversal is a kilometre of track no corridor
+	## here has room for. The run home is flown at eighty-five, so the slot the old plan offered it
+	## there was one the physics never once accepted.
+	plan["cutback_slot"] = "low"
 	plan["cutback"] = {
-		"exit_pitch_deg": rng.randf_range(20.0, 22.0),
+		"exit_pitch_deg": rng.randf_range(13.0, 17.0),
 		"pullout_g": rng.randf_range(2.4, 2.8),
 		"peak_g": rng.randf_range(2.8, 3.2),
 		## Held just past vertical rather than well past it: every degree beyond ninety turns more of
@@ -262,7 +349,12 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 		"peak_bank_deg": rng.randf_range(112.0, 120.0),
 	}
 	plan["level_g"] = rng.randf_range(2.4, 2.8)
-	plan["climb_pitch_deg"] = rng.randf_range(25.0, 27.0)
+	## Heading act one has to arrive on, and the bank the one sweep it is allowed may use.
+	## Steep, and that is a layout decision rather than a comfort one: the launch corridor is the one
+	## stretch that can walk back the kilometre and a half act one marches along the escarpment, and
+	## it only walks it back if it climbs across the face rather than along it.
+	plan["climb_aim_deg"] = rng.randf_range(68.0, 82.0)
+	plan["act_sweep_bank_deg"] = rng.randf_range(45.0, 60.0)
 	## Height the crest stands above the plateau. The rim has to clear both the climb coming up
 	## under it and the dive pitching over it, and both of those read the same margin.
 	plan["crest_margin"] = rng.randf_range(46.0, 56.0)
@@ -270,18 +362,20 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 	## plateau under it, close enough that the dive's pitch-over is past the face before it drops.
 	plan["crest_edge_offset"] = rng.randf_range(6.0, 14.0)
 	plan["climb_bank_deg"] = rng.randf_range(40.0, 55.0)
-	plan["launch_length"] = rng.randf_range(110.0, 140.0)
-	plan["launch_exit_speed"] = rng.randf_range(42.0, 44.0)
-	plan["climb_exit_speed"] = rng.randf_range(15.0, 17.0)
+	## LSM2 is a booster at the base and then three hundred metres of unpowered climb. The g the
+	## booster holds is the plan value; its length is Δ(v²)/(2·g) against the speed the climb needs,
+	## flexed inside a quarter either way so the crest still lands where the rim wants it.
+	plan["lsm2_g"] = rng.randf_range(1.9, 2.1)
+	plan["climb_exit_speed"] = rng.randf_range(15.0, 18.0)
 	plan["hold_brake_length"] = rng.randf_range(55.0, 70.0)
 	plan["crest_hold_length"] = rng.randf_range(8.0, 12.0)
-	plan["hold_release_pitch_deg"] = rng.randf_range(10.0, 14.0)
+	plan["hold_release_pitch_deg"] = rng.randf_range(14.0, 18.0)
 	## Speed the plateau beat is ridden at. Everything up here is solved from it, and it is squeezed
 	## from both sides: below about 20 m/s a plateau-scale hill is a dozen samples long and its
 	## curvature ramp lands inside one of them, while above about 20 m/s the dive's pitch-over —
 	## which spends height as v² — eats the whole cliff before it is vertical. So the suspense runs
 	## fast enough to have shape and a short rim brake takes it back down before the lip.
-	plan["hold_release_speed"] = rng.randf_range(23.0, 25.0)
+	plan["hold_release_speed"] = rng.randf_range(22.0, 24.0)
 	plan["rim_brake_length"] = rng.randf_range(40.0, 60.0)
 	plan["rim_brake_speed"] = rng.randf_range(15.0, 17.0)
 	## The clifftop crest is a pullout up and a pullout back down, not an authored airtime hill: at
@@ -297,17 +391,22 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 	}
 	plan["dive_peak_g"] = rng.randf_range(5.0, 5.6)
 	plan["dive_pitch_deg"] = -90.0
-	plan["tunnel_length"] = rng.randf_range(420.0, 520.0)
+	## The record launch, and the one number on this ride the onset rule wrote rather than the story.
+	## The cliff hands the tunnel seventy-eight metres a second, so the last twenty to the record is
+	## Δ(v²) = 3360 — and a booster's thrust ramps over a fixed fraction of its own length, which at
+	## that speed is a fraction of a second. Measured: 3.75 g mean peaks at 6.9 and ramps at 67 g/s
+	## against a 25 g/s ceiling. The g that fits the ceiling is this, and the length follows from it.
+	plan["lsm3_g"] = rng.randf_range(1.15, 1.30)
 	plan["tunnel_exit_speed"] = rng.randf_range(93.5, 94.8)
 	## The whole return run sits on this: a past-vertical overbank at 85 m/s drops thirty metres by
 	## construction, so the high-speed half of the ride has to leave the tunnel above that.
-	plan["tunnel_end_height"] = rng.randf_range(28.0, 32.0)
+	plan["tunnel_end_height"] = rng.randf_range(42.0, 50.0)
 	## The marquee corridor turns off the dive's line as soon as the tunnel ends. Run straight out,
 	## the camelback and the run home are the same corridor twice — the return leg retraces the
 	## outbound one and the whole second act reads as one line. Doglegged, the camelback runs
 	## diagonally across the plain and the run home comes back on the offset line beside it. The sign
 	## is fixed in the terrain frame, which is what makes the seed mirror flip it.
-	plan["post_tunnel_dogleg"] = rng.randf_range(35.0, 55.0)
+	plan["post_tunnel_dogleg"] = rng.randf_range(22.0, 32.0)
 	## Apex above the valley the entry pullout was entered from, not the rise handed to author_hill:
 	## at 90 m/s the pullout alone climbs a hundred metres, so a rise target says nothing about how
 	## tall the structure ends up. The rise is solved from this once the pullout is integrated.
@@ -318,12 +417,12 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 		"crown_g": -rng.randf_range(0.25, 0.35),
 		"exit_peak_g": rng.randf_range(4.6, 5.0),
 	}
-	plan["turnaround_bank_deg"] = rng.randf_range(65.0, 75.0)
+	plan["turnaround_bank_deg"] = rng.randf_range(60.0, 68.0)
 	## One marquee beat opens the run home, and which one is the seed's. Both parameter sets are
 	## drawn either way so the branch cannot shift the stream.
 	plan["return_marquee"] = "overbank" if rng.randf() < 0.5 else "wave_turn"
 	plan["overbank"] = {
-		"heading_change_deg": rng.randf_range(80.0, 100.0),
+		"heading_change_deg": rng.randf_range(60.0, 85.0),
 		"bank_deg": rng.randf_range(88.0, 96.0),
 		"peak_g": rng.randf_range(2.4, 2.8),
 	}
@@ -350,13 +449,13 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 		})
 	plan["return_pullouts"] = return_pullouts
 	plan["return_hills"] = return_hills
-	plan["brake_length"] = rng.randf_range(220.0, 280.0)
+	plan["brake_length"] = rng.randf_range(240.0, 300.0)
 	plan["approach_lead"] = rng.randf_range(180.0, 220.0)
 	## What the assembly is aiming for, in the units the checks read. Written here rather than
 	## measured afterwards so a failure reads as a miss against an intention, not as a moved band.
 	plan["expectations"] = {
 		"camelback_structure": plan.camelback.structure,
-		"route_length": [7200.0, 9800.0],
+		"route_length": [6400.0, 7600.0],
 		"immelmann_apex": [75.0, 95.0],
 		"loop_height": [LOOP_BAND.x, LOOP_BAND.y],
 		"loop_leg_separation": 4.0,
@@ -369,27 +468,121 @@ static func _plan(rng: RandomNumberGenerator) -> Dictionary:
 ## ---------------------------------------------------------------------------------- story slots
 
 
-static func _station_and_lift(
+## The two headings the whole layout hangs off, measured before anything is integrated. A twisted
+## drop sweeps the same arc at any speed — its length and its curvature both scale as v², so the
+## angle between them does not — which makes the heading act one will inherit knowable in advance.
+## Act one's own heading is fixed by what has to happen at the end of it: the wave turn is the beat
+## that points the run at the escarpment, so the act runs on the climb's aim less the wave's sweep,
+## less the reversals its inversions supply. The station is then aimed at the reverse of that,
+## because that is the line the run home comes back on.
+static func _bearing(layout: Dictionary, plan: Dictionary) -> void:
+	var probe_state := {
+		"position": Vector3.ZERO,
+		"tangent": Vector3.FORWARD,
+		"up": Vector3.UP,
+		"speed": plan.opening_crest_speed,
+		"distance": 0.0,
+		"time": 0.0,
+	}
+	var probe_route: Dictionary = RideElements.new_route()
+	RideElements.append_state(probe_route, probe_state, 0, 1.0, 0.0, 0.0, 0, Vector3.ZERO)
+	var probe: Array = RideElements.author_twisted_drop(probe_route, probe_state, {
+		"target_pitch_deg": plan.drop_pitch_deg,
+		"peak_bank_deg": -layout.turn_sign * plan.drop_bank_deg,
+		"lateral_g": plan.drop_lateral_g,
+	})
+	var reversals := 2.0 if plan.cutback_slot == "low" else 1.0
+	plan["drop_sweep_deg"] = layout.turn_sign * probe[0].element.heading_change_deg
+	plan["act_heading_deg"] = _wrap(
+		plan.climb_aim_deg - plan.wave.sweep_deg - 180.0 * reversals
+	)
+	plan["crest_heading_deg"] = _wrap(plan.act_heading_deg - plan.drop_sweep_deg)
+	## Which way the station points, searched rather than drawn. Everything from the crest turn to the
+	## tunnel mouth is rigid in act one's own frame — the terrain only anchors how far in it sits —
+	## so where the marquee corridor starts can be dead-reckoned off the station before a metre of it
+	## is integrated, and the bearing that makes the circuit close is the one the same analytic model
+	## of the run home says leaves a brake run's length and nothing to one side. The drawn yaw only
+	## picks where the search starts, so a seed still owns its answer.
+	var station: Vector3 = _world(layout, plan.station_s, plan.station_a, STATION_HEIGHT)
+	var best := INF
+	var bearing: float = _wrap(plan.act_heading_deg + 180.0 + plan.station_yaw_deg)
+	for step in 37:
+		var home: float = bearing + lerpf(-90.0, 90.0, step / 36.0)
+		var origin: Vector3 = (
+			station
+			+ _direction(layout, home) * OPENER_REACH
+			+ _direction(layout, plan.act_heading_deg) * ACT_REACH
+			+ _direction(layout, plan.act_heading_deg + 90.0) * ACT_SIDE
+		)
+		var trial: Dictionary = _corridor_search(
+			layout,
+			plan,
+			origin,
+			-90.0,
+			plan.tunnel_exit_speed,
+			station - _direction(layout, home) * plan.approach_lead,
+			home
+		)
+		if trial.error < best:
+			best = trial.error
+			plan["start_bearing_deg"] = _wrap(home)
+	plan["bearing_note"] = "station aimed %.0f°, %.0f° off the reverse of act one" % [
+		plan.start_bearing_deg,
+		_wrap(plan.start_bearing_deg - plan.act_heading_deg - 180.0),
+	]
+
+
+## Station, the first booster, and the coast over the opener's crest. The booster is 2 g of flat
+## track — its length is Δ(v²)/(2·2g) and nothing else — and the climb behind it is unpowered, so
+## the crest speed is what the booster paid for. Height is therefore solved, not chosen: the crest
+## stands wherever a coast from the booster's exit speed runs out at the speed the drop wants.
+static func _station_and_boost(
 	plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
 ) -> void:
-	## The lift is sized by the crest it has to reach at the grade it is allowed to hold, the same
-	## way the cliff climb is: pitch and the ramp's delivery fix the length. It is still a
-	## constant-speed lift — it arrives at 41 km/h — but it now arrives a hundred metres up,
-	## because that height is what the inversion act on the plain is paid out of.
-	var pitch: float = plan.lift_pitch_deg
-	var length: float = (plan.lift_crest_height - STATION_HEIGHT) / (
-		RAMP_DELIVERY * sin(deg_to_rad(pitch))
-	)
+	## Exit speed the booster has to reach so that the drop off the crest hands act one the speed the
+	## two inversions are both in scale at. Energy from the booster's exit at station height to the
+	## valley at drop_bottom_height, plus what drag spends on the way over.
+	var exit_speed: float = sqrt(maxf(
+		plan.act_entry_speed * plan.act_entry_speed
+		+ 2.0 * RideElements.G0 * (plan.drop_bottom_height - STATION_HEIGHT)
+		+ OPENER_DRAG,
+		STATION_EXIT_SPEED * STATION_EXIT_SPEED + 100.0
+	))
+	plan["lsm1_speed"] = exit_speed
+	var boost_length: float = (
+		exit_speed * exit_speed - STATION_EXIT_SPEED * STATION_EXIT_SPEED
+	) / (2.0 * LSM1_G * RideElements.G0)
 	_add(route, state, sections, [
-		RideElements.grade_section("Station", 45.0, _flat_pitch(), 12.5, 0, 4.0),
-		RideElements.grade_section(
-			"LSM1 lift",
-			length,
-			[Vector2(0, 0), Vector2(0.2, pitch), Vector2(0.8, pitch), Vector2(1, 0)],
-			plan.lift_speed,
-			1
-		),
+		RideElements.grade_section("Station", 45.0, _flat_pitch(), STATION_EXIT_SPEED, 0, 4.0),
+		RideElements.grade_section("LSM1 boost", boost_length, _flat_pitch(), exit_speed, 1),
 	])
+	var pitch: float = plan.opening_climb_pitch_deg
+	var crest: float = plan.opening_crest_speed
+	var rise: float = (exit_speed * exit_speed - crest * crest) / (2.0 * RideElements.G0)
+	var climb: Dictionary = _coast_climb("Opening climb", rise, pitch)
+	## One deterministic re-check, the same shape the cliff climb's is: the coast is integrated, the
+	## crest speed read off it, and the height moved by exactly the energy the reading was out by.
+	for _pass in 2:
+		var trial := _trial_grade(route, state, climb)
+		if absf(trial.state.speed - crest) < 0.3:
+			break
+		rise += (trial.state.speed * trial.state.speed - crest * crest) / (2.0 * RideElements.G0)
+		climb = _coast_climb("Opening climb", maxf(rise, 20.0), pitch)
+	_add(route, state, sections, [climb])
+	plan["crest_height"] = state.position.y
+	plan["crest_speed"] = state.speed
+
+
+## An unpowered grade that gains `rise` at this pitch. Same septic ramp a powered climb rides, so
+## the delivery constant is the same one; only the drive is gone.
+static func _coast_climb(name: String, rise: float, pitch: float) -> Dictionary:
+	return RideElements.grade_section(
+		name,
+		maxf(rise / (RAMP_DELIVERY * sin(deg_to_rad(pitch))), 40.0),
+		[Vector2(0, 0), Vector2(0.2, pitch), Vector2(0.8, pitch), Vector2(1, 0)],
+		-1.0,
+		0
+	)
 
 
 ## The opening element is a non-inverting banked side-dive; the frame sign carries the seed mirror,
@@ -400,9 +593,10 @@ static func _station_and_lift(
 static func _opening_drop(
 	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
 ) -> void:
+	_crest_turn(layout, plan, route, state, sections)
 	_add(route, state, sections, RideElements.author_twisted_drop(route, state, {
 		"target_pitch_deg": plan.drop_pitch_deg,
-		"peak_bank_deg": layout.turn_sign * plan.drop_bank_deg,
+		"peak_bank_deg": -layout.turn_sign * plan.drop_bank_deg,
 		"lateral_g": plan.drop_lateral_g,
 	}))
 	var want: float = state.position.y - plan.drop_bottom_height
@@ -430,62 +624,185 @@ static func _opening_drop(
 ## heading reversed, so the corridor is handed back to the low act, whose first alignment turn is
 ## what walks the run off its own line: a 180° turn at this speed displaces the track by its own
 ## diameter, which is the clearance the retrace would otherwise not have.
-static func _inversion_act(
+## Act one is one arc, not a chain. Nothing in it is aimed: every beat is entered on the attitude the
+## beat in front of it left, the inversions supply their own reversals, and the wave turn — the last
+## beat before the escarpment — is solved to whatever heading the run still owes. The station was
+## aimed for this, so what is left over at the end is an estimate error rather than a whole turn, and
+## it is either one long sweep or nothing at all.
+static func _act_one(
 	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
 ) -> void:
-	## The act is aimed so that the Immelmann's reversal is the turn the corridor wanted, not a turn
-	## to be undone: with one of them in the running order, act one starts pointed away from the
-	## escarpment and the half loop is what points it back. Undoing it instead costs a 180° turn at
-	## act-one speed — measured, 520 m — and leaves the launch that much further out, which the
-	## brake run pays for a second time on the way home.
-	_align(layout, route, state, sections, plan.low_heading_deg, plan.climb_bank_deg)
-	var placed: Array = []
 	var notes: Array = []
 	plan["inversion_notes"] = notes
-	## Two rounds, because the act is its own speed schedule: a loop entered at the valley is over
-	## the envelope and a loop entered off the Immelmann's drop is not, so a candidate the order
-	## reaches too early is offered the act again once the elements ahead of it have been flown.
-	for _round in 2:
-		for kind in plan.inversion_order:
-			if placed.has(kind):
-				continue
-			_settle_to_plain(plan, route, state, sections)
-			if not _inversion_feasible(kind, plan, state.speed):
-				notes.append("%s not feasible at %.1f m/s" % [kind, state.speed])
-				continue
-			if not placed.is_empty():
-				_align(
+	for kind in plan.inversion_order:
+		_settle_to_plain(plan, route, state, sections)
+		if not _inversion_feasible(kind, plan, state.speed):
+			notes.append("%s not feasible at %.1f m/s" % [kind, state.speed])
+			continue
+		match kind:
+			"immelmann":
+				_add(route, state, sections, RideElements.author_immelmann(route, state, plan.immelmann))
+				## The cutback is a descending element — measured, it spends eighty metres reversing
+				## at act-one speed — so it is flown here, off the Immelmann's ninety, and nowhere
+				## else in act one: over the plain it finishes underground.
+				## The reversal is not optional: act one's whole heading budget is written around the
+				## two the act supplies, and a missing one is 180° the wave turn cannot absorb. So
+				## when the cutback will not clear the track it is flown off, the beat is replaced
+				## rather than dropped — the same reversal, flown as a banked arc instead of a roll.
+				if plan.cutback_slot == "low" and not _cutback(
+					layout, plan, route, state, sections, "act one"
+				):
+					_flowing_turn(layout, plan, route, state, sections, layout.turn_sign * 180.0)
+				notes.append("immelmann flown")
+			"loop":
+				if _add_if_sound(
 					layout, route, state, sections,
-					plan.low_heading_deg + plan.dogleg, plan.climb_bank_deg
-				)
-			match kind:
-				"immelmann":
-					_add(route, state, sections, RideElements.author_immelmann(route, state, plan.immelmann))
-					## The cutback is a descending element — measured, it spends eighty metres
-					## reversing at act-one speed — so it is flown here, off the Immelmann's ninety,
-					## and nowhere else in act one: over the plain it finishes underground. It also
-					## undoes the Immelmann's own reversal, which is a turn the act does not then
-					## have to fly.
-					if plan.cutback_slot == "low":
-						_cutback(layout, plan, route, state, sections, "act one")
-				"loop":
-					if not _add_if_sound(
-						layout, route, state, sections,
-						RideElements.author_loop(route, state, {
-							"height": _loop_height(plan, state.speed),
-							"peak_g": plan.loop.peak_g,
-							"lateral_g": layout.turn_sign * plan.loop.lateral_g,
-						})
-					):
-						notes.append("loop rejected by the corridor at %.1f m/s" % state.speed)
-						continue
-			## An Immelmann exits reversed, and the corridor is walked back here rather than later
-			## because here is the slowest the act ever runs: a turn costs v², so the same reversal
-			## is half the track before the drop pays the altitude back and twice it afterwards.
-			_align(layout, route, state, sections, plan.low_heading_deg, plan.climb_bank_deg)
-			notes.append("%s flown" % kind)
-			placed.append(kind)
+					RideElements.author_loop(route, state, {
+						"height": _loop_height(plan, state.speed),
+						"peak_g": plan.loop.peak_g,
+						"lateral_g": layout.turn_sign * plan.loop.lateral_g,
+					})
+				):
+					notes.append("loop flown")
+				else:
+					notes.append("loop rejected by the corridor at %.1f m/s" % state.speed)
 	_settle_to_plain(plan, route, state, sections)
+	## The rhythm section, flown straight off the last inversion's exit. Two pullout-and-hill pairs
+	## and then the wave turn, which is where the run turns to face the escarpment.
+	for i in 2:
+		_add(route, state, sections, RideElements.author_pullout(route, state, plan.low_pullouts[i]))
+		_add(route, state, sections, RideElements.author_hill(route, state, plan.low_hills[i]))
+	_add(route, state, sections, RideElements.author_pullout(route, state, plan.low_pullouts[2]))
+	var run: float = _launch_run(layout, plan, state)
+	var target: float = (
+		layout.terrain.apron_width + layout.terrain.face_width + plan.crest_edge_offset
+	)
+	_act_wave(layout, plan, route, state, sections, _owed_heading(layout, plan, state, run, target))
+	_level(route, state, sections, plan.level_g)
+	## Nothing normally reaches this: the lead sweep put act one on the heading its own reversals
+	## bring back, and the wave turn is solved for the rest. It fires when an inversion was not flown
+	## — a reversal missing is 180° missing — and it says so when it does.
+	_act_sweep(layout, plan, route, state, sections, run, target)
+
+
+## The turn out of the crest, and the only steering act one gets. The opener climbs on the line the
+## run home comes back down, so the ride has a hundred and eighty degrees to find between the two —
+## and the one place it is cheap is here, at the top, where the train is doing sixteen metres a
+## second and a turn's length goes as v². Measured, the same reversal costs eighty metres here and
+## seven hundred at the bottom of the drop.
+static func _crest_turn(
+	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
+) -> void:
+	var owed := rad_to_deg(angle_difference(
+		deg_to_rad(_heading_deg(layout, state.tangent)), deg_to_rad(plan.crest_heading_deg)
+	))
+	if absf(owed) < 6.0:
+		plan["act_sweep_note"] = "no crest turn: %.0f° left" % owed
+		return
+	_add(route, state, sections, RideElements.author_turn(route, state, {
+		"heading_change_deg": layout.turn_sign * owed,
+		"bank_deg": _bank_for(owed, state.speed, plan.act_sweep_bank_deg),
+	}))
+	plan["act_sweep_note"] = "crest turn %.0f° onto %.0f° over %.0f m" % [
+		owed, plan.crest_heading_deg, sections[-1].length
+	]
+
+
+## A turn flown as a gesture rather than as a correction: bank comes off until the arc is at least
+## ACT_SWEEP_MIN_LENGTH long, so what the run reads is an arc between two beats.
+static func _flowing_turn(
+	layout: Dictionary,
+	plan: Dictionary,
+	route: Dictionary,
+	state: Dictionary,
+	sections: Array,
+	owed: float
+) -> void:
+	var flowing := rad_to_deg(atan(
+		deg_to_rad(absf(owed)) * state.speed * state.speed
+		/ (ACT_SWEEP_MIN_LENGTH * RideElements.G0)
+	))
+	var bank: float = minf(
+		minf(plan.act_sweep_bank_deg, flowing), _bank_for(owed, state.speed, plan.act_sweep_bank_deg)
+	)
+	_add(route, state, sections, RideElements.author_turn(route, state, {
+		"heading_change_deg": layout.turn_sign * owed, "bank_deg": maxf(bank, 8.0),
+	}))
+
+
+## Heading the run still owes the escarpment, measured from where a turn of that size would leave it.
+## A turn moves the train before its own aim is read, so the answer is a fixed point rather than an
+## angle: six passes of an analytic arc endpoint settle it without integrating anything.
+static func _owed_heading(
+	layout: Dictionary, plan: Dictionary, state: Dictionary, run: float, target: float
+) -> float:
+	var heading := _heading_deg(layout, state.tangent)
+	var owed := 0.0
+	for _pass in 6:
+		var landed := _arc_endpoint(
+			layout, state.position, heading, owed, state.speed, plan.act_sweep_bank_deg
+		)
+		var residual := rad_to_deg(angle_difference(
+			deg_to_rad(heading + owed),
+			deg_to_rad(_approach_heading(layout, landed, run, target))
+		))
+		if absf(residual) < 0.25:
+			break
+		owed += residual
+	return owed
+
+
+## The wave turn, solved to the heading the act still owes. Its plan curve comes from the lateral
+## load threaded through the crest, and the sweep that load buys is very nearly linear in it, so two
+## rescales land the target; the drawn sweep is the cap, because past it the crest is a lateral beat
+## rather than an airtime one.
+static func _act_wave(
+	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary,
+	sections: Array, owed: float
+) -> void:
+	var want: float = clampf(owed, -plan.wave.sweep_deg, plan.wave.sweep_deg)
+	if absf(want) < 12.0:
+		want = 12.0 * (layout.turn_sign if is_zero_approx(want) else signf(want))
+	var span: float = 1.7 * plan.wave.rise / maxf(
+		sin(deg_to_rad(absf(RideElements.exit_pitch_deg(state)))), 0.15
+	)
+	var bank: float = signf(want) * layout.turn_sign * minf(
+		plan.wave.peak_bank_deg, ROLL_BUDGET * 0.16 * span / state.speed
+	)
+	var lateral: float = plan.wave.lateral_g
+	var group: Array = []
+	var swept := 0.0
+	for _pass in 3:
+		group = RideElements.author_wave_turn(route, state, {
+			"rise": plan.wave.rise,
+			"crown_g": plan.wave.crown_g,
+			"peak_bank_deg": bank,
+			"lateral_g": lateral,
+		})
+		swept = layout.turn_sign * group[0].element.heading_change_deg
+		if absf(swept - want) < 3.0:
+			break
+		lateral = clampf(lateral * want / (swept if absf(swept) > 1.0 else signf(want)), 0.3, 1.8)
+	plan["wave_note"] = "wave turn sweeps %.0f° of the %.0f° owed at %.2f g lateral" % [
+		swept, owed, lateral
+	]
+	_add(route, state, sections, group)
+
+
+## The one sweep act one is allowed, and only when there is a real heading left to fly. It is forced
+## long: bank comes off until the arc is at least ACT_SWEEP_MIN_LENGTH, so what the run reads is a
+## banked arc between two beats rather than a correction snapped in between them.
+static func _act_sweep(
+	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary,
+	sections: Array, run: float, target: float
+) -> void:
+	var owed: float = _owed_heading(layout, plan, state, run, target)
+	if absf(owed) < ACT_SWEEP_MIN_DEG:
+		return
+	_flowing_turn(layout, plan, route, state, sections, owed)
+	plan["act_sweep_note"] = "%s, plus a recovery sweep of %.0f° over %.0f m" % [
+		plan.act_sweep_note, owed, sections[-1].length
+	]
 
 
 ## Give back whatever altitude the act is still holding. A loop returns to the height it left, so
@@ -549,34 +866,6 @@ static func _inversion_feasible(kind: String, plan: Dictionary, speed: float) ->
 	return false
 
 
-## Terrain-hugging airtime on the plain, aimed at a shallow inland heading so the act arrives at the
-## launch corridor without any of its element lengths being chosen for position.
-static func _low_act(
-	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
-) -> void:
-	var heading: float = plan.low_heading_deg
-	for i in 2:
-		_align(layout, route, state, sections, heading, plan.climb_bank_deg)
-		_add(route, state, sections, RideElements.author_pullout(route, state, plan.low_pullouts[i]))
-		_add(route, state, sections, RideElements.author_hill(route, state, plan.low_hills[i]))
-	_align(layout, route, state, sections, heading, plan.climb_bank_deg)
-	_add(route, state, sections, RideElements.author_pullout(route, state, plan.low_pullouts[2]))
-	## A wave turn's length comes from its rise, not from its bank, so the roll rate it asks for is
-	## whatever bank·v/(0.16·length) happens to be. Past a point the bank is what has to give.
-	var span: float = 1.7 * plan.wave.rise / maxf(
-		sin(deg_to_rad(absf(RideElements.exit_pitch_deg(state)))), 0.15
-	)
-	_add(route, state, sections, RideElements.author_wave_turn(route, state, {
-		"rise": plan.wave.rise,
-		"crown_g": plan.wave.crown_g,
-		"peak_bank_deg": layout.turn_sign * minf(
-			plan.wave.peak_bank_deg, ROLL_BUDGET * 0.16 * span / state.speed
-		),
-		"lateral_g": plan.wave.lateral_g,
-	}))
-	_level(route, state, sections, plan.level_g)
-
-
 ## The one cutback the ride is allowed. It is entered off a pullout held to author_cutback's 22°
 ## contract, and it is solved before it is committed: the template's length solve has a second root
 ## — a giant arc that also sweeps 180° — and the only way to tell the two apart is to read the
@@ -600,12 +889,25 @@ static func _cutback(
 		"peak_g": _peak_for(state.speed, plan.cutback.exit_pitch_deg, plan.cutback.pullout_g),
 	})
 	var climbing: Dictionary = RideElements._trial(route, state, entry[0])
-	var group: Array = RideElements.author_cutback(climbing.route, climbing.state, {
-		"heading_change_deg": layout.turn_sign * 180.0,
-		"peak_g": plan.cutback.peak_g,
-		"peak_bank_deg": plan.cutback.peak_bank_deg,
-	})
-	var swept: float = absf(group[0].element.heading_change_deg)
+	## The reversal wraps its own approach — that is what a cutback is — so how far past vertical it
+	## is rolled decides whether it wraps it or hits it. Every degree beyond ninety turns more of the
+	## support downward and pulls the exit leg in toward the entry, so a beat that will not clear is
+	## offered a shallower roll before it is dropped.
+	var group: Array = []
+	var swept := 0.0
+	var cleared := false
+	for attempt in 3:
+		group = RideElements.author_cutback(climbing.route, climbing.state, {
+			"heading_change_deg": layout.turn_sign * 180.0,
+			"peak_g": plan.cutback.peak_g,
+			"peak_bank_deg": plan.cutback.peak_bank_deg - 6.0 * attempt,
+		})
+		swept = absf(group[0].element.heading_change_deg)
+		if group[0].length > CUTBACK_MAX_LENGTH or absf(swept - 180.0) > CUTBACK_HEADING_TOLERANCE:
+			continue
+		cleared = _clears_route(route, RideElements._trial(climbing.route, climbing.state, group[0]).route)
+		if cleared:
+			break
 	if group[0].length > CUTBACK_MAX_LENGTH or absf(swept - 180.0) > CUTBACK_HEADING_TOLERANCE:
 		plan["cutback_note"] = "%s cutback skipped: %.0f m sweeping %.0f°" % [
 			slot, group[0].length, swept
@@ -637,69 +939,104 @@ static func _cutback(
 	return true
 
 
-## LSM2: a flat launch on the plain and a straight powered climb that crosses the apron and the face
-## and crests just inside the rim. The heading is solved so the crest lands at a chosen edge
-## distance — the aim is against the wobbled edge, because a nominal offset is not what the terrain
-## check reads. The climb pitch is then set from the height actually left to gain, and retuned once
-## against the integrated rise; that single retune is the only correction in this generator.
-static func _cliff_climb(
+## Ground the launch corridor covers before the crest: one booster at 2 g and the coast up the face.
+## Used by act one to aim, before either is solved, so it is the mid-window estimate rather than a
+## measurement — which is exactly why the window exists.
+static func _launch_run(layout: Dictionary, plan: Dictionary, state: Dictionary) -> float:
+	var terrain: Dictionary = layout.terrain
+	var rise: float = terrain.relief + plan.crest_margin - plan.drop_bottom_height
+	var base: float = sqrt(
+		plan.climb_exit_speed * plan.climb_exit_speed + 2.0 * RideElements.G0 * rise + CLIMB_DRAG * 900.0
+	)
+	var boost: float = (base * base - state.speed * state.speed) / (2.0 * plan.lsm2_g * RideElements.G0)
+	return clampf(boost, 100.0, LSM_MAX_LENGTH) + rise / (CLIMB_DELIVERY * tan(deg_to_rad(29.0)))
+
+
+## LSM2: a booster at the cliff base and then three hundred metres of unpowered coast up the face,
+## decelerating the whole way, which is what the real ride does. The booster's exit speed is solved
+## from the climb — enough energy to crest at a crawl and no more — and its length from the g it is
+## allowed to hold. Only two things are then free, and both of them are how far the corridor reaches:
+## the booster may run a quarter long or short of its nominal 2 g, and the climb may be steepened or
+## shallowed inside a few degrees. Between them they cover the heading act one arrived a little off
+## by, which is why act one is allowed to arrive a little off.
+static func _cliff_launch(
 	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
 ) -> void:
 	var terrain: Dictionary = layout.terrain
 	var target: float = terrain.apron_width + terrain.face_width + plan.crest_edge_offset
-	var pitch: float = plan.climb_pitch_deg
 	var rise: float = terrain.relief + plan.crest_margin - state.position.y
-	var length: float = maxf(rise / (CLIMB_DELIVERY * sin(deg_to_rad(pitch))), 100.0)
-	var climb_run: float = length * cos(deg_to_rad(pitch))
-	## Each align turn moves the train before the next one is aimed, so the aim is re-solved from
-	## where it actually is; the residual heading a turn is allowed to leave is then absorbed by
-	## the launch, which is the one straight run whose length costs the climb nothing.
-	## Tight, because the climb is three quarters of a kilometre long: four degrees of residual
-	## heading — the tolerance a corridor turn is normally allowed — walks the crest a hundred metres
-	## further inland than it was aimed, and the dive that follows has to pitch over that much
-	## plateau before it reaches the lip.
-	for step in 4:
-		_align(
-			layout, route, state, sections,
-			_approach_heading(layout, state.position, plan.launch_length + climb_run, target),
-			plan.climb_bank_deg,
-			4.0 if step == 0 else 1.0
-		)
-	## The climb is solved before the launch that carries it, not after: the launch is flat, so it
-	## changes neither the height the climb starts from nor the heading it leaves on, and a grade
-	## section's shape comes from its pitch profile rather than its speed. Solved the other way round
-	## the launch is sized against a run the retune then changes, and the crest lands seventy metres
-	## inside the aim — which puts the whole clifftop beat, and the dive that follows it, that far
-	## back from the lip.
-	rise = terrain.relief + plan.crest_margin - state.position.y
-	length = maxf(rise / (CLIMB_DELIVERY * sin(deg_to_rad(pitch))), 100.0)
-	var climb := _climb_section(plan, length, pitch)
-	var trial := _trial_grade(route, state, climb)
-	var reached: float = trial.state.position.y - state.position.y
-	if absf(reached - rise) > 6.0:
-		pitch = rad_to_deg(asin(clampf(sin(deg_to_rad(pitch)) * rise / maxf(reached, 1.0), 0.05, 0.9)))
-		climb = _climb_section(plan, length, pitch)
-	climb_run = length * cos(deg_to_rad(pitch))
-	_add(route, state, sections, [RideElements.grade_section(
-		"LSM2 launch",
-		_approach_run(layout, state.position, state.tangent, climb_run, target),
-		_flat_pitch(),
-		plan.launch_exit_speed,
-		2
-	)])
+	var nominal: float = rise / (CLIMB_DELIVERY * sin(deg_to_rad(29.0)))
+	var base: float = sqrt(
+		plan.climb_exit_speed * plan.climb_exit_speed
+		+ 2.0 * RideElements.G0 * rise + CLIMB_DRAG * nominal
+	)
+	var square: float = (2.0 * plan.lsm2_g * RideElements.G0)
+	var window := Vector2(
+		clampf((base * base - state.speed * state.speed) * 0.75 / square, 80.0, LSM_MAX_LENGTH),
+		clampf((base * base - state.speed * state.speed) * 1.25 / square, 90.0, LSM_MAX_LENGTH)
+	)
+	## Both levers move the same quantity — how much ground the corridor covers before the crest — so
+	## they are bisected together on one parameter. Longer booster and shallower climb reach further.
+	var reach := func(t: float) -> Vector2:
+		var length: float = lerpf(nominal * 0.86, nominal * 1.22, t)
+		var pitch: float = rad_to_deg(asin(clampf(rise / (CLIMB_DELIVERY * length), 0.05, 0.9)))
+		return Vector2(lerpf(window.x, window.y, t), length * cos(deg_to_rad(pitch)))
+	var low := 0.0
+	var high := 1.0
+	for _step in 22:
+		var middle := (low + high) * 0.5
+		var run: Vector2 = reach.call(middle)
+		if _edge(layout, state.position + _ground(state.tangent) * (run.x + run.y)) < target:
+			low = middle
+		else:
+			high = middle
+	var solved: Vector2 = reach.call((low + high) * 0.5)
+	var boost_length: float = solved.x
+	var length: float = lerpf(nominal * 0.86, nominal * 1.22, (low + high) * 0.5)
+	var pitch: float = rad_to_deg(asin(clampf(rise / (CLIMB_DELIVERY * length), 0.05, 0.9)))
+	var climb := _climb_section(length, pitch)
+	## One deterministic re-check across both sections: the booster is solved for `base`, the coast is
+	## integrated off it, and whatever the crest speed reads out by is put back as energy.
+	var boost: Dictionary = {}
+	for _pass in 2:
+		boost = RideElements.grade_section("LSM2 boost", boost_length, _flat_pitch(), base, 2)
+		var launched := _trial_grade(route, state, boost)
+		var crested := _trial_grade(launched.route, launched.state, climb)
+		var reached: float = crested.state.position.y - launched.state.position.y
+		if absf(reached - rise) > 5.0:
+			pitch = rad_to_deg(asin(clampf(
+				sin(deg_to_rad(pitch)) * rise / maxf(reached, 1.0), 0.05, 0.9
+			)))
+			climb = _climb_section(length, pitch)
+		if absf(crested.state.speed - plan.climb_exit_speed) < 0.5:
+			break
+		base = sqrt(maxf(
+			base * base
+			+ plan.climb_exit_speed * plan.climb_exit_speed
+			- crested.state.speed * crested.state.speed,
+			state.speed * state.speed + 400.0
+		))
+	plan["lsm2_note"] = "LSM2 boost %.0f m at %.2f g to %.0f km/h, coast %.0f m at %.1f°" % [
+		boost_length,
+		(base * base - state.speed * state.speed) / (2.0 * boost_length * RideElements.G0),
+		base * 3.6,
+		length,
+		pitch,
+	]
+	_add(route, state, sections, [boost])
 	_add(route, state, sections, [climb])
 
 
-static func _climb_section(plan: Dictionary, length: float, pitch: float) -> Dictionary:
+static func _climb_section(length: float, pitch: float) -> Dictionary:
 	return RideElements.grade_section(
-		"LSM2 climb",
+		"Cliff climb",
 		length,
 		[
-			Vector2(0, 0), Vector2(CLIMB_RAMP, pitch),
-			Vector2(1.0 - CLIMB_RAMP, pitch), Vector2(1, 0),
+			Vector2(0, 0), Vector2(CLIMB_RAMP_IN, pitch),
+			Vector2(1.0 - CLIMB_RAMP_OUT, pitch), Vector2(1, 0),
 		],
-		plan.climb_exit_speed,
-		2
+		-1.0,
+		0
 	)
 
 
@@ -709,7 +1046,11 @@ static func _climb_section(plan: Dictionary, length: float, pitch: float) -> Dic
 static func _clifftop(
 	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
 ) -> void:
-	_align(layout, route, state, sections, 0.0, plan.climb_bank_deg)
+	## The plateau beat runs back along the rim, not on along it. Act one already marched better than
+	## a kilometre in one direction with nothing steering it and the climb added half of that again;
+	## turned the other way here, the traverse takes four hundred metres of it back for a fifty-metre
+	## turn at crawling speed, which is the cheapest corridor on the ride.
+	_align(layout, route, state, sections, 180.0, plan.climb_bank_deg)
 	## Release is a ramp, not a shove: the speed the clifftop elements need comes off the plateau as
 	## height, so the drive a grade section solves for is left with nothing but drag to cover.
 	var release_pitch: float = plan.hold_release_pitch_deg
@@ -768,29 +1109,34 @@ static func _dive_and_tunnel(
 	sections: Array,
 	tunnel: Array
 ) -> void:
-	var drop: float = maxf(
-		layout.terrain.apron_height + 8.0 - plan.tunnel_end_height, 20.0
-	)
-	var pitch := -rad_to_deg(asin(clampf(
-		drop / (plan.tunnel_length * (0.75 + 0.25 * 0.5)), 0.05, 0.32
-	)))
 	var dive: Array = RideElements.author_dive(route, state, {
-		"height": state.position.y - plan.tunnel_end_height - drop,
+		"height": state.position.y - plan.tunnel_end_height,
 		"max_pitch_deg": plan.dive_pitch_deg,
 		"peak_g": plan.dive_peak_g,
-		"exit_pitch_deg": pitch,
 	})
 	## Two groups on this ride are dives. Only this one is the cliff.
 	for section in dive:
 		section.element["cliff_dive"] = true
 	_add(route, state, sections, dive)
+	## The tunnel is the pullout and the booster inside it, and that is all it ever was: the dive
+	## arrives at the plain already doing seventy-six metres a second, so the last twenty to the
+	## record is a short stretch of stator rather than half a kilometre of powered downhill.
 	tunnel.append(sections.size() - 1)
+	var length: float = clampf(
+		(plan.tunnel_exit_speed * plan.tunnel_exit_speed - state.speed * state.speed)
+		/ (2.0 * plan.lsm3_g * RideElements.G0),
+		30.0,
+		LSM_MAX_LENGTH
+	)
+	plan["lsm3_note"] = "LSM3 boost %.0f m, %.0f -> %.0f km/h at %.2f g" % [
+		length,
+		state.speed * 3.6,
+		plan.tunnel_exit_speed * 3.6,
+		(plan.tunnel_exit_speed * plan.tunnel_exit_speed - state.speed * state.speed)
+		/ (2.0 * length * RideElements.G0),
+	]
 	_add(route, state, sections, [RideElements.grade_section(
-		"Tunnel LSM3",
-		plan.tunnel_length,
-		[Vector2(0, pitch), Vector2(0.75, pitch), Vector2(1, 0)],
-		plan.tunnel_exit_speed,
-		3
+		"LSM3 boost", length, _flat_pitch(), plan.tunnel_exit_speed, 3
 	)])
 	tunnel.append(sections.size() - 1)
 
@@ -800,19 +1146,22 @@ static func _dive_and_tunnel(
 ## hill has started, so what the ride is judged on is the apex above the valley it left, and the
 ## rise handed to author_hill is whatever is left of that once the pullout has been integrated.
 static func _camelback(
-	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, sections: Array
+	layout: Dictionary,
+	plan: Dictionary,
+	route: Dictionary,
+	state: Dictionary,
+	sections: Array,
+	station_position: Vector3,
+	station_tangent: Vector3
 ) -> void:
-	## The dogleg off the dive's line. The tunnel leaves pointed straight out from the escarpment at
-	## -90°, and everything after it — the camelback, the turnaround, the run home — then lives on
-	## that one line, out and back. Turned here, the marquee corridor runs diagonally across the
-	## plain and the return leg comes home beside it rather than down it. It turns toward the
-	## station's own side: act one already marches the better part of two kilometres along the cliff,
-	## so the second act either walks that back or the brake run does, and the brake run is straight
-	## track that pays for it twice.
-	_align(
-		layout, route, state, sections,
-		-90.0 - plan.post_tunnel_dogleg, plan.turnaround_bank_deg, 3.0
-	)
+	## The dogleg off the dive's line, and the one place in the ride where the circuit is closed.
+	## The tunnel leaves pointed straight out from the escarpment, and everything after it — the
+	## camelback, the raceway arc, the run home — lives on whatever line is chosen here. Act one
+	## marches better than a kilometre along the cliff with nothing steering it, so this is the
+	## angle that walks that back: it is solved, against an analytic model of the marquee corridor
+	## and the whole run home, so that what is left for the brake run is a brake run's length. The
+	## drawn dogleg is what it falls back on when the solve runs out of corridor at either end.
+	_camelback_corridor(layout, plan, route, state, sections, station_position, station_tangent)
 	_level(route, state, sections, plan.level_g)
 	var target: float = plan.camelback.structure
 	if state.speed < sqrt(2.0 * RideElements.G0 * target) + 4.0:
@@ -858,6 +1207,128 @@ static func _camelback(
 	}))
 
 
+## The heading the marquee corridor runs on, solved so that the run home closes. Everything after
+## this point is a straight-ish shot and one rotation, both of which have analytic models, so the
+## whole of the second act's geometry can be asked the only question that matters: how much corridor
+## is left when the airtime runs out. Bisected because that answer falls monotonically as the
+## corridor is turned back along the escarpment.
+static func _camelback_corridor(
+	layout: Dictionary,
+	plan: Dictionary,
+	route: Dictionary,
+	state: Dictionary,
+	sections: Array,
+	station_position: Vector3,
+	station_tangent: Vector3
+) -> void:
+	var approach: Vector3 = station_position - station_tangent * plan.approach_lead
+	var home: float = _heading_deg(layout, station_tangent)
+	var solved: Dictionary = _corridor_search(
+		layout, plan, state.position, _heading_deg(layout, state.tangent), state.speed, approach, home
+	)
+	plan["return_arc_bank"] = solved.bank
+	plan["return_pairs"] = solved.pairs
+	plan["corridor_note"] = (
+		"marquee corridor %.0f°, raceway arc at %.0f° of bank, %d pairs, brake approach %.0f m ahead and %.0f m aside"
+		% [solved.aim, solved.bank, solved.pairs, solved.ahead, solved.aside]
+	)
+	_align(layout, route, state, sections, solved.aim, plan.turnaround_bank_deg, 3.0)
+
+
+## Where the marquee corridor should run and how tight the raceway arc should be, decided against an
+## analytic model of everything downstream: the corridor turn, the camelback, the arc, the marquee,
+## and the airtime. Three dofs — corridor, radius, and how many speed hills there is room for — and
+## two misses to answer, so it is searched on a coarse grid and refined twice rather than bisected:
+## both dofs move both misses, and solving them one at a time walks in circles.
+static func _corridor_search(
+	layout: Dictionary,
+	plan: Dictionary,
+	position: Vector3,
+	heading: float,
+	speed: float,
+	approach: Vector3,
+	home: float
+) -> Dictionary:
+	var forward: Vector3 = _direction(layout, home)
+	var across: Vector3 = _direction(layout, home + 90.0)
+	var structure: float = CAMELBACK_REACH * speed * speed
+	var return_speed: float = speed * RETURN_SPEED_SHARE
+	var marquee: Dictionary = _marquee_arc(layout, plan, return_speed)
+	## A dictionary because GDScript lambdas capture by value, and the count is the one thing the
+	## search changes underneath the model.
+	var beats := {"pairs": 2}
+	var landed := func(aim: float, bank: float) -> Vector3:
+		var turned := _arc_endpoint(
+			layout, position, heading, aim - heading, speed, plan.turnaround_bank_deg
+		)
+		return _home_endpoint(
+			layout,
+			_run_endpoint(layout, turned, aim, structure),
+			aim,
+			return_speed,
+			marquee,
+			bank,
+			beats["pairs"],
+			home
+		)
+	var best := INF
+	var chosen := {
+		"aim": -90.0 - plan.post_tunnel_dogleg,
+		"bank": plan.turnaround_bank_deg,
+		"pairs": 2,
+		"ahead": 0.0,
+		"aside": 0.0,
+		"error": INF,
+	}
+	for count in [2, 1, 0]:
+		beats["pairs"] = count
+		var aim_low: float = CORRIDOR_BAND.x
+		var aim_high: float = CORRIDOR_BAND.y
+		var bank_low: float = RETURN_BANK_BAND.x
+		var bank_high: float = RETURN_BANK_BAND.y
+		var aim := aim_low
+		var bank := bank_low
+		for _refine in 3:
+			var best_here := INF
+			for i in 17:
+				for j in 9:
+					var try_aim: float = lerpf(aim_low, aim_high, i / 16.0)
+					var try_bank: float = lerpf(bank_low, bank_high, j / 8.0)
+					var miss: Vector3 = approach - landed.call(try_aim, try_bank)
+					var ahead: float = miss.dot(forward)
+					var aside: float = miss.dot(across)
+					## The arc's own length is part of the cost, not just the miss it leaves: a corridor
+					## aimed back along the escarpment leaves ninety degrees to fly instead of a hundred
+					## and eighty, and at eighty-five metres a second that is a kilometre of track.
+					var error: float = (
+						absf(ahead - plan.brake_length - CLOSURE_MARGIN)
+						+ RETURN_ASIDE_COST * absf(aside)
+						+ RETURN_ARC_COST * (
+							_arc_length(
+								_return_sweep_deg(try_aim, marquee.sweep, home), return_speed, try_bank
+							)
+							+ _arc_length(try_aim - heading, speed, plan.turnaround_bank_deg)
+						)
+					)
+					if error < best_here:
+						best_here = error
+						aim = try_aim
+						bank = try_bank
+					if error + RETURN_PAIR_PENALTY * (2 - count) < best:
+						best = error + RETURN_PAIR_PENALTY * (2 - count)
+						chosen = {
+							"aim": try_aim, "bank": try_bank, "pairs": count,
+							"ahead": ahead, "aside": aside, "error": error,
+						}
+			var aim_step: float = (aim_high - aim_low) / 16.0
+			var bank_step: float = (bank_high - bank_low) / 8.0
+			aim_low = maxf(aim - aim_step, CORRIDOR_BAND.x)
+			aim_high = minf(aim + aim_step, CORRIDOR_BAND.y)
+			bank_low = maxf(bank - bank_step, RETURN_BANK_BAND.x)
+			bank_high = minf(bank + bank_step, RETURN_BANK_BAND.y)
+	return chosen
+
+
 ## Apex above the valley an entry pullout at this pitch would reach, measured off trials rather
 ## than a formula, because the hill's own two-knob solve is part of the answer.
 static func _camelback_structure(
@@ -893,98 +1364,148 @@ static func _return_run(
 	station_tangent: Vector3
 ) -> void:
 	var approach: Vector3 = station_position - station_tangent * plan.approach_lead
-	var home := _aim_heading(layout, state.position, approach)
-	var delta := rad_to_deg(angle_difference(
-		deg_to_rad(_heading_deg(layout, state.tangent)), deg_to_rad(home)
-	))
-	## The turnaround is a heading reversal, which is the one thing a cutback is: given the slot it
-	## is offered the beat first, and a plain turn takes it only if the cutback will not solve.
-	var turned: bool = (
-		plan.cutback_slot == "return"
-		and _cutback(layout, plan, route, state, sections, "return run")
-	)
-	if not turned:
-		if absf(delta) > 100.0:
-			_add(route, state, sections, RideElements.author_turn(route, state, {
-				"heading_change_deg": layout.turn_sign * delta, "bank_deg": plan.turnaround_bank_deg,
-			}))
-		else:
-			_align(layout, route, state, sections, home, plan.turnaround_bank_deg)
-	## One marquee beat opens the run home. Past vertical at 83 m/s the support is gone for the whole
-	## element, and the roll-rate limit forces it to be long: ninety degrees of it is 480 m of track
-	## and eighty metres of descent. The corridor either has that height under it or the beat does
-	## not happen here — and on the seeds that draw the wave turn instead, the beat is an airtime
-	## crest flown on edge, which costs the corridor nothing but the hill.
-	if _return_room(plan, state, approach, RETURN_MARQUEE_ROOM):
-		if plan.return_marquee == "overbank":
-			_add_if_sound(layout, route, state, sections, RideElements.author_overbank(route, state, {
-				"heading_change_deg": layout.turn_sign * plan.overbank.heading_change_deg,
-				"bank_deg": plan.overbank.bank_deg,
-				"peak_g": plan.overbank.peak_g,
-			}))
-		else:
-			_return_wave(layout, plan, route, state, sections)
-	else:
+	## One rotation, solved once. The arc, the marquee it hands to and the airtime that follows are a
+	## single gesture, so the arc is aimed past all three: what it is solved for is the heading the
+	## whole run has to leave on, not the heading the next element wants. That is the difference
+	## between a raceway arc with beats in it and a turn followed by corrections.
+	var marquee: Dictionary = _marquee_arc(layout, plan, state.speed)
+	var home: float = _heading_deg(layout, station_tangent)
+	var swept: float = _return_sweep(layout, state, marquee, home)
+	plan["arc_entry_heading"] = _heading_deg(layout, state.tangent)
+	## The arc's radius is the last thing standing between the gesture and the platform, and the
+	## analytic model that chose it is arcs and straight runs — good to a couple of hundred metres,
+	## which is not good enough when being short means the closure bezier is asked to turn back
+	## inside its own handles. So it is measured: the turn is integrated at the modelled bank and at
+	## one either side of it, and the bank that leaves the marquee, the airtime and the brake run
+	## their own lengths is the one flown.
+	var want: float = MARQUEE_REACH + plan.brake_length + CLOSURE_MARGIN
+	var bank: float = plan.return_arc_bank
+	if absf(swept) > 6.0:
+		var reach := func(candidate: float) -> float:
+			var trial: Dictionary = RideElements._trial(route, state, RideElements.author_turn(
+				route, state, {
+					"heading_change_deg": layout.turn_sign * swept,
+					"bank_deg": _bank_for(swept, state.speed, candidate),
+				}
+			)[0])
+			return trial.state.position.distance_to(approach)
+		var first: float = reach.call(bank)
+		var probe: float = clampf(bank - 10.0, RETURN_BANK_BAND.x, RETURN_BANK_BAND.y)
+		if absf(first - want) > 40.0 and absf(probe - bank) > 1.0:
+			var second: float = reach.call(probe)
+			if absf(second - first) > 1.0:
+				## Only ever a little looser than the model chose, and as tight as the envelope allows.
+				## A secant given the whole band answers "fly a wider circle" to any shortfall, and a
+				## wider circle at eighty-five metres a second is three kilometres of track.
+				bank = clampf(
+					bank + (want - first) * (probe - bank) / (second - first),
+					maxf(RETURN_BANK_BAND.x, bank - 4.0),
+					RETURN_BANK_BAND.y
+				)
+		_add(route, state, sections, RideElements.author_turn(route, state, {
+			"heading_change_deg": layout.turn_sign * swept,
+			"bank_deg": _bank_for(swept, state.speed, bank),
+		}))
+	plan["return_note"] = "raceway arc sweeps %.0f° at %.0f° of bank over %.0f m, %.0f m left" % [
+		swept, bank, sections[-1].length, state.position.distance_to(approach)
+	]
+	## The marquee is the second half of the same rotation. Past vertical at 83 m/s the support is
+	## gone for the whole element, and the roll-rate limit forces it to be long: ninety degrees of it
+	## is 480 m of track and eighty metres of descent. On the seeds that draw the wave turn instead,
+	## the beat is an airtime crest flown on edge, which costs the corridor nothing but the hill.
+	## Gated on measured room, not on the model: the beat is solved, trial-integrated, and taken only
+	## if what it leaves behind it is still a closure's worth of corridor. A run home that lands on
+	## top of the platform hands the C4 bezier a hundred metres to take out a heading and an offset
+	## in, and it takes them out as a cusp.
+	if _marquee_room(layout, plan, route, state, approach) < CLOSURE_FLOOR:
 		plan["marquee_note"] = "%s skipped: %.0f m of corridor left" % [
 			plan.return_marquee, state.position.distance_to(approach)
 		]
-	## Every element here is hundreds of metres long at 80 m/s, so the run is kept pointed home
-	## between them: a corridor walked the wrong way costs a kilometre of turn to walk back. A turn
-	## carries whatever pitch it is handed, so each one is entered level or it flies the ride down.
-	_level(route, state, sections, plan.level_g)
-	## Aimed loosely between the beats and tightly only before the brake run. A correction turn at
-	## 84 m/s costs three hundred metres per ten degrees, and ten degrees of heading is something the
-	## next aim absorbs for nothing — so the run is pointed roughly home here and squared up later.
-	var pairs := 0
-	for i in 2:
-		_align(
-			layout, route, state, sections,
-			_aim_heading(layout, state.position, approach), 60.0, 12.0
-		)
-		## The pair is trialled rather than estimated. Its length is whatever the templates solve for
-		## at the speed the run happens to be carrying, and what matters is not that length but the
-		## corridor it leaves: a beat that lands the train on top of the approach point turns the two
-		## tight pre-brake aims into kilometre-long turns chasing a point already behind it.
+	elif plan.return_marquee == "overbank":
+		## Entered climbing, because past vertical there is no support at all: ninety degrees of
+		## overbank at eighty-five metres a second is most of four seconds of free fall, and the plain
+		## is thirty metres under the camelback's valley. The entry pullout is what buys the headroom.
+		_add(route, state, sections, RideElements.author_pullout(route, state, {
+			"exit_pitch_deg": plan.return_wave_entry.exit_pitch_deg,
+			"peak_g": _peak_for(
+				state.speed, plan.return_wave_entry.exit_pitch_deg, plan.return_wave_entry.peak_g
+			),
+		}))
+		if not _add_if_sound(
+			layout, route, state, sections, RideElements.author_overbank(route, state, {
+				"heading_change_deg": layout.turn_sign * plan.overbank.heading_change_deg,
+				"bank_deg": plan.overbank.bank_deg,
+				"peak_g": plan.overbank.peak_g,
+			})
+		):
+			plan["marquee_note"] = "overbank rejected by the corridor"
+	else:
+		_return_wave(layout, plan, route, state, sections)
+	## The airtime rides inside the arc: each pair is entered on the attitude the beat in front of it
+	## left, so nothing between them is aimed. The pair is still trialled before it is committed,
+	## because what matters is not its length but the corridor it leaves for the brake run.
+	var flown := 0
+	for i in plan.return_pairs:
 		var pullout: Dictionary = RideElements.author_pullout(route, state, plan.return_pullouts[i])[0]
 		var crest: Dictionary = RideElements._trial(route, state, pullout)
 		var hill: Dictionary = RideElements.author_hill(crest.route, crest.state, plan.return_hills[i])[0]
 		var landed: Dictionary = RideElements._trial(crest.route, crest.state, hill)
-		var left: float = landed.state.position.distance_to(approach)
-		if left < RETURN_AIM_ROOM + plan.brake_length:
-			plan["return_note"] = "%d of 2 return pairs flown: pair %d would leave %.0f m, %.0f needed" % [
-				pairs, i + 1, left, RETURN_AIM_ROOM + plan.brake_length,
-			]
+		if landed.state.position.distance_to(approach) < plan.brake_length * 0.8:
 			break
 		_add(route, state, sections, [pullout])
 		_add(route, state, sections, [hill])
-		_level(route, state, sections, plan.level_g)
-		pairs += 1
-	if pairs == 2:
-		plan["return_note"] = "2 of 2 return pairs flown"
-	## Aimed twice, and tightly: a turn at 75 m/s is hundreds of metres long, so the point it was
-	## aimed at has moved a long way behind the train by the time it comes out of the first one — and
-	## the brake run that follows is a kilometre and a half of straight track, so four degrees of
-	## residual puts its end a hundred metres to one side of the approach. The C4 closure then has to
-	## take that out in its own length, which is where the lateral limit goes.
-	for _pass in 2:
-		_align(layout, route, state, sections, _aim_heading(layout, state.position, approach), 60.0, 1.5)
-	## The brake run covers whatever the corridor leaves, less one approach lead, and comes down to
+		flown += 1
+	_level(route, state, sections, plan.level_g)
+	## The one safety valve on the run home. The arc was aimed through a model of the beats behind
+	## it, and a model is a model: if the gesture really has landed pointing somewhere else, it is
+	## squared up once. Anything under the tolerance is left for the brake run and the closure.
+	var aim: float = _aim_heading(layout, state.position, approach)
+	var off := absf(rad_to_deg(angle_difference(
+		deg_to_rad(_heading_deg(layout, state.tangent)), deg_to_rad(aim)
+	)))
+	## Past the limit the aim point is behind the train and a turn to it is a second reversal, so what
+	## the run squares up on instead is the station's own bearing: the C4 closure cusps on a tangent
+	## mismatch, not on an offset — matched tangents it takes out as an S.
+	if state.position.distance_to(approach) < CLOSURE_FLOOR:
+		off = 0.0
+	elif off > RETURN_AIM_LIMIT:
+		aim = home
+		plan["return_note"] = "%s, aim %.0f° off so squared on the station's bearing" % [
+			plan.return_note, off
+		]
+	_align(layout, route, state, sections, aim, 60.0, RETURN_AIM_TOLERANCE)
+	plan["return_note"] = "%s, %d of 2 pairs flown" % [plan.return_note, flown]
+	## The brake run covers what the corridor leaves, less one approach lead, and comes down to
 	## station height on the way — a closure that has to shed thirty metres of potential as well as
 	## the speed cannot solve its drive and stalls short of the platform. Both ends of the length
 	## matter: stopped a kilometre out, the C4 closure — a bezier across the gap, not a solved-length
 	## element — grows past its own 8 % budget; run all the way onto the approach point, the same
 	## bezier has only the lead left to take out the heading it was handed, and a nine-control curve
 	## asked to turn inside its own handles folds into a cusp the lateral limit reads at seven g.
-	## It also never runs longer than the corridor actually has. Driven past the approach point the
-	## closure is a nine-control bezier asked to turn back inside its own handles, which it does as a
-	## cusp — measured on a seed whose return run came home 24 m short of the aim, ten g of lateral.
 	var run_home: float = state.position.distance_to(approach)
-	var brake_length: float = maxf(
-		clampf(plan.brake_length, 120.0, maxf(run_home - 60.0, 120.0)),
-		run_home - plan.approach_lead
+	## The brake run covers what the corridor actually left, and never a metre more. Driven past the
+	## approach point the closure is a nine-control bezier asked to turn back inside its own handles,
+	## which it does as a cusp — measured, eight hundred g of lateral. So when the gesture comes home
+	## short the brake run is simply not built and the closure sheds the speed itself: it solves its
+	## own drive, and a three-hundred-metre bezier from seventy metres a second is under a g of it.
+	## Long enough to do both jobs, and never long enough to run past the platform. The brake run has
+	## to shed the speed and give back the height the run home is carrying, and what it cannot give
+	## back the C4 closure has to — a closure asked to lose forty metres of potential as well as
+	## seventy metres a second solves a drive that stalls the train halfway across it.
+	var descent: float = maxf(state.position.y - STATION_HEIGHT, 0.0)
+	var brake_length: float = clampf(
+		maxf(run_home - plan.approach_lead, descent / (RAMP_DELIVERY * BRAKE_GRADE)),
+		60.0,
+		maxf(minf(run_home * 0.85, plan.brake_length * 3.0), 60.0)
 	)
+	plan["brake_note"] = "brake run %.0f m of the %.0f m the gesture left, giving back %.0f m" % [
+		brake_length, run_home, descent
+	]
+	## Shallow, and clamped: the brake run is the shortest grade on the ride and it may have fifty
+	## metres to give back, which at a steeper grade puts a crest in the middle of it — measured,
+	## −3.5 g of it at seventy-five metres a second.
 	var brake_pitch := rad_to_deg(asin(clampf(
-		(state.position.y - STATION_HEIGHT) / (RAMP_DELIVERY * brake_length), -0.35, 0.35
+		descent / (RAMP_DELIVERY * brake_length), -BRAKE_GRADE, BRAKE_GRADE
 	)))
 	_add(route, state, sections, [RideElements.grade_section(
 		"Final brakes",
@@ -996,20 +1517,116 @@ static func _return_run(
 	)])
 
 
-## Whether the run home still has corridor for a beat of this size. Everything on this run is
-## hundreds of metres long at eighty metres a second, so a beat flown without the room behind it
-## carries the train past the approach point — and from there the two tight pre-brake aims are
-## kilometre-long turns chasing a point already behind the train, and the C4 closure is a bezier
-## asked to turn back inside its own handles, which it does as a cusp at ten g of lateral. So each
-## beat is asked for its own length, one correction turn, and the whole brake run before it is
-## committed, and the run records what it dropped.
-static func _return_room(
-	plan: Dictionary, state: Dictionary, approach: Vector3, beat_room: float
-) -> bool:
-	return (
-		state.position.distance_to(approach)
-		>= beat_room + RETURN_AIM_ROOM + plan.brake_length
+## The marquee beat, as an arc the model can see through. Neither shape holds altitude, so the radius
+## is not the bank's: an overbank turns on its authored normal load, v²/(peak·g), and a wave turn on
+## the lateral threaded through its crest.
+static func _marquee_arc(_layout: Dictionary, plan: Dictionary, speed: float) -> Dictionary:
+	if plan.return_marquee == "overbank":
+		return {
+			"sweep": plan.overbank.heading_change_deg,
+			"bank": rad_to_deg(atan(MARQUEE_TIGHTNESS * plan.overbank.peak_g)),
+		}
+	var span: float = 1.7 * plan.return_wave.rise / 0.3
+	return {
+		"sweep": rad_to_deg(
+			plan.return_wave.lateral_g * RideElements.G0 * span / (speed * speed)
+		),
+		"bank": rad_to_deg(atan(MARQUEE_TIGHTNESS * plan.return_wave.lateral_g)),
+	}
+
+
+## How far the raceway arc sweeps. Not an aim at a point — a rotation onto the heading the station
+## itself sits on, with the marquee counted as the second half of it. Everything after the marquee
+## flies straight, so this is the whole of the run home's steering in one number.
+static func _return_sweep(
+	layout: Dictionary, state: Dictionary, marquee: Dictionary, home_heading: float
+) -> float:
+	return rad_to_deg(angle_difference(
+		deg_to_rad(_heading_deg(layout, state.tangent) + marquee.sweep), deg_to_rad(home_heading)
+	))
+
+
+## Heading the raceway arc has to sweep from a given corridor, and the track that costs.
+static func _return_sweep_deg(heading: float, marquee_sweep: float, home_heading: float) -> float:
+	return rad_to_deg(angle_difference(
+		deg_to_rad(heading + marquee_sweep), deg_to_rad(home_heading)
+	))
+
+
+static func _arc_length(sweep_deg: float, speed: float, bank_deg: float) -> float:
+	return TURN_ARC_FACTOR * deg_to_rad(absf(sweep_deg)) * speed * speed / (
+		RideElements.G0 * maxf(tan(deg_to_rad(clampf(bank_deg, 4.0, 80.0))), 0.05)
 	)
+
+
+## Where the run home ends up, modelled: arc, marquee, then the airtime flown straight. Analytic
+## because it is asked hundreds of times while the marquee corridor is being chosen, and integrating
+## candidate turns costs more than the turns being chosen between.
+static func _home_endpoint(
+	layout: Dictionary,
+	position: Vector3,
+	heading: float,
+	speed: float,
+	marquee: Dictionary,
+	bank: float,
+	pairs: int,
+	home_heading: float
+) -> Vector3:
+	var owed := rad_to_deg(angle_difference(
+		deg_to_rad(heading + marquee.sweep), deg_to_rad(home_heading)
+	))
+	var after_arc := _arc_endpoint(layout, position, heading, owed, speed, bank)
+	var after_marquee := _arc_endpoint(
+		layout, after_arc, heading + owed, marquee.sweep, speed, marquee.bank
+	)
+	return _run_endpoint(
+		layout, after_marquee, home_heading, pairs * RETURN_PAIR_SECONDS * speed
+	)
+
+
+## What the marquee beat would leave behind it, measured by solving and trial-integrating the real
+## thing rather than by asking the model that chose the corridor.
+static func _marquee_room(
+	layout: Dictionary, plan: Dictionary, route: Dictionary, state: Dictionary, approach: Vector3
+) -> float:
+	var group: Array
+	if plan.return_marquee == "overbank":
+		var entry: Array = RideElements.author_pullout(route, state, {
+			"exit_pitch_deg": plan.return_wave_entry.exit_pitch_deg,
+			"peak_g": _peak_for(
+				state.speed, plan.return_wave_entry.exit_pitch_deg, plan.return_wave_entry.peak_g
+			),
+		})
+		var climbing: Dictionary = RideElements._trial(route, state, entry[0])
+		group = RideElements.author_overbank(climbing.route, climbing.state, {
+			"heading_change_deg": layout.turn_sign * plan.overbank.heading_change_deg,
+			"bank_deg": plan.overbank.bank_deg,
+			"peak_g": plan.overbank.peak_g,
+		})
+		return RideElements._trial(
+			climbing.route, climbing.state, group[0]
+		).state.position.distance_to(approach)
+	var entry: Array = RideElements.author_pullout(route, state, {
+		"exit_pitch_deg": plan.return_wave_entry.exit_pitch_deg,
+		"peak_g": _peak_for(
+			state.speed, plan.return_wave_entry.exit_pitch_deg, plan.return_wave_entry.peak_g
+		),
+	})
+	var climbing: Dictionary = RideElements._trial(route, state, entry[0])
+	var span: float = 1.7 * plan.return_wave.rise / maxf(
+		sin(deg_to_rad(absf(RideElements.exit_pitch_deg(climbing.state)))), 0.15
+	)
+	group = RideElements.author_wave_turn(climbing.route, climbing.state, {
+		"rise": plan.return_wave.rise,
+		"crown_g": plan.return_wave.crown_g,
+		"peak_bank_deg": layout.turn_sign * minf(
+			plan.return_wave.peak_bank_deg, ROLL_BUDGET * 0.16 * span / climbing.state.speed
+		),
+		"lateral_g": plan.return_wave.lateral_g,
+	})
+	return RideElements._trial(
+		climbing.route, climbing.state, group[0]
+	).state.position.distance_to(approach)
 
 
 ## The wave turn's half of the return marquee: an airtime crest flown on edge. It has to be entered
@@ -1073,6 +1690,31 @@ static func _add_if_sound(
 			if point.distance_to(trial_route.positions[j]) < 3.0:
 				return false
 	_add(route, state, sections, group)
+	return true
+
+
+## Which gesture a section belongs to. Stamped after each slot rather than passed into it, so the
+## story skeleton names the phases in one place and the phase profile the checks print reads back
+## exactly the five long gestures the ride is written as.
+static func _mark(sections: Array, phase: String) -> void:
+	for section in sections:
+		if not section.has("phase"):
+			section["phase"] = phase
+
+
+## Whether the samples a trial added clear the track that was already there. The route check reads a
+## three-metre corridor between any two points more than thirty metres apart along the track, and a
+## beat that wraps its own approach — which is the whole of what a cutback is — is exactly the beat
+## that can fail it.
+static func _clears_route(route: Dictionary, trial: Dictionary) -> bool:
+	var first: int = route.positions.size()
+	for i in range(first, trial.positions.size()):
+		var point: Vector3 = trial.positions[i]
+		for j in first:
+			if absf(trial.distances[i] - trial.distances[j]) <= 30.0:
+				continue
+			if point.distance_to(trial.positions[j]) < 3.6:
+				return false
 	return true
 
 
@@ -1171,8 +1813,47 @@ static func _trial_grade(route: Dictionary, state: Dictionary, section: Dictiona
 	return {"route": trial_route, "state": trial_state}
 
 
+static func _wrap(degrees: float) -> float:
+	return rad_to_deg(angle_difference(0.0, deg_to_rad(degrees)))
+
+
 static func _flat_pitch() -> Array:
 	return [Vector2(0, 0), Vector2(1, 0)]
+
+
+static func _ground(tangent: Vector3) -> Vector3:
+	return Vector3(tangent.x, 0.0, tangent.z).normalized()
+
+
+## Where a coordinated turn of this size ends up, without integrating it. A turn is an arc of radius
+## v²/(g·tan bank), so its chord is 2R·sin(Δ/2) laid down on the bisecting heading — accurate enough
+## to aim with, which is the whole point: an aim that has to integrate its own candidate turns costs
+## more than the turns it is choosing between.
+static func _arc_endpoint(
+	layout: Dictionary,
+	position: Vector3,
+	heading_deg: float,
+	delta_deg: float,
+	speed: float,
+	bank_deg: float
+) -> Vector3:
+	## A turn is not a circle of the radius its held bank implies: the roll goes on over the first
+	## third and comes back off over the last, so most of a third of the element turns at less than
+	## the bank it is named for. Measured across these seeds, the arc it really lays down is half as
+	## long again as the textbook one, and the aim reads the arc it really lays down.
+	var radius: float = TURN_ARC_FACTOR * speed * speed / (
+		RideElements.G0 * maxf(tan(deg_to_rad(clampf(bank_deg, 4.0, 80.0))), 0.05)
+	)
+	var chord: float = 2.0 * radius * sin(deg_to_rad(absf(delta_deg)) * 0.5)
+	return position + _direction(layout, heading_deg + delta_deg * 0.5) * chord
+
+
+## The same estimate for a run of straight-ish beats: they hold their heading, so they only move the
+## aim point along it.
+static func _run_endpoint(
+	layout: Dictionary, position: Vector3, heading_deg: float, distance: float
+) -> Vector3:
+	return position + _direction(layout, heading_deg) * distance
 
 
 ## -------------------------------------------------------------------------------- terrain frame

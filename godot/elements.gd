@@ -50,6 +50,9 @@ static func fvd_section(
 	}
 
 
+## `exit_speed_target` below zero means the section is unpowered: no drive is solved and the speed
+## evolves from gravity and drag alone. That is what a coasting climb is — the boost that pays for
+## it sits behind it as its own section, so a launch reads as a launch and a hill reads as a hill.
 static func grade_section(
 	name: String,
 	length: float,
@@ -279,10 +282,12 @@ static func integrate_grade(
 	for i in 64:
 		var pitch := deg_to_rad(_profile_septic(section.pitch, (i + 0.5) / 64.0).x)
 		mean_gravity += GRAVITY.dot(Vector3(heading.x * cos(pitch), sin(pitch), heading.y * cos(pitch))) / 64.0
-	var average_speed2: float = 0.5 * (entry_speed * entry_speed + section.exit_speed_target * section.exit_speed_target)
-	var average_drag: float = DRAG_FACTOR * average_speed2 + ROLLING_FACTOR * G0
-	var delivered: float = 1.0 - minf(60.0 / section.length, 0.45)
-	var drive: float = (0.5 * (section.exit_speed_target * section.exit_speed_target - entry_speed * entry_speed) - mean_gravity * section.length + average_drag * section.length) / (section.length * delivered)
+	var drive := 0.0
+	if section.exit_speed_target >= 0.0:
+		var average_speed2: float = 0.5 * (entry_speed * entry_speed + section.exit_speed_target * section.exit_speed_target)
+		var average_drag: float = DRAG_FACTOR * average_speed2 + ROLLING_FACTOR * G0
+		var delivered: float = 1.0 - minf(60.0 / section.length, 0.45)
+		drive = (0.5 * (section.exit_speed_target * section.exit_speed_target - entry_speed * entry_speed) - mean_gravity * section.length + average_drag * section.length) / (section.length * delivered)
 	for i in steps:
 		var u1 := float(i + 1) / steps
 		var um := (i + 0.5) / steps

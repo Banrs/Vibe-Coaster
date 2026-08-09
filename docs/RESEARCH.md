@@ -275,3 +275,15 @@ risk notes: +8 Gz is credible only as a brief, <~2 s peak inside the ~5 s cerebr
 - Do NOT prime video agents with spec numbers (biases observation); give them structure, not values.
 - One video agent at a time (shared pane). Budget ≈20 screenshots/agent; grids stretch this to
   150+ frames.
+- Seek trap (found on the I305 g-meter video, 2026-08-09): setting `video.currentTime` can
+  silently stop updating the decoded frame — `seeked` fires and `currentTime` reads correctly,
+  but `drawImage` returns the same stale frame. Seek via
+  `document.getElementById('movie_player').seekTo(t, true)`, then await `seeked` +
+  `requestVideoFrameCallback`. Pixel-hash two distant frames before trusting any sweep; keep
+  batches under ~8 seeks per JS call (16 exceeds the 30 s tool timeout).
+- Hidden-pane trap (found on the Falcon's Flight review video, 2026-08-09): when the browser
+  pane is not visible, YouTube stops decoding frames entirely — playback advances and `seeked`
+  fires, but `drawImage` returns stale frames and `requestVideoFrameCallback` never fires
+  (hangs). Capture only in a JS call issued immediately after a screenshot, and hash-verify
+  every captured cell. Caption text is compositor-gated the same way — DOM caption harvesting
+  fails while hidden.

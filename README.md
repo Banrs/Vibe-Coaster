@@ -15,10 +15,12 @@ inspection layer (placeholder train, simple track and pillars).
   (structure above its valley), a ~90° cliff dive down ~0.8× the escarpment relief, a
   75–95 m Immelmann (tallest-inversion class), a helical-leg vertical loop, a cutback,
   9–10.5 km of track.
-- Falcon's Flight's skeleton — constant-speed LSM lift, twisted non-inverting side-drop,
-  terrain-hugging airtime, launched-then-decelerating cliff climb, crest crawl/hold, outward-
-  banked rim turn, monotonic 90° dive into a tunnel, high-speed return — with Tormenta's
-  inversion act grafted where its physics belongs (act one, at 42–50 m/s).
+- Falcon's Flight's skeleton in five cohesive gestures — twisted side-drop into one flowing
+  low act, a boosted-then-coasting decelerating cliff climb, one crest hold with an
+  outward-banked rim turn, a monotonic 90° dive into the tunnel launch and camelback, and a
+  single sweeping return arc home — with Tormenta's inversion act grafted where its physics
+  belongs (act one, at 42–50 m/s). No lifts: exactly three short LSM boosters (~2 g, ~2 g,
+  and the ~4 g record launch), every climb an unpowered coast.
 - Exactly three LSM zones, no mid-course brake, one continuous energy arc after the tunnel
   launch, and one deliberate slow beat (the crest hold).
 - A ~2041 human-load envelope: duration-stretched ASTM F2291 curves at +8.0/−3.0 Gz ·

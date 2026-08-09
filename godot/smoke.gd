@@ -18,11 +18,34 @@ const THRILL_KINDS := [
 ## a live speed lands near its target, not on it.
 const IMMELMANN_APEX_CHECK := Vector2(72.0, 98.0)
 const LOOP_HEIGHT_CHECK := Vector2(48.0, 72.0)
-## The route aims at 7.2–9.8 km and lands here. The gap is act one: 2.6–3.0 km of it, of which
-## 0.75–1.24 km is the correction turns between the beats — a 68° turn at 47 m/s is 416 m of track
-## and there are five to eight of them before the launch. Nothing in the second act is spending it;
-## the post-tunnel dogleg took the doubled corridor out and the run home is gated on measured room.
-const LENGTH_CHECK := Vector2(9100.0, 10500.0)
+## One circuit, and the band the generator aims at. Act one no longer chains correction turns — it
+## flies one heading from the crest turn to the wave turn — and the run home is one rotation rather
+## than a turn and a string of square-ups. What is left is very nearly all structure: the cliff climb
+## is 0.8 km, the camelback 1.1, the dive 0.5 and the raceway arc 0.9, because a reversal at
+## eighty-five metres a second cannot be flown in less.
+## The aim is 6.4–7.6 km and the generator lands here. What is left over is one thing and it is
+## measured: the raceway arc. The run home is a heading reversal at eighty-five metres a second, and
+## the corridor solve that chooses how much of it the marquee carries works off an analytic model
+## of arcs and straight runs which lands within a couple of hundred metres — so the arc comes out
+## between 900 m and 1.2 km, and the brake run behind it covers whatever the model was long by.
+## Everything else is structure: 0.8 km of cliff climb, 1.1 of camelback, 0.5 of dive.
+const LENGTH_CHECK := Vector2(7200.0, 9700.0)
+## Shortest a beat may be before it reads as a kink rather than an element, and the g band each
+## booster has to hold. Grammar — the pullouts, pushovers and falls that hand one beat to the next —
+## is exempt from the first: a 20 m fall between a crest and its pullout is one element, not a stub.
+const BEAT_FLOOR := 30.0
+const GRAMMAR_KINDS := ["pullout", "pushover", "fall"]
+const TURN_KINDS := ["turn", "rim_turn", "overbank"]
+const BOOST_G := Vector2(1.6, 2.4)
+## The record launch's floor. Not the four g the story asked for: at a 78 m/s entry a booster's own
+## thrust ramp is a quarter of a second long, and four g mean peaks at seven and ramps at 67 g/s
+## against the envelope's 25. This is what the onset rule leaves.
+const RECORD_BOOST_G := 1.1
+## Flat grade is infrastructure, not track between beats. These are the pieces allowed to be it.
+const FLAT_GRADES := [
+	"Station", "LSM1 boost", "LSM2 boost", "LSM3 boost",
+	"Holding brake", "Crest hold", "Rim brake", "Final brakes",
+]
 
 
 func _initialize() -> void:
@@ -97,11 +120,111 @@ func _generator_errors() -> PackedStringArray:
 		_expect(issues, closure.length <= route.length * 0.08, "closure is %.0f m of %.0f" % [closure.length, route.length])
 		for issue in issues:
 			errors.append("seed %d: %s" % [seed_value, issue])
+		_expect_shape(route, issues)
+		for issue in issues:
+			errors.append("seed %d: %s" % [seed_value, issue])
+		var fast := _time_share(route, 200.0)
+		var quick := _time_share(route, 100.0)
 		print(
-			"seed %d: %.0f m, %.1f s, %.1f km/h top, %d samples, %d ms | %s | %s | %s"
-			% [seed_value, route.length, route.duration, analysis.top_speed * 3.6, route.positions.size(), elapsed, ", ".join(route.plan.inversion_notes), route.plan.get("cutback_note", "no cutback slot"), route.plan.get("return_note", "no return note")]
+			"seed %d: %.0f m, %.1f s, %.1f km/h avg, %.1f km/h top, %.0f%% of the ride over 200, %.0f%% over 100, %d ms"
+			% [seed_value, route.length, route.duration, 3.6 * route.length / route.duration, analysis.top_speed * 3.6, 100.0 * fast, 100.0 * quick, elapsed]
 		)
+		print(
+			"  %s | %s | %s"
+			% [", ".join(route.plan.inversion_notes), route.plan.get("cutback_note", "no cutback"), route.plan.get("wave_note", "no wave")]
+		)
+		print(
+			"  %s | %s | %s"
+			% [route.plan.get("lsm2_note", "-"), route.plan.get("lsm3_note", "-"), route.plan.get("act_sweep_note", "-")]
+		)
+		print(
+			"  %s | %s | %s"
+			% [route.plan.get("bearing_note", "-"), route.plan.get("corridor_note", "-"), route.plan.get("return_note", "-")]
+		)
+		if seed_value == 42:
+			_print_phases(route)
 	return errors
+
+
+## The reviewer's view of the ride: one line per gesture. Nothing else in this file reads phases —
+## they are the generator's own account of the story it just told.
+func _print_phases(route: Dictionary) -> void:
+	var order := []
+	var totals := {}
+	for section in route.sections:
+		var phase: String = section.get("phase", "?")
+		if not totals.has(phase):
+			totals[phase] = Vector2.ZERO
+			order.append(phase)
+		totals[phase] += Vector2(section.length, section.end_time - section.start_time)
+	print("  seed 42 phase profile:")
+	for phase in order:
+		var totals_for: Vector2 = totals[phase]
+		print(
+			"    %-20s %6.0f m %6.1f s %6.0f km/h"
+			% [phase, totals_for.x, totals_for.y, 3.6 * totals_for.x / maxf(totals_for.y, 0.01)]
+		)
+
+
+## Fraction of the ride's time spent at or above this speed, in km/h.
+func _time_share(route: Dictionary, kmh: float) -> float:
+	var held := 0.0
+	for i in range(1, route.speeds.size()):
+		if route.speeds[i] * 3.6 >= kmh:
+			held += route.times[i] - route.times[i - 1]
+	return held / maxf(route.duration, 0.01)
+
+
+## The flow rules. A beat is a run of FVD sections sharing one element dictionary, so a group counts
+## once; the ban is on standalone stubs, on two turns stitched together, and on flat grade used as
+## track between beats rather than as the infrastructure it is.
+func _expect_shape(route: Dictionary, issues: PackedStringArray) -> void:
+	var beats := []
+	for index in route.sections.size():
+		var section: Dictionary = route.sections[index]
+		if section.kind != "FVD" or not section.has("element"):
+			continue
+		var kind: String = section.element.get("kind", "")
+		if not beats.is_empty() and is_same(beats[-1].element, section.element):
+			beats[-1].length += section.length
+			continue
+		beats.append({
+			"kind": kind, "length": section.length, "index": index, "element": section.element,
+		})
+	for i in beats.size():
+		var beat: Dictionary = beats[i]
+		if not GRAMMAR_KINDS.has(beat.kind):
+			_expect(issues, beat.length >= BEAT_FLOOR, "the %s beat is only %.0f m long" % [beat.kind, beat.length])
+		if i > 0 and TURN_KINDS.has(beat.kind) and TURN_KINDS.has(beats[i - 1].kind) and beats[i - 1].index == beat.index - 1:
+			_expect(issues, false, "a %s runs straight into a %s" % [beats[i - 1].kind, beat.kind])
+	for index in range(1, route.sections.size() - 1):
+		var section: Dictionary = route.sections[index]
+		if section.kind != "GRADE" or not _is_flat(section):
+			continue
+		if route.sections[index - 1].kind == "FVD" and route.sections[index + 1].kind == "FVD":
+			_expect(issues, FLAT_GRADES.has(section.name), "flat grade '%s' sits between two beats" % section.name)
+	## Three boosters, each short, each holding the g it was sized for.
+	var boosts := []
+	for section in route.sections:
+		if section.lsm != 0:
+			boosts.append(section)
+	_expect(issues, boosts.size() == 3, "the ride has %d powered sections, not three boosters" % boosts.size())
+	for boost in boosts:
+		var accel: float = (
+			boost.exit_speed * boost.exit_speed - boost.entry_speed * boost.entry_speed
+		) / (2.0 * boost.length * 9.80665)
+		_expect(issues, boost.length <= 200.0, "'%s' is %.0f m long" % [boost.name, boost.length])
+		if boost.lsm == 3:
+			_expect(issues, accel >= RECORD_BOOST_G, "'%s' holds %.2f g, under the record launch's %.1f" % [boost.name, accel, RECORD_BOOST_G])
+		else:
+			_expect(issues, accel >= BOOST_G.x and accel <= BOOST_G.y, "'%s' holds %.2f g, outside %s" % [boost.name, accel, str(BOOST_G)])
+
+
+func _is_flat(section: Dictionary) -> bool:
+	for key in section.pitch:
+		if absf(key.y) > 0.5:
+			return false
+	return true
 
 
 ## What the generator said it was building, checked against what it built. Every band here is read

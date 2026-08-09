@@ -206,17 +206,26 @@ the candidate route is committed.
 The only flown-track intermediate representation is an ordered sequence of serializable physical
 profile spans. Profiles use a small fixed polynomial vocabulary and carry explicitly named units:
 
-- dimensionless `normal_g`, `lateral_g`, and `longitudinal_g` proper-acceleration channels;
+- dimensionless `normal_g` and `lateral_g` proper-acceleration channels;
+- dimensionless `drive_g`, the authored propulsion/brake command before central resistance;
 - `roll_rate_rad_s` in radians per second;
 - `duration_s` and stable gesture metadata.
 
-Integrator position, velocity, acceleration, time, and distance are SI. Resistance returns m/s2.
+Each control channel and its quintic coefficients are stored independently as Float64 scalars, not
+packed into an engine-precision vector. `Vector3` is reserved for geometry/frame state. Integrator
+position, velocity, acceleration, time, and distance are SI. Resistance returns m/s2.
 Any degrees-per-second authoring input is converted once at configuration/catalog ingestion.
 
 Profiles are piecewise smooth in time. Adjacent spans match the required endpoint values and first
 and second derivatives; transition shoulders are compiled as part of the owning gesture. Internal
 polynomial or Bézier mathematics is permitted as a representation of a force profile or as a solver
 seed. It may never author an independent position-space track.
+
+Every span names a stable role such as `entry`, `core`, or `exit`. A motion program derives
+contiguous role-level span windows; after integration, the route projects them to exact native
+sample, physical-time, and distance bounds nested beneath the whole gesture. Evidence selectors
+resolve a declared role exactly. Missing roles are evidence gaps, never permission to widen a
+`core` comparison to entry/exit shoulders.
 
 ## 5. One time-domain FVD kernel
 
@@ -225,41 +234,50 @@ launch onset, pacing, and the requested ride duration, and it avoids the `1/v` c
 singularities of an arc-length kernel.
 
 For unit tangent `T`, rider up `U`, rider right `R = T x U`, speed `v`, position `r`, accumulated
-distance `s`, gravity vector `g`, standard gravity `g0`, dimensionless proper controls `normal_g`,
-`lateral_g`, and `longitudinal_g`, roll rate `omega_rad_s`, and the central resistance acceleration
-`drag_mps2`, the governing law is:
+distance `s`, gravity vector `g`, standard gravity `g0`, dimensionless proper controls `normal_g`
+and `lateral_g`, authored propulsion/brake command `drive_g`, roll rate `omega_rad_s`, and the
+central resistance acceleration `drag_mps2`, the governing law is:
 
 ```text
 a_perp = g - dot(g, T) T + g0 (normal_g U + lateral_g R)
 dr/dt  = v T
 ds/dt  = v
-dv/dt  = dot(g, T) + g0 longitudinal_g - drag_mps2(v, configuration)
+dv/dt  = dot(g, T) + g0 drive_g - drag_mps2(v, configuration)
 dT/dt  = a_perp / v
+longitudinal_g = drive_g - drag_mps2(v, configuration) / g0
 ```
 
 The rider frame is parallel-transported with the changing tangent and rotated about `T` by
-`omega`. Every numerical step re-orthonormalizes the frame. Gravity acts once: longitudinal proper
-drive is not allowed to double-count grade acceleration.
+`omega`. Every numerical step re-orthonormalizes the frame. Gravity acts once: `drive_g` never
+contains grade acceleration. The trajectory exposes both the authored `drive_g` and the total rider
+proper acceleration `longitudinal_g`; accelerometer evidence is compared with the latter.
 
 At rest or arbitrarily low speed, FVD cannot robustly define curvature. The kernel therefore defines
-`MIN_MOVING_SPEED = 2.0 m/s`. Below that speed, only explicit station launch/hold mode is legal:
-controls must make transverse inertial acceleration zero within the integrator tolerance,
-`roll_rate_rad_s` must be zero, tangent and frame remain fixed, and longitudinal acceleration alone
-advances speed. The moving law begins only after a transition shoulder reaches the threshold with
-zero curvature jet. Any later candidate falling below the threshold outside station mode is
-rejected. This is not a second bootstrap integrator and contains no epsilon-dependent geometry.
+`MIN_MOVING_SPEED = 2.0 m/s`. Below that speed, only an explicit straight station
+launch/creep/brake span is legal: controls must make transverse inertial acceleration zero within the
+integrator tolerance, `roll_rate_rad_s` must be zero, tangent and frame remain fixed, and
+longitudinal acceleration alone advances speed. The simulated route contains no stationary dwell:
+speed may be zero only at its initial instant, and every accepted interval advances distance.
+Consecutive station spans may launch, creep, or brake; every handoff between station and moving laws
+occurs at a native span/integration boundary at exactly the threshold with zero curvature jet. A
+final station span may instead end at the catalogued positive terminal creep speed at the fixed
+station endpoint. Every intermediate Runge-Kutta stage is validated before any division by speed,
+and any nonstation candidate below the threshold is rejected. This is not a second bootstrap
+integrator and contains no epsilon-dependent geometry.
 
 The final route uses a deterministic 100 Hz integration step so verification reads native time
 semantics and the fastest intended speed still advances roughly one metre per step. Bounded recipe
 solves use the same kernel at a coarser step; the accepted program receives one full-resolution
 integration. Selected convergence tests compare against a finer step.
 
-The integrator also emits the one authoritative continuous `Trajectory`: per-step dense output
-derived from the same integration state and derivatives, with a documented local error bound. All
-sampling evaluates this trajectory; no consumer fits another curve. Safety checks use adaptive
-subdivision or conservative swept enclosures from the authoritative segments, including integration
-error. Uniform-arc samples are views for rendering and reporting only and never feed clearance,
-self-intersection, force reconstruction, or other verification.
+The integrator also emits the one authoritative continuous numerical `Trajectory`: per-step dense
+output derived from the same accepted integration state, derivatives, and exact owning controls.
+All sampling evaluates this trajectory; no consumer fits another curve. Step-doubling differences
+are reported as empirical convergence estimates, never formal or conservative error bounds. Safety
+checks adaptively sample the authoritative dense intervals, screen at coarse resolution when needed,
+and revalidate every accepted route at the native 100 Hz integration. Uniform-arc samples are views
+for rendering and reporting only and never feed clearance, self-intersection, force reconstruction,
+or other verification.
 
 ## 6. Boundary and closure contract
 
@@ -275,17 +293,20 @@ the actual physical state:
 - normal, lateral, and longitudinal proper acceleration and their bounded rates.
 
 Matching force values alone is insufficient because speed, gravity projection, and frame
-orientation also determine curvature. The C4 guarantee requires C2 physical controls and resistance
-law, C2-compatible frame transport, matching time-domain control derivatives, and speed bounded by
-`MIN_MOVING_SPEED` at every moving seam. The compiler propagates time derivatives through the
-dynamics and converts them to arc-length curvature derivatives with the chain rule. It does not use
-finite differences as proof. Under those explicit hypotheses curvature is C2 in arc length and the
-centerline is C4; numerical samples only validate convergence against the analytic boundary jet.
+orientation also determine curvature. The analytic C4 result requires C2 physical controls and
+resistance law, C2-compatible frame transport, matching time-domain control derivatives, and speed
+bounded by `MIN_MOVING_SPEED` at every moving seam. The compiler propagates time derivatives through
+the dynamics and converts them to arc-length curvature derivatives with the chain rule. It does not
+use finite differences as proof. Under those explicit hypotheses the analytic ODE solution has C2
+arc-length curvature and a C4 centerline. The dense sampler is a convergence-tested numerical
+approximation of that solution; it does not make an independent C4 claim.
 
 Station return targets a planner-reserved capture manifold rather than an arbitrary pose. The
 manifold is a bounded interval on the station centreline, at station height, with station yaw,
 level pitch and roll, a structurally zero curvature jet, and a brake-entry speed band. A straight
-FVD brake/transfer span then reaches the fixed station endpoint.
+moving brake reaches the threshold, then an explicit straight station-mode transfer reaches the
+fixed station endpoint at its catalogued positive terminal creep speed. Station dwell after that
+endpoint is outside the generated trajectory.
 
 The return recipe has five bounded variables: lateral pulse amplitude and timing skew, normal pulse
 amplitude and timing skew, and authored roll-pulse area. Its five normalized residuals are
@@ -295,15 +316,17 @@ the roll residual accounts for both the incoming frame and parallel-transport ho
 speed must fall inside the manifold band and is not tuned with hidden return propulsion.
 
 A deterministic box-constrained trust-region root solve receives at most 40 coarse trajectory
-evaluations, including error-estimate evaluations. The authoritative integrator supplies a
-conservative coarse-to-100-Hz error bound for every capture residual, derived from its local error
-enclosures and checked by step-doubling tests. Coarse acceptance requires `abs(residual) + bound` to
-fit inside the final manifold tolerance. The preset capability envelope is a conservative tested
-subset of this parameter box, and upstream pins outside its finite compatibility graph are rejected
-during planning. Failure to capture is reported before the one full-resolution integration; a
-full-resolution miss inside the certified margin is an integrator correctness failure, never a cue
-to retry or repair. No position-space Bézier, frame reset, alignment turn, or post-hoc translation
-is accepted as closure.
+evaluations, including one finer-step comparison. Coarse acceptance is only a screen: every
+normalized residual plus its empirical coarse/fine difference must fit inside the final manifold
+tolerance. The preset capability envelope is a bounded tested subset of this parameter box, and
+upstream pins outside its finite compatibility graph are rejected during planning. The accepted
+whole program then receives exactly one 100 Hz integration. At the recorded native capture, brake,
+handoff, and endpoint boundaries, the compiler recomputes the five residuals, along interval,
+brake-entry speed, zero-curvature value/first/second-derivative jet, station-law handoff, and fixed
+terminal endpoint against that same trajectory without reintegrating. A full-resolution miss is an
+integrator or recipe failure, never a cue to retry or repair;
+neither coarse screening nor 100 Hz validation is described as formal certification. No
+position-space Bézier, frame reset, alignment turn, or post-hoc translation is accepted as closure.
 
 ## 7. Honest longitudinal dynamics
 
@@ -380,8 +403,11 @@ extra path.
 
 The audit measures time-weighted pacing, correct exact-duration held values, meaningful
 non-coincident transition windows, stable beat identities, row-shifted element attribution, and
-checked artifact writes. The current fidelity implementation is characterized first and then
-refactored or rewritten wherever it violates these semantics.
+checked artifact writes. Every held-force comparison is first sampled over its exact selected
+beat/role and row-shifted physical-time window on a new 100 Hz grid using the authoritative dense
+trajectory; native span sample counts never stand in for elapsed seconds. The current fidelity
+implementation is characterized first and then refactored or rewritten wherever it violates these
+semantics.
 
 ## 10. Curvature and smoothing integrity
 
@@ -393,7 +419,8 @@ from position, time, speed, gravity, and frame. It compares:
 
 - authored force against reconstructed force;
 - geometric curvature against the force/speed-derived curvature;
-- raw curvature and curvature derivatives across every boundary;
+- raw curvature vectors and their first/second arc-length derivatives across every boundary, with
+  scalar magnitude/radius derived only for plots and unbounded radius represented without clamping;
 - normal integration against a finer-step convergence run;
 - unsmoothed generated channels against explicitly labelled source-filtered channels.
 
@@ -438,7 +465,8 @@ does not ship with two selectable geometry systems.
 
 The stable consumer boundary is defined first. `Route` owns the authoritative `Trajectory`, native
 time samples, distance, position, tangent, rider-up, speed, three proper-g channels, roll rate,
-gesture windows/metadata, terrain reference, configuration and catalog fingerprints, resolution
+whole-gesture windows with nested role-level sample/time/distance windows, terrain reference,
+configuration and catalog fingerprints, resolution
 report, solver counters, and verification inputs. Viewer, verifier, smoke, and audit consume only
 this contract. Uniform-distance views are derived read-only data and never replace the trajectory.
 
@@ -476,11 +504,12 @@ The implementation plan must include failing tests before each behavior change a
 - central drag/rolling-loss and unpowered energy-bleed tests;
 - terrain, clearance, self-intersection, and support-overlap review coverage;
 - evidence catalog schema, provenance, axis transform, row, duration, and element-alignment tests;
-- corrected held-value, time-weighted pacing, transition-window, aggregation, and deterministic
-  ranking tests;
+- corrected held-value, moving non-grid role-window resampling, time-weighted pacing,
+  transition-window, aggregation, and deterministic ranking tests;
 - the fifteen-seed audit twice with byte-identical JSON and Markdown and complete review artifacts;
-- proof that each seed is generated once per audit and each accepted route is integrated once at
-  full resolution;
+- proof that each seed is generated once per audit, each accepted route is integrated once at full
+  resolution, and station-capture invariants are rechecked on that accepted trajectory without a
+  retry or second integration;
 - required Godot import and smoke commands plus fresh generated-POV and PNG inspection.
 
 Final review is adversarial. Independent reviewers must challenge physical equations, numeric

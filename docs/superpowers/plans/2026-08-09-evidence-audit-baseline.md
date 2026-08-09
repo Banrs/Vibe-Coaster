@@ -1,0 +1,1075 @@
+# Evidence Audit Baseline Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Produce a skeptical, fully offline, deterministic fidelity baseline over the approved fifteen legacy-generator seeds before any ride-behavior change, backed by re-adjudicated committed evidence and checked JSON, Markdown, POV, and PNG artifacts.
+
+**Architecture:** Execute this plan first, against the untouched legacy `Dictionary` returned by the current `RideGenerator.build(seed)`, before typed-route adaptation, motion-kernel authority, recipes, or behavior changes. `RideFidelityReferences` points to reviewed committed metadata/landmarks/hashes under `docs/evidence/fidelity/`; acquisition is an authoring workflow, while audit/CI remain offline. `RideFidelity` is read-only, `CanonicalData` supplies the one canonical JSON/hash implementation, `RideFidelityArtifacts` owns reports/checked writes, and `_inspect.gd` remains the diagnostic command.
+
+**Tech Stack:** Godot 4.7.1, typed GDScript, built-in `JSON`, `FileAccess`, `DirAccess`, `Image`, and `HashingContext`; PowerShell 7-compatible verification commands; committed JSON/Markdown evidence records.
+
+## Global Constraints
+
+- Authority order is explicit user decisions, reproducible physical derivation and verified external evidence, creative ride vision, then current code/generated behavior.
+- This baseline is executed and committed before the route/config foundation: it consumes untouched legacy route dictionaries, imports no `RideRoute`, `MotionTrajectory`, or `LegacyRouteAdapter`, and records the legacy base commit in `audit.json`.
+- The fixed fleet order is exactly `[11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]`; preserve this order in reports. Sort stable identifiers inside findings, never the fleet.
+- Source acquisition may use the visible in-app Browser or ignored local `yt-dlp`/`ffmpeg` work files. Commit no copyrighted video/frame/audio, cookies, tokens, or session data—only reviewed metadata, timestamped landmarks, source/alignment decisions, and hashes. Normal audit/smoke/CI are offline.
+- Every YouTube video ID and RideForcesDB recording ID is a separate source record. Never merge URLs, runs, rows, devices, or timelines.
+- Evidence targets reference a stable `semantic_selector_id`, never a route-specific beat ID. Each selector record declares both a legacy anchor (`phase`, `kind`, occurrence rule, and `window_role`) and a compiled anchor (`story_slot_id` plus `window_role`), or explicitly declares one representation inapplicable. Legacy v1 anchors use only the honest `whole` role; compiled anchors may select a validated role such as `core`. This single catalog must resolve both pre-change legacy measurements and post-cutover story-slot measurements; an unresolved applicable branch or role is an evidence gap, never a fallback.
+- Evidence states are exactly `review_pending`, `observation_only`, `corroborative`, and `executable`; only `executable` observations may define comparison bands.
+- A source or observation becomes `executable` only with a committed source artifact or content digest, retrieval date, exact window, axis mapping, row/seat, transform ID, confidence rationale, and required corroborating links.
+- Unknown device/sample-rate video contributes timestamped landmarks, visible values, phase order, geometry, flow, and review prompts only. Never fabricate a dense trace.
+- Approved fictional force transforms scale force values only, never source duration, geometry, or time. Positive/negative vertical, lateral, and negative longitudinal remain separate axes; there is no inferred positive-longitudinal multiplier.
+- Preserve physical seconds even when emitting phase-normalized overlays; normalization must not conceal a duration miss. Keep row effects separate.
+- Audit dimensions remain separate: loads, geometry/scale, pacing/energy, terrain/AGL, and flow/transitions. Findings are `within`, `under`, `over`, `observed-only`, or `evidence-gap`; there is no overall fidelity score.
+- Preserve the diagnostic capability to emit per-element side/profile images, whole-route top/elevation images, and whole-ride force, speed, pitch, roll, and AGL channels. Extend it with longitudinal proper acceleration, curvature, radius, roll acceleration, and jerk.
+- Generated positions are direct integrator output. No smoothing, fitted replacement curve, radius clamp, or viewer-only path may feed physics, verification, or generated-channel measurement.
+- Filtering is permitted only for the existing human-tolerance verifier or a catalogued evidence comparison and must be explicitly labelled. Raw generated channels remain available.
+- The audit generates each seed exactly once per run. Fidelity misses are diagnostic; malformed catalog data, generation failure, physical inconsistency, or failed artifact writes are operational failures.
+- Do not modify `godot/generator.gd`, `godot/elements.gd`, `godot/main.gd`, `godot/terrain.gd`, or the safety thresholds/filtering in `godot/verify.gd` in this plan.
+- Required stable commands remain the editor import and `res://smoke.gd` invocations below, always through the controlled portable binary and isolated application state.
+
+Before any command block in a PowerShell session, run this preamble. In a linked worktree, the fallback resolves the portable binary from the shared repository rather than `PATH`; application state remains beneath the active worktree's ignored `out/`:
+
+```powershell
+$taskRoot = (Resolve-Path '.').Path
+$sharedRepoRoot = Split-Path ((git rev-parse --path-format=absolute --git-common-dir).Trim()) -Parent
+$portableGodot = if ($env:GODOT_BIN) { (Resolve-Path -LiteralPath $env:GODOT_BIN).Path } else { (Resolve-Path -LiteralPath (Join-Path $sharedRepoRoot 'out\tools\godot-4.7.1\Godot_v4.7.1-stable_win64_console.exe')).Path }
+$godotAppData = Join-Path $taskRoot 'out\godot-appdata'
+$godotLocalAppData = Join-Path $taskRoot 'out\godot-localappdata'
+$null = New-Item -ItemType Directory -Force -Path $godotAppData, $godotLocalAppData
+$env:APPDATA = $godotAppData
+$env:LOCALAPPDATA = $godotLocalAppData
+```
+
+## File and Interface Map
+
+- Create `docs/evidence/fidelity/source-manifest.json`: stable source IDs, exact URLs/recording IDs, retrieval metadata, state, and artifact digests.
+- Create `docs/evidence/fidelity/catalog-review.md`: concise adjudication log explaining promotion, downgrade, rejection, and unresolved mappings.
+- Create `docs/evidence/fidelity/youtube/*.json`: one reviewed metadata/landmark record per YouTube ID; no copied video and no invented sample series.
+- Create `docs/evidence/fidelity/rideforcesdb/*.json`: reviewed retrieval/alignment records and raw response only when a genuine session-backed fetch validates; otherwise cite the committed telemetry tables and record the fetch gap.
+- Create `godot/canonical_data.gd`: narrow recursive canonical JSON plus SHA-256 utility shared by config/catalog/report code.
+- Modify `godot/fidelity_references.gd`: JSON-compatible executable `CATALOG`, immutable transforms, source/observation records, targets, review prompts, and evidence gaps.
+- Modify `godot/fidelity.gd`: catalog validation, beat/row measurement, exact held values, time-weighted metrics, transition windows, reconstruction, fleet comparison, and deterministic recommendation.
+- Modify `godot/fidelity_tests.gd`: pure synthetic tests for all semantics and catalog rules.
+- Create `godot/fidelity_artifacts.gd`: deterministic report/Markdown, checked writes, and diagnostic render helpers; canonical JSON delegates to `CanonicalData`.
+- Create `godot/fidelity_artifact_tests.gd`: synthetic serialization, manifest, write-failure, render, and one-build-per-seed tests.
+- Modify `godot/_inspect.gd`: thin offline runner over the fixed fleet; retains existing console/PNG diagnostics and emits the complete baseline pack.
+- Modify `godot/smoke.gd`: keep delegating shared grouping/held primitives and run both focused test suites; do not change existing ride target constants or generator gate behavior.
+- Modify `README.md` and `CLAUDE.md`: document the offline baseline command, output contract, evidence-authoring separation, and operational-versus-diagnostic exit semantics.
+
+Stable public interfaces for this plan:
+
+```gdscript
+RideFidelity.validate_catalog(catalog: Dictionary) -> PackedStringArray
+RideFidelity.validate_catalog_artifacts(catalog: Dictionary) -> PackedStringArray
+RideFidelity.held(values: PackedFloat32Array, polarity: float, seconds: float) -> float
+RideFidelity.element_bands(route: Dictionary, row_offset: float = 0.0) -> Array
+RideFidelity.measure_route(route: Dictionary, row_offsets: Array) -> Dictionary
+RideFidelity.compare_fleet(seed_measurements: Array, catalog: Dictionary) -> Dictionary
+CanonicalData.canonical_json(value: Variant) -> String
+CanonicalData.sha256_text(value: String) -> String
+RideFidelityArtifacts.build_report(seed_measurements: Array, comparison: Dictionary, catalog: Dictionary, legacy_base_commit: String) -> Dictionary
+RideFidelityArtifacts.canonical_json(value: Variant) -> String # delegate only
+RideFidelityArtifacts.markdown(report: Dictionary) -> String
+RideFidelityArtifacts.write_pack(output_dir: String, report: Dictionary, routes_by_seed: Dictionary) -> PackedStringArray
+```
+
+---
+
+### Task 1: Characterize the existing diagnostic contract
+
+**Files:**
+- Modify: `godot/fidelity_tests.gd`
+
+**Interfaces:**
+- Consumes: current `RideFidelity.held`, `RideFidelity.element_bands`, `RideFidelity.measure_route`, current inspector artifact names.
+- Produces: characterization fixtures that distinguish preserved capability from corrected semantics.
+
+- [ ] **Step 0: Pin and prove the untouched legacy input boundary**
+
+Run `git rev-parse HEAD` and retain the exact hash as `legacy_base_commit` in the report contract. Add a focused assertion that `RideGenerator.build(42) is Dictionary`, contains current packed arrays/sections, and that `fidelity.gd`, `_inspect.gd`, and this test import none of `RideRoute`, `MotionTrajectory`, or `LegacyRouteAdapter`. If the foundation has already changed that boundary, execute this plan from a worktree at the pinned pre-foundation commit rather than adapting the audit forward.
+
+- [ ] **Step 1: Add a synthetic legacy route helper with shared-element identity and all required diagnostic channels**
+
+```gdscript
+static func _legacy_characterization_route() -> Dictionary:
+	var route := _measurement_route()
+	route["sections"][0]["element"] = route.sections[1].element
+	route["sections"][0]["phase"] = "act one"
+	route["sections"][1]["phase"] = "act one"
+	return route
+```
+
+- [ ] **Step 2: Add characterization assertions for grouping, stable current beat IDs, row-window intent, and read-only measurement**
+
+```gdscript
+static func _test_legacy_characterization(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _legacy_characterization_route()
+	var before := route.duplicate(true)
+	var bands: Array = fidelity.element_bands(route, 2.0)
+	_expect(errors, bands[0].beat_id == "act-one/00/hill", "legacy adapter keeps its stable beat ID")
+	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row enters after its offset")
+	fidelity.measure_route(route, [0.0, 2.0])
+	_expect(errors, route == before, "fidelity measurement is read-only")
+```
+
+- [ ] **Step 3: Run the focused suite with the repository-portable Godot binary**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+```
+
+Expected: the existing fidelity characterizations pass. Artifact tests are introduced immediately before artifact implementation in Task 7, so no committed task leaves a focused suite red.
+
+- [ ] **Step 4: Commit the characterization boundary**
+
+```powershell
+git add godot/fidelity_tests.gd
+git commit -m "test: characterize fidelity diagnostics"
+```
+
+### Task 2: Research and commit distinct evidence records
+
+**Files:**
+- Create: `docs/evidence/fidelity/source-manifest.json`
+- Create: `docs/evidence/fidelity/catalog-review.md`
+- Create: `docs/evidence/fidelity/youtube/*.json`
+- Create: `docs/evidence/fidelity/rideforcesdb/*.json`
+
+**Interfaces:**
+- Consumes: approved evidence rules and the repository claims in `docs/TELEMETRY.md`, `docs/TELEMETRY-I305.md`, and `docs/RESEARCH.md`.
+- Produces: immutable offline artifacts referenced by `RideFidelityReferences.CATALOG`.
+
+- [ ] **Step 1: Create the evidence directories and record the exact source inventory in `source-manifest.json`**
+
+```powershell
+New-Item -ItemType Directory -Force 'docs/evidence/fidelity/youtube' | Out-Null
+New-Item -ItemType Directory -Force 'docs/evidence/fidelity/rideforcesdb' | Out-Null
+```
+
+The manifest must contain separate source IDs for all of these URLs/recordings, even when two sources cover the same ride:
+
+```text
+youtube.falcon.forward.cUURkqyn4Zs       https://www.youtube.com/watch?v=cUURkqyn4Zs
+youtube.falcon.backward.J54WKu2nU6o      https://www.youtube.com/watch?v=J54WKu2nU6o
+youtube.falcon.sdXGD9kMR7s               https://www.youtube.com/watch?v=sdXGD9kMR7s
+youtube.falcon.poco8rOnW18               https://www.youtube.com/watch?v=poco8rOnW18
+youtube.coastertalk.continuous.0Ua       https://www.youtube.com/watch?v=0UaOSBGSx20
+youtube.coastertalk.edited.seNR          https://www.youtube.com/watch?v=seNRpi4wP-s
+youtube.tormenta.forward.AHjk            https://www.youtube.com/watch?v=AHjk2R4da_I
+youtube.i305.overlay.wX7                  https://www.youtube.com/watch?v=wX7uHKj-Ujc
+youtube.falcon.cgi.NFV                    https://www.youtube.com/watch?v=NFVNGgwZk3c
+rideforcesdb.falcon.4804                  https://rideforcesdb.com/getRec?id=4804
+rideforcesdb.tormenta.6383                https://rideforcesdb.com/getRec?id=6383
+rideforcesdb.tormenta.6369                https://rideforcesdb.com/getRec?id=6369
+```
+
+`source-manifest.json` has `schema_version: "fidelity-source-manifest@1"` and one record per source ID. Each record fixes `initial_state`, `permitted_contributions`, `permitted_axes`, and `promotion_prerequisites`; no later code infers them from the URL:
+
+| Source ID | Initial state | Permitted contribution |
+|---|---|---|
+| `youtube.falcon.forward.cUURkqyn4Zs` | `observation_only` | order, geometry, timing landmarks, feel prompts |
+| `youtube.falcon.backward.J54WKu2nU6o` | `observation_only` | order, geometry, speed perception, feel prompts |
+| `youtube.falcon.sdXGD9kMR7s` | `observation_only` | order, geometry, timing landmarks, feel prompts |
+| `youtube.falcon.poco8rOnW18` | `corroborative` | model-to-model geometry/order only |
+| `youtube.coastertalk.continuous.0Ua` | `corroborative` | displayed-channel landmarks; axes remain unknown until reviewed |
+| `youtube.coastertalk.edited.seNR` | `review_pending` | edited visual landmarks only; no absolute ride timeline |
+| `youtube.tormenta.forward.AHjk` | `observation_only` | order, geometry, timing landmarks, feel prompts |
+| `youtube.i305.overlay.wX7` | `corroborative` | vertical/normal-g windows only |
+| `youtube.falcon.cgi.NFV` | `corroborative` | model-to-model geometry/order only |
+| `rideforcesdb.falcon.4804` | `corroborative` | reviewed force windows with row/device caveats |
+| `rideforcesdb.tormenta.6383` | `corroborative` | reviewed force windows with row/device caveats |
+| `rideforcesdb.tormenta.6369` | `corroborative` | cross-recording support only; pocket/sliding caveat |
+
+State semantics are executable rules: `review_pending` means identified/acquired but not sufficiently reviewed; `observation_only` permits only its manifest-listed observations and prompts but no band; `corroborative` may support another aligned source but cannot define a band alone; `executable` requires artifact/digest, exact window, axis/row mapping, transform, confidence rationale, and required corroboration. Promotion cannot expand a source beyond `permitted_contributions` or `permitted_axes` without a reviewed manifest version change.
+
+Align these four visual timelines independently: `J54WKu2nU6o` real backwards POV (`observation_only`), `sdXGD9kMR7s` real front-row POV (`observation_only`), `0UaOSBGSx20` continuous CoasterTalk Source landmarks (`corroborative`, unknown row/device/sample rate preserved), and `poco8rOnW18` NoLimits2 simulation (`corroborative` model-to-model only, never measured truth). Never merge their URLs/timelines. The table fixes every other source's state and limits. If identity, row, device, or timing cannot be established, retain `review_pending`; only a qualifying observation becomes `executable`.
+
+- [ ] **Step 2: Capture reproducible YouTube metadata artifacts without downloading video**
+
+```powershell
+$ids = @('cUURkqyn4Zs','J54WKu2nU6o','sdXGD9kMR7s','poco8rOnW18','0UaOSBGSx20','seNRpi4wP-s','AHjk2R4da_I','wX7uHKj-Ujc','NFVNGgwZk3c')
+foreach ($id in $ids) {
+  curl.exe -L --fail --silent --show-error --max-time 30 "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$id&format=json" -o "docs/evidence/fidelity/youtube/$id-oembed.json"
+}
+```
+
+Expected: nine distinct JSON files; a failed or unavailable URL stops the task and leaves that record `review_pending` with the retrieval failure recorded, never copied from another source.
+
+- [ ] **Step 3: Review video through the visible in-app Browser or ignored local extraction**
+
+Preferred: invoke `browser:control-in-app-browser`, navigate the exact URL, keep the pane visible, seek precisely, and use canvas-painted contact sheets per `docs/RESEARCH.md` §7. If Browser inspection is unavailable, use ignored local work only:
+
+```powershell
+New-Item -ItemType Directory -Force 'out/evidence-work/video','out/evidence-work/frames' | Out-Null
+$timelineIds = @('J54WKu2nU6o','sdXGD9kMR7s','0UaOSBGSx20','poco8rOnW18')
+foreach ($id in $timelineIds) {
+  yt-dlp --no-playlist -f "bv*+ba/b" --merge-output-format mp4 -o "out/evidence-work/video/%(id)s.%(ext)s" "https://www.youtube.com/watch?v=$id"
+}
+ffmpeg -hide_banner -loglevel error -ss 00:01:54.500 -i 'out/evidence-work/video/sdXGD9kMR7s.mp4' -frames:v 1 'out/evidence-work/frames/sdXGD9kMR7s-114.5.png'
+```
+
+Use `ffprobe` for duration/stream metadata and repeat `ffmpeg -ss` only at reviewed landmarks. Commit no downloaded media, frames, audio, thumbnails, cookies, or sessions. Commit one `<video-id>-review.json` per URL containing metadata, exact timestamps/windows, landmark descriptions, local source SHA-256 when available, and state; a hash does not make a video trace executable. Every source-to-generated mapping has a structured `alignment` object with `source_landmark_id`, `generated_anchor.semantic_selector_id`, `method`, `uncertainty_s`, `row_compatibility`, and `rationale`. Edited or discontinuous timelines use landmark-to-landmark methods rather than invented absolute ride time. Missing fields yield an evidence gap, never an inferred mapping.
+
+- [ ] **Step 4: Establish a RideForcesDB session, then attempt genuine raw acquisition**
+
+```powershell
+$recordings = @('4804','6383','6369')
+foreach ($recording in $recordings) {
+  $cookie = "out/evidence-work/rfdb-$recording.cookies"
+  curl.exe -L --fail --silent --show-error --max-time 30 -c $cookie -o NUL "https://rideforcesdb.com/?id=$recording&axes=yzxac"
+  curl.exe -L --fail --silent --show-error --max-time 30 -b $cookie "https://rideforcesdb.com/getRec?id=$recording" -o "out/evidence-work/rfdb-$recording-getRec"
+  curl.exe -L --fail --silent --show-error --max-time 30 -b $cookie "https://rideforcesdb.com/download?id=$recording&ftype=csv" -o "out/evidence-work/rfdb-$recording.csv"
+}
+```
+
+Validate status, content type, non-login/non-HTML body, parseability, recording ID, columns, sample count, and monotone time before copying a genuine payload to `docs/evidence/fidelity/rideforcesdb/<id>-raw.{json,csv}`. Never commit cookies. Acquisition is a validated `acquisition` tagged union: `raw` requires repository-relative `artifact_path` and `artifact_sha256` and forbids `diagnostic_path`, `diagnostic_sha256`, and `fallback_citations`; `raw_fetch_unavailable` forbids `artifact_path`/`artifact_sha256`, requires repository-relative `diagnostic_path`/`diagnostic_sha256`, and requires non-empty `fallback_citations`, each with `document`, stable table/section ID, row or line anchor, columns used, and source windows used. If both endpoints remain unavailable, commit only retrieval diagnostics, cite the already committed windows/tables in `docs/TELEMETRY.md`, and keep the justified evidence state. Never fabricate or reconstruct a raw payload from prose tables.
+
+- [ ] **Step 5: Verify raw artifact hashes and record the exact lowercase SHA-256 values in the manifest**
+
+```powershell
+Get-ChildItem 'docs/evidence/fidelity' -Recurse -File |
+  Where-Object Name -Match '(oembed|raw).*\.(json|csv)$' |
+  Sort-Object FullName |
+  ForEach-Object {
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+    '{0}  {1}' -f $hash, $_.FullName
+  }
+```
+
+Copy each exact digest into its matching manifest record; do not use a date, path, or digest from a neighboring source.
+
+- [ ] **Step 6: Create separate reviewed alignment records for RideForcesDB 4804, 6383, and 6369**
+
+Each record must include `acquisition` (`raw` or `raw_fetch_unavailable`), exactly the matching artifact pair or diagnostic-plus-structured-fallback branch defined above, raw axis names when actually acquired, mapped rider axes, row/seat, device, native sample rate, processing chain, excluded intervals, named element order, exact source-second windows, alignment evidence, confidence rationale, and corroborating source IDs. Keep 4804 corroborative because RideForcesDB flags the wrist recording unreliable. Record 6383 as row 2. Record 6369 separately with its back/right-pocket, pocket-carried/sliding-device caveat; it cannot silently stand in for 6383 or measured rider-frame truth. Only a derived observation corroborated across 6383, 6369, and the Tormenta POV may become executable. When raw acquisition is unavailable, retain `raw_fetch_unavailable`; validator tests must reject missing fallback anchors, simultaneous acquisition branches, or a raw digest without a genuine raw artifact.
+
+- [ ] **Step 7: Write `catalog-review.md` as a decision log**
+
+Record these mandatory adjudications:
+
+- the continuous `0UaOSBGSx20` and edited `seNRpi4wP-s` videos remain distinct;
+- `J54WKu2nU6o`, `sdXGD9kMR7s`, `0UaOSBGSx20`, and `poco8rOnW18` retain independent timeline origins and explicit landmark-to-landmark alignment records;
+- `poco8rOnW18` is NoLimits2 simulation and remains corroborative model-to-model evidence only;
+- no unknown-rate video becomes a dense trace;
+- 4804 does not independently define executable bands;
+- 6383 remains row 2; 6369 retains its back/right-pocket, pocket-carried/sliding-device caveat; a telemetry-table fallback is labelled `raw_fetch_unavailable` rather than raw;
+- the old `terrain.act_one_hugging_share = [0.8, 1.0]` is an evidence gap because the source is qualitative;
+- the old I305 `transition_force_swing = [3.5, 4.7]` is removed unless an exact non-coincident source window proves that metric;
+- the old Do-Dodonpa `1.1` positive-longitudinal scale is removed because no approved Gx+ fictional multiplier exists;
+- CGI remains model-to-model visual evidence and yields no measured-truth target where real POV disagrees.
+
+- [ ] **Step 8: Confirm normal test commands run with network disabled after artifacts exist**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+```
+
+Expected: this command reads repository files only. Inert provenance URLs exist only in
+`fidelity_references.gd`; no test or runtime code constructs a network client or dereferences a
+catalog URL.
+
+- [ ] **Step 9: Commit the reviewed evidence artifacts separately from executable catalog code**
+
+```powershell
+git add docs/evidence/fidelity
+git commit -m "docs: commit reviewed ride evidence"
+```
+
+### Task 3: Replace the catalog schema and re-adjudicate executable targets
+
+**Files:**
+- Modify: `godot/fidelity_references.gd`
+- Modify: `godot/fidelity.gd`
+- Modify: `godot/fidelity_tests.gd`
+
+**Interfaces:**
+- Consumes: committed evidence artifacts from Task 2.
+- Produces: `RideFidelityReferences.CATALOG` schema version 2 and strict `RideFidelity.validate_catalog`.
+
+- [ ] **Step 1: Add a complete valid schema-v2 catalog fixture**
+
+```gdscript
+static func _valid_catalog_v2() -> Dictionary:
+	return {
+		"schema_version": 2,
+		"catalog_version": "2026-08-09.baseline.1",
+		"selectors": {
+			"semantic.act1.loop.core": {
+				"legacy_anchor": {"phase":"act one", "kind":"loop", "occurrence":0, "window_role":"whole"},
+				"compiled_anchor": {"story_slot_id":"act1.loop", "window_role":"core"},
+			},
+		},
+		"sources": {
+			"rideforcesdb.tormenta.6383": {
+				"state": "corroborative",
+				"acquisition": "raw",
+				"url": "https://rideforcesdb.com/getRec?id=6383",
+				"recording_id": "6383",
+				"retrieved_on": "2026-08-10",
+				"retrieval_context": "RideForcesDB getRec response",
+				"artifact_path": "docs/evidence/fidelity/rideforcesdb/6383-raw.json",
+				"artifact_sha256": "d".repeat(64),
+				"row_seat": "row 2",
+				"device": "consumer IMU; exact device unverified",
+				"sample_rate_hz": 50.0,
+				"axis_mapping": {"vertical": "normal_g", "lateral": "lateral_g", "longitudinal": "longitudinal_g"},
+				"reliability": "requires element-order and cross-recording corroboration",
+				"processing": ["raw committed response", "source-window selection only"],
+				"caveats": ["no independently validated angle channel"],
+			},
+		},
+		"transforms": {
+			"fictional.gz-positive.1_3333333333@2026-08-09": {
+				"axis": "normal_g", "polarity": "positive", "factor": 1.3333333333,
+				"formula": "target_force_g = observed_force_g * 1.3333333333",
+				"approval": "explicit user decision 2026-08-09",
+			},
+		},
+		"observations": [], "targets": [], "review_prompts": [], "evidence_gaps": [],
+	}
+```
+
+- [ ] **Step 2: Add failing validator cases for state, provenance, digest, row, axis, duration, and transform rules**
+
+```gdscript
+static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringArray) -> void:
+	var catalog := _valid_catalog_v2()
+	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "complete schema-v2 catalog validates")
+	var bad_state := catalog.duplicate(true)
+	bad_state.sources["rideforcesdb.tormenta.6383"].state = "trusted"
+	_expect_contains(errors, fidelity.validate_catalog(bad_state), "invalid state", "unknown evidence state is rejected")
+	var bad_hash := catalog.duplicate(true)
+	bad_hash.sources["rideforcesdb.tormenta.6383"].artifact_sha256 = "abc"
+	_expect_contains(errors, fidelity.validate_catalog(bad_hash), "artifact_sha256", "non-SHA-256 digest is rejected")
+	var bad_union := catalog.duplicate(true)
+	bad_union.sources["rideforcesdb.tormenta.6383"].acquisition = "raw_fetch_unavailable"
+	_expect_contains(errors, fidelity.validate_catalog(bad_union), "acquisition", "acquisition branches cannot be mixed")
+	var bad_selector := catalog.duplicate(true)
+	bad_selector.selectors["semantic.act1.loop.core"].erase("compiled_anchor")
+	_expect_contains(errors, fidelity.validate_catalog(bad_selector), "compiled_anchor", "applicable selectors require a compiled anchor")
+	var bad_transform := catalog.duplicate(true)
+	bad_transform.transforms["fictional.gz-positive.1_3333333333@2026-08-09"].axis = "duration_s"
+	_expect_contains(errors, fidelity.validate_catalog(bad_transform), "force axis", "transforms cannot scale time")
+```
+
+- [ ] **Step 3: Add failing promotion tests**
+
+```gdscript
+static func _test_executable_promotion(fidelity: Script, errors: PackedStringArray) -> void:
+	var catalog := _valid_catalog_v2()
+	catalog.observations.append({
+		"id": "tormenta.loop.gz-positive.6383",
+		"state": "executable", "source_ids": ["rideforcesdb.tormenta.6383"],
+		"source_window_s": [22.94, 27.58], "source_axis": "vertical",
+		"mapped_axis": "normal_g", "row_seat": "row 2", "duration_s": 4.64,
+		"raw_range": [2.52, 3.84], "transform_id": "fictional.gz-positive.1_3333333333@2026-08-09",
+		"confidence": "medium", "confidence_rationale": "exact trace window",
+		"corroborating_source_ids": [], "semantic_selector_id": "semantic.act1.loop.core",
+		"alignment": {"source_landmark_id":"tormenta.loop.entry", "generated_anchor":{"semantic_selector_id":"semantic.act1.loop.core"}, "method":"element-order-plus-force-shape", "uncertainty_s":0.2, "row_compatibility":"explicit-row-transform", "rationale":"matched entry/exit shoulders"},
+	})
+	_expect_contains(errors, fidelity.validate_catalog(catalog), "requires corroboration", "corroborative source cannot promote alone")
+```
+
+- [ ] **Step 4: Run the focused test and verify schema-v1 code fails**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+```
+
+Expected: failures mention schema version 2, evidence state, digest, and executable promotion.
+
+- [ ] **Step 5: Implement the schema-v2 validator with exact allowed sets**
+
+```gdscript
+const EVIDENCE_STATES := ["review_pending", "observation_only", "corroborative", "executable"]
+const FORCE_AXES := ["normal_g", "lateral_g", "longitudinal_g"]
+const FINDING_STATES := ["within", "under", "over", "observed-only", "evidence-gap"]
+
+static func _valid_sha256(value: Variant) -> bool:
+	var text := str(value)
+	if text.length() != 64:
+		return false
+	for character in text:
+		if character not in "0123456789abcdef":
+			return false
+	return true
+```
+
+Validate unique IDs across every collection, exact source and semantic-selector references, both selector-anchor branches and their allowed fields, required non-empty `window_role`, legacy role exactly `whole`, source-manifest initial state/permitted contributions/permitted axes, the exact mutually exclusive `acquisition` union and its artifact-or-diagnostic digest pair, retrieval date/context, row/device/sample-rate/axis mapping/reliability/processing/caveats/windows, transform axis/polarity/factor/formula/approval, observation promotion, target-to-executable-observation linkage, and separate raw/target ranges. Reject absolute paths, `res://`/URI paths, and parent traversal. Resolve a validated artifact or diagnostic path for reading with `ProjectSettings.globalize_path("res://../" + repository_path)` in one catalog helper. Every mapped observation requires the complete `alignment` object and compatible source permissions; validate its `generated_anchor.semantic_selector_id`, nonnegative uncertainty, explicit row compatibility, and method. `sample_rate_hz` may be `null` only when the state is not `executable` and the caveat explicitly records it as unknown.
+
+Implement `validate_catalog_artifacts` by selecting exactly the path/hash pair allowed by each source's acquisition branch, globalizing the repository-relative path, hashing its bytes with `HashingContext.HASH_SHA256`, and comparing the lowercase hex digest. Missing files, unreadable files, branch mismatches, and digest mismatches are catalog operational errors. The method performs no network access.
+
+- [ ] **Step 6: Replace `RideFidelityReferences.CATALOG` with the re-adjudicated schema-v2 catalog**
+
+Use the exact source IDs from Task 2. Add one stable `selectors` record per generated element family used by an observation/target, with both legacy and compiled anchors as defined globally. Each observation and target references only `semantic_selector_id`; `compare_fleet` resolves that selector against measurement metadata using the legacy branch before cutover and the compiled branch afterward, clips the selected measurement to the exact role-level native/time/distance window, never rewrites target IDs, and emits an evidence gap when an applicable branch or role does not resolve. Whole-gesture beat aggregation remains unchanged and is not silently substituted for a compiled `core`. Encode the approved value transforms as five unambiguous signed records: Gz+ ×1.3333333333, Gz− ×1.5, Gy+ ×1.5666666667, Gy− ×1.5666666667, and Gx− ×1.7142857143. Transform application preserves the observation sign and only scales magnitude for the declared polarity. Represent identity as `observed.identity@1`; do not create a Gx+ scale transform or a time/geometry transform. Add tests rejecting wrong-polarity application, any Gx+ record, and any transform outside the three force axes. Make qualitative AGL, connective micro-element, coasting-drag, support geometry, and insufficiently aligned transition claims evidence gaps or review prompts rather than numeric targets.
+
+- [ ] **Step 7: Run the focused tests until the committed catalog validates offline**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+```
+
+Expected: exit 0 and no network access.
+
+- [ ] **Step 8: Commit schema and catalog together**
+
+```powershell
+git add godot/fidelity_references.gd godot/fidelity.gd godot/fidelity_tests.gd
+git commit -m "feat: re-adjudicate fidelity evidence catalog"
+```
+
+### Task 4: Correct held, row, pacing, and transition semantics
+
+**Files:**
+- Modify: `godot/fidelity.gd`
+- Modify: `godot/fidelity_tests.gd`
+
+**Interfaces:**
+- Consumes: legacy route dictionaries and schema-v2 observation durations.
+- Produces: corrected `held`, `element_bands`, and `measure_route` with physical-time semantics.
+
+- [ ] **Step 1: Add an exact-duration held-value regression**
+
+```gdscript
+static func _test_exact_duration_hold(fidelity: Script, errors: PackedStringArray) -> void:
+	var exact := PackedFloat32Array()
+	exact.resize(81)
+	exact.fill(-0.75)
+	_expect_close(errors, fidelity.held(exact, -1.0, 0.8), -0.75, "81 samples contain exactly 0.8 seconds at 100 Hz")
+	_expect(errors, fidelity.held(exact, -1.0, 0.804) == -INF, "81 samples do not contain a non-grid 0.804-second hold")
+	var non_grid := PackedFloat32Array(exact)
+	non_grid.append(-0.75)
+	_expect_close(errors, fidelity.held(non_grid, -1.0, 0.804), -0.75, "82 samples contain the ceiling interval count for 0.804 seconds")
+```
+
+- [ ] **Step 2: Add a moving non-grid seam regression for production measurement.** Build a monotone moving route whose selected beat begins between native 100 Hz timestamps and whose force plateau covers the requested `0.804 s` only after deterministic time interpolation. Assert `measure_route`, not merely direct `held`, samples the selected row/window on a fresh exact 100 Hz grid anchored at its physical start, returns the expected held value, excludes the preceding gesture, and is invariant to extra irregular native samples. Keep the fixture reusable so the later route migration runs the same assertion through `MotionTrajectory.sample_time_into`.
+
+- [ ] **Step 3: Add an irregular-time pacing route and time-weighted expectations**
+
+```gdscript
+static func _test_time_weighted_pacing(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _irregular_pacing_route()
+	var measured: Dictionary = fidelity.measure_route(route, [0.0])
+	_expect_close(errors, measured.beats[0].pacing.dead_zone_share, 0.2 / 1.3, "dead-zone share is weighted by elapsed seconds")
+	_expect_close(errors, measured.beats[0].pacing.speed_share_200, 1.1 / 1.3, "speed share is weighted by elapsed seconds")
+```
+
+Add `_irregular_pacing_route()` as a complete five-sample route: build fresh five-entry arrays for positions, tangents, ups, rights, curvatures, banks, speeds, three proper-g axes, roll rates, distances, and times; use the exact values in the former inline fixture and one section spanning indices `0..4`. Do not mutate the forty-one-sample `_measurement_route`, because mismatched channel lengths would invalidate the test.
+
+- [ ] **Step 4: Add row-boundary tests at the beginning and end of the closed route**
+
+```gdscript
+static func _test_row_windows(fidelity: Script, errors: PackedStringArray) -> void:
+	var bands: Array = fidelity.element_bands(_measurement_route(), 2.0)
+	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row begins when it reaches the beat start")
+	_expect_close(errors, bands[0].window_end_distance, 22.0, "rear row ends when it reaches the beat end")
+	_expect(errors, bands[-1].window_end_distance <= 40.0, "terminal row window is explicitly clipped, not wrapped into an unrelated beat")
+```
+
+- [ ] **Step 5: Add a meaningful non-coincident transition-window test**
+
+```gdscript
+static func _test_transition_windows(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _transition_route() # helper returns 3.0 seconds at 100 Hz with a seam at 1.5 s
+	var measured: Dictionary = fidelity.measure_route(route, [0.0])
+	var flow: Dictionary = measured.beats[0].flow
+	_expect_close(errors, flow.transition_before_s[0], 1.0, "before window starts 0.5 seconds before seam")
+	_expect_close(errors, flow.transition_before_s[1], 1.5, "before window ends at seam")
+	_expect_close(errors, flow.transition_after_s[0], 1.5, "after window starts at seam")
+	_expect_close(errors, flow.transition_after_s[1], 2.0, "after window ends 0.5 seconds after seam")
+	_expect(errors, flow.transition_force_swing > 1.9, "transition compares window extrema, not coincident seam samples")
+```
+
+- [ ] **Step 6: Run tests and confirm all five semantics fail against the partial audit code**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+```
+
+- [ ] **Step 7: Correct exact held-window bounds**
+
+```gdscript
+static func held(values: PackedFloat32Array, polarity: float, seconds: float) -> float:
+	var window := ceili(seconds * Verify.SAMPLE_HZ - 1e-9) + 1
+	if window > values.size():
+		return -INF
+	return Verify._held_curve(values, polarity)[window] * polarity
+```
+
+Require finite `seconds > 0.0`, use `<= values.size()` in `_hold_values`, and keep the existing signed-polarity convention. The small epsilon protects exact grid-aligned durations from floating representation; ceiling semantics prevents a non-grid request from accepting a shorter interval. `-INF` remains an internal compatibility sentinel only: `measure_route` converts it to an unavailable metric with reason `insufficient_duration`, omits a numeric value, and `compare_fleet` emits an evidence gap where applicable. No non-finite sentinel enters canonical JSON.
+
+- [ ] **Step 8: Resample every held-force measurement to an exact physical 100 Hz grid.** Before any production call to `held`, derive the selected beat/role and row-shifted physical time bounds, then sample that single force axis at `window_start_s + n / Verify.SAMPLE_HZ` while the timestamp is within the window. Use `MotionTrajectory.sample_time_into` after route migration and deterministic timestamp interpolation for the untouched legacy baseline. Never pass native per-span arrays directly to `held`, concatenate samples across role boundaries, or infer duration from native sample count. Preserve the public `held` primitive and its legacy smoke parity; the resampler is a private measurement detail.
+
+- [ ] **Step 9: Replace sample counts with interval-duration accumulation**
+
+For each interval `i..i+1`, add `dt = times[i + 1] - times[i]` to the metric when the left sample satisfies its predicate, then divide by total positive duration. Keep physical durations in seconds and emit sample counts only as diagnostics.
+
+- [ ] **Step 10: Implement explicit row-window clipping and transition windows**
+
+Add `TRANSITION_WINDOW_SECONDS := 0.5`. Emit `transition_before_s`, `transition_after_s`, maximum force swing between the two window extrema, bank handoff, roll-rate handoff, and `transition_seconds := 1.0` when both full windows exist. Emit an `evidence-gap` measurement reason when route boundaries cannot supply both windows; never silently fall back to coincident seam samples.
+
+- [ ] **Step 11: Run focused tests and smoke**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+```
+
+Expected: all corrected semantics pass; legacy generator behavior and existing smoke bands remain unchanged.
+
+- [ ] **Step 12: Commit corrected measurement semantics**
+
+```powershell
+git add godot/fidelity.gd godot/fidelity_tests.gd
+git commit -m "fix: measure fidelity in physical time"
+```
+
+### Task 5: Add independent force, curvature, and smoothing-integrity reconstruction
+
+**Files:**
+- Modify: `godot/fidelity.gd`
+- Modify: `godot/fidelity_tests.gd`
+
+**Interfaces:**
+- Consumes: route `positions`, `times`, `distances`, `speeds`, `tangents`, `ups`, `rights`, `curvatures`, three proper-g arrays, and `roll_rates`.
+- Produces: `reconstruct_channels(route: Dictionary) -> Dictionary`, included in `measure_route`.
+
+- [ ] **Step 1: Add a straight constant-speed reconstruction test**
+
+```gdscript
+static func _test_straight_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _analytic_straight_route(20.0, 2.0, 100.0)
+	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	_expect_close(errors, _max_abs(channels.curvature), 0.0, "straight route has zero geometric curvature")
+	_expect_close(errors, _maximum(channels.reconstructed_normal_g), 1.0, "level straight reconstructs one normal g")
+	_expect_close(errors, _max_abs(channels.reconstructed_longitudinal_g), 0.0, "constant speed reconstructs zero longitudinal proper g")
+```
+
+- [ ] **Step 2: Add a constant-radius horizontal circle test**
+
+```gdscript
+static func _test_constant_radius_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
+	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	_expect_close_tol(errors, _median_finite(channels.radius_m), 50.0, 0.75, "circle reconstructs geometric radius")
+	_expect_close_tol(errors, _median_packed(channels.curvature), 0.02, 0.0003, "circle reconstructs curvature")
+```
+
+- [ ] **Step 3: Add authored-versus-reconstructed force mismatch and jerk tests**
+
+```gdscript
+static func _test_force_integrity_mismatch(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
+	route.lateral_g.fill(0.0)
+	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	_expect(errors, channels.force_error_peak_g > 0.5, "incorrect authored force is exposed")
+	_expect(errors, not channels.has("filtered_positions"), "reconstruction never creates smoothed geometry")
+	_expect(errors, channels.has("jerk_mps3"), "reconstruction emits inertial jerk")
+```
+
+- [ ] **Step 4: Add a boundary curvature-vector derivative test**
+
+Construct a synthetic route whose curvature vector changes direction but not magnitude across a declared section seam. Assert raw `curvature_vector`, `curvature_vector_ds`, `curvature_vector_d2s`, scalar curvature magnitude, roll acceleration, and the seam index are emitted without filtering. Require the vector derivative to expose the direction jump even though the scalar magnitude stays equal, and require a separately labelled evidence-filtered comparison not to replace any raw array.
+
+- [ ] **Step 5: Run tests and verify `reconstruct_channels` is missing**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+```
+
+Expected: focused failures state that reconstruction channels are absent.
+
+- [ ] **Step 6: Implement reconstruction from generated samples**
+
+```gdscript
+const G0 := 9.80665
+const GRAVITY := Vector3.DOWN * G0
+
+static func reconstruct_channels(route: Dictionary) -> Dictionary:
+	var count: int = route.positions.size()
+	var inertial := PackedVector3Array()
+	var curvature_vector := PackedVector3Array()
+	var curvature := PackedFloat32Array()
+	var radius_m := []
+	var radius_unbounded := []
+	var reconstructed_normal := PackedFloat32Array()
+	var reconstructed_lateral := PackedFloat32Array()
+	var reconstructed_longitudinal := PackedFloat32Array()
+	for i in count:
+		var acceleration := _time_derivative_vec3(route.times, route.speeds, route.tangents, i)
+		var proper := acceleration - GRAVITY
+		var v2 := maxf(route.speeds[i] * route.speeds[i], 0.000001)
+		var tangential := route.tangents[i] * acceleration.dot(route.tangents[i])
+		var kappa_vector := (acceleration - tangential) / v2
+		var kappa := kappa_vector.length()
+		inertial.append(acceleration)
+		curvature_vector.append(kappa_vector)
+		curvature.append(kappa)
+		radius_m.append(null if kappa <= 0.000001 else 1.0 / kappa)
+		radius_unbounded.append(kappa <= 0.000001)
+		reconstructed_normal.append(proper.dot(route.ups[i]) / G0)
+		reconstructed_lateral.append(proper.dot(route.rights[i]) / G0)
+		reconstructed_longitudinal.append(proper.dot(route.tangents[i]) / G0)
+	return {
+		"inertial_acceleration_mps2": inertial,
+		"curvature_vector": curvature_vector,
+		"curvature": curvature,
+		"radius_m": radius_m,
+		"radius_unbounded": radius_unbounded,
+		"reconstructed_normal_g": reconstructed_normal,
+		"reconstructed_lateral_g": reconstructed_lateral,
+		"reconstructed_longitudinal_g": reconstructed_longitudinal,
+	}
+```
+
+Use centered differences internally and one-sided differences only at route endpoints. Compute `curvature_vector_ds` and `curvature_vector_d2s` against distance before deriving any scalar summaries; also compute roll acceleration and inertial jerk against time, force error per axis, geometric-versus-authored curvature-vector error, and raw seam windows. Straight samples serialize radius as `null` with `radius_unbounded=true`; never emit infinity, clamp radius, or substitute a large finite value. Do not mutate or duplicate `route.positions` into a fitted path.
+
+- [ ] **Step 7: Add explicitly labelled evidence filtering**
+
+When a catalog observation names processing, emit `comparison_channels: {source_filtered: ..., filter_id: ...}`. Keep `generated_raw` and `reconstructed_raw` adjacent in the report. Reuse `Verify.filter` only when the observation explicitly calls for the existing 5 Hz human-tolerance chain; do not apply it globally.
+
+- [ ] **Step 8: Run reconstruction tests and smoke**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+```
+
+- [ ] **Step 9: Commit smoothing-integrity diagnostics**
+
+```powershell
+git add godot/fidelity.gd godot/fidelity_tests.gd
+git commit -m "feat: reconstruct route fidelity channels"
+```
+
+### Task 6: Implement deterministic fleet comparison and recommendation
+
+**Files:**
+- Modify: `godot/fidelity.gd`
+- Modify: `godot/fidelity_tests.gd`
+
+**Interfaces:**
+- Consumes: `measure_route` results and schema-v2 catalog.
+- Produces: `compare_fleet(seed_measurements, catalog) -> Dictionary`.
+
+- [ ] **Step 1: Add table-driven classification tests**
+
+```gdscript
+static func _test_target_classification(fidelity: Script, errors: PackedStringArray) -> void:
+	for case in [
+		{"value": 0.5, "band": [1.0, 2.0], "expected": "under"},
+		{"value": 1.5, "band": [1.0, 2.0], "expected": "within"},
+		{"value": 2.5, "band": [1.0, 2.0], "expected": "over"},
+	]:
+		_expect(errors, fidelity.classify_value(case.value, case.band) == case.expected, "classification %s" % case.expected)
+```
+
+- [ ] **Step 2: Add observed-only and evidence-gap cases**
+
+Assert a measured metric without an executable target emits `observed-only`; an executable semantic selector whose applicable legacy/compiled anchor or row does not match emits `evidence-gap` with target ID, `semantic_selector_id`, branch, and reason.
+
+- [ ] **Step 3: Add aggregation and deterministic ranking tests**
+
+```gdscript
+static func _test_recommendation_ranking(fidelity: Script, errors: PackedStringArray) -> void:
+	var fleet := _comparison_fleet([11,42,20260809,1,3,7,99,256,555,1234,4096,31337,77777,123456,20250101])
+	var comparison: Dictionary = fidelity.compare_fleet(fleet, _comparison_catalog())
+	_expect(errors, comparison.fleet == [11,42,20260809,1,3,7,99,256,555,1234,4096,31337,77777,123456,20250101], "canonical fleet order is preserved")
+	_expect(errors, comparison.recommendation.target_id == "loads.hill.ejector", "normalized median miss wins deterministic ranking")
+	var reversed := fleet.duplicate(true)
+	reversed.reverse()
+	var reordered: Dictionary = fidelity.compare_fleet(reversed, _comparison_catalog())
+	_expect(errors, comparison.findings == reordered.findings, "finding order is independent of input map order")
+```
+
+- [ ] **Step 4: Add the eligibility boundary and explicit no-result tests**
+
+Require medium/high-confidence evidence and at least eight of fifteen affected seeds. Seven misses are ineligible; eight are eligible. Low-confidence evidence never recommends. An empty eligible set emits `{"status":"no-eligible-finding"}`.
+
+- [ ] **Step 5: Run tests and verify comparison APIs fail**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+```
+
+- [ ] **Step 6: Implement exact normalization and target-specific aggregation**
+
+```gdscript
+static func normalized_miss(value: float, target_range: Array) -> float:
+	var distance := 0.0
+	if value < float(target_range[0]):
+		distance = float(target_range[0]) - value
+	elif value > float(target_range[1]):
+		distance = value - float(target_range[1])
+	var denominator := maxf(0.1, maxf(absf(float(target_range[0])), maxf(absf(float(target_range[1])), float(target_range[1]) - float(target_range[0]))))
+	return distance / denominator
+```
+
+Apply each target's declared seed/beat/row aggregation (`minimum`, `maximum`, `median`, or time-weighted `sum`) before classification. Sort finding IDs and tie-break by normalized median miss descending, prevalence descending, confidence high before medium, then target ID ascending.
+
+- [ ] **Step 7: Emit provenance and evidence gaps without an overall score**
+
+Every finding contains target ID, observation/source IDs, transform ID, `semantic_selector_id`, resolved representation branch/anchor, row, retained duration, raw and target bands, per-seed values/statuses, prevalence, confidence, and caveats. Do not emit `score`, `total_score`, or a weighted cross-dimension scalar.
+
+- [ ] **Step 8: Run focused tests and smoke**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+```
+
+- [ ] **Step 9: Commit the comparison engine**
+
+```powershell
+git add godot/fidelity.gd godot/fidelity_tests.gd
+git commit -m "feat: compare deterministic fidelity fleet"
+```
+
+### Task 7: Build deterministic reports and checked diagnostic artifacts
+
+**Files:**
+- Create: `godot/canonical_data.gd`
+- Create: `godot/fidelity_artifacts.gd`
+- Create: `godot/fidelity_artifact_tests.gd`
+- Modify: `godot/_inspect.gd`
+- Modify: `godot/smoke.gd`
+
+**Interfaces:**
+- Consumes: measured legacy route dictionaries, comparison, schema-v2 catalog, pinned `legacy_base_commit`, existing inspector rendering behavior.
+- Produces: one narrow `CanonicalData` serializer/hash utility, `ride-fidelity-audit@1`, `fidelity-artifact-manifest@1`, `fidelity-pov-map@1`, and `fidelity-issue-coverage@1` reports, plus the checked audit/POV/PNG pack under `INSPECT_OUT`.
+
+- [ ] **Step 1: Create the SceneTree runner and add canonical JSON/Markdown ordering tests**
+
+The runner checks `ResourceLoader.exists` for `res://canonical_data.gd` and `res://fidelity_artifacts.gd`, reports the missing production scripts, and returns before loading them. Once present, it loads both scripts, calls every focused test, prints errors in stable order, and exits nonzero on failure.
+
+```gdscript
+static func _test_canonical_reports(canonical_data: Script, artifacts: Script, errors: PackedStringArray) -> void:
+	var report := {"schema_version":"ride-fidelity-audit@1", "catalog":{"schema_version":2,"catalog_version":"test","canonical_sha256":"a".repeat(64)}, "findings":[{"target_id":"z"},{"target_id":"a"}], "fleet":[11,42,20260809,1], "evidence_snapshot":[]}
+	var reordered := {"evidence_snapshot":[], "fleet":[11,42,20260809,1], "findings":[{"target_id":"z"},{"target_id":"a"}], "catalog":{"canonical_sha256":"a".repeat(64),"catalog_version":"test","schema_version":2}, "schema_version":"ride-fidelity-audit@1"}
+	var json_a: String = canonical_data.canonical_json(report)
+	var json_b: String = canonical_data.canonical_json(reordered)
+	_expect(errors, json_a == json_b, "dictionary insertion order does not affect canonical JSON")
+	_expect(errors, artifacts.canonical_json(report) == json_a, "artifact serialization delegates to CanonicalData")
+	_expect(errors, json_a.contains('"fleet":[11,42,20260809,1]'), "canonical fleet order is preserved")
+	_expect(errors, not json_a.contains(Time.get_datetime_string_from_system()), "report contains no runtime timestamp")
+```
+
+- [ ] **Step 2: Add checked-write failure tests**
+
+```gdscript
+static func _test_checked_write_failure(artifacts: Script, errors: PackedStringArray) -> void:
+	var failures: PackedStringArray = artifacts.write_text_checked("Z:/path-that-does-not-exist/audit.json", "{}\n")
+	_expect(errors, not failures.is_empty(), "failed report write is operationally visible")
+	_expect_contains(errors, failures, "artifact_write", "write failure has a distinct category")
+```
+
+- [ ] **Step 3: Add a manifest and preserved-output test**
+
+Require these stable outputs:
+
+```text
+audit.json
+audit.md
+manifest.json
+review/pov-map.json
+review/pov-map.md
+review/checklist.md
+review/issue-coverage.json
+review/issue-coverage.md
+review/seed-11/channels.png
+review/seed-11/top.png
+review/seed-11/elevation.png
+review/seed-42/channels.png
+review/seed-42/top.png
+review/seed-42/elevation.png
+review/seed-20260809/channels.png
+review/seed-20260809/top.png
+review/seed-20260809/elevation.png
+review/seed-42/elements/<stable-beat-id>.png
+review/seed-42/pov/<stable-beat-id>.png
+```
+
+`audit.json` records the exact pinned `legacy_base_commit`, audit schema, catalog schema/version/canonical SHA-256, catalog validation result, and a sorted `evidence_snapshot`. Every referenced source snapshot records source ID, state, acquisition result, repository-relative artifact/diagnostic path and SHA-256, or the exact structured fallback citations used; it never claims an unavailable raw artifact. The manifest records its schema, relative path, byte size, SHA-256, seed, gesture/legacy beat ID, artifact kind, and render dimensions. Tests assert the old side/top/elevation/channel capability still exists.
+
+- [ ] **Step 4: Run the artifact suite and confirm it fails before implementation**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
+```
+
+- [ ] **Step 5: Create or reuse the narrow `CanonicalData` utility and delegate all report serialization to it**
+
+```gdscript
+class_name CanonicalData
+extends RefCounted
+
+static func _canonical(value: Variant) -> Variant:
+	if value is Dictionary:
+		var output := {}
+		var keys := value.keys()
+		keys.sort()
+		for key in keys:
+			output[key] = _canonical(value[key])
+		return output
+	if value is Array:
+		var output := []
+		for item in value:
+			output.append(_canonical(item))
+		return output
+	return value
+
+static func canonical_json(value: Variant) -> String:
+	return JSON.stringify(_canonical(value), "", false, true) + "\n"
+
+static func sha256_text(value: String) -> String:
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update(value.to_utf8_buffer())
+	return context.finish().hex_encode()
+```
+
+Canonicalization sorts dictionary keys only. Arrays already carrying semantic order—including `fleet`—must remain in their supplied order. Findings are sorted before report construction by their stable contract. `RideFidelityArtifacts.canonical_json(value)` is only `return CanonicalData.canonical_json(value)`; it must not carry a second `_canonical` implementation. Later foundation/config/catalog/report code reuses this same utility instead of introducing another canonical JSON encoder.
+Before serialization, recursively reject non-finite numeric values. `null` is legal only where the report schema explicitly declares absence, including `radius_m[i] == null` paired with `radius_unbounded[i] == true`; it is never a stand-in for malformed arithmetic.
+
+- [ ] **Step 6: Implement checked text and PNG writes**
+
+```gdscript
+static func write_text_checked(path: String, content: String) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		errors.append("artifact_write: cannot open '%s': %s" % [path, error_string(FileAccess.get_open_error())])
+		return errors
+	file.store_string(content)
+	file.close()
+	var verify := FileAccess.get_file_as_string(path)
+	if verify != content:
+		errors.append("artifact_write: byte verification failed for '%s'" % path)
+	return errors
+
+static func save_png_checked(image: Image, path: String) -> PackedStringArray:
+	var error := image.save_png(path)
+	return PackedStringArray() if error == OK and FileAccess.file_exists(path) and FileAccess.get_file_as_bytes(path).size() > 0 else PackedStringArray(["artifact_write: PNG failed '%s' (%s)" % [path, error_string(error)]])
+```
+
+- [ ] **Step 7: Move existing render logic behind `RideFidelityArtifacts` without deleting capability**
+
+Keep side/profile, top, elevation, and the existing speed/normal/lateral/pitch/roll-rate/AGL strips. Add labelled longitudinal proper-g, reconstructed curvature, radius, roll-acceleration, and jerk strips. Source-filtered overlays must use different colors and legends from raw generated channels. Use stable beat-ID filenames rather than sample indices.
+
+- [ ] **Step 8: Add synchronized POV mappings and generated POV frames**
+
+`pov-map.json` carries `schema_version: "fidelity-pov-map@1"` and is built only from validated observation `alignment` objects. It links source ID, source landmark/timestamp/window, alignment method/uncertainty/row compatibility, source observation ID, generated seed, generated anchor/stable beat ID/time/window, and relative generated-POV PNG. `pov-map.md` presents the same data. Render generated POV frames from the route frame and generic track/terrain inspection layer; do not embed source-video frames. Missing or incompatible alignment fields produce explicit evidence gaps and no apparently precise mapping.
+
+- [ ] **Step 9: Add the unscored review checklist and complete issue 1–16 traceability**
+
+Write explicit checklist sections for shaping, feel, speed perception, terrain/clearance, and support overlap. Each prompt links evidence IDs and generated artifacts but carries no numeric score. Emit one ordered issue-coverage record for every integer ID 1 through 16, with issue text, linked measurement/target/evidence IDs, generated artifact paths, and exactly one top-level state of `measured`, `review-prompt`, or `evidence-gap`. A record may link many findings, but each issue ID appears once and none may be omitted. Add a failing test for missing, duplicate, out-of-range, or unlinked issue records, including direct fixtures for entry-launch speed (9), flats (12), multidimensional scaling (14), and transition jerk (15).
+
+- [ ] **Step 10: Register the now-green artifact suite and run both focused and smoke gates**
+
+Preload `FidelityArtifactTests` in `smoke.gd` and append `FidelityArtifactTests.run()` immediately
+after `FidelityTests.run()` without changing generator checks.
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
+& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+```
+
+- [ ] **Step 11: Commit report and artifact support**
+
+```powershell
+git add godot/canonical_data.gd godot/fidelity_artifacts.gd godot/fidelity_artifact_tests.gd godot/_inspect.gd godot/smoke.gd
+git commit -m "feat: write checked fidelity review artifacts"
+```
+
+### Task 8: Run the exact fifteen-seed baseline once per seed
+
+**Files:**
+- Modify: `godot/_inspect.gd`
+- Modify: `godot/fidelity_artifact_tests.gd`
+
+**Interfaces:**
+- Consumes: `RideGenerator.build`, `RideElements.ROW_OFFSETS`, validated catalog, `measure_route`, `compare_fleet`, and `RideFidelityArtifacts`.
+- Produces: complete deterministic baseline pack and generation work counters.
+
+- [ ] **Step 1: Add the canonical fleet constant and one-build spy test**
+
+```gdscript
+const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+
+static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray) -> void:
+	var calls := {}
+	var build := func(seed_value: int) -> Dictionary:
+		calls[seed_value] = int(calls.get(seed_value, 0)) + 1
+		return {"seed": seed_value}
+	var measure := func(route: Dictionary) -> Dictionary: return {"seed": route.seed}
+	var compare := func(measurements: Array) -> Dictionary: return {"fleet": measurements.map(func(item): return item.seed)}
+	var report: Dictionary = runner.call(AUDIT_SEEDS, build, measure, compare)
+	_expect(errors, report.fleet == AUDIT_SEEDS, "report preserves canonical fleet")
+	for seed_value in AUDIT_SEEDS:
+		_expect(errors, calls.get(seed_value, 0) == 1, "seed %d is generated once" % seed_value)
+```
+
+- [ ] **Step 2: Implement `_run_audit(seeds, build_route, measure_route, compare_fleet)` as injectable orchestration**
+
+```gdscript
+static func _run_audit(seeds: Array, build_route: Callable, measure_route: Callable, compare_fleet: Callable) -> Dictionary:
+	var measurements := []
+	var routes_by_seed := {}
+	var generation_counts := {}
+	for seed_value in seeds:
+		var route: Dictionary = build_route.call(seed_value)
+		generation_counts[str(seed_value)] = int(generation_counts.get(str(seed_value), 0)) + 1
+		measurements.append(measure_route.call(route))
+		if seed_value in [11, 42, 20260809]:
+			routes_by_seed[seed_value] = route
+	var comparison: Dictionary = compare_fleet.call(measurements)
+	return {"fleet": seeds.duplicate(), "measurements": measurements, "comparison": comparison, "routes_by_seed": routes_by_seed, "generation_counts": generation_counts}
+```
+
+Production calls `_run_audit(AUDIT_SEEDS, RideGenerator.build, func(route): return RideFidelity.measure_route(route, RideElements.ROW_OFFSETS), func(measurements): return RideFidelity.compare_fleet(measurements, RideFidelityReferences.CATALOG))`.
+
+Do not build deep-review seeds a second time; retain those three already-built route dictionaries only until artifact writing completes.
+
+- [ ] **Step 3: Make operational errors fail and fidelity misses remain diagnostic**
+
+Before generation, validate the catalog and artifact root. During generation, record distinct `generation`, `physical_consistency`, and `artifact_write` errors with catalog version and seed. A comparison result containing `under` or `over` findings still exits 0 when all operational work succeeds.
+
+- [ ] **Step 4: Run the focused one-build test**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
+```
+
+- [ ] **Step 5: Run two clean full audits**
+
+```powershell
+$workspace = (Resolve-Path '.').Path
+$env:INSPECT_OUT = Join-Path $workspace 'out\fidelity-baseline-a'
+& $portableGodot --headless --path '.\godot' --script 'res://_inspect.gd'
+if ($LASTEXITCODE -ne 0) { throw "baseline A failed: $LASTEXITCODE" }
+$env:INSPECT_OUT = Join-Path $workspace 'out\fidelity-baseline-b'
+& $portableGodot --headless --path '.\godot' --script 'res://_inspect.gd'
+if ($LASTEXITCODE -ne 0) { throw "baseline B failed: $LASTEXITCODE" }
+```
+
+- [ ] **Step 6: Compare deterministic text artifacts byte for byte**
+
+```powershell
+$textArtifacts = @('audit.json','audit.md','manifest.json','review\pov-map.json','review\pov-map.md','review\checklist.md','review\issue-coverage.json','review\issue-coverage.md')
+foreach ($relative in $textArtifacts) {
+  $a = [IO.File]::ReadAllBytes((Join-Path 'out\fidelity-baseline-a' $relative))
+  $b = [IO.File]::ReadAllBytes((Join-Path 'out\fidelity-baseline-b' $relative))
+  if ($a.Length -ne $b.Length -or [Convert]::ToHexString($a) -cne [Convert]::ToHexString($b)) {
+    throw "non-deterministic artifact: $relative"
+  }
+}
+```
+
+- [ ] **Step 7: Verify the artifact manifest and generated images**
+
+```powershell
+$manifest = Get-Content -Raw 'out\fidelity-baseline-a\manifest.json' | ConvertFrom-Json
+if (($manifest.generation_counts.PSObject.Properties | Where-Object Value -ne 1).Count -ne 0) { throw 'a seed was generated more than once' }
+if (($manifest.files | Where-Object { -not (Test-Path -LiteralPath (Join-Path 'out\fidelity-baseline-a' $_.path)) }).Count -ne 0) { throw 'manifest references a missing artifact' }
+if ($manifest.schema_version -ne 'fidelity-artifact-manifest@1') { throw 'unexpected manifest schema' }
+if (($manifest.files | Where-Object kind -eq 'png').Count -lt 12) { throw 'review PNG pack is incomplete' }
+```
+
+- [ ] **Step 8: Inspect fresh seed-11, seed-42, and seed-20260809 channel/top/elevation images, seed-42 profiles, and generated POV frames**
+
+Check that every image is non-empty, labelled, legible, uses raw versus filtered styling consistently, and contains no clipped trace or blank viewport. Review `pov-map.md` against each linked generated frame and source timestamp. Record post-run human observations in `out/fidelity-baseline-a/manual-inspection.md`, explicitly outside the deterministic manifest/text comparison; generated `audit.md` remains canonical and contains prompts/results only. Do not convert subjective checks into scores.
+
+- [ ] **Step 9: Run required import, focused tests, and smoke from clean portable app-data directories**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --editor --quit
+if ($LASTEXITCODE -ne 0) { throw "Godot import failed: $LASTEXITCODE" }
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+if ($LASTEXITCODE -ne 0) { throw "fidelity tests failed: $LASTEXITCODE" }
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
+if ($LASTEXITCODE -ne 0) { throw "artifact tests failed: $LASTEXITCODE" }
+& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+if ($LASTEXITCODE -ne 0) { throw "smoke failed: $LASTEXITCODE" }
+```
+
+- [ ] **Step 10: Commit the completed runner**
+
+```powershell
+git add godot/_inspect.gd godot/fidelity_artifact_tests.gd
+git commit -m "feat: audit fixed fifteen-seed baseline"
+```
+
+### Task 9: Document and adversarially review the baseline gate
+
+**Files:**
+- Modify: `README.md`
+- Modify: `CLAUDE.md`
+- Modify: `docs/ISSUES.md`
+- Review: all files changed by Tasks 1–8 and ignored artifacts under `out/fidelity-baseline-a/`.
+
+**Interfaces:**
+- Consumes: verified audit command and output contract.
+- Produces: durable operator instructions and a final evidence-backed baseline ready before generator behavior changes.
+
+- [ ] **Step 1: Add the exact offline audit command and output contract to `README.md`**
+
+Document the portable command from Task 8, `INSPECT_OUT`, the fixed fleet order, JSON/Markdown/manifest and review-pack paths, offline behavior, and the rule that fidelity misses do not fail while malformed evidence/generation/physics/write failures do.
+
+- [ ] **Step 2: Update `CLAUDE.md` architecture notes without claiming the legacy ride is correct**
+
+State that `_inspect.gd` preserves the existing diagnostic images and now adds reconstructed longitudinal/curvature/radius/roll-acceleration/jerk channels, offline evidence overlays, POV mappings, and checked writes. Keep the approved FVD-first design authoritative.
+
+- [ ] **Step 3: Update open-issues audit and promotion guidance**
+
+For issues 1–16, link the deterministic `review/issue-coverage.json`/Markdown artifacts without
+marking a ride-quality issue solved from a diagnostic result alone. Document that a finding becomes
+a future hard gate only through a new Superpowers design cycle with reviewed executable evidence,
+an explicit threshold and scope, a focused failing test, and proof that the promoted gate does not
+reward geometry smoothing, radius manipulation, or hidden drive.
+
+- [ ] **Step 4: Scan for forbidden live-network runtime dependencies and overall scores**
+
+```powershell
+$networkCodeHits = rg -n 'HTTPRequest|HTTPClient|WebSocketPeer|WebSocketMultiplayerPeer|StreamPeerTCP' godot --glob '*.gd'
+if ($networkCodeHits) { throw "runtime network dependency found:`n$networkCodeHits" }
+$urlCodeHits = rg -n 'https?://' godot --glob '*.gd' --glob '!fidelity_references.gd'
+if ($urlCodeHits) { throw "URL outside the provenance catalog found:`n$urlCodeHits" }
+$scoreHits = rg -n 'overall[_ -]?score|total[_ -]?score' godot docs/evidence/fidelity
+if ($scoreHits) { throw "forbidden overall fidelity score found:`n$scoreHits" }
+```
+
+URLs are allowed only in `fidelity_references.gd` as inert provenance strings. The class scan rejects executable network clients independently of literal provenance.
+
+- [ ] **Step 5: Inspect the final diff for behavior changes**
+
+```powershell
+git diff --stat db20968..HEAD
+git diff db20968..HEAD -- godot/generator.gd godot/elements.gd godot/main.gd godot/terrain.gd godot/verify.gd
+```
+
+Expected: the second command is empty. If it is not, revert the out-of-scope behavior change and rerun Task 8 verification.
+
+- [ ] **Step 6: Adversarially review evidence and math**
+
+Check every executable observation against its committed artifact, exact window, row, axis, processing, transform, confidence, and corroboration. Recompute at least one held value, one time-weighted share, one row shift, one transition window, one curvature/radius case, and one normalized miss independently. Confirm stable IDs and finding order, canonical fleet order, one build per seed, checked writes, and no smoothed geometry path.
+
+- [ ] **Step 7: Run the final fresh verification commands**
+
+```powershell
+& $portableGodot --headless --path '.\godot' --editor --quit
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+& $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
+& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+```
+
+- [ ] **Step 8: Commit operator documentation**
+
+```powershell
+git add README.md CLAUDE.md docs/ISSUES.md
+git commit -m "docs: document offline fidelity baseline"
+```
+
+- [ ] **Step 9: Record the final handoff condition**
+
+The next ride-behavior plan may start only when: catalog validation passes offline; the exact fleet is generated once; two audits have byte-identical JSON, Markdown, and manifests; all manifest files exist and hash correctly; fresh POV/PNG artifacts were visually inspected; import, focused tests, and smoke pass; and the diff contains no generator, elements, viewer, terrain, or verifier behavior change.

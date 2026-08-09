@@ -4,6 +4,14 @@ This repository is a seed-based one-shot coaster generator in pure GDScript: a n
 (~2041) hybrid of Falcon's Flight and Tormenta: Rampaging Run. Physics, generation, and
 validation are the product; visuals are a deliberately generic inspection layer.
 
+> **Active approved redesign:**
+> `docs/superpowers/specs/2026-08-09-fvd-first-configurable-generator-design.md` is authoritative
+> for the current FVD-first replacement. The architecture and generator sections below describe
+> the legacy runtime until cutover; they do not prohibit replacing its FVD/grade/closure split or
+> changing poor generated behavior. Required commands, safety verification, deterministic public
+> inputs, and the documented creative ride arc remain in force unless the approved design states
+> otherwise.
+
 Run both checks before and after any change:
 
 ```sh

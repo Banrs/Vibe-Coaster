@@ -1,5 +1,9 @@
 # Ride Fidelity Audit Design
 
+> **Historical checkpoint:** This diagnostic-only design was partially implemented and is now
+> superseded by `2026-08-09-fvd-first-configurable-generator-design.md`. Retain it as implementation
+> history; do not use its no-behavior-change constraint for new work.
+
 ## Purpose
 
 Build a reproducible, diagnostic-only audit before changing ride behavior. The audit compares the established fifteen-seed fleet with the measured references already recorded in `docs/TELEMETRY.md`, `docs/TELEMETRY-I305.md`, and `docs/RESEARCH.md`. It keeps loads, geometry, pacing, terrain, and transition evidence separate, generates a standard human-review pack, and recommends one bounded follow-up only when the evidence is systemic and credible.

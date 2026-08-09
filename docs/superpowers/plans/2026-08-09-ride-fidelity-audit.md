@@ -1,5 +1,10 @@
 # Ride Fidelity Audit Implementation Plan
 
+> **Superseded:** Tasks 1-2 were partially implemented before the approved scope expanded. Replace
+> this plan with the FVD-first configurable-generator implementation plan produced from
+> `../specs/2026-08-09-fvd-first-configurable-generator-design.md`; do not continue these tasks
+> independently.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a deterministic, diagnostic-only, fifteen-seed fidelity audit that turns the repository's measured telemetry into separate evidence scorecards and one evidence-qualified follow-up recommendation.

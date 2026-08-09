@@ -17,6 +17,13 @@ const ROLL_SHAPE := [
 	Vector2(0.68, 0), Vector2(0.82, -1), Vector2(1, 0),
 ]
 const TURN_KEYS := [0.0, 0.08, 0.16, 0.24, 0.32, 0.68, 0.76, 0.84, 0.92, 1.0]
+## Ceiling on any authored roll rate, inside the 120°/s the envelope allows. The roll amplitudes
+## below are carried as bank·speed per unit length and then rescaled against the bank actually
+## measured, which is a loop that can run away: an element that solves short — a crest tightened by
+## its own ejector, say — is handed the same amplitude over less track, reads less bank for it, and
+## asks for more. Clamped, the element simply comes out less banked than it was asked for, and says
+## so in `peak_bank_deg`, instead of rolling the train past vertical.
+const MAX_ROLL_RATE := 110.0
 ## Roll spread over the whole element, at full bank only in the middle: half the peak rate a
 ## hold-then-release schedule needs for the same bank, which is what a past-vertical roll costs.
 const CUTBACK_ROLL := [
@@ -53,6 +60,10 @@ static func fvd_section(
 ## `exit_speed_target` below zero means the section is unpowered: no drive is solved and the speed
 ## evolves from gravity and drag alone. That is what a coasting climb is — the boost that pays for
 ## it sits behind it as its own section, so a launch reads as a launch and a hill reads as a hill.
+## `ramp` is the thrust engagement measured in metres of track, in then out. Zero means the old
+## length-proportional default, which is right for a station or a brake run; a booster passes real
+## lengths, because at eighty metres a second a fraction of the section is a fraction of a second
+## and the onset that implies is what decides how hard the launch may hit.
 static func grade_section(
 	name: String,
 	length: float,
@@ -60,7 +71,8 @@ static func grade_section(
 	exit_speed_target: float,
 	lsm: int = 0,
 	minimum_speed: float = 4.0,
-	element: Dictionary = {}
+	element: Dictionary = {},
+	ramp: Vector2 = Vector2.ZERO
 ) -> Dictionary:
 	return {
 		"name": name,
@@ -71,6 +83,7 @@ static func grade_section(
 		"lsm": lsm,
 		"minimum_speed": minimum_speed,
 		"element": element,
+		"ramp": ramp,
 	}
 
 
@@ -282,11 +295,12 @@ static func integrate_grade(
 	for i in 64:
 		var pitch := deg_to_rad(_profile_septic(section.pitch, (i + 0.5) / 64.0).x)
 		mean_gravity += GRAVITY.dot(Vector3(heading.x * cos(pitch), sin(pitch), heading.y * cos(pitch))) / 64.0
+	var ramps := _ramp_fractions(section.length, section.get("ramp", Vector2.ZERO))
 	var drive := 0.0
 	if section.exit_speed_target >= 0.0:
 		var average_speed2: float = 0.5 * (entry_speed * entry_speed + section.exit_speed_target * section.exit_speed_target)
 		var average_drag: float = DRAG_FACTOR * average_speed2 + ROLLING_FACTOR * G0
-		var delivered: float = 1.0 - minf(60.0 / section.length, 0.45)
+		var delivered: float = 1.0 - 0.5 * (ramps.x + ramps.y)
 		drive = (0.5 * (section.exit_speed_target * section.exit_speed_target - entry_speed * entry_speed) - mean_gravity * section.length + average_drag * section.length) / (section.length * delivered)
 	for i in steps:
 		var u1 := float(i + 1) / steps
@@ -302,7 +316,7 @@ static func integrate_grade(
 		var gravity_along := _mean_train_gravity(route, state.distance + step * 0.5, tangent_mid)
 		var proper_mid: Vector3 = curvature * state.speed * state.speed - (GRAVITY - tangent_mid * gravity_along)
 		var drag: float = DRAG_FACTOR * state.speed * state.speed + ROLLING_FACTOR * absf(proper_mid.dot(lift))
-		var propulsion: float = drive * _engagement(um, section.length)
+		var propulsion: float = drive * _engagement(um, ramps)
 		var speed_end: float = sqrt(maxf(0.04, state.speed * state.speed + 2.0 * (gravity_along + propulsion - drag) * step))
 		var average_speed: float = 0.5 * (state.speed + speed_end)
 		var previous_tangent: Vector3 = state.tangent
@@ -318,7 +332,7 @@ static func integrate_grade(
 		var proper: Vector3 = end_curvature * speed_end * speed_end - gravity_across
 		var end_drag: float = DRAG_FACTOR * speed_end * speed_end + ROLLING_FACTOR * absf(proper.dot(end_lift))
 		var end_gravity := _mean_train_gravity(route, state.distance, next_tangent)
-		var longitudinal: float = (end_gravity - GRAVITY.dot(next_tangent) + drive * _engagement(u1, section.length) - end_drag) / G0
+		var longitudinal: float = (end_gravity - GRAVITY.dot(next_tangent) + drive * _engagement(u1, ramps) - end_drag) / G0
 		var up: Vector3 = state.up
 		var right: Vector3 = next_tangent.cross(up).normalized()
 		append_state(
@@ -333,9 +347,17 @@ static func integrate_grade(
 		)
 
 
-static func _engagement(u: float, length: float) -> float:
-	var fraction := minf(60.0 / length, 0.45)
-	return _smooth5(clampf(u / fraction, 0.0, 1.0)) * _smooth5(clampf((1.0 - u) / fraction, 0.0, 1.0))
+static func _engagement(u: float, ramps: Vector2) -> float:
+	return _smooth5(clampf(u / ramps.x, 0.0, 1.0)) * _smooth5(clampf((1.0 - u) / ramps.y, 0.0, 1.0))
+
+
+## Engagement ramps as fractions of the section. Authored ramps are metres and are scaled down
+## together if the two of them would not fit; the default is the old length-proportional one.
+static func _ramp_fractions(length: float, ramp: Vector2) -> Vector2:
+	if ramp.x <= 0.0 or ramp.y <= 0.0:
+		var fraction := minf(60.0 / length, 0.45)
+		return Vector2(fraction, fraction)
+	return ramp * minf(1.0, 0.9 * length / (ramp.x + ramp.y)) / length
 
 
 ## ---------------------------------------------------------------------------- station closure
@@ -380,7 +402,8 @@ static func append_closure(
 	## Seed the Newton solve the way the grade sections do, so any entry speed converges.
 	var mean_gravity: float = G0 * (start.y - station_position.y) / estimate
 	var average_drag: float = DRAG_FACTOR * 0.5 * (state.speed * state.speed + station_speed * station_speed) + ROLLING_FACTOR * G0
-	var delivered: float = 1.0 - minf(60.0 / estimate, 0.45)
+	var ramps := _ramp_fractions(estimate, Vector2.ZERO)
+	var delivered: float = 1.0 - 0.5 * (ramps.x + ramps.y)
 	var drive: float = (0.5 * (station_speed * station_speed - state.speed * state.speed) - mean_gravity * estimate + average_drag * estimate) / (estimate * delivered)
 	for _iteration in 6:
 		var error := _closure_exit_speed2(route, controls, count, section.entry_speed, drive, state.distance) - station_speed * station_speed
@@ -407,7 +430,7 @@ static func append_closure(
 		var middle_up := _level_up(middle_tangent)
 		var middle_proper: Vector3 = middle_curvature * state.speed * state.speed - gravity_across
 		var drag: float = DRAG_FACTOR * state.speed * state.speed + ROLLING_FACTOR * absf(middle_proper.dot(middle_up))
-		var acceleration: float = gravity_along + drive * _engagement(um, estimate) - drag
+		var acceleration: float = gravity_along + drive * _engagement(um, ramps) - drag
 		var speed_start: float = state.speed
 		var speed_end := sqrt(maxf(0.04, state.speed * state.speed + 2.0 * acceleration * chord))
 		var curvature := _bezier_curvature(controls, u)
@@ -423,7 +446,7 @@ static func append_closure(
 		var right: Vector3 = tangent.cross(up).normalized()
 		var end_drag := DRAG_FACTOR * speed_end * speed_end + ROLLING_FACTOR * absf(proper.dot(up))
 		var end_gravity := _mean_train_gravity(route, state.distance, tangent)
-		var longitudinal := (end_gravity - GRAVITY.dot(tangent) + drive * _engagement(u, estimate) - end_drag) / G0
+		var longitudinal := (end_gravity - GRAVITY.dot(tangent) + drive * _engagement(u, ramps) - end_drag) / G0
 		append_state(route, state, index, proper.dot(up) / G0, proper.dot(right) / G0, longitudinal, 0, curvature)
 		previous = point
 	section["end_index"] = route.positions.size() - 1
@@ -465,7 +488,7 @@ static func _closure_exit_speed2(
 		var gravity_along := _mean_train_gravity(history, distance + chord * 0.5, tangent)
 		var proper := curvature * speed2 - (GRAVITY - tangent * front_gravity)
 		var drag := DRAG_FACTOR * speed2 + ROLLING_FACTOR * absf(proper.dot(up))
-		speed2 = maxf(0.04, speed2 + 2.0 * (gravity_along + drive * _engagement(um, length) - drag) * chord)
+		speed2 = maxf(0.04, speed2 + 2.0 * (gravity_along + drive * _engagement(um, _ramp_fractions(length, Vector2.ZERO)) - drag) * chord)
 		distance += chord
 		history.distances.append(distance)
 		history.tangents.append(_bezier9_derivative(controls, u).normalized())
@@ -620,7 +643,12 @@ static func author_pullout(route: Dictionary, state: Dictionary, p: Dictionary) 
 	var target: float = p.exit_pitch_deg
 	var peak: float = p.peak_g
 	var entry := exit_pitch_deg(state)
-	var normal := [Vector2(0, cos(deg_to_rad(entry))), Vector2(0.3, peak), Vector2(0.7, peak), Vector2(1, 1)]
+	## The plateau is wide because a valley is a hold, not a spike: the reference's airtime-hill
+	## valleys measure 1.3–1.4 s above 2 g inside pullouts of about two seconds, which is a little
+	## over half the element spent at the value it is named for.
+	var normal := [
+		Vector2(0, cos(deg_to_rad(entry))), Vector2(0.24, peak), Vector2(0.76, peak), Vector2(1, 1),
+	]
 	var seed: float = maxf(deg_to_rad(absf(target - entry)) * state.speed * state.speed / (maxf(peak - 1.0, 0.3) * G0), 20.0)
 	var factory := func(k: float) -> Dictionary:
 		return fvd_section("pullout", k, normal, _flat(0.0), _flat(0.0))
@@ -749,18 +777,32 @@ static func author_twisted_drop(route: Dictionary, state: Dictionary, p: Diction
 	## Support has to stay under cos(pitch) by a margin that grows with the dive, exactly as a
 	## pushover's floor does: held any closer, the pitch only approaches the target asymptotically
 	## and the length solve runs away chasing the last degree.
-	var hold: float = p.get("hold_g", minf(0.9, cos_target - 1.2 * (1.0 - cos_target) * (1.0 - cos_target)))
+	var hold: float = minf(
+		p.get("hold_g", 0.9), cos_target - 1.2 * (1.0 - cos_target) * (1.0 - cos_target)
+	)
 	var normal := [Vector2(0, 1), Vector2(0.3, hold), Vector2(0.72, hold), Vector2(1, cos_target)]
+	## Lateral is the base lobe the drift is flown on plus the snap the reference measures across the
+	## roll: a brief pulse one way as the bank goes on, a slightly smaller one the other way as it
+	## comes off. The two are a third of the element apart, so the reversal rule reads two events
+	## rather than one capped pair, and each is short enough to cost the heading almost nothing.
+	var snap: float = absf(p.get("snap_g", 0.0)) * signf(bank)
 	var lateral_keys := []
-	for u in TURN_KEYS:
-		lateral_keys.append(Vector2(u, lateral * _bank_fraction(u)))
+	if is_zero_approx(snap):
+		for u in TURN_KEYS:
+			lateral_keys.append(Vector2(u, lateral * _bank_fraction(u)))
+	else:
+		lateral_keys = [
+			Vector2(0, 0), Vector2(0.16, snap), Vector2(0.26, snap),
+			Vector2(0.38, lateral), Vector2(0.62, lateral),
+			Vector2(0.74, -0.84 * snap), Vector2(0.86, -0.84 * snap), Vector2(1, 0),
+		]
 	var first: int = route.positions.size()
 	var entry := exit_pitch_deg(state)
 	var tuning := {"in": bank * state.speed / 0.16, "out": -bank * state.speed / 0.16}
 	var factory := func(k: float) -> Dictionary:
 		return fvd_section("twisted drop", k, normal, lateral_keys, [
-			Vector2(0, 0), Vector2(0.18, tuning["in"] / k), Vector2(0.32, 0),
-			Vector2(0.68, 0), Vector2(0.82, tuning["out"] / k), Vector2(1, 0),
+			Vector2(0, 0), Vector2(0.18, _capped(tuning["in"] / k)), Vector2(0.32, 0),
+			Vector2(0.68, 0), Vector2(0.82, _capped(tuning["out"] / k)), Vector2(1, 0),
 		])
 	## The element sweeps its own heading, so a pushover's along-entry-heading reading would
 	## overstate the dive. Nothing here goes past vertical, so plain asin pitch is monotone.
@@ -810,8 +852,8 @@ static func author_wave_turn(route: Dictionary, state: Dictionary, p: Dictionary
 		var edge := clampf(span, 0.05, 0.48)
 		var normal := [Vector2(0, 1), Vector2(edge, crown), Vector2(1.0 - edge, crown), Vector2(1, 1)]
 		return fvd_section("wave turn", length, normal, lateral_keys, [
-			Vector2(0, 0), Vector2(0.18, tuning["in"] / length), Vector2(0.32, 0),
-			Vector2(0.68, 0), Vector2(0.82, tuning["out"] / length), Vector2(1, 0),
+			Vector2(0, 0), Vector2(0.18, _capped(tuning["in"] / length)), Vector2(0.32, 0),
+			Vector2(0.68, 0), Vector2(0.82, _capped(tuning["out"] / length)), Vector2(1, 0),
 		])
 	var symmetry := func(_trial_route: Dictionary, trial_state: Dictionary) -> float:
 		return exit_pitch_deg(trial_state)
@@ -885,9 +927,16 @@ static func author_loop(route: Dictionary, state: Dictionary, p: Dictionary) -> 
 	## behind it, that bank is what the turn snaps out at 150°/s. So the loop takes its own tilt back
 	## out over the descending leg, at an amplitude measured rather than derived.
 	var roll := {"rate": 0.0}
+	## Twin lobes with the apex dipping between them, which is what the inversion reference measures:
+	## 3.84 g into the entry leg, 2.52 at the top, 3.74 out — the apex is the local minimum and is
+	## never unloaded. A flat hold reads the same peak for the whole five seconds instead, which is
+	## both wrong and the hardest thing on this ride for the duration envelope to carry.
+	var dip: float = p.get("apex_share", 0.60)
 	var build := func(length: float, peak: float) -> Dictionary:
 		return fvd_section("loop", length, [
-			Vector2(0, 1), Vector2(0.2, peak), Vector2(0.75, peak), Vector2(1, 1),
+			Vector2(0, 1), Vector2(0.16, peak), Vector2(0.32, peak),
+			Vector2(0.5, 1.0 + (peak - 1.0) * dip),
+			Vector2(0.68, peak), Vector2(0.84, peak), Vector2(1, 1),
 		], lateral_keys, [
 			Vector2(0, 0), Vector2(0.6, 0), Vector2(0.72, roll["rate"]),
 			Vector2(0.88, roll["rate"]), Vector2(1, 0),
@@ -973,7 +1022,14 @@ static func author_immelmann(route: Dictionary, state: Dictionary, p: Dictionary
 	var entry_height: float = state.position.y
 	var entry_tangent: Vector3 = state.tangent
 	var heading := Vector2(entry_tangent.x, entry_tangent.z).normalized()
-	var normal := [Vector2(0, 1), Vector2(0.22, peak), Vector2(0.55, peak), Vector2(1, -1)]
+	## The entry leg is where the speed is, so the load peaks there and settles onto its hold as the
+	## shape climbs — the reference's own signature, 4.3–4.4 g brief over ≥3 g held two and a half
+	## seconds. The lobe is authored as a multiple of the hold so one number still sizes the element.
+	var lobe: float = 1.0 + (peak - 1.0) * p.get("entry_lobe", 1.15)
+	var normal := [
+		Vector2(0, 1), Vector2(0.15, lobe), Vector2(0.28, lobe),
+		Vector2(0.55, peak), Vector2(0.78, peak), Vector2(1, -1),
+	]
 	var factory := func(k: float) -> Dictionary:
 		return fvd_section("immelmann half loop", k, normal, _flat(0.0), _flat(0.0))
 	var closure := func(trial_route: Dictionary, _trial_state: Dictionary) -> float:
@@ -1033,9 +1089,9 @@ static func author_cutback(route: Dictionary, state: Dictionary, p: Dictionary) 
 	var tuning := {"in": bank * state.speed / 0.38, "out": bank * state.speed / 0.38}
 	var factory := func(k: float) -> Dictionary:
 		return fvd_section("cutback", k, normal, _flat(0.0), [
-			Vector2(0, 0), Vector2(0.12, tuning["in"] / k), Vector2(0.38, tuning["in"] / k),
-			Vector2(0.5, 0), Vector2(0.62, -tuning["out"] / k), Vector2(0.88, -tuning["out"] / k),
-			Vector2(1, 0),
+			Vector2(0, 0), Vector2(0.12, _capped(tuning["in"] / k)), Vector2(0.38, _capped(tuning["in"] / k)),
+			Vector2(0.5, 0), Vector2(0.62, _capped(-tuning["out"] / k)),
+			Vector2(0.88, _capped(-tuning["out"] / k)), Vector2(1, 0),
 		])
 	var measure := func(trial_route: Dictionary, _trial_state: Dictionary) -> float:
 		return _heading_change_deg(trial_route, first)
@@ -1126,8 +1182,8 @@ static func _banked_turn(
 	var first: int = route.positions.size()
 	var factory := func(k: float) -> Dictionary:
 		return fvd_section(name, k, normal, lateral_keys, [
-			Vector2(0, 0), Vector2(0.18, tuning["in"] / k), Vector2(0.32, 0),
-			Vector2(0.68, 0), Vector2(0.82, tuning["out"] / k), Vector2(1, 0),
+			Vector2(0, 0), Vector2(0.18, _capped(tuning["in"] / k)), Vector2(0.32, 0),
+			Vector2(0.68, 0), Vector2(0.82, _capped(tuning["out"] / k)), Vector2(1, 0),
 		])
 	var measure := func(trial_route: Dictionary, _trial_state: Dictionary) -> float:
 		return _heading_change_deg(trial_route, first)
@@ -1199,6 +1255,10 @@ static func _bank_fraction(u: float, keys := PackedVector2Array(ROLL_SHAPE)) -> 
 		if x <= u:
 			partial += value
 	return partial / maxf(total, 0.000001)
+
+
+static func _capped(rate: float) -> float:
+	return clampf(rate, -MAX_ROLL_RATE, MAX_ROLL_RATE)
 
 
 static func _flat(value: float) -> Array:

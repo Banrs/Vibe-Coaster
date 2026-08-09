@@ -16,35 +16,65 @@ const THRILL_KINDS := [
 ## The plan's expectation bands are what the generator is aiming at; these are what the check will
 ## fail on. They sit a couple of metres outside the aim on each side, because an element solved off
 ## a live speed lands near its target, not on it.
-const IMMELMANN_APEX_CHECK := Vector2(72.0, 98.0)
-const LOOP_HEIGHT_CHECK := Vector2(48.0, 72.0)
-## One circuit, and the band the generator aims at. Act one no longer chains correction turns — it
-## flies one heading from the crest turn to the wave turn — and the run home is one rotation rather
-## than a turn and a string of square-ups. What is left is very nearly all structure: the cliff climb
-## is 0.8 km, the camelback 1.1, the dive 0.5 and the raceway arc 0.9, because a reversal at
-## eighty-five metres a second cannot be flown in less.
-## The aim is 6.4–7.6 km and the generator lands here. What is left over is one thing and it is
-## measured: the raceway arc. The run home is a heading reversal at eighty-five metres a second, and
-## the corridor solve that chooses how much of it the marquee carries works off an analytic model
-## of arcs and straight runs which lands within a couple of hundred metres — so the arc comes out
-## between 900 m and 1.2 km, and the brake run behind it covers whatever the model was long by.
-## Everything else is structure: 0.8 km of cliff climb, 1.1 of camelback, 0.5 of dive.
-const LENGTH_CHECK := Vector2(7200.0, 9700.0)
+const IMMELMANN_APEX_CHECK := Vector2(70.0, 98.0)
+const LOOP_HEIGHT_CHECK := Vector2(56.0, 84.0)
+## One circuit, and the band the generator aims at is 6.4–7.6 km. It lands here. What is left over
+## is measured, and it is two things. The raceway arc is one: the run home is a heading reversal at
+## eighty-five metres a second, and the bank it may hold is roll-rate limited rather than duration
+## limited — bank·tan(bank) ≤ ROLL_BUDGET·0.16·Δ·v/g — so a 150° reversal is 800 m of track and
+## splitting it in two makes it longer, not shorter. The cliff climb is the other: it has to cross a
+## three-hundred-metre escarpment at a grade a coasting train can carry, which is 800 m to 1.3 km
+## depending on how far out act one leaves it. Everything else is structure: 1.5 km of camelback,
+## 0.5 of dive, 0.8 of opener.
+const LENGTH_CHECK := Vector2(7400.0, 8900.0)
 ## Shortest a beat may be before it reads as a kink rather than an element, and the g band each
 ## booster has to hold. Grammar — the pullouts, pushovers and falls that hand one beat to the next —
 ## is exempt from the first: a 20 m fall between a crest and its pullout is one element, not a stub.
 const BEAT_FLOOR := 30.0
 const GRAMMAR_KINDS := ["pullout", "pushover", "fall"]
 const TURN_KINDS := ["turn", "rim_turn", "overbank"]
-const BOOST_G := Vector2(1.6, 2.4)
-## The record launch's floor. Not the four g the story asked for: at a 78 m/s entry a booster's own
-## thrust ramp is a quarter of a second long, and four g mean peaks at seven and ramps at 67 g/s
-## against the envelope's 25. This is what the onset rule leaves.
-const RECORD_BOOST_G := 1.1
+## The three powered zones, read as the g each one HOLDS rather than as its mean. Zone one is the
+## entry launch — a compressed-gas shot, the class Do-Dodonpa measures at 3.2–3.8 g — and zones two
+## and three are LSM boosters, which is a 2 g machine. The LSM band is wide at the top because the
+## launch corridor may run the cliff booster short to reach its crest.
+const ENTRY_LAUNCH_G := Vector2(3.5, 4.5)
+const LSM_BOOST_G := Vector2(1.6, 2.9)
+const BOOST_HOLD := 0.4
+## Act one, against the inversion reference scaled on the value with its hold kept. The Immelmann
+## measures 4.34–4.43 g with ≥3 g held 2.5–2.7 s; the loop is a twin lobe whose apex dips but never
+## unloads (3.84 → 2.52 → 3.74); the cutback is 4.20 g with ≥2 g held 1.76 s.
+const IMMELMANN_HOLD_G := 3.9
+const IMMELMANN_PEAK_G := 6.2
+const LOOP_LOBE_G := 4.6
+const LOOP_APEX_G := 2.6
+const LOOP_PEAK_G := 6.8
+const CUTBACK_PEAK_G := Vector2(4.6, 5.8)
+const CUTBACK_HOLD_G := 2.7
+## The opener's own signature, against the primary reference's twisted first drop: +1.64 → −1.35 g
+## of lateral across the roll and −0.99 g of airtime over the crest, scaled ×1.567 and ×1.5.
+const DROP_LATERAL_G := Vector2(1.9, 2.7)
+const DROP_AIRTIME_G := -0.55
+## Airtime hills: valleys 2.07–2.68 g held 1.3 s, crests −0.40…−0.73 g. Scaled, and the crest band
+## is two-sided because a hill that never unloads is not an airtime hill.
+const VALLEY_G := Vector2(2.6, 3.9)
+const CREST_G := Vector2(-1.25, -0.5)
+## The marquee pair. The camelback pulls 2.14–3.89 g with 3.32 s ≥2 g, floats ≤0.2 g for 6.8 s over
+## its crest and pulls 2.16–3.44 g out; the cliff dive's pullout is 2.04–2.99 g with 1.58 s ≥2 g.
+const CAMELBACK_PEAK_G := Vector2(4.7, 5.6)
+## Held over a second and a half rather than the reference's 3.3: at ninety-four metres a second
+## the pull-up that reaches 250 m of structure is two and a half seconds long end to end, so a
+## 3.3 s hold is not a shape it has.
+const CAMELBACK_HOLD_G := 4.0
+const CAMELBACK_HOLD := 1.5
+const CAMELBACK_EXIT_G := Vector2(3.7, 4.9)
+const CAMELBACK_FLOAT_G := 0.25
+const CAMELBACK_FLOAT_HOLD := 4.0
+const DIVE_PULLOUT_G := Vector2(3.3, 4.7)
+const DIVE_PULLOUT_HOLD_G := 3.0
 ## Flat grade is infrastructure, not track between beats. These are the pieces allowed to be it.
 const FLAT_GRADES := [
-	"Station", "LSM1 boost", "LSM2 boost", "LSM3 boost",
-	"Holding brake", "Crest hold", "Rim brake", "Final brakes",
+	"Station", "LSM3 boost",
+	"Holding brake", "Crest hold", "Final brakes",
 ]
 
 
@@ -121,6 +151,7 @@ func _generator_errors() -> PackedStringArray:
 		for issue in issues:
 			errors.append("seed %d: %s" % [seed_value, issue])
 		_expect_shape(route, issues)
+		_expect_bands(route, issues)
 		for issue in issues:
 			errors.append("seed %d: %s" % [seed_value, issue])
 		var fast := _time_share(route, 200.0)
@@ -143,6 +174,7 @@ func _generator_errors() -> PackedStringArray:
 		)
 		if seed_value == 42:
 			_print_phases(route)
+			_print_bands(route)
 	return errors
 
 
@@ -203,21 +235,145 @@ func _expect_shape(route: Dictionary, issues: PackedStringArray) -> void:
 			continue
 		if route.sections[index - 1].kind == "FVD" and route.sections[index + 1].kind == "FVD":
 			_expect(issues, FLAT_GRADES.has(section.name), "flat grade '%s' sits between two beats" % section.name)
-	## Three boosters, each short, each holding the g it was sized for.
+	## Three powered zones, each short. What each one holds is a held-value band rather than a mean —
+	## a launch is its plateau, and its mean is whatever its onset-limited ramps leave of it.
 	var boosts := []
 	for section in route.sections:
 		if section.lsm != 0:
 			boosts.append(section)
 	_expect(issues, boosts.size() == 3, "the ride has %d powered sections, not three boosters" % boosts.size())
 	for boost in boosts:
-		var accel: float = (
-			boost.exit_speed * boost.exit_speed - boost.entry_speed * boost.entry_speed
-		) / (2.0 * boost.length * 9.80665)
 		_expect(issues, boost.length <= 200.0, "'%s' is %.0f m long" % [boost.name, boost.length])
-		if boost.lsm == 3:
-			_expect(issues, accel >= RECORD_BOOST_G, "'%s' holds %.2f g, under the record launch's %.1f" % [boost.name, accel, RECORD_BOOST_G])
-		else:
-			_expect(issues, accel >= BOOST_G.x and accel <= BOOST_G.y, "'%s' holds %.2f g, outside %s" % [boost.name, accel, str(BOOST_G)])
+
+
+## ---------------------------------------------------------------------------- held-value bands
+##
+## The fidelity check. A measured counterpart is a value held for a duration, not a spike, so every
+## band here is read off the filtered series the load toolkit itself uses and asked for a value the
+## beat SUSTAINS: `held(t)` is the largest g the window holds continuously for t seconds, which an
+## outlier sample cannot satisfy. Targets are the measured reference scaled per axis by the envelope
+## stretch on the VALUE with the measured HOLD kept — Gz+ ×1.333, Gz− ×1.5, Gy ×1.567.
+
+
+## One entry per beat: the kind, the 100 Hz window it occupies, and the filtered series inside it.
+func _element_bands(route: Dictionary) -> Array:
+	var normal: PackedFloat32Array = Verify.filter(Verify.resample(route.times, route.normal_g))
+	var lateral: PackedFloat32Array = Verify.filter(Verify.resample(route.times, route.lateral_g))
+	var longitudinal: PackedFloat32Array = Verify.filter(
+		Verify.resample(route.times, route.longitudinal_g)
+	)
+	var beats := []
+	for section in route.sections:
+		var element: Dictionary = section.get("element", {})
+		var kind: String = element.get("kind", "") if section.kind == "FVD" else section.name
+		if kind == "":
+			continue
+		if not beats.is_empty() and beats[-1].kind == kind and is_same(beats[-1].element, element):
+			beats[-1].last = section.end_index
+			continue
+		beats.append({
+			"kind": kind, "element": element, "phase": section.get("phase", ""),
+			"first": section.start_index, "last": section.end_index,
+		})
+	var bands := []
+	for beat in beats:
+		var low: int = mini(floori(route.times[beat.first] * 100.0), normal.size() - 1)
+		var high: int = mini(floori(route.times[beat.last] * 100.0), normal.size() - 1)
+		if high - low < 4:
+			continue
+		bands.append({
+			"kind": beat.kind,
+			"element": beat.element,
+			"phase": beat.phase,
+			"seconds": route.times[beat.last] - route.times[beat.first],
+			"normal": normal.slice(low, high + 1),
+			"lateral": lateral.slice(low, high + 1),
+			"longitudinal": longitudinal.slice(low, high + 1),
+		})
+	return bands
+
+
+## Largest value the window sustains for `seconds` without interruption, signed by `polarity`:
+## the same largest-rectangle held curve the duration envelope is read off. −INF when the window
+## is shorter than the hold being asked for, which fails any band that asks for one.
+func _held(values: PackedFloat32Array, polarity: float, seconds: float) -> float:
+	var window := roundi(seconds * 100.0) + 1
+	if window >= values.size():
+		return -INF
+	return Verify._held_curve(values, polarity)[window] * polarity
+
+
+## Every band here is the measured counterpart scaled per axis on the VALUE with the measured HOLD
+## kept, and every one of them asks for a value the beat SUSTAINS. That is the point: a spike cannot
+## satisfy `held`, so an element cannot pass by touching its band for one sample on its way past.
+func _expect_bands(route: Dictionary, issues: PackedStringArray) -> void:
+	var valley := 0.0
+	var seen := {}
+	for band in _element_bands(route):
+		var peak: float = _held(band.normal, 1.0, 0.0)
+		seen[band.kind] = true
+		match band.kind:
+			"Entry launch":
+				var held: float = _held(band.longitudinal, 1.0, BOOST_HOLD)
+				_expect(issues, held >= ENTRY_LAUNCH_G.x and held <= ENTRY_LAUNCH_G.y, "the entry launch holds %.2f g for %.1f s, outside %s" % [held, BOOST_HOLD, str(ENTRY_LAUNCH_G)])
+			"LSM2 boost", "LSM3 boost":
+				var held: float = _held(band.longitudinal, 1.0, BOOST_HOLD)
+				_expect(issues, held >= LSM_BOOST_G.x and held <= LSM_BOOST_G.y, "'%s' holds %.2f g for %.1f s, outside %s" % [band.kind, held, BOOST_HOLD, str(LSM_BOOST_G)])
+			"twisted_drop":
+				var lateral: float = maxf(_held(band.lateral, 1.0, 0.0), -_held(band.lateral, -1.0, 0.0))
+				var airtime: float = _held(band.normal, -1.0, 0.8)
+				_expect(issues, lateral >= DROP_LATERAL_G.x and lateral <= DROP_LATERAL_G.y, "the twisted drop snaps to %.2f g of lateral, outside %s" % [lateral, str(DROP_LATERAL_G)])
+				_expect(issues, airtime <= DROP_AIRTIME_G, "the twisted drop only unloads to %.2f g for 0.8 s" % airtime)
+			"immelmann":
+				var held: float = _held(band.normal, 1.0, 2.2)
+				_expect(issues, held >= IMMELMANN_HOLD_G, "the immelmann only holds %.2f g for 2.2 s" % held)
+				_expect(issues, peak <= IMMELMANN_PEAK_G, "the immelmann peaks at %.2f g" % peak)
+			"loop":
+				var lobe: float = _held(band.normal, 1.0, 0.8)
+				var apex: float = _held(band.normal, 1.0, 3.0)
+				_expect(issues, lobe >= LOOP_LOBE_G and peak <= LOOP_PEAK_G, "the loop's entry lobe holds %.2f g and peaks at %.2f" % [lobe, peak])
+				_expect(issues, apex >= LOOP_APEX_G, "the loop's apex falls to %.2f g — the dip has to stay loaded" % apex)
+			"cutback":
+				var held: float = _held(band.normal, 1.0, 1.5)
+				_expect(issues, peak >= CUTBACK_PEAK_G.x and peak <= CUTBACK_PEAK_G.y, "the cutback peaks at %.2f g, outside %s" % [peak, str(CUTBACK_PEAK_G)])
+				_expect(issues, held >= CUTBACK_HOLD_G, "the cutback only holds %.2f g for 1.5 s" % held)
+			"hill":
+				var crest: float = _held(band.normal, -1.0, 0.8)
+				if band.element.has("structure_rise"):
+					var float_ceiling: float = _held(band.normal, -1.0, CAMELBACK_FLOAT_HOLD)
+					_expect(issues, float_ceiling <= CAMELBACK_FLOAT_G, "the camelback crest never floats: its quietest %.0f s still reaches %.2f g" % [CAMELBACK_FLOAT_HOLD, float_ceiling])
+				else:
+					_expect(issues, crest <= CREST_G.y and crest >= CREST_G.x, "an airtime crest holds %.2f g for 0.8 s, outside %s" % [crest, str(CREST_G)])
+			"pullout":
+				if band.element.has("camelback"):
+					if band.element.exit_pitch_deg > 1.0:
+						_expect(issues, peak >= CAMELBACK_PEAK_G.x and peak <= CAMELBACK_PEAK_G.y, "the camelback pull-up peaks at %.2f g, outside %s" % [peak, str(CAMELBACK_PEAK_G)])
+						_expect(issues, _held(band.normal, 1.0, CAMELBACK_HOLD) >= CAMELBACK_HOLD_G, "the camelback pull-up only holds %.2f g for %.1f s" % [_held(band.normal, 1.0, CAMELBACK_HOLD), CAMELBACK_HOLD])
+					else:
+						_expect(issues, peak >= CAMELBACK_EXIT_G.x and peak <= CAMELBACK_EXIT_G.y, "the camelback exit pullout peaks at %.2f g, outside %s" % [peak, str(CAMELBACK_EXIT_G)])
+				elif band.element.has("cliff_dive"):
+					_expect(issues, peak >= DIVE_PULLOUT_G.x and peak <= DIVE_PULLOUT_G.y, "the cliff-dive pullout peaks at %.2f g, outside %s" % [peak, str(DIVE_PULLOUT_G)])
+					_expect(issues, _held(band.normal, 1.0, 1.5) >= DIVE_PULLOUT_HOLD_G, "the cliff-dive pullout only holds %.2f g for 1.5 s" % _held(band.normal, 1.0, 1.5))
+				elif band.phase == "act one":
+					valley = maxf(valley, _held(band.normal, 1.0, 1.0))
+	_expect(issues, seen.has("immelmann") or seen.has("loop"), "no inversion carries a load band")
+	_expect(issues, valley >= VALLEY_G.x and valley <= VALLEY_G.y, "act one's strongest valley holds %.2f g for 1 s, outside %s" % [valley, str(VALLEY_G)])
+
+
+func _print_bands(route: Dictionary) -> void:
+	print("  seed 42 held-value bands (peak | held 0.5 s | held 1.5 s | held 3.0 s):")
+	for band in _element_bands(route):
+		print(
+			"    %-16s %4.1f s  Gz %5.2f |%5.2f |%5.2f |%5.2f   Gz- %5.2f |%5.2f   Gy %5.2f |%5.2f   Gx %5.2f |%5.2f"
+			% [
+				band.kind, band.seconds,
+				_held(band.normal, 1.0, 0.0), _held(band.normal, 1.0, 0.5),
+				_held(band.normal, 1.0, 1.5), _held(band.normal, 1.0, 3.0),
+				_held(band.normal, -1.0, 0.0), _held(band.normal, -1.0, 1.0),
+				_held(band.lateral, 1.0, 0.0), _held(band.lateral, -1.0, 0.0),
+				_held(band.longitudinal, 1.0, 0.0), _held(band.longitudinal, 1.0, 0.5),
+			]
+		)
 
 
 func _is_flat(section: Dictionary) -> bool:

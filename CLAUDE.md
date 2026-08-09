@@ -44,19 +44,22 @@ local timings.
   tables): +8.0/−3.0 Gz · ±4.7 Gy · +8.0/−6.0 Gx · 25 g/s onset · 120°/s roll. The limit at
   duration t is `stretch × F2291_limit(t)` per axis — see `verify.gd` constants.
 - Story skeleton, five cohesive gestures like the real ride (seeded variation inside slots):
-  station → LSM1 boost + unpowered coast over the opener crest → twisted non-inverting
+  station → ~4 g air-launch + unpowered coast over the opener crest → twisted non-inverting
   side-drop into act one, ONE flowing arc at honest inversion speed (giant Immelmann
   ~75–95 m: the tallest-inversion chase; helical-leg loop; cutback at the Immelmann exit;
   hills + wave turn, all chained exit-to-entry) → LSM2 boost at the cliff base (~290 km/h)
   + unpowered decelerating coast up the escarpment → crest crawl/hold (the ride's one
   deliberate slow beat) + compact clifftop suspense (reference-scale only, outward-banked
-  rim turn) → 90° cliff dive (~0.8× relief, monotonic, no lip pause) → tunnel LSM3 boost at
-  ~4 g to ~340 km/h (the record launch) → record camelback (~250 m structure above its
+  rim turn) → 90° cliff dive (~0.8× relief, monotonic, no lip pause) → tunnel LSM boost to
+  ~340 km/h (the record launch) → record camelback (~250 m structure above its
   valley) → return run as one monotonic-bleed raceway arc home with embedded beats →
   brakes → explicit C4 station closure.
-- LSM = exactly three short boosters (no lifts, no powered climbs; ~2 g / ~2 g / ~4 g, each
-  shorter than Falcon's booster sections — user decision). No mid-course brake: one
-  continuous energy arc after LSM3. No standalone connector turns, no sub-30 m stub
+- Propulsion = exactly three short boosters, no lifts, no powered climbs (user decision):
+  a Do-Dodonpa-like non-LSM air/hydraulic entry launch at ~4 g out of the station, then two
+  LSM boosters at ~2 g class (fastest-current-LSM × near-future credit), each shorter than
+  Falcon's booster sections. Boosters need not be flat — like Falcon's, a launch may extend
+  into a climb or run a varying gradient. No mid-course brake: one
+  continuous energy arc after the tunnel booster. No standalone connector turns, no sub-30 m stub
   sections, no flat grades between elements; elapsed average speed is reported, never
   targeted — pacing is organic. Length ~6.4–7.6 km. Records live in the marquee elements; suspense/clifftop elements never scale toward
   records; no element class between ~110 m and the ~250 m marquee pair (the gap is the

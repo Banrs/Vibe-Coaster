@@ -34,6 +34,11 @@ root `CLAUDE.md` holds the contract.
 
 17. Loading time.
 18. Camera/HUD issues.
+19. Generation/CI speed — a seed costs thousands of element integrations because every
+    solver iteration re-integrates at full 1.5 m resolution; smoke is ~2 min local / ~4 min
+    CI plus runner spin-up, too slow for a tight dev loop. Candidate levers: coarse-to-fine
+    solving (search coarse, integrate the accepted geometry fine), caching Godot + imports
+    on CI, splitting the gate into parallel jobs.
 
 ## Recommended approach
 

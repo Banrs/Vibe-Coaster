@@ -171,6 +171,14 @@ const BRAKE_CREST_G := -0.6
 ## Brake run a metre of carried height costs, at the grade the crest rule above allows and the two
 ## thirds of it the profile's ramps deliver. Measured across these seeds.
 const BRAKE_RUN_PER_METRE := 4.5
+## Mean bite the brakes hold, which is what decides how long they are. The reference measures −1.06 g
+## sustained on friction fins; the near-future magnetic set at the envelope's longitudinal stretch
+## allows −1.8 g held, and a solved drive delivers its mean through engagement ramps — so a mean of
+## this size peaks near that allowance and is a five-second stop rather than a fourteen-second one.
+const BRAKE_BITE_G := 1.35
+## Shortest run-in worth building in front of the bite. Below it the corridor's surplus is simply
+## braked away with everything else, which is what the brake run used to do with all of it.
+const BRAKE_APPROACH_FLOOR := 60.0
 const MARQUEE_REACH := 320.0
 const OPENER_REACH := 280.0
 const ACT_REACH := 1070.0
@@ -1934,42 +1942,85 @@ static func _return_run(
 			brake_length, aim_error
 		]
 		return
-	var grade: float = _brake_grade(state.speed, brake_length)
-	var brake_pitch := rad_to_deg(asin(clampf(
-		descent / (RAMP_DELIVERY * brake_length), -grade, grade
-	)))
-	plan["brake_note"] = "brake run %.0f m at up to %.0f°, giving back %.0f of the %.0f m it carries, %.0f m of lead left %.0f° off" % [
-		brake_length, rad_to_deg(asin(grade)),
-		RAMP_DELIVERY * brake_length * sin(deg_to_rad(brake_pitch)), descent, lead, aim_error
-	]
-	## Ramped across the whole first half: what the crest into a brake run costs is v² times its
-	## curvature, and this is the fastest grade on the ride at the moment it starts. Where the
-	## descent sits inside the run is the one free knob, and it is gated on the track already laid:
+	## What the bite has to shed is the speed the run home came home on plus every metre of height
+	## still to give back — energy does not care which section gives it back. At the bite the ride
+	## brakes at, that is a length, and it is a short one. Whatever the corridor left in front of it
+	## is flown at speed instead of braked away across half a kilometre: the reference ends in seven
+	## seconds of brakes, not in a quarter of a minute of soft ones.
+	var bottom_speed: float = sqrt(state.speed * state.speed + 2.0 * RideElements.G0 * descent)
+	var transfer: float = RideElements.TRANSFER_SPEED
+	var bite: float = clampf(
+		(bottom_speed * bottom_speed - transfer * transfer) / (2.0 * BRAKE_BITE_G * RideElements.G0),
+		0.0,
+		brake_length
+	)
+	var approach_run: float = brake_length - bite
+	if approach_run < BRAKE_APPROACH_FLOOR:
+		bite = brake_length
+		approach_run = 0.0
+	## The crest into the descent is read on the piece that carries it, at the speed that piece is
+	## entered at: unbraked and over the whole of the run in front when there is one, and on the
+	## bite's own first half when there is not.
+	var grade: float = (
+		_brake_grade(state.speed * state.speed, approach_run) if approach_run > 0.0
+		else _brake_grade(0.73 * state.speed * state.speed + 13.0, 0.55 * bite)
+	)
+	## What the crest into a brake run costs is v² times its curvature, and this is the fastest grade
+	## on the ride at the moment it starts. Where the descent sits inside the run is the one free
+	## knob left after that, and it is gated on the track already laid:
 	## on a layout whose outbound corridor crosses the approach at grade — measured, one seed's
 	## corridor turn passed within three metres of its own brakes — sliding the descent later moves
 	## the crossing metres apart in height, at a ramp that is longer and slower than the standard
 	## one, so the crest rule holds with margin.
-	var profiles := [
-		[Vector2(0, 0), Vector2(0.55, -brake_pitch), Vector2(0.85, -brake_pitch), Vector2(1, 0)],
-		[Vector2(0, 0), Vector2(0.72, -brake_pitch), Vector2(0.92, -brake_pitch), Vector2(1, 0)],
-	]
-	for i in profiles.size():
-		var brakes: Dictionary = RideElements.grade_section(
-			"Final brakes", brake_length, profiles[i], 7.0
-		)
-		if i == profiles.size() - 1 or _group_clears(route, state, [brakes]):
-			_add(route, state, sections, [brakes])
+	var shapes := [Vector2(0.55, 0.85), Vector2(0.72, 0.92)]
+	for i in shapes.size():
+		var shape: Vector2 = shapes[i]
+		var pitch := 0.0
+		var delivery := 0.0
+		var group := []
+		if approach_run > 0.0:
+			## Pitched down across the pair rather than down and back up inside each piece. The
+			## level-off at the end of a descent is a valley, and where the single brake run put its
+			## valley at walking pace, a run in front puts one at eighty metres a second: over a fifth
+			## of a short section that reads nine g. So the run in front is the crest, ramped across
+			## the whole of itself and at the whole of the speed; the bite holds the grade and carries
+			## it out on the speed it has left; and the seam between them sits at grade with zero
+			## curvature on either side of it. Each septic ramp delivers half its own length of
+			## descent, and the holds deliver all of theirs.
+			delivery = 0.5 * approach_run + (0.5 + 0.5 * shape.x) * bite
+			pitch = rad_to_deg(asin(clampf(descent / delivery, -grade, grade)))
+			group.append(RideElements.grade_section("Brake approach", approach_run, [
+				Vector2(0, 0), Vector2(1, -pitch),
+			], -1.0))
+			group.append(RideElements.grade_section("Final brakes", bite, [
+				Vector2(0, -pitch), Vector2(shape.x, -pitch), Vector2(1, 0),
+			], transfer))
+		else:
+			delivery = RAMP_DELIVERY * bite
+			pitch = rad_to_deg(asin(clampf(descent / delivery, -grade, grade)))
+			group.append(RideElements.grade_section("Final brakes", bite, [
+				Vector2(0, 0), Vector2(shape.x, -pitch),
+				Vector2(shape.y, -pitch), Vector2(1, 0),
+			], transfer))
+		if i == shapes.size() - 1 or _group_clears(route, state, group):
+			plan["brake_note"] = "brake run %.0f m of approach then %.0f m of bite at %.2f g, giving back %.0f of the %.0f m it carries, %.0f m of lead left %.0f° off" % [
+				approach_run, bite,
+				(bottom_speed * bottom_speed - transfer * transfer) / (2.0 * bite * RideElements.G0),
+				delivery * sin(deg_to_rad(pitch)), descent, lead, aim_error
+			]
+			_add(route, state, sections, group)
 			break
 
 
-## Steepest a brake run of this length may be pitched, solved rather than capped. The profile ramps
-## the pitch on over the first half of the run, and by a quarter of the way in the brakes have
-## already taken a fifth of the speed out — which is where the crest is steepest and where the load
-## is read: n − 1 = −v²·Δθ·2.1875/(0.55·L·g), inverted for the crest the ride will take.
-static func _brake_grade(entry_speed: float, length: float) -> float:
-	var speed2: float = 0.73 * entry_speed * entry_speed + 13.0
+## Steepest a brake run may be pitched, solved rather than capped: n − 1 = −v²·Δθ·2.1875/(ramp·g),
+## inverted for the crest the ride will take, where `ramp` is the track the pitch is ramped on over
+## and `crest_speed2` is the speed² it is ramped on at. The two callers read differently. A run in
+## front of the bite takes its crest at the speed the run home came home on, ramped over the whole
+## of itself; the bite taken alone ramps over its own first half, and by a quarter of the way in the
+## brakes have already taken a fifth of the speed out — which is where its crest is steepest.
+static func _brake_grade(crest_speed2: float, ramp: float) -> float:
 	return clampf(
-		absf(BRAKE_CREST_G - 1.0) * 0.55 * length * RideElements.G0 / (2.1875 * maxf(speed2, 1.0)),
+		absf(BRAKE_CREST_G - 1.0) * ramp * RideElements.G0 / (2.1875 * maxf(crest_speed2, 1.0)),
 		0.02,
 		0.35
 	)

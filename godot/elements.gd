@@ -31,6 +31,19 @@ const CUTBACK_ROLL := [
 	Vector2(0.62, -1), Vector2(0.88, -1), Vector2(1, 0),
 ]
 const CUTBACK_KEYS := [0.0, 0.12, 0.25, 0.38, 0.5, 0.62, 0.75, 0.88, 1.0]
+## Speed the brake run hands the closure, and the speed the closure holds across the approach. The
+## station transfer is driven track, not a coast, so what it costs in time is a choice: at station
+## speed a three-hundred-metre approach is a minute of nothing, and the reference ends in seconds.
+## Fifty km/h is what a transfer track carries, and the settle to platform speed happens at the
+## platform rather than a quarter of a mile out.
+const TRANSFER_SPEED := 14.0
+## Track the settle to station speed is given. Short enough to keep the approach out of the crawl,
+## long enough that the settle itself is a tenth of a g rather than a stop.
+const TRANSFER_SETTLE := 70.0
+## Lateral the transfer may hold. The closure is a bezier and some of them are S-shaped, so the
+## speed it may be flown at is whatever its own tightest point allows — a station approach reads
+## as one at half a g, not at two.
+const TRANSFER_LATERAL_G := 0.8
 
 
 ## ------------------------------------------------------------------------ section constructors
@@ -380,12 +393,22 @@ static func append_closure(
 	for i in range(4, -1, -1):
 		controls.append(station_position - station_tangent * handle * i / 9.0)
 	var estimate := 0.0
+	var tightest := 0.0
 	var previous := start
 	for i in range(1, 101):
 		var point := _bezier9(controls, i / 100.0)
 		estimate += previous.distance_to(point)
+		tightest = maxf(tightest, _bezier_curvature(controls, i / 100.0).length())
 		previous = point
 	var count := ceili(estimate / SAMPLE_SPACING)
+	## What the approach is flown at: the speed the brake run handed over, capped by the transfer
+	## speed and by what this particular bezier's tightest point holds at half a g of lateral.
+	var cruise: float = clampf(
+		minf(state.speed, sqrt(TRANSFER_LATERAL_G * G0 / maxf(tightest, 1e-6))),
+		station_speed,
+		TRANSFER_SPEED
+	)
+	var settle: float = clampf(TRANSFER_SETTLE / maxf(estimate, 1.0), 0.15, 1.0)
 	var index := sections.size()
 	var section := {
 		"name": "C4 station return",
@@ -405,11 +428,12 @@ static func append_closure(
 	var ramps := _ramp_fractions(estimate, Vector2.ZERO)
 	var delivered: float = 1.0 - 0.5 * (ramps.x + ramps.y)
 	var drive: float = (0.5 * (station_speed * station_speed - state.speed * state.speed) - mean_gravity * estimate + average_drag * estimate) / (estimate * delivered)
+	var schedule := Vector3(cruise, station_speed, settle)
 	for _iteration in 6:
-		var error := _closure_exit_speed2(route, controls, count, section.entry_speed, drive, state.distance, station_speed * station_speed) - station_speed * station_speed
+		var error := _closure_exit_speed2(route, controls, count, section.entry_speed, drive, state.distance, schedule) - station_speed * station_speed
 		if absf(error) < 0.01:
 			break
-		var shifted := _closure_exit_speed2(route, controls, count, section.entry_speed, drive + 0.05, state.distance, station_speed * station_speed)
+		var shifted := _closure_exit_speed2(route, controls, count, section.entry_speed, drive + 0.05, state.distance, schedule)
 		var gradient := (shifted - error - station_speed * station_speed) / 0.05
 		if absf(gradient) < 0.01:
 			break
@@ -432,13 +456,15 @@ static func append_closure(
 		var drag: float = DRAG_FACTOR * state.speed * state.speed + ROLLING_FACTOR * absf(middle_proper.dot(middle_up))
 		var acceleration: float = gravity_along + drive * _engagement(um, ramps) - drag
 		var speed_start: float = state.speed
-		## Floored at the station's own speed, and that is what the closure physically is: the tail of
+		## Floored on the transfer schedule, and that is what the closure physically is: the tail of
 		## the brake run and the transfer track through the platform, which is driven. A solved drive
 		## that has to take out both the last of the speed and the last of the height puts its braking
 		## in the middle of the curve, and unfloored the train stops there — which reads as a stalled
-		## route rather than as what it is, a station transfer being asked to coast.
+		## route rather than as what it is, a station transfer being asked to coast. Held at the
+		## transfer speed rather than at the platform's, the same track is seconds instead of a minute.
 		var speed_end := maxf(
-			sqrt(maxf(0.04, state.speed * state.speed + 2.0 * acceleration * chord)), station_speed
+			sqrt(maxf(0.04, state.speed * state.speed + 2.0 * acceleration * chord)),
+			_transfer_floor(u, cruise, station_speed, settle)
 		)
 		var curvature := _bezier_curvature(controls, u)
 		state.position = point
@@ -451,9 +477,11 @@ static func append_closure(
 		var proper: Vector3 = curvature * speed_end * speed_end - gravity_across
 		var up: Vector3 = state.up
 		var right: Vector3 = tangent.cross(up).normalized()
-		var end_drag := DRAG_FACTOR * speed_end * speed_end + ROLLING_FACTOR * absf(proper.dot(up))
-		var end_gravity := _mean_train_gravity(route, state.distance, tangent)
-		var longitudinal := (end_gravity - GRAVITY.dot(tangent) + drive * _engagement(u, ramps) - end_drag) / G0
+		## Read off the speed the step actually flew rather than off the drive it was handed, because
+		## the schedule floor is part of the physics here: the settle to platform speed is braking and
+		## has to be reported as braking.
+		var applied: float = (speed_end * speed_end - speed_start * speed_start) / (2.0 * maxf(chord, 0.001))
+		var longitudinal := (applied - GRAVITY.dot(tangent)) / G0
 		append_state(route, state, index, proper.dot(up) / G0, proper.dot(right) / G0, longitudinal, 0, curvature)
 		previous = point
 	section["end_index"] = route.positions.size() - 1
@@ -474,7 +502,7 @@ static func _closure_exit_speed2(
 	entry_speed: float,
 	drive: float,
 	start_distance: float,
-	entry_floor: float = 0.04
+	schedule: Vector3
 ) -> float:
 	var history: Dictionary = route.duplicate(true)
 	var speed2 := entry_speed * entry_speed
@@ -498,8 +526,9 @@ static func _closure_exit_speed2(
 		var gravity_along := _mean_train_gravity(history, distance + chord * 0.5, tangent)
 		var proper := curvature * speed2 - (GRAVITY - tangent * front_gravity)
 		var drag := DRAG_FACTOR * speed2 + ROLLING_FACTOR * absf(proper.dot(up))
+		var floor_speed := _transfer_floor(u, schedule.x, schedule.y, schedule.z)
 		speed2 = maxf(
-			entry_floor,
+			floor_speed * floor_speed,
 			speed2 + 2.0 * (gravity_along + drive * _engagement(um, _ramp_fractions(length, Vector2.ZERO)) - drag) * chord
 		)
 		distance += chord
@@ -507,6 +536,14 @@ static func _closure_exit_speed2(
 		history.tangents.append(_bezier9_derivative(controls, u).normalized())
 		previous = point
 	return speed2
+
+
+## The transfer schedule: the approach speed held across the closure, then settled to the platform's
+## own speed over the last stretch of it. Braking the whole way instead — which is what a solved
+## drive alone does — spends the approach at walking pace, and a v²-linear bleed from the transfer
+## speed is slower still than the crawl it replaces.
+static func _transfer_floor(u: float, cruise: float, station_speed: float, settle: float) -> float:
+	return lerpf(cruise, station_speed, _smooth5(clampf((u - 1.0 + settle) / settle, 0.0, 1.0)))
 
 
 static func _bezier9(points: PackedVector3Array, u: float) -> Vector3:

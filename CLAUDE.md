@@ -34,6 +34,9 @@ local timings.
 - `godot/main.gd` — viewer: meshes, cameras, seven rows, metrics HUD, seed key (N).
 - `godot/smoke.gd` — headless gate: toolkit self-tests, template probes, and multi-seed
   generator validation (same seed twice bit-identical; every seed passes every check).
+- `godot/_inspect.gd` — inspection harness (not a gate): per-element stats, phase tables,
+  and PNG renders (element shapes, top/elevation, 6-channel ride traces) for comparing
+  seeds against the measured references.
 
 ## Generator contract
 
@@ -61,7 +64,8 @@ local timings.
   into a climb or run a varying gradient. No mid-course brake: one
   continuous energy arc after the tunnel booster. No standalone connector turns, no sub-30 m stub
   sections, no flat grades between elements; elapsed average speed is reported, never
-  targeted — pacing is organic. Length ~6.4–7.6 km. Records live in the marquee elements; suspense/clifftop elements never scale toward
+  targeted — pacing is organic. Length ~7.6–10.2 km (user-accepted 2026-08-09: the honest
+  cost of the five-gesture story at 340 km/h; the return reversal alone is ~1.1 km). Records live in the marquee elements; suspense/clifftop elements never scale toward
   records; no element class between ~110 m and the ~250 m marquee pair (the gap is the
   authentic pattern).
 - Physics limits discovered by measurement, respected by design: giant inversions need
@@ -72,4 +76,7 @@ Do not restore the removed Rust optimizer, native extension, HTML viewer, hardco
 `ride_model.gd` route, runtime correction passes, or the old flat per-duration limit tables.
 Do not add restraint/seat/suspension/structural models until requested. History and rationale:
 `docs/PLAN.md` (executed), `docs/RESEARCH.md` (Step-0 findings), `docs/REFERENCE.md` (retired
-checkpoint rationale).
+checkpoint rationale). Measured real-ride telemetry (the fidelity ground truth — per-element
+g/duration tables for Falcon's Flight, Tormenta, and class exemplars): `docs/TELEMETRY.md`
+and `docs/TELEMETRY-I305.md`. Fidelity targets = measured counterpart × per-axis envelope
+stretch on values (Gz+ ×1.333, Gz− ×1.5, Gy ×1.567, Gx− ×1.71), measured hold durations kept.

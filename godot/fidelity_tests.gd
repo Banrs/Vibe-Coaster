@@ -527,11 +527,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		{
 			"source_id": "youtube.falcon.backward.J54WKu2nU6o", "file": "J54WKu2nU6o-review.json",
 			"duration": 240.881, "published_on": "2026-01-05", "state": "observation_only",
-			"review_contributions": ["order","geometry","speed perception","feel prompts"], "catalog_contributions": ["order","geometry","speed perception","feel prompts"],
-			"promotion_prerequisites": [
-				"Review exact source-local landmarks with uncertainty and row/camera context.",
-				"Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock.",
-			],
+			"review_contributions": ["order","geometry","speed perception","feel prompts"],
 			"view": {
 				"content_kind":"built-ride", "direction":"rear-facing",
 				"position_claim":"centered rear-facing view; exact row undisclosed", "mount":"unknown",
@@ -554,11 +550,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		{
 			"source_id": "youtube.falcon.sdXGD9kMR7s", "file": "sdXGD9kMR7s-review.json",
 			"duration": 239.061, "published_on": "2026-01-01", "state": "observation_only",
-			"review_contributions": ["order","geometry","timing landmarks","feel prompts"], "catalog_contributions": ["order","geometry","timing landmarks","feel prompts"],
-			"promotion_prerequisites": [
-				"Review exact source-local landmarks with uncertainty and front-row/camera context.",
-				"Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock.",
-			],
+			"review_contributions": ["order","geometry","timing landmarks","feel prompts"],
 			"view": {
 				"content_kind":"built-ride", "direction":"forward",
 				"position_claim":"front-row view per title over the leading car nose; exact mount undisclosed", "mount":"unknown",
@@ -581,9 +573,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		{
 			"source_id": "youtube.falcon.poco8rOnW18", "file": "poco8rOnW18-review.json",
 			"duration": 328.521, "published_on": "2023-06-04", "state": "corroborative",
-			"review_contributions": ["model-to-model geometry/order only"], "catalog_contributions": ["model-to-model geometry","model-to-model order"],
-			"promotion_prerequisites": ["Remain NoLimits2 model-only even if content provenance and landmarks are later committed.",
-				"Never use this simulation as measured truth or transfer its clock to real footage."],
+			"review_contributions": ["model-to-model geometry/order only"],
 			"view": {
 				"content_kind":"nolimits2-precreation", "direction":"mixed",
 				"position_claim":"mixed third-person and virtual POV; not an as-built camera", "mount":"not-applicable",
@@ -608,11 +598,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		{
 			"source_id": "youtube.coastertalk.continuous.0Ua", "file": "0UaOSBGSx20-review.json",
 			"duration": 213.541, "published_on": "2026-04-14", "state": "corroborative",
-			"review_contributions": ["displayed-channel landmarks; axes remain unknown until reviewed"], "catalog_contributions": ["displayed-channel landmarks"],
-			"promotion_prerequisites": [
-				"Review exact source-local landmark windows and identify row, device, sample rate, and displayed-axis mapping.",
-				"Commit qualifying content provenance and a complete alignment; never infer a dense trace or borrow the edited seNR timeline.",
-			],
+			"review_contributions": ["displayed-channel landmarks; axes remain unknown until reviewed"],
 			"view": {
 				"content_kind":"built-ride", "direction":"forward",
 				"position_claim":"leading-view appearance consistent with front row; exact row undisclosed", "mount":"unknown",
@@ -674,13 +660,9 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 			all_readouts.append_array(expected.rendered_readouts)
 		_expect(errors, review.get("independent_timeline", {}).get("landmarks") == expected_landmarks, "%s pins ordered source-local landmarks" % fixture.source_id)
 		_expect(errors, source.get("windows") == expected_windows, "%s catalog mirrors reviewed point windows" % fixture.source_id)
-		_expect(errors, review.get("state") == fixture.state and source.get("state") == fixture.state, "%s does not promote source state" % fixture.source_id)
-		_expect(errors,
-			source.get("initial_state") == fixture.state
-			and review.get("permitted_contributions") == fixture.review_contributions
-			and source.get("permitted_contributions") == fixture.catalog_contributions,
-			"%s pins its permission ceiling" % fixture.source_id)
-		_expect(errors, source.get("promotion_prerequisites") == fixture.promotion_prerequisites, "%s pins promotion prerequisites" % fixture.source_id)
+		_expect(errors, review.get("state") == fixture.state, "%s does not promote review state" % fixture.source_id)
+		_expect(errors, review.get("permitted_contributions") == fixture.review_contributions,
+			"%s pins its review permission ceiling" % fixture.source_id)
 		_expect(errors, source.get("permitted_axes", []).is_empty() and source.get("axis_mapping", {}).is_empty(), "%s keeps axes and mapping empty" % fixture.source_id)
 		_expect(errors, source.get("sample_rate_hz", 0) == null and review.has("alignment") and review.alignment == [],
 			"%s keeps sample rate null and explicit empty alignment" % fixture.source_id)

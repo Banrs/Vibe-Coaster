@@ -737,8 +737,7 @@ func _template_errors() -> PackedStringArray:
 
 	var turn_state := _template_state(70.0, 0.0)
 	var turn_route := _seed_route(turn_state)
-	var turn: Array = []
-	_run_group(turn_route, turn_state, Elements.author_turn(turn_route, turn_state, {"heading_change_deg": 180.0, "bank_deg": 70.0}), turn)
+	_run_group(turn_route, turn_state, Elements.author_turn(turn_route, turn_state, {"heading_change_deg": 180.0, "bank_deg": 70.0}), [])
 	var turn_mid: float = turn_route.banks[turn_route.banks.size() / 2]
 	_expect(errors, absf(Elements._heading_change_deg(turn_route, 1) - 180.0) <= 3.0, "turn sweeps %.1f°, not 180" % Elements._heading_change_deg(turn_route, 1))
 	_expect(errors, absf(turn_route.banks[-1]) <= 3.0, "turn exits banked %.1f°" % turn_route.banks[-1])
@@ -747,16 +746,14 @@ func _template_errors() -> PackedStringArray:
 
 	var rim_state := _template_state(16.0, 0.0)
 	var rim_route := _seed_route(rim_state)
-	var rim: Array = []
-	_run_group(rim_route, rim_state, Elements.author_rim_turn(rim_route, rim_state, {"heading_change_deg": 120.0, "outward_bank_deg": 25.0, "lateral_g": -1.0}), rim)
+	_run_group(rim_route, rim_state, Elements.author_rim_turn(rim_route, rim_state, {"heading_change_deg": 120.0, "outward_bank_deg": 25.0, "lateral_g": -1.0}), [])
 	var rim_mid: float = rim_route.banks[rim_route.banks.size() / 2]
 	_expect(errors, absf(Elements._heading_change_deg(rim_route, 1) - 120.0) <= 3.0, "rim turn sweeps %.1f°, not 120" % Elements._heading_change_deg(rim_route, 1))
 	_expect(errors, rim_mid * turn_mid < 0.0, "rim turn banks %.1f°, not away from the corner" % rim_mid)
 
 	var over_state := _template_state(55.0, 0.0)
 	var over_route := _seed_route(over_state)
-	var over: Array = []
-	_run_group(over_route, over_state, Elements.author_overbank(over_route, over_state, {"heading_change_deg": 150.0, "bank_deg": 95.0, "peak_g": 2.6}), over)
+	_run_group(over_route, over_state, Elements.author_overbank(over_route, over_state, {"heading_change_deg": 150.0, "bank_deg": 95.0, "peak_g": 2.6}), [])
 	var peak_bank := 0.0
 	for bank in over_route.banks:
 		peak_bank = maxf(peak_bank, absf(bank))

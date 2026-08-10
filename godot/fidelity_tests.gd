@@ -684,10 +684,11 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		_expect(errors, source.get("permitted_axes", []).is_empty() and source.get("axis_mapping", {}).is_empty(), "%s keeps axes and mapping empty" % fixture.source_id)
 		_expect(errors, source.get("sample_rate_hz", 0) == null and review.has("alignment") and review.alignment == [],
 			"%s keeps sample rate null and explicit empty alignment" % fixture.source_id)
-		var status_text := str(review.get("independent_timeline", {}).get("landmark_review_status", "")).to_lower()
-		var gaps_text := " ".join(review.get("evidence_gaps", [])).to_lower()
-		_expect(errors, status_text.contains("reviewed") and not status_text.contains("not reviewed")
-			and str(review.get("alignment_status", "")).to_lower().contains("no") and gaps_text.contains("cannot define executable comparison bands"),
+		var status_text := str(review.get("independent_timeline", {}).get("landmark_review_status", ""))
+		var alignment_status := str(review.get("alignment_status", ""))
+		_expect(errors, status_text == "Sparse source-local landmarks reviewed live; no continuous trace or generated alignment is asserted."
+			and alignment_status == "Reviewed source-local landmarks only; no source landmark is mapped to a generated selector."
+			and " ".join(review.get("evidence_gaps", [])).to_lower().contains("cannot define executable comparison bands"),
 			"%s replaces stale review status without promoting alignment or bands" % fixture.source_id)
 		_expect(errors,
 			str(review.get("independent_timeline", {}).get("continuity", "")).to_lower().contains("no cross-source clock or timestamp mapping is asserted"),
@@ -703,8 +704,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 	var prompts := {}
 	var prompt_ids := []
 	for prompt in catalog.get("review_prompts", []):
-		prompts[prompt.get("id")] = prompt
-		prompt_ids.append(prompt.get("id"))
+		prompts[prompt.get("id")] = prompt; prompt_ids.append(prompt.get("id"))
 	_expect(errors, prompt_ids == [
 		"review.ride_feel", "review.speed_perception", "review.element_shaping", "review.support_overlap",
 		"review.coastertalk_overlay_spot_checks", "review.terrain_clearance",

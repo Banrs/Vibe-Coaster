@@ -3,6 +3,8 @@ extends SceneTree
 const CANONICAL_PATH := "res://canonical_data.gd"
 const ARTIFACTS_PATH := "res://fidelity_artifacts.gd"
 const REFERENCES_PATH := "res://fidelity_references.gd"
+const SAMPLING_PATH := "res://route_sampling.gd"
+const VIEWER_PATH := "res://main.gd"
 const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
 
 
@@ -30,7 +32,61 @@ static func run() -> PackedStringArray:
 	_test_committed_catalog(artifacts, references, errors)
 	_test_element_render_request_filter(artifacts, errors)
 	_test_center_row_alignment_selectors(artifacts, errors)
+	_test_route_sampling(errors)
 	return errors
+
+
+## The viewer's interpolation is the POV contract: extraction must not move a single sample.
+static func _test_route_sampling(errors: PackedStringArray) -> void:
+	if not ResourceLoader.exists(SAMPLING_PATH):
+		errors.append("RouteSampling is missing")
+		return
+	var sampling: Script = load(SAMPLING_PATH)
+	var viewer: Script = load(VIEWER_PATH)
+	var route := _sampling_route()
+	_expect(errors, sampling.lower_index(route.distances, -5.0) == 0,
+		"lower index clamps below the first knot")
+	_expect(errors, sampling.lower_index(route.distances, 10.0) == 1,
+		"lower index takes the span starting at an exact knot")
+	_expect(errors, sampling.lower_index(route.distances, 25.0) == 1,
+		"lower index clamps to the final span")
+	_expect(errors, is_equal_approx(sampling.distance_at_time(route, 0.25), 2.5),
+		"distance interpolates linearly between sample times")
+	_expect(errors, is_equal_approx(sampling.distance_at_time(route, 2.25), 2.5),
+		"time wraps by ride duration")
+	var pose: Transform3D = sampling.pose_at_distance(route, 5.0)
+	_expect(errors, pose.origin.is_equal_approx(Vector3(5.0, 0.0, 0.0)),
+		"pose origin lerps between knot positions")
+	var diagonal := sqrt(0.5)
+	_expect(errors, (-pose.basis.z).is_equal_approx(Vector3(diagonal, 0.0, -diagonal))
+		and pose.basis.y.is_equal_approx(Vector3.UP),
+		"pose orientation slerps halfway through the quarter-turn between knots")
+	_expect(errors, sampling.pose_at_distance(route, 25.0) == pose, "distance wraps by ride length")
+	for distance in [0.0, 3.75, 10.0, 14.5, 19.9, 41.0]:
+		_expect(errors, viewer.pose_at_distance(route, distance)
+			== sampling.pose_at_distance(route, distance),
+			"viewer pose sampling delegates without change at %f" % distance)
+		_expect(errors, viewer.distance_at_time(route, distance * 0.1)
+			== sampling.distance_at_time(route, distance * 0.1),
+			"viewer time-to-distance delegates without change at %f" % distance)
+		_expect(errors, viewer._lower_index(route.distances, distance)
+			== sampling.lower_index(route.distances, distance),
+			"viewer lower index delegates without change at %f" % distance)
+
+
+## Three knots turning a right angle about the vertical: enough to expose lerp-versus-slerp.
+static func _sampling_route() -> Dictionary:
+	return {
+		"length": 20.0, "duration": 2.0,
+		"distances": PackedFloat32Array([0.0, 10.0, 20.0]),
+		"times": PackedFloat32Array([0.0, 1.0, 2.0]),
+		"positions": PackedVector3Array([
+			Vector3.ZERO, Vector3(10.0, 0.0, 0.0), Vector3(10.0, 0.0, -10.0),
+		]),
+		"tangents": PackedVector3Array([Vector3.RIGHT, Vector3.FORWARD, Vector3.LEFT]),
+		"ups": PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP]),
+		"rights": PackedVector3Array([Vector3.BACK, Vector3.RIGHT, Vector3.FORWARD]),
+	}
 
 
 static func _test_canonical_data(

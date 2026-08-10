@@ -40,8 +40,10 @@ static func _test_canonical_data(
 		"schema_version": "ride-fidelity-audit@1",
 		"findings": [{"target_id": "z"}, {"target_id": "a"}],
 		"fleet": [11, 42, 20260809, 1],
+		"legal": {"null": null, "bool": true},
 	}
 	var reordered := {
+		"legal": {"bool": true, "null": null},
 		"fleet": [11, 42, 20260809, 1],
 		"findings": [{"target_id": "z"}, {"target_id": "a"}],
 		"schema_version": "ride-fidelity-audit@1",
@@ -53,6 +55,8 @@ static func _test_canonical_data(
 		"artifact serialization delegates to CanonicalData")
 	_expect(errors, json_a.contains('"fleet":[11,42,20260809,1]'),
 		"canonical JSON preserves semantic array order")
+	_expect(errors, json_a.contains('"legal":{"bool":true,"null":null}'),
+		"recursive canonicalization accepts and orders null and booleans")
 	_expect(errors, json_a.ends_with("\n") and not json_a.ends_with("\n\n"),
 		"canonical JSON has exactly one final LF")
 	_expect(errors, canonical_data.canonical_json({"bad": INF}) == "",
@@ -67,8 +71,7 @@ static func _test_canonical_data(
 
 
 static func _test_complete_report(artifacts: Script, errors: PackedStringArray) -> void:
-	var fixture := _valid_fixture()
-	var actual: Dictionary = _build(artifacts, fixture)
+	var actual: Dictionary = _build(artifacts, _valid_fixture())
 	_expect(errors, actual == _expected_report(),
 		"valid inputs produce the complete pure report contract")
 	_expect(errors, artifacts.markdown(actual) == EXPECTED_MARKDOWN,
@@ -91,14 +94,24 @@ static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray)
 			func(value: Dictionary): value.legacy_base_commit = "ABC"],
 		["comparison has the exact Task 6 algebra", "comparison",
 			func(value: Dictionary): value.comparison["extra"] = true],
+		["Task 6 members cannot be missing", "comparison",
+			func(value: Dictionary): value.comparison.erase("findings")],
+		["Task 6 members have contracted types", "comparison",
+			func(value: Dictionary): value.comparison.observed_only = {}],
 		["comparison projections must be JSON-safe", "comparison",
 			func(value: Dictionary): value.comparison.findings[0].metric = INF],
 		["measurement summaries must be finite", "measurement",
 			func(value: Dictionary): value.seed_measurements[0].length = INF],
 		["measurement seeds are unique", "duplicate measurement seed",
 			func(value: Dictionary): value.seed_measurements[3].seed = 11],
+		["measurement seeds must be integers", "measurement seed",
+			func(value: Dictionary): value.seed_measurements[0].seed = 11.0],
 		["measurement seeds match fleet", "measurement seeds",
 			func(value: Dictionary): value.seed_measurements[3].seed = 7],
+		["required seed 11 cannot be replaced consistently", "deep seed",
+			func(value: Dictionary): _replace_seed(value, 11, 7)],
+		["required seed 42 cannot be replaced consistently", "deep seed",
+			func(value: Dictionary): _replace_seed(value, 42, 7)],
 		["deep seed 20260809 is mandatory", "deep seed",
 			func(value: Dictionary): value.comparison.fleet[2] = 7],
 		["counter keys are Strings", "generation_counts",
@@ -197,6 +210,12 @@ static func _build(artifacts: Script, fixture: Dictionary) -> Dictionary:
 	)
 
 
+static func _replace_seed(value: Dictionary, old_seed: int, new_seed: int) -> void:
+	value.seed_measurements[value.comparison.fleet.find(old_seed)].seed = new_seed
+	value.comparison.fleet[value.comparison.fleet.find(old_seed)] = new_seed
+	value.generation_counts[str(new_seed)] = value.generation_counts[str(old_seed)]
+	value.generation_counts.erase(str(old_seed))
+
 static func _valid_fixture() -> Dictionary:
 	var measurements := []
 	for seed in [11, 42, 20260809, 1]:
@@ -247,7 +266,13 @@ static func _valid_catalog() -> Dictionary:
 			"source.raw": {
 				"state": "executable", "acquisition": "raw",
 				"artifact_path": "evidence/raw.json", "artifact_sha256": "a".repeat(64),
+				"diagnostic_path": "evidence/raw-diagnostic.json", "diagnostic_sha256": "f".repeat(64),
+				"metadata_artifact_path": "evidence/raw-metadata.json", "metadata_artifact_sha256": "9".repeat(64),
 				"review_path": "evidence/raw-review.json", "review_sha256": "b".repeat(64),
+				"fallback_citations": [{
+					"document": "docs/TELEMETRY.md", "section_id": "fixture",
+					"source_windows_used": [[1.25, 3.0]],
+				}],
 				"url": "https://example.invalid/raw", "processing": ["excluded"],
 				"windows": [
 					{"id": "landmark.point", "time_s": 1.25},
@@ -256,8 +281,8 @@ static func _valid_catalog() -> Dictionary:
 			},
 			"youtube.unaligned": {
 				"state": "observation_only",
-				"metadata_artifact_path": "evidence/video.json",
-				"metadata_artifact_sha256": "d".repeat(64),
+				"metadata_diagnostic_path": "evidence/video-diagnostic.json",
+				"metadata_diagnostic_sha256": "d".repeat(64),
 				"review_path": "evidence/video-review.json",
 				"review_sha256": "e".repeat(64),
 				"video_id": "video", "windows": [{"id": "video.crest", "time_s": 4.0}],
@@ -280,7 +305,7 @@ static func _valid_catalog() -> Dictionary:
 		],
 		"evidence_gaps": [{
 			"id": "gap.unmeasured", "description": "No executable evidence.",
-			"source_ids": ["youtube.unaligned"], "issues": [7, 8, 10, 11, 13],
+			"source_ids": ["youtube.unaligned"], "issues": [7, 8, 9, 10, 11, 12, 13, 15],
 		}],
 	}
 
@@ -339,12 +364,19 @@ static func _expected_report() -> Dictionary:
 			{
 				"source_id": "source.raw", "state": "executable", "acquisition": "raw",
 				"artifact_path": "evidence/raw.json", "artifact_sha256": "a".repeat(64),
+				"diagnostic_path": "evidence/raw-diagnostic.json", "diagnostic_sha256": "f".repeat(64),
+				"metadata_artifact_path": "evidence/raw-metadata.json",
+				"metadata_artifact_sha256": "9".repeat(64),
 				"review_path": "evidence/raw-review.json", "review_sha256": "b".repeat(64),
+				"fallback_citations": [{
+					"document": "docs/TELEMETRY.md", "section_id": "fixture",
+					"source_windows_used": [[1.25, 3.0]],
+				}],
 			},
 			{
 				"source_id": "youtube.unaligned", "state": "observation_only",
-				"metadata_artifact_path": "evidence/video.json",
-				"metadata_artifact_sha256": "d".repeat(64),
+				"metadata_diagnostic_path": "evidence/video-diagnostic.json",
+				"metadata_diagnostic_sha256": "d".repeat(64),
 				"review_path": "evidence/video-review.json",
 				"review_sha256": "e".repeat(64),
 			},
@@ -433,7 +465,7 @@ static func _expected_issue(issue_id: int) -> Dictionary:
 		artifacts = ["review/seed-42/channels.png"]
 	elif issue_id in [2, 3, 4, 5, 6, 12, 14, 15, 16]:
 		state = "review-prompt"
-		evidence = [_prompt_for_issue(issue_id), "source.raw"]
+		evidence = [PROMPT_FOR_ISSUE[issue_id], "source.raw"]
 		artifacts = ["review/seed-42/channels.png"]
 	return {
 		"issue_id": issue_id, "issue_text": ISSUE_TEXT.get(issue_id, "Issue %d" % issue_id),
@@ -447,18 +479,13 @@ const ISSUE_TEXT := {
 	14: "Multidimensional scaling", 15: "Transition jerk",
 }
 
-
-static func _prompt_for_issue(issue_id: int) -> String:
-	if issue_id in [2, 14]:
-		return "prompt.shaping"
-	if issue_id in [3, 15]:
-		return "prompt.feel"
-	if issue_id in [4, 9]:
-		return "prompt.speed"
-	if issue_id in [5, 12]:
-		return "prompt.terrain"
-	return "prompt.support"
-
+const PROMPT_FOR_ISSUE := {
+	2: "prompt.shaping", 14: "prompt.shaping",
+	3: "prompt.feel", 15: "prompt.feel",
+	4: "prompt.speed", 9: "prompt.speed",
+	5: "prompt.terrain", 12: "prompt.terrain",
+	6: "prompt.support", 16: "prompt.support",
+}
 
 static func _expected_render_requests() -> Array:
 	var requests := []

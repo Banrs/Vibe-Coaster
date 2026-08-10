@@ -1,0 +1,64 @@
+{
+  "schema_version": "fidelity-rideforcesdb-review@1",
+  "source_id": "rideforcesdb.tormenta.6369",
+  "source_url": "https://rideforcesdb.com/getRec?id=6369",
+  "recording_id": "6369",
+  "retrieved_on": "2026-08-10",
+  "state": "corroborative",
+  "acquisition": {
+    "result": "raw_fetch_unavailable",
+    "diagnostic_path": "docs/evidence/fidelity/rideforcesdb/6369-diagnostic.json",
+    "diagnostic_sha256": "c1244015f24ae85037ed2caf0c51bc2fd45b65e9e54f6b48383a1592558d1e7b",
+    "fallback_citations": [
+      {
+        "document": "docs/TELEMETRY.md",
+        "section_id": "1.2-tormenta-per-element-cross-recording",
+        "line_anchor": "lines 347-423",
+        "columns_used": ["Element (RCDB order)", "t (6369)", "Duration", "Peak vert (6383 / 6369)", "Hold", "Notes"],
+        "source_windows_used": [[7.38, 9.24], [10.2, 13.8], [18.04, 21.58], [23.5, 28.52], [32.0, 44.0], [45.92, 47.34], [47.7, 50.26], [52.7, 54.58], [56.34, 58.02], [61.46, 62.24]]
+      },
+      {
+        "document": "docs/TELEMETRY.md",
+        "section_id": "appendix-c-tormenta-rec-6369-back-right",
+        "line_anchor": "lines 513-602",
+        "columns_used": ["t", "Vmean", "Vmin", "Vmax", "Lmin", "Lmax", "Gmin", "Gmax"],
+        "source_windows_used": [[0.0, 84.0]]
+      }
+    ]
+  },
+  "row_seat": "Back right seat",
+  "device": "Phone carried in a back/right pocket; exact model unverified; author warns it might slide",
+  "native_sample_rate_hz": null,
+  "reviewed_corpus_provenance": {
+    "sample_rate_hz": 50.0,
+    "processing": "The committed TELEMETRY review says its RideForcesDB values use an 11-sample (0.22 s) centred moving average and exposes a reviewed 1 Hz summary table.",
+    "scope": "Reviewed-corpus provenance only; no native raw payload is committed, so this record does not independently verify sample cadence."
+  },
+  "mapped_rider_axes": {
+    "basis": "Reviewed TELEMETRY table headings only, not a verified stable device-to-rider transform.",
+    "vertical": "normal_g",
+    "lateral": "lateral_g",
+    "longitudinal": "longitudinal_g"
+  },
+  "processing_chain": ["No raw payload processing was performed for this review record.", "Only exact windows and table columns in acquisition.fallback_citations are used.", "Pocket movement may rotate or slide the device; no angle channel is available."],
+  "excluded_intervals": [],
+  "named_element_order": ["chain lift hill", "285 ft 95-degree drop", "218 ft Immelmann", "179 ft loop", "block brake", "post-block drop", "Immelmann", "cutback", "brakes"],
+  "source_windows": [
+    {"id": "tormenta.drop", "window_s": [7.38, 9.24]},
+    {"id": "tormenta.drop_pullout", "window_s": [10.2, 13.8]},
+    {"id": "tormenta.immelmann_1", "window_s": [18.04, 21.58]},
+    {"id": "tormenta.loop", "window_s": [23.5, 28.52]},
+    {"id": "tormenta.block_brake", "window_s": [32.0, 44.0]},
+    {"id": "tormenta.post_block_drop", "window_s": [45.92, 47.34]},
+    {"id": "tormenta.post_block_pullout", "window_s": [47.7, 50.26]},
+    {"id": "tormenta.immelmann_2", "window_s": [52.7, 54.58]},
+    {"id": "tormenta.cutback", "window_s": [56.34, 58.02]},
+    {"id": "tormenta.brake_bite", "window_s": [61.46, 62.24]}
+  ],
+  "alignment": [],
+  "confidence": "low",
+  "confidence_rationale": "This is a pocket-carried back/right recording with an explicit sliding warning, no committed raw payload, and no angle channel.",
+  "corroborating_source_ids": ["rideforcesdb.tormenta.6383", "youtube.tormenta.forward.AHjk"],
+  "promotion_prerequisites": ["6369 is cross-recording support only and cannot stand in for 6383 or rider-frame truth.", "A derived observation must be corroborated across 6383, 6369, and the Tormenta POV.", "Commit and validate a genuine raw payload or content digest and stable device-to-rider mapping.", "Resolve exact compatible landmark-to-generated alignment; do not transfer 6383 absolute times."],
+  "evidence_gaps": ["No genuine raw payload or raw artifact digest is committed.", "No stable pocket-device axis mapping is established.", "No source-to-generated alignment is adjudicated."]
+}

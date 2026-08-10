@@ -1,0 +1,50 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.falcon.forward.cUURkqyn4Zs",
+  "source_url": "https://www.youtube.com/watch?v=cUURkqyn4Zs",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "title": "Falcon's Flight front seat on-ride 4K POV Six Flags Qiddiya City",
+    "channel": "CoasterForce",
+    "duration_seconds": 223.821
+  },
+  "state": "observation_only",
+  "permitted_contributions": [
+    "order",
+    "geometry",
+    "timing landmarks",
+    "feel prompts"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/cUURkqyn4Zs-oembed.json",
+    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "video_downloaded": false,
+    "repository_review": [
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Falcon's Flight research sources",
+        "line": 63,
+        "claim": "The repository identifies this CoasterForce video as the primary forward reference."
+      },
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Phase list (CoasterForce video time; ride proper 0:11 → 3:06 ≈ 175 s)",
+        "line": 72,
+        "claim": "The repository phase list identifies CoasterForce video time as its reference clock."
+      }
+    ]
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.cUURkqyn4Zs",
+    "origin": "This video's own playback timeline",
+    "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "No committed local video artifact or SHA-256 is available.",
+    "No reviewed source-second landmark windows are recorded in this artifact.",
+    "No row, device, camera calibration, or axis mapping is established.",
+    "This source cannot define executable comparison bands."
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.coastertalk.edited.seNR",
+  "source_url": "https://www.youtube.com/watch?v=seNRpi4wP-s",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "title": "Falcon's Flight Review. – World's tallest, fastest & longest roller coaster.",
+    "channel": "CoasterTalk",
+    "duration_seconds": 589.701
+  },
+  "state": "review_pending",
+  "permitted_contributions": [
+    "edited visual landmarks only"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/seNRpi4wP-s-oembed.json",
+    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "video_downloaded": false,
+    "repository_review": [
+      {
+        "document": "docs/TELEMETRY.md",
+        "section": "SOURCE 2 — YouTube: CoasterTalk, \"Falcon's Flight Review\"",
+        "line": 822,
+        "claim": "The reviewed repository source identifies this specific CoasterTalk review."
+      },
+      {
+        "document": "docs/TELEMETRY.md",
+        "section": "Telemetry provenance and caveats",
+        "line": 832,
+        "claim": "The repository review describes the video as edited rather than a continuous POV."
+      },
+      {
+        "document": "docs/TELEMETRY.md",
+        "section": "Telemetry provenance and caveats",
+        "line": 836,
+        "claim": "The repository review identifies two separate ride runs."
+      }
+    ]
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.seNRpi4wP-s",
+    "origin": "This edited review's own playback timeline",
+    "continuity": "No absolute continuous ride timeline, cross-source clock, timestamp mapping, or transfer of values from another review is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "No committed local video artifact or SHA-256 is available.",
+    "No reviewed source-second visual-landmark windows are recorded.",
+    "Edits, b-roll, and multiple ride runs prevent an absolute continuous ride timeline.",
+    "No row, device, sample-rate, or axis mapping is established for this artifact.",
+    "This source cannot define executable comparison bands."
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "fidelity-youtube-oembed@1",
+  "artifact_status": "retrieval_unavailable",
+  "retrieved_on": "2026-08-10",
+  "video_id": "wX7uHKj-Ujc",
+  "source_url": "https://www.youtube.com/watch?v=wX7uHKj-Ujc",
+  "retrieval": {
+    "endpoint": "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=wX7uHKj-Ujc&format=json",
+    "provider_response_received": false,
+    "provider_response": null,
+    "outcome": "No genuine YouTube oEmbed response was captured for this source."
+  },
+  "repository_labels": {
+    "display_label": "Intimidator 305 Pov With G force readings",
+    "channel_label": "Intamindator 305",
+    "exact_provider_title_known": false,
+    "provenance": "docs/TELEMETRY-I305.md lines 3-6"
+  },
+  "note": "Repository labels are discovery aids only and are not represented as provider-returned metadata. No video was downloaded."
+}

@@ -1,0 +1,43 @@
+{
+  "schema_version": "fidelity-rideforcesdb-diagnostic@1",
+  "source_id": "rideforcesdb.tormenta.6369",
+  "recording_id": "6369",
+  "retrieved_on": "2026-08-10",
+  "acquisition": "raw_fetch_unavailable",
+  "raw_retrieval": {
+    "endpoint": "https://rideforcesdb.com/getRec?id=6369",
+    "request_context": "Attempted from the available sandboxed environment.",
+    "response_received": false,
+    "response_body": null,
+    "outcome": "Connection to the raw endpoint was blocked or unavailable in this environment; no response payload was obtained.",
+    "validation": {
+      "is_non_login_non_html_body": false,
+      "is_recording_payload": false,
+      "recording_id_verified": false,
+      "columns_verified": false,
+      "sample_count_verified": false,
+      "monotone_time_verified": false
+    }
+  },
+  "metadata_verification": {
+    "endpoint": "https://rideforcesdb.com/rideInfo?id=6383",
+    "response_received": true,
+    "outcome": "A genuine current Tormenta rideInfo response included the separate recording 6369.",
+    "matched_repository_telemetry": true,
+    "matched_fields": {
+      "ride": "Tormenta Rampaging Run",
+      "author": "Zonies",
+      "seat": "Back right seat",
+      "device_note": "Phone in pocket, might be errors caused by sliding",
+      "quality": 10,
+      "advanced": 0
+    },
+    "repository_anchor": "docs/TELEMETRY.md section 1.2, lines 347-420"
+  },
+  "raw_payload_committed": false,
+  "notes": [
+    "The metadata endpoint above is recorded exactly as retrieved; this diagnostic does not claim that rideInfo?id=6369 was requested.",
+    "No HTTP status, content type, body, columns, sample count, or time sequence is asserted for the unavailable raw response.",
+    "No raw samples were fabricated or reconstructed from the repository's prose or 1 Hz fallback tables."
+  ]
+}

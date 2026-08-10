@@ -1,0 +1,58 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.falcon.cgi.NFV",
+  "source_url": "https://www.youtube.com/watch?v=NFVNGgwZk3c",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "provider_title": null,
+    "provider_channel": null,
+    "repository_display_label": "Falcon's Flight CGI",
+    "repository_channel_label": "AmusementInsider",
+    "repository_duration_seconds": 167.981,
+    "exact_provider_title_known": false
+  },
+  "state": "corroborative",
+  "permitted_contributions": [
+    "model-to-model geometry/order only"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/NFVNGgwZk3c-oembed.json",
+    "metadata_source": "retrieval-unavailable diagnostic with repository labels",
+    "video_downloaded": false,
+    "content_classification": "CGI design-intent rendering; not survey data or measured truth.",
+    "repository_review": [
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "CGI-derived geometry",
+        "line": 137,
+        "claim": "The CGI is a design-intent rendering, not survey data."
+      },
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Giant camelback",
+        "line": 139,
+        "claim": "The repository review uses the CGI for giant-camelback geometry."
+      },
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Where CGI contradicts reality (reality wins)",
+        "line": 169,
+        "claim": "Where CGI contradicts real-ride evidence, reality wins."
+      }
+    ]
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.NFVNGgwZk3c",
+    "origin": "This CGI rendering's own playback timeline",
+    "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "The oEmbed endpoint was unavailable during offline artifact preparation; title and channel are repository-supplied metadata rather than independently re-fetched oEmbed fields.",
+    "No committed local video artifact or SHA-256 is available.",
+    "No repository-reviewed source-second landmark windows are recorded.",
+    "No row, device, camera calibration, or axis mapping is established.",
+    "CGI is model-only corroboration and must never be treated as measured real-world truth or used to define executable comparison bands."
+  ]
+}

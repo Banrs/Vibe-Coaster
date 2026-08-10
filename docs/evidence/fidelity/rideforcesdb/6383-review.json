@@ -1,0 +1,64 @@
+{
+  "schema_version": "fidelity-rideforcesdb-review@1",
+  "source_id": "rideforcesdb.tormenta.6383",
+  "source_url": "https://rideforcesdb.com/getRec?id=6383",
+  "recording_id": "6383",
+  "retrieved_on": "2026-08-10",
+  "state": "corroborative",
+  "acquisition": {
+    "result": "raw_fetch_unavailable",
+    "diagnostic_path": "docs/evidence/fidelity/rideforcesdb/6383-diagnostic.json",
+    "diagnostic_sha256": "65610d2c719f2f9faf90fdcd22d0378d15c58ee8d654a764391016b008532b70",
+    "fallback_citations": [
+      {
+        "document": "docs/TELEMETRY.md",
+        "section_id": "1.2-tormenta-per-element-cross-recording",
+        "line_anchor": "lines 347-423",
+        "columns_used": ["Element (RCDB order)", "t (6383)", "Duration", "Peak vert (6383 / 6369)", "Hold", "Notes"],
+        "source_windows_used": [[7.28, 9.06], [9.84, 13.56], [17.6, 21.16], [22.94, 27.58], [31.8, 42.0], [44.68, 45.62], [46.08, 48.9], [50.94, 53.16], [54.5, 56.24], [59.58, 60.4]]
+      },
+      {
+        "document": "docs/TELEMETRY.md",
+        "section_id": "appendix-b-tormenta-rec-6383-row-2",
+        "line_anchor": "lines 424-511",
+        "columns_used": ["t", "Vmean", "Vmin", "Vmax", "Lmin", "Lmax", "Gmin", "Gmax"],
+        "source_windows_used": [[0.0, 82.0]]
+      }
+    ]
+  },
+  "row_seat": "Row 2, Seat 8, Train 1",
+  "device": "iPhone; exact model unverified",
+  "native_sample_rate_hz": null,
+  "reviewed_corpus_provenance": {
+    "sample_rate_hz": 50.0,
+    "processing": "The committed TELEMETRY review says its RideForcesDB values use an 11-sample (0.22 s) centred moving average and exposes a reviewed 1 Hz summary table.",
+    "scope": "Reviewed-corpus provenance only; no native raw payload is committed, so this record does not independently verify sample cadence."
+  },
+  "mapped_rider_axes": {
+    "basis": "Reviewed TELEMETRY table headings only, not a verified raw-payload schema.",
+    "vertical": "normal_g",
+    "lateral": "lateral_g",
+    "longitudinal": "longitudinal_g"
+  },
+  "processing_chain": ["No raw payload processing was performed for this review record.", "Only exact windows and table columns in acquisition.fallback_citations are used.", "No angle channel is available; inversion identity follows reviewed element order and trace shape."],
+  "excluded_intervals": [],
+  "named_element_order": ["chain lift hill", "285 ft 95-degree drop", "218 ft Immelmann", "179 ft loop", "block brake", "post-block drop", "Immelmann", "cutback", "brakes"],
+  "source_windows": [
+    {"id": "tormenta.drop", "window_s": [7.28, 9.06]},
+    {"id": "tormenta.drop_pullout", "window_s": [9.84, 13.56]},
+    {"id": "tormenta.immelmann_1", "window_s": [17.6, 21.16]},
+    {"id": "tormenta.loop", "window_s": [22.94, 27.58]},
+    {"id": "tormenta.block_brake", "window_s": [31.8, 42.0]},
+    {"id": "tormenta.post_block_drop", "window_s": [44.68, 45.62]},
+    {"id": "tormenta.post_block_pullout", "window_s": [46.08, 48.9]},
+    {"id": "tormenta.immelmann_2", "window_s": [50.94, 53.16]},
+    {"id": "tormenta.cutback", "window_s": [54.5, 56.24]},
+    {"id": "tormenta.brake_bite", "window_s": [59.58, 60.4]}
+  ],
+  "alignment": [],
+  "confidence": "medium-low",
+  "confidence_rationale": "Row 2 and element-order provenance are reviewed, but no raw payload or angle channel is committed and absolute time is not transferable to recording 6369.",
+  "corroborating_source_ids": ["rideforcesdb.tormenta.6369", "youtube.tormenta.forward.AHjk"],
+  "promotion_prerequisites": ["A derived observation must be corroborated across 6383, 6369, and the Tormenta POV.", "Commit and validate a genuine raw payload or content digest and raw axis schema.", "Resolve exact compatible landmark-to-generated alignment; do not transfer 6369 absolute times."],
+  "evidence_gaps": ["No genuine raw payload or raw artifact digest is committed.", "No source-to-generated alignment is adjudicated."]
+}

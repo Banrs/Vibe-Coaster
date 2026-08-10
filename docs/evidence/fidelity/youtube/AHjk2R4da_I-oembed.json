@@ -1,0 +1,20 @@
+{
+  "schema_version": "fidelity-youtube-oembed@1",
+  "artifact_status": "retrieval_unavailable",
+  "retrieved_on": "2026-08-10",
+  "video_id": "AHjk2R4da_I",
+  "source_url": "https://www.youtube.com/watch?v=AHjk2R4da_I",
+  "retrieval": {
+    "endpoint": "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=AHjk2R4da_I&format=json",
+    "provider_response_received": false,
+    "provider_response": null,
+    "outcome": "No genuine YouTube oEmbed response was captured for this source."
+  },
+  "repository_labels": {
+    "display_label": "Tormenta POV",
+    "channel_label": "JWulfCoasters",
+    "exact_provider_title_known": false,
+    "provenance": "docs/RESEARCH.md lines 106-109"
+  },
+  "note": "Repository labels are discovery aids only and are not represented as provider-returned metadata. No video was downloaded."
+}

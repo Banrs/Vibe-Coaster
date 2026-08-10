@@ -1,0 +1,37 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.falcon.sdXGD9kMR7s",
+  "source_url": "https://www.youtube.com/watch?v=sdXGD9kMR7s",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "title": "Falcon's Flight Front Row POV | NEW 600 foot, 155 mph Roller Coaster at Six Flags Qiddiya City",
+    "channel": "Coaster Studios",
+    "duration_seconds": 239.061
+  },
+  "state": "observation_only",
+  "permitted_contributions": [
+    "order",
+    "geometry",
+    "timing landmarks",
+    "feel prompts"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-oembed.json",
+    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "video_downloaded": false,
+    "repository_review": []
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.sdXGD9kMR7s",
+    "origin": "This video's own playback timeline",
+    "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "No committed local video artifact or SHA-256 is available.",
+    "No repository-reviewed source-second landmark windows are recorded.",
+    "No row, device, camera calibration, or axis mapping is established.",
+    "This source cannot define executable comparison bands."
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.i305.overlay.wX7",
+  "source_url": "https://www.youtube.com/watch?v=wX7uHKj-Ujc",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "provider_title": null,
+    "provider_channel": null,
+    "repository_display_label": "Intimidator 305 Pov With G force readings",
+    "repository_channel_label": "Intamindator 305",
+    "repository_duration_seconds": 49.561,
+    "exact_provider_title_known": false
+  },
+  "state": "corroborative",
+  "permitted_contributions": [
+    "vertical/normal-g windows only"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/wX7uHKj-Ujc-oembed.json",
+    "metadata_source": "retrieval-unavailable diagnostic with repository labels",
+    "video_downloaded": false,
+    "repository_review": [
+      {
+        "document": "docs/TELEMETRY-I305.md",
+        "section": "Source & method",
+        "line": 13,
+        "claim": "The overlay is a single signed rider-frame normal (vertical) g trace; no lateral or longitudinal trace is present."
+      },
+      {
+        "document": "docs/TELEMETRY-I305.md",
+        "section": "Source & method",
+        "line": 15,
+        "claim": "Overlay clock equals video time plus 0.21 s; the documented element windows use overlay/ride seconds."
+      },
+      {
+        "document": "docs/TELEMETRY-I305.md",
+        "section": "Source & method",
+        "line": 18,
+        "claim": "Read values are approximately ±0.15 g and times approximately ±0.15 s."
+      }
+    ]
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.wX7uHKj-Ujc",
+    "origin": "This video's overlay/ride timeline",
+    "continuity": "The repository records an overlay-to-video offset, but no cross-source or generated alignment is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "The oEmbed endpoint was unavailable during offline artifact preparation; title and channel are repository-supplied metadata rather than independently re-fetched oEmbed fields.",
+    "No committed local video artifact or SHA-256 is available.",
+    "The documented windows are vertical/normal-g only; lateral and longitudinal axes must not be inferred.",
+    "Value and time readings carry approximately ±0.15 g and ±0.15 s uncertainty, respectively.",
+    "The imagery and g data come from different sources, so element-to-time attribution follows the uploader's synchronization and is not certified.",
+    "This corroborative source cannot define executable comparison bands alone."
+  ]
+}

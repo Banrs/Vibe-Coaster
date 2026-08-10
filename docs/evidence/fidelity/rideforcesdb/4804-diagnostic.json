@@ -1,0 +1,41 @@
+{
+  "schema_version": "fidelity-rideforcesdb-diagnostic@1",
+  "source_id": "rideforcesdb.falcon.4804",
+  "recording_id": "4804",
+  "retrieved_on": "2026-08-10",
+  "acquisition": "raw_fetch_unavailable",
+  "raw_retrieval": {
+    "endpoint": "https://rideforcesdb.com/getRec?id=4804",
+    "request_context": "Genuine request with a browser User-Agent and Referer https://rideforcesdb.com/?id=4804&axes=yzxac.",
+    "response_received": true,
+    "response_body": "false",
+    "outcome": "The endpoint returned the literal JSON-compatible boolean body false, not a recording payload.",
+    "validation": {
+      "is_non_login_non_html_body": true,
+      "is_recording_payload": false,
+      "recording_id_verified": false,
+      "columns_verified": false,
+      "sample_count_verified": false,
+      "monotone_time_verified": false
+    }
+  },
+  "metadata_verification": {
+    "endpoint": "https://rideforcesdb.com/rideInfo?id=4804",
+    "response_received": true,
+    "outcome": "A genuine current rideInfo response identified Falcon's Flight and recording 4804.",
+    "matched_repository_telemetry": true,
+    "matched_fields": {
+      "ride": "Falcon's Flight",
+      "author": "ZakCoaster",
+      "seat": "Row 7, L seat, ? train",
+      "quality": 10,
+      "advanced": 1
+    },
+    "repository_anchor": "docs/TELEMETRY.md section 1.1, lines 52-92"
+  },
+  "raw_payload_committed": false,
+  "notes": [
+    "No raw samples were fabricated or reconstructed from the repository's prose or 1 Hz fallback tables.",
+    "The literal false response is retained as retrieval evidence only; it is not a force trace."
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.falcon.backward.J54WKu2nU6o",
+  "source_url": "https://www.youtube.com/watch?v=J54WKu2nU6o",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "title": "Falcon's Flight BACKWARDS POV | Worlds Tallest, Fastest, Longest Roller Coaster at Six Flags Qiddiya",
+    "channel": "Coaster Studios",
+    "duration_seconds": 240.881
+  },
+  "state": "observation_only",
+  "permitted_contributions": [
+    "order",
+    "geometry",
+    "speed perception",
+    "feel prompts"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/J54WKu2nU6o-oembed.json",
+    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "video_downloaded": false,
+    "repository_review": [
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Falcon's Flight research sources",
+        "line": 64,
+        "claim": "Rear-facing POV with zero obstruction; element order was confirmed as forward-time."
+      }
+    ]
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.J54WKu2nU6o",
+    "origin": "This video's own playback timeline",
+    "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "No committed local video artifact or SHA-256 is available.",
+    "No reviewed source-second landmark windows are recorded.",
+    "No row, device, camera calibration, or axis mapping is established.",
+    "This source cannot define executable comparison bands."
+  ]
+}

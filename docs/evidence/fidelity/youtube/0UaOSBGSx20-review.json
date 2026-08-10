@@ -1,0 +1,34 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.coastertalk.continuous.0Ua",
+  "source_url": "https://www.youtube.com/watch?v=0UaOSBGSx20",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "title": "This is how intense the fastest roller coaster in the world really is.",
+    "channel": "CoasterTalk Source",
+    "duration_seconds": 214.000
+  },
+  "state": "corroborative",
+  "permitted_contributions": [
+    "displayed-channel landmarks; axes remain unknown until reviewed"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/0UaOSBGSx20-oembed.json",
+    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "video_downloaded": false,
+    "repository_review": []
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.0UaOSBGSx20",
+    "origin": "This video's own continuous playback timeline",
+    "continuity": "This timeline remains distinct from the edited seNRpi4wP-s review; no cross-source clock or timestamp mapping is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "No committed local video artifact or SHA-256 is available.",
+    "No reviewed source-second landmark windows are recorded.",
+    "Displayed channels have no reviewed axis mapping, row, device, or sample-rate identification.",
+    "This source cannot define executable comparison bands."
+  ]
+}

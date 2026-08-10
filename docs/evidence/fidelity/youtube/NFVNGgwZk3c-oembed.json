@@ -1,0 +1,20 @@
+{
+  "schema_version": "fidelity-youtube-oembed@1",
+  "artifact_status": "retrieval_unavailable",
+  "retrieved_on": "2026-08-10",
+  "video_id": "NFVNGgwZk3c",
+  "source_url": "https://www.youtube.com/watch?v=NFVNGgwZk3c",
+  "retrieval": {
+    "endpoint": "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=NFVNGgwZk3c&format=json",
+    "provider_response_received": false,
+    "provider_response": null,
+    "outcome": "No genuine YouTube oEmbed response was captured for this source."
+  },
+  "repository_labels": {
+    "display_label": "Falcon's Flight CGI",
+    "channel_label": "AmusementInsider",
+    "exact_provider_title_known": false,
+    "provenance": "docs/RESEARCH.md lines 66 and 137-169"
+  },
+  "note": "Repository labels are discovery aids only and are not represented as provider-returned metadata. No video was downloaded."
+}

@@ -1,0 +1,66 @@
+{
+  "schema_version": "fidelity-youtube-review@1",
+  "source_id": "youtube.tormenta.forward.AHjk",
+  "source_url": "https://www.youtube.com/watch?v=AHjk2R4da_I",
+  "retrieved_on": "2026-08-10",
+  "metadata": {
+    "provider_title": null,
+    "provider_channel": null,
+    "repository_display_label": "Tormenta POV",
+    "repository_channel_label": "JWulfCoasters",
+    "repository_duration_seconds": 137.0,
+    "exact_provider_title_known": false
+  },
+  "state": "observation_only",
+  "permitted_contributions": [
+    "order",
+    "geometry",
+    "timing landmarks",
+    "feel prompts"
+  ],
+  "provenance": {
+    "metadata_artifact": "docs/evidence/fidelity/youtube/AHjk2R4da_I-oembed.json",
+    "metadata_source": "retrieval-unavailable diagnostic with repository labels",
+    "video_downloaded": false,
+    "repository_review": [
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Tormenta — POV analysis",
+        "line": 108,
+        "claim": "JWulfCoasters front-row 4K source; real daytime footage with approximately 0–5% obstruction."
+      },
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Tormenta — POV analysis",
+        "line": 111,
+        "claim": "The reviewed sequence begins with curves to lift, chain lift, high traverse, pitch-over crawl, and a dead-stop hold."
+      },
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Tormenta — POV analysis",
+        "line": 114,
+        "claim": "The reviewed sequence continues through the beyond-vertical drop, Immelmann, vertical loop, cutback, mid-course block brake, second drop, smaller inversions, and brakes."
+      },
+      {
+        "document": "docs/RESEARCH.md",
+        "section": "Tormenta — POV analysis",
+        "line": 119,
+        "claim": "The beyond-vertical attitude during the hold was confirmed visually in the repository review."
+      }
+    ]
+  },
+  "independent_timeline": {
+    "timeline_id": "youtube.AHjk2R4da_I",
+    "origin": "This video's own playback timeline",
+    "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmarks": []
+  },
+  "alignment": [],
+  "evidence_gaps": [
+    "The oEmbed endpoint was unavailable during offline artifact preparation; title and channel are repository-supplied metadata rather than independently re-fetched oEmbed fields.",
+    "No committed local video artifact or SHA-256 is available.",
+    "No reviewed source-second landmark windows are recorded.",
+    "No row, device, camera calibration, or axis mapping is established.",
+    "This observation-only source cannot define executable comparison bands."
+  ]
+}

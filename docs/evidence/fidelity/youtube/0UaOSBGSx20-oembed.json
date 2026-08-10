@@ -1,0 +1,18 @@
+{
+  "schema_version": "fidelity-youtube-oembed@1",
+  "artifact_status": "curated_provider_response_snapshot",
+  "retrieved_on": "2026-08-10",
+  "source_url": "https://www.youtube.com/watch?v=0UaOSBGSx20",
+  "snapshot_note": "Provider fields present in the captured repository snapshot are preserved below. This is curated metadata, not a downloaded video or a byte-for-byte HTTP response.",
+  "title": "This is how intense the fastest roller coaster in the world really is.",
+  "author_name": "CoasterTalk Source",
+  "type": "video",
+  "height": 113,
+  "width": 200,
+  "version": "1.0",
+  "provider_name": "YouTube",
+  "provider_url": "https://www.youtube.com/",
+  "thumbnail_url": "https://i.ytimg.com/vi/0UaOSBGSx20/hqdefault.jpg",
+  "thumbnail_height": 360,
+  "thumbnail_width": 480
+}

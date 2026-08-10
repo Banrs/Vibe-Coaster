@@ -33,7 +33,33 @@ static func run() -> PackedStringArray:
 	_test_element_render_request_filter(artifacts, errors)
 	_test_center_row_alignment_selectors(artifacts, errors)
 	_test_route_sampling(errors)
+	_test_checked_writes(artifacts, errors)
 	return errors
+
+
+## Writes are operational: an unopenable destination is an error, and a landed file is reopened.
+static func _test_checked_writes(artifacts: Script, errors: PackedStringArray) -> void:
+	var unopenable := "Z:/path-that-does-not-exist/audit.json"
+	var failures: Array = Array(artifacts.write_text_checked(unopenable, "{}\n"))
+	_expect(errors, not failures.is_empty(), "failed report write is operationally visible")
+	_expect_contains(errors, failures, "artifact_write", "write failure has a distinct category")
+	var image := Image.create(4, 3, false, Image.FORMAT_RGB8)
+	_expect_contains(errors,
+		Array(artifacts.save_png_checked(image, "Z:/path-that-does-not-exist/frame.png")),
+		"artifact_write", "failed PNG write is operationally visible")
+	var directory := "user://artifact-tests"
+	DirAccess.make_dir_recursive_absolute(directory)
+	_expect(errors, artifacts.write_text_checked("%s/audit.json" % directory, "{\"a\":1}\n").is_empty(),
+		"a verified text write reports no error")
+	_expect(errors, FileAccess.get_file_as_string("%s/audit.json" % directory) == "{\"a\":1}\n",
+		"checked text writes land byte-exact")
+	_expect(errors, artifacts.save_png_checked(image, "%s/frame.png" % directory).is_empty(),
+		"a verified PNG write reports no error")
+	var reopened := Image.new()
+	_expect(errors, reopened.load_png_from_buffer(
+		FileAccess.get_file_as_bytes("%s/frame.png" % directory)) == OK
+		and reopened.get_size() == Vector2i(4, 3),
+		"checked PNG writes reopen at their rendered size")
 
 
 ## The viewer's interpolation is the POV contract: extraction must not move a single sample.

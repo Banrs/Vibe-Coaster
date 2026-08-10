@@ -77,6 +77,28 @@ static func build_report(
 static func canonical_json(value: Variant) -> String:
 	return _CANONICAL_DATA.canonical_json(value)
 
+
+## Every artifact write is verified by reopening it; a failed write is operational, never advisory.
+static func write_text_checked(path: String, content: String) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		errors.append("artifact_write: cannot open '%s': %s" % [
+			path, error_string(FileAccess.get_open_error())])
+		return errors
+	file.store_string(content)
+	file.close()
+	if FileAccess.get_file_as_string(path) != content:
+		errors.append("artifact_write: byte verification failed for '%s'" % path)
+	return errors
+
+
+static func save_png_checked(image: Image, path: String) -> PackedStringArray:
+	var error := image.save_png(path)
+	if error == OK and FileAccess.file_exists(path) and FileAccess.get_file_as_bytes(path).size() > 0:
+		return PackedStringArray()
+	return PackedStringArray(["artifact_write: PNG failed '%s' (%s)" % [path, error_string(error)]])
+
 static func _validate_base_commit(value: Variant, errors: Array[String]) -> void:
 	if typeof(value) != TYPE_STRING:
 		errors.append("artifact_report: legacy_base_commit must be lowercase 40-hex")

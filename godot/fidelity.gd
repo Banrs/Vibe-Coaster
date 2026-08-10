@@ -23,6 +23,8 @@ const METRICS := [
 const HOLD_SECONDS := [0.2, 0.5, 0.8, 1.0, 1.1, 1.4, 2.0, 2.4, 2.78, 3.0, 4.0, 6.8, 12.0]
 const TERRAIN_HUGGING_AGL := 20.0
 const TRANSITION_WINDOW_SECONDS := 0.5
+const GRAVITY_MPS2 := 9.80665
+const CURVATURE_ZERO_EPS := 1e-9
 
 
 ## Largest value a window sustains for `seconds`, signed by `polarity`. This is the same
@@ -112,7 +114,260 @@ static func measure_route(route: Dictionary, row_offsets: Array) -> Dictionary:
 			"flow": _aggregate_flow(measured_beats),
 		},
 		"beats": measured_beats,
+		"reconstruction": reconstruct_channels(route),
 	}
+
+
+## Raw, read-only reconstruction from the generated samples. Geometry is derived from position,
+## while authored curvature and force channels remain separately labelled integrity references.
+static func reconstruct_channels(route: Dictionary) -> Dictionary:
+	var count: int = _validate_reconstruction_input(route)
+	var distances: PackedFloat32Array = route.distances
+	var times: PackedFloat32Array = route.times
+	var positions: PackedVector3Array = route.positions
+
+	var position_by_distance: Dictionary = _quadratic_vector_derivatives(distances, positions)
+	var geometric_tangent := PackedVector3Array()
+	geometric_tangent.resize(count)
+	for index in count:
+		var position_ds: Vector3 = position_by_distance.first[index]
+		assert(position_ds.length_squared() > 0.0)
+		geometric_tangent[index] = position_ds.normalized()
+
+	var tangent_by_distance: Dictionary = _quadratic_vector_derivatives(
+		distances, geometric_tangent
+	)
+	var curvature_vector: PackedVector3Array = tangent_by_distance.first
+	var curvature := PackedFloat32Array()
+	curvature.resize(count)
+	var radius_m: Array = []
+	var radius_unbounded: Array = []
+	for index in count:
+		var tangent: Vector3 = geometric_tangent[index]
+		var raw_curvature: Vector3 = curvature_vector[index]
+		var geometric_curvature: Vector3 = (
+			raw_curvature - tangent * tangent.dot(raw_curvature)
+		)
+		curvature_vector[index] = geometric_curvature
+		curvature[index] = geometric_curvature.length()
+		if curvature[index] <= CURVATURE_ZERO_EPS:
+			radius_m.append(null)
+			radius_unbounded.append(true)
+		else:
+			radius_m.append(1.0 / curvature[index])
+			radius_unbounded.append(false)
+
+	var curvature_vector_derivatives: Dictionary = _quadratic_vector_derivatives(
+		distances, curvature_vector
+	)
+	var curvature_derivatives: Dictionary = _quadratic_float_derivatives(distances, curvature)
+	var authored_curvature_vector := PackedVector3Array(route.curvatures)
+	var authored_curvature := PackedFloat32Array()
+	authored_curvature.resize(count)
+	var geometric_authored_error := PackedVector3Array()
+	geometric_authored_error.resize(count)
+	for index in count:
+		authored_curvature[index] = authored_curvature_vector[index].length()
+		geometric_authored_error[index] = (
+			curvature_vector[index] - authored_curvature_vector[index]
+		)
+	var authored_vector_derivatives: Dictionary = _quadratic_vector_derivatives(
+		distances, authored_curvature_vector
+	)
+	var authored_scalar_derivatives: Dictionary = _quadratic_float_derivatives(
+		distances, authored_curvature
+	)
+
+	var position_by_time: Dictionary = _quadratic_vector_derivatives(times, positions)
+	var inertial_acceleration: PackedVector3Array = position_by_time.second
+	var jerk_derivatives: Dictionary = _quadratic_vector_derivatives(
+		times, inertial_acceleration
+	)
+	var reconstructed_normal := PackedFloat32Array()
+	var reconstructed_lateral := PackedFloat32Array()
+	var reconstructed_longitudinal := PackedFloat32Array()
+	var normal_error := PackedFloat32Array()
+	var lateral_error := PackedFloat32Array()
+	var longitudinal_error := PackedFloat32Array()
+	var force_curvature_vector := PackedVector3Array()
+	var force_authored_error := PackedVector3Array()
+	reconstructed_normal.resize(count)
+	reconstructed_lateral.resize(count)
+	reconstructed_longitudinal.resize(count)
+	normal_error.resize(count)
+	lateral_error.resize(count)
+	longitudinal_error.resize(count)
+	force_curvature_vector.resize(count)
+	force_authored_error.resize(count)
+	var force_error_peak: float = 0.0
+	var gravity: Vector3 = Vector3.DOWN * GRAVITY_MPS2
+	for index in count:
+		var tangent: Vector3 = route.tangents[index]
+		var proper_acceleration: Vector3 = inertial_acceleration[index] - gravity
+		reconstructed_normal[index] = proper_acceleration.dot(route.ups[index]) / GRAVITY_MPS2
+		reconstructed_lateral[index] = proper_acceleration.dot(route.rights[index]) / GRAVITY_MPS2
+		reconstructed_longitudinal[index] = proper_acceleration.dot(tangent) / GRAVITY_MPS2
+		normal_error[index] = reconstructed_normal[index] - route.normal_g[index]
+		lateral_error[index] = reconstructed_lateral[index] - route.lateral_g[index]
+		longitudinal_error[index] = (
+			reconstructed_longitudinal[index] - route.longitudinal_g[index]
+		)
+		force_error_peak = maxf(
+			force_error_peak,
+			maxf(
+				absf(normal_error[index]),
+				maxf(absf(lateral_error[index]), absf(longitudinal_error[index]))
+			)
+		)
+
+		var authored_proper_acceleration: Vector3 = (
+			route.ups[index] * route.normal_g[index]
+			+ route.rights[index] * route.lateral_g[index]
+			+ tangent * route.longitudinal_g[index]
+		) * GRAVITY_MPS2
+		var authored_inertial_acceleration: Vector3 = authored_proper_acceleration + gravity
+		var transverse_acceleration: Vector3 = (
+			authored_inertial_acceleration
+			- tangent * tangent.dot(authored_inertial_acceleration)
+		)
+		var speed: float = route.speeds[index]
+		assert(is_finite(speed) and speed > 0.0)
+		var speed_squared := speed * speed
+		force_curvature_vector[index] = transverse_acceleration / speed_squared
+		force_authored_error[index] = (
+			force_curvature_vector[index] - authored_curvature_vector[index]
+		)
+
+	var roll_derivatives: Dictionary = _quadratic_float_derivatives(times, route.roll_rates)
+	var seam_indices: PackedInt32Array = _reconstruction_seam_indices(route.sections, count)
+	return {
+		"curvature_vector": curvature_vector,
+		"curvature_vector_ds": curvature_vector_derivatives.first,
+		"curvature_vector_d2s": curvature_vector_derivatives.second,
+		"curvature": curvature,
+		"curvature_ds": curvature_derivatives.first,
+		"curvature_d2s": curvature_derivatives.second,
+		"radius_m": radius_m,
+		"radius_unbounded": radius_unbounded,
+		"authored_curvature_vector": authored_curvature_vector,
+		"authored_curvature_vector_ds": authored_vector_derivatives.first,
+		"authored_curvature_vector_d2s": authored_vector_derivatives.second,
+		"authored_curvature": authored_curvature,
+		"authored_curvature_ds": authored_scalar_derivatives.first,
+		"authored_curvature_d2s": authored_scalar_derivatives.second,
+		"geometric_authored_curvature_error_vector": geometric_authored_error,
+		"inertial_acceleration_mps2": inertial_acceleration,
+		"jerk_mps3": jerk_derivatives.first,
+		"reconstructed_normal_g": reconstructed_normal,
+		"reconstructed_lateral_g": reconstructed_lateral,
+		"reconstructed_longitudinal_g": reconstructed_longitudinal,
+		"normal_force_error_g": normal_error,
+		"lateral_force_error_g": lateral_error,
+		"longitudinal_force_error_g": longitudinal_error,
+		"force_error_peak_g": force_error_peak,
+		"force_curvature_vector": force_curvature_vector,
+		"force_authored_curvature_error_vector": force_authored_error,
+		"roll_acceleration_dps2": roll_derivatives.first,
+		"seam_indices": seam_indices,
+		"seam_markers": _reconstruction_seam_markers(seam_indices, route),
+	}
+
+
+static func _validate_reconstruction_input(route: Dictionary) -> int:
+	var count: int = route.positions.size()
+	assert(count >= 3)
+	for key in [
+		"times", "distances", "speeds", "tangents", "ups", "rights", "curvatures",
+		"normal_g", "lateral_g", "longitudinal_g", "roll_rates",
+	]:
+		assert(route[key].size() == count)
+	for index in range(1, count):
+		assert(route.distances[index] > route.distances[index - 1])
+		assert(route.times[index] > route.times[index - 1])
+	return count
+
+
+static func _quadratic_vector_derivatives(
+	coordinates: PackedFloat32Array, values: PackedVector3Array
+) -> Dictionary:
+	var first := PackedVector3Array()
+	var second := PackedVector3Array()
+	first.resize(values.size())
+	second.resize(values.size())
+	for index in values.size():
+		var local: Vector3i = _quadratic_local_indices(index, values.size())
+		var a: int = local.x
+		var b: int = local.y
+		var c: int = local.z
+		var x: float = coordinates[index]
+		var xa: float = coordinates[a]
+		var xb: float = coordinates[b]
+		var xc: float = coordinates[c]
+		var slope_ab: Vector3 = (values[b] - values[a]) / (xb - xa)
+		var slope_bc: Vector3 = (values[c] - values[b]) / (xc - xb)
+		var second_divided_difference: Vector3 = (slope_bc - slope_ab) / (xc - xa)
+		first[index] = slope_ab + second_divided_difference * (2.0 * x - xa - xb)
+		second[index] = second_divided_difference * 2.0
+	return {"first": first, "second": second}
+
+
+static func _quadratic_float_derivatives(
+	coordinates: PackedFloat32Array, values: PackedFloat32Array
+) -> Dictionary:
+	var first := PackedFloat32Array()
+	var second := PackedFloat32Array()
+	first.resize(values.size())
+	second.resize(values.size())
+	for index in values.size():
+		var local: Vector3i = _quadratic_local_indices(index, values.size())
+		var a: int = local.x
+		var b: int = local.y
+		var c: int = local.z
+		var x: float = coordinates[index]
+		var xa: float = coordinates[a]
+		var xb: float = coordinates[b]
+		var xc: float = coordinates[c]
+		var slope_ab: float = (values[b] - values[a]) / (xb - xa)
+		var slope_bc: float = (values[c] - values[b]) / (xc - xb)
+		var second_divided_difference: float = (slope_bc - slope_ab) / (xc - xa)
+		first[index] = slope_ab + second_divided_difference * (2.0 * x - xa - xb)
+		second[index] = second_divided_difference * 2.0
+	return {"first": first, "second": second}
+
+
+static func _quadratic_local_indices(index: int, count: int) -> Vector3i:
+	if index == 0:
+		return Vector3i(0, 1, 2)
+	if index == count - 1:
+		return Vector3i(count - 3, count - 2, count - 1)
+	return Vector3i(index - 1, index, index + 1)
+
+
+static func _reconstruction_seam_indices(sections: Array, count: int) -> PackedInt32Array:
+	var unique: Dictionary = {}
+	for section in sections:
+		var sample_index: int = int(section.start_index)
+		if sample_index > 0 and sample_index < count:
+			unique[sample_index] = true
+	var sorted := PackedInt32Array(unique.keys())
+	sorted.sort()
+	return sorted
+
+
+static func _reconstruction_seam_markers(
+	seam_indices: PackedInt32Array, route: Dictionary
+) -> Array:
+	var markers: Array = []
+	var last: int = route.positions.size() - 1
+	for sample_index in seam_indices:
+		markers.append({
+			"sample_index": sample_index,
+			"time_s": float(route.times[sample_index]),
+			"distance_m": float(route.distances[sample_index]),
+			"window_start_index": maxi(sample_index - 2, 0),
+			"window_end_index": mini(sample_index + 2, last),
+		})
+	return markers
 
 
 static func _beat_definitions(route: Dictionary) -> Array:

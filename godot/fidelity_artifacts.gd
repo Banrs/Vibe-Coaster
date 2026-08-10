@@ -24,6 +24,10 @@ const _ISSUE_TEXT := {
 	9: "Entry-launch speed", 12: "Flats",
 	14: "Multidimensional scaling", 15: "Transition jerk",
 }
+const _SIDE_VIEW_KINDS := [
+	"hill", "immelmann", "loop", "cutback", "twisted_drop",
+	"dive", "wave_turn", "overbank", "turn",
+]
 
 static func build_report(
 	seed_measurements: Variant,
@@ -34,115 +38,173 @@ static func build_report(
 ) -> Dictionary:
 	var errors: Array[String] = []
 	_validate_base_commit(legacy_base_commit, errors)
-	var fleet := _validate_comparison(comparison, errors)
-	var measurement_context := _validate_measurements(seed_measurements, fleet, errors)
-	_validate_counts(generation_counts, fleet, errors)
-	var context := _catalog_context(catalog, measurement_context.get("by_seed", {}), errors)
-	var coverage := _issue_coverage(comparison, context, errors)
+	var comparison_projection := _validate_comparison(comparison, errors)
+	var fleet: Array = comparison_projection.fleet
+	var by_seed := _validate_measurements(seed_measurements, fleet, errors)
+	var counts_projection := _validate_counts(generation_counts, fleet, errors)
+	var catalog_context := _catalog_context(catalog, by_seed, comparison_projection, errors)
+	var pov_map := {
+		"schema_version": "fidelity-pov-map@1", "source_landmarks": catalog_context.source_landmarks,
+		"records": catalog_context.pov_records, "gaps": catalog_context.pov_gaps,
+	}
+	var render_requests := _render_requests(by_seed, pov_map, errors)
+	var catalog_text := _CANONICAL_DATA.canonical_json(catalog)
+	if catalog_text.is_empty():
+		errors.append("artifact_report: catalog canonical data is invalid")
 	if not errors.is_empty():
 		return _invalid(errors)
-	var summaries := []
-	for seed in fleet:
-		summaries.append(measurement_context.summaries[seed])
+
+	var summaries := fleet.map(func(seed: int): return by_seed[seed])
 	var report := {
 		"schema_version": "ride-fidelity-audit@1", "legacy_base_commit": legacy_base_commit,
 		"catalog": {
-			"schema_version": catalog.schema_version, "catalog_version": catalog.catalog_version,
-			"canonical_sha256": catalog.canonical_sha256, "validation_status": "valid",
+			"schema_version": catalog_context.identity.schema_version,
+			"catalog_version": catalog_context.identity.catalog_version,
+			"canonical_sha256": _CANONICAL_DATA.sha256_text(catalog_text), "validation_status": "valid",
 		},
-		"fleet": fleet, "measurement_summaries": summaries,
-		"findings": comparison.findings, "observed_only": comparison.observed_only,
-		"evidence_gaps": comparison.evidence_gaps, "recommendation": comparison.recommendation,
-		"evidence_snapshot": _evidence_snapshot(catalog),
-		"pov_map": _pov_map(catalog, context),
-		"checklist": _checklist(context.prompts),
-		"issue_coverage": coverage,
+		"fleet": comparison_projection.fleet, "generation_counts": counts_projection,
+		"measurement_summaries": summaries, "findings": comparison_projection.findings,
+		"observed_only": comparison_projection.observed_only, "evidence_gaps": comparison_projection.evidence_gaps,
+		"recommendation": comparison_projection.recommendation, "evidence_snapshot": catalog_context.evidence_snapshot,
+		"pov_map": pov_map, "checklist": catalog_context.checklist, "issue_coverage": catalog_context.issue_coverage,
+		"render_requests": render_requests,
 	}
-	report["render_requests"] = _render_requests(measurement_context.by_seed, report.pov_map)
 	if _CANONICAL_DATA.canonical_json(report).is_empty():
 		errors.append("artifact_report: completed report is not canonical JSON data")
 		return _invalid(errors)
 	return report
+
 static func canonical_json(value: Variant) -> String:
 	return _CANONICAL_DATA.canonical_json(value)
+
 static func _validate_base_commit(value: Variant, errors: Array[String]) -> void:
-	if typeof(value) != TYPE_STRING or value.length() != 40:
+	if typeof(value) != TYPE_STRING:
+		errors.append("artifact_report: legacy_base_commit must be lowercase 40-hex")
+		return
+	var commit: String = value
+	if commit.length() != 40:
 		errors.append("artifact_report: legacy_base_commit must be lowercase 40-hex")
 		return
 	for index in range(40):
-		if not "0123456789abcdef".contains(value[index]):
+		if not "0123456789abcdef".contains(commit[index]):
 			errors.append("artifact_report: legacy_base_commit must be lowercase 40-hex")
 			return
-static func _validate_comparison(value: Variant, errors: Array[String]) -> Array:
+
+static func _validate_comparison(value: Variant, errors: Array[String]) -> Dictionary:
+	var projection := {
+		"fleet": [], "findings": [], "observed_only": [],
+		"evidence_gaps": [], "recommendation": {},
+	}
 	if not value is Dictionary:
 		errors.append("artifact_report: comparison must be a Dictionary")
-		return []
+		return projection
+	var comparison: Dictionary = value
 	var keys: Array = value.keys()
 	var expected := _COMPARISON_KEYS.duplicate()
 	keys.sort()
 	expected.sort()
 	if keys != expected:
 		errors.append("artifact_report: comparison must have the exact Task 6 members")
-	var types_are_valid := (
-		value.get("fleet") is Array
-		and value.get("findings") is Array
-		and value.get("observed_only") is Array
-		and value.get("evidence_gaps") is Array
-		and value.get("recommendation") is Dictionary
-	)
-	if not types_are_valid:
+	var fleet_value: Variant = comparison.get("fleet")
+	var findings_value: Variant = comparison.get("findings")
+	var observed_value: Variant = comparison.get("observed_only")
+	var gaps_value: Variant = comparison.get("evidence_gaps")
+	var recommendation_value: Variant = comparison.get("recommendation")
+	if (not fleet_value is Array or not findings_value is Array
+		or not observed_value is Array or not gaps_value is Array
+		or not recommendation_value is Dictionary):
 		errors.append("artifact_report: comparison members have invalid types")
-		return []
-	var fleet: Array = value.fleet
+		return projection
+	projection.findings = findings_value.duplicate(true)
+	projection.observed_only = observed_value.duplicate(true)
+	projection.evidence_gaps = gaps_value.duplicate(true)
+	projection.recommendation = recommendation_value.duplicate(true)
 	var seen := {}
-	for seed in fleet:
-		if typeof(seed) != TYPE_INT:
+	var safe_fleet := []
+	for seed_value in fleet_value:
+		if typeof(seed_value) != TYPE_INT:
 			errors.append("artifact_report: comparison fleet seeds must be integers")
-		elif seen.has(seed):
+		elif seen.has(seed_value):
 			errors.append("artifact_report: comparison fleet seeds must be unique")
 		else:
-			seen[seed] = true
-	if _CANONICAL_DATA.canonical_json(value).is_empty():
+			seen[seed_value] = true
+			safe_fleet.append(seed_value)
+	projection["fleet"] = safe_fleet
+	if _CANONICAL_DATA.canonical_json(projection).is_empty():
 		errors.append("artifact_report: comparison projections must be canonical JSON data")
-	return fleet
+	return projection
+
 static func _validate_measurements(value: Variant, fleet: Array, errors: Array[String]) -> Dictionary:
 	var by_seed := {}
-	var summaries := {}
+	var seen := {}
 	if not value is Array:
 		errors.append("artifact_report: seed_measurements must be an Array")
-		return {"by_seed": by_seed, "summaries": summaries}
-	for item in value:
-		if not item is Dictionary:
+		return by_seed
+	for item_value in value:
+		if not item_value is Dictionary:
 			errors.append("artifact_report: measurement entries must be Dictionaries")
 			continue
+		var item: Dictionary = item_value
+		var entry_error_count := errors.size()
+		var schema_version: Variant = item.get("schema_version")
+		if typeof(schema_version) != TYPE_INT or schema_version not in [1, 2]:
+			errors.append("artifact_report: measurement schema_version must be integer 1 or 2")
 		var seed: Variant = item.get("seed")
 		if typeof(seed) != TYPE_INT:
 			errors.append("artifact_report: measurement seed must be an integer")
 			continue
-		if by_seed.has(seed):
+		if seen.has(seed):
 			errors.append("artifact_report: duplicate measurement seed %s" % seed)
 			continue
-		by_seed[seed] = item
+		seen[seed] = true
+		var length: Variant = item.get("length")
+		var duration: Variant = item.get("duration")
+		if not _finite_number(length) or not _finite_number(duration):
+			errors.append("artifact_report: measurement length and duration must be finite numbers")
+		var dimensions: Variant = item.get("dimensions")
+		var beats: Variant = item.get("beats")
+		if not dimensions is Dictionary:
+			errors.append("artifact_report: measurement dimensions must be a Dictionary")
+		if not beats is Array:
+			errors.append("artifact_report: measurement beats must be an Array")
 		var reconstruction: Variant = item.get("reconstruction")
 		if not reconstruction is Dictionary:
-			errors.append("artifact_report: measurement reconstruction is invalid")
+			errors.append("artifact_report: measurement reconstruction must be a Dictionary")
 			continue
+		var force_peak: Variant = reconstruction.get("force_error_peak_g")
+		if not _finite_number(force_peak):
+			errors.append("artifact_report: measurement force_error_peak_g must be finite numeric")
 		var seams: Variant = reconstruction.get("seam_indices")
 		if not (seams is Array or seams is PackedInt32Array):
-			errors.append("artifact_report: measurement reconstruction is invalid")
+			errors.append("artifact_report: measurement seam_indices must be an Array or PackedInt32Array")
+		if not beats is Array or not dimensions is Dictionary:
+			continue
+		var beat_ids := {}
+		for beat_value in beats:
+			if not beat_value is Dictionary:
+				errors.append("artifact_report: measurement beat must be a Dictionary")
+				continue
+			var beat: Dictionary = beat_value
+			var beat_id := _required_string(beat, "beat_id", "measurement beat", errors)
+			if beat_ids.has(beat_id):
+				errors.append("artifact_report: duplicate measurement beat_id %s" % beat_id)
+				continue
+			if not beat_id.is_empty():
+				beat_ids[beat_id] = true
+			_required_string(beat, "kind", "measurement beat", errors)
+		if errors.size() != entry_error_count:
 			continue
 		var summary := {
-			"schema_version": item.get("schema_version"), "seed": seed,
-			"length": item.get("length"), "duration": item.get("duration"),
-			"dimensions": item.get("dimensions"), "beats": item.get("beats"),
-			"force_error_peak_g": reconstruction.get("force_error_peak_g"),
-			"reconstruction_seam_count": seams.size(),
+			"schema_version": schema_version, "seed": seed,
+			"length": length, "duration": duration,
+			"dimensions": dimensions.duplicate(true), "beats": beats.duplicate(true),
+			"force_error_peak_g": force_peak, "reconstruction_seam_count": seams.size(),
 		}
 		if _CANONICAL_DATA.canonical_json(summary).is_empty():
 			errors.append("artifact_report: measurement summary must contain finite canonical JSON data")
 			continue
-		summaries[seed] = summary
-	var actual_seeds: Array = by_seed.keys()
+		by_seed[seed] = summary
+	var actual_seeds: Array = seen.keys()
 	var expected_seeds := fleet.duplicate()
 	actual_seeds.sort()
 	expected_seeds.sort()
@@ -151,346 +213,429 @@ static func _validate_measurements(value: Variant, fleet: Array, errors: Array[S
 	for seed in _DEEP_SEEDS:
 		if not fleet.has(seed):
 			errors.append("artifact_report: deep seed %d is required" % seed)
-	return {"by_seed": by_seed, "summaries": summaries}
-static func _validate_counts(value: Variant, fleet: Array, errors: Array[String]) -> void:
+	return by_seed
+
+static func _validate_counts(value: Variant, fleet: Array, errors: Array[String]) -> Dictionary:
+	var projection := {}
 	if not value is Dictionary:
 		errors.append("artifact_report: generation_counts must be a Dictionary")
-		return
-	var actual := {}
-	for key in value:
-		if typeof(key) != TYPE_STRING:
+		return projection
+	var counts: Dictionary = value
+	for key_value in counts:
+		if typeof(key_value) != TYPE_STRING:
 			errors.append("artifact_report: generation_counts keys must be Strings")
 			continue
-		actual[key] = true
-		if typeof(value[key]) != TYPE_INT:
+		var key: String = key_value
+		var count: Variant = counts[key]
+		if typeof(count) != TYPE_INT:
 			errors.append("artifact_report: generation_counts values must be integers")
-		elif value[key] != 1:
+		elif count != 1:
 			errors.append("artifact_report: generation_counts must record exactly one generation per seed")
-	var expected := {}
+		else:
+			projection[key] = count
+	var expected_keys := []
 	for seed in fleet:
-		expected[str(seed)] = true
-	var actual_keys: Array = actual.keys()
-	var expected_keys: Array = expected.keys()
+		expected_keys.append(str(seed))
+	var actual_keys: Array = projection.keys()
 	actual_keys.sort()
 	expected_keys.sort()
 	if actual_keys != expected_keys:
 		errors.append("artifact_report: generation_counts keys must exactly match the fleet")
-static func _catalog_context(value: Variant, by_seed: Dictionary, errors: Array[String]) -> Dictionary:
+	return projection
+
+static func _catalog_context(
+	value: Variant, by_seed: Dictionary, comparison: Dictionary, errors: Array[String]
+) -> Dictionary:
 	var context := {
-		"observations": [], "observation_by_id": {}, "targets": [], "prompts": [],
-		"gaps": [], "resolutions": {}, "aligned_sources": {},
+		"identity": {"schema_version": 0, "catalog_version": ""},
+		"evidence_snapshot": [], "source_landmarks": [], "source_times": {},
+		"unaligned_candidates": {}, "pov_records": [], "pov_gaps": [],
+		"checklist": [], "issue_coverage": {},
 	}
+	var checklist_rows := {}
+	for spec in _CHECKLIST_SPECS:
+		checklist_rows[spec[0]] = []
+	var coverage_records := []
+	for issue_id in range(1, 17):
+		coverage_records.append({
+			"issue_id": issue_id, "issue_text": _ISSUE_TEXT.get(issue_id, "Issue %d" % issue_id),
+			"linked_measurement_ids": [], "linked_target_ids": [],
+			"linked_evidence_ids": [], "generated_artifact_paths": [], "state": "evidence-gap",
+		})
 	if not value is Dictionary:
 		errors.append("artifact_report: catalog must be a Dictionary")
 		return context
-	var sources_value: Variant = value.get("sources")
-	var selectors_value: Variant = value.get("selectors")
-	var observations_value: Variant = value.get("observations")
-	var targets_value: Variant = value.get("targets")
-	var prompts_value: Variant = value.get("review_prompts")
-	var gaps_value: Variant = value.get("evidence_gaps")
+	var catalog: Dictionary = value
+	var schema_version: Variant = catalog.get("schema_version")
+	var catalog_version := _required_string(catalog, "catalog_version", "catalog", errors)
+	if typeof(schema_version) != TYPE_INT or schema_version != 2:
+		errors.append("artifact_report: catalog schema_version must be integer 2")
+	else:
+		context.identity = {"schema_version": schema_version, "catalog_version": catalog_version}
+	var sources_value: Variant = catalog.get("sources")
+	var selectors_value: Variant = catalog.get("selectors")
 	if not sources_value is Dictionary or not selectors_value is Dictionary:
 		errors.append("artifact_report: catalog sources and selectors have invalid types")
 		return context
-	if not observations_value is Array or not targets_value is Array:
-		errors.append("artifact_report: catalog comparison links have invalid types")
-		return context
-	if not prompts_value is Array or not gaps_value is Array:
-		errors.append("artifact_report: catalog review links have invalid types")
-		return context
 	var sources: Dictionary = sources_value
 	var selectors: Dictionary = selectors_value
-	var observations: Array = observations_value
-	var targets: Array = targets_value
-	var prompts: Array = prompts_value
-	var gaps: Array = gaps_value
-	context.observations = observations
-	context.targets = targets
-	context.prompts = prompts
-	context.gaps = gaps
-	var observation_by_id := {}
-	context.observation_by_id = observation_by_id
-	for observation in observations:
-		var observation_id := str(observation.get("id", ""))
-		if observation_id.is_empty() or observation_by_id.has(observation_id):
+	for source_id_value in sources:
+		if typeof(source_id_value) != TYPE_STRING:
+			errors.append("artifact_report: catalog source IDs must be nonempty Strings")
+			continue
+		var source_id: String = source_id_value
+		if source_id.is_empty():
+			errors.append("artifact_report: catalog source IDs must be nonempty Strings")
+			continue
+		_source_projection(source_id, sources[source_id], context, errors)
+	context.evidence_snapshot.sort_custom(
+		func(a: Dictionary, b: Dictionary) -> bool: return a.source_id < b.source_id)
+	context.source_landmarks.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if a.source_id != b.source_id:
+			return a.source_id < b.source_id
+		return a.landmark_id < b.landmark_id)
+
+	var finding_targets := {}
+	for finding_value in comparison.findings:
+		if finding_value is Dictionary:
+			var target_id: Variant = finding_value.get("target_id")
+			if typeof(target_id) == TYPE_STRING:
+				finding_targets[target_id] = true
+	var observation_sources := {}
+	var compiled_anchors := {}
+	for observation in _dictionary_records(catalog.get("observations"), "catalog observations", errors):
+		var entry_errors := errors.size()
+		var observation_id := _required_string(observation, "id", "observation", errors)
+		var source_id := _required_string(observation, "source_id", "observation", errors)
+		var selector_id := _required_string(observation, "semantic_selector_id", "observation", errors)
+		if observation_id.is_empty() or observation_sources.has(observation_id):
 			errors.append("artifact_report: observation IDs must be nonempty and unique")
-		else:
-			observation_by_id[observation_id] = observation
-		var source_id := str(observation.get("source_id", ""))
-		var selector_id := str(observation.get("semantic_selector_id", ""))
+			continue
+		observation_sources[observation_id] = source_id
 		if not sources.has(source_id):
 			errors.append("artifact_report: observation source_id does not resolve: %s" % source_id)
 		if not selectors.has(selector_id):
 			errors.append("artifact_report: observation semantic_selector_id does not resolve: %s" % selector_id)
-		if observation.has("alignment") and observation.alignment is Dictionary:
-			context.aligned_sources[source_id] = true
-			if sources.has(source_id) and selectors.has(selector_id) and by_seed.has(42):
-				_resolve_alignment(observation, sources[source_id], selectors[selector_id],
-					by_seed[42], context.resolutions, errors)
-	for target in targets:
-		if not observation_by_id.has(str(target.get("observation_id", ""))):
-			errors.append("artifact_report: target observation_id does not resolve: %s" % target.get("id", ""))
-		if not selectors.has(str(target.get("semantic_selector_id", ""))):
-			errors.append("artifact_report: target semantic_selector_id does not resolve: %s" % target.get("id", ""))
-		_validate_issues(target, "target", errors)
-	var category_ids := {}
-	for prompt in prompts:
-		for source_id in prompt.source_ids:
-			if not sources.has(source_id):
-				errors.append("artifact_report: prompt source_id does not resolve: %s" % source_id)
-		_validate_issues(prompt, "prompt", errors)
-		var category_id: String = _CATEGORY_IDS.get(str(prompt.get("category", "")), "")
+		if not observation.has("alignment"):
+			continue
+		var alignment_value: Variant = observation.get("alignment")
+		if not alignment_value is Dictionary:
+			errors.append("artifact_report: observation alignment must be a Dictionary")
+			continue
+		var alignment: Dictionary = alignment_value
+		var landmark_id := _required_string(alignment, "source_landmark_id", "alignment", errors)
+		var method := _required_string(alignment, "method", "alignment", errors)
+		var row_compatibility := _required_string(alignment, "row_compatibility", "alignment", errors)
+		var uncertainty: Variant = alignment.get("uncertainty_s")
+		if not _finite_number(uncertainty):
+			errors.append("artifact_report: alignment uncertainty_s must be finite numeric")
+		var generated_anchor: Variant = alignment.get("generated_anchor")
+		if not generated_anchor is Dictionary:
+			errors.append("artifact_report: alignment generated_anchor must be a Dictionary")
+		var landmark_key := "%s/%s" % [source_id, landmark_id]
+		if not context.source_times.has(landmark_key):
+			errors.append("artifact_report: source_landmark_id does not resolve: %s" % landmark_id)
+		if selectors.has(selector_id) and not compiled_anchors.has(selector_id):
+			var selector_value: Variant = selectors[selector_id]
+			if not selector_value is Dictionary:
+				errors.append("artifact_report: selector records must be Dictionaries")
+			else:
+				var selector: Dictionary = selector_value
+				var anchor_value: Variant = selector.get("compiled_anchor")
+				if not anchor_value is Dictionary:
+					errors.append("artifact_report: selector compiled anchor must be a Dictionary")
+				else:
+					var anchor: Dictionary = anchor_value
+					var story_slot := _required_string(anchor, "story_slot_id", "compiled anchor", errors)
+					var window_role := _required_string(anchor, "window_role", "compiled anchor", errors)
+					if not story_slot.is_empty() and not window_role.is_empty():
+						compiled_anchors[selector_id] = {
+							"story_slot_id": story_slot, "window_role": window_role,
+						}
+		if errors.size() != entry_errors or not by_seed.has(42) or not compiled_anchors.has(selector_id):
+			continue
+		var resolution := _center_row_resolution(by_seed[42], compiled_anchors[selector_id], errors)
+		if resolution.is_empty():
+			continue
+		var generated_time := (float(resolution.window_start_s) + float(resolution.window_end_s)) * 0.5
+		context.pov_records.append({
+			"source_id": source_id, "source_landmark_id": landmark_id,
+			"source_time": context.source_times[landmark_key], "observation_id": observation_id,
+			"semantic_selector_id": selector_id, "alignment_method": method,
+			"uncertainty_s": uncertainty, "row_compatibility": row_compatibility,
+			"generated_seed": 42, "generated_anchor": generated_anchor.duplicate(true),
+			"generated_beat_id": resolution.beat_id, "generated_time_s": generated_time,
+			"generated_window_s": [resolution.window_start_s, resolution.window_end_s],
+			"generated_pov_path": "review/seed-42/pov/%s.png" % resolution.beat_id,
+		})
+		context.unaligned_candidates.erase(source_id)
+
+	for target in _dictionary_records(catalog.get("targets"), "catalog targets", errors):
+		var target_id := _required_string(target, "id", "target", errors)
+		var observation_id := _required_string(target, "observation_id", "target", errors)
+		var selector_id := _required_string(target, "semantic_selector_id", "target", errors)
+		var issues := _validated_issues(target.get("issues"), "target", errors)
+		if not observation_sources.has(observation_id):
+			errors.append("artifact_report: target observation_id does not resolve: %s" % target_id)
+		if not selectors.has(selector_id):
+			errors.append("artifact_report: target semantic_selector_id does not resolve: %s" % target_id)
+		if not finding_targets.has(target_id) or not observation_sources.has(observation_id):
+			continue
+		for issue_id in issues:
+			var record: Dictionary = coverage_records[issue_id - 1]
+			record.state = "measured"
+			record.linked_measurement_ids.append("seed-42")
+			record.linked_target_ids.append(target_id)
+			record.linked_evidence_ids.append_array([observation_id, observation_sources[observation_id]])
+			record.generated_artifact_paths.append("review/seed-42/channels.png")
+
+	for prompt in _dictionary_records(catalog.get("review_prompts"), "catalog review_prompts", errors):
+		var prompt_id := _required_string(prompt, "id", "prompt", errors)
+		var category := _required_string(prompt, "category", "prompt", errors)
+		var prompt_text := _required_string(prompt, "prompt", "prompt", errors)
+		var source_ids := _validated_source_ids(prompt.get("source_ids"), "prompt", sources, errors)
+		var issues := _validated_issues(prompt.get("issues"), "prompt", errors)
+		var category_id: String = _CATEGORY_IDS.get(category, "")
 		if category_id.is_empty():
 			errors.append("artifact_report: prompt has unknown checklist category")
 		else:
-			category_ids[category_id] = true
-	for gap in gaps:
-		for source_id in gap.source_ids:
-			if not sources.has(source_id):
-				errors.append("artifact_report: gap source_id does not resolve: %s" % source_id)
-		_validate_issues(gap, "gap", errors)
+			checklist_rows[category_id].append({
+				"id": prompt_id, "prompt": prompt_text,
+				"evidence_ids": _sorted_unique(source_ids),
+				"generated_artifact_paths": ["review/seed-42/channels.png"],
+			})
+		for issue_id in issues:
+			var record: Dictionary = coverage_records[issue_id - 1]
+			if record.state == "measured":
+				continue
+			record.state = "review-prompt"
+			record.linked_evidence_ids.append_array([prompt_id] + source_ids)
+			record.generated_artifact_paths.append("review/seed-42/channels.png")
+
+	for gap in _dictionary_records(catalog.get("evidence_gaps"), "catalog evidence_gaps", errors):
+		var gap_id := _required_string(gap, "id", "gap", errors)
+		_validated_source_ids(gap.get("source_ids"), "gap", sources, errors)
+		for issue_id in _validated_issues(gap.get("issues"), "gap", errors):
+			var record: Dictionary = coverage_records[issue_id - 1]
+			if record.state == "evidence-gap":
+				record.linked_evidence_ids.append(gap_id)
+
 	for spec in _CHECKLIST_SPECS:
-		if not category_ids.has(spec[0]):
+		var rows: Array = checklist_rows[spec[0]]
+		if rows.is_empty():
 			errors.append("artifact_report: checklist category %s is missing" % spec[0])
-	for source_id in sources:
-		var seen_landmarks := {}
-		for landmark in sources[source_id].get("windows", []):
-			var landmark_id := str(landmark.get("id", ""))
-			if landmark_id.is_empty() or seen_landmarks.has(landmark_id):
-				errors.append("artifact_report: source landmark IDs must be nonempty and unique")
-			seen_landmarks[landmark_id] = true
-			if _source_time(landmark).is_empty():
-				errors.append("artifact_report: source landmark has invalid tagged time")
-	return context
-static func _validate_issues(record: Dictionary, label: String, errors: Array[String]) -> void:
-	var issues: Variant = record.get("issues")
-	if not issues is Array:
-		errors.append("artifact_report: %s issues must be an Array" % label)
-		return
-	for issue_id in issues:
-		if typeof(issue_id) != TYPE_INT or issue_id < 1 or issue_id > 16:
-			errors.append("artifact_report: %s issue ID must be an integer from 1 through 16" % label)
-static func _resolve_alignment(
-	observation: Dictionary,
-	source: Dictionary,
-	selector: Dictionary,
-	measurement: Dictionary,
-	resolutions: Dictionary,
-	errors: Array[String]
-) -> void:
-	var alignment: Dictionary = observation.alignment
-	var landmark_id := str(alignment.get("source_landmark_id", ""))
-	var landmark_found := false
-	for landmark in source.get("windows", []):
-		if landmark is Dictionary and str(landmark.get("id", "")) == landmark_id:
-			landmark_found = true
-			break
-	if not landmark_found:
-		errors.append("artifact_report: source_landmark_id does not resolve: %s" % landmark_id)
-	var anchor: Dictionary = selector.compiled_anchor
-	var row_selector: Dictionary = alignment.generated_row_selector
-	var matches := []
-	for beat in measurement.get("beats", []):
-		if not beat is Dictionary:
-			continue
-		if beat.get("story_slot_id") != anchor.get("story_slot_id"):
-			continue
-		if beat.get("window_role") != anchor.get("window_role"):
-			continue
-		for row in beat.get("rows", []):
-			if row is Dictionary and row.get("row_id") == row_selector.get("row_id"):
-				matches.append({"beat": beat, "row": row})
-	if matches.size() != 1:
-		errors.append("artifact_report: aligned observation must resolve exactly one center row")
-		return
-	resolutions[str(observation.get("id", ""))] = matches[0]
-static func _source_time(landmark: Dictionary) -> Dictionary:
-	if landmark.has("time_s") == landmark.has("window_s"):
-		return {}
-	if landmark.has("time_s"):
-		return {"kind": "point", "time_s": landmark.time_s} if _finite_number(landmark.time_s) else {}
-	var window: Variant = landmark.window_s
-	if not window is Array or window.size() != 2:
-		return {}
-	return {"kind": "window", "window_s": window} if (
-		_finite_number(window[0]) and _finite_number(window[1])) else {}
-static func _finite_number(value: Variant) -> bool:
-	return typeof(value) == TYPE_INT or (typeof(value) == TYPE_FLOAT and is_finite(float(value)))
-static func _evidence_snapshot(catalog: Dictionary) -> Array:
-	var output := []
-	var source_ids: Array = catalog.sources.keys()
-	source_ids.sort()
-	for source_id in source_ids:
-		var source: Dictionary = catalog.sources[source_id]
-		var snapshot := {"source_id": source_id, "state": source.get("state")}
-		if source.has("acquisition"):
-			snapshot["acquisition"] = source.acquisition
-		for stem in _PAIR_STEMS:
-			var path_key := "%s_path" % stem
-			if source.has(path_key):
-				snapshot[path_key] = source[path_key]
-				snapshot["%s_sha256" % stem] = source.get("%s_sha256" % stem)
-		if source.has("fallback_citations"):
-			snapshot["fallback_citations"] = source.fallback_citations
-		output.append(snapshot)
-	return output
-static func _pov_map(catalog: Dictionary, context: Dictionary) -> Dictionary:
-	var landmarks := []
-	var landmark_by_key := {}
-	var gaps := []
-	for source_id in catalog.sources:
-		var source: Dictionary = catalog.sources[source_id]
-		var landmark_ids := []
-		for landmark in source.get("windows", []):
-			var row := {
-				"source_id": source_id, "landmark_id": landmark.id,
-				"source_time": _source_time(landmark),
-			}
-			landmarks.append(row)
-			landmark_ids.append(str(landmark.id))
-			landmark_by_key["%s/%s" % [source_id, landmark.id]] = landmark
-		if str(source_id).begins_with("youtube.") and not landmark_ids.is_empty():
-			if not context.aligned_sources.has(source_id):
-				landmark_ids.sort()
-				gaps.append({
-					"id": "%s/alignment-not-present" % source_id, "source_id": source_id,
-					"reason": "alignment-not-present", "source_landmark_ids": landmark_ids,
-				})
-	landmarks.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		if a.source_id != b.source_id:
-			return a.source_id < b.source_id
-		return a.landmark_id < b.landmark_id)
-	var records := []
-	for observation in context.observations:
-		var observation_id := str(observation.get("id", ""))
-		if not observation.has("alignment") or not context.resolutions.has(observation_id):
-			continue
-		var alignment: Dictionary = observation.alignment
-		var source_id := str(observation.source_id)
-		var landmark_id := str(alignment.source_landmark_id)
-		var resolved: Dictionary = context.resolutions[observation_id]
-		var beat: Dictionary = resolved.beat
-		var row: Dictionary = resolved.row
-		records.append({
-			"source_id": source_id, "source_landmark_id": landmark_id,
-			"source_time": _source_time(landmark_by_key["%s/%s" % [source_id, landmark_id]]),
-			"observation_id": observation_id, "semantic_selector_id": observation.semantic_selector_id,
-			"alignment_method": alignment.get("method"), "uncertainty_s": alignment.get("uncertainty_s"),
-			"row_compatibility": alignment.get("row_compatibility"), "generated_seed": 42,
-			"generated_anchor": alignment.get("generated_anchor"), "generated_beat_id": beat.beat_id,
-			"generated_window_s": [row.window_start_s, row.window_end_s],
-			"generated_pov_path": "review/seed-42/pov/%s.png" % beat.beat_id,
-		})
-	records.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.id < b.id)
+		context.checklist.append({"id": spec[0], "title": spec[1], "prompts": rows})
+	for record in coverage_records:
+		for field in ["linked_measurement_ids", "linked_target_ids",
+			"linked_evidence_ids", "generated_artifact_paths"]:
+			record[field] = _sorted_unique(record[field])
+		if record.linked_evidence_ids.is_empty() and record.generated_artifact_paths.is_empty():
+			errors.append("artifact_report: issue %d has no traceability links" % record.issue_id)
+	context.issue_coverage = {"schema_version": "fidelity-issue-coverage@1", "records": coverage_records}
+	context.pov_records.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if a.source_id != b.source_id:
 			return a.source_id < b.source_id
 		if a.source_landmark_id != b.source_landmark_id:
 			return a.source_landmark_id < b.source_landmark_id
 		return a.observation_id < b.observation_id)
-	gaps.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.id < b.id)
-	return {"schema_version": "fidelity-pov-map@1", "source_landmarks": landmarks,
-		"records": records, "gaps": gaps}
-static func _checklist(prompts: Array) -> Array:
-	var by_category := {}
-	for spec in _CHECKLIST_SPECS:
-		by_category[spec[0]] = []
-	for prompt in prompts:
-		var category_id: String = _CATEGORY_IDS.get(str(prompt.category), "")
-		if not category_id.is_empty():
-			by_category[category_id].append({
-				"id": prompt.id, "prompt": prompt.prompt,
-				"evidence_ids": _sorted_unique(prompt.source_ids),
-				"generated_artifact_paths": ["review/seed-42/channels.png"],
-			})
+	context.pov_gaps = context.unaligned_candidates.values()
+	context.pov_gaps.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.id < b.id)
+	return context
+
+static func _required_string(record: Dictionary, key: String, label: String, errors: Array[String]) -> String:
+	var value: Variant = record.get(key)
+	if typeof(value) == TYPE_STRING:
+		var text: String = value
+		if not text.is_empty():
+			return text
+	errors.append("artifact_report: %s %s must be a nonempty String" % [label, key])
+	return ""
+
+static func _dictionary_records(value: Variant, label: String, errors: Array[String]) -> Array:
 	var output := []
-	for spec in _CHECKLIST_SPECS:
-		var rows: Array = by_category[spec[0]]
-		rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.id < b.id)
-		output.append({"id": spec[0], "title": spec[1], "prompts": rows})
-	return output
-static func _issue_coverage(
-	comparison: Variant,
-	context: Dictionary,
-	errors: Array[String]
-) -> Dictionary:
-	var records := []
-	if not comparison is Dictionary:
-		return {"schema_version": "fidelity-issue-coverage@1", "records": records}
-	var finding_targets := {}
-	if comparison.get("findings") is Array:
-		for finding in comparison.findings:
-			if finding is Dictionary:
-				finding_targets[str(finding.get("target_id", ""))] = true
-	for issue_id in range(1, 17):
-		var measured_measurements := []
-		var measured_targets := []
-		var measured_evidence := []
-		var measured_artifacts := []
-		for target in context.targets:
-			if issue_id not in target.get("issues", []):
-				continue
-			var target_id := str(target.get("id", ""))
-			if not finding_targets.has(target_id):
-				continue
-			measured_measurements.append("seed-42")
-			measured_targets.append(target_id)
-			var observation_id := str(target.get("observation_id", ""))
-			measured_evidence.append(observation_id)
-			if context.observation_by_id.has(observation_id):
-				measured_evidence.append(str(context.observation_by_id[observation_id].source_id))
-			measured_artifacts.append("review/seed-42/channels.png")
-		var prompt_evidence := []
-		var prompt_artifacts := []
-		for prompt in context.prompts:
-			if issue_id in prompt.get("issues", []):
-				prompt_evidence.append(str(prompt.id))
-				prompt_evidence.append_array(prompt.get("source_ids", []))
-				prompt_artifacts.append("review/seed-42/channels.png")
-		var gap_evidence := []
-		for gap in context.gaps:
-			if issue_id in gap.get("issues", []):
-				gap_evidence.append(str(gap.id))
-		if measured_targets.is_empty() and prompt_evidence.is_empty() and gap_evidence.is_empty():
-			errors.append("artifact_report: issue %d has no traceability links" % issue_id)
-		var record := {
-			"issue_id": issue_id, "issue_text": _ISSUE_TEXT.get(issue_id, "Issue %d" % issue_id),
-			"linked_measurement_ids": [], "linked_target_ids": [],
-			"linked_evidence_ids": [], "generated_artifact_paths": [],
-			"state": "evidence-gap",
-		}
-		if not measured_targets.is_empty():
-			record.state = "measured"
-			record.linked_measurement_ids = _sorted_unique(measured_measurements)
-			record.linked_target_ids = _sorted_unique(measured_targets)
-			record.linked_evidence_ids = _sorted_unique(measured_evidence)
-			record.generated_artifact_paths = _sorted_unique(measured_artifacts)
-		elif not prompt_evidence.is_empty():
-			record.state = "review-prompt"
-			record.linked_evidence_ids = _sorted_unique(prompt_evidence)
-			record.generated_artifact_paths = _sorted_unique(prompt_artifacts)
+	if not value is Array:
+		errors.append("artifact_report: %s must be an Array" % label)
+		return output
+	for record_value in value:
+		if not record_value is Dictionary:
+			errors.append("artifact_report: %s entries must be Dictionaries" % label)
 		else:
-			record.linked_evidence_ids = _sorted_unique(gap_evidence)
-		records.append(record)
-	return {"schema_version": "fidelity-issue-coverage@1", "records": records}
-static func _render_requests(by_seed: Dictionary, pov_map: Dictionary) -> Array:
-	var by_path := {}
+			output.append(record_value)
+	return output
+
+static func _validated_source_ids(
+	value: Variant, label: String, sources: Dictionary, errors: Array[String]
+) -> Array:
+	var output := []
+	if not value is Array:
+		errors.append("artifact_report: %s source_ids must be an Array" % label)
+		return output
+	for source_id_value in value:
+		if typeof(source_id_value) != TYPE_STRING:
+			errors.append("artifact_report: %s source_ids must contain Strings" % label)
+			continue
+		var source_id: String = source_id_value
+		output.append(source_id)
+		if not sources.has(source_id):
+			errors.append("artifact_report: %s source_id does not resolve: %s" % [label, source_id])
+	return output
+
+static func _validated_issues(value: Variant, label: String, errors: Array[String]) -> Array:
+	var output := []
+	if not value is Array:
+		errors.append("artifact_report: %s issues must be an Array" % label)
+		return output
+	for issue_id in value:
+		if typeof(issue_id) != TYPE_INT or issue_id < 1 or issue_id > 16:
+			errors.append("artifact_report: %s issue ID must be an integer from 1 through 16" % label)
+		else:
+			output.append(issue_id)
+	return output
+
+static func _source_projection(
+	source_id: String, value: Variant, context: Dictionary, errors: Array[String]
+) -> void:
+	if not value is Dictionary:
+		errors.append("artifact_report: source records must be Dictionaries")
+		return
+	var source: Dictionary = value
+	var snapshot := {"source_id": source_id, "state": _required_string(source, "state", "source", errors)}
+	if source.has("acquisition"):
+		snapshot["acquisition"] = _required_string(source, "acquisition", "source", errors)
+	for stem in _PAIR_STEMS:
+		var path_key := "%s_path" % stem
+		if source.has(path_key):
+			snapshot[path_key] = _required_string(source, path_key, "source", errors)
+			var hash_key := "%s_sha256" % stem
+			snapshot[hash_key] = _required_string(source, hash_key, "source", errors)
+	if source.has("fallback_citations"):
+		var citations: Variant = source.get("fallback_citations")
+		if not citations is Array:
+			errors.append("artifact_report: source fallback_citations must be an Array")
+		else:
+			snapshot["fallback_citations"] = citations.duplicate(true)
+	context.evidence_snapshot.append(snapshot)
+	var landmark_ids := []
+	var windows: Variant = source.get("windows")
+	if not windows is Array:
+		errors.append("artifact_report: source windows must be an Array")
+		return
+	var seen := {}
+	for landmark_value in windows:
+		if not landmark_value is Dictionary:
+			errors.append("artifact_report: source window entries must be Dictionaries")
+			continue
+		var landmark: Dictionary = landmark_value
+		var landmark_id := _required_string(landmark, "id", "source landmark", errors)
+		if landmark_id.is_empty() or seen.has(landmark_id):
+			errors.append("artifact_report: source landmark IDs must be nonempty and unique")
+			continue
+		seen[landmark_id] = true
+		var source_time := _source_time(landmark)
+		if source_time.is_empty():
+			errors.append("artifact_report: source landmark has invalid tagged time")
+			continue
+		landmark_ids.append(landmark_id)
+		context.source_landmarks.append({
+			"source_id": source_id, "landmark_id": landmark_id, "source_time": source_time,
+		})
+		context.source_times["%s/%s" % [source_id, landmark_id]] = source_time
+	if source_id.begins_with("youtube.") and not landmark_ids.is_empty():
+		landmark_ids.sort()
+		context.unaligned_candidates[source_id] = {
+			"id": "%s/alignment-not-present" % source_id, "source_id": source_id,
+			"reason": "alignment-not-present", "source_landmark_ids": landmark_ids,
+		}
+
+static func _center_row_resolution(measurement: Dictionary, anchor: Dictionary, errors: Array[String]) -> Dictionary:
+	var matches := []
+	var duration: Variant = measurement.duration
+	var beats: Array = measurement.beats
+	for beat in beats:
+		if beat.get("story_slot_id") != anchor.get("story_slot_id"):
+			continue
+		if beat.get("window_role") != anchor.get("window_role"):
+			continue
+		var rows_value: Variant = beat.get("rows")
+		if not rows_value is Array:
+			errors.append("artifact_report: measurement beat rows must be an Array")
+			continue
+		for row_value in rows_value:
+			if not row_value is Dictionary:
+				errors.append("artifact_report: measurement row must be a Dictionary")
+				continue
+			var row: Dictionary = row_value
+			var offset: Variant = row.get("offset")
+			if not _finite_number(offset):
+				errors.append("artifact_report: measurement row offset must be finite numeric")
+				continue
+			if absf(float(offset)) > 0.000001:
+				continue
+			var window_start: Variant = row.get("window_start_s")
+			var window_end: Variant = row.get("window_end_s")
+			if not _finite_number(window_start) or not _finite_number(window_end):
+				errors.append("artifact_report: measurement row window must be finite numeric")
+				continue
+			if float(window_start) < 0.0 or float(window_start) >= float(window_end) or float(window_end) > float(duration):
+				errors.append("artifact_report: measurement row window must be ordered within duration")
+				continue
+			matches.append({
+				"beat_id": beat.get("beat_id"), "window_start_s": window_start, "window_end_s": window_end,
+			})
+	if matches.size() != 1:
+		errors.append("artifact_report: aligned observation must resolve exactly one center row")
+		return {}
+	return matches[0]
+
+static func _source_time(landmark: Dictionary) -> Dictionary:
+	if landmark.has("time_s") == landmark.has("window_s"):
+		return {}
+	if landmark.has("time_s"):
+		var time: Variant = landmark.get("time_s")
+		return {"kind": "point", "time_s": time} if _finite_number(time) else {}
+	var window: Variant = landmark.get("window_s")
+	if (not window is Array or window.size() != 2
+		or not _finite_number(window[0]) or not _finite_number(window[1])):
+		return {}
+	return {"kind": "window", "window_s": [window[0], window[1]]}
+
+static func _finite_number(value: Variant) -> bool:
+	return typeof(value) == TYPE_INT or (typeof(value) == TYPE_FLOAT and is_finite(float(value)))
+
+static func _render_requests(
+	by_seed: Dictionary, pov_map: Dictionary, errors: Array[String]
+) -> Array:
+	var candidates: Array[Dictionary] = []
 	for seed in _DEEP_SEEDS:
 		for kind in ["channels", "elevation", "top"]:
 			var path := "review/seed-%d/%s.png" % [seed, kind]
-			by_path[path] = {"path": path, "seed": seed, "artifact_kind": kind}
-	for beat in by_seed[42].beats:
-		var path := "review/seed-42/elements/%s.png" % beat.beat_id
-		by_path[path] = {"path": path, "seed": 42, "artifact_kind": "element", "beat_id": beat.beat_id}
+			candidates.append({"path": path, "seed": seed, "artifact_kind": kind})
+	if by_seed.has(42):
+		var seed_42: Dictionary = by_seed[42]
+		for beat in seed_42.beats:
+			if beat.kind not in _SIDE_VIEW_KINDS:
+				continue
+			var path := "review/seed-42/elements/%s.png" % beat.beat_id
+			candidates.append({
+				"path": path, "seed": 42, "artifact_kind": "element", "beat_id": beat.beat_id,
+			})
 	for record in pov_map.records:
 		var path: String = record.generated_pov_path
-		by_path[path] = {"path": path, "seed": 42, "artifact_kind": "pov",
-			"beat_id": record.generated_beat_id}
-	var paths: Array = by_path.keys()
-	paths.sort()
-	var output := []
-	for path in paths:
-		output.append(by_path[path])
+		candidates.append({
+			"path": path, "seed": 42, "artifact_kind": "pov",
+			"beat_id": record.generated_beat_id, "generated_time_s": record.generated_time_s,
+		})
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.path < b.path)
+	var output: Array[Dictionary] = []
+	for candidate in candidates:
+		if not output.is_empty() and output[-1].path == candidate.path:
+			if output[-1] != candidate:
+				errors.append("artifact_report: render request path has conflicting payload: %s" % candidate.path)
+			continue
+		output.append(candidate)
 	return output
+
 static func _sorted_unique(values: Array) -> Array:
 	var seen := {}
 	for value in values:
@@ -498,8 +643,10 @@ static func _sorted_unique(values: Array) -> Array:
 	var output: Array = seen.keys()
 	output.sort()
 	return output
+
 static func _invalid(errors: Array[String]) -> Dictionary:
 	return {"status": "invalid-input", "errors": _sorted_unique(errors)}
+
 static func markdown(report: Dictionary) -> String:
 	var lines := PackedStringArray(["# Ride fidelity audit", "", "## Identity"])
 	lines.append("Schema: %s" % report.schema_version)
@@ -584,15 +731,18 @@ static func markdown(report: Dictionary) -> String:
 			request.path, request.artifact_kind, request.seed, request.get("beat_id", ""),
 		]))
 	return "\n".join(lines) + "\n"
+
 static func _source_time_text(source_time: Dictionary) -> String:
 	if source_time.kind == "point":
 		return "point %s" % _f6(source_time.time_s)
 	return "window %s–%s" % [_f6(source_time.window_s[0]), _f6(source_time.window_s[1])]
+
 static func _f6(value: Variant) -> String:
 	var number := float(value)
 	if number == 0.0:
 		number = 0.0
 	return "%.6f" % number
+
 static func _markdown_row(cells: Array) -> String:
 	var text := PackedStringArray()
 	for cell in cells:

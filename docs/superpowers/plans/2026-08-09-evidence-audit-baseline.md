@@ -69,7 +69,7 @@ RideFidelity.measure_route(route: Dictionary, row_offsets: Array) -> Dictionary
 RideFidelity.compare_fleet(seed_measurements: Array, catalog: Dictionary) -> Dictionary
 CanonicalData.canonical_json(value: Variant) -> String
 CanonicalData.sha256_text(value: String) -> String
-RideFidelityArtifacts.build_report(seed_measurements: Array, comparison: Dictionary, catalog: Dictionary, legacy_base_commit: String) -> Dictionary
+RideFidelityArtifacts.build_report(seed_measurements: Array, comparison: Dictionary, catalog: Dictionary, legacy_base_commit: String, generation_counts: Dictionary) -> Dictionary
 RideFidelityArtifacts.canonical_json(value: Variant) -> String # delegate only
 RideFidelityArtifacts.markdown(report: Dictionary) -> String
 RideFidelityArtifacts.write_pack(output_dir: String, report: Dictionary, routes_by_seed: Dictionary) -> PackedStringArray
@@ -184,7 +184,15 @@ rideforcesdb.tormenta.6369                https://rideforcesdb.com/getRec?id=636
 
 State semantics are executable rules: `review_pending` means identified/acquired but not sufficiently reviewed; `observation_only` permits only its manifest-listed observations and prompts but no band; `corroborative` may support another aligned source but cannot define a band alone; `executable` requires artifact/digest, exact window, axis/row mapping, transform, confidence rationale, and required corroboration. Promotion cannot expand a source beyond `permitted_contributions` or `permitted_axes` without a reviewed manifest version change.
 
-Align these four visual timelines independently: `J54WKu2nU6o` real backwards POV (`observation_only`), `sdXGD9kMR7s` real front-row POV (`observation_only`), `0UaOSBGSx20` continuous CoasterTalk Source landmarks (`corroborative`, unknown row/device/sample rate preserved), and `poco8rOnW18` NoLimits2 simulation (`corroborative` model-to-model only, never measured truth). Never merge their URLs/timelines. The table fixes every other source's state and limits. If identity, row, device, or timing cannot be established, retain `review_pending`; only a qualifying observation becomes `executable`.
+Review these four visual timelines independently and retain only source-local point landmarks:
+`J54WKu2nU6o` real backwards POV (`observation_only`), `sdXGD9kMR7s` real front-row POV
+(`observation_only`), `0UaOSBGSx20` continuous CoasterTalk Source landmarks (`corroborative`,
+unknown row/device/sample rate preserved), and `poco8rOnW18` NoLimits2 simulation
+(`corroborative` model-to-model only, never measured truth). No source-to-generated alignment or
+aligned observation is approved in this baseline; keep the alignment arrays empty. Never merge
+their URLs, timeline origins, landmarks, or clocks. The table fixes every other source's state and
+limits. If identity, row, device, or timing cannot be established, retain `review_pending`; only a
+future qualifying observation may become `executable` through a separately reviewed promotion.
 
 - [ ] **Step 2: Capture reproducible YouTube metadata artifacts without downloading video**
 
@@ -210,7 +218,7 @@ foreach ($id in $timelineIds) {
 ffmpeg -hide_banner -loglevel error -ss 00:01:54.500 -i 'out/evidence-work/video/sdXGD9kMR7s.mp4' -frames:v 1 'out/evidence-work/frames/sdXGD9kMR7s-114.5.png'
 ```
 
-Use `ffprobe` for duration/stream metadata and repeat `ffmpeg -ss` only at reviewed landmarks. Commit no downloaded media, frames, audio, thumbnails, cookies, or sessions. Commit one `<video-id>-review.json` per URL containing metadata, exact timestamps/windows, landmark descriptions, local source SHA-256 when available, and state; a hash does not make a video trace executable. Every source-to-generated mapping has a structured `alignment` object with `source_landmark_id`, `generated_anchor.semantic_selector_id`, `method`, `uncertainty_s`, `row_compatibility`, and `rationale`. Edited or discontinuous timelines use landmark-to-landmark methods rather than invented absolute ride time. Missing fields yield an evidence gap, never an inferred mapping.
+Use `ffprobe` for duration/stream metadata and repeat `ffmpeg -ss` only at reviewed landmarks. Commit no downloaded media, frames, audio, thumbnails, cookies, or sessions. Commit one `<video-id>-review.json` per URL containing metadata, exact timestamps/windows, landmark descriptions, local source SHA-256 when available, and state; a hash does not make a video trace executable. This baseline approves no source-to-generated mapping. Any future mapping must carry a reviewed structured `alignment` object with `source_landmark_id`, `generated_anchor.semantic_selector_id`, `method`, `uncertainty_s`, `row_compatibility`, and `rationale`. Edited or discontinuous timelines could use only landmark-to-landmark methods, never invented absolute ride time. Missing fields yield an evidence gap, never an inferred mapping.
 
 - [ ] **Step 4: Establish a RideForcesDB session, then attempt genuine raw acquisition**
 
@@ -249,7 +257,7 @@ Each record must include `acquisition` (`raw` or `raw_fetch_unavailable`), exact
 Record these mandatory adjudications:
 
 - the continuous `0UaOSBGSx20` and edited `seNRpi4wP-s` videos remain distinct;
-- `J54WKu2nU6o`, `sdXGD9kMR7s`, `0UaOSBGSx20`, and `poco8rOnW18` retain independent timeline origins and explicit landmark-to-landmark alignment records;
+- `J54WKu2nU6o`, `sdXGD9kMR7s`, `0UaOSBGSx20`, and `poco8rOnW18` retain independent timeline origins and source-local point landmarks; no source-to-generated alignment or aligned observation is approved, so their alignment arrays remain empty;
 - `poco8rOnW18` is NoLimits2 simulation and remains corroborative model-to-model evidence only;
 - no unknown-rate video becomes a dense trace;
 - 4804 does not independently define executable bands;
@@ -780,6 +788,90 @@ git add godot/fidelity.gd godot/fidelity_tests.gd
 git commit -m "feat: compare deterministic fidelity fleet"
 ```
 
+### Required checkpoint between Tasks 6 and 7: commit the reviewed live POV landmarks
+
+This is a separate TDD slice because it shares `fidelity_tests.gd` with Task 6. Modify only the four
+YouTube `*-review.json` files for `J54WKu2nU6o`, `sdXGD9kMR7s`, `poco8rOnW18`, and
+`0UaOSBGSx20`; `docs/evidence/fidelity/source-manifest.json`;
+`docs/evidence/fidelity/catalog-review.md`; `godot/fidelity_references.gd`; and
+`godot/fidelity_tests.gd`. Preserve every source state and permission ceiling, empty permitted axes
+and mappings, null sample rates, empty alignments/selectors/observations/targets, independent source
+clocks, and the absence of any duration scaling or generated mapping. Do not change runtime,
+generator, viewer, verifier, or CI behavior.
+
+- [ ] **Step 1: Commit and push focused RED regressions before changing evidence data**
+
+Require exact ordered landmark IDs and source-local `time_s` values in each review file and its
+catalog-window mirror:
+
+```text
+J54: j54.station_dispatch=0.07, j54.park_straight=29.99, j54.park_bank=59.07,
+     j54.rocky_descent=89.18, j54.elevated_crest=120.71, j54.steep_segment=139.36,
+     j54.park_return=159.43, j54.support_passage=179.50, j54.station_return=219.65
+sdX: sdx.station_dispatch=0.07, sdx.park_straight=28.93, sdx.park_bank=58.81,
+     sdx.rock_face_pitch=88.87, sdx.cliff_edge=118.94, sdx.elevated_crest=138.86,
+     sdx.low_terrain_turn=158.97, sdx.park_run=178.88, sdx.station_return=218.91
+poco: poco.opening=0.10, poco.park_element=43.63, poco.desert_curve=88.56,
+      poco.elevated_arch=133.76, poco.supported_grade=148.74, poco.low_return=163.71,
+      poco.virtual_pov_start=170.69, poco.steep_ascent=178.69, poco.rocky_ascent=223.89,
+      poco.modeled_hill=268.82, poco.park_return=314.02
+0Ua: 0ua.station_dispatch=0.06, 0ua.park_straight=25.25, 0ua.park_hill_turn=49.171226,
+     0ua.cliff_approach=74.18, 0ua.high_terrain_turn=100.45, 0ua.cliff_descent=124.37,
+     0ua.fast_park_return=149.39, 0ua.compact_park_descent=174.40,
+     0ua.station_return=204.44
+```
+
+Also require exact durations/publish dates `(240.881, 2026-01-05)`,
+`(239.061, 2026-01-01)`, `(328.521, 2023-06-04)`, and `(213.541, 2026-04-14)` in that
+source order; the reviewed built/rear-facing, built/front-row-view, NoLimits2-precreation/mixed, and
+built/leading-view classifications with conservative obstruction/mount caveats; matching final
+review hashes; and exact non-promotion invariants. Tests must fail on the stale committed catalog.
+
+- [ ] **Step 2: Transcribe only the reviewed sparse evidence and prompts**
+
+Keep schema `fidelity-youtube-review@1`. Add the reviewed metadata, source-local live-review
+provenance, view classification, and exact point landmarks. Every landmark is exactly
+`{id, time_s, description, provenance, rendered_readouts}` with provenance
+`live-player-currentTime-readback`. Commit numeric readouts only for these three sign-reviewed
+uploader labels, without a mapped rider axis:
+
+```json
+{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]}
+{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]}
+{"label":"Long.","display_value":-0.58,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[-0.58,-0.57]}
+```
+
+They belong respectively to `0ua.park_hill_turn`, `0ua.fast_park_return`, and
+`0ua.compact_park_descent`. Record the uploader sensor/edit/sampling caveats; do not commit the
+unre-reviewed adjacent `Vert.` or `Lat.` values. Update the four review SHA-256 values in the
+manifest and catalog, bump the catalog version once, mirror the point windows, replace stale
+"metadata only" claims, and update the adjudication log.
+
+Add exactly two unscored prompts: `review.coastertalk_overlay_spot_checks`, category `ride feel`,
+sources `[youtube.coastertalk.continuous.0Ua]`, issues `[3,10,13,15,16]`; and
+`review.terrain_clearance`, category `terrain/clearance`, sources
+`[youtube.coastertalk.continuous.0Ua,youtube.falcon.backward.J54WKu2nU6o,youtube.falcon.sdXGD9kMR7s]`,
+issues `[6,8,12]`. Their prose must explicitly forbid treating the spot checks as a calibrated trace
+or band and forbid proportional alignment of independent video clocks or inference of an AGL band.
+
+- [ ] **Step 3: Push GREEN and verify through GitHub Actions**
+
+Catalog and artifact validation must pass; all four exact landmark sets, three negative readouts,
+metadata/classifications/hashes, and empty executable collections must pass. Import, existing smoke
+and seed sweep, and viewer must remain green. Never run local Godot.
+
+- [ ] **Step 4: Commit the evidence refresh**
+
+```powershell
+git add docs/evidence/fidelity/youtube/J54WKu2nU6o-review.json `
+  docs/evidence/fidelity/youtube/sdXGD9kMR7s-review.json `
+  docs/evidence/fidelity/youtube/poco8rOnW18-review.json `
+  docs/evidence/fidelity/youtube/0UaOSBGSx20-review.json `
+  docs/evidence/fidelity/source-manifest.json docs/evidence/fidelity/catalog-review.md `
+  godot/fidelity_references.gd godot/fidelity_tests.gd
+git commit -m "docs: record reviewed POV landmarks"
+```
+
 ### Task 7: Build deterministic reports and checked diagnostic artifacts
 
 **Files:**
@@ -790,8 +882,22 @@ git commit -m "feat: compare deterministic fidelity fleet"
 - Modify: `godot/smoke.gd`
 
 **Interfaces:**
-- Consumes: measured legacy route dictionaries, comparison, schema-v2 catalog, pinned `legacy_base_commit`, existing inspector rendering behavior.
+- Consumes: measured legacy route dictionaries, comparison, schema-v2 catalog, pinned `legacy_base_commit`, externally observed `generation_counts`, existing inspector rendering behavior.
 - Produces: one narrow `CanonicalData` serializer/hash utility, `ride-fidelity-audit@1`, `fidelity-artifact-manifest@1`, `fidelity-pov-map@1`, and `fidelity-issue-coverage@1` reports, plus the checked audit/POV/PNG pack under `INSPECT_OUT`.
+
+`build_report` never infers generation work from measurements. Its fifth argument is the counter
+dictionary collected by Task 8's build spy. It must have only `String` keys, with a key set exactly
+equal to the report fleet mapped through `str(seed)`, and every value must have integer type and
+value `1`. Reject rather than coerce non-string keys, missing or extra keys, and non-integer `1`
+values. Synthetic Task 7 fixtures supply that exact shape; Task 8 passes
+`_run_audit(...).generation_counts` unchanged.
+
+Execute Task 7 as three sequential reviewed TDD slices. Task 7A owns canonical serialization and
+complete pure report construction, including POV mappings/gaps, checklist, issue coverage, render
+requests, and deterministic text. Task 7B owns CPU rendering, beat/span resolution, checked text/PNG
+pack writes, and manifest-last assembly from reopened bytes. Task 7C owns inspector delegation and
+smoke registration. These slices must not introduce renderer injection or partial report/manifest
+contracts merely to manufacture an intermediate GREEN state.
 
 - [ ] **Step 1: Create the SceneTree runner and add canonical JSON/Markdown ordering tests**
 
@@ -913,11 +1019,31 @@ Keep side/profile, top, elevation, and the existing speed/normal/lateral/pitch/r
 
 - [ ] **Step 8: Add synchronized POV mappings and generated POV frames**
 
-`pov-map.json` carries `schema_version: "fidelity-pov-map@1"` and is built only from validated observation `alignment` objects. It links source ID, source landmark/timestamp/window, alignment method/uncertainty/row compatibility, source observation ID, generated seed, generated anchor/stable beat ID/time/window, and relative generated-POV PNG. `pov-map.md` presents the same data. Render generated POV frames from the route frame and generic track/terrain inspection layer; do not embed source-video frames. Missing or incompatible alignment fields produce explicit evidence gaps and no apparently precise mapping.
+`pov-map.json` carries `schema_version: "fidelity-pov-map@1"`. Successful records come only from
+validated observation `alignment` objects and link source ID, source landmark, alignment
+method/uncertainty/row compatibility, observation and selector IDs, generated seed, generated
+anchor/stable beat ID/window, and relative generated-POV PNG. Source time is a tagged union that
+preserves exactly one catalog form: `{"kind":"point","time_s":...}` or
+`{"kind":"window","window_s":[...]}`; never turn a point into an invented interval or rescale a
+source window. Every YouTube source with declared landmarks but no aligned observation emits one
+source-level `alignment-not-present` gap, carrying no invented observation, selector, generated
+timestamp, or PNG request. Observation-driven gaps remain distinct. Sort landmarks and gaps by
+stable IDs. `pov-map.md` presents the same data. Render generated POV frames from the route frame
+and generic track/terrain inspection layer; do not embed source-video frames.
 
 - [ ] **Step 9: Add the unscored review checklist and complete issue 1–16 traceability**
 
-Write explicit checklist sections for shaping, feel, speed perception, terrain/clearance, and support overlap. Each prompt links evidence IDs and generated artifacts but carries no numeric score. Emit one ordered issue-coverage record for every integer ID 1 through 16, with issue text, linked measurement/target/evidence IDs, generated artifact paths, and exactly one top-level state of `measured`, `review-prompt`, or `evidence-gap`. A record may link many findings, but each issue ID appears once and none may be omitted. Add a failing test for missing, duplicate, out-of-range, or unlinked issue records, including direct fixtures for entry-launch speed (9), flats (12), multidimensional scaling (14), and transition jerk (15).
+Write exactly five ordered checklist sections for shaping, feel, speed perception,
+terrain/clearance, and support overlap. Every prompt is catalog-owned: map catalog category
+`terrain/clearance` to checklist ID `terrain-clearance` just as the other four reviewed categories
+map to their checklist IDs; do not invent a fixed implementation prompt. Each category must receive
+at least one catalog prompt, and each prompt links evidence IDs and generated artifacts but carries
+no numeric score. Emit one ordered issue-coverage record for every integer ID 1 through 16, with
+issue text, linked measurement/target/evidence IDs, generated artifact paths, and exactly one
+top-level state of `measured`, `review-prompt`, or `evidence-gap`. A record may link many findings,
+but each issue ID appears once and none may be omitted. Add a failing test for missing, duplicate,
+out-of-range, or unlinked issue records, including direct fixtures for entry-launch speed (9),
+flats (12), multidimensional scaling (14), and transition jerk (15).
 
 - [ ] **Step 10: Register the now-green artifact suite and run both focused and smoke gates**
 
@@ -1072,7 +1198,7 @@ Document the portable command from Task 8, `INSPECT_OUT`, the fixed fleet order,
 
 - [ ] **Step 2: Update `CLAUDE.md` architecture notes without claiming the legacy ride is correct**
 
-State that `_inspect.gd` preserves the existing diagnostic images and now adds reconstructed longitudinal/curvature/radius/roll-acceleration/jerk channels, offline evidence overlays, POV mappings, and checked writes. Keep the approved FVD-first design authoritative.
+State that `_inspect.gd` preserves the existing diagnostic images and now adds reconstructed longitudinal/curvature/radius/roll-acceleration/jerk channels, offline evidence overlays, POV mappings, and checked writes. Keep the approved force-informed hybrid design authoritative: FVD is preferred where it gives superior rider-dynamics control, not forced onto layout, terrain, closure, or exact-geometry work better solved by another physically coherent method.
 
 - [ ] **Step 3: Update open-issues audit and promotion guidance**
 

@@ -6,7 +6,8 @@
   "metadata": {
     "title": "Falcon's Flight Front Row POV | NEW 600 foot, 155 mph Roller Coaster at Six Flags Qiddiya City",
     "channel": "Coaster Studios",
-    "duration_seconds": 239.061
+    "duration_seconds": null,
+    "duration_provenance": "YouTube oEmbed does not provide duration; no retained duration artifact is available."
   },
   "state": "observation_only",
   "permitted_contributions": [
@@ -17,7 +18,7 @@
   ],
   "provenance": {
     "metadata_artifact": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-oembed.json",
-    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
     "repository_review": []
   },
@@ -25,9 +26,11 @@
     "timeline_id": "youtube.sdXGD9kMR7s",
     "origin": "This video's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmark_review_status": "No exact source-second landmark has been visually recaptured or retained.",
     "landmarks": []
   },
   "alignment": [],
+  "alignment_status": "No source landmark is mapped to a generated selector.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
     "No repository-reviewed source-second landmark windows are recorded.",

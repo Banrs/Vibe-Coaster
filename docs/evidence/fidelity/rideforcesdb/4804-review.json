@@ -8,7 +8,7 @@
   "acquisition": {
     "result": "raw_fetch_unavailable",
     "diagnostic_path": "docs/evidence/fidelity/rideforcesdb/4804-diagnostic.json",
-    "diagnostic_sha256": "6589bb8e7a8b02bdc2a179a707da37ce5c5a85a3b9dd0942a1d8cbe8779dae10",
+    "diagnostic_sha256": "13684a1489457596253369e3850486774b1acd812f7f24f84c1f9ba8ffb0aa99",
     "fallback_citations": [
       {
         "document": "docs/TELEMETRY.md",
@@ -27,12 +27,14 @@
     "processing": "The committed TELEMETRY review says its RideForcesDB values use an 11-sample (0.22 s) centred moving average.",
     "scope": "Reviewed-corpus provenance only; no native raw payload is committed, so this record does not independently verify sample cadence or perform filtering."
   },
-  "mapped_rider_axes": {
-    "basis": "Reviewed TELEMETRY table headings only, not a verified raw-payload schema.",
+  "reviewed_table_column_semantics": {
+    "basis": "Reviewed TELEMETRY table headings only; this is not a verified raw-axis or device-to-rider mapping.",
     "vertical": "normal_g",
     "lateral": "lateral_g",
     "longitudinal": "longitudinal_g"
   },
+  "raw_axis_mapping": null,
+  "device_to_rider_mapping": "unverified wrist orientation; RideForcesDB rotation warning retained",
   "processing_chain": [
     "No raw payload processing was performed for this review record.",
     "Only the exact repository-reviewed windows cited in acquisition.fallback_citations may be referenced.",
@@ -58,7 +60,8 @@
   "alignment": [],
   "confidence": "low",
   "confidence_rationale": "RideForcesDB flags the wrist recording unreliable, no raw payload is committed, and this is the sole database recording for the ride.",
-  "corroborating_source_ids": ["youtube.coastertalk.edited.seNR"],
+  "corroborating_source_ids": [],
+  "identity_support_source_ids": ["youtube.coastertalk.edited.seNR"],
   "promotion_prerequisites": [
     "4804 cannot define an executable band alone.",
     "Commit and validate a genuine raw payload or content digest, exact source window, raw axis schema, row/device mapping, and processing chain.",

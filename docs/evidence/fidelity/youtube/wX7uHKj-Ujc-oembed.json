@@ -13,6 +13,7 @@
   "repository_labels": {
     "display_label": "Intimidator 305 Pov With G force readings",
     "channel_label": "Intamindator 305",
+    "duration_seconds": 49.56,
     "exact_provider_title_known": false,
     "provenance": "docs/TELEMETRY-I305.md lines 3-6"
   },

@@ -13,6 +13,7 @@
   "repository_labels": {
     "display_label": "Tormenta POV",
     "channel_label": "JWulfCoasters",
+    "duration_seconds": 137.0,
     "exact_provider_title_known": false,
     "provenance": "docs/RESEARCH.md lines 106-109"
   },

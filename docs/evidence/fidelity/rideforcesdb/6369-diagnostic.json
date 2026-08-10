@@ -19,11 +19,27 @@
       "monotone_time_verified": false
     }
   },
+  "session_bootstrap": {
+    "endpoint": "https://rideforcesdb.com/?id=6369&axes=yzxac",
+    "attempted": true,
+    "outcome": "Connection was blocked or unavailable in this environment; no session response or cookie was obtained."
+  },
+  "csv_retrieval": {
+    "endpoint": "https://rideforcesdb.com/download?id=6369&ftype=csv",
+    "attempted": true,
+    "response_received": false,
+    "http_status": null,
+    "content_type": null,
+    "is_csv_payload": false,
+    "outcome": "Connection was blocked or unavailable in this environment; no CSV response was obtained."
+  },
   "metadata_verification": {
     "endpoint": "https://rideforcesdb.com/rideInfo?id=6383",
     "response_received": true,
+    "response_artifact_path": "docs/evidence/fidelity/rideforcesdb/6383-ride-info.json",
+    "response_artifact_sha256": "95ce0416f6cc0790c5fd5b07ba7472d240f8b17cbc06d6da6f8821b43eabda61",
     "outcome": "A genuine current Tormenta rideInfo response included the separate recording 6369.",
-    "matched_repository_telemetry": true,
+    "matched_repository_telemetry": false,
     "matched_fields": {
       "ride": "Tormenta Rampaging Run",
       "author": "Zonies",
@@ -31,6 +47,12 @@
       "device_note": "Phone in pocket, might be errors caused by sliding",
       "quality": 10,
       "advanced": 0
+    },
+    "repository_disagreement": {
+      "field": "author",
+      "provider_value": "Zonies",
+      "repository_value": "(RFDB Web Client)",
+      "repository_anchor": "docs/TELEMETRY.md line 365"
     },
     "repository_anchor": "docs/TELEMETRY.md section 1.2, lines 347-420"
   },

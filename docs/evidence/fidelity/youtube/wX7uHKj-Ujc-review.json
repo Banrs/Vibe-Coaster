@@ -8,10 +8,11 @@
     "provider_channel": null,
     "repository_display_label": "Intimidator 305 Pov With G force readings",
     "repository_channel_label": "Intamindator 305",
-    "repository_duration_seconds": 49.561,
+    "repository_duration_seconds": 49.56,
+    "duration_provenance": "docs/TELEMETRY-I305.md lines 5-6",
     "exact_provider_title_known": false
   },
-  "state": "corroborative",
+  "state": "review_pending",
   "permitted_contributions": [
     "vertical/normal-g windows only"
   ],
@@ -35,7 +36,7 @@
       {
         "document": "docs/TELEMETRY-I305.md",
         "section": "Source & method",
-        "line": 18,
+        "line": 21,
         "claim": "Read values are approximately ±0.15 g and times approximately ±0.15 s."
       }
     ]
@@ -44,15 +45,33 @@
     "timeline_id": "youtube.wX7uHKj-Ujc",
     "origin": "This video's overlay/ride timeline",
     "continuity": "The repository records an overlay-to-video offset, but no cross-source or generated alignment is asserted.",
-    "landmarks": []
+    "landmarks": [
+      {
+        "id": "i305.first_banked_turn",
+        "window_s": [8.7, 12.7],
+        "axis": "normal_g",
+        "description": "Repository-reviewed overlay window for the first large banked turn; imagery-to-trace identity remains uploader-synchronized.",
+        "provenance": "docs/TELEMETRY-I305.md lines 41-47",
+        "uncertainty_s": 0.15
+      },
+      {
+        "id": "i305.ejector_hill_1",
+        "window_s": [15.4, 18.2],
+        "axis": "normal_g",
+        "description": "Repository-reviewed overlay window for the first ejector hill.",
+        "provenance": "docs/TELEMETRY-I305.md line 48",
+        "uncertainty_s": 0.15
+      }
+    ]
   },
   "alignment": [],
+  "alignment_status": "Reviewed normal-g windows are not mapped to generated selectors; imagery synchronization remains uploader-attributed.",
   "evidence_gaps": [
     "The oEmbed endpoint was unavailable during offline artifact preparation; title and channel are repository-supplied metadata rather than independently re-fetched oEmbed fields.",
     "No committed local video artifact or SHA-256 is available.",
     "The documented windows are vertical/normal-g only; lateral and longitudinal axes must not be inferred.",
     "Value and time readings carry approximately ±0.15 g and ±0.15 s uncertainty, respectively.",
     "The imagery and g data come from different sources, so element-to-time attribution follows the uploader's synchronization and is not certified.",
-    "This corroborative source cannot define executable comparison bands alone."
+    "Retrieval remains review-pending; the reviewed overlay windows cannot define executable comparison bands alone."
   ]
 }

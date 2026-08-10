@@ -6,7 +6,8 @@
   "metadata": {
     "title": "Falcon's Flight BACKWARDS POV | Worlds Tallest, Fastest, Longest Roller Coaster at Six Flags Qiddiya",
     "channel": "Coaster Studios",
-    "duration_seconds": 240.881
+    "duration_seconds": 240.9,
+    "duration_provenance": "docs/RESEARCH.md line 64"
   },
   "state": "observation_only",
   "permitted_contributions": [
@@ -17,7 +18,7 @@
   ],
   "provenance": {
     "metadata_artifact": "docs/evidence/fidelity/youtube/J54WKu2nU6o-oembed.json",
-    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
     "repository_review": [
       {
@@ -32,9 +33,11 @@
     "timeline_id": "youtube.J54WKu2nU6o",
     "origin": "This video's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmark_review_status": "No exact source-second landmark has been visually recaptured or retained.",
     "landmarks": []
   },
   "alignment": [],
+  "alignment_status": "The backwards POV confirms order only; no source landmark is mapped to a generated selector.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
     "No reviewed source-second landmark windows are recorded.",

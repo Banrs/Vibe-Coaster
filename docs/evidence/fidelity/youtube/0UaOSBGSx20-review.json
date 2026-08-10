@@ -6,7 +6,8 @@
   "metadata": {
     "title": "This is how intense the fastest roller coaster in the world really is.",
     "channel": "CoasterTalk Source",
-    "duration_seconds": 214.000
+    "duration_seconds": null,
+    "duration_provenance": "YouTube oEmbed does not provide duration; no retained duration artifact is available."
   },
   "state": "corroborative",
   "permitted_contributions": [
@@ -14,7 +15,7 @@
   ],
   "provenance": {
     "metadata_artifact": "docs/evidence/fidelity/youtube/0UaOSBGSx20-oembed.json",
-    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
     "repository_review": []
   },
@@ -22,9 +23,11 @@
     "timeline_id": "youtube.0UaOSBGSx20",
     "origin": "This video's own continuous playback timeline",
     "continuity": "This timeline remains distinct from the edited seNRpi4wP-s review; no cross-source clock or timestamp mapping is asserted.",
+    "landmark_review_status": "No source-second landmark has been visually recaptured or retained.",
     "landmarks": []
   },
   "alignment": [],
+  "alignment_status": "No landmark-to-generated mapping exists; displayed axes remain unknown.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
     "No reviewed source-second landmark windows are recorded.",

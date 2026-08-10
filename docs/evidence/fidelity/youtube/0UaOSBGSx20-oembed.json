@@ -1,18 +1,1 @@
-{
-  "schema_version": "fidelity-youtube-oembed@1",
-  "artifact_status": "curated_provider_response_snapshot",
-  "retrieved_on": "2026-08-10",
-  "source_url": "https://www.youtube.com/watch?v=0UaOSBGSx20",
-  "snapshot_note": "Provider fields present in the captured repository snapshot are preserved below. This is curated metadata, not a downloaded video or a byte-for-byte HTTP response.",
-  "title": "This is how intense the fastest roller coaster in the world really is.",
-  "author_name": "CoasterTalk Source",
-  "type": "video",
-  "height": 113,
-  "width": 200,
-  "version": "1.0",
-  "provider_name": "YouTube",
-  "provider_url": "https://www.youtube.com/",
-  "thumbnail_url": "https://i.ytimg.com/vi/0UaOSBGSx20/hqdefault.jpg",
-  "thumbnail_height": 360,
-  "thumbnail_width": 480
-}
+{"title":"This is how intense the fastest roller coaster in the world really is.","author_name":"CoasterTalk Source","author_url":"https://www.youtube.com/@CoasterTalkSource","type":"video","height":113,"width":200,"version":"1.0","provider_name":"YouTube","provider_url":"https://www.youtube.com/","thumbnail_height":360,"thumbnail_width":480,"thumbnail_url":"https://i.ytimg.com/vi/0UaOSBGSx20/hqdefault.jpg","html":"\u003ciframe width=\u0022200\u0022 height=\u0022113\u0022 src=\u0022https://www.youtube.com/embed/0UaOSBGSx20?feature=oembed\u0022 frameborder=\u00220\u0022 allow=\u0022accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share\u0022 referrerpolicy=\u0022strict-origin-when-cross-origin\u0022 allowfullscreen title=\u0022This is how intense the fastest roller coaster in the world really is.\u0022\u003e\u003c/iframe\u003e"}

@@ -9,9 +9,10 @@
     "repository_display_label": "Tormenta POV",
     "repository_channel_label": "JWulfCoasters",
     "repository_duration_seconds": 137.0,
+    "duration_provenance": "docs/RESEARCH.md lines 108-109",
     "exact_provider_title_known": false
   },
-  "state": "observation_only",
+  "state": "review_pending",
   "permitted_contributions": [
     "order",
     "geometry",
@@ -53,14 +54,16 @@
     "timeline_id": "youtube.AHjk2R4da_I",
     "origin": "This video's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmark_review_status": "No exact source-second landmark was independently recaptured; repository sequence and approximate durations are observation prompts only.",
     "landmarks": []
   },
   "alignment": [],
+  "alignment_status": "No exact source-second landmark is mapped to a generated selector.",
   "evidence_gaps": [
     "The oEmbed endpoint was unavailable during offline artifact preparation; title and channel are repository-supplied metadata rather than independently re-fetched oEmbed fields.",
     "No committed local video artifact or SHA-256 is available.",
     "No reviewed source-second landmark windows are recorded.",
     "No row, device, camera calibration, or axis mapping is established.",
-    "This observation-only source cannot define executable comparison bands."
+    "Retrieval remains review-pending; its manifest permissions are a ceiling and cannot define executable comparison bands."
   ]
 }

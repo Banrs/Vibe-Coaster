@@ -4,9 +4,10 @@
   "source_url": "https://www.youtube.com/watch?v=cUURkqyn4Zs",
   "retrieved_on": "2026-08-10",
   "metadata": {
-    "title": "Falcon's Flight front seat on-ride 4K POV Six Flags Qiddiya City",
+    "title": null,
     "channel": "CoasterForce",
-    "duration_seconds": 223.821
+    "duration_seconds": 223.8,
+    "duration_provenance": "docs/RESEARCH.md line 63"
   },
   "state": "observation_only",
   "permitted_contributions": [
@@ -17,7 +18,7 @@
   ],
   "provenance": {
     "metadata_artifact": "docs/evidence/fidelity/youtube/cUURkqyn4Zs-oembed.json",
-    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "metadata_source": "repository review labels; provider response body not retained",
     "video_downloaded": false,
     "repository_review": [
       {
@@ -38,12 +39,21 @@
     "timeline_id": "youtube.cUURkqyn4Zs",
     "origin": "This video's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
-    "landmarks": []
+    "landmarks": [
+      {"id": "falcon.lsm_lift", "window_s": [21.0, 50.0], "description": "Repository-reviewed lift window.", "provenance": "docs/RESEARCH.md lines 72-78"},
+      {"id": "falcon.first_drop", "window_s": [50.5, 55.0], "description": "Repository-reviewed twisted first-drop window.", "provenance": "docs/RESEARCH.md line 79"},
+      {"id": "falcon.cliff_climb", "window_s": [82.0, 114.0], "description": "Repository-reviewed cliff-launch and climb window.", "provenance": "docs/RESEARCH.md lines 81-82"},
+      {"id": "falcon.crest_hold", "window_s": [114.5, 117.2], "description": "Repository-reviewed crest crawl/hold window.", "provenance": "docs/RESEARCH.md line 83"},
+      {"id": "falcon.cliff_dive", "window_s": [128.5, 131.0], "description": "Repository-reviewed dive-to-tunnel window.", "provenance": "docs/RESEARCH.md line 85"},
+      {"id": "falcon.camelback", "window_s": [132.0, 147.0], "description": "Repository-reviewed camelback window.", "provenance": "docs/RESEARCH.md line 87"},
+      {"id": "falcon.return_run", "window_s": [150.0, 186.0], "description": "Repository-reviewed high-speed return window.", "provenance": "docs/RESEARCH.md line 88"}
+    ]
   },
   "alignment": [],
+  "alignment_status": "No source landmark has been mapped to a generated semantic selector; cross-source timestamps are forbidden.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
-    "No reviewed source-second landmark windows are recorded in this artifact.",
+    "Repository-reviewed source windows are recorded, but no current browser/frame recapture or generated-selector mapping is committed.",
     "No row, device, camera calibration, or axis mapping is established.",
     "This source cannot define executable comparison bands."
   ]

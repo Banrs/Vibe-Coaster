@@ -7,11 +7,11 @@
     "provider_title": null,
     "provider_channel": null,
     "repository_display_label": "Falcon's Flight CGI",
-    "repository_channel_label": "AmusementInsider",
-    "repository_duration_seconds": 167.981,
+    "repository_channel_label": null,
+    "repository_duration_seconds": null,
     "exact_provider_title_known": false
   },
-  "state": "corroborative",
+  "state": "review_pending",
   "permitted_contributions": [
     "model-to-model geometry/order only"
   ],
@@ -45,14 +45,28 @@
     "timeline_id": "youtube.NFVNGgwZk3c",
     "origin": "This CGI rendering's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
-    "landmarks": []
+    "landmarks": [
+      {
+        "id": "cgi.camelback.side_profile",
+        "time_s": 11.0,
+        "description": "Repository-reviewed side-on giant-camelback frame.",
+        "provenance": "docs/RESEARCH.md line 139"
+      },
+      {
+        "id": "cgi.camelback.end_on",
+        "time_s": 111.0,
+        "uncertainty_s": 1.0,
+        "description": "Approximate repository-reviewed end-on frame used only to corroborate planarity.",
+        "provenance": "docs/RESEARCH.md line 139"
+      }
+    ]
   },
   "alignment": [],
+  "alignment_status": "Repository-reviewed CGI frames are not mapped to generated selectors and remain model-only.",
   "evidence_gaps": [
-    "The oEmbed endpoint was unavailable during offline artifact preparation; title and channel are repository-supplied metadata rather than independently re-fetched oEmbed fields.",
+    "The oEmbed endpoint was unavailable during offline artifact preparation; no exact provider title, channel, or duration is asserted.",
     "No committed local video artifact or SHA-256 is available.",
-    "No repository-reviewed source-second landmark windows are recorded.",
     "No row, device, camera calibration, or axis mapping is established.",
-    "CGI is model-only corroboration and must never be treated as measured real-world truth or used to define executable comparison bands."
+    "Retrieval remains review-pending. CGI is model-only corroboration and must never be treated as measured real-world truth or used to define executable comparison bands."
   ]
 }

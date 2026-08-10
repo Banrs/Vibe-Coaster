@@ -3,6 +3,8 @@
   "retrieved_on": "2026-08-10",
   "policy": {
     "states": ["review_pending", "observation_only", "corroborative", "executable"],
+    "initial_state_rule": "initial_state preserves the approved source-specific permission ceiling.",
+    "current_state_rule": "current_state reflects acquisition/review readiness and may be more restrictive than initial_state.",
     "promotion_rule": "Promotion cannot expand permitted_contributions or permitted_axes without a reviewed manifest version change.",
     "raw_media_committed": false,
     "alignment_rule": "Every timeline remains source-local. Empty alignment arrays are evidence gaps, not permission to infer a cross-source or generated clock."
@@ -14,14 +16,17 @@
       "recording_id": "4804",
       "retrieved_on": "2026-08-10",
       "initial_state": "corroborative",
+      "current_state": "corroborative",
       "permitted_contributions": ["reviewed force windows with row and device caveats"],
       "permitted_axes": ["normal_g", "lateral_g", "longitudinal_g"],
       "promotion_prerequisites": ["Cannot promote alone because the recording is flagged unreliable.", "Requires a genuine validated raw artifact or content digest, exact window, verified raw axis schema, row/device mapping, processing chain, complete alignment, confidence rationale, and independent compatible corroboration."],
       "acquisition": "raw_fetch_unavailable",
+      "metadata_artifact_path": "docs/evidence/fidelity/rideforcesdb/4804-ride-info.json",
+      "metadata_artifact_sha256": "f3623b59a9532704f150038161bed03b2950d21d276bb9e5bf2eef9373845564",
       "diagnostic_path": "docs/evidence/fidelity/rideforcesdb/4804-diagnostic.json",
-      "diagnostic_sha256": "6589bb8e7a8b02bdc2a179a707da37ce5c5a85a3b9dd0942a1d8cbe8779dae10",
+      "diagnostic_sha256": "13684a1489457596253369e3850486774b1acd812f7f24f84c1f9ba8ffb0aa99",
       "review_path": "docs/evidence/fidelity/rideforcesdb/4804-review.json",
-      "review_sha256": "defa9996a2e10dc906a7a4466db57212a8740c13d60de4a0f6f0119fd17d3576"
+      "review_sha256": "347ea5b12bad7e181f7c1a021e5c6d9bea11013d42596cce6d4cf2b98e000e49"
     },
     {
       "source_id": "rideforcesdb.tormenta.6369",
@@ -29,14 +34,17 @@
       "recording_id": "6369",
       "retrieved_on": "2026-08-10",
       "initial_state": "corroborative",
+      "current_state": "corroborative",
       "permitted_contributions": ["cross-recording support only with pocket and sliding-device caveats"],
       "permitted_axes": ["normal_g", "lateral_g", "longitudinal_g"],
       "promotion_prerequisites": ["Cannot stand in for recording 6383 or measured rider-frame truth.", "A derived observation requires genuine validated content provenance, exact source-local windows, stable axis mapping, and corroboration across 6369, 6383, and the Tormenta POV."],
       "acquisition": "raw_fetch_unavailable",
+      "metadata_artifact_path": "docs/evidence/fidelity/rideforcesdb/6383-ride-info.json",
+      "metadata_artifact_sha256": "95ce0416f6cc0790c5fd5b07ba7472d240f8b17cbc06d6da6f8821b43eabda61",
       "diagnostic_path": "docs/evidence/fidelity/rideforcesdb/6369-diagnostic.json",
-      "diagnostic_sha256": "c1244015f24ae85037ed2caf0c51bc2fd45b65e9e54f6b48383a1592558d1e7b",
+      "diagnostic_sha256": "3e8fe4836c051faa6ad1e50c49c9debea3b8eee6140c9a46292b68f5f80261e3",
       "review_path": "docs/evidence/fidelity/rideforcesdb/6369-review.json",
-      "review_sha256": "4effbaa21713dbc13ce52f98f54130fb7e9ce0f434f2e6adb292a3a9d4bfe74e"
+      "review_sha256": "9ac0e2fc30d40954a2a74e6920a4b52d01a88f3e8a223b4d3472bca6e7611f6c"
     },
     {
       "source_id": "rideforcesdb.tormenta.6383",
@@ -44,14 +52,17 @@
       "recording_id": "6383",
       "retrieved_on": "2026-08-10",
       "initial_state": "corroborative",
+      "current_state": "corroborative",
       "permitted_contributions": ["reviewed force windows with row and device caveats"],
       "permitted_axes": ["normal_g", "lateral_g", "longitudinal_g"],
       "promotion_prerequisites": ["Row 2 must remain explicit and recording 6369 times must not be transferred.", "A derived observation requires genuine validated content provenance, exact source-local windows, verified raw axes, complete alignment, and corroboration across 6383, 6369, and the Tormenta POV."],
       "acquisition": "raw_fetch_unavailable",
+      "metadata_artifact_path": "docs/evidence/fidelity/rideforcesdb/6383-ride-info.json",
+      "metadata_artifact_sha256": "95ce0416f6cc0790c5fd5b07ba7472d240f8b17cbc06d6da6f8821b43eabda61",
       "diagnostic_path": "docs/evidence/fidelity/rideforcesdb/6383-diagnostic.json",
-      "diagnostic_sha256": "65610d2c719f2f9faf90fdcd22d0378d15c58ee8d654a764391016b008532b70",
+      "diagnostic_sha256": "a40a3bf86a5f12eeebcb72da2f8b7dde857d17c34b32d98ec862576176610b79",
       "review_path": "docs/evidence/fidelity/rideforcesdb/6383-review.json",
-      "review_sha256": "9925e6d364e8aa3cbac26ae562f3b985db8aadb7efb37674ec9d980d4e3260dc"
+      "review_sha256": "40ab3696c7aaea6332fc01728987d72a67a421ba4df805c5f38bec33ddc97db6"
     },
     {
       "source_id": "youtube.coastertalk.continuous.0Ua",
@@ -59,13 +70,14 @@
       "video_id": "0UaOSBGSx20",
       "retrieved_on": "2026-08-10",
       "initial_state": "corroborative",
+      "current_state": "corroborative",
       "permitted_contributions": ["displayed-channel landmarks"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Review exact source-local landmark windows and identify row, device, sample rate, and displayed-axis mapping.", "Commit qualifying content provenance and a complete alignment; never infer a dense trace or borrow the edited seNR timeline."],
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/0UaOSBGSx20-oembed.json",
-      "metadata_artifact_sha256": "0dbb952ba6450a28bc5a912ca53ab29a3e357d9997da2e8d6200ac03b4192820",
+      "metadata_artifact_sha256": "eb71dc52f36bda28ee6a9086fcbd6e5397e259f1c9d18624b18076274bf8a83a",
       "review_path": "docs/evidence/fidelity/youtube/0UaOSBGSx20-review.json",
-      "review_sha256": "73f2ea6bdf73b602882c7c5c03841f5d4f9498b83515d54f118310d2e5ffafbe"
+      "review_sha256": "f01618a6a1bc42a7eb3055b1e76ef7b8d2c8f8ef77c5aec7166c85435fd89f25"
     },
     {
       "source_id": "youtube.coastertalk.edited.seNR",
@@ -73,13 +85,14 @@
       "video_id": "seNRpi4wP-s",
       "retrieved_on": "2026-08-10",
       "initial_state": "review_pending",
+      "current_state": "review_pending",
       "permitted_contributions": ["edited visual landmarks only"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Review exact clip-local visual landmarks and run identity.", "Use landmark-to-landmark alignment only; edits, b-roll, and two runs forbid an absolute ride timeline or dense trace."],
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/seNRpi4wP-s-oembed.json",
-      "metadata_artifact_sha256": "91aa3a90c2f6f8c99e59ebdf152f1ead131b8e01b11e81eab23252ea75f8041c",
+      "metadata_artifact_sha256": "e2a314015ae1a41781ee02b31f58b1358c14b3c6292517ef8b0af508570ea65f",
       "review_path": "docs/evidence/fidelity/youtube/seNRpi4wP-s-review.json",
-      "review_sha256": "f1e202eb5327b292a9a98e55f44a0a451e2bb7a744bb0532df6528951ddc248a"
+      "review_sha256": "a2ee5c8add5e61ae63aa5aab053c6336d01705c83ab8b6f28883f410a789085f"
     },
     {
       "source_id": "youtube.falcon.backward.J54WKu2nU6o",
@@ -87,13 +100,14 @@
       "video_id": "J54WKu2nU6o",
       "retrieved_on": "2026-08-10",
       "initial_state": "observation_only",
+      "current_state": "observation_only",
       "permitted_contributions": ["order", "geometry", "speed perception", "feel prompts"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Review exact source-local landmarks with uncertainty and row/camera context.", "Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock."],
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-oembed.json",
-      "metadata_artifact_sha256": "13a9e181b2f68a9892b945cda7e09d09a8b7322ec828ff801f16bb812c06626e",
+      "metadata_artifact_sha256": "595aa5253b41a2557e3a33bcbd2695a74d9723bb1e49e84fc9f75c4910a26aaf",
       "review_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-review.json",
-      "review_sha256": "ecd60c4ac535985b0a28d1a16967944a48e1c61bbcd02ea9b424b0c677695771"
+      "review_sha256": "1eae94e3639bd69dc227e58f8b04f8d9e5ce78a29c9ab4e3bedb3c98127a490f"
     },
     {
       "source_id": "youtube.falcon.cgi.NFV",
@@ -101,13 +115,14 @@
       "video_id": "NFVNGgwZk3c",
       "retrieved_on": "2026-08-10",
       "initial_state": "corroborative",
+      "current_state": "review_pending",
       "permitted_contributions": ["model-to-model geometry", "model-to-model order"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Remain model-only even if content provenance and landmarks are later committed.", "Where CGI disagrees with real POV, the real POV controls; no measured-truth or force target may be derived."],
       "metadata_diagnostic_path": "docs/evidence/fidelity/youtube/NFVNGgwZk3c-oembed.json",
-      "metadata_diagnostic_sha256": "90302cbd92439649ab36a4aecaee780c5887d3da7bae251a5bad8eb4c55c6d29",
+      "metadata_diagnostic_sha256": "3f47dc70b35bf2db5c9a718033c5df61083fbf5c9176f89e4bd123d50e8c139c",
       "review_path": "docs/evidence/fidelity/youtube/NFVNGgwZk3c-review.json",
-      "review_sha256": "ac290f74108c3f80294ca6aec998bb84043376e59507682a5694f587cb7ca619"
+      "review_sha256": "5a531ff6fd6187f36e8fda1e9678d6a05a4197af1a4fd3c24c831213f0f19e95"
     },
     {
       "source_id": "youtube.falcon.forward.cUURkqyn4Zs",
@@ -115,13 +130,14 @@
       "video_id": "cUURkqyn4Zs",
       "retrieved_on": "2026-08-10",
       "initial_state": "observation_only",
+      "current_state": "observation_only",
       "permitted_contributions": ["order", "geometry", "timing landmarks", "feel prompts"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Review exact source-local landmarks with uncertainty and row/camera context.", "Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or a dense trace."],
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/cUURkqyn4Zs-oembed.json",
-      "metadata_artifact_sha256": "469316d21a1b446b2e9976c4d841961ff44ba897821d9b9d4eed7655726cd15b",
+      "metadata_artifact_sha256": "4dc75607a7e14de12d8decfc9606832ef2ebda464ff238989f9eea8f6b9a04b6",
       "review_path": "docs/evidence/fidelity/youtube/cUURkqyn4Zs-review.json",
-      "review_sha256": "eee1cfbcc3e02dbfc136227227e32b8eb1e450c25ead0d6989cc713f899f64cc"
+      "review_sha256": "10da7875407a425a5e17c3f85c64ea008ca53436048a1aa0249b68734306c198"
     },
     {
       "source_id": "youtube.falcon.poco8rOnW18",
@@ -129,13 +145,14 @@
       "video_id": "poco8rOnW18",
       "retrieved_on": "2026-08-10",
       "initial_state": "corroborative",
+      "current_state": "corroborative",
       "permitted_contributions": ["model-to-model geometry", "model-to-model order"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Remain NoLimits2 model-only even if content provenance and landmarks are later committed.", "Never use this simulation as measured truth or transfer its clock to real footage."],
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/poco8rOnW18-oembed.json",
-      "metadata_artifact_sha256": "e59ca66afa85779b14cb50d1625f86e27485c60d2c3d2744e9c1be226a4068fe",
+      "metadata_artifact_sha256": "5776d2ee4dd2840c518774b77c6f6c5517c127f8884493e1f762678ced7ff1ef",
       "review_path": "docs/evidence/fidelity/youtube/poco8rOnW18-review.json",
-      "review_sha256": "8fa9026d4f90725fb11f77e7ac6b86adf7a589a57b6d4395b238ec6e34e200db"
+      "review_sha256": "8efaa68ada0f258c842aebc08747e1e2ac826aace5c875fa634a288031f08332"
     },
     {
       "source_id": "youtube.falcon.sdXGD9kMR7s",
@@ -143,13 +160,14 @@
       "video_id": "sdXGD9kMR7s",
       "retrieved_on": "2026-08-10",
       "initial_state": "observation_only",
+      "current_state": "observation_only",
       "permitted_contributions": ["order", "geometry", "timing landmarks", "feel prompts"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Review exact source-local landmarks with uncertainty and front-row/camera context.", "Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock."],
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-oembed.json",
-      "metadata_artifact_sha256": "0906d0614d33b1d45fdcc754e8edc86b301da4198714d55ee54b5cb9b4ae2cdc",
+      "metadata_artifact_sha256": "badb63ae7143267d526a4d6d32dbdc85f280506cf2a8663280df760f87b12361",
       "review_path": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-review.json",
-      "review_sha256": "252ba365c4fb49b12611ac1efb50bbb830f7fd56ec026a79637b5541929a441c"
+      "review_sha256": "7fd9f1bf4a5df352c5371264f160f3bfcc30a89acacffe99a6f3ea3c47b00531"
     },
     {
       "source_id": "youtube.i305.overlay.wX7",
@@ -157,13 +175,14 @@
       "video_id": "wX7uHKj-Ujc",
       "retrieved_on": "2026-08-10",
       "initial_state": "corroborative",
+      "current_state": "review_pending",
       "permitted_contributions": ["vertical/normal-g windows only"],
       "permitted_axes": ["normal_g"],
       "promotion_prerequisites": ["Commit qualifying content provenance and exact reviewed vertical windows with the documented uncertainty and uploader synchronization caveat.", "No lateral or longitudinal axis may be inferred; complete alignment and independent compatible corroboration are required."],
       "metadata_diagnostic_path": "docs/evidence/fidelity/youtube/wX7uHKj-Ujc-oembed.json",
-      "metadata_diagnostic_sha256": "1161b233efc15c0c5279ff67ec95084de3fff57252d1a97b5d35bcf4d0086b5c",
+      "metadata_diagnostic_sha256": "bc41ffd9692da259172046a6a204a2f544d967a789e1d2cf62d228d9e1507fba",
       "review_path": "docs/evidence/fidelity/youtube/wX7uHKj-Ujc-review.json",
-      "review_sha256": "e3bb6387bdd1713e1414b69d7678c9fdf51866f644ce0611b084e3242b8bf093"
+      "review_sha256": "9fd3a7ec8e8094abfc9148b2d74600d5a1ec238466a66b7dd02b81a8a43277a2"
     },
     {
       "source_id": "youtube.tormenta.forward.AHjk",
@@ -171,13 +190,14 @@
       "video_id": "AHjk2R4da_I",
       "retrieved_on": "2026-08-10",
       "initial_state": "observation_only",
+      "current_state": "review_pending",
       "permitted_contributions": ["order", "geometry", "timing landmarks", "feel prompts"],
       "permitted_axes": [],
       "promotion_prerequisites": ["Capture genuine provider/content provenance without treating repository labels as exact provider metadata.", "Review exact source-local landmarks and complete alignment; force claims require compatible corroboration from both Tormenta recordings."],
       "metadata_diagnostic_path": "docs/evidence/fidelity/youtube/AHjk2R4da_I-oembed.json",
-      "metadata_diagnostic_sha256": "bbb7b9130e10730f3c02ffb9c3bd28ae623b9403eaf6f2bb8465bf9e87117433",
+      "metadata_diagnostic_sha256": "f048bca08164a572c96a5a0eaeb1b7523e5193881bc53725e4a9bd93b60924ba",
       "review_path": "docs/evidence/fidelity/youtube/AHjk2R4da_I-review.json",
-      "review_sha256": "48fefed35e7afe1a6324095b2201dca51137e78fd82a5baff1ce30c552274b01"
+      "review_sha256": "d42e433dfe335beb3b76d40c640cdf0e690ffcafe141c1ed01e50f8c22102715"
     }
   ]
 }

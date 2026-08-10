@@ -6,7 +6,8 @@
   "metadata": {
     "title": "Falcon's Flight - Six Flags Qiddiya | 607ft WORLD RECORD BREAKING Intamin Roller Coaster | NoLimits2",
     "channel": "ML Designs",
-    "duration_seconds": 328.521
+    "duration_seconds": null,
+    "duration_provenance": "YouTube oEmbed does not provide duration; no retained duration artifact is available."
   },
   "state": "corroborative",
   "permitted_contributions": [
@@ -14,7 +15,7 @@
   ],
   "provenance": {
     "metadata_artifact": "docs/evidence/fidelity/youtube/poco8rOnW18-oembed.json",
-    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
     "content_classification": "NoLimits2 simulation",
     "repository_review": []
@@ -23,9 +24,11 @@
     "timeline_id": "youtube.poco8rOnW18",
     "origin": "This NoLimits2 simulation's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
+    "landmark_review_status": "No exact source-second landmark has been visually recaptured or retained.",
     "landmarks": []
   },
   "alignment": [],
+  "alignment_status": "No model landmark is mapped to a generated selector; this source cannot establish measured truth.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
     "No repository-reviewed source-second landmark windows are recorded.",

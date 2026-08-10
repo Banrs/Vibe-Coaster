@@ -19,9 +19,25 @@
       "monotone_time_verified": false
     }
   },
+  "session_bootstrap": {
+    "endpoint": "https://rideforcesdb.com/?id=6383&axes=yzxac",
+    "attempted": true,
+    "outcome": "Connection was blocked or unavailable in this environment; no session response or cookie was obtained."
+  },
+  "csv_retrieval": {
+    "endpoint": "https://rideforcesdb.com/download?id=6383&ftype=csv",
+    "attempted": true,
+    "response_received": false,
+    "http_status": null,
+    "content_type": null,
+    "is_csv_payload": false,
+    "outcome": "Connection was blocked or unavailable in this environment; no CSV response was obtained."
+  },
   "metadata_verification": {
     "endpoint": "https://rideforcesdb.com/rideInfo?id=6383",
     "response_received": true,
+    "response_artifact_path": "docs/evidence/fidelity/rideforcesdb/6383-ride-info.json",
+    "response_artifact_sha256": "95ce0416f6cc0790c5fd5b07ba7472d240f8b17cbc06d6da6f8821b43eabda61",
     "outcome": "A genuine current rideInfo response identified Tormenta Rampaging Run and included recording 6383.",
     "matched_repository_telemetry": true,
     "matched_fields": {

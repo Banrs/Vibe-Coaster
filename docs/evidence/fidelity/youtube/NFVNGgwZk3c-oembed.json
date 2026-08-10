@@ -12,7 +12,8 @@
   },
   "repository_labels": {
     "display_label": "Falcon's Flight CGI",
-    "channel_label": "AmusementInsider",
+    "channel_label": null,
+    "duration_seconds": null,
     "exact_provider_title_known": false,
     "provenance": "docs/RESEARCH.md lines 66 and 137-169"
   },

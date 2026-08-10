@@ -6,7 +6,8 @@
   "metadata": {
     "title": "Falcon's Flight Review. – World's tallest, fastest & longest roller coaster.",
     "channel": "CoasterTalk",
-    "duration_seconds": 589.701
+    "duration_seconds": 589.7,
+    "duration_provenance": "docs/TELEMETRY.md lines 824-826"
   },
   "state": "review_pending",
   "permitted_contributions": [
@@ -14,7 +15,7 @@
   ],
   "provenance": {
     "metadata_artifact": "docs/evidence/fidelity/youtube/seNRpi4wP-s-oembed.json",
-    "metadata_source": "curated snapshot of captured YouTube oEmbed provider fields",
+    "metadata_source": "repository review labels; provider response body not retained",
     "video_downloaded": false,
     "repository_review": [
       {
@@ -41,12 +42,21 @@
     "timeline_id": "youtube.seNRpi4wP-s",
     "origin": "This edited review's own playback timeline",
     "continuity": "No absolute continuous ride timeline, cross-source clock, timestamp mapping, or transfer of values from another review is asserted.",
-    "landmarks": []
+    "landmarks": [
+      {
+        "id": "falcon.edited_overlay_clip_extent",
+        "window_s": [100.0, 360.0],
+        "description": "Approximate video-time extent containing edited POV clips with telemetry; it is not a continuous ride window.",
+        "method": "edited-clip extent only",
+        "provenance": "docs/TELEMETRY.md lines 832-851"
+      }
+    ]
   },
   "alignment": [],
+  "alignment_status": "Edited clips and two runs prevent absolute alignment; future mappings must be clip-local landmark-to-landmark records.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
-    "No reviewed source-second visual-landmark windows are recorded.",
+    "Only the edited overlay clip extent is recorded; no element frame is aligned to a generated selector.",
     "Edits, b-roll, and multiple ride runs prevent an absolute continuous ride timeline.",
     "No row, device, sample-rate, or axis mapping is established for this artifact.",
     "This source cannot define executable comparison bands."

@@ -19,9 +19,25 @@
       "monotone_time_verified": false
     }
   },
+  "session_bootstrap": {
+    "endpoint": "https://rideforcesdb.com/?id=4804&axes=yzxac",
+    "attempted": true,
+    "outcome": "The request completed and produced a transient session cookie. The cookie value is not committed."
+  },
+  "csv_retrieval": {
+    "endpoint": "https://rideforcesdb.com/download?id=4804&ftype=csv",
+    "attempted": true,
+    "response_received": true,
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8",
+    "is_csv_payload": false,
+    "outcome": "A direct request returned HTML rather than CSV. A subsequent session-cookie request was blocked by the execution environment, so no CSV body was obtained or validated."
+  },
   "metadata_verification": {
     "endpoint": "https://rideforcesdb.com/rideInfo?id=4804",
     "response_received": true,
+    "response_artifact_path": "docs/evidence/fidelity/rideforcesdb/4804-ride-info.json",
+    "response_artifact_sha256": "f3623b59a9532704f150038161bed03b2950d21d276bb9e5bf2eef9373845564",
     "outcome": "A genuine current rideInfo response identified Falcon's Flight and recording 4804.",
     "matched_repository_telemetry": true,
     "matched_fields": {

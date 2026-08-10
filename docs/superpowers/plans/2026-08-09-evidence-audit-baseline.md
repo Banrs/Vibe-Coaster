@@ -788,6 +788,38 @@ git add godot/fidelity.gd godot/fidelity_tests.gd
 git commit -m "feat: compare deterministic fidelity fleet"
 ```
 
+### Required checkpoint after Task 6: consolidate before adding evidence or artifacts
+
+The Task 6 review exposed avoidable repetition in the shared fidelity core and tests. Before adding
+any tracked POV data or Task 7 code, perform one behavior-preserving deletion pass under
+`AGENTS.md`: unify the duplicate time/distance interpolation path, replace repeated catalog and fleet
+fixtures with readable data-driven cases, remove guards that only tested APIs already made
+mandatory by earlier RED commits, narrow only metrics already rejected by `_metric_axis`, and keep smoke
+delegation thin. Do not shorten files by packing assertions onto long lines, splitting files, weakening
+tests, or changing seeds, tolerances, physics, smoothing, radii, selectors, schemas, or gates.
+
+- [ ] Modify exactly `godot/fidelity.gd`, `godot/fidelity_tests.gd`, and `godot/smoke.gd`. At code
+  baseline `eb8b639e6e394d85877784a691703b6c4d14e03e` they contain 2,361 + 2,079 + 991 =
+  5,431 physical lines, counted with `[IO.File]::ReadAllLines((Resolve-Path $file)).Count`.
+  Require a final total no greater than 5,331; 5,266–5,311 is the reviewed safe target, not a quota
+  that permits obscurity.
+- [ ] Keep `DIMENSIONS` unchanged. Shallow-copy only the two catalog arrays used solely for sorting;
+  all returned defensive fields and every per-seed fleet template remain deeply isolated.
+- [ ] Keep multi-error, precedence, artifact-I/O, and positive validation controls explicit. Every
+  data-driven single-mutation case retains a readable name, fresh deep-copied catalog, exact
+  mutation, and expected diagnostic substring.
+- [ ] Remove API guards only by making every required API call unconditional. Add one nested
+  per-seed fixture-isolation assertion and one assertion that comparison neither reorders the catalog
+  nor exposes returned fields that can mutate it.
+- [ ] Refresh Graphify first and use only source-backed dependency paths; retain the recorded warning
+  that no compare-to-artifact edge exists until Task 7.
+- [ ] Treat GitHub Actions run 39 (`31389177890`) as the green before-state, then run the same import,
+  focused suite, unchanged smoke/seed sweep, and viewer workflow remotely after the refactor.
+- [ ] Obtain an independent scoped review confirming semantic parity, readable tests, and no hidden
+  ride-behavior or threshold change.
+- [ ] Commit only the three files above as `refactor: consolidate fidelity measurement scaffolding`
+  before starting the POV RED commit.
+
 ### Required checkpoint between Tasks 6 and 7: commit the reviewed live POV landmarks
 
 This is a separate TDD slice because it shares `fidelity_tests.gd` with Task 6. Modify only the four
@@ -824,8 +856,68 @@ poco: poco.opening=0.10, poco.park_element=43.63, poco.desert_curve=88.56,
 Also require exact durations/publish dates `(240.881, 2026-01-05)`,
 `(239.061, 2026-01-01)`, `(328.521, 2023-06-04)`, and `(213.541, 2026-04-14)` in that
 source order; the reviewed built/rear-facing, built/front-row-view, NoLimits2-precreation/mixed, and
-built/leading-view classifications with conservative obstruction/mount caveats; matching final
-review hashes; and exact non-promotion invariants. Tests must fail on the stale committed catalog.
+built/leading-view classifications with conservative obstruction/mount caveats; and exact
+non-promotion invariants. Tests must fail on the stale committed catalog. File SHA-256 values are
+integrity checks recomputed from final bytes; correctness comes from direct assertions over the
+exact structured review fixture below, never from a manifest/file self-match alone.
+
+Use these exact landmark descriptions in the same order as the ID/time lists above:
+
+```text
+J54: Covered station corridor with track centered in the rear-facing view. |
+     Open-air straight beside park buildings and walkways. |
+     Strongly banked park turn among illuminated supports. |
+     Banked descending turn through dark rocky terrain. |
+     Large elevated crest silhouetted against the night sky. |
+     Extremely steep track segment; travel direction is ambiguous in the rear-facing still. |
+     Banked return toward the illuminated park. |
+     Tilted passage through dense supports and park structures. |
+     Brake/return track entering the station area.
+sdX: Dark station dispatch corridor with the leading car nose visible. |
+     Straight beside park buildings approaching a tall inclined section; editorial length card visible. |
+     Banked compact park element among dense supports. |
+     Steeply pitched track beside a rock face. |
+     High cliff-edge view over the park and track below. |
+     Elevated crest with strong sun glare. |
+     Low banked terrain turn past supports and buildings. |
+     Elevated park run through a hill-and-turn section. |
+     Brake/return track inside the blue-lit station.
+poco: Black opening frame. |
+      Third-person train view in a compact modeled park element. |
+      Third-person banked curve over modeled desert terrain. |
+      Third-person profile of a large elevated arch. |
+      Third-person train on a long highly supported grade. |
+      Third-person low return track through the modeled park. |
+      First sampled virtual POV frame toward a tall inclined element. |
+      Virtual POV on a very steep ascent. |
+      Virtual POV ascending through modeled rocky terrain. |
+      Virtual POV approaching a large triangular-supported hill. |
+      Virtual POV in a banked compact modeled park return.
+0Ua: Station attendant dispatch. |
+     Straight away from the station toward a tall inclined section. |
+     Compact park hill and turn. |
+     Long approach toward the cliff and terrain section. |
+     Lower-speed banked turn on the high desert terrain. |
+     Steep cliff descent toward a tunnel. |
+     Fast park return with large hills visible. |
+     Compact descent between park buildings. |
+     Brake/return run approaching the station.
+```
+
+The exact `view` objects are:
+
+```json
+{"content_kind":"built-ride","direction":"rear-facing","position_claim":"centered rear-facing view; exact row undisclosed","mount":"unknown","obstructions":["lower-right watermark","night exposure","motion blur","rapid camera roll"],"certainty":"high for ride identity and orientation; medium for element shaping from sparse night frames"}
+{"content_kind":"built-ride","direction":"forward","position_claim":"front-row view per title over the leading car nose; exact mount undisclosed","mount":"unknown","obstructions":["leading car nose","curved windshield or bar","lower-right watermark","sun glare","lens or dust spots"],"certainty":"high for ride identity and stated front-row orientation; medium for exact element interpretation"}
+{"content_kind":"nolimits2-precreation","direction":"mixed","position_claim":"mixed third-person and virtual POV; not an as-built camera","mount":"not-applicable","obstructions":["synthetic low-detail terrain and scenery","lower-right watermark"],"certainty":"high for precreation status; low for as-built correspondence"}
+{"content_kind":"built-ride","direction":"forward","position_claim":"leading-view appearance consistent with front row; exact row undisclosed","mount":"unknown","obstructions":["leading car nose and curved bar","edge gauges and bottom graph","lower-left seat model","right-side readouts","central watermark","sun glare"],"certainty":"high for synchronized overlay presence; medium for physical accuracy because of uploader limitations"}
+```
+
+Every `provenance.live_review` object has exact keys `reviewed_on`, `method`, `time_basis`,
+`retained_frame_or_video`, and `correction_review`. Their common values are `2026-08-10`,
+`visible live YouTube player, media-element currentTime readback, and expanded description; sparse manual sampling only`,
+`source-local media-element seconds`, and `false`; correction status is `pass` only for 0Ua and
+`not-applicable` for the other three. Keep the existing parent `provenance.video_downloaded: false`.
 
 - [ ] **Step 2: Transcribe only the reviewed sparse evidence and prompts**
 
@@ -853,6 +945,19 @@ sources `[youtube.coastertalk.continuous.0Ua]`, issues `[3,10,13,15,16]`; and
 `[youtube.coastertalk.continuous.0Ua,youtube.falcon.backward.J54WKu2nU6o,youtube.falcon.sdXGD9kMR7s]`,
 issues `[6,8,12]`. Their prose must explicitly forbid treating the spot checks as a calibrated trace
 or band and forbid proportional alignment of independent video clocks or inference of an AGL band.
+
+Replace the existing prompt/gap prose with these exact strings:
+
+```text
+review.ride_feel: Compare generated act ordering and connective flow against source-local POV landmarks only; do not transfer timestamps or proportionally scale independent video clocks.
+review.speed_perception: Compare generated speed perception against source-local terrain, support, and park-reference landmarks only; do not infer speed from a global POV duration ratio.
+gap.force_bands: Sparse rendered video points lack raw sampling, device/row calibration, rider-axis mapping, full source-to-generated alignment, and corroboration; no multiplier or duration ratio closes those gaps.
+```
+
+Other catalog prose may reuse the exact provenance/view/description strings above but must add no
+new fact. It is not a byte-exact test surface. The RED fixture pins structured fields, ordered
+landmarks, the exact prompt/gap strings above, and non-promotion invariants; artifact validation
+separately recomputes each manifest SHA-256 from the checked-in review bytes.
 
 - [ ] **Step 3: Push GREEN and verify through GitHub Actions**
 
@@ -938,12 +1043,18 @@ review/checklist.md
 review/issue-coverage.json
 review/issue-coverage.md
 review/seed-11/channels.png
+review/seed-11/channels.json
+review/seed-11/channels.md
 review/seed-11/top.png
 review/seed-11/elevation.png
 review/seed-42/channels.png
+review/seed-42/channels.json
+review/seed-42/channels.md
 review/seed-42/top.png
 review/seed-42/elevation.png
 review/seed-20260809/channels.png
+review/seed-20260809/channels.json
+review/seed-20260809/channels.md
 review/seed-20260809/top.png
 review/seed-20260809/elevation.png
 review/seed-42/elements/<stable-beat-id>.png
@@ -1015,7 +1126,48 @@ static func save_png_checked(image: Image, path: String) -> PackedStringArray:
 
 - [ ] **Step 7: Move existing render logic behind `RideFidelityArtifacts` without deleting capability**
 
-Keep side/profile, top, elevation, and the existing speed/normal/lateral/pitch/roll-rate/AGL strips. Add labelled longitudinal proper-g, reconstructed curvature, radius, roll-acceleration, and jerk strips. Source-filtered overlays must use different colors and legends from raw generated channels. Use stable beat-ID filenames rather than sample indices.
+Keep side/profile, top, elevation, and the existing speed/normal/lateral/pitch/roll-rate/AGL strips.
+Add longitudinal proper-g, reconstructed curvature, radius, roll-acceleration, and jerk strips. Keep
+the PNG traces font-free. Task 7B computes each image and its `fidelity-channel-legend@1` record from
+one shared channel descriptor, then writes stable adjacent `channels.json` and `channels.md`
+sidecars. Each legend binds image path, seed, dimensions, and eleven ordered strips with stable ID,
+index, label, unit, finite plotted min/max, bounded/unbounded counts, and exactly one
+`raw_generated` series with the existing `[0.55,0.95,1.0,1.0]` RGBA trace color;
+`source_filtered` is absent in this baseline. Include the checked
+sidecars in the manifest. Do not add an embedded glyph table, font rasterizer, text-layout helper,
+or label asset, and do not duplicate channel calculations across Tasks 7A/7B. Use stable beat-ID
+filenames rather than sample indices.
+
+The canonical legend has exact keys/types
+`{schema_version:String,image_path:String,seed:int,width:int,height:int,strips:Array}` with
+`schema_version: "fidelity-channel-legend@1"`, an audit-root-relative forward-slash image path,
+`width: 1400`, and `height: 1650`. Each strip has exact keys/types
+`{index:int,channel_id:String,label:String,unit:String,plot_min:float,plot_max:float,bounded_count:int,unbounded_count:int,series:Array}`.
+Finite values define the bounded count and exact min/max; a constant finite channel uses
+`plot_max = plot_min + 0.001`; an all-unbounded channel uses `[0.0,1.0]` and a nonzero unbounded
+count. The sole series is exactly
+`{"role":"raw_generated","color_rgba":[0.55,0.95,1.0,1.0]}`. Strip order is:
+
+```text
+0 | speed_kmh | Speed | km/h
+1 | normal_g | Normal proper acceleration | g
+2 | lateral_g | Lateral proper acceleration | g
+3 | longitudinal_proper_g | Longitudinal proper acceleration | g
+4 | pitch_deg | Pitch | deg
+5 | roll_rate_dps | Roll rate | deg/s
+6 | agl_m | Height above ground | m
+7 | reconstructed_curvature_inv_m | Reconstructed curvature | 1/m
+8 | radius_m | Radius | m
+9 | roll_acceleration_dps2 | Roll acceleration | deg/s^2
+10 | jerk_mps3 | Jerk | m/s^3
+```
+
+`channels.md` is a pure projection of the reopened canonical JSON: fixed title
+`# Channel legend — seed <seed>`, an image line with path and `<width>x<height>`, then one
+fixed-column table row per strip in array order containing every strip field and the series
+role/RGBA. Format floats with six digits after the decimal point. A synthetic eleven-strip golden
+JSON fixture and exact Markdown string pin keys, order, relative path, numeric formatting,
+all-unbounded radius behavior, and the absence of `source_filtered`.
 
 - [ ] **Step 8: Add synchronized POV mappings and generated POV frames**
 
@@ -1136,7 +1288,13 @@ if ($LASTEXITCODE -ne 0) { throw "baseline B failed: $LASTEXITCODE" }
 - [ ] **Step 6: Compare deterministic text artifacts byte for byte**
 
 ```powershell
-$textArtifacts = @('audit.json','audit.md','manifest.json','review\pov-map.json','review\pov-map.md','review\checklist.md','review\issue-coverage.json','review\issue-coverage.md')
+$textArtifacts = @(
+  'audit.json','audit.md','manifest.json','review\pov-map.json','review\pov-map.md',
+  'review\checklist.md','review\issue-coverage.json','review\issue-coverage.md',
+  'review\seed-11\channels.json','review\seed-11\channels.md',
+  'review\seed-42\channels.json','review\seed-42\channels.md',
+  'review\seed-20260809\channels.json','review\seed-20260809\channels.md'
+)
 foreach ($relative in $textArtifacts) {
   $a = [IO.File]::ReadAllBytes((Join-Path 'out\fidelity-baseline-a' $relative))
   $b = [IO.File]::ReadAllBytes((Join-Path 'out\fidelity-baseline-b' $relative))
@@ -1158,7 +1316,12 @@ if (($manifest.files | Where-Object kind -eq 'png').Count -lt 12) { throw 'revie
 
 - [ ] **Step 8: Inspect fresh seed-11, seed-42, and seed-20260809 channel/top/elevation images, seed-42 profiles, and generated POV frames**
 
-Check that every image is non-empty, labelled, legible, uses raw versus filtered styling consistently, and contains no clipped trace or blank viewport. Review `pov-map.md` against each linked generated frame and source timestamp. Record post-run human observations in `out/fidelity-baseline-a/manual-inspection.md`, explicitly outside the deterministic manifest/text comparison; generated `audit.md` remains canonical and contains prompts/results only. Do not convert subjective checks into scores.
+Check that every image is non-empty, legible when paired with its canonical sidecar legend, contains
+the one declared raw-generated trace, and has no clipped trace or blank viewport. Review
+`pov-map.md` against each linked generated frame and source timestamp. Record post-run human
+observations in `out/fidelity-baseline-a/manual-inspection.md`, explicitly outside the deterministic
+manifest/text comparison; generated `audit.md` remains canonical and contains prompts/results only.
+Do not convert subjective checks into scores.
 
 - [ ] **Step 9: Run required import, focused tests, and smoke from clean portable app-data directories**
 
@@ -1192,13 +1355,19 @@ git commit -m "feat: audit fixed fifteen-seed baseline"
 - Consumes: verified audit command and output contract.
 - Produces: durable operator instructions and a final evidence-backed baseline ready before generator behavior changes.
 
+Treat source and test line-count growth as a first-class review concern. Against exact authoritative
+baseline `1b612990edbf52a1ce0f7e4e9149192376b7efad`, report numstat for every changed `.gd` file and
+flag any production file above 1,000 physical lines or test file above 1,500. Each flagged file needs
+a reviewer-recorded keep/simplify decision; any actionable simplify decision blocks completion until
+implemented and reverified. File splitting and line minification do not count as reduction.
+
 - [ ] **Step 1: Add the exact offline audit command and output contract to `README.md`**
 
 Document the portable command from Task 8, `INSPECT_OUT`, the fixed fleet order, JSON/Markdown/manifest and review-pack paths, offline behavior, and the rule that fidelity misses do not fail while malformed evidence/generation/physics/write failures do.
 
 - [ ] **Step 2: Update `CLAUDE.md` architecture notes without claiming the legacy ride is correct**
 
-State that `_inspect.gd` preserves the existing diagnostic images and now adds reconstructed longitudinal/curvature/radius/roll-acceleration/jerk channels, offline evidence overlays, POV mappings, and checked writes. Keep the approved force-informed hybrid design authoritative: FVD is preferred where it gives superior rider-dynamics control, not forced onto layout, terrain, closure, or exact-geometry work better solved by another physically coherent method.
+State that `_inspect.gd` preserves the existing diagnostic images and now adds reconstructed longitudinal/curvature/radius/roll-acceleration/jerk channels, evidence-linked review prompts, explicit POV mapping gaps, and checked writes. Keep the approved force-informed hybrid design authoritative: FVD is preferred where it gives superior rider-dynamics control, not forced onto layout, terrain, closure, or exact-geometry work better solved by another physically coherent method.
 
 - [ ] **Step 3: Update open-issues audit and promotion guidance**
 
@@ -1224,8 +1393,8 @@ URLs are allowed only in `fidelity_references.gd` as inert provenance strings. T
 - [ ] **Step 5: Inspect the final diff for behavior changes**
 
 ```powershell
-git diff --stat db20968..HEAD
-git diff db20968..HEAD -- godot/generator.gd godot/elements.gd godot/main.gd godot/terrain.gd godot/verify.gd
+git diff --stat 1b612990edbf52a1ce0f7e4e9149192376b7efad..HEAD
+git diff 1b612990edbf52a1ce0f7e4e9149192376b7efad..HEAD -- godot/generator.gd godot/elements.gd godot/main.gd godot/terrain.gd godot/verify.gd
 ```
 
 Expected: the second command is empty. If it is not, revert the out-of-scope behavior change and rerun Task 8 verification.

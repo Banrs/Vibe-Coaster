@@ -1005,6 +1005,27 @@ reopened bytes. Task 7C owns inspector delegation and retains the final smoke re
 This is the sole sequencing exception. These slices must not introduce renderer injection or partial
 report/manifest contracts merely to manufacture an intermediate GREEN state.
 
+Task 7A's pure report contract is exact:
+
+- Each `measurement_summaries` entry has exact top-level keys `{schema_version, seed, length,
+  duration, dimensions, beats, force_error_peak_g, reconstruction_seam_count}`.
+  `force_error_peak_g` copies `measurement.reconstruction.force_error_peak_g`;
+  `reconstruction_seam_count` is `measurement.reconstruction.seam_indices.size()`. Omit the
+  `reconstruction` key and every other reconstruction member.
+- `evidence_snapshot` contains one record for every `catalog.sources` entry, sorted by `source_id`.
+  Each record contains `source_id`, `state`, optional `acquisition` only when present in the catalog,
+  every present path/hash pair from `artifact`, `diagnostic`, `metadata_artifact`,
+  `metadata_diagnostic`, and `review`, and `fallback_citations` only when present. It contains no
+  URL, windows, axes, processing, caveats, or invented acquisition value.
+- Exact equality with the successful fixture's ordered issue IDs 1-16 proves that constructed output
+  has no missing or duplicate record. Public-input negative fixtures cover an out-of-range catalog
+  issue ID and an issue whose union of linked IDs and generated paths is empty. Do not expose a
+  coverage validator or add test-only injection solely to manufacture malformed output records.
+- The literal expected Markdown in the valid RED fixture is normative. Its section order is
+  Identity, Fleet, Measurements, Findings, Observed only, Evidence gaps, Recommendation, Evidence
+  snapshot, POV map, Checklist, Issue coverage, Render requests; rows follow the already-contracted
+  array orders.
+
 - [ ] **Step 1: Create the SceneTree runner and add canonical JSON/Markdown ordering tests**
 
 The runner checks `ResourceLoader.exists` for `res://canonical_data.gd` and `res://fidelity_artifacts.gd`, reports the missing production scripts, and returns before loading them. Once present, it loads both scripts, calls every focused test, prints errors in stable order, and exits nonzero on failure.
@@ -1062,7 +1083,13 @@ review/seed-42/elements/<stable-beat-id>.png
 review/seed-42/pov/<stable-beat-id>.png
 ```
 
-`audit.json` records the exact pinned `legacy_base_commit`, audit schema, catalog schema/version/canonical SHA-256, catalog validation result, and a sorted `evidence_snapshot`. Every referenced source snapshot records source ID, state, acquisition result, repository-relative artifact/diagnostic path and SHA-256, or the exact structured fallback citations used; it never claims an unavailable raw artifact. The manifest records its schema, relative path, byte size, SHA-256, seed, gesture/legacy beat ID, artifact kind, and render dimensions. Tests assert the old side/top/elevation/channel capability still exists.
+`audit.json` records the exact pinned `legacy_base_commit`, audit schema, catalog schema/version/canonical
+SHA-256, catalog validation result, and a sorted `evidence_snapshot`. Every referenced source snapshot
+records source ID, state, acquisition only when present, every present repository-relative
+artifact/diagnostic/review path and SHA-256 pair, and exact structured fallback citations only when
+present; it never claims an unavailable raw artifact. The manifest records its schema, relative path,
+byte size, SHA-256, seed, gesture/legacy beat ID, artifact kind, and render dimensions. Tests assert
+the old side/top/elevation/channel capability still exists.
 
 - [ ] **Step 4: Permanently register the artifact suite and confirm GitHub RED**
 
@@ -1201,9 +1228,10 @@ at least one catalog prompt, and each prompt links evidence IDs and generated ar
 no numeric score. Emit one ordered issue-coverage record for every integer ID 1 through 16, with
 issue text, linked measurement/target/evidence IDs, generated artifact paths, and exactly one
 top-level state of `measured`, `review-prompt`, or `evidence-gap`. A record may link many findings,
-but each issue ID appears once and none may be omitted. Add a failing test for missing, duplicate,
-out-of-range, or unlinked issue records, including direct fixtures for entry-launch speed (9),
-flats (12), multidimensional scaling (14), and transition jerk (15).
+but each issue ID appears once and none may be omitted. Pin exact successful issue IDs 1-16, and add
+failing public-input tests for an out-of-range catalog issue ID and an issue whose linked-ID/path
+union is empty, including direct fixtures for entry-launch speed (9), flats (12), multidimensional
+scaling (14), and transition jerk (15).
 
 - [ ] **Step 10: Retain the pre-registered artifact suite and run the focused and smoke gates**
 

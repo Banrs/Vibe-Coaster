@@ -21,6 +21,10 @@ const METRICS := [
 	"flat_dwell", "same_kind_adjacency",
 ]
 const HOLD_SECONDS := [0.2, 0.5, 0.8, 1.0, 1.1, 1.4, 2.0, 2.4, 2.78, 3.0, 4.0, 6.8, 12.0]
+const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+const ROW_BEAT_REDUCERS := ["minimum", "maximum", "median", "time_weighted_mean"]
+const SEED_REDUCERS := ["minimum", "maximum", "median"]
+const ROW_OFFSET_TOLERANCE := 0.000001
 const TERRAIN_HUGGING_AGL := 20.0
 const TRANSITION_WINDOW_SECONDS := 0.5
 const GRAVITY_MPS2 := 9.80665
@@ -36,6 +40,551 @@ static func held(values: PackedFloat32Array, polarity: float, seconds: float) ->
 	if window > values.size():
 		return -INF
 	return Verify._held_curve(values, polarity)[window] * polarity
+
+
+static func classify_value(value: float, target_range: Array) -> String:
+	if value < float(target_range[0]):
+		return "under"
+	if value > float(target_range[1]):
+		return "over"
+	return "within"
+
+
+static func normalized_miss(value: float, target_range: Array) -> float:
+	var distance := 0.0
+	if value < float(target_range[0]):
+		distance = float(target_range[0]) - value
+	elif value > float(target_range[1]):
+		distance = value - float(target_range[1])
+	var denominator := maxf(
+		0.1,
+		maxf(
+			absf(float(target_range[0])),
+			maxf(
+				absf(float(target_range[1])),
+				float(target_range[1]) - float(target_range[0])
+			)
+		)
+	)
+	return distance / denominator
+
+
+static func compare_fleet(seed_measurements: Array, catalog: Dictionary) -> Dictionary:
+	if not validate_catalog(catalog).is_empty():
+		return {"status": "invalid-input", "reason": "catalog-invalid"}
+	if not _canonical_fleet_is_valid(seed_measurements):
+		return {"status": "invalid-input", "reason": "fleet-invalid"}
+
+	for measurement_value in seed_measurements:
+		if not _comparison_measurement_is_valid(measurement_value):
+			return {"status": "invalid-input", "reason": "measurement-invalid"}
+
+	var observations: Array = catalog.get("observations", [])
+	var observation_by_id := _comparison_records_by_id(observations)
+	var selectors: Dictionary = catalog.get("selectors", {})
+	var sources: Dictionary = catalog.get("sources", {})
+	var resolved_by_observation := {}
+	for observation_value in observations:
+		var observation: Dictionary = observation_value
+		resolved_by_observation[str(observation.id)] = {}
+	# Resolve every catalogued observation once before representation validation so malformed
+	# consumed fields retain their documented precedence over a mixed fleet.
+	for measurement_value in seed_measurements:
+		var measurement: Dictionary = measurement_value
+		for observation_value in observations:
+			var observation: Dictionary = observation_value
+			var selector: Dictionary = selectors[str(observation.get("semantic_selector_id", ""))]
+			var resolved := _resolve_comparison_samples(measurement, observation, selector)
+			if resolved.get("invalid", false):
+				return {"status": "invalid-input", "reason": "measurement-invalid"}
+			var by_seed: Dictionary = resolved_by_observation[str(observation.id)]
+			by_seed[int(measurement.seed)] = resolved
+
+	var schemas := {}
+	for measurement_value in seed_measurements:
+		var measurement: Dictionary = measurement_value
+		schemas[int(measurement.schema_version)] = true
+	if schemas.size() != 1:
+		return {"status": "invalid-input", "reason": "mixed-representation"}
+	var resolved_branch := "legacy" if schemas.has(1) else "compiled"
+
+	var measurements := seed_measurements.duplicate()
+	measurements.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		return int(first.seed) < int(second.seed)
+	)
+	var fleet := []
+	for measurement_value in seed_measurements:
+		var measurement: Dictionary = measurement_value
+		fleet.append(int(measurement.seed))
+
+	var targets: Array = catalog.get("targets", [])
+	targets = targets.duplicate(true)
+	targets.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		return str(first.get("id", "")) < str(second.get("id", ""))
+	)
+	var targeted_observations := {}
+	var findings := []
+	var evidence_gaps := []
+	for target_value in targets:
+		var target: Dictionary = target_value
+		var observation_id := str(target.observation_id)
+		targeted_observations[observation_id] = true
+		var observation: Dictionary = observation_by_id[observation_id]
+		var selector: Dictionary = selectors[str(target.semantic_selector_id)]
+		var resolved_by_seed: Dictionary = resolved_by_observation[observation_id]
+		var seed_results := []
+		var gap_count := 0
+		for measurement_value in measurements:
+			var measurement: Dictionary = measurement_value
+			var resolved: Dictionary = resolved_by_seed[int(measurement.seed)]
+			if resolved.has("reason"):
+				evidence_gaps.append({
+					"target_id": str(target.id),
+					"seed": int(measurement.seed),
+					"reason": str(resolved.reason),
+				})
+				gap_count += 1
+				continue
+			var reduced := _reduce_comparison_samples(resolved.samples, target.aggregation)
+			var value := float(reduced.value)
+			var target_range: Array = target.target_range
+			seed_results.append({
+				"seed": int(measurement.seed),
+				"value": value,
+				"status": classify_value(value, target_range),
+				"normalized_miss": normalized_miss(value, target_range),
+				"retained_seconds": float(reduced.retained_seconds),
+				"beat_ids": reduced.beat_ids,
+				"row_ids": reduced.row_ids,
+			})
+		if not seed_results.is_empty():
+			var resolved_anchor: Dictionary = selector["%s_anchor" % resolved_branch]
+			findings.append(_build_target_finding(
+				target, observation, resolved_branch, resolved_anchor, seed_results, gap_count,
+				observation_by_id, sources
+			))
+
+	var observed_only := []
+	var sorted_observations := observations.duplicate(true)
+	sorted_observations.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		return str(first.get("id", "")) < str(second.get("id", ""))
+	)
+	for observation_value in sorted_observations:
+		var observation: Dictionary = observation_value
+		if targeted_observations.has(str(observation.id)):
+			continue
+		var resolved_by_seed: Dictionary = resolved_by_observation[str(observation.id)]
+		for measurement_value in measurements:
+			var measurement: Dictionary = measurement_value
+			var resolved: Dictionary = resolved_by_seed[int(measurement.seed)]
+			if resolved.has("reason"):
+				continue
+			var samples: Array = resolved.samples
+			for sample_value in samples:
+				var sample: Dictionary = sample_value
+				observed_only.append({
+					"observation_id": str(observation.id),
+					"source_id": str(observation.source_id),
+					"metric": str(observation.metric),
+					"seed": int(measurement.seed),
+					"beat_id": str(sample.beat_id),
+					"row_id": str(sample.row_id),
+					"value": float(sample.value),
+					"retained_seconds": float(sample.seconds),
+				})
+
+	observed_only.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		if str(first.observation_id) != str(second.observation_id):
+			return str(first.observation_id) < str(second.observation_id)
+		if int(first.seed) != int(second.seed):
+			return int(first.seed) < int(second.seed)
+		if str(first.beat_id) != str(second.beat_id):
+			return str(first.beat_id) < str(second.beat_id)
+		return str(first.row_id) < str(second.row_id)
+	)
+	evidence_gaps.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		if str(first.target_id) != str(second.target_id):
+			return str(first.target_id) < str(second.target_id)
+		return int(first.seed) < int(second.seed)
+	)
+	return {
+		"fleet": fleet,
+		"findings": findings,
+		"observed_only": observed_only,
+		"evidence_gaps": evidence_gaps,
+		"recommendation": _comparison_recommendation(findings),
+	}
+
+
+static func _canonical_fleet_is_valid(seed_measurements: Array) -> bool:
+	var actual := []
+	for measurement_value in seed_measurements:
+		if not measurement_value is Dictionary:
+			return false
+		var measurement: Dictionary = measurement_value
+		if typeof(measurement.get("seed")) != TYPE_INT:
+			return false
+		actual.append(int(measurement.seed))
+	actual.sort()
+	var expected := CANONICAL_FLEET.duplicate()
+	expected.sort()
+	return actual == expected
+
+
+static func _comparison_measurement_is_valid(measurement_value: Variant) -> bool:
+	if not measurement_value is Dictionary:
+		return false
+	var measurement: Dictionary = measurement_value
+	if typeof(measurement.get("schema_version")) != TYPE_INT or measurement.schema_version not in [1, 2]:
+		return false
+	var beats_value: Variant = measurement.get("beats")
+	if not beats_value is Array:
+		return false
+	var beat_ids := {}
+	for beat_value in beats_value:
+		if not beat_value is Dictionary:
+			return false
+		var beat: Dictionary = beat_value
+		var beat_id_value: Variant = beat.get("beat_id")
+		if not beat_id_value is String or str(beat_id_value) == "" or beat_ids.has(beat_id_value):
+			return false
+		beat_ids[beat_id_value] = true
+		var rows_value: Variant = beat.get("rows")
+		if not rows_value is Array:
+			return false
+		var row_ids := {}
+		for row_value in rows_value:
+			if not row_value is Dictionary:
+				return false
+			var row: Dictionary = row_value
+			var row_id_value: Variant = row.get("row_id")
+			if not row_id_value is String or str(row_id_value) == "" or row_ids.has(row_id_value):
+				return false
+			row_ids[row_id_value] = true
+	return true
+
+
+static func _comparison_records_by_id(records: Array) -> Dictionary:
+	var by_id := {}
+	for record_value in records:
+		var record: Dictionary = record_value
+		by_id[str(record.id)] = record
+	return by_id
+
+
+static func _resolve_comparison_samples(
+	measurement: Dictionary, observation: Dictionary, selector: Dictionary
+) -> Dictionary:
+	var branch := "legacy" if int(measurement.schema_version) == 1 else "compiled"
+	var anchor: Dictionary = selector["%s_anchor" % branch]
+	var selected_beats := []
+	var beats: Array = measurement.beats
+	if branch == "legacy":
+		var occurrence := int(anchor.occurrence)
+		var matched := 0
+		for beat_value in beats:
+			var beat: Dictionary = beat_value
+			if beat.get("phase") != anchor.phase or beat.get("kind") != anchor.kind:
+				continue
+			if matched == occurrence:
+				selected_beats.append(beat)
+				break
+			matched += 1
+	else:
+		for beat_value in beats:
+			var beat: Dictionary = beat_value
+			var story_slot_value: Variant = beat.get("story_slot_id")
+			var window_role_value: Variant = beat.get("window_role")
+			if (
+				story_slot_value is String
+				and window_role_value is String
+				and str(story_slot_value) != ""
+				and str(window_role_value) != ""
+				and story_slot_value == anchor.story_slot_id
+				and window_role_value == anchor.window_role
+			):
+				selected_beats.append(beat)
+		selected_beats.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+			return str(first.beat_id) < str(second.beat_id)
+		)
+	if selected_beats.is_empty():
+		return {"reason": "anchor-not-found", "branch": branch, "anchor": anchor}
+
+	var selected_pairs := []
+	var alignment: Dictionary = observation.alignment
+	var compatibility := str(alignment.row_compatibility)
+	var first_row_gap := ""
+	for beat_value in selected_beats:
+		var beat: Dictionary = beat_value
+		var rows: Array = beat.rows
+		var selected_rows := []
+		if compatibility == "row-independent":
+			selected_rows = rows.duplicate()
+		else:
+			var row_selector: Dictionary = alignment.generated_row_selector
+			for row_value in rows:
+				var row: Dictionary = row_value
+				var matches := false
+				if row_selector.has("row_id"):
+					matches = row.get("row_id") == row_selector.row_id
+				elif row_selector.has("position"):
+					matches = row.get("position") == row_selector.position
+				else:
+					if not _finite_number(row.get("offset")):
+						return {"invalid": true}
+					matches = absf(float(row.offset) - float(row_selector.offset)) <= ROW_OFFSET_TOLERANCE
+				if matches:
+					selected_rows.append(row)
+			if selected_rows.size() > 1:
+				if first_row_gap == "":
+					first_row_gap = "row-ambiguous"
+				continue
+		if selected_rows.is_empty():
+			if first_row_gap == "":
+				first_row_gap = "row-not-found"
+			continue
+		selected_rows.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+			return str(first.row_id) < str(second.row_id)
+		)
+		for row_value in selected_rows:
+			var row: Dictionary = row_value
+			selected_pairs.append({"beat": beat, "row": row})
+	if first_row_gap != "":
+		return {"reason": first_row_gap, "branch": branch, "anchor": anchor}
+
+	var samples := []
+	var first_metric_gap := ""
+	for pair_value in selected_pairs:
+		var pair: Dictionary = pair_value
+		var beat: Dictionary = pair.beat
+		var row: Dictionary = pair.row
+		var metric_result := _resolve_comparison_metric(row, observation)
+		if metric_result.get("invalid", false):
+			return {"invalid": true}
+		if metric_result.has("reason"):
+			if first_metric_gap == "":
+				first_metric_gap = str(metric_result.reason)
+			continue
+		samples.append({
+			"beat_id": str(beat.beat_id),
+			"row_id": str(row.row_id),
+			"value": float(metric_result.value),
+			"seconds": float(metric_result.seconds),
+		})
+	if first_metric_gap != "":
+		return {"reason": first_metric_gap, "branch": branch, "anchor": anchor}
+	return {"samples": samples, "branch": branch, "anchor": anchor}
+
+
+static func _resolve_comparison_metric(row: Dictionary, observation: Dictionary) -> Dictionary:
+	var loads_value: Variant = row.get("loads")
+	var metric := str(observation.metric)
+	if not loads_value is Dictionary:
+		return {"invalid": true}
+	var loads: Dictionary = loads_value
+	if not metric.contains("_held_") and not _positive_number(row.get("window_seconds")):
+		return {"invalid": true}
+	if not loads.has(metric):
+		return {"reason": "metric-not-found"}
+	var stored_value: Variant = loads[metric]
+	if metric.contains("_held_"):
+		if not stored_value is Dictionary:
+			return {"invalid": true}
+		var held_values: Dictionary = stored_value
+		var hold_key := _hold_key(float(observation.hold_seconds))
+		if held_values.has(hold_key):
+			if not _finite_number(held_values[hold_key]):
+				return {"invalid": true}
+			return {
+				"value": float(held_values[hold_key]),
+				"seconds": float(observation.hold_seconds),
+			}
+		if held_values.has("_unavailable"):
+			var unavailable_value: Variant = held_values["_unavailable"]
+			if not unavailable_value is Dictionary:
+				return {"invalid": true}
+			var unavailable: Dictionary = unavailable_value
+			if unavailable.has(hold_key):
+				var record_value: Variant = unavailable[hold_key]
+				if not record_value is Dictionary:
+					return {"invalid": true}
+				var record: Dictionary = record_value
+				if record.get("status") != "unavailable" or str(record.get("reason", "")).strip_edges() == "":
+					return {"invalid": true}
+				return {"reason": "metric-unavailable"}
+		return {"reason": "metric-not-found"}
+	if not _finite_number(stored_value):
+		return {"invalid": true}
+	return {"value": float(stored_value), "seconds": float(row.window_seconds)}
+
+
+static func _reduce_comparison_samples(samples: Array, aggregation: Dictionary) -> Dictionary:
+	var by_beat := {}
+	for sample_value in samples:
+		var sample: Dictionary = sample_value
+		var beat_id := str(sample.beat_id)
+		if not by_beat.has(beat_id):
+			by_beat[beat_id] = []
+		by_beat[beat_id].append(sample)
+	var beat_ids := by_beat.keys()
+	beat_ids.sort()
+	var beat_values := []
+	var row_ids := {}
+	for beat_id_value in beat_ids:
+		var beat_samples: Array = by_beat[beat_id_value]
+		beat_samples.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+			return str(first.row_id) < str(second.row_id)
+		)
+		var retained_seconds := 0.0
+		for sample_value in beat_samples:
+			var sample: Dictionary = sample_value
+			row_ids[str(sample.row_id)] = true
+			retained_seconds = maxf(retained_seconds, float(sample.seconds))
+		beat_values.append({
+			"value": _reduce_comparison_records(beat_samples, str(aggregation.row)),
+			"seconds": retained_seconds,
+		})
+	var total_seconds := 0.0
+	for beat_value in beat_values:
+		var beat: Dictionary = beat_value
+		total_seconds += float(beat.seconds)
+	var sorted_row_ids := row_ids.keys()
+	sorted_row_ids.sort()
+	return {
+		"value": _reduce_comparison_records(beat_values, str(aggregation.beat)),
+		"retained_seconds": total_seconds,
+		"beat_ids": beat_ids,
+		"row_ids": sorted_row_ids,
+	}
+
+
+static func _reduce_comparison_records(records: Array, reducer: String) -> float:
+	if reducer == "time_weighted_mean":
+		var weighted_total := 0.0
+		var total_seconds := 0.0
+		for record_value in records:
+			var record: Dictionary = record_value
+			weighted_total += float(record.value) * float(record.seconds)
+			total_seconds += float(record.seconds)
+		return weighted_total / total_seconds
+	var values := []
+	for record_value in records:
+		var record: Dictionary = record_value
+		values.append(float(record.value))
+	return _reduce_comparison_values(values, reducer)
+
+
+static func _reduce_comparison_values(values: Array, reducer: String) -> float:
+	var ordered := values.duplicate()
+	ordered.sort()
+	if reducer == "minimum":
+		return float(ordered[0])
+	if reducer == "maximum":
+		return float(ordered[-1])
+	return _median(ordered)
+
+
+static func _build_target_finding(
+	target: Dictionary, observation: Dictionary, branch: String, anchor: Dictionary,
+	seed_results: Array, gap_count: int, observation_by_id: Dictionary, sources: Dictionary
+) -> Dictionary:
+	seed_results.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		return int(first.seed) < int(second.seed)
+	)
+	var seed_values := []
+	var affected_misses := []
+	var total_retained_seconds := 0.0
+	for result_value in seed_results:
+		var result: Dictionary = result_value
+		seed_values.append(float(result.value))
+		total_retained_seconds += float(result.retained_seconds)
+		if result.status in ["under", "over"]:
+			affected_misses.append(float(result.normalized_miss))
+	var fleet_value := _reduce_comparison_values(seed_values, str(target.aggregation.seed))
+	var normalized_median := 0.0
+	if not affected_misses.is_empty():
+		normalized_median = _reduce_comparison_values(affected_misses, "median")
+
+	var primary_source_ids := _sorted_unique_strings([observation.source_id])
+	var corroborating_source_ids := []
+	for corroborating_id in observation.corroborating_observation_ids:
+		var corroborating: Dictionary = observation_by_id[str(corroborating_id)]
+		corroborating_source_ids.append(corroborating.source_id)
+	corroborating_source_ids = _sorted_unique_strings(corroborating_source_ids)
+	var provenance_source_ids := primary_source_ids.duplicate()
+	provenance_source_ids.append_array(corroborating_source_ids)
+	var caveats := []
+	for source_id in provenance_source_ids:
+		var source: Dictionary = sources[str(source_id)]
+		caveats.append_array(source.caveats)
+	caveats = _sorted_unique_strings(caveats)
+
+	var target_range: Array = target.target_range
+	return {
+		"target_id": str(target.id),
+		"observation_id": str(observation.id),
+		"primary_source_ids": primary_source_ids,
+		"corroborating_source_ids": corroborating_source_ids,
+		"caveats": caveats,
+		"transform_id": str(observation.transform_id),
+		"semantic_selector_id": str(target.semantic_selector_id),
+		"dimension": str(target.dimension),
+		"metric": str(target.metric),
+		"hold_seconds": target.hold_seconds,
+		"resolved_branch": branch,
+		"anchor": anchor.duplicate(true),
+		"row_compatibility": str(observation.alignment.row_compatibility),
+		"generated_row_selector": observation.alignment.generated_row_selector,
+		"aggregation": target.aggregation.duplicate(true),
+		"raw_range": target.raw_range.duplicate(true),
+		"target_range": target_range.duplicate(true),
+		"seed_results": seed_results,
+		"fleet_value": fleet_value,
+		"fleet_status": classify_value(fleet_value, target_range),
+		"total_retained_seconds": total_retained_seconds,
+		"affected_count": affected_misses.size(),
+		"available_count": seed_results.size(),
+		"gap_count": gap_count,
+		"prevalence": float(affected_misses.size()) / float(CANONICAL_FLEET.size()),
+		"normalized_median_miss": normalized_median,
+		"observation_confidence": str(observation.confidence),
+	}
+
+
+static func _sorted_unique_strings(values: Array) -> Array:
+	var seen := {}
+	for value in values:
+		seen[str(value)] = true
+	var output := seen.keys()
+	output.sort()
+	return output
+
+
+static func _comparison_recommendation(findings: Array) -> Dictionary:
+	var eligible := []
+	for finding_value in findings:
+		var finding: Dictionary = finding_value
+		if finding.observation_confidence in ["high", "medium"] and int(finding.affected_count) >= 8:
+			eligible.append(finding)
+	if eligible.is_empty():
+		return {"status": "no-eligible-finding"}
+	eligible.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		if float(first.normalized_median_miss) != float(second.normalized_median_miss):
+			return float(first.normalized_median_miss) > float(second.normalized_median_miss)
+		if float(first.prevalence) != float(second.prevalence):
+			return float(first.prevalence) > float(second.prevalence)
+		if str(first.observation_confidence) != str(second.observation_confidence):
+			return str(first.observation_confidence) == "high"
+		return str(first.target_id) < str(second.target_id)
+	)
+	var selected: Dictionary = eligible[0]
+	return {
+		"status": "recommended",
+		"target_id": str(selected.target_id),
+		"normalized_median_miss": float(selected.normalized_median_miss),
+		"prevalence": float(selected.prevalence),
+		"confidence": str(selected.observation_confidence),
+	}
 
 
 static func _hold_window_samples(seconds: float) -> int:
@@ -880,7 +1429,7 @@ const OBSERVATION_FIELDS := [
 ]
 const TARGET_FIELDS := [
 	"id", "observation_id", "semantic_selector_id", "dimension", "metric", "hold_seconds",
-	"raw_range", "target_range", "issues",
+	"raw_range", "target_range", "issues", "aggregation",
 ]
 
 
@@ -1334,6 +1883,8 @@ static func _validate_observation_metric(
 			or float(hold_seconds) > float(observation.duration_s)
 		):
 			errors.append("observation '%s' has invalid held duration" % observation_id)
+		if not _hold_seconds_is_emitted(hold_seconds):
+			errors.append("observation '%s' hold_seconds must be exactly present in HOLD_SECONDS" % observation_id)
 	elif hold_seconds != null:
 		errors.append("observation '%s' peak metric cannot declare hold_seconds" % observation_id)
 	if transform.get("kind") == "scale" and transform.get("axis") != mapped_axis:
@@ -1422,12 +1973,32 @@ static func _validate_targets(
 		var hold_seconds: Variant = target.get("hold_seconds")
 		if hold_seconds != observation.get("hold_seconds"):
 			errors.append("target '%s' hold_seconds must match observation" % target_id)
+		if str(target.get("metric", "")).contains("_held_") and not _hold_seconds_is_emitted(hold_seconds):
+			errors.append("target '%s' hold_seconds must be exactly present in HOLD_SECONDS" % target_id)
 		if not _ranges_close(target.get("raw_range"), observation.get("raw_range")):
 			errors.append("target '%s' raw_range must match observation" % target_id)
 		var expected_target := _transformed_range(observation, transforms)
 		if expected_target.is_empty() or not _ranges_close(target.get("target_range"), expected_target):
 			errors.append("target '%s' target_range must match the approved transform" % target_id)
+		_validate_aggregation(target_id, target.get("aggregation"), errors)
 		_validate_issues("target", target_id, target.get("issues"), errors)
+
+
+static func _validate_aggregation(
+	target_id: String, aggregation: Variant, errors: PackedStringArray
+) -> void:
+	if not aggregation is Dictionary:
+		errors.append("target '%s' aggregation must be a Dictionary" % target_id)
+		return
+	_require_exact_keys(
+		aggregation, ["row", "beat", "seed"], "target '%s' aggregation" % target_id, errors
+	)
+	if aggregation.get("row") not in ROW_BEAT_REDUCERS:
+		errors.append("target '%s' aggregation has invalid row reducer" % target_id)
+	if aggregation.get("beat") not in ROW_BEAT_REDUCERS:
+		errors.append("target '%s' aggregation has invalid beat reducer" % target_id)
+	if aggregation.get("seed") not in SEED_REDUCERS:
+		errors.append("target '%s' aggregation has invalid seed reducer" % target_id)
 
 
 static func _window_by_id(windows: Variant, window_id: String) -> Dictionary:
@@ -1495,7 +2066,10 @@ static func _validate_alignment(
 		return
 	_require_exact_keys(
 		alignment,
-		["source_landmark_id", "generated_anchor", "method", "uncertainty_s", "row_compatibility", "rationale"],
+		[
+			"source_landmark_id", "generated_anchor", "method", "uncertainty_s",
+			"row_compatibility", "generated_row_selector", "rationale",
+		],
 		"observation '%s' alignment" % observation_id,
 		errors
 	)
@@ -1508,8 +2082,36 @@ static func _validate_alignment(
 		errors.append("observation '%s' has incomplete alignment" % observation_id)
 	if not _nonnegative_number(alignment.get("uncertainty_s")):
 		errors.append("observation '%s' alignment has invalid uncertainty_s" % observation_id)
-	if alignment.get("row_compatibility") not in ["same-row", "explicit-row-transform", "row-independent"]:
+	var compatibility: Variant = alignment.get("row_compatibility")
+	var row_selector: Variant = alignment.get("generated_row_selector")
+	if compatibility not in ["same-row", "explicit-row-transform", "row-independent"]:
 		errors.append("observation '%s' alignment has invalid row_compatibility" % observation_id)
+	elif compatibility == "row-independent":
+		if row_selector != null:
+			errors.append("observation '%s' alignment generated_row_selector must be null for row-independent evidence" % observation_id)
+	elif not _valid_generated_row_selector(row_selector):
+		errors.append("observation '%s' alignment has invalid generated_row_selector" % observation_id)
+
+
+static func _valid_generated_row_selector(selector: Variant) -> bool:
+	if not selector is Dictionary or selector.size() != 1:
+		return false
+	if selector.has("row_id"):
+		return selector.row_id is String and str(selector.row_id).strip_edges() != ""
+	if selector.has("position"):
+		return selector.position in ["front", "intermediate", "rear"]
+	if selector.has("offset"):
+		return typeof(selector.offset) == TYPE_FLOAT and is_finite(float(selector.offset))
+	return false
+
+
+static func _hold_seconds_is_emitted(value: Variant) -> bool:
+	if not _positive_number(value):
+		return false
+	for seconds in HOLD_SECONDS:
+		if float(value) == float(seconds):
+			return true
+	return false
 
 
 static func _validate_auxiliary_records(

@@ -503,7 +503,8 @@ static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedSt
 	bad_offset.observations[0].alignment.generated_row_selector = {"offset": NAN}
 	_expect_contains(errors, fidelity.validate_catalog(bad_offset), "generated_row_selector", "row selector offset is finite")
 	for malformed_selector in [
-		[], {"unknown": "row-01"}, {"row_id": ""}, {"row_id": 2}, {"position": null}, {"offset": "2.0"},
+		[], {"unknown": "row-01"}, {"row_id": ""}, {"row_id": 2}, {"position": null},
+		{"offset": 2}, {"offset": "2.0"},
 	]:
 		var malformed := catalog.duplicate(true)
 		malformed.observations[0].alignment.generated_row_selector = malformed_selector
@@ -875,6 +876,13 @@ static func _test_fleet_validation(fidelity: Script, errors: PackedStringArray) 
 	var nonfinite_metric := _comparison_fleet(CANONICAL_FLEET)
 	nonfinite_metric[0].beats[0].rows[0].loads.normal_peak_positive = NAN
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(nonfinite_metric, catalog), "measurement-invalid", "non-finite selected metric")
+	var missing_then_nonfinite := _compiled_reducer_fleet(CANONICAL_FLEET)
+	missing_then_nonfinite[0].beats[0].rows[0].loads.erase("normal_peak_positive")
+	missing_then_nonfinite[0].beats[1].rows[0].loads.normal_peak_positive = NAN
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(missing_then_nonfinite, catalog), "measurement-invalid", "a missing metric does not hide a later non-finite selected metric")
+	var malformed_loads := _comparison_fleet(CANONICAL_FLEET)
+	malformed_loads[0].beats[0].rows[0].loads = NAN
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(malformed_loads, catalog), "measurement-invalid", "malformed selected loads container")
 	var nonfinite_duration := _comparison_fleet(CANONICAL_FLEET)
 	nonfinite_duration[0].beats[0].rows[0].window_seconds = INF
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(nonfinite_duration, catalog), "measurement-invalid", "non-finite selected duration")

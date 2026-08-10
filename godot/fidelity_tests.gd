@@ -4,6 +4,7 @@ const FIDELITY_PATH := "res://fidelity.gd"
 const REFERENCES_PATH := "res://fidelity_references.gd"
 const GENERATOR_PATH := "res://generator.gd"
 const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
+const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 
 
 func _initialize() -> void:
@@ -41,6 +42,16 @@ static func run() -> PackedStringArray:
 	_test_executable_promotion(fidelity, errors)
 	_test_route_measurements(fidelity, errors)
 	_test_reference_catalog(fidelity, errors)
+	_test_comparison_catalog_contract(fidelity, errors)
+	if _require_comparison_api(fidelity, errors):
+		_test_target_classification(fidelity, errors)
+		_test_comparison_reducers(fidelity, errors)
+		_test_selector_and_row_resolution(fidelity, errors)
+		_test_observed_only_and_evidence_gaps(fidelity, errors)
+		_test_fleet_validation(fidelity, errors)
+		_test_recommendation_eligibility(fidelity, errors)
+		_test_recommendation_ranking(fidelity, errors)
+		_test_comparison_determinism(fidelity, errors)
 	return errors
 
 
@@ -435,6 +446,68 @@ static func _test_executable_promotion(fidelity: Script, errors: PackedStringArr
 	_expect_contains(errors, fidelity.validate_catalog(missing_observation), "unknown observation", "targets require an executable observation")
 
 
+static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedStringArray) -> void:
+	var catalog := _valid_promotion_catalog()
+	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "comparison execution policy validates")
+	var missing_aggregation := catalog.duplicate(true)
+	missing_aggregation.targets[0].erase("aggregation")
+	_expect_contains(errors, fidelity.validate_catalog(missing_aggregation), "aggregation", "targets require an aggregation policy")
+	for reducer in ["sum", "time_weighted_sum", "unknown"]:
+		var bad_row := catalog.duplicate(true)
+		bad_row.targets[0].aggregation.row = reducer
+		_expect_contains(errors, fidelity.validate_catalog(bad_row), "aggregation", "row reducer %s is rejected" % reducer)
+		var bad_beat := catalog.duplicate(true)
+		bad_beat.targets[0].aggregation.beat = reducer
+		_expect_contains(errors, fidelity.validate_catalog(bad_beat), "aggregation", "beat reducer %s is rejected" % reducer)
+	var weighted_seed := catalog.duplicate(true)
+	weighted_seed.targets[0].aggregation.seed = "time_weighted_mean"
+	_expect_contains(errors, fidelity.validate_catalog(weighted_seed), "aggregation", "seed reduction cannot be time weighted")
+	var malformed_aggregation := catalog.duplicate(true)
+	malformed_aggregation.targets[0].aggregation = {"row": "median", "beat": "median", "seed": "median", "extra": "median"}
+	_expect_contains(errors, fidelity.validate_catalog(malformed_aggregation), "aggregation", "aggregation fields are exact")
+
+	var missing_row_selector := catalog.duplicate(true)
+	missing_row_selector.observations[0].alignment.erase("generated_row_selector")
+	_expect_contains(errors, fidelity.validate_catalog(missing_row_selector), "generated_row_selector", "alignment requires a generated row selector field")
+	var independent_with_selector := catalog.duplicate(true)
+	independent_with_selector.observations[0].alignment.row_compatibility = "row-independent"
+	_expect_contains(errors, fidelity.validate_catalog(independent_with_selector), "generated_row_selector", "row-independent alignment requires null row selector")
+	var same_row_without_selector := catalog.duplicate(true)
+	same_row_without_selector.observations[0].alignment.generated_row_selector = null
+	_expect_contains(errors, fidelity.validate_catalog(same_row_without_selector), "generated_row_selector", "same-row alignment requires an exact row selector")
+	var multiple_selector_fields := catalog.duplicate(true)
+	multiple_selector_fields.observations[0].alignment.generated_row_selector = {"row_id": "row-02", "position": "rear"}
+	_expect_contains(errors, fidelity.validate_catalog(multiple_selector_fields), "generated_row_selector", "row selector has exactly one field")
+	var bad_position := catalog.duplicate(true)
+	bad_position.observations[0].alignment.generated_row_selector = {"position": "middle"}
+	_expect_contains(errors, fidelity.validate_catalog(bad_position), "generated_row_selector", "row selector position is exact")
+	var bad_offset := catalog.duplicate(true)
+	bad_offset.observations[0].alignment.generated_row_selector = {"offset": NAN}
+	_expect_contains(errors, fidelity.validate_catalog(bad_offset), "generated_row_selector", "row selector offset is finite")
+	for selector in [{"row_id": "row-02"}, {"position": "rear"}, {"offset": 2.0}]:
+		var exact_selector := catalog.duplicate(true)
+		exact_selector.observations[0].alignment.generated_row_selector = selector
+		_expect(errors, fidelity.validate_catalog(exact_selector).is_empty(), "exact generated row selector validates")
+	var independent := catalog.duplicate(true)
+	independent.observations[0].alignment.row_compatibility = "row-independent"
+	independent.observations[0].alignment.generated_row_selector = null
+	_expect(errors, fidelity.validate_catalog(independent).is_empty(), "row-independent null selector validates")
+
+	var non_grid_hold := catalog.duplicate(true)
+	non_grid_hold.observations[0].hold_seconds = 0.804
+	non_grid_hold.targets[0].hold_seconds = 0.804
+	_expect_contains(errors, fidelity.validate_catalog(non_grid_hold), "HOLD_SECONDS", "comparison holds must use an emitted duration")
+	var long_values := PackedFloat32Array()
+	long_values.resize(1301)
+	long_values.fill(1.0)
+	var emitted: Dictionary = fidelity._hold_values(long_values, 1.0)
+	var emitted_keys := PackedStringArray(emitted.keys())
+	emitted_keys.sort()
+	var expected_keys := PackedStringArray(["0.20", "0.50", "0.80", "1.00", "1.10", "1.40", "2.00", "2.40", "2.78", "3.00", "4.00", "6.80", "12.00"])
+	expected_keys.sort()
+	_expect(errors, emitted_keys == expected_keys, "measurement emits exactly the HOLD_SECONDS lookup keys")
+
+
 static func _test_route_measurements(fidelity: Script, errors: PackedStringArray) -> void:
 	if not _script_has_method(fidelity, "measure_route"):
 		errors.append("RideFidelity.measure_route is missing")
@@ -518,6 +591,356 @@ static func _test_manifest_parity(catalog: Dictionary, errors: PackedStringArray
 	actual_ids.sort()
 	_expect(errors, actual_ids == expected_ids, "reference catalog source IDs exactly match the manifest")
 	_expect(errors, catalog.get("selectors", {}).is_empty(), "baseline catalog has no unreferenced semantic selectors")
+
+
+static func _require_comparison_api(fidelity: Script, errors: PackedStringArray) -> bool:
+	var available := true
+	for method_name in ["classify_value", "normalized_miss", "compare_fleet"]:
+		if not _script_has_method(fidelity, method_name):
+			errors.append("RideFidelity.%s is missing" % method_name)
+			available = false
+	return available
+
+
+static func _test_target_classification(fidelity: Script, errors: PackedStringArray) -> void:
+	for case in [
+		{"value": 0.5, "band": [1.0, 2.0], "expected": "under"},
+		{"value": 1.0, "band": [1.0, 2.0], "expected": "within"},
+		{"value": 1.5, "band": [1.0, 2.0], "expected": "within"},
+		{"value": 2.0, "band": [1.0, 2.0], "expected": "within"},
+		{"value": 2.5, "band": [1.0, 2.0], "expected": "over"},
+		{"value": -2.5, "band": [-2.0, -1.0], "expected": "under"},
+		{"value": -0.5, "band": [-2.0, -1.0], "expected": "over"},
+	]:
+		_expect(errors, fidelity.classify_value(case.value, case.band) == case.expected, "classification %s" % case.expected)
+	for case in [
+		{"value": 0.5, "band": [1.0, 2.0], "expected": 0.25},
+		{"value": 1.5, "band": [1.0, 2.0], "expected": 0.0},
+		{"value": 2.5, "band": [1.0, 2.0], "expected": 0.25},
+		{"value": 0.05, "band": [0.0, 0.0], "expected": 0.5},
+		{"value": -3.0, "band": [-2.0, -1.0], "expected": 0.5},
+	]:
+		_expect_close(errors, fidelity.normalized_miss(case.value, case.band), case.expected, "normalized miss uses the specified denominator")
+
+
+static func _test_comparison_reducers(fidelity: Script, errors: PackedStringArray) -> void:
+	var reducer_fleet := _compiled_reducer_fleet(CANONICAL_FLEET)
+	for case in [
+		{"reducer": "minimum", "expected": 1.0},
+		{"reducer": "maximum", "expected": 7.0},
+		{"reducer": "median", "expected": 4.0},
+		{"reducer": "time_weighted_mean", "expected": (2.5 * 3.0 + (38.0 / 6.0) * 4.0) / 7.0},
+	]:
+		var catalog := _comparison_catalog()
+		catalog.observations[0].alignment.row_compatibility = "row-independent"
+		catalog.observations[0].alignment.generated_row_selector = null
+		catalog.targets[0].aggregation.row = case.reducer
+		catalog.targets[0].aggregation.beat = case.reducer
+		var comparison: Dictionary = fidelity.compare_fleet(reducer_fleet, catalog)
+		var finding := _first_finding(comparison, errors, "%s reducer emits a finding" % case.reducer)
+		if finding.is_empty():
+			continue
+		_expect_close(errors, finding.seed_results[0].value, case.expected, "%s reduces row then beat values" % case.reducer)
+		_expect_close(errors, finding.seed_results[0].retained_seconds, 7.0, "%s keeps max parallel row duration and summed beat duration" % case.reducer)
+		_expect_close(errors, finding.total_retained_seconds, 105.0, "%s retains stable fleet duration" % case.reducer)
+
+	for reducer_case in [
+		{"reducer": "minimum", "expected": 1.0},
+		{"reducer": "maximum", "expected": 15.0},
+		{"reducer": "median", "expected": 8.0},
+	]:
+		var catalog := _comparison_catalog()
+		catalog.targets[0].aggregation.seed = reducer_case.reducer
+		var comparison: Dictionary = fidelity.compare_fleet(_seed_reducer_fleet(CANONICAL_FLEET), catalog)
+		var finding := _first_finding(comparison, errors, "%s seed reducer emits a finding" % reducer_case.reducer)
+		if not finding.is_empty():
+			_expect_close(errors, finding.fleet_value, reducer_case.expected, "%s reduces available seed values" % reducer_case.reducer)
+
+	var held_catalog := _comparison_catalog("normal_held_positive", 0.8)
+	var held_comparison: Dictionary = fidelity.compare_fleet(_held_comparison_fleet(CANONICAL_FLEET), held_catalog)
+	var held_finding := _first_finding(held_comparison, errors, "held comparison emits a finding")
+	if not held_finding.is_empty():
+		_expect_close(errors, held_finding.seed_results[0].retained_seconds, 0.8, "held support is the requested duration")
+		_expect_close(errors, held_finding.total_retained_seconds, 12.0, "held fleet support sums requested durations")
+
+	var reordered := reducer_fleet.duplicate(true)
+	for measurement in reordered:
+		measurement.beats.reverse()
+		for beat in measurement.beats:
+			beat.rows.reverse()
+	var stable_a: Dictionary = fidelity.compare_fleet(reducer_fleet, _comparison_catalog_with_aggregation("time_weighted_mean", "time_weighted_mean", "median"))
+	var stable_b: Dictionary = fidelity.compare_fleet(reordered, _comparison_catalog_with_aggregation("time_weighted_mean", "time_weighted_mean", "median"))
+	_expect(errors, stable_a.get("findings", []) == stable_b.get("findings", []), "weighted reduction order is stable under beat and row insertion changes")
+
+
+static func _test_selector_and_row_resolution(fidelity: Script, errors: PackedStringArray) -> void:
+	var occurrence_catalog := _comparison_catalog()
+	occurrence_catalog.selectors["semantic.hill"].legacy_anchor.occurrence = 1
+	var occurrence_result: Dictionary = fidelity.compare_fleet(_legacy_occurrence_fleet(CANONICAL_FLEET), occurrence_catalog)
+	var occurrence_finding := _first_finding(occurrence_result, errors, "legacy occurrence emits a finding")
+	if not occurrence_finding.is_empty():
+		_expect_close(errors, occurrence_finding.seed_results[0].value, 3.0, "legacy occurrence counts exact phase-kind matches in measurement order")
+		_expect(errors, occurrence_finding.seed_results[0].beat_ids == ["legacy-match-02"], "stored phase-wide ordinal is not the legacy occurrence")
+
+	var compiled_miss: Dictionary = fidelity.compare_fleet(_compiled_fallback_trap_fleet(CANONICAL_FLEET), _comparison_catalog())
+	_expect(errors, compiled_miss.get("findings", []).is_empty(), "compiled selector miss never falls back to legacy")
+	_expect(errors, compiled_miss.get("evidence_gaps", []).size() == 15, "compiled selector miss gaps every seed")
+	if not compiled_miss.get("evidence_gaps", []).is_empty():
+		_expect(errors, compiled_miss.evidence_gaps[0].reason == "anchor-not-found", "compiled miss reports anchor-not-found")
+
+	for selector_case in [
+		{"selector": {"row_id": "row-02"}, "expected": 2.0},
+		{"selector": {"position": "rear"}, "expected": 2.0},
+		{"selector": {"offset": 2.0000005}, "expected": 2.0},
+	]:
+		var catalog := _comparison_catalog()
+		catalog.observations[0].alignment.generated_row_selector = selector_case.selector
+		var comparison: Dictionary = fidelity.compare_fleet(_row_selection_fleet(CANONICAL_FLEET), catalog)
+		var finding := _first_finding(comparison, errors, "exact row selector emits a finding")
+		if not finding.is_empty():
+			_expect_close(errors, finding.seed_results[0].value, selector_case.expected, "row selector resolves exactly")
+
+	var independent_catalog := _comparison_catalog()
+	independent_catalog.observations[0].alignment.row_compatibility = "row-independent"
+	independent_catalog.observations[0].alignment.generated_row_selector = null
+	independent_catalog.targets[0].aggregation.row = "maximum"
+	var independent: Dictionary = fidelity.compare_fleet(_row_selection_fleet(CANONICAL_FLEET), independent_catalog)
+	var independent_finding := _first_finding(independent, errors, "row-independent comparison emits a finding")
+	if not independent_finding.is_empty():
+		_expect_close(errors, independent_finding.seed_results[0].value, 2.0, "row-independent observes all rows before reducing")
+		_expect(errors, independent_finding.seed_results[0].row_ids == ["row-01", "row-02"], "row IDs are retained and sorted")
+
+	var missing_row_catalog := _comparison_catalog()
+	missing_row_catalog.observations[0].alignment.generated_row_selector = {"row_id": "missing"}
+	_assert_all_gaps(errors, fidelity.compare_fleet(_row_selection_fleet(CANONICAL_FLEET), missing_row_catalog), "row-not-found", "missing row")
+	var ambiguous_catalog := _comparison_catalog()
+	ambiguous_catalog.observations[0].alignment.generated_row_selector = {"position": "intermediate"}
+	_assert_all_gaps(errors, fidelity.compare_fleet(_ambiguous_row_fleet(CANONICAL_FLEET), ambiguous_catalog), "row-ambiguous", "ambiguous row")
+
+	var partial_fleet := _compiled_reducer_fleet(CANONICAL_FLEET)
+	partial_fleet[0].beats[1].rows[0].loads.erase("normal_peak_positive")
+	var partial: Dictionary = fidelity.compare_fleet(partial_fleet, _comparison_catalog())
+	var partial_finding := _first_finding(partial, errors, "multi-beat partial fleet retains other seeds")
+	if not partial_finding.is_empty():
+		_expect(errors, partial_finding.seed_results.size() == 14, "one missing selected beat metric removes the whole target-seed reduction")
+	_expect(errors, partial.get("evidence_gaps", []).size() == 1 and partial.evidence_gaps[0].reason == "metric-not-found", "all-or-nothing multi-beat failure emits one metric gap")
+
+	var unavailable_fleet := _held_comparison_fleet(CANONICAL_FLEET)
+	unavailable_fleet[0].beats[0].rows[0].loads.normal_held_positive = {"_unavailable": {"0.80": {"status": "unavailable", "reason": "insufficient_duration"}}}
+	var unavailable: Dictionary = fidelity.compare_fleet(unavailable_fleet, _comparison_catalog("normal_held_positive", 0.8))
+	_expect(errors, unavailable.get("evidence_gaps", []).size() == 1 and unavailable.evidence_gaps[0].reason == "metric-unavailable", "explicitly unavailable held metric is a gap")
+
+
+static func _test_observed_only_and_evidence_gaps(fidelity: Script, errors: PackedStringArray) -> void:
+	var catalog := _comparison_catalog_with_observed_only()
+	var comparison: Dictionary = fidelity.compare_fleet(_observed_only_fleet(CANONICAL_FLEET), catalog)
+	_expect(errors, comparison.get("findings", []).size() == 1, "target-backed comparisons stay in findings")
+	_expect(errors, comparison.get("observed_only", []).size() == 15, "catalogued untargeted numeric observations stay separate")
+	if not comparison.get("observed_only", []).is_empty():
+		var observed: Dictionary = comparison.observed_only[0]
+		_expect(errors, observed.observation_id == "observed.hill.entry", "observed-only record retains observation provenance")
+		_expect(errors, observed.seed == 1, "observed-only records sort by observation and numeric seed")
+		_expect(errors, observed.source_id == "test.primary", "observed-only record retains source provenance")
+		_expect(errors, observed.metric == "normal_peak_positive" and observed.value == 9.0, "observed-only record contains only its catalogued metric")
+	_expect(errors, _count_dictionary_key(comparison.get("observed_only", []), "normal_peak_negative") == 0, "uncatalogued measurement metrics are not enumerated")
+
+	var finding := _first_finding(comparison, errors, "provenance comparison emits a finding")
+	if not finding.is_empty():
+		_expect(errors, finding.primary_source_ids == ["test.primary"], "finding retains sorted unique primary source IDs")
+		_expect(errors, finding.corroborating_source_ids.is_empty(), "finding distinguishes absent corroborating sources")
+		_expect(errors, finding.caveats == ["fixture caveat"], "finding retains sorted unique source caveats")
+		_expect(errors, finding.transform_id == "observed.identity@1" and finding.semantic_selector_id == "semantic.hill", "finding retains transform and selector provenance")
+		_expect(errors, finding.resolved_branch == "legacy" and finding.anchor == catalog.selectors["semantic.hill"].legacy_anchor, "finding reports its resolved branch and anchor")
+		_expect(errors, finding.row_compatibility == "same-row" and finding.generated_row_selector == {"row_id": "row-01"}, "finding reports row alignment policy")
+	var corroborated_catalog := _comparison_catalog()
+	corroborated_catalog.sources["test.secondary"] = _comparison_source("secondary", "b".repeat(64))
+	var corroborating := _comparison_observation(
+		"observed.hill.corroborating", "semantic.hill", "normal_peak_positive", null, "medium"
+	)
+	corroborating.state = "corroborative"
+	corroborating.source_id = "test.secondary"
+	corroborated_catalog.observations.append(corroborating)
+	corroborated_catalog.observations[0].corroborating_observation_ids = ["observed.hill.corroborating"]
+	var corroborated: Dictionary = fidelity.compare_fleet(_comparison_fleet(CANONICAL_FLEET), corroborated_catalog)
+	var corroborated_finding := _first_finding(corroborated, errors, "corroborated provenance emits a finding")
+	if not corroborated_finding.is_empty():
+		_expect(errors, corroborated_finding.corroborating_source_ids == ["test.secondary"], "finding retains sorted unique corroborating source IDs")
+
+	var anchor_catalog := _comparison_catalog()
+	anchor_catalog.selectors["semantic.hill"].legacy_anchor.kind = "missing"
+	_assert_all_gaps(errors, fidelity.compare_fleet(_comparison_fleet(CANONICAL_FLEET), anchor_catalog), "anchor-not-found", "missing anchor")
+	var gap_pairs := {}
+	var anchor_gaps: Array = fidelity.compare_fleet(_comparison_fleet(CANONICAL_FLEET), anchor_catalog).get("evidence_gaps", [])
+	for gap in anchor_gaps:
+		gap_pairs["%s/%s" % [gap.target_id, gap.seed]] = true
+	_expect(errors, gap_pairs.size() == 15, "evidence gaps contain at most one record per target and seed")
+	if not anchor_gaps.is_empty():
+		_expect(errors, anchor_gaps[0].seed == 1, "evidence gaps sort by target and numeric seed")
+
+
+static func _test_fleet_validation(fidelity: Script, errors: PackedStringArray) -> void:
+	var catalog := _comparison_catalog()
+	var catalog_invalid := catalog.duplicate(true)
+	catalog_invalid.targets[0].erase("aggregation")
+	_expect(errors, fidelity.compare_fleet([], catalog_invalid) == {"status": "invalid-input", "reason": "catalog-invalid"}, "catalog validation has first precedence")
+	var duplicate := _comparison_fleet(CANONICAL_FLEET)
+	duplicate[-1].seed = duplicate[0].seed
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(duplicate, catalog), "fleet-invalid", "duplicate fleet seed")
+	var missing := _comparison_fleet(CANONICAL_FLEET)
+	missing.pop_back()
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(missing, catalog), "fleet-invalid", "missing fleet seed")
+	var extra := _comparison_fleet(CANONICAL_FLEET)
+	extra.append(_comparison_measurement(999, 1.5))
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(extra, catalog), "fleet-invalid", "extra fleet seed")
+	var non_integer := _comparison_fleet(CANONICAL_FLEET)
+	non_integer[0].seed = 11.0
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(non_integer, catalog), "fleet-invalid", "non-integer fleet seed")
+	var malformed := _comparison_fleet(CANONICAL_FLEET)
+	malformed[0].beats = null
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(malformed, catalog), "measurement-invalid", "malformed measurement")
+	var duplicate_beat := _compiled_reducer_fleet(CANONICAL_FLEET)
+	duplicate_beat[0].beats[1].beat_id = duplicate_beat[0].beats[0].beat_id
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(duplicate_beat, catalog), "measurement-invalid", "duplicate beat ID")
+	var duplicate_row := _row_selection_fleet(CANONICAL_FLEET)
+	duplicate_row[0].beats[0].rows[1].row_id = duplicate_row[0].beats[0].rows[0].row_id
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(duplicate_row, catalog), "measurement-invalid", "within-beat duplicate row ID")
+	var nonfinite_metric := _comparison_fleet(CANONICAL_FLEET)
+	nonfinite_metric[0].beats[0].rows[0].loads.normal_peak_positive = NAN
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(nonfinite_metric, catalog), "measurement-invalid", "non-finite selected metric")
+	var nonfinite_duration := _comparison_fleet(CANONICAL_FLEET)
+	nonfinite_duration[0].beats[0].rows[0].window_seconds = INF
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(nonfinite_duration, catalog), "measurement-invalid", "non-finite selected duration")
+	var offset_catalog := _comparison_catalog()
+	offset_catalog.observations[0].alignment.generated_row_selector = {"offset": 0.0}
+	var nonfinite_offset := _comparison_fleet(CANONICAL_FLEET)
+	nonfinite_offset[0].beats[0].rows[0].offset = NAN
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(nonfinite_offset, offset_catalog), "measurement-invalid", "non-finite selected row offset")
+	var mixed := _comparison_fleet(CANONICAL_FLEET)
+	mixed[0].schema_version = 2
+	mixed[0].beats[0].story_slot_id = "act1.hill"
+	mixed[0].beats[0].window_role = "core"
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(mixed, catalog), "mixed-representation", "mixed measurement schemas")
+	var cross_beat_rows: Dictionary = fidelity.compare_fleet(_compiled_reducer_fleet(CANONICAL_FLEET), catalog)
+	_expect(errors, cross_beat_rows.get("status", "") != "invalid-input", "row IDs may repeat across different beats")
+
+
+static func _test_recommendation_eligibility(fidelity: Script, errors: PackedStringArray) -> void:
+	var seven: Dictionary = fidelity.compare_fleet(_eligibility_fleet(7), _comparison_catalog())
+	_expect(errors, seven.get("recommendation") == {"status": "no-eligible-finding"}, "seven affected seeds are ineligible")
+	var eight: Dictionary = fidelity.compare_fleet(_eligibility_fleet(8), _comparison_catalog())
+	_expect(errors, eight.get("recommendation", {}).get("status") == "recommended", "eight affected seeds are eligible")
+	var eight_finding := _first_finding(eight, errors, "eight-seed comparison emits a finding")
+	if not eight_finding.is_empty():
+		_expect(errors, eight_finding.affected_count == 8 and eight_finding.available_count == 15 and eight_finding.gap_count == 0, "affected counts exclude within results and gaps")
+		_expect_close(errors, eight_finding.prevalence, 8.0 / 15.0, "prevalence denominator is always fifteen")
+		_expect_close(errors, eight_finding.normalized_median_miss, 0.25, "severity is the median normalized miss of affected seeds")
+	var low_catalog := _comparison_catalog()
+	low_catalog.observations[0].confidence = "low"
+	var low: Dictionary = fidelity.compare_fleet(_eligibility_fleet(15), low_catalog)
+	_expect(errors, low.get("recommendation") == {"status": "no-eligible-finding"}, "low confidence is always ineligible")
+	var gap_fleet := _eligibility_fleet(8)
+	gap_fleet[8].beats[0].rows[0].loads.erase("normal_peak_positive")
+	var with_gap: Dictionary = fidelity.compare_fleet(gap_fleet, _comparison_catalog())
+	var gap_finding := _first_finding(with_gap, errors, "gap denominator comparison emits a finding")
+	if not gap_finding.is_empty():
+		_expect(errors, gap_finding.affected_count == 8 and gap_finding.gap_count == 1, "gaps do not count as affected")
+		_expect_close(errors, gap_finding.prevalence, 8.0 / 15.0, "gaps remain in the fifteen-seed denominator")
+	var empty_catalog := _comparison_catalog()
+	empty_catalog.targets = []
+	var no_targets: Dictionary = fidelity.compare_fleet(_comparison_fleet(CANONICAL_FLEET), empty_catalog)
+	_expect(errors, no_targets.get("recommendation") == {"status": "no-eligible-finding"}, "empty eligible set emits the exact no-result object")
+
+
+static func _test_recommendation_ranking(fidelity: Script, errors: PackedStringArray) -> void:
+	var fleet := _comparison_fleet([11,42,20260809,1,3,7,99,256,555,1234,4096,31337,77777,123456,20250101])
+	var comparison: Dictionary = fidelity.compare_fleet(fleet, _comparison_catalog())
+	_expect(errors, comparison.fleet == [11,42,20260809,1,3,7,99,256,555,1234,4096,31337,77777,123456,20250101], "canonical fleet order is preserved")
+	_expect(errors, comparison.recommendation.target_id == "loads.hill.ejector", "normalized median miss wins deterministic ranking")
+	var reversed := fleet.duplicate(true)
+	reversed.reverse()
+	var reordered: Dictionary = fidelity.compare_fleet(reversed, _comparison_catalog())
+	_expect(errors, comparison.findings == reordered.findings, "finding order is independent of input map order")
+
+	for ranking_case in [
+		{"specs": [{"id": "rank.lower", "miss": 0.20, "affected": 15, "confidence": "high"}, {"id": "rank.severity", "miss": 0.30, "affected": 8, "confidence": "medium"}], "expected": "rank.severity", "message": "severity ranks first"},
+		{"specs": [{"id": "rank.eight", "miss": 0.20, "affected": 8, "confidence": "high"}, {"id": "rank.prevalence", "miss": 0.20, "affected": 9, "confidence": "medium"}], "expected": "rank.prevalence", "message": "prevalence breaks severity ties"},
+		{"specs": [{"id": "rank.medium", "miss": 0.20, "affected": 8, "confidence": "medium"}, {"id": "rank.high", "miss": 0.20, "affected": 8, "confidence": "high"}], "expected": "rank.high", "message": "confidence breaks prevalence ties"},
+		{"specs": [{"id": "rank.z", "miss": 0.20, "affected": 8, "confidence": "high"}, {"id": "rank.a", "miss": 0.20, "affected": 8, "confidence": "high"}], "expected": "rank.a", "message": "target ID breaks complete ties"},
+	]:
+		var ranked: Dictionary = fidelity.compare_fleet(_ranking_fleet(ranking_case.specs), _ranking_catalog(ranking_case.specs))
+		_expect(errors, ranked.get("recommendation", {}).get("target_id") == ranking_case.expected, ranking_case.message)
+		var finding_ids := []
+		for finding in ranked.get("findings", []):
+			finding_ids.append(finding.target_id)
+		var sorted_ids := finding_ids.duplicate()
+		sorted_ids.sort()
+		_expect(errors, finding_ids == sorted_ids, "findings sort by target ID")
+
+
+static func _test_comparison_determinism(fidelity: Script, errors: PackedStringArray) -> void:
+	var catalog := _comparison_catalog()
+	var fleet := _comparison_fleet(CANONICAL_FLEET)
+	var comparison: Dictionary = fidelity.compare_fleet(fleet, catalog)
+	var expected_top_keys := PackedStringArray(["fleet", "findings", "observed_only", "evidence_gaps", "recommendation"])
+	var actual_top_keys := PackedStringArray(comparison.keys())
+	expected_top_keys.sort()
+	actual_top_keys.sort()
+	_expect(errors, actual_top_keys == expected_top_keys, "comparison emits the exact result algebra")
+	var finding := _first_finding(comparison, errors, "deterministic comparison emits a finding")
+	if not finding.is_empty():
+		var nested_seeds := []
+		for result in finding.seed_results:
+			nested_seeds.append(result.seed)
+		var sorted_seeds := nested_seeds.duplicate()
+		sorted_seeds.sort()
+		_expect(errors, nested_seeds == sorted_seeds, "nested seed results sort numerically")
+		var expected_finding_keys := PackedStringArray([
+			"target_id", "observation_id", "primary_source_ids", "corroborating_source_ids", "caveats",
+			"transform_id", "semantic_selector_id", "dimension", "metric", "hold_seconds",
+			"resolved_branch", "anchor", "row_compatibility", "generated_row_selector", "aggregation",
+			"raw_range", "target_range", "seed_results", "fleet_value", "fleet_status",
+			"total_retained_seconds", "affected_count", "available_count", "gap_count", "prevalence",
+			"normalized_median_miss", "observation_confidence",
+		])
+		var actual_finding_keys := PackedStringArray(finding.keys())
+		expected_finding_keys.sort()
+		actual_finding_keys.sort()
+		_expect(errors, actual_finding_keys == expected_finding_keys, "finding emits every required provenance and aggregation field")
+	var perturbed := fleet.duplicate(true)
+	for measurement in perturbed:
+		var loads: Dictionary = measurement.beats[0].rows[0].loads
+		var selected: Variant = loads.normal_peak_positive
+		loads.erase("normal_peak_positive")
+		loads["unused_metric"] = -123.0
+		loads["normal_peak_positive"] = selected
+	var perturbed_comparison: Dictionary = fidelity.compare_fleet(perturbed, catalog)
+	_expect(errors, comparison.get("findings", []) == perturbed_comparison.get("findings", []), "dictionary insertion order does not affect findings")
+	_expect(errors, _count_dictionary_key(comparison, "score") == 0, "comparison recursively forbids score")
+	_expect(errors, _count_dictionary_key(comparison, "total_score") == 0, "comparison recursively forbids total_score")
+
+
+static func _first_finding(comparison: Dictionary, errors: PackedStringArray, message: String) -> Dictionary:
+	var findings: Variant = comparison.get("findings", [])
+	if not findings is Array or findings.is_empty() or not findings[0] is Dictionary:
+		errors.append(message)
+		return {}
+	return findings[0]
+
+
+static func _assert_all_gaps(
+	errors: PackedStringArray, comparison: Dictionary, reason: String, message: String
+) -> void:
+	var gaps: Variant = comparison.get("evidence_gaps", [])
+	_expect(errors, gaps is Array and gaps.size() == 15, "%s emits one gap per seed" % message)
+	if gaps is Array:
+		for gap in gaps:
+			_expect(errors, gap.get("reason") == reason, "%s reports %s" % [message, reason])
+
+
+static func _expect_invalid_comparison(
+	errors: PackedStringArray, actual: Dictionary, reason: String, message: String
+) -> void:
+	_expect(errors, actual == {"status": "invalid-input", "reason": reason}, "%s rejects the whole comparison" % message)
 
 
 static func _grouping_route() -> Dictionary:
@@ -913,6 +1336,304 @@ static func _legacy_characterization_route() -> Dictionary:
 	return route
 
 
+static func _comparison_catalog(
+	metric: String = "normal_peak_positive", hold_seconds: Variant = null
+) -> Dictionary:
+	var catalog := _valid_catalog_v2()
+	catalog.selectors = {
+		"semantic.hill": {
+			"legacy_anchor": {"phase": "act one", "kind": "hill", "occurrence": 0, "window_role": "whole"},
+			"compiled_anchor": {"story_slot_id": "act1.hill", "window_role": "core"},
+		},
+	}
+	catalog.sources = {"test.primary": _comparison_source("primary", "a".repeat(64))}
+	catalog.transforms = {
+		"observed.identity@1": {
+			"kind": "identity", "factor": 1.0, "formula": "target_value = observed_value",
+			"approval": "identity; no transform",
+		},
+	}
+	catalog.observations = [
+		_comparison_observation(
+			"observed.hill", "semantic.hill", metric, hold_seconds, "high"
+		),
+	]
+	catalog.targets = [
+		_comparison_target(
+			"loads.hill.ejector", "observed.hill", "semantic.hill", metric, hold_seconds
+		),
+	]
+	catalog.review_prompts = []
+	catalog.evidence_gaps = []
+	return catalog
+
+
+static func _comparison_catalog_with_aggregation(
+	row_reducer: String, beat_reducer: String, seed_reducer: String
+) -> Dictionary:
+	var catalog := _comparison_catalog()
+	catalog.observations[0].alignment.row_compatibility = "row-independent"
+	catalog.observations[0].alignment.generated_row_selector = null
+	catalog.targets[0].aggregation = {
+		"row": row_reducer, "beat": beat_reducer, "seed": seed_reducer,
+	}
+	return catalog
+
+
+static func _comparison_catalog_with_observed_only() -> Dictionary:
+	var catalog := _comparison_catalog()
+	catalog.selectors["semantic.entry"] = {
+		"legacy_anchor": {"phase": "act one", "kind": "entry", "occurrence": 0, "window_role": "whole"},
+		"compiled_anchor": {"story_slot_id": "act1.entry", "window_role": "entry"},
+	}
+	catalog.observations.append(
+		_comparison_observation(
+			"observed.hill.entry", "semantic.entry", "normal_peak_positive", null, "medium"
+		)
+	)
+	return catalog
+
+
+static func _comparison_source(label: String, digest: String) -> Dictionary:
+	var source := _synthetic_raw_source(label, digest)
+	source.initial_state = "executable"
+	source.state = "executable"
+	source.row_seat = "provenance text: row ninety-nine; never parse"
+	source.caveats = ["fixture caveat"]
+	return source
+
+
+static func _comparison_observation(
+	observation_id: String, selector_id: String, metric: String,
+	hold_seconds: Variant, confidence: String
+) -> Dictionary:
+	return {
+		"id": observation_id, "state": "executable", "source_id": "test.primary",
+		"source_window_id": "tormenta.loop", "source_axis": "vertical", "mapped_axis": "normal_g",
+		"row_seat": "provenance text: row ninety-nine; never parse", "duration_s": 2.0,
+		"metric": metric, "hold_seconds": hold_seconds, "raw_range": [1.0, 2.0],
+		"transform_id": "observed.identity@1", "confidence": confidence,
+		"confidence_rationale": "deterministic synthetic comparison fixture",
+		"corroborating_observation_ids": [], "semantic_selector_id": selector_id,
+		"alignment": {
+			"source_landmark_id": "tormenta.loop",
+			"generated_anchor": {"semantic_selector_id": selector_id},
+			"method": "synthetic exact anchor", "uncertainty_s": 0.0,
+			"row_compatibility": "same-row", "generated_row_selector": {"row_id": "row-01"},
+			"rationale": "comparison contract fixture",
+		},
+	}
+
+
+static func _comparison_target(
+	target_id: String, observation_id: String, selector_id: String,
+	metric: String, hold_seconds: Variant
+) -> Dictionary:
+	return {
+		"id": target_id, "observation_id": observation_id,
+		"semantic_selector_id": selector_id, "dimension": "loads", "metric": metric,
+		"hold_seconds": hold_seconds, "raw_range": [1.0, 2.0], "target_range": [1.0, 2.0],
+		"issues": [3], "aggregation": {"row": "median", "beat": "median", "seed": "median"},
+	}
+
+
+static func _comparison_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		var canonical_index := CANONICAL_FLEET.find(seed_value)
+		var value := 0.5 if canonical_index >= 0 and canonical_index < 8 else 1.5
+		fleet.append(_comparison_measurement(seed_value, value))
+	return fleet
+
+
+static func _eligibility_fleet(affected_count: int) -> Array:
+	var fleet := []
+	for index in CANONICAL_FLEET.size():
+		fleet.append(_comparison_measurement(CANONICAL_FLEET[index], 0.5 if index < affected_count else 1.5))
+	return fleet
+
+
+static func _comparison_measurement(seed_value: Variant, value: float) -> Dictionary:
+	return {
+		"schema_version": 1, "seed": seed_value,
+		"beats": [
+			_legacy_comparison_beat(
+				"legacy-hill", "act one", "hill",
+				[_comparison_row("row-01", "front", 0.0, 2.0, value)]
+			),
+		],
+	}
+
+
+static func _seed_reducer_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		fleet.append(_comparison_measurement(seed_value, float(CANONICAL_FLEET.find(seed_value) + 1)))
+	return fleet
+
+
+static func _compiled_reducer_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		fleet.append({
+			"schema_version": 2, "seed": seed_value,
+			"beats": [
+				_compiled_comparison_beat("compiled-a", "act1.hill", "core", [
+					_comparison_row("row-01", "front", 0.0, 1.0, 1.0),
+					_comparison_row("row-02", "rear", 2.0, 3.0, 3.0),
+				]),
+				_compiled_comparison_beat("compiled-b", "act1.hill", "core", [
+					_comparison_row("row-01", "front", 0.0, 2.0, 5.0),
+					_comparison_row("row-02", "rear", 2.0, 4.0, 7.0),
+				]),
+			],
+		})
+	return fleet
+
+
+static func _held_comparison_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		fleet.append({
+			"schema_version": 1, "seed": seed_value,
+			"beats": [_legacy_comparison_beat(
+				"legacy-held", "act one", "hill",
+				[_comparison_row("row-01", "front", 0.0, 5.0, 1.5, "normal_held_positive", 0.8)]
+			)],
+		})
+	return fleet
+
+
+static func _legacy_occurrence_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		fleet.append({
+			"schema_version": 1, "seed": seed_value,
+			"beats": [
+				_legacy_comparison_beat("legacy-match-01", "act one", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 1.0)], 99),
+				_legacy_comparison_beat("legacy-match-02", "act one", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 3.0)], 0),
+			],
+		})
+	return fleet
+
+
+static func _compiled_fallback_trap_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		var beat := _compiled_comparison_beat(
+			"compiled-wrong", "wrong.slot", "core",
+			[_comparison_row("row-01", "front", 0.0, 2.0, 1.5)]
+		)
+		beat.phase = "act one"
+		beat.kind = "hill"
+		fleet.append({"schema_version": 2, "seed": seed_value, "beats": [beat]})
+	return fleet
+
+
+static func _row_selection_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		fleet.append({
+			"schema_version": 1, "seed": seed_value,
+			"beats": [_legacy_comparison_beat("legacy-hill", "act one", "hill", [
+				_comparison_row("row-01", "front", 0.0, 1.0, 1.0),
+				_comparison_row("row-02", "rear", 2.0, 3.0, 2.0),
+			])],
+		})
+	return fleet
+
+
+static func _ambiguous_row_fleet(seeds: Array) -> Array:
+	var fleet := _row_selection_fleet(seeds)
+	for measurement in fleet:
+		measurement.beats[0].rows[0].position = "intermediate"
+		measurement.beats[0].rows[1].position = "intermediate"
+	return fleet
+
+
+static func _observed_only_fleet(seeds: Array) -> Array:
+	var fleet := []
+	for seed_value in seeds:
+		fleet.append({
+			"schema_version": 1, "seed": seed_value,
+			"beats": [
+				_legacy_comparison_beat("legacy-hill", "act one", "hill", [_comparison_row("row-01", "front", 0.0, 2.0, 0.5)]),
+				_legacy_comparison_beat("legacy-entry", "act one", "entry", [_comparison_row("row-01", "front", 0.0, 1.0, 9.0)]),
+			],
+		})
+	return fleet
+
+
+static func _ranking_catalog(specs: Array) -> Dictionary:
+	var catalog := _comparison_catalog()
+	catalog.selectors = {}
+	catalog.observations = []
+	catalog.targets = []
+	for index in specs.size():
+		var spec: Dictionary = specs[index]
+		var selector_id := "semantic.rank.%02d" % index
+		var observation_id := "observed.rank.%02d" % index
+		var kind := "rank-kind-%02d" % index
+		catalog.selectors[selector_id] = {
+			"legacy_anchor": {"phase": "ranking", "kind": kind, "occurrence": 0, "window_role": "whole"},
+			"compiled_anchor": {"story_slot_id": "ranking.slot.%02d" % index, "window_role": "core"},
+		}
+		catalog.observations.append(_comparison_observation(
+			observation_id, selector_id, "normal_peak_positive", null, spec.confidence
+		))
+		catalog.targets.append(_comparison_target(
+			spec.id, observation_id, selector_id, "normal_peak_positive", null
+		))
+	return catalog
+
+
+static func _ranking_fleet(specs: Array) -> Array:
+	var fleet := []
+	for seed_index in CANONICAL_FLEET.size():
+		var beats := []
+		for spec_index in specs.size():
+			var spec: Dictionary = specs[spec_index]
+			var value := 1.0 - float(spec.miss) * 2.0 if seed_index < int(spec.affected) else 1.5
+			beats.append(_legacy_comparison_beat(
+				"rank-beat-%02d" % spec_index, "ranking", "rank-kind-%02d" % spec_index,
+				[_comparison_row("row-01", "front", 0.0, 1.0, value)]
+			))
+		fleet.append({"schema_version": 1, "seed": CANONICAL_FLEET[seed_index], "beats": beats})
+	return fleet
+
+
+static func _legacy_comparison_beat(
+	beat_id: String, phase: String, kind: String, rows: Array, ordinal: int = 0
+) -> Dictionary:
+	return {
+		"beat_id": beat_id, "phase": phase, "ordinal": ordinal, "kind": kind, "rows": rows,
+	}
+
+
+static func _compiled_comparison_beat(
+	beat_id: String, story_slot_id: String, window_role: String, rows: Array
+) -> Dictionary:
+	return {
+		"beat_id": beat_id, "story_slot_id": story_slot_id,
+		"window_role": window_role, "rows": rows,
+	}
+
+
+static func _comparison_row(
+	row_id: String, position: String, offset: float, seconds: float, value: float,
+	metric: String = "normal_peak_positive", hold_seconds: Variant = null
+) -> Dictionary:
+	var loads := {"normal_peak_negative": -9.0}
+	if hold_seconds == null:
+		loads[metric] = value
+	else:
+		loads[metric] = {"%.2f" % float(hold_seconds): value}
+	return {
+		"row_id": row_id, "position": position, "offset": offset,
+		"window_seconds": seconds, "loads": loads,
+	}
+
+
 static func _valid_catalog_v2() -> Dictionary:
 	return {
 		"schema_version": 2,
@@ -988,6 +1709,7 @@ static func _valid_promotion_catalog() -> Dictionary:
 		"semantic_selector_id": "semantic.act1.loop.core", "dimension": "loads",
 		"metric": "normal_held_positive", "hold_seconds": 1.0,
 		"raw_range": [2.0, 3.0], "target_range": [2.6666666666, 3.9999999999], "issues": [3],
+		"aggregation": {"row": "median", "beat": "median", "seed": "median"},
 	}]
 	return catalog
 
@@ -1019,7 +1741,7 @@ static func _force_observation(
 		"confidence": "medium", "confidence_rationale": "synthetic exact trace window",
 		"corroborating_observation_ids": corroborating_ids,
 		"semantic_selector_id": "semantic.act1.loop.core",
-		"alignment": {"source_landmark_id": "tormenta.loop", "generated_anchor": {"semantic_selector_id": "semantic.act1.loop.core"}, "method": "element-order-plus-force-shape", "uncertainty_s": 0.2, "row_compatibility": "same-row", "rationale": "matched entry and exit shoulders"},
+		"alignment": {"source_landmark_id": "tormenta.loop", "generated_anchor": {"semantic_selector_id": "semantic.act1.loop.core"}, "method": "element-order-plus-force-shape", "uncertainty_s": 0.2, "row_compatibility": "same-row", "generated_row_selector": {"row_id": "row-02"}, "rationale": "matched entry and exit shoulders"},
 	}
 
 

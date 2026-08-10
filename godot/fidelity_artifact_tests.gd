@@ -93,26 +93,50 @@ static func _test_report_determinism(artifacts: Script, errors: PackedStringArra
 
 static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray) -> void:
 	var cases := [
-		["measurement schema missing", "schema_version", func(v: Dictionary): v.seed_measurements[0].erase("schema_version")],
-		["measurement schema type", "schema_version", func(v: Dictionary): v.seed_measurements[0].schema_version = "2"],
-		["measurement schema is finite", "schema_version", func(v: Dictionary): v.seed_measurements[0].schema_version = INF],
-		["measurement schema is supported", "schema_version", func(v: Dictionary): v.seed_measurements[0].schema_version = 3],
-		["measurement seed is required", "measurement seed", func(v: Dictionary): v.seed_measurements[0].erase("seed")],
-		["measurement seed is finite", "measurement seed", func(v: Dictionary): v.seed_measurements[0].seed = INF],
-		["measurement length is required", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("length")],
-		["measurement length is numeric", "measurement", func(v: Dictionary): v.seed_measurements[0].length = "111"],
-		["measurement duration is required", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("duration")],
-		["measurement duration is numeric", "measurement", func(v: Dictionary): v.seed_measurements[0].duration = "11"],
-		["measurement duration is finite", "measurement", func(v: Dictionary): v.seed_measurements[0].duration = NAN],
-		["measurement dimensions missing", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("dimensions")],
-		["measurement dimensions type", "measurement", func(v: Dictionary): v.seed_measurements[0].dimensions = []],
-		["measurement beats are required", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("beats")],
-		["measurement beats have Array type", "measurement", func(v: Dictionary): v.seed_measurements[0].beats = {}],
-		["force missing", "force", func(v: Dictionary): v.seed_measurements[0].reconstruction.erase("force_error_peak_g")],
-		["force type", "force", func(v: Dictionary): v.seed_measurements[0].reconstruction.force_error_peak_g = "0.01"],
-		["force finite", "force", func(v: Dictionary): v.seed_measurements[0].reconstruction.force_error_peak_g = NAN],
-		["seams missing", "seam", func(v: Dictionary): v.seed_measurements[0].reconstruction.erase("seam_indices")],
-		["measurement seams type", "seam", func(v: Dictionary): v.seed_measurements[0].reconstruction.seam_indices = {}],
+		["measurement schema missing", "schema_version",
+			func(value: Dictionary): value.seed_measurements[0].erase("schema_version")],
+		["measurement schema type", "schema_version",
+			func(value: Dictionary): value.seed_measurements[0].schema_version = "2"],
+		["measurement schema is finite", "schema_version",
+			func(value: Dictionary): value.seed_measurements[0].schema_version = INF],
+		["measurement schema is supported", "schema_version",
+			func(value: Dictionary): value.seed_measurements[0].schema_version = 3],
+		["measurement seed is required", "measurement seed",
+			func(value: Dictionary): value.seed_measurements[0].erase("seed")],
+		["measurement seed is finite", "measurement seed",
+			func(value: Dictionary): value.seed_measurements[0].seed = INF],
+		["measurement length is required", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].erase("length")],
+		["measurement length is numeric", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].length = "111"],
+		["measurement duration is required", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].erase("duration")],
+		["measurement duration is numeric", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].duration = "11"],
+		["measurement duration is finite", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].duration = NAN],
+		["measurement dimensions missing", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].erase("dimensions")],
+		["measurement dimensions type", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].dimensions = []],
+		["measurement beats are required", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].erase("beats")],
+		["measurement beats have Array type", "measurement",
+			func(value: Dictionary): value.seed_measurements[0].beats = {}],
+		["measurement reconstruction is required", "reconstruction",
+			func(value: Dictionary): value.seed_measurements[0].erase("reconstruction")],
+		["measurement reconstruction has Dictionary type", "reconstruction",
+			func(value: Dictionary): value.seed_measurements[0].reconstruction = []],
+		["force missing", "force",
+			func(value: Dictionary): value.seed_measurements[0].reconstruction.erase("force_error_peak_g")],
+		["force type", "force",
+			func(value: Dictionary): value.seed_measurements[0].reconstruction.force_error_peak_g = "0.01"],
+		["force finite", "force",
+			func(value: Dictionary): value.seed_measurements[0].reconstruction.force_error_peak_g = NAN],
+		["seams missing", "seam",
+			func(value: Dictionary): value.seed_measurements[0].reconstruction.erase("seam_indices")],
+		["measurement seams type", "seam",
+			func(value: Dictionary): value.seed_measurements[0].reconstruction.seam_indices = {}],
 		["base commit must be lowercase 40-hex", "legacy_base_commit",
 			func(value: Dictionary): value.legacy_base_commit = "ABC"],
 		["comparison has the exact Task 6 algebra", "comparison",
@@ -163,15 +187,24 @@ static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray)
 
 static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedStringArray) -> void:
 	var cases := [
-		["catalog identity fields are guarded", "catalog", func(v: Dictionary): v.catalog.schema_version = "2"],
-		["catalog record containers are guarded", "catalog", func(v: Dictionary): v.catalog.observations = {}],
-		["source windows are guarded", "source", func(v: Dictionary): v.catalog.sources["source.raw"].windows[0] = {}],
-		["source-ID arrays are guarded", "source", func(v: Dictionary): v.catalog.review_prompts[0].source_ids = []],
-		["compiled anchor guard", "anchor", func(v: Dictionary): v.catalog.selectors["selector.loop"].compiled_anchor = {}],
-		["alignments are guarded", "alignment", func(v: Dictionary): v.catalog.observations[0].alignment = null],
-		["measurement beats are guarded", "beat", func(v: Dictionary): v.seed_measurements[1].beats[0] = []],
-		["measurement rows are guarded", "row", func(v: Dictionary): v.seed_measurements[1].beats[0].rows[0] = []],
-		["required projection leaf guard", "state", func(v: Dictionary): v.catalog.sources["source.raw"].erase("state")],
+		["catalog identity fields are guarded", "catalog",
+			func(value: Dictionary): value.catalog.schema_version = "2"],
+		["catalog record containers are guarded", "catalog",
+			func(value: Dictionary): value.catalog.observations = {}],
+		["source windows are guarded", "source",
+			func(value: Dictionary): value.catalog.sources["source.raw"].windows[0] = {}],
+		["source-ID arrays are guarded", "source",
+			func(value: Dictionary): value.catalog.review_prompts[0].source_ids = PackedStringArray(["source.raw"])],
+		["compiled anchor guard", "anchor",
+			func(value: Dictionary): value.catalog.selectors["selector.loop"].compiled_anchor = {}],
+		["alignments are guarded", "alignment",
+			func(value: Dictionary): value.catalog.observations[0].alignment = null],
+		["measurement beats are guarded", "beat",
+			func(value: Dictionary): value.seed_measurements[1].beats[0] = []],
+		["measurement rows are guarded", "row",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0] = []],
+		["required projection leaf guard", "state",
+			func(value: Dictionary): value.catalog.sources["source.raw"].erase("state")],
 		["observation source links resolve", "observation",
 			func(value: Dictionary): value.catalog.observations[0].source_id = "missing"],
 		["target observation links resolve", "target",
@@ -190,9 +223,10 @@ static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedSt
 			func(value: Dictionary): value.catalog.observations[0].alignment.source_landmark_id = "missing"],
 		["aligned selectors resolve", "semantic_selector_id",
 			func(value: Dictionary): value.catalog.observations[0].semantic_selector_id = "missing"],
-		["center-row POV resolution is unique", "row",
-			func(value: Dictionary): value.seed_measurements[1].beats[0].rows.append(
-				value.seed_measurements[1].beats[0].rows[0].duplicate(true))],
+		["center-row POV resolution requires a zero-offset row", "row",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0].offset = 2.0],
+		["center-row POV resolution rejects distinct ambiguous rows", "row",
+			func(value: Dictionary): _add_distinct_center_row(value)],
 	]
 	_expect_invalid_cases(artifacts, errors, cases)
 
@@ -300,6 +334,12 @@ static func _replace_seed(value: Dictionary, old_seed: int, new_seed: int) -> vo
 	value.comparison.fleet[value.comparison.fleet.find(old_seed)] = new_seed
 	value.generation_counts[str(new_seed)] = value.generation_counts[str(old_seed)]
 	value.generation_counts.erase(str(old_seed))
+
+
+static func _add_distinct_center_row(value: Dictionary) -> void:
+	var row: Dictionary = value.seed_measurements[1].beats[0].rows[0].duplicate(true)
+	row.row_id = "row-center-2"
+	value.seed_measurements[1].beats[0].rows.append(row)
 
 static func _valid_fixture() -> Dictionary:
 	var measurements := []

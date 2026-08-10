@@ -2028,7 +2028,7 @@ static func _valid_catalog_v2() -> Dictionary:
 				"metadata_artifact_path": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-oembed.json",
 				"metadata_artifact_sha256": "badb63ae7143267d526a4d6d32dbdc85f280506cf2a8663280df760f87b12361",
 				"review_path": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-review.json",
-				"review_sha256": "7fd9f1bf4a5df352c5371264f160f3bfcc30a89acacffe99a6f3ea3c47b00531",
+				"review_sha256": "9dd4b8ed8f5d4bfd8b67f2218c65ed681fcb912fe55a5599e34770919d6192df",
 				"row_seat": "front-row camera; exact seat unverified", "device": "camera; exact device unverified", "sample_rate_hz": null,
 				"axis_mapping": {}, "reliability": "visual observation only", "processing": ["metadata capture only"],
 				"caveats": ["native sample rate is unknown", "no force-axis mapping", "no reviewed source-second landmarks"],

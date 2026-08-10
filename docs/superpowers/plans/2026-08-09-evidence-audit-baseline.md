@@ -1109,6 +1109,11 @@ review/seed-42/elements/<stable-beat-id>.png
 review/seed-42/pov/<stable-beat-id>.png
 ```
 
+Keep each logical `beat_id` unchanged in JSON. For element and POV filename stems only, replace
+every `/` with `__`; the generated beat grammar cannot contain underscores, so this projection is
+reversible. Task 7A emits the projected request path, and Task 7B recomputes and validates it rather
+than repairing a mismatched request.
+
 `audit.json` records the exact pinned `legacy_base_commit`, audit schema, catalog schema/version/canonical
 SHA-256, catalog validation result, and a sorted `evidence_snapshot`. Every referenced source snapshot
 records source ID, state, acquisition only when present, every present repository-relative

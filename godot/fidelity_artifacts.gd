@@ -99,11 +99,7 @@ static func _validate_comparison(value: Variant, errors: Array[String]) -> Dicti
 		errors.append("artifact_report: comparison must be a Dictionary")
 		return projection
 	var comparison: Dictionary = value
-	var keys: Array = value.keys()
-	var expected := _COMPARISON_KEYS.duplicate()
-	keys.sort()
-	expected.sort()
-	if keys != expected:
+	if comparison.size() != _COMPARISON_KEYS.size() or not comparison.has_all(_COMPARISON_KEYS):
 		errors.append("artifact_report: comparison must have the exact Task 6 members")
 	var fleet_value: Variant = comparison.get("fleet")
 	var findings_value: Variant = comparison.get("findings")
@@ -332,6 +328,10 @@ static func _catalog_context(
 		var generated_anchor: Variant = alignment.get("generated_anchor")
 		if not generated_anchor is Dictionary:
 			errors.append("artifact_report: alignment generated_anchor must be a Dictionary")
+		elif (generated_anchor.size() != 1
+			or typeof(generated_anchor.get("semantic_selector_id")) != TYPE_STRING
+			or generated_anchor.get("semantic_selector_id") != selector_id):
+			errors.append("artifact_report: generated_anchor must match observation semantic_selector_id")
 		var landmark_key := "%s/%s" % [source_id, landmark_id]
 		if not context.source_times.has(landmark_key):
 			errors.append("artifact_report: source_landmark_id does not resolve: %s" % landmark_id)
@@ -360,10 +360,10 @@ static func _catalog_context(
 		var generated_time := (float(resolution.window_start_s) + float(resolution.window_end_s)) * 0.5
 		context.pov_records.append({
 			"source_id": source_id, "source_landmark_id": landmark_id,
-			"source_time": context.source_times[landmark_key], "observation_id": observation_id,
+			"source_time": context.source_times[landmark_key].duplicate(true), "observation_id": observation_id,
 			"semantic_selector_id": selector_id, "alignment_method": method,
 			"uncertainty_s": uncertainty, "row_compatibility": row_compatibility,
-			"generated_seed": 42, "generated_anchor": generated_anchor.duplicate(true),
+			"generated_seed": 42, "generated_anchor": {"semantic_selector_id": selector_id},
 			"generated_beat_id": resolution.beat_id, "generated_time_s": generated_time,
 			"generated_window_s": [resolution.window_start_s, resolution.window_end_s],
 			"generated_pov_path": "review/seed-42/pov/%s.png" % resolution.beat_id,

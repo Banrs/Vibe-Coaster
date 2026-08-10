@@ -49,11 +49,13 @@ $env:LOCALAPPDATA = $godotLocalAppData
 - Create `docs/evidence/fidelity/youtube/*.json`: one reviewed metadata/landmark record per YouTube ID; no copied video and no invented sample series.
 - Create `docs/evidence/fidelity/rideforcesdb/*.json`: reviewed retrieval/alignment records and raw response only when a genuine session-backed fetch validates; otherwise cite the committed telemetry tables and record the fetch gap.
 - Create `godot/canonical_data.gd`: narrow recursive canonical JSON plus SHA-256 utility shared by config/catalog/report code.
+- Create `godot/route_sampling.gd`: pure route time/distance/pose interpolation shared by the viewer and deterministic POV artifacts.
 - Modify `godot/fidelity_references.gd`: JSON-compatible executable `CATALOG`, immutable transforms, source/observation records, targets, review prompts, and evidence gaps.
 - Modify `godot/fidelity.gd`: catalog validation, beat/row measurement, exact held values, time-weighted metrics, transition windows, reconstruction, fleet comparison, and deterministic recommendation.
 - Modify `godot/fidelity_tests.gd`: pure synthetic tests for all semantics and catalog rules.
 - Create `godot/fidelity_artifacts.gd`: deterministic report/Markdown, checked writes, and diagnostic render helpers; canonical JSON delegates to `CanonicalData`.
 - Create `godot/fidelity_artifact_tests.gd`: synthetic serialization, manifest, write-failure, render, and one-build-per-seed tests.
+- Modify `godot/main.gd`: retain its static sampling APIs as thin delegates to `RouteSampling`, with no viewer behavior change.
 - Modify `godot/_inspect.gd`: thin offline runner over the fixed fleet; retains existing console/PNG diagnostics and emits the complete baseline pack.
 - Modify `godot/smoke.gd`: keep delegating shared grouping/held primitives and run both focused test suites; do not change existing ride target constants or generator gate behavior.
 - Modify `README.md` and `CLAUDE.md`: document the offline baseline command, output contract, evidence-authoring separation, and operational-versus-diagnostic exit semantics.
@@ -73,6 +75,9 @@ RideFidelityArtifacts.build_report(seed_measurements: Array, comparison: Diction
 RideFidelityArtifacts.canonical_json(value: Variant) -> String # delegate only
 RideFidelityArtifacts.markdown(report: Dictionary) -> String
 RideFidelityArtifacts.write_pack(output_dir: String, report: Dictionary, routes_by_seed: Dictionary) -> PackedStringArray
+RouteSampling.lower_index(values: PackedFloat32Array, value: float) -> int
+RouteSampling.distance_at_time(route: Dictionary, time_s: float) -> float
+RouteSampling.pose_at_distance(route: Dictionary, distance_m: float) -> Transform3D
 ```
 
 ---
@@ -981,9 +986,11 @@ git commit -m "docs: record reviewed POV landmarks"
 
 **Files:**
 - Create: `godot/canonical_data.gd`
+- Create: `godot/route_sampling.gd`
 - Create: `godot/fidelity_artifacts.gd`
 - Create: `godot/fidelity_artifact_tests.gd`
 - Modify: `godot/_inspect.gd`
+- Modify: `godot/main.gd`
 - Modify: `godot/smoke.gd`
 
 **Interfaces:**
@@ -1012,6 +1019,10 @@ Task 7A's pure report contract is exact:
 - `generation_counts` is the isolated exact copy of the validated fifth argument. It has one
   String key per fleet seed and integer value `1`; it is present in canonical JSON but does not add
   a Markdown section.
+- Every measurement's `beat_id` values are unique. A resolved POV center-row window is finite and
+  satisfies `0 <= start < end <= measurement.duration`; both its POV-map record and render request
+  carry `generated_time_s = start + (end - start) * 0.5`. Identical path/payload intents deduplicate,
+  while a conflicting same-path payload is invalid.
 - Each `measurement_summaries` entry has exact top-level keys `{schema_version, seed, length,
   duration, dimensions, beats, force_error_peak_g, reconstruction_seam_count}`.
   `force_error_peak_g` copies `measurement.reconstruction.force_error_peak_g`;
@@ -1031,8 +1042,9 @@ Task 7A's pure report contract is exact:
   snapshot, POV map, Checklist, Issue coverage, Render requests; rows follow the already-contracted
   array orders.
 - Task 7A physical-line review thresholds are 55 soft / 80 absolute for `canonical_data.gd`, a
-  reviewed corrected-GREEN forecast of 724-742 / 750 absolute for `fidelity_artifacts.gd`, 762
-  absolute for the now-complete focused regression suite, and exactly two added `smoke.gd` lines.
+  reviewed structural landing forecast of 735-750 / 750 absolute for `fidelity_artifacts.gd`, 762
+  absolute for the focused regression suite (761 expected after test consolidation), and exactly two
+  added `smoke.gd` lines.
   These are stops, not quotas; never pack lines, couple expected values to fixtures, weaken
   mutations, or add generic schema machinery to meet them. Further test growth requires structural
   deletion or an explicit reviewed contract amendment.
@@ -1098,10 +1110,15 @@ review/seed-42/pov/<stable-beat-id>.png
 SHA-256, catalog validation result, and a sorted `evidence_snapshot`. Every referenced source snapshot
 records source ID, state, acquisition only when present, every present repository-relative
 artifact/diagnostic/review path and SHA-256 pair, and exact structured fallback citations only when
-present; it never claims an unavailable raw artifact. The manifest records its schema, relative path,
-byte size, SHA-256, seed, gesture/legacy beat ID, artifact kind, and render dimensions. Tests assert
-the old side/top/elevation/channel capability still exists. Manifest assembly copies
-`report.generation_counts` unchanged; it never infers generation work from fleet or route data.
+present; it never claims an unavailable raw artifact. The manifest has exact top-level keys
+`{schema_version, generation_counts, files}` and copies `report.generation_counts` unchanged; it
+never infers generation work from fleet or route data. Every file record has exact keys
+`{path, kind, artifact_kind, byte_size, sha256, seed, beat_id, width, height}`. `kind` is one of
+`json`, `markdown`, or `png`; `artifact_kind` is one of `audit`, `pov-map`, `checklist`,
+`issue-coverage`, `channels`, `top`, `elevation`, `element`, or `pov`. Use explicit `null` for
+inapplicable seed/beat/dimensions. Sort records by forward-slash relative path; populate size/hash
+and PNG dimensions from reopened bytes. Write `manifest.json` last and exclude it from `files` to
+avoid recursive self-hashing. Tests assert the old side/top/elevation/channel capability still exists.
 
 - [ ] **Step 4: Permanently register the artifact suite and confirm GitHub RED**
 
@@ -1206,8 +1223,11 @@ count. The sole series is exactly
 7 | reconstructed_curvature_inv_m | Reconstructed curvature | 1/m
 8 | radius_m | Radius | m
 9 | roll_acceleration_dps2 | Roll acceleration | deg/s^2
-10 | jerk_mps3 | Jerk | m/s^3
+10 | jerk_mps3 | Inertial jerk magnitude | m/s^3
 ```
+
+The jerk strip is the unfiltered Euclidean length of each vector in
+`reconstruction.jerk_mps3`; it is non-negative and does not invent a privileged rider-frame axis.
 
 `channels.md` is a pure projection of the reopened canonical JSON: fixed title
 `# Channel legend — seed <seed>`, an image line with path and `<width>x<height>`, then one
@@ -1221,14 +1241,25 @@ all-unbounded radius behavior, and the absence of `source_filtered`.
 `pov-map.json` carries `schema_version: "fidelity-pov-map@1"`. Successful records come only from
 validated observation `alignment` objects and link source ID, source landmark, alignment
 method/uncertainty/row compatibility, observation and selector IDs, generated seed, generated
-anchor/stable beat ID/window, and relative generated-POV PNG. Source time is a tagged union that
+anchor/stable beat ID/window, arithmetic-midpoint `generated_time_s`, and relative generated-POV
+PNG. Source time is a tagged union that
 preserves exactly one catalog form: `{"kind":"point","time_s":...}` or
 `{"kind":"window","window_s":[...]}`; never turn a point into an invented interval or rescale a
-source window. Every YouTube source with declared landmarks but no aligned observation emits one
+source window. Every generated window satisfies finite
+`0 <= start < end <= measurement.duration`; Task 7B consumes the recorded midpoint without
+reinterpreting the window. Every YouTube source with declared landmarks but no aligned observation emits one
 source-level `alignment-not-present` gap, carrying no invented observation, selector, generated
 timestamp, or PNG request. Observation-driven gaps remain distinct. Sort landmarks and gaps by
-stable IDs. `pov-map.md` presents the same data. Render generated POV frames from the route frame
-and generic track/terrain inspection layer; do not embed source-video frames.
+stable IDs. `pov-map.md` presents the same data.
+
+Extract the viewer's exact lower-index, time-to-distance, and quaternion-slerped pose interpolation
+into pure `RouteSampling`; keep `main.gd`'s existing static methods as thin delegates and pin parity
+before/after. `RideFidelityArtifacts` depends on the neutral utility, never on `main.gd`, and does not
+substitute the force verifier's intentionally different private field interpolation. Render the
+recorded midpoint with a fixed neutral perspective camera: `1440x900`, vertical FOV `72` degrees,
+near `0.08 m`, far `5000 m`, center-row route basis, and eye position
+`pose.origin + pose.basis.y * 0.35`. Do not apply the viewer's speed-dependent FOV widening. Render
+the generic track/terrain inspection layer only; do not embed source-video frames.
 
 - [ ] **Step 9: Add the unscored review checklist and complete issue 1–16 traceability**
 
@@ -1244,6 +1275,11 @@ but each issue ID appears once and none may be omitted. Pin exact successful iss
 failing public-input tests for an out-of-range catalog issue ID and an issue whose linked-ID/path
 union is empty, including direct fixtures for entry-launch speed (9), flats (12), multidimensional
 scaling (14), and transition jerk (15).
+
+Keep `markdown(report)` and `write_pack(...)` as the only public text/pack APIs. Private shared body
+appenders project POV map, checklist, and issue coverage for both aggregate `audit.md` and their
+standalone Markdown files; the pack writer never revisits catalog/comparison inputs or adds separate
+public formatter methods.
 
 - [ ] **Step 10: Retain the pre-registered artifact suite and run the focused and smoke gates**
 

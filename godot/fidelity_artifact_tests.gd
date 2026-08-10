@@ -25,13 +25,10 @@ static func run() -> PackedStringArray:
 	var artifacts: Script = load(ARTIFACTS_PATH)
 	var references: Script = load(REFERENCES_PATH)
 	_test_canonical_data(canonical_data, artifacts, errors)
-	_test_complete_report(artifacts, canonical_data.sha256_text(canonical_data.canonical_json(_valid_catalog())), errors)
-	_test_report_determinism(artifacts, errors)
-	_test_invalid_envelope(artifacts, errors)
-	_test_invalid_links_and_coverage(artifacts, errors)
+	_test_successful_report(artifacts, canonical_data.sha256_text(canonical_data.canonical_json(_valid_catalog())), errors)
+	_test_invalid_inputs(artifacts, errors)
 	_test_committed_catalog(artifacts, references, errors)
 	_test_element_render_request_filter(artifacts, errors)
-	_test_nested_alias_isolation(artifacts, errors)
 	_test_center_row_alignment_selectors(artifacts, errors)
 	return errors
 
@@ -73,15 +70,13 @@ static func _test_canonical_data(
 		"SHA-256 hashes the exact supplied UTF-8 text")
 
 
-static func _test_complete_report(artifacts: Script, oracle: String, errors: PackedStringArray) -> void:
+static func _test_successful_report(artifacts: Script, oracle: String, errors: PackedStringArray) -> void:
 	var actual: Dictionary = _build(artifacts, _valid_fixture())
 	_expect(errors, actual == _expected_report(),
 		"complete report mismatch; oracle=%s report=%s" % [oracle, actual.get("catalog", {}).get("canonical_sha256", "")])
 	_expect(errors, artifacts.markdown(actual) == EXPECTED_MARKDOWN,
 		"Markdown is the normative literal projection")
 
-
-static func _test_report_determinism(artifacts: Script, errors: PackedStringArray) -> void:
 	var fixture := _valid_fixture()
 	var before := fixture.duplicate(true)
 	var report_a: Dictionary = _build(artifacts, fixture)
@@ -90,8 +85,28 @@ static func _test_report_determinism(artifacts: Script, errors: PackedStringArra
 	_expect(errors, report_a == report_b,
 		"input dictionary insertion order does not affect report values")
 
+	var source_fixture := _valid_fixture()
+	var source_report: Dictionary = _build(artifacts, source_fixture)
+	source_fixture.comparison.findings[0].metric = "changed"
+	source_fixture.seed_measurements[1].dimensions.width = 99.0
+	source_fixture.seed_measurements[1].beats[0].kind = "changed"
+	source_fixture.catalog.sources["source.raw"].fallback_citations[0].section_id = "changed"
+	source_fixture.catalog.sources["source.raw"].windows[1].window_s[0] = 9.0
+	source_fixture.catalog.observations[0].alignment.generated_anchor.semantic_selector_id = "changed"
+	source_fixture.generation_counts["42"] = 2
+	_expect(errors, source_report == _expected_report(), "caller nested mutations do not change the completed report")
+	var report_fixture := _valid_fixture()
+	var mutable_report: Dictionary = _build(artifacts, report_fixture)
+	mutable_report.findings[0].metric = "changed"
+	mutable_report.measurement_summaries[1].dimensions.width = 99.0
+	mutable_report.measurement_summaries[1].beats[0].kind = "changed"
+	mutable_report.evidence_snapshot[0].fallback_citations[0].section_id = "changed"
+	mutable_report.pov_map.source_landmarks[1].source_time.window_s[0] = 9.0
+	mutable_report.pov_map.records[0].generated_anchor.semantic_selector_id = "changed"
+	_expect(errors, report_fixture == _valid_fixture(), "completed-report nested mutations do not change caller inputs")
 
-static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray) -> void:
+
+static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -> void:
 	var cases := [
 		["measurement schema missing", "schema_version",
 			func(value: Dictionary): value.seed_measurements[0].erase("schema_version")],
@@ -167,22 +182,6 @@ static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray)
 			func(value: Dictionary): value.generation_counts["42"] = 1.0],
 		["every seed was generated exactly once", "generation_counts",
 			func(value: Dictionary): value.generation_counts["42"] = 2],
-	]
-	_expect_invalid_cases(artifacts, errors, cases)
-	var multiple := _valid_fixture()
-	multiple.legacy_base_commit = "BAD"
-	multiple.generation_counts["42"] = 2
-	var result: Dictionary = _build(artifacts, multiple)
-	var sorted_errors: Array = result.get("errors", []).duplicate()
-	sorted_errors.sort()
-	_expect(errors, result.keys().size() == 2 and result.status == "invalid-input",
-		"invalid reports return only status and errors")
-	_expect(errors, result.errors == sorted_errors and result.errors.size() >= 2,
-		"all invalid-input diagnostics are stable and sorted")
-
-
-static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedStringArray) -> void:
-	var cases := [
 		["catalog identity fields are guarded", "catalog",
 			func(value: Dictionary): value.catalog.schema_version = "2"],
 		["catalog canonicalization rejects unconsumed NAN", "canonical",
@@ -199,8 +198,17 @@ static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedSt
 			func(value: Dictionary): value.catalog.observations[0].alignment = null],
 		["measurement beats are guarded", "beat",
 			func(value: Dictionary): value.seed_measurements[1].beats[0] = []],
+		["measurement beat IDs are unique per seed", "duplicate measurement beat",
+			func(value: Dictionary): value.seed_measurements[1].beats.append(
+				{"beat_id": "beat-loop", "kind": "brake_run"})],
 		["measurement rows are guarded", "row",
 			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0] = []],
+		["generated POV row windows reject equal endpoints", "measurement row window",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0].window_end_s = 10.1],
+		["generated POV row windows reject reversed endpoints", "measurement row window",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0].window_start_s = 12.0],
+		["generated POV row windows stay within measurement duration", "measurement row window",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0].window_end_s = 12.1],
 		["required projection leaf guard", "state",
 			func(value: Dictionary): value.catalog.sources["source.raw"].erase("state")],
 		["observation source links resolve", "observation",
@@ -230,6 +238,16 @@ static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedSt
 				value.seed_measurements[1].beats[0].rows[0].duplicate(true))],
 	]
 	_expect_invalid_cases(artifacts, errors, cases)
+	var multiple := _valid_fixture()
+	multiple.legacy_base_commit = "BAD"
+	multiple.generation_counts["42"] = 2
+	var result: Dictionary = _build(artifacts, multiple)
+	var sorted_errors: Array = result.get("errors", []).duplicate()
+	sorted_errors.sort()
+	_expect(errors, result.keys().size() == 2 and result.status == "invalid-input",
+		"invalid reports return only status and errors")
+	_expect(errors, result.errors == sorted_errors and result.errors.size() >= 2,
+		"all invalid-input diagnostics are stable and sorted")
 
 
 static func _test_committed_catalog(
@@ -275,28 +293,6 @@ static func _test_element_render_request_filter(artifacts: Script, errors: Packe
 		"only the exact nine retained side-view beat kinds produce element render requests")
 
 
-static func _test_nested_alias_isolation(artifacts: Script, errors: PackedStringArray) -> void:
-	var source_fixture := _valid_fixture()
-	var source_report: Dictionary = _build(artifacts, source_fixture)
-	source_fixture.comparison.findings[0].metric = "changed"
-	source_fixture.seed_measurements[1].dimensions.width = 99.0
-	source_fixture.seed_measurements[1].beats[0].kind = "changed"
-	source_fixture.catalog.sources["source.raw"].fallback_citations[0].section_id = "changed"
-	source_fixture.catalog.sources["source.raw"].windows[1].window_s[0] = 9.0
-	source_fixture.catalog.observations[0].alignment.generated_anchor.semantic_selector_id = "changed"
-	source_fixture.generation_counts["42"] = 2
-	_expect(errors, source_report == _expected_report(), "caller nested mutations do not change the completed report")
-	var report_fixture := _valid_fixture()
-	var mutable_report: Dictionary = _build(artifacts, report_fixture)
-	mutable_report.findings[0].metric = "changed"
-	mutable_report.measurement_summaries[1].dimensions.width = 99.0
-	mutable_report.measurement_summaries[1].beats[0].kind = "changed"
-	mutable_report.evidence_snapshot[0].fallback_citations[0].section_id = "changed"
-	mutable_report.pov_map.source_landmarks[1].source_time.window_s[0] = 9.0
-	mutable_report.pov_map.records[0].generated_anchor.semantic_selector_id = "changed"
-	_expect(errors, report_fixture == _valid_fixture(), "completed-report nested mutations do not change caller inputs")
-
-
 static func _test_center_row_alignment_selectors(artifacts: Script, errors: PackedStringArray) -> void:
 	for selector in [{"row_id": "row-edge"}, {"position": "front"}, {"offset": 2.0}, null]:
 		var fixture := _valid_fixture()
@@ -308,7 +304,8 @@ static func _test_center_row_alignment_selectors(artifacts: Script, errors: Pack
 		if selector == null:
 			fixture.catalog.observations[0].alignment.row_compatibility = "row-independent"
 		var records: Array = _build(artifacts, fixture).get("pov_map", {}).get("records", [])
-		_expect(errors, records.size() == 2 and records[0].generated_window_s == [10.1, 11.9],
+		_expect(errors, records.size() == 2 and records[0].generated_window_s == [10.1, 11.9]
+			and records[0].generated_time_s == 11.0,
 			"every valid evidence row selector resolves the unique zero-offset POV center row")
 
 
@@ -538,6 +535,7 @@ static func _expected_pov_map() -> Dictionary:
 			"uncertainty_s": 0.1, "row_compatibility": "same-row",
 			"generated_seed": 42, "generated_anchor": {"semantic_selector_id": "selector.loop"},
 			"generated_beat_id": "beat-loop", "generated_window_s": [10.1, 11.9],
+			"generated_time_s": 11.0,
 			"generated_pov_path": "review/seed-42/pov/beat-loop.png",
 		})
 	return {
@@ -629,6 +627,7 @@ static func _expected_render_requests() -> Array:
 	requests.append({
 		"path": "review/seed-42/pov/beat-loop.png", "seed": 42,
 		"artifact_kind": "pov", "beat_id": "beat-loop",
+		"generated_time_s": 11.0,
 	})
 	requests.sort_custom(func(a: Dictionary, b: Dictionary): return a.path < b.path)
 	return requests

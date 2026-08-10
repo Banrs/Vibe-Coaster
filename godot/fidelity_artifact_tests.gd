@@ -25,7 +25,7 @@ static func run() -> PackedStringArray:
 	var artifacts: Script = load(ARTIFACTS_PATH)
 	var references: Script = load(REFERENCES_PATH)
 	_test_canonical_data(canonical_data, artifacts, errors)
-	_test_successful_report(artifacts, canonical_data.sha256_text(canonical_data.canonical_json(_valid_catalog())), errors)
+	_test_successful_report(artifacts, errors)
 	_test_invalid_inputs(artifacts, errors)
 	_test_committed_catalog(artifacts, references, errors)
 	_test_element_render_request_filter(artifacts, errors)
@@ -70,10 +70,10 @@ static func _test_canonical_data(
 		"SHA-256 hashes the exact supplied UTF-8 text")
 
 
-static func _test_successful_report(artifacts: Script, oracle: String, errors: PackedStringArray) -> void:
+static func _test_successful_report(artifacts: Script, errors: PackedStringArray) -> void:
 	var actual: Dictionary = _build(artifacts, _valid_fixture())
 	_expect(errors, actual == _expected_report(),
-		"complete report mismatch; oracle=%s report=%s" % [oracle, actual.get("catalog", {}).get("canonical_sha256", "")])
+		"valid inputs produce the complete pure report contract")
 	_expect(errors, artifacts.markdown(actual) == EXPECTED_MARKDOWN,
 		"Markdown is the normative literal projection")
 
@@ -468,7 +468,7 @@ static func _expected_report() -> Dictionary:
 		"legacy_base_commit": "3fa14885bef2daf3a7d9c0e544424cb6a296fd99",
 		"catalog": {
 			"schema_version": 2, "catalog_version": "test",
-			"canonical_sha256": "__CALIBRATE_CATALOG_SHA256__", "validation_status": "valid",
+			"canonical_sha256": "fd2fb5d8ae1cd756bc501f32ac9951479c13b7c1d7e915be9974fb1a5c06a285", "validation_status": "valid",
 		},
 		"fleet": [11, 42, 20260809, 1],
 		"generation_counts": {"11": 1, "42": 1, "20260809": 1, "1": 1},

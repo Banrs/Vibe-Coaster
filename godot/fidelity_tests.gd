@@ -704,7 +704,8 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 	var prompts := {}
 	var prompt_ids := []
 	for prompt in catalog.get("review_prompts", []):
-		prompts[prompt.get("id")] = prompt; prompt_ids.append(prompt.get("id"))
+		prompts[prompt.get("id")] = prompt
+		prompt_ids.append(prompt.get("id"))
 	_expect(errors, prompt_ids == [
 		"review.ride_feel", "review.speed_perception", "review.element_shaping", "review.support_overlap",
 		"review.coastertalk_overlay_spot_checks", "review.terrain_clearance",

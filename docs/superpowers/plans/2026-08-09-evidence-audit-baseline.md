@@ -1023,6 +1023,9 @@ Task 7A's pure report contract is exact:
   satisfies `0 <= start < end <= measurement.duration`; both its POV-map record and render request
   carry `generated_time_s = start + (end - start) * 0.5`. Identical path/payload intents deduplicate,
   while a conflicting same-path payload is invalid.
+- Comparison keys are proven String/exact without sorting unvalidated Variants. Each projected
+  generated anchor is constructed as exactly `{"semantic_selector_id": <matching selector ID>}`;
+  source-landmark and POV-record time dictionaries are independently owned.
 - Each `measurement_summaries` entry has exact top-level keys `{schema_version, seed, length,
   duration, dimensions, beats, force_error_peak_g, reconstruction_seam_count}`.
   `force_error_peak_g` copies `measurement.reconstruction.force_error_peak_g`;
@@ -1042,8 +1045,8 @@ Task 7A's pure report contract is exact:
   snapshot, POV map, Checklist, Issue coverage, Render requests; rows follow the already-contracted
   array orders.
 - Task 7A physical-line review thresholds are 55 soft / 80 absolute for `canonical_data.gd`, a
-  reviewed structural landing forecast of 735-750 / 750 absolute for `fidelity_artifacts.gd`, 762
-  absolute for the focused regression suite (761 expected after test consolidation), and exactly two
+  reviewed structural landing forecast of 735-750 / 750 absolute for `fidelity_artifacts.gd`, 766
+  absolute for the focused regression suite after final review fixes, and exactly two
   added `smoke.gd` lines.
   These are stops, not quotas; never pack lines, couple expected values to fixtures, weaken
   mutations, or add generic schema machinery to meet them. Further test growth requires structural

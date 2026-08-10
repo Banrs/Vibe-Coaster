@@ -102,6 +102,7 @@ static func _test_successful_report(artifacts: Script, oracle: String, errors: P
 	mutable_report.measurement_summaries[1].beats[0].kind = "changed"
 	mutable_report.evidence_snapshot[0].fallback_citations[0].section_id = "changed"
 	mutable_report.pov_map.source_landmarks[1].source_time.window_s[0] = 9.0
+	_expect(errors, mutable_report.pov_map.records[1].source_time.window_s[0] == 2.0, "source times are independent")
 	mutable_report.pov_map.records[0].generated_anchor.semantic_selector_id = "changed"
 	_expect(errors, report_fixture == _valid_fixture(), "completed-report nested mutations do not change caller inputs")
 
@@ -151,7 +152,7 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 		["base commit must be lowercase 40-hex", "legacy_base_commit",
 			func(value: Dictionary): value.legacy_base_commit = "ABC"],
 		["comparison has the exact Task 6 algebra", "comparison",
-			func(value: Dictionary): value.comparison["extra"] = true],
+			func(value: Dictionary): value.comparison[7] = true],
 		["Task 6 members cannot be missing", "comparison",
 			func(value: Dictionary): value.comparison.erase("findings")],
 		["Task 6 members have contracted types", "comparison",
@@ -196,6 +197,10 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 			func(value: Dictionary): value.catalog.selectors["selector.loop"].compiled_anchor = {}],
 		["alignments are guarded", "alignment",
 			func(value: Dictionary): value.catalog.observations[0].alignment = null],
+		["generated anchor selector matches observation selector", "generated_anchor",
+			func(value: Dictionary): value.catalog.observations[0].alignment.generated_anchor.semantic_selector_id = "wrong"],
+		["generated anchor has exact members", "generated_anchor",
+			func(value: Dictionary): value.catalog.observations[0].alignment.generated_anchor["extra"] = true],
 		["measurement beats are guarded", "beat",
 			func(value: Dictionary): value.seed_measurements[1].beats[0] = []],
 		["measurement beat IDs are unique per seed", "duplicate measurement beat",

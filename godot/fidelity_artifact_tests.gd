@@ -180,7 +180,7 @@ static func _test_committed_catalog(
 		if str(source_id).begins_with("youtube.") and not fixture.catalog.sources[source_id].windows.is_empty():
 			expected_gap_ids.append("%s/alignment-not-present" % source_id)
 	expected_gap_ids.sort()
-	var actual_gap_ids := report.get("pov_map", {}).get("gaps", []).map(
+	var actual_gap_ids: Array = report.get("pov_map", {}).get("gaps", []).map(
 		func(gap: Dictionary): return gap.get("id"))
 	_expect(errors, actual_gap_ids == expected_gap_ids,
 		"committed source-level no-alignment gaps are complete and sorted")
@@ -608,7 +608,7 @@ Gap: youtube.unaligned — alignment-not-present (video.crest)
 static func _reverse_dictionaries(value: Variant) -> Variant:
 	if value is Dictionary:
 		var output := {}
-		var keys := value.keys()
+		var keys: Array = value.keys()
 		keys.reverse()
 		for key in keys:
 			output[key] = _reverse_dictionaries(value[key])

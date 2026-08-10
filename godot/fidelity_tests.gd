@@ -494,7 +494,8 @@ static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedSt
 	_expect(errors, fidelity.validate_catalog(independent).is_empty(), "row-independent null selector validates")
 
 	var non_grid_hold := catalog.duplicate(true)
-	non_grid_hold.observations[0].hold_seconds = 0.804
+	for observation in non_grid_hold.observations:
+		observation.hold_seconds = 0.804
 	non_grid_hold.targets[0].hold_seconds = 0.804
 	_expect_contains(errors, fidelity.validate_catalog(non_grid_hold), "HOLD_SECONDS", "comparison holds must use an emitted duration")
 	var long_values := PackedFloat32Array()

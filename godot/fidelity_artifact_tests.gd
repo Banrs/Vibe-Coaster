@@ -205,7 +205,10 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 			func(value: Dictionary): value.seed_measurements[1].beats[0] = []],
 		["measurement beat IDs are unique per seed", "duplicate measurement beat",
 			func(value: Dictionary): value.seed_measurements[1].beats.append(
-				{"beat_id": "beat-loop", "kind": "brake_run"})],
+				{"beat_id": "act-one/00/loop", "kind": "brake_run"})],
+		["projected beat render paths conflict",
+			"artifact_report: render request path has conflicting payload: review/seed-42/elements/act-one__00__loop.png",
+			func(value: Dictionary): _append_copy(value.seed_measurements[1].beats, 0, {"beat_id": "act-one__00__loop"})],
 		["measurement rows are guarded", "row",
 			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0] = []],
 		["generated POV row windows reject equal endpoints", "measurement row window",
@@ -237,10 +240,9 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 		["center-row POV resolution requires a zero-offset row", "row",
 			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0].offset = 2.0],
 		["center-row POV resolution rejects distinct ambiguous rows", "row",
-			func(value: Dictionary): _add_distinct_center_row(value)],
+			func(value: Dictionary): _append_copy(value.seed_measurements[1].beats[0].rows, 0, {"row_id": "row-center-2"})],
 		["center-row POV resolution rejects identical ambiguous rows", "row",
-			func(value: Dictionary): value.seed_measurements[1].beats[0].rows.append(
-				value.seed_measurements[1].beats[0].rows[0].duplicate(true))],
+			func(value: Dictionary): _append_copy(value.seed_measurements[1].beats[0].rows, 0, {})],
 	]
 	_expect_invalid_cases(artifacts, errors, cases)
 	var multiple := _valid_fixture()
@@ -284,17 +286,15 @@ static func _test_committed_catalog(
 static func _test_element_render_request_filter(artifacts: Script, errors: PackedStringArray) -> void:
 	var fixture := _valid_fixture()
 	for kind in ["hill", "immelmann", "cutback", "twisted_drop", "dive", "wave_turn", "overbank", "turn", "brake_run"]:
-		var beat: Dictionary = fixture.seed_measurements[1].beats[0].duplicate(true)
-		beat.beat_id = "beat-%s" % kind
-		beat.kind = kind
-		beat.story_slot_id = "act1.%s" % kind
-		fixture.seed_measurements[1].beats.append(beat)
+		_append_copy(fixture.seed_measurements[1].beats, 0, {
+			"beat_id": "beat-%s" % kind, "kind": kind, "story_slot_id": "act1.%s" % kind,
+		})
 	var actual := []
 	for request in _build(artifacts, fixture).get("render_requests", []):
 		if request.get("artifact_kind") == "element":
 			actual.append(request.get("beat_id"))
-	_expect(errors, actual == ["beat-cutback", "beat-dive", "beat-hill", "beat-immelmann", "beat-loop",
-		"beat-overbank", "beat-turn", "beat-twisted_drop", "beat-wave_turn"],
+	_expect(errors, actual == ["act-one/00/loop", "beat-cutback", "beat-dive", "beat-hill",
+		"beat-immelmann", "beat-overbank", "beat-turn", "beat-twisted_drop", "beat-wave_turn"],
 		"only the exact nine retained side-view beat kinds produce element render requests")
 
 
@@ -340,10 +340,10 @@ static func _replace_seed(value: Dictionary, old_seed: int, new_seed: int) -> vo
 	value.generation_counts.erase(str(old_seed))
 
 
-static func _add_distinct_center_row(value: Dictionary) -> void:
-	var row: Dictionary = value.seed_measurements[1].beats[0].rows[0].duplicate(true)
-	row.row_id = "row-center-2"
-	value.seed_measurements[1].beats[0].rows.append(row)
+static func _append_copy(values: Array, index: int, overrides: Dictionary) -> void:
+	var copy: Dictionary = values[index].duplicate(true)
+	copy.merge(overrides, true)
+	values.append(copy)
 
 static func _valid_fixture() -> Dictionary:
 	var measurements := []
@@ -362,7 +362,7 @@ static func _valid_fixture() -> Dictionary:
 			},
 		})
 	measurements[1].beats = [{
-		"beat_id": "beat-loop", "story_slot_id": "act1.loop",
+		"beat_id": "act-one/00/loop", "story_slot_id": "act1.loop",
 		"window_role": "core", "kind": "loop", "window_s": [10.0, 12.0],
 		"rows": [{
 			"row_id": "row-02", "position": "intermediate",
@@ -475,7 +475,7 @@ static func _expected_report() -> Dictionary:
 		"measurement_summaries": [
 			_measurement_summary(11, 111.0, 11.0, []),
 			_measurement_summary(42, 142.0, 12.0, [{
-				"beat_id": "beat-loop", "story_slot_id": "act1.loop",
+				"beat_id": "act-one/00/loop", "story_slot_id": "act1.loop",
 				"window_role": "core", "kind": "loop", "window_s": [10.0, 12.0],
 				"rows": [{
 					"row_id": "row-02", "position": "intermediate",
@@ -539,9 +539,9 @@ static func _expected_pov_map() -> Dictionary:
 			"semantic_selector_id": "selector.loop", "alignment_method": "fixture alignment",
 			"uncertainty_s": 0.1, "row_compatibility": "same-row",
 			"generated_seed": 42, "generated_anchor": {"semantic_selector_id": "selector.loop"},
-			"generated_beat_id": "beat-loop", "generated_window_s": [10.1, 11.9],
+			"generated_beat_id": "act-one/00/loop", "generated_window_s": [10.1, 11.9],
 			"generated_time_s": 11.0,
-			"generated_pov_path": "review/seed-42/pov/beat-loop.png",
+			"generated_pov_path": "review/seed-42/pov/act-one__00__loop.png",
 		})
 	return {
 		"schema_version": "fidelity-pov-map@1",
@@ -626,12 +626,12 @@ static func _expected_render_requests() -> Array:
 				"seed": seed, "artifact_kind": kind,
 			})
 	requests.append({
-		"path": "review/seed-42/elements/beat-loop.png", "seed": 42,
-		"artifact_kind": "element", "beat_id": "beat-loop",
+		"path": "review/seed-42/elements/act-one__00__loop.png", "seed": 42,
+		"artifact_kind": "element", "beat_id": "act-one/00/loop",
 	})
 	requests.append({
-		"path": "review/seed-42/pov/beat-loop.png", "seed": 42,
-		"artifact_kind": "pov", "beat_id": "beat-loop",
+		"path": "review/seed-42/pov/act-one__00__loop.png", "seed": 42,
+		"artifact_kind": "pov", "beat_id": "act-one/00/loop",
 		"generated_time_s": 11.0,
 	})
 	requests.sort_custom(func(a: Dictionary, b: Dictionary): return a.path < b.path)
@@ -683,8 +683,8 @@ recommended: target.load
 ## POV map
 | source | landmark | observation | generated beat | source time |
 | --- | --- | --- | --- | --- |
-| source.raw | landmark.point | obs.point | beat-loop | point 1.250000 |
-| source.raw | landmark.window | obs.window | beat-loop | window 2.000000–3.000000 |
+| source.raw | landmark.point | obs.point | act-one/00/loop | point 1.250000 |
+| source.raw | landmark.window | obs.window | act-one/00/loop | window 2.000000–3.000000 |
 Gap: youtube.unaligned — alignment-not-present (video.crest)
 
 ## Checklist
@@ -729,9 +729,9 @@ Gap: youtube.unaligned — alignment-not-present (video.crest)
 | review/seed-20260809/elevation.png | elevation | 20260809 |  |
 | review/seed-20260809/top.png | top | 20260809 |  |
 | review/seed-42/channels.png | channels | 42 |  |
-| review/seed-42/elements/beat-loop.png | element | 42 | beat-loop |
+| review/seed-42/elements/act-one__00__loop.png | element | 42 | act-one/00/loop |
 | review/seed-42/elevation.png | elevation | 42 |  |
-| review/seed-42/pov/beat-loop.png | pov | 42 | beat-loop |
+| review/seed-42/pov/act-one__00__loop.png | pov | 42 | act-one/00/loop |
 | review/seed-42/top.png | top | 42 |  |
 """
 

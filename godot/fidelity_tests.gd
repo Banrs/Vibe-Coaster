@@ -503,7 +503,7 @@ static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedSt
 	bad_offset.observations[0].alignment.generated_row_selector = {"offset": NAN}
 	_expect_contains(errors, fidelity.validate_catalog(bad_offset), "generated_row_selector", "row selector offset is finite")
 	for malformed_selector in [
-		[], {"row_id": ""}, {"row_id": 2}, {"position": null}, {"offset": "2.0"},
+		[], {"unknown": "row-01"}, {"row_id": ""}, {"row_id": 2}, {"position": null}, {"offset": "2.0"},
 	]:
 		var malformed := catalog.duplicate(true)
 		malformed.observations[0].alignment.generated_row_selector = malformed_selector
@@ -723,6 +723,7 @@ static func _test_selector_and_row_resolution(fidelity: Script, errors: PackedSt
 		{"selector": {"row_id": "row-02"}, "expected": 2.0},
 		{"selector": {"position": "rear"}, "expected": 2.0},
 		{"selector": {"offset": 2.0000005}, "expected": 2.0},
+		{"selector": {"offset": 0.000001}, "expected": 1.0},
 	]:
 		var catalog := _comparison_catalog()
 		catalog.observations[0].alignment.generated_row_selector = selector_case.selector
@@ -731,7 +732,7 @@ static func _test_selector_and_row_resolution(fidelity: Script, errors: PackedSt
 		if not finding.is_empty():
 			_expect_close(errors, finding.seed_results[0].value, selector_case.expected, "row selector resolves exactly")
 	var outside_tolerance := _comparison_catalog()
-	outside_tolerance.observations[0].alignment.generated_row_selector = {"offset": 2.0000011}
+	outside_tolerance.observations[0].alignment.generated_row_selector = {"offset": 0.0000011}
 	_assert_all_gaps(errors, fidelity.compare_fleet(_row_selection_fleet(CANONICAL_FLEET), outside_tolerance), "row-not-found", "offset just outside tolerance")
 
 	var independent_catalog := _comparison_catalog()
@@ -785,6 +786,14 @@ static func _test_observed_only_and_evidence_gaps(fidelity: Script, errors: Pack
 			"observed.hill.entry/1/entry-a/row-01", "observed.hill.entry/1/entry-a/row-02",
 			"observed.hill.entry/1/entry-b/row-01", "observed.hill.entry/1/entry-b/row-02",
 		], "observed-only ordering uses the full stable tuple")
+		var observation_boundary := []
+		for index in [59, 60]:
+			var record: Dictionary = comparison.observed_only[index]
+			observation_boundary.append("%s/%s/%s/%s" % [record.observation_id, record.seed, record.beat_id, record.row_id])
+		_expect(errors, observation_boundary == [
+			"observed.hill.entry/20260809/entry-b/row-02",
+			"observed.hill.exit/1/exit-a/row-01",
+		], "observation ID sorts before seed across observed-only records")
 	_expect(errors, _count_dictionary_key(comparison.get("observed_only", []), "normal_peak_negative") == 0, "uncatalogued measurement metrics are not enumerated")
 
 	var finding := _first_finding(comparison, errors, "provenance comparison emits a finding")
@@ -810,9 +819,15 @@ static func _test_observed_only_and_evidence_gaps(fidelity: Script, errors: Pack
 	)
 	corroborating_a.state = "corroborative"
 	corroborating_a.source_id = "test.a"
+	var corroborating_a_duplicate := _comparison_observation(
+		"observed.hill.a.duplicate", "semantic.hill", "normal_peak_positive", null, "medium"
+	)
+	corroborating_a_duplicate.state = "corroborative"
+	corroborating_a_duplicate.source_id = "test.a"
 	corroborated_catalog.observations.append(corroborating_z)
+	corroborated_catalog.observations.append(corroborating_a_duplicate)
 	corroborated_catalog.observations.append(corroborating_a)
-	corroborated_catalog.observations[0].corroborating_observation_ids = ["observed.hill.z", "observed.hill.a"]
+	corroborated_catalog.observations[0].corroborating_observation_ids = ["observed.hill.z", "observed.hill.a.duplicate", "observed.hill.a"]
 	var corroborated: Dictionary = fidelity.compare_fleet(_comparison_fleet(CANONICAL_FLEET), corroborated_catalog)
 	var corroborated_finding := _first_finding(corroborated, errors, "corroborated provenance emits a finding")
 	if not corroborated_finding.is_empty():
@@ -883,12 +898,8 @@ static func _test_recommendation_eligibility(fidelity: Script, errors: PackedStr
 	var eight: Dictionary = fidelity.compare_fleet(_eligibility_fleet(8), _comparison_catalog())
 	_expect(errors, eight.get("recommendation") == {
 		"status": "recommended", "target_id": "loads.hill.ejector",
-		"observation_id": "observed.hill", "dimension": "loads",
-		"metric": "normal_peak_positive", "hold_seconds": null,
-		"fleet_value": 0.9, "fleet_status": "under",
-		"affected_count": 8, "available_count": 15, "gap_count": 0,
-		"prevalence": 8.0 / 15.0, "normalized_median_miss": 0.25,
-		"observation_confidence": "high",
+		"normalized_median_miss": 0.25, "prevalence": 8.0 / 15.0,
+		"confidence": "high",
 	}, "eight affected seeds emit the exact compact recommendation")
 	var eight_finding := _first_finding(eight, errors, "eight-seed comparison emits a finding")
 	if not eight_finding.is_empty():
@@ -1456,10 +1467,10 @@ static func _comparison_catalog_with_observed_only() -> Dictionary:
 	)
 	entry.alignment.row_compatibility = "row-independent"
 	entry.alignment.generated_row_selector = null
-	catalog.observations.append(entry)
 	catalog.observations.append(_comparison_observation(
 		"observed.hill.exit", "semantic.exit", "normal_peak_positive", null, "medium"
 	))
+	catalog.observations.append(entry)
 	return catalog
 
 

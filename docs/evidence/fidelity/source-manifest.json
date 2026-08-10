@@ -77,7 +77,7 @@
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/0UaOSBGSx20-oembed.json",
       "metadata_artifact_sha256": "eb71dc52f36bda28ee6a9086fcbd6e5397e259f1c9d18624b18076274bf8a83a",
       "review_path": "docs/evidence/fidelity/youtube/0UaOSBGSx20-review.json",
-      "review_sha256": "f01618a6a1bc42a7eb3055b1e76ef7b8d2c8f8ef77c5aec7166c85435fd89f25"
+      "review_sha256": "4e0af882b0280a9d7c7638b2f33a68af7909a6d1d085e61adac987d7869632ba"
     },
     {
       "source_id": "youtube.coastertalk.edited.seNR",
@@ -107,7 +107,7 @@
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-oembed.json",
       "metadata_artifact_sha256": "595aa5253b41a2557e3a33bcbd2695a74d9723bb1e49e84fc9f75c4910a26aaf",
       "review_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-review.json",
-      "review_sha256": "1eae94e3639bd69dc227e58f8b04f8d9e5ce78a29c9ab4e3bedb3c98127a490f"
+      "review_sha256": "d78534c443817d95b33163136ac1451ae4747dcdebb8266e4cf7fd7f4b2cb9e0"
     },
     {
       "source_id": "youtube.falcon.cgi.NFV",
@@ -152,7 +152,7 @@
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/poco8rOnW18-oembed.json",
       "metadata_artifact_sha256": "5776d2ee4dd2840c518774b77c6f6c5517c127f8884493e1f762678ced7ff1ef",
       "review_path": "docs/evidence/fidelity/youtube/poco8rOnW18-review.json",
-      "review_sha256": "8efaa68ada0f258c842aebc08747e1e2ac826aace5c875fa634a288031f08332"
+      "review_sha256": "99f44129f2731e65170fc524b3dc32dc7e7e022034596ae96642cea0af1c9fd0"
     },
     {
       "source_id": "youtube.falcon.sdXGD9kMR7s",
@@ -167,7 +167,7 @@
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-oembed.json",
       "metadata_artifact_sha256": "badb63ae7143267d526a4d6d32dbdc85f280506cf2a8663280df760f87b12361",
       "review_path": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-review.json",
-      "review_sha256": "7fd9f1bf4a5df352c5371264f160f3bfcc30a89acacffe99a6f3ea3c47b00531"
+      "review_sha256": "9dd4b8ed8f5d4bfd8b67f2218c65ed681fcb912fe55a5599e34770919d6192df"
     },
     {
       "source_id": "youtube.i305.overlay.wX7",

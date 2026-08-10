@@ -6,8 +6,9 @@
   "metadata": {
     "title": "Falcon's Flight BACKWARDS POV | Worlds Tallest, Fastest, Longest Roller Coaster at Six Flags Qiddiya",
     "channel": "Coaster Studios",
-    "duration_seconds": 240.9,
-    "duration_provenance": "docs/RESEARCH.md line 64"
+    "duration_seconds": 240.881,
+    "duration_provenance": "live media-element duration readback",
+    "published_on": "2026-01-05"
   },
   "state": "observation_only",
   "permitted_contributions": [
@@ -20,6 +21,13 @@
     "metadata_artifact": "docs/evidence/fidelity/youtube/J54WKu2nU6o-oembed.json",
     "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
+    "live_review": {
+      "reviewed_on": "2026-08-10",
+      "method": "visible live YouTube player, media-element currentTime readback, and expanded description; sparse manual sampling only",
+      "time_basis": "source-local media-element seconds",
+      "retained_frame_or_video": false,
+      "correction_review": "not-applicable"
+    },
     "repository_review": [
       {
         "document": "docs/RESEARCH.md",
@@ -29,19 +37,96 @@
       }
     ]
   },
+  "view": {
+    "content_kind": "built-ride",
+    "direction": "rear-facing",
+    "position_claim": "centered rear-facing view; exact row undisclosed",
+    "mount": "unknown",
+    "obstructions": [
+      "lower-right watermark",
+      "night exposure",
+      "motion blur",
+      "rapid camera roll"
+    ],
+    "certainty": "high for ride identity and orientation; medium for element shaping from sparse night frames"
+  },
   "independent_timeline": {
     "timeline_id": "youtube.J54WKu2nU6o",
     "origin": "This video's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
-    "landmark_review_status": "No exact source-second landmark has been visually recaptured or retained.",
-    "landmarks": []
+    "landmark_review_status": "Sparse source-local landmarks reviewed live; no continuous trace or generated alignment is asserted.",
+    "landmarks": [
+      {
+        "id": "j54.station_dispatch",
+        "time_s": 0.07,
+        "description": "Covered station corridor with track centered in the rear-facing view.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.park_straight",
+        "time_s": 29.99,
+        "description": "Open-air straight beside park buildings and walkways.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.park_bank",
+        "time_s": 59.07,
+        "description": "Strongly banked park turn among illuminated supports.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.rocky_descent",
+        "time_s": 89.18,
+        "description": "Banked descending turn through dark rocky terrain.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.elevated_crest",
+        "time_s": 120.71,
+        "description": "Large elevated crest silhouetted against the night sky.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.steep_segment",
+        "time_s": 139.36,
+        "description": "Extremely steep track segment; travel direction is ambiguous in the rear-facing still.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.park_return",
+        "time_s": 159.43,
+        "description": "Banked return toward the illuminated park.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.support_passage",
+        "time_s": 179.50,
+        "description": "Tilted passage through dense supports and park structures.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "j54.station_return",
+        "time_s": 219.65,
+        "description": "Brake/return track entering the station area.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      }
+    ]
   },
   "alignment": [],
-  "alignment_status": "The backwards POV confirms order only; no source landmark is mapped to a generated selector.",
+  "alignment_status": "Reviewed source-local landmarks only; no source landmark is mapped to a generated selector.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
-    "No reviewed source-second landmark windows are recorded.",
-    "No row, device, camera calibration, or axis mapping is established.",
+    "Only sparse source-local point landmarks are recorded; no continuous trace is available.",
+    "No row, device, camera calibration, axis mapping, or source-to-generated alignment is established.",
     "This source cannot define executable comparison bands."
   ]
 }

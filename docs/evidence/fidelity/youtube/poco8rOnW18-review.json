@@ -6,8 +6,9 @@
   "metadata": {
     "title": "Falcon's Flight - Six Flags Qiddiya | 607ft WORLD RECORD BREAKING Intamin Roller Coaster | NoLimits2",
     "channel": "ML Designs",
-    "duration_seconds": null,
-    "duration_provenance": "YouTube oEmbed does not provide duration; no retained duration artifact is available."
+    "duration_seconds": 328.521,
+    "duration_provenance": "live media-element duration readback",
+    "published_on": "2023-06-04"
   },
   "state": "corroborative",
   "permitted_contributions": [
@@ -18,21 +19,117 @@
     "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
     "content_classification": "NoLimits2 simulation",
+    "live_review": {
+      "reviewed_on": "2026-08-10",
+      "method": "visible live YouTube player, media-element currentTime readback, and expanded description; sparse manual sampling only",
+      "time_basis": "source-local media-element seconds",
+      "retained_frame_or_video": false,
+      "correction_review": "not-applicable"
+    },
     "repository_review": []
+  },
+  "view": {
+    "content_kind": "nolimits2-precreation",
+    "direction": "mixed",
+    "position_claim": "mixed third-person and virtual POV; not an as-built camera",
+    "mount": "not-applicable",
+    "obstructions": [
+      "synthetic low-detail terrain and scenery",
+      "lower-right watermark"
+    ],
+    "certainty": "high for precreation status; low for as-built correspondence"
   },
   "independent_timeline": {
     "timeline_id": "youtube.poco8rOnW18",
     "origin": "This NoLimits2 simulation's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
-    "landmark_review_status": "No exact source-second landmark has been visually recaptured or retained.",
-    "landmarks": []
+    "landmark_review_status": "Sparse source-local landmarks reviewed live; no continuous trace or generated alignment is asserted.",
+    "landmarks": [
+      {
+        "id": "poco.opening",
+        "time_s": 0.10,
+        "description": "Black opening frame.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.park_element",
+        "time_s": 43.63,
+        "description": "Third-person train view in a compact modeled park element.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.desert_curve",
+        "time_s": 88.56,
+        "description": "Third-person banked curve over modeled desert terrain.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.elevated_arch",
+        "time_s": 133.76,
+        "description": "Third-person profile of a large elevated arch.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.supported_grade",
+        "time_s": 148.74,
+        "description": "Third-person train on a long highly supported grade.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.low_return",
+        "time_s": 163.71,
+        "description": "Third-person low return track through the modeled park.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.virtual_pov_start",
+        "time_s": 170.69,
+        "description": "First sampled virtual POV frame toward a tall inclined element.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.steep_ascent",
+        "time_s": 178.69,
+        "description": "Virtual POV on a very steep ascent.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.rocky_ascent",
+        "time_s": 223.89,
+        "description": "Virtual POV ascending through modeled rocky terrain.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.modeled_hill",
+        "time_s": 268.82,
+        "description": "Virtual POV approaching a large triangular-supported hill.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "poco.park_return",
+        "time_s": 314.02,
+        "description": "Virtual POV in a banked compact modeled park return.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      }
+    ]
   },
   "alignment": [],
-  "alignment_status": "No model landmark is mapped to a generated selector; this source cannot establish measured truth.",
+  "alignment_status": "Reviewed source-local landmarks only; no source landmark is mapped to a generated selector.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
-    "No repository-reviewed source-second landmark windows are recorded.",
-    "No row, device, camera calibration, or axis mapping is established.",
-    "A simulated source is not measured real-world truth and cannot define executable comparison bands."
+    "Sparse live-player landmarks do not establish as-built geometry or measured truth.",
+    "No row, device, camera calibration, sample rate, or axis mapping is established.",
+    "This source cannot define executable comparison bands."
   ]
 }

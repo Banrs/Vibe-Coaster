@@ -6,8 +6,9 @@
   "metadata": {
     "title": "This is how intense the fastest roller coaster in the world really is.",
     "channel": "CoasterTalk Source",
-    "duration_seconds": null,
-    "duration_provenance": "YouTube oEmbed does not provide duration; no retained duration artifact is available."
+    "duration_seconds": 213.541,
+    "duration_provenance": "live media-element duration readback",
+    "published_on": "2026-04-14"
   },
   "state": "corroborative",
   "permitted_contributions": [
@@ -17,21 +18,132 @@
     "metadata_artifact": "docs/evidence/fidelity/youtube/0UaOSBGSx20-oembed.json",
     "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
+    "live_review": {
+      "reviewed_on": "2026-08-10",
+      "method": "visible live YouTube player, media-element currentTime readback, and expanded description; sparse manual sampling only",
+      "time_basis": "source-local media-element seconds",
+      "retained_frame_or_video": false,
+      "correction_review": "pass"
+    },
     "repository_review": []
+  },
+  "view": {
+    "content_kind": "built-ride",
+    "direction": "forward",
+    "position_claim": "leading-view appearance consistent with front row; exact row undisclosed",
+    "mount": "unknown",
+    "obstructions": [
+      "leading car nose and curved bar",
+      "edge gauges and bottom graph",
+      "lower-left seat model",
+      "right-side readouts",
+      "central watermark",
+      "sun glare"
+    ],
+    "certainty": "high for synchronized overlay presence; medium for physical accuracy because of uploader limitations"
   },
   "independent_timeline": {
     "timeline_id": "youtube.0UaOSBGSx20",
     "origin": "This video's own continuous playback timeline",
     "continuity": "This timeline remains distinct from the edited seNRpi4wP-s review; no cross-source clock or timestamp mapping is asserted.",
-    "landmark_review_status": "No source-second landmark has been visually recaptured or retained.",
-    "landmarks": []
+    "landmark_review_status": "Sparse source-local landmarks reviewed live; no continuous trace or generated alignment is asserted.",
+    "landmarks": [
+      {
+        "id": "0ua.station_dispatch",
+        "time_s": 0.06,
+        "description": "Station attendant dispatch.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "0ua.park_straight",
+        "time_s": 25.25,
+        "description": "Straight away from the station toward a tall inclined section.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "0ua.park_hill_turn",
+        "time_s": 49.171226,
+        "description": "Compact park hill and turn.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": [
+          {
+            "label": "Long.",
+            "display_value": -0.30,
+            "unit": "g",
+            "qualifier": "approximate-unmapped-uploader-display",
+            "adjacent_range": []
+          }
+        ]
+      },
+      {
+        "id": "0ua.cliff_approach",
+        "time_s": 74.18,
+        "description": "Long approach toward the cliff and terrain section.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "0ua.high_terrain_turn",
+        "time_s": 100.45,
+        "description": "Lower-speed banked turn on the high desert terrain.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "0ua.cliff_descent",
+        "time_s": 124.37,
+        "description": "Steep cliff descent toward a tunnel.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "0ua.fast_park_return",
+        "time_s": 149.39,
+        "description": "Fast park return with large hills visible.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": [
+          {
+            "label": "Long.",
+            "display_value": -0.19,
+            "unit": "g",
+            "qualifier": "approximate-unmapped-uploader-display",
+            "adjacent_range": []
+          }
+        ]
+      },
+      {
+        "id": "0ua.compact_park_descent",
+        "time_s": 174.40,
+        "description": "Compact descent between park buildings.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": [
+          {
+            "label": "Long.",
+            "display_value": -0.58,
+            "unit": "g",
+            "qualifier": "approximate-unmapped-uploader-display",
+            "adjacent_range": [-0.58, -0.57]
+          }
+        ]
+      },
+      {
+        "id": "0ua.station_return",
+        "time_s": 204.44,
+        "description": "Brake/return run approaching the station.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      }
+    ]
   },
   "alignment": [],
-  "alignment_status": "No landmark-to-generated mapping exists; displayed axes remain unknown.",
+  "alignment_status": "Reviewed source-local landmarks only; no source landmark is mapped to a generated selector.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
-    "No reviewed source-second landmark windows are recorded.",
-    "Displayed channels have no reviewed axis mapping, row, device, or sample-rate identification.",
+    "Sparse uploader-rendered readouts are manual spot checks, not a continuous trace.",
+    "Uploader sensor, editing, and sampling details remain unverified; row, device, sample rate, and displayed-axis mapping are unknown.",
+    "The three negative Long. readouts remain unmapped uploader labels and cannot be interpreted as a rider axis.",
     "This source cannot define executable comparison bands."
   ]
 }

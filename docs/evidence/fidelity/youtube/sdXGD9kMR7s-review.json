@@ -6,8 +6,9 @@
   "metadata": {
     "title": "Falcon's Flight Front Row POV | NEW 600 foot, 155 mph Roller Coaster at Six Flags Qiddiya City",
     "channel": "Coaster Studios",
-    "duration_seconds": null,
-    "duration_provenance": "YouTube oEmbed does not provide duration; no retained duration artifact is available."
+    "duration_seconds": 239.061,
+    "duration_provenance": "live media-element duration readback",
+    "published_on": "2026-01-01"
   },
   "state": "observation_only",
   "permitted_contributions": [
@@ -20,21 +21,106 @@
     "metadata_artifact": "docs/evidence/fidelity/youtube/sdXGD9kMR7s-oembed.json",
     "metadata_source": "captured YouTube oEmbed response body; exact JSON content committed",
     "video_downloaded": false,
+    "live_review": {
+      "reviewed_on": "2026-08-10",
+      "method": "visible live YouTube player, media-element currentTime readback, and expanded description; sparse manual sampling only",
+      "time_basis": "source-local media-element seconds",
+      "retained_frame_or_video": false,
+      "correction_review": "not-applicable"
+    },
     "repository_review": []
+  },
+  "view": {
+    "content_kind": "built-ride",
+    "direction": "forward",
+    "position_claim": "front-row view per title over the leading car nose; exact mount undisclosed",
+    "mount": "unknown",
+    "obstructions": [
+      "leading car nose",
+      "curved windshield or bar",
+      "lower-right watermark",
+      "sun glare",
+      "lens or dust spots"
+    ],
+    "certainty": "high for ride identity and stated front-row orientation; medium for exact element interpretation"
   },
   "independent_timeline": {
     "timeline_id": "youtube.sdXGD9kMR7s",
     "origin": "This video's own playback timeline",
     "continuity": "No cross-source clock or timestamp mapping is asserted.",
-    "landmark_review_status": "No exact source-second landmark has been visually recaptured or retained.",
-    "landmarks": []
+    "landmark_review_status": "Sparse source-local landmarks reviewed live; no continuous trace or generated alignment is asserted.",
+    "landmarks": [
+      {
+        "id": "sdx.station_dispatch",
+        "time_s": 0.07,
+        "description": "Dark station dispatch corridor with the leading car nose visible.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.park_straight",
+        "time_s": 28.93,
+        "description": "Straight beside park buildings approaching a tall inclined section; editorial length card visible.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.park_bank",
+        "time_s": 58.81,
+        "description": "Banked compact park element among dense supports.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.rock_face_pitch",
+        "time_s": 88.87,
+        "description": "Steeply pitched track beside a rock face.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.cliff_edge",
+        "time_s": 118.94,
+        "description": "High cliff-edge view over the park and track below.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.elevated_crest",
+        "time_s": 138.86,
+        "description": "Elevated crest with strong sun glare.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.low_terrain_turn",
+        "time_s": 158.97,
+        "description": "Low banked terrain turn past supports and buildings.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.park_run",
+        "time_s": 178.88,
+        "description": "Elevated park run through a hill-and-turn section.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      },
+      {
+        "id": "sdx.station_return",
+        "time_s": 218.91,
+        "description": "Brake/return track inside the blue-lit station.",
+        "provenance": "live-player-currentTime-readback",
+        "rendered_readouts": []
+      }
+    ]
   },
   "alignment": [],
-  "alignment_status": "No source landmark is mapped to a generated selector.",
+  "alignment_status": "Reviewed source-local landmarks only; no source landmark is mapped to a generated selector.",
   "evidence_gaps": [
     "No committed local video artifact or SHA-256 is available.",
-    "No repository-reviewed source-second landmark windows are recorded.",
-    "No row, device, camera calibration, or axis mapping is established.",
+    "Only sparse source-local point landmarks are recorded; no continuous trace is available.",
+    "No row, device, camera calibration, axis mapping, or source-to-generated alignment is established.",
     "This source cannot define executable comparison bands."
   ]
 }

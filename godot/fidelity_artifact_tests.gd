@@ -284,6 +284,7 @@ static func _test_nested_alias_isolation(artifacts: Script, errors: PackedString
 	source_fixture.catalog.sources["source.raw"].fallback_citations[0].section_id = "changed"
 	source_fixture.catalog.sources["source.raw"].windows[1].window_s[0] = 9.0
 	source_fixture.catalog.observations[0].alignment.generated_anchor.semantic_selector_id = "changed"
+	source_fixture.generation_counts["42"] = 2
 	_expect(errors, source_report == _expected_report(), "caller nested mutations do not change the completed report")
 	var report_fixture := _valid_fixture()
 	var mutable_report: Dictionary = _build(artifacts, report_fixture)
@@ -468,6 +469,7 @@ static func _expected_report() -> Dictionary:
 			"canonical_sha256": "__CALIBRATE_CATALOG_SHA256__", "validation_status": "valid",
 		},
 		"fleet": [11, 42, 20260809, 1],
+		"generation_counts": {"11": 1, "42": 1, "20260809": 1, "1": 1},
 		"measurement_summaries": [
 			_measurement_summary(11, 111.0, 11.0, []),
 			_measurement_summary(42, 142.0, 12.0, [{

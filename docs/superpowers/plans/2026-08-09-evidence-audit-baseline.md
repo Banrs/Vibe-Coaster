@@ -995,7 +995,9 @@ dictionary collected by Task 8's build spy. It must have only `String` keys, wit
 equal to the report fleet mapped through `str(seed)`, and every value must have integer type and
 value `1`. Reject rather than coerce non-string keys, missing or extra keys, and non-integer `1`
 values. Synthetic Task 7 fixtures supply that exact shape; Task 8 passes
-`_run_audit(...).generation_counts` unchanged.
+`_run_audit(...).generation_counts` unchanged. A successful report retains an isolated exact copy
+as top-level JSON-only operational provenance. Task 7B copies that field unchanged into the
+manifest; neither stage reconstructs counters from the fleet or measurements.
 
 Execute Task 7 as three sequential reviewed TDD slices. Task 7A owns canonical serialization and
 complete pure report construction, including POV mappings/gaps, checklist, issue coverage, render
@@ -1007,6 +1009,9 @@ report/manifest contracts merely to manufacture an intermediate GREEN state.
 
 Task 7A's pure report contract is exact:
 
+- `generation_counts` is the isolated exact copy of the validated fifth argument. It has one
+  String key per fleet seed and integer value `1`; it is present in canonical JSON but does not add
+  a Markdown section.
 - Each `measurement_summaries` entry has exact top-level keys `{schema_version, seed, length,
   duration, dimensions, beats, force_error_peak_g, reconstruction_seam_count}`.
   `force_error_peak_g` copies `measurement.reconstruction.force_error_peak_g`;
@@ -1025,11 +1030,12 @@ Task 7A's pure report contract is exact:
   Identity, Fleet, Measurements, Findings, Observed only, Evidence gaps, Recommendation, Evidence
   snapshot, POV map, Checklist, Issue coverage, Render requests; rows follow the already-contracted
   array orders.
-- Task 7A physical-line review thresholds are 55 soft / 80 absolute for `canonical_data.gd`, 560 /
-  750 for `fidelity_artifacts.gd`, an expected test size no greater than 621 with 635 soft / 700
-  absolute for `fidelity_artifact_tests.gd`, and exactly two added `smoke.gd` lines. These are stops,
-  not quotas; never pack lines, couple expected values to fixtures, weaken mutations, or add generic
-  schema machinery to meet them.
+- Task 7A physical-line review thresholds are 55 soft / 80 absolute for `canonical_data.gd`, a
+  reviewed corrected-GREEN forecast of 724-742 / 750 absolute for `fidelity_artifacts.gd`, 762
+  absolute for the now-complete focused regression suite, and exactly two added `smoke.gd` lines.
+  These are stops, not quotas; never pack lines, couple expected values to fixtures, weaken
+  mutations, or add generic schema machinery to meet them. Further test growth requires structural
+  deletion or an explicit reviewed contract amendment.
 
 - [ ] **Step 1: Create the SceneTree runner and add canonical JSON/Markdown ordering tests**
 
@@ -1094,7 +1100,8 @@ records source ID, state, acquisition only when present, every present repositor
 artifact/diagnostic/review path and SHA-256 pair, and exact structured fallback citations only when
 present; it never claims an unavailable raw artifact. The manifest records its schema, relative path,
 byte size, SHA-256, seed, gesture/legacy beat ID, artifact kind, and render dimensions. Tests assert
-the old side/top/elevation/channel capability still exists.
+the old side/top/elevation/channel capability still exists. Manifest assembly copies
+`report.generation_counts` unchanged; it never infers generation work from fleet or route data.
 
 - [ ] **Step 4: Permanently register the artifact suite and confirm GitHub RED**
 
@@ -1284,6 +1291,9 @@ static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray
 		_expect(errors, calls.get(seed_value, 0) == 1, "seed %d is generated once" % seed_value)
 ```
 
+The spy also asserts that the returned `generation_counts` has exactly the fleet mapped to String
+keys and that every value is integer `1`.
+
 - [ ] **Step 2: Implement `_run_audit(seeds, build_route, measure_route, compare_fleet)` as injectable orchestration**
 
 ```gdscript
@@ -1302,6 +1312,10 @@ static func _run_audit(seeds: Array, build_route: Callable, measure_route: Calla
 ```
 
 Production calls `_run_audit(AUDIT_SEEDS, RideGenerator.build, func(route): return RideFidelity.measure_route(route, RideElements.ROW_OFFSETS), func(measurements): return RideFidelity.compare_fleet(measurements, RideFidelityReferences.CATALOG))`.
+
+Pass the returned `audit.generation_counts` once to `build_report(...)`, then call
+`write_pack(output_dir, report, audit.routes_by_seed)`. The pack writer consumes only the validated
+copy retained in `report.generation_counts`.
 
 Do not build deep-review seeds a second time; retain those three already-built route dictionaries only until artifact writing completes.
 
@@ -1350,6 +1364,12 @@ foreach ($relative in $textArtifacts) {
 
 ```powershell
 $manifest = Get-Content -Raw 'out\fidelity-baseline-a\manifest.json' | ConvertFrom-Json
+$expectedCountKeys = @(
+  '11','42','20260809','1','3','7','99','256','555','1234',
+  '4096','31337','77777','123456','20250101'
+) | Sort-Object
+$actualCountKeys = @($manifest.generation_counts.PSObject.Properties.Name | Sort-Object)
+if (Compare-Object $expectedCountKeys $actualCountKeys) { throw 'generation-count seed set is incomplete' }
 if (($manifest.generation_counts.PSObject.Properties | Where-Object Value -ne 1).Count -ne 0) { throw 'a seed was generated more than once' }
 if (($manifest.files | Where-Object { -not (Test-Path -LiteralPath (Join-Path 'out\fidelity-baseline-a' $_.path)) }).Count -ne 0) { throw 'manifest references a missing artifact' }
 if ($manifest.schema_version -ne 'fidelity-artifact-manifest@1') { throw 'unexpected manifest schema' }

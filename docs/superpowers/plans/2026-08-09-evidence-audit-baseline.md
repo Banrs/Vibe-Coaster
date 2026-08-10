@@ -999,10 +999,11 @@ values. Synthetic Task 7 fixtures supply that exact shape; Task 8 passes
 
 Execute Task 7 as three sequential reviewed TDD slices. Task 7A owns canonical serialization and
 complete pure report construction, including POV mappings/gaps, checklist, issue coverage, render
-requests, and deterministic text. Task 7B owns CPU rendering, beat/span resolution, checked text/PNG
-pack writes, and manifest-last assembly from reopened bytes. Task 7C owns inspector delegation and
-smoke registration. These slices must not introduce renderer injection or partial report/manifest
-contracts merely to manufacture an intermediate GREEN state.
+requests, deterministic text, and permanent artifact-suite registration during RED. Task 7B owns
+CPU rendering, beat/span resolution, checked text/PNG pack writes, and manifest-last assembly from
+reopened bytes. Task 7C owns inspector delegation and retains the final smoke registration unchanged.
+This is the sole sequencing exception. These slices must not introduce renderer injection or partial
+report/manifest contracts merely to manufacture an intermediate GREEN state.
 
 - [ ] **Step 1: Create the SceneTree runner and add canonical JSON/Markdown ordering tests**
 
@@ -1063,11 +1064,18 @@ review/seed-42/pov/<stable-beat-id>.png
 
 `audit.json` records the exact pinned `legacy_base_commit`, audit schema, catalog schema/version/canonical SHA-256, catalog validation result, and a sorted `evidence_snapshot`. Every referenced source snapshot records source ID, state, acquisition result, repository-relative artifact/diagnostic path and SHA-256, or the exact structured fallback citations used; it never claims an unavailable raw artifact. The manifest records its schema, relative path, byte size, SHA-256, seed, gesture/legacy beat ID, artifact kind, and render dimensions. Tests assert the old side/top/elevation/channel capability still exists.
 
-- [ ] **Step 4: Run the artifact suite and confirm it fails before implementation**
+- [ ] **Step 4: Permanently register the artifact suite and confirm GitHub RED**
 
-```powershell
-& $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
+Preload `FidelityArtifactTests` in `smoke.gd` and append `FidelityArtifactTests.run()` immediately
+after `FidelityTests.run()`. Keep both lines through Task 7C. The guarded runner must report both
+missing production scripts before attempting to load either one.
+
+```sh
+godot --headless --path godot --script res://smoke.gd
 ```
+
+Expected GitHub RED diagnostics, in order: `CanonicalData is missing`, then
+`RideFidelityArtifacts is missing`. Do not add a workflow step or run local Godot.
 
 - [ ] **Step 5: Create or reuse the narrow `CanonicalData` utility and delegate all report serialization to it**
 
@@ -1197,15 +1205,16 @@ but each issue ID appears once and none may be omitted. Add a failing test for m
 out-of-range, or unlinked issue records, including direct fixtures for entry-launch speed (9),
 flats (12), multidimensional scaling (14), and transition jerk (15).
 
-- [ ] **Step 10: Register the now-green artifact suite and run both focused and smoke gates**
+- [ ] **Step 10: Retain the pre-registered artifact suite and run the focused and smoke gates**
 
-Preload `FidelityArtifactTests` in `smoke.gd` and append `FidelityArtifactTests.run()` immediately
-after `FidelityTests.run()` without changing generator checks.
+Task 7C adds inspector delegation only. It must not re-register or otherwise alter the smoke harness;
+the unchanged smoke command continues to execute both focused suites before generator checks.
 
-```powershell
-& $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
-& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+```sh
+godot --headless --path godot --script res://smoke.gd
 ```
+
+Verify this command through GitHub Actions only; do not launch local Godot.
 
 - [ ] **Step 11: Commit report and artifact support**
 

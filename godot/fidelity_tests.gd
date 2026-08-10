@@ -19,6 +19,7 @@ static func run() -> PackedStringArray:
 		errors.append("RideFidelity is missing")
 		return errors
 	var fidelity: Script = load(FIDELITY_PATH)
+	_test_tolerance_oracle(errors)
 	_test_legacy_input_boundary(errors)
 	_test_held_values(fidelity, errors)
 	_test_exact_duration_hold(fidelity, errors)
@@ -67,6 +68,12 @@ static func _test_legacy_input_boundary(errors: PackedStringArray) -> void:
 		var dependencies := ResourceLoader.get_dependencies(script_path)
 		for forbidden_path in ["res://ride_route.gd", "res://motion_trajectory.gd", "res://legacy_route_adapter.gd"]:
 			_expect(errors, not dependencies.has(forbidden_path), "%s does not import %s" % [script_path, forbidden_path])
+
+
+static func _test_tolerance_oracle(errors: PackedStringArray) -> void:
+	var oracle_errors := PackedStringArray()
+	_expect_close_tol(oracle_errors, NAN, 0.0, 0.1, "non-finite actual")
+	_expect(errors, oracle_errors.size() == 1, "tolerance oracle rejects a NaN actual value")
 
 
 static func _test_held_values(fidelity: Script, errors: PackedStringArray) -> void:

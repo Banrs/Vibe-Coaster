@@ -528,8 +528,16 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 			"source_id": "youtube.falcon.backward.J54WKu2nU6o", "file": "J54WKu2nU6o-review.json",
 			"duration": 240.881, "published_on": "2026-01-05", "state": "observation_only",
 			"review_contributions": ["order","geometry","speed perception","feel prompts"], "catalog_contributions": ["order","geometry","speed perception","feel prompts"],
-			"promotion_prerequisites": ["Review exact source-local landmarks with uncertainty and row/camera context.","Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock."],
-			"view": {"content_kind":"built-ride","direction":"rear-facing","position_claim":"centered rear-facing view; exact row undisclosed","mount":"unknown","obstructions":["lower-right watermark","night exposure","motion blur","rapid camera roll"],"certainty":"high for ride identity and orientation; medium for element shaping from sparse night frames"},
+			"promotion_prerequisites": [
+				"Review exact source-local landmarks with uncertainty and row/camera context.",
+				"Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock.",
+			],
+			"view": {
+				"content_kind":"built-ride", "direction":"rear-facing",
+				"position_claim":"centered rear-facing view; exact row undisclosed", "mount":"unknown",
+				"obstructions":["lower-right watermark","night exposure","motion blur","rapid camera roll"],
+				"certainty":"high for ride identity and orientation; medium for element shaping from sparse night frames",
+			},
 			"correction_review": "not-applicable",
 			"landmarks": [
 				{"id":"j54.station_dispatch","time_s":0.07,"description":"Covered station corridor with track centered in the rear-facing view."},
@@ -547,8 +555,16 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 			"source_id": "youtube.falcon.sdXGD9kMR7s", "file": "sdXGD9kMR7s-review.json",
 			"duration": 239.061, "published_on": "2026-01-01", "state": "observation_only",
 			"review_contributions": ["order","geometry","timing landmarks","feel prompts"], "catalog_contributions": ["order","geometry","timing landmarks","feel prompts"],
-			"promotion_prerequisites": ["Review exact source-local landmarks with uncertainty and front-row/camera context.","Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock."],
-			"view": {"content_kind":"built-ride","direction":"forward","position_claim":"front-row view per title over the leading car nose; exact mount undisclosed","mount":"unknown","obstructions":["leading car nose","curved windshield or bar","lower-right watermark","sun glare","lens or dust spots"],"certainty":"high for ride identity and stated front-row orientation; medium for exact element interpretation"},
+			"promotion_prerequisites": [
+				"Review exact source-local landmarks with uncertainty and front-row/camera context.",
+				"Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock.",
+			],
+			"view": {
+				"content_kind":"built-ride", "direction":"forward",
+				"position_claim":"front-row view per title over the leading car nose; exact mount undisclosed", "mount":"unknown",
+				"obstructions":["leading car nose","curved windshield or bar","lower-right watermark","sun glare","lens or dust spots"],
+				"certainty":"high for ride identity and stated front-row orientation; medium for exact element interpretation",
+			},
 			"correction_review": "not-applicable",
 			"landmarks": [
 				{"id":"sdx.station_dispatch","time_s":0.07,"description":"Dark station dispatch corridor with the leading car nose visible."},
@@ -566,8 +582,14 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 			"source_id": "youtube.falcon.poco8rOnW18", "file": "poco8rOnW18-review.json",
 			"duration": 328.521, "published_on": "2023-06-04", "state": "corroborative",
 			"review_contributions": ["model-to-model geometry/order only"], "catalog_contributions": ["model-to-model geometry","model-to-model order"],
-			"promotion_prerequisites": ["Remain NoLimits2 model-only even if content provenance and landmarks are later committed.","Never use this simulation as measured truth or transfer its clock to real footage."],
-			"view": {"content_kind":"nolimits2-precreation","direction":"mixed","position_claim":"mixed third-person and virtual POV; not an as-built camera","mount":"not-applicable","obstructions":["synthetic low-detail terrain and scenery","lower-right watermark"],"certainty":"high for precreation status; low for as-built correspondence"},
+			"promotion_prerequisites": ["Remain NoLimits2 model-only even if content provenance and landmarks are later committed.",
+				"Never use this simulation as measured truth or transfer its clock to real footage."],
+			"view": {
+				"content_kind":"nolimits2-precreation", "direction":"mixed",
+				"position_claim":"mixed third-person and virtual POV; not an as-built camera", "mount":"not-applicable",
+				"obstructions":["synthetic low-detail terrain and scenery","lower-right watermark"],
+				"certainty":"high for precreation status; low for as-built correspondence",
+			},
 			"correction_review": "not-applicable",
 			"landmarks": [
 				{"id":"poco.opening","time_s":0.10,"description":"Black opening frame."},
@@ -587,18 +609,32 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 			"source_id": "youtube.coastertalk.continuous.0Ua", "file": "0UaOSBGSx20-review.json",
 			"duration": 213.541, "published_on": "2026-04-14", "state": "corroborative",
 			"review_contributions": ["displayed-channel landmarks; axes remain unknown until reviewed"], "catalog_contributions": ["displayed-channel landmarks"],
-			"promotion_prerequisites": ["Review exact source-local landmark windows and identify row, device, sample rate, and displayed-axis mapping.","Commit qualifying content provenance and a complete alignment; never infer a dense trace or borrow the edited seNR timeline."],
-			"view": {"content_kind":"built-ride","direction":"forward","position_claim":"leading-view appearance consistent with front row; exact row undisclosed","mount":"unknown","obstructions":["leading car nose and curved bar","edge gauges and bottom graph","lower-left seat model","right-side readouts","central watermark","sun glare"],"certainty":"high for synchronized overlay presence; medium for physical accuracy because of uploader limitations"},
+			"promotion_prerequisites": [
+				"Review exact source-local landmark windows and identify row, device, sample rate, and displayed-axis mapping.",
+				"Commit qualifying content provenance and a complete alignment; never infer a dense trace or borrow the edited seNR timeline.",
+			],
+			"view": {
+				"content_kind":"built-ride", "direction":"forward",
+				"position_claim":"leading-view appearance consistent with front row; exact row undisclosed", "mount":"unknown",
+				"obstructions":["leading car nose and curved bar","edge gauges and bottom graph","lower-left seat model","right-side readouts","central watermark","sun glare"],
+				"certainty":"high for synchronized overlay presence; medium for physical accuracy because of uploader limitations",
+			},
 			"correction_review": "pass",
 			"landmarks": [
 				{"id":"0ua.station_dispatch","time_s":0.06,"description":"Station attendant dispatch."},
 				{"id":"0ua.park_straight","time_s":25.25,"description":"Straight away from the station toward a tall inclined section."},
-				{"id":"0ua.park_hill_turn","time_s":49.171226,"description":"Compact park hill and turn.","readouts":[{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]}]},
+				{"id":"0ua.park_hill_turn","time_s":49.171226,"description":"Compact park hill and turn.","readouts":[
+					{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
+				]},
 				{"id":"0ua.cliff_approach","time_s":74.18,"description":"Long approach toward the cliff and terrain section."},
 				{"id":"0ua.high_terrain_turn","time_s":100.45,"description":"Lower-speed banked turn on the high desert terrain."},
 				{"id":"0ua.cliff_descent","time_s":124.37,"description":"Steep cliff descent toward a tunnel."},
-				{"id":"0ua.fast_park_return","time_s":149.39,"description":"Fast park return with large hills visible.","readouts":[{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]}]},
-				{"id":"0ua.compact_park_descent","time_s":174.40,"description":"Compact descent between park buildings.","readouts":[{"label":"Long.","display_value":-0.58,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[-0.58,-0.57]}]},
+				{"id":"0ua.fast_park_return","time_s":149.39,"description":"Fast park return with large hills visible.","readouts":[
+					{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
+				]},
+				{"id":"0ua.compact_park_descent","time_s":174.40,"description":"Compact descent between park buildings.","readouts":[
+					{"label":"Long.","display_value":-0.58,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[-0.58,-0.57]},
+				]},
 				{"id":"0ua.station_return","time_s":204.44,"description":"Brake/return run approaching the station."},
 			],
 		},
@@ -609,6 +645,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		"time_basis": "source-local media-element seconds", "retained_frame_or_video": false,
 	}
 	var all_readouts := []
+	_expect(errors, catalog.get("catalog_version") == "2026-08-10.evidence-baseline.2", "live POV review bumps the catalog version once")
 	for fixture in fixtures:
 		var review: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/fidelity/youtube/" + fixture.file))
 		_expect(errors, review is Dictionary, "%s live review parses" % fixture.source_id)
@@ -617,10 +654,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		var source: Dictionary = catalog.get("sources", {}).get(fixture.source_id, {})
 		_expect(errors, review.get("schema_version") == "fidelity-youtube-review@1", "%s preserves review schema" % fixture.source_id)
 		_expect(errors, review.get("source_id") == fixture.source_id, "%s preserves source identity" % fixture.source_id)
-		var actual_duration := -1.0
-		if review.get("metadata", {}).get("duration_seconds") is float or review.get("metadata", {}).get("duration_seconds") is int:
-			actual_duration = review.get("metadata", {}).get("duration_seconds")
-		_expect_close(errors, actual_duration, fixture.duration, "%s pins live duration" % fixture.source_id)
+		_expect(errors, review.get("metadata", {}).get("duration_seconds") == fixture.duration, "%s pins exact live duration" % fixture.source_id)
 		_expect(errors, review.get("metadata", {}).get("published_on") == fixture.published_on, "%s pins publish date" % fixture.source_id)
 		var duration_provenance := str(review.get("metadata", {}).get("duration_provenance", "")).to_lower()
 		_expect(errors, duration_provenance.contains("live") and duration_provenance.contains("duration"), "%s gives semantic live duration provenance" % fixture.source_id)
@@ -631,35 +665,80 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		_expect(errors, live_review == expected_provenance, "%s pins exact live-review provenance" % fixture.source_id)
 		_expect(errors, review.get("provenance", {}).get("video_downloaded") == false, "%s remains a no-video review" % fixture.source_id)
 		var expected_landmarks := []
+		var expected_windows := []
 		for landmark in fixture.landmarks:
-			var expected := {"id":landmark.id,"time_s":landmark.time_s,"description":landmark.description,"provenance":"live-player-currentTime-readback","rendered_readouts":landmark.get("readouts", [])}
+			var expected := {"id":landmark.id,"time_s":landmark.time_s,"description":landmark.description,
+				"provenance":"live-player-currentTime-readback","rendered_readouts":landmark.get("readouts", [])}
 			expected_landmarks.append(expected)
+			expected_windows.append({"id":landmark.id,"time_s":landmark.time_s})
 			all_readouts.append_array(expected.rendered_readouts)
 		_expect(errors, review.get("independent_timeline", {}).get("landmarks") == expected_landmarks, "%s pins ordered source-local landmarks" % fixture.source_id)
-		_expect(errors, source.get("windows") == expected_landmarks, "%s catalog mirrors reviewed point landmarks" % fixture.source_id)
+		_expect(errors, source.get("windows") == expected_windows, "%s catalog mirrors reviewed point windows" % fixture.source_id)
 		_expect(errors, review.get("state") == fixture.state and source.get("state") == fixture.state, "%s does not promote source state" % fixture.source_id)
-		_expect(errors, source.get("initial_state") == fixture.state and review.get("permitted_contributions") == fixture.review_contributions and source.get("permitted_contributions") == fixture.catalog_contributions, "%s pins its permission ceiling" % fixture.source_id)
+		_expect(errors,
+			source.get("initial_state") == fixture.state
+			and review.get("permitted_contributions") == fixture.review_contributions
+			and source.get("permitted_contributions") == fixture.catalog_contributions,
+			"%s pins its permission ceiling" % fixture.source_id)
 		_expect(errors, source.get("promotion_prerequisites") == fixture.promotion_prerequisites, "%s pins promotion prerequisites" % fixture.source_id)
 		_expect(errors, source.get("permitted_axes", []).is_empty() and source.get("axis_mapping", {}).is_empty(), "%s keeps axes and mapping empty" % fixture.source_id)
-		_expect(errors, source.get("sample_rate_hz", 0) == null and review.get("alignment", []).is_empty(), "%s keeps sample rate null and alignment empty" % fixture.source_id)
-		_expect(errors, str(review.get("independent_timeline", {}).get("continuity", "")).to_lower().contains("no cross-source clock or timestamp mapping is asserted"), "%s keeps an independent source clock" % fixture.source_id)
-	_expect(errors, all_readouts == [{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},{"label":"Long.","display_value":-0.58,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[-0.58,-0.57]}], "live reviews contain exactly three sign-reviewed unmapped Long. values")
-	_expect(errors, catalog.get("selectors", {}).is_empty() and catalog.get("observations", []).is_empty() and catalog.get("targets", []).is_empty(), "live POV review does not create selectors, observations, or targets")
+		_expect(errors, source.get("sample_rate_hz", 0) == null and review.has("alignment") and review.alignment == [],
+			"%s keeps sample rate null and explicit empty alignment" % fixture.source_id)
+		var status_text := str(review.get("independent_timeline", {}).get("landmark_review_status", "")).to_lower()
+		var gaps_text := " ".join(review.get("evidence_gaps", [])).to_lower()
+		_expect(errors, status_text.contains("reviewed") and not status_text.contains("not reviewed")
+			and str(review.get("alignment_status", "")).to_lower().contains("no") and gaps_text.contains("cannot define executable comparison bands"),
+			"%s replaces stale review status without promoting alignment or bands" % fixture.source_id)
+		_expect(errors,
+			str(review.get("independent_timeline", {}).get("continuity", "")).to_lower().contains("no cross-source clock or timestamp mapping is asserted"),
+			"%s keeps an independent source clock" % fixture.source_id)
+	var expected_readouts := [
+		{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
+		{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
+		{"label":"Long.","display_value":-0.58,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[-0.58,-0.57]},
+	]
+	_expect(errors, all_readouts == expected_readouts, "live reviews contain exactly three sign-reviewed unmapped Long. values")
+	var executable_collections_empty := catalog.get("selectors", {}).is_empty() and catalog.get("observations", []).is_empty() and catalog.get("targets", []).is_empty()
+	_expect(errors, executable_collections_empty, "live POV review does not create selectors, observations, or targets")
 	var prompts := {}
+	var prompt_ids := []
 	for prompt in catalog.get("review_prompts", []):
 		prompts[prompt.get("id")] = prompt
-	_expect(errors, prompts.get("review.ride_feel", {}).get("prompt") == "Compare generated act ordering and connective flow against source-local POV landmarks only; do not transfer timestamps or proportionally scale independent video clocks.", "ride-feel prompt forbids clock transfer")
-	_expect(errors, prompts.get("review.speed_perception", {}).get("prompt") == "Compare generated speed perception against source-local terrain, support, and park-reference landmarks only; do not infer speed from a global POV duration ratio.", "speed prompt forbids duration scaling")
+		prompt_ids.append(prompt.get("id"))
+	_expect(errors, prompt_ids == [
+		"review.ride_feel", "review.speed_perception", "review.element_shaping", "review.support_overlap",
+		"review.coastertalk_overlay_spot_checks", "review.terrain_clearance",
+	], "live POV catalog has exactly the six approved prompt IDs")
+	var ride_feel_prompt := "Compare generated act ordering and connective flow against source-local POV landmarks only; " + \
+		"do not transfer timestamps or proportionally scale independent video clocks."
+	_expect(errors, prompts.get("review.ride_feel", {}).get("prompt") == ride_feel_prompt, "ride-feel prompt forbids clock transfer")
+	var speed_prompt := "Compare generated speed perception against source-local terrain, support, and park-reference landmarks only; " + \
+		"do not infer speed from a global POV duration ratio."
+	_expect(errors, prompts.get("review.speed_perception", {}).get("prompt") == speed_prompt, "speed prompt forbids duration scaling")
 	var overlay_prompt: Dictionary = prompts.get("review.coastertalk_overlay_spot_checks", {})
-	_expect(errors, overlay_prompt.get("category") == "ride feel" and overlay_prompt.get("source_ids") == ["youtube.coastertalk.continuous.0Ua"] and overlay_prompt.get("issues") == [3,10,13,15,16], "overlay prompt pins category, source, and issues")
-	_expect(errors, str(overlay_prompt.get("prompt", "")).contains("calibrated trace") and str(overlay_prompt.get("prompt", "")).contains("band"), "overlay prompt explicitly forbids trace and band promotion")
+	_expect(errors,
+		overlay_prompt.get("category") == "ride feel"
+		and overlay_prompt.get("source_ids") == ["youtube.coastertalk.continuous.0Ua"]
+		and overlay_prompt.get("issues") == [3,10,13,15,16],
+		"overlay prompt pins category, source, and issues")
+	var overlay_text := str(overlay_prompt.get("prompt", ""))
+	_expect(errors, overlay_text.contains("calibrated trace") and overlay_text.contains("band"), "overlay prompt explicitly forbids trace and band promotion")
 	var terrain_prompt: Dictionary = prompts.get("review.terrain_clearance", {})
-	_expect(errors, terrain_prompt.get("category") == "terrain/clearance" and terrain_prompt.get("source_ids") == ["youtube.coastertalk.continuous.0Ua","youtube.falcon.backward.J54WKu2nU6o","youtube.falcon.sdXGD9kMR7s"] and terrain_prompt.get("issues") == [6,8,12], "terrain prompt pins category, sources, and issues")
-	_expect(errors, str(terrain_prompt.get("prompt", "")).contains("proportional") and str(terrain_prompt.get("prompt", "")).contains("independent video clocks") and str(terrain_prompt.get("prompt", "")).contains("AGL band"), "terrain prompt forbids clock alignment and AGL inference")
+	_expect(errors,
+		terrain_prompt.get("category") == "terrain/clearance"
+		and terrain_prompt.get("source_ids") == ["youtube.coastertalk.continuous.0Ua","youtube.falcon.backward.J54WKu2nU6o","youtube.falcon.sdXGD9kMR7s"]
+		and terrain_prompt.get("issues") == [6,8,12],
+		"terrain prompt pins category, sources, and issues")
+	var terrain_text := str(terrain_prompt.get("prompt", ""))
+	_expect(errors,
+		terrain_text.contains("proportional") and terrain_text.contains("independent video clocks") and terrain_text.contains("AGL band"),
+		"terrain prompt forbids clock alignment and AGL inference")
 	var gaps := {}
 	for gap in catalog.get("evidence_gaps", []):
 		gaps[gap.get("id")] = gap
-	_expect(errors, gaps.get("gap.force_bands", {}).get("description") == "Sparse rendered video points lack raw sampling, device/row calibration, rider-axis mapping, full source-to-generated alignment, and corroboration; no multiplier or duration ratio closes those gaps.", "force gap pins non-promotion rationale")
+	var force_gap := "Sparse rendered video points lack raw sampling, device/row calibration, rider-axis mapping, " + \
+		"full source-to-generated alignment, and corroboration; no multiplier or duration ratio closes those gaps."
+	_expect(errors, gaps.get("gap.force_bands", {}).get("description") == force_gap, "force gap pins non-promotion rationale")
 
 
 static func _test_manifest_parity(catalog: Dictionary, errors: PackedStringArray) -> void:

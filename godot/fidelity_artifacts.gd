@@ -366,7 +366,7 @@ static func _catalog_context(
 			"generated_seed": 42, "generated_anchor": {"semantic_selector_id": selector_id},
 			"generated_beat_id": resolution.beat_id, "generated_time_s": generated_time,
 			"generated_window_s": [resolution.window_start_s, resolution.window_end_s],
-			"generated_pov_path": "review/seed-42/pov/%s.png" % resolution.beat_id,
+			"generated_pov_path": "review/seed-42/pov/%s.png" % resolution.beat_id.replace("/", "__"),
 		})
 		context.unaligned_candidates.erase(source_id)
 
@@ -616,7 +616,7 @@ static func _render_requests(
 		for beat in seed_42.beats:
 			if beat.kind not in _SIDE_VIEW_KINDS:
 				continue
-			var path := "review/seed-42/elements/%s.png" % beat.beat_id
+			var path := "review/seed-42/elements/%s.png" % beat.beat_id.replace("/", "__")
 			candidates.append({
 				"path": path, "seed": 42, "artifact_kind": "element", "beat_id": beat.beat_id,
 			})

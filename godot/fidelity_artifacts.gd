@@ -2,6 +2,35 @@ class_name RideFidelityArtifacts
 extends RefCounted
 
 const _CANONICAL_DATA = preload("res://canonical_data.gd")
+const _FIDELITY = preload("res://fidelity.gd")
+const _TERRAIN = preload("res://terrain.gd")
+const _SAMPLING = preload("res://route_sampling.gd")
+
+## Eleven ordered strips, in the order the legend and the stacked image both publish them.
+const _CHANNEL_SPECS := [
+	["speed_kmh", "Speed", "km/h"],
+	["normal_g", "Normal proper acceleration", "g"],
+	["lateral_g", "Lateral proper acceleration", "g"],
+	["longitudinal_proper_g", "Longitudinal proper acceleration", "g"],
+	["pitch_deg", "Pitch", "deg"],
+	["roll_rate_dps", "Roll rate", "deg/s"],
+	["agl_m", "Height above ground", "m"],
+	["reconstructed_curvature_inv_m", "Reconstructed curvature", "1/m"],
+	["radius_m", "Radius", "m"],
+	["roll_acceleration_dps2", "Roll acceleration", "deg/s^2"],
+	["jerk_mps3", "Inertial jerk magnitude", "m/s^3"],
+]
+const _TRACE_RGBA := [0.55, 0.95, 1.0, 1.0]
+const _TRACE_COLOR := Color(0.55, 0.95, 1.0)
+const _CHANNEL_WIDTH := 1400
+const _STRIP_HEIGHT := 150
+const _PLOT_SIZE := Vector2i(1100, 700)
+const _PLOT_MARGIN := 40.0
+const _POV_SIZE := Vector2i(1440, 900)
+const _POV_FOV_DEG := 72.0
+const _POV_NEAR_M := 0.08
+const _POV_FAR_M := 5000.0
+const _POV_EYE_UP_M := 0.35
 
 const _DEEP_SEEDS := [11, 42, 20260809]
 const _COMPARISON_KEYS := ["fleet", "findings", "observed_only", "evidence_gaps", "recommendation"]
@@ -716,36 +745,12 @@ static func markdown(report: Dictionary) -> String:
 		lines.append(_markdown_row([
 			snapshot.source_id, snapshot.state, snapshot.get("acquisition", ""),
 		]))
-	lines.append_array(["", "## POV map",
-		"| source | landmark | observation | generated beat | source time |",
-		"| --- | --- | --- | --- | --- |"])
-	for record in report.pov_map.records:
-		lines.append(_markdown_row([
-			record.source_id, record.source_landmark_id, record.observation_id,
-			record.generated_beat_id, _source_time_text(record.source_time),
-		]))
-	for gap in report.pov_map.gaps:
-		lines.append("Gap: %s — %s (%s)" % [
-			gap.source_id, gap.reason, ", ".join(PackedStringArray(gap.source_landmark_ids)),
-		])
+	lines.append_array(["", "## POV map"])
+	lines.append_array(_pov_map_lines(report.pov_map))
 	lines.append_array(["", "## Checklist"])
-	for section in report.checklist:
-		lines.append("### %s" % section.title)
-		for prompt in section.prompts:
-			lines.append("- %s: %s [%s] -> %s" % [
-				prompt.id, prompt.prompt, ", ".join(PackedStringArray(prompt.evidence_ids)),
-				", ".join(PackedStringArray(prompt.generated_artifact_paths)),
-			])
-	lines.append_array(["", "## Issue coverage",
-		"| issue | text | state | targets | evidence | artifacts |",
-		"| ---: | --- | --- | --- | --- | --- |"])
-	for record in report.issue_coverage.records:
-		lines.append(_markdown_row([
-			record.issue_id, record.issue_text, record.state,
-			", ".join(PackedStringArray(record.linked_target_ids)),
-			", ".join(PackedStringArray(record.linked_evidence_ids)),
-			", ".join(PackedStringArray(record.generated_artifact_paths)),
-		]))
+	lines.append_array(_checklist_lines(report.checklist))
+	lines.append_array(["", "## Issue coverage"])
+	lines.append_array(_issue_coverage_lines(report.issue_coverage))
 	lines.append_array(["", "## Render requests", "| path | kind | seed | beat |",
 		"| --- | --- | ---: | --- |"])
 	for request in report.render_requests:
@@ -753,6 +758,53 @@ static func markdown(report: Dictionary) -> String:
 			request.path, request.artifact_kind, request.seed, request.get("beat_id", ""),
 		]))
 	return "\n".join(lines) + "\n"
+
+## One body per review projection, shared by the aggregate audit and its standalone file.
+static func _pov_map_lines(pov_map: Dictionary) -> PackedStringArray:
+	var lines := PackedStringArray([
+		"| source | landmark | observation | generated beat | source time |",
+		"| --- | --- | --- | --- | --- |"])
+	for record in pov_map.records:
+		lines.append(_markdown_row([
+			record.source_id, record.source_landmark_id, record.observation_id,
+			record.generated_beat_id, _source_time_text(record.source_time),
+		]))
+	for gap in pov_map.gaps:
+		lines.append("Gap: %s — %s (%s)" % [
+			gap.source_id, gap.reason, ", ".join(PackedStringArray(gap.source_landmark_ids)),
+		])
+	return lines
+
+
+static func _checklist_lines(checklist: Array) -> PackedStringArray:
+	var lines := PackedStringArray()
+	for section in checklist:
+		lines.append("### %s" % section.title)
+		for prompt in section.prompts:
+			lines.append("- %s: %s [%s] -> %s" % [
+				prompt.id, prompt.prompt, ", ".join(PackedStringArray(prompt.evidence_ids)),
+				", ".join(PackedStringArray(prompt.generated_artifact_paths)),
+			])
+	return lines
+
+
+static func _issue_coverage_lines(issue_coverage: Dictionary) -> PackedStringArray:
+	var lines := PackedStringArray([
+		"| issue | text | state | targets | evidence | artifacts |",
+		"| ---: | --- | --- | --- | --- | --- |"])
+	for record in issue_coverage.records:
+		lines.append(_markdown_row([
+			record.issue_id, record.issue_text, record.state,
+			", ".join(PackedStringArray(record.linked_target_ids)),
+			", ".join(PackedStringArray(record.linked_evidence_ids)),
+			", ".join(PackedStringArray(record.generated_artifact_paths)),
+		]))
+	return lines
+
+
+static func _standalone(title: String, body: PackedStringArray) -> String:
+	return "# %s\n\n%s\n" % [title, "\n".join(body)]
+
 
 static func _source_time_text(source_time: Dictionary) -> String:
 	if source_time.kind == "point":
@@ -770,3 +822,475 @@ static func _markdown_row(cells: Array) -> String:
 	for cell in cells:
 		text.append(str(cell))
 	return "| %s |" % " | ".join(text)
+
+
+## One shared descriptor per channel feeds both the stacked image and the legend record, so the
+## plotted extent a reviewer reads is by construction the extent that was drawn.
+static func channels(route: Dictionary) -> Dictionary:
+	var descriptors := _channel_descriptors(route)
+	var strips := []
+	for descriptor in descriptors:
+		strips.append(descriptor.strip)
+	return {"image": _channels_image(route, descriptors), "strips": strips}
+
+
+static func _channel_descriptors(route: Dictionary) -> Array:
+	var columns := _channel_columns(route)
+	var descriptors := []
+	for index in _CHANNEL_SPECS.size():
+		var spec: Array = _CHANNEL_SPECS[index]
+		var values: Array = columns[index]
+		var low := INF
+		var high := -INF
+		var bounded := 0
+		for value in values:
+			if not _finite_number(value):
+				continue
+			bounded += 1
+			low = minf(low, float(value))
+			high = maxf(high, float(value))
+		if bounded == 0:
+			low = 0.0
+			high = 1.0
+		elif high == low:
+			high = low + 0.001
+		descriptors.append({"values": values, "strip": {
+			"index": index, "channel_id": spec[0], "label": spec[1], "unit": spec[2],
+			"plot_min": low, "plot_max": high, "bounded_count": bounded,
+			"unbounded_count": values.size() - bounded,
+			"series": [{"role": "raw_generated", "color_rgba": _TRACE_RGBA.duplicate()}],
+		}})
+	return descriptors
+
+
+## Raw generated samples plus the contracted reconstruction; nothing here is filtered or refitted.
+static func _channel_columns(route: Dictionary) -> Array:
+	var reconstruction: Dictionary = _FIDELITY.reconstruct_channels(route)
+	var speed := []
+	var pitch := []
+	var agl := []
+	var jerk := []
+	for index in route.positions.size():
+		var position: Vector3 = route.positions[index]
+		speed.append(float(route.speeds[index]) * 3.6)
+		pitch.append(rad_to_deg(asin(clampf(route.tangents[index].y, -1.0, 1.0))))
+		agl.append(position.y - _TERRAIN.height(route.terrain, position.x, position.z))
+		jerk.append(reconstruction.jerk_mps3[index].length())
+	return [
+		speed, Array(route.normal_g), Array(route.lateral_g), Array(route.longitudinal_g),
+		pitch, Array(route.roll_rates), agl, Array(reconstruction.curvature),
+		reconstruction.radius_m, Array(reconstruction.roll_acceleration_dps2), jerk,
+	]
+
+
+static func _channels_image(route: Dictionary, descriptors: Array) -> Image:
+	var times: PackedFloat32Array = route.times
+	var duration := maxf(float(times[-1]), 0.000001)
+	var image := Image.create(
+		_CHANNEL_WIDTH, _STRIP_HEIGHT * descriptors.size(), false, Image.FORMAT_RGB8
+	)
+	image.fill(Color(0.09, 0.10, 0.12))
+	for strip_index in descriptors.size():
+		var strip: Dictionary = descriptors[strip_index].strip
+		var values: Array = descriptors[strip_index].values
+		var low: float = strip.plot_min
+		var span: float = maxf(float(strip.plot_max) - low, 0.000001)
+		var top := strip_index * _STRIP_HEIGHT
+		var bounds := Rect2i(
+			Vector2i(0, top + 1), Vector2i(_CHANNEL_WIDTH - 1, _STRIP_HEIGHT - 2)
+		)
+		for x in _CHANNEL_WIDTH:
+			image.set_pixel(x, top, Color(0.25, 0.25, 0.30))
+		if low < 0.0 and float(strip.plot_max) > 0.0:
+			var zero_y := top + _STRIP_HEIGHT - 8 - int(-low / span * (_STRIP_HEIGHT - 16))
+			for x in range(0, _CHANNEL_WIDTH, 2):
+				image.set_pixel(x, clampi(zero_y, top + 1, top + _STRIP_HEIGHT - 1), Color(0.28, 0.24, 0.24))
+		for section in route.sections:
+			var mark := clampi(
+				int(float(section.start_time) / duration * (_CHANNEL_WIDTH - 1)), 0, _CHANNEL_WIDTH - 1
+			)
+			for y in range(top, top + _STRIP_HEIGHT, 4):
+				image.set_pixel(mark, y, Color(0.30, 0.27, 0.20))
+		for index in range(1, values.size()):
+			if not _finite_number(values[index]) or not _finite_number(values[index - 1]):
+				continue
+			_draw_line(image,
+				_strip_point(float(times[index - 1]), duration, float(values[index - 1]), low, span, top),
+				_strip_point(float(times[index]), duration, float(values[index]), low, span, top),
+				_TRACE_COLOR, bounds)
+	return image
+
+
+static func _strip_point(
+	at: float, duration: float, value: float, low: float, span: float, top: int
+) -> Vector2:
+	return Vector2(
+		at / duration * (_CHANNEL_WIDTH - 1),
+		top + _STRIP_HEIGHT - 8 - (value - low) / span * (_STRIP_HEIGHT - 16)
+	)
+
+
+static func top_image(route: Dictionary) -> Image:
+	var points := PackedVector2Array()
+	for position in route.positions:
+		points.append(Vector2(position.x, position.z))
+	return _plot_image(points)
+
+
+static func elevation_image(route: Dictionary) -> Image:
+	var points := PackedVector2Array()
+	for index in route.positions.size():
+		points.append(Vector2(route.distances[index], route.positions[index].y))
+	return _plot_image(points)
+
+
+## The inspector's per-element side view: the span flattened onto its own dominant ground heading.
+static func side_image(route: Dictionary, first: int, last: int) -> Image:
+	var origin: Vector3 = route.positions[first]
+	var heading := Vector2.ZERO
+	for index in range(first, last + 1):
+		heading += Vector2(route.positions[index].x - origin.x, route.positions[index].z - origin.z)
+	if heading.length() < 1.0:
+		heading = Vector2(route.tangents[first].x, route.tangents[first].z)
+	heading = heading.normalized()
+	var points := PackedVector2Array()
+	for index in range(first, last + 1):
+		var position: Vector3 = route.positions[index]
+		points.append(Vector2(
+			Vector2(position.x - origin.x, position.z - origin.z).dot(heading), position.y
+		))
+	return _plot_image(points)
+
+
+static func _plot_image(points: PackedVector2Array) -> Image:
+	var low := Vector2(INF, INF)
+	var high := Vector2(-INF, -INF)
+	for point in points:
+		low = low.min(point)
+		high = high.max(point)
+	var span: Vector2 = (high - low).max(Vector2.ONE)
+	var scale := minf(
+		(_PLOT_SIZE.x - 2.0 * _PLOT_MARGIN) / span.x, (_PLOT_SIZE.y - 2.0 * _PLOT_MARGIN) / span.y
+	)
+	var image := Image.create(_PLOT_SIZE.x, _PLOT_SIZE.y, false, Image.FORMAT_RGB8)
+	image.fill(Color(0.09, 0.10, 0.12))
+	var bounds := Rect2i(Vector2i.ONE, _PLOT_SIZE - Vector2i(3, 3))
+	for index in range(1, points.size()):
+		_draw_line(image, _plot_point(points[index - 1], low, scale),
+			_plot_point(points[index], low, scale), _TRACE_COLOR, bounds, 1)
+	return image
+
+
+static func _plot_point(point: Vector2, low: Vector2, scale: float) -> Vector2:
+	var placed: Vector2 = (point - low) * scale + Vector2(_PLOT_MARGIN, _PLOT_MARGIN)
+	return Vector2(placed.x, _PLOT_SIZE.y - 1 - placed.y)
+
+
+## A fixed neutral inspection camera on the centre-row frame: no speed-dependent widening, no
+## source imagery, just the generated track against the generated ground.
+static func pov_image(route: Dictionary, time_s: float) -> Image:
+	var at := _SAMPLING.distance_at_time(route, time_s)
+	var pose := _SAMPLING.pose_at_distance(route, at)
+	var view := Transform3D(
+		pose.basis, pose.origin + pose.basis.y * _POV_EYE_UP_M
+	).affine_inverse()
+	var image := Image.create(_POV_SIZE.x, _POV_SIZE.y, false, Image.FORMAT_RGB8)
+	image.fill(Color(0.09, 0.10, 0.12))
+	var bounds := Rect2i(Vector2i.ZERO, _POV_SIZE - Vector2i.ONE)
+	const GROUND_STEP := 40.0
+	var base_x := floorf(pose.origin.x / GROUND_STEP) * GROUND_STEP
+	var base_z := floorf(pose.origin.z / GROUND_STEP) * GROUND_STEP
+	for line in range(-8, 9):
+		var along_x := PackedVector3Array()
+		var along_z := PackedVector3Array()
+		for step in range(-8, 9):
+			var x := base_x + step * GROUND_STEP
+			var z := base_z + step * GROUND_STEP
+			var fixed_z := base_z + line * GROUND_STEP
+			var fixed_x := base_x + line * GROUND_STEP
+			along_x.append(Vector3(x, _TERRAIN.height(route.terrain, x, fixed_z), fixed_z))
+			along_z.append(Vector3(fixed_x, _TERRAIN.height(route.terrain, fixed_x, z), z))
+		_draw_projected(image, view, along_x, Color(0.45, 0.36, 0.26), bounds)
+		_draw_projected(image, view, along_z, Color(0.45, 0.36, 0.26), bounds)
+	var spine := PackedVector3Array()
+	var left := PackedVector3Array()
+	var right := PackedVector3Array()
+	var offset := -400.0
+	while offset <= 400.0:
+		var sample := _SAMPLING.pose_at_distance(route, at + offset)
+		spine.append(sample.origin - sample.basis.y * 1.55)
+		left.append(sample.origin - sample.basis.x * 0.95 - sample.basis.y * 1.05)
+		right.append(sample.origin + sample.basis.x * 0.95 - sample.basis.y * 1.05)
+		offset += 2.0
+	_draw_projected(image, view, spine, Color(0.62, 0.58, 0.52), bounds)
+	_draw_projected(image, view, left, _TRACE_COLOR, bounds)
+	_draw_projected(image, view, right, _TRACE_COLOR, bounds)
+	return image
+
+
+## Camera-space polyline: clipped at the near plane, then clipped to the frame, so nothing that
+## left the view is smeared back onto an edge.
+static func _draw_projected(
+	image: Image, view: Transform3D, points: PackedVector3Array, color: Color, bounds: Rect2i
+) -> void:
+	var previous := Vector3.ZERO
+	var has_previous := false
+	for point in points:
+		var local: Vector3 = view * point
+		if has_previous:
+			var from := previous
+			var to := local
+			if from.z <= -_POV_NEAR_M or to.z <= -_POV_NEAR_M:
+				if from.z > -_POV_NEAR_M:
+					from = _clipped_to_near(to, from)
+				elif to.z > -_POV_NEAR_M:
+					to = _clipped_to_near(from, to)
+				if minf(from.length(), to.length()) <= _POV_FAR_M:
+					var segment := _clipped_to_frame(_projected(from), _projected(to), bounds)
+					if not segment.is_empty():
+						_draw_line(image, segment[0], segment[1], color, bounds)
+		previous = local
+		has_previous = true
+
+
+static func _clipped_to_near(inside: Vector3, outside: Vector3) -> Vector3:
+	return inside.lerp(outside, (-_POV_NEAR_M - inside.z) / (outside.z - inside.z))
+
+
+static func _projected(local: Vector3) -> Vector2:
+	var focal := 1.0 / tan(deg_to_rad(_POV_FOV_DEG) * 0.5)
+	return Vector2(
+		(local.x / -local.z * focal / (float(_POV_SIZE.x) / _POV_SIZE.y) * 0.5 + 0.5) * _POV_SIZE.x,
+		(0.5 - local.y / -local.z * focal * 0.5) * _POV_SIZE.y
+	)
+
+
+static func _clipped_to_frame(from: Vector2, to: Vector2, bounds: Rect2i) -> PackedVector2Array:
+	var delta := to - from
+	var low := 0.0
+	var high := 1.0
+	var edges := [
+		[-delta.x, from.x - bounds.position.x], [delta.x, bounds.end.x - from.x],
+		[-delta.y, from.y - bounds.position.y], [delta.y, bounds.end.y - from.y],
+	]
+	for edge in edges:
+		var scale: float = edge[0]
+		var distance: float = edge[1]
+		if absf(scale) < 0.000001:
+			if distance < 0.0:
+				return PackedVector2Array()
+			continue
+		var crossing := distance / scale
+		if scale < 0.0:
+			low = maxf(low, crossing)
+		else:
+			high = minf(high, crossing)
+	if low > high:
+		return PackedVector2Array()
+	return PackedVector2Array([from.lerp(to, low), from.lerp(to, high)])
+
+
+static func _draw_line(
+	image: Image, from: Vector2, to: Vector2, color: Color, bounds: Rect2i, thickness: int = 0
+) -> void:
+	var steps := maxi(ceili(from.distance_to(to)), 1)
+	for step in steps + 1:
+		var point: Vector2 = from.lerp(to, float(step) / steps)
+		for dx in range(-thickness, thickness + 1):
+			for dy in range(-thickness, thickness + 1):
+				image.set_pixel(
+					clampi(roundi(point.x) + dx, bounds.position.x, bounds.end.x),
+					clampi(roundi(point.y) + dy, bounds.position.y, bounds.end.y),
+					color
+				)
+
+
+## The whole checked pack: text, renders, sidecars, then the manifest from the reopened bytes.
+static func write_pack(
+	output_dir: String, report: Dictionary, routes_by_seed: Dictionary
+) -> PackedStringArray:
+	var errors := PackedStringArray()
+	if report.get("schema_version") != "ride-fidelity-audit@1":
+		errors.append("artifact_write: input is not a completed ride-fidelity-audit@1 report")
+		return errors
+	var root := output_dir.rstrip("/")
+	var records: Array = []
+	for case in [
+		["audit.json", "audit", canonical_json(report)],
+		["audit.md", "audit", markdown(report)],
+		["review/pov-map.json", "pov-map", canonical_json(report.pov_map)],
+		["review/pov-map.md", "pov-map", _standalone("POV map", _pov_map_lines(report.pov_map))],
+		["review/checklist.md", "checklist",
+			_standalone("Checklist", _checklist_lines(report.checklist))],
+		["review/issue-coverage.json", "issue-coverage", canonical_json(report.issue_coverage)],
+		["review/issue-coverage.md", "issue-coverage",
+			_standalone("Issue coverage", _issue_coverage_lines(report.issue_coverage))],
+	]:
+		_write(root, case[0], case[1], case[2], null, null, records, errors)
+	var beats := {}
+	for summary in report.measurement_summaries:
+		var by_id := {}
+		for beat in summary.beats:
+			by_id[beat.beat_id] = beat
+		beats[summary.seed] = by_id
+	for request in report.render_requests:
+		_write_render(root, request, routes_by_seed, beats, records, errors)
+	var files := _manifest_files(root, records, errors)
+	if not errors.is_empty():
+		return errors
+	errors.append_array(write_text_checked("%s/manifest.json" % root, canonical_json({
+		"schema_version": "fidelity-artifact-manifest@1",
+		"generation_counts": report.generation_counts, "files": files,
+	})))
+	return errors
+
+
+static func _write_render(
+	root: String, request: Dictionary, routes_by_seed: Dictionary,
+	beats: Dictionary, records: Array, errors: PackedStringArray
+) -> void:
+	var seed_value: int = request.seed
+	var kind: String = request.artifact_kind
+	var beat_id: Variant = request.get("beat_id")
+	var stem := "review/seed-%d" % seed_value
+	var expected := "%s/%s.png" % [stem, kind]
+	if kind == "element" or kind == "pov":
+		expected = "%s/%s/%s.png" % [
+			stem, "elements" if kind == "element" else "pov", str(beat_id).replace("/", "__")
+		]
+	if request.path != expected:
+		errors.append("artifact_write: render request '%s' does not project '%s'" % [
+			request.path, expected])
+		return
+	if not routes_by_seed.has(seed_value):
+		errors.append("artifact_write: no generated route for seed %d" % seed_value)
+		return
+	var route: Dictionary = routes_by_seed[seed_value]
+	match kind:
+		"top":
+			_write(root, expected, kind, top_image(route), seed_value, null, records, errors)
+		"elevation":
+			_write(root, expected, kind, elevation_image(route), seed_value, null, records, errors)
+		"channels":
+			_write_channels(root, expected, seed_value, route, records, errors)
+		"element":
+			var beat: Dictionary = beats.get(seed_value, {}).get(beat_id, {})
+			if not _finite_number(beat.get("start_distance")) or not _finite_number(beat.get("end_distance")):
+				errors.append("artifact_write: beat '%s' has no measured span for seed %d" % [
+					beat_id, seed_value])
+				return
+			_write(root, expected, kind, side_image(route,
+				_sample_index(route.distances, float(beat.start_distance)),
+				_sample_index(route.distances, float(beat.end_distance))
+			), seed_value, beat_id, records, errors)
+		"pov":
+			if not _finite_number(request.get("generated_time_s")):
+				errors.append("artifact_write: POV request '%s' has no generated time" % request.path)
+				return
+			_write(root, expected, kind, pov_image(route, float(request.generated_time_s)),
+				seed_value, beat_id, records, errors)
+		_:
+			errors.append("artifact_write: unknown render kind '%s'" % kind)
+
+
+static func _write_channels(
+	root: String, path: String, seed_value: int, route: Dictionary,
+	records: Array, errors: PackedStringArray
+) -> void:
+	var rendered := channels(route)
+	_write(root, path, "channels", rendered.image, seed_value, null, records, errors)
+	var legend_path := "review/seed-%d/channels.json" % seed_value
+	_write(root, legend_path, "channels", canonical_json({
+		"schema_version": "fidelity-channel-legend@1", "image_path": path, "seed": seed_value,
+		"width": _CHANNEL_WIDTH, "height": _STRIP_HEIGHT * _CHANNEL_SPECS.size(),
+		"strips": rendered.strips,
+	}), seed_value, null, records, errors)
+	var reopened: Variant = JSON.parse_string(
+		FileAccess.get_file_as_string("%s/%s" % [root, legend_path]))
+	if not reopened is Dictionary:
+		errors.append("artifact_write: channel legend for seed %d did not reopen" % seed_value)
+		return
+	_write(root, "review/seed-%d/channels.md" % seed_value, "channels",
+		_channels_markdown(reopened), seed_value, null, records, errors)
+
+
+static func _channels_markdown(legend: Dictionary) -> String:
+	var lines := PackedStringArray([
+		"# Channel legend — seed %d" % int(legend.seed), "",
+		"Image: %s (%dx%d)" % [legend.image_path, int(legend.width), int(legend.height)], "",
+		"| index | channel | label | unit | plot min | plot max | bounded | unbounded | series | color |",
+		"| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+	])
+	for strip in legend.strips:
+		var series: Dictionary = strip.series[0]
+		var color := PackedStringArray()
+		for component in series.color_rgba:
+			color.append(_f6(component))
+		lines.append(_markdown_row([
+			int(strip.index), strip.channel_id, strip.label, strip.unit,
+			_f6(strip.plot_min), _f6(strip.plot_max),
+			int(strip.bounded_count), int(strip.unbounded_count),
+			series.role, ", ".join(color),
+		]))
+	return "\n".join(lines) + "\n"
+
+
+static func _write(
+	root: String, path: String, artifact_kind: String, content: Variant,
+	seed_value: Variant, beat_id: Variant, records: Array, errors: PackedStringArray
+) -> void:
+	var absolute := "%s/%s" % [root, path]
+	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
+	var failures := (
+		save_png_checked(content, absolute) if content is Image
+		else write_text_checked(absolute, content)
+	)
+	if failures.is_empty():
+		records.append({
+			"path": path, "artifact_kind": artifact_kind, "seed": seed_value, "beat_id": beat_id,
+		})
+	errors.append_array(failures)
+
+
+static func _manifest_files(root: String, records: Array, errors: PackedStringArray) -> Array:
+	var files := []
+	for record in records:
+		var bytes := FileAccess.get_file_as_bytes("%s/%s" % [root, record.path])
+		if bytes.is_empty():
+			errors.append("artifact_write: cannot reopen '%s'" % record.path)
+			continue
+		var width: Variant = null
+		var height: Variant = null
+		var kind := "png"
+		if record.path.ends_with(".json"):
+			kind = "json"
+		elif record.path.ends_with(".md"):
+			kind = "markdown"
+		else:
+			var image := Image.new()
+			if image.load_png_from_buffer(bytes) != OK:
+				errors.append("artifact_write: '%s' did not reopen as a PNG" % record.path)
+				continue
+			width = image.get_width()
+			height = image.get_height()
+		files.append({
+			"path": record.path, "kind": kind, "artifact_kind": record.artifact_kind,
+			"byte_size": bytes.size(), "sha256": _sha256_bytes(bytes),
+			"seed": record.seed, "beat_id": record.beat_id, "width": width, "height": height,
+		})
+	files.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.path < b.path)
+	return files
+
+
+static func _sample_index(distances: PackedFloat32Array, at: float) -> int:
+	var index := _SAMPLING.lower_index(distances, at)
+	if absf(distances[index + 1] - at) < absf(distances[index] - at):
+		return index + 1
+	return index
+
+
+static func _sha256_bytes(bytes: PackedByteArray) -> String:
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update(bytes)
+	return context.finish().hex_encode()

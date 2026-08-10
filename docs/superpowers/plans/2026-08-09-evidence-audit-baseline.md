@@ -1077,7 +1077,7 @@ static func _test_checked_write_failure(artifacts: Script, errors: PackedStringA
 	_expect_contains(errors, failures, "artifact_write", "write failure has a distinct category")
 ```
 
-- [ ] **Step 3: Add a manifest and preserved-output test**
+- [x] **Step 3: Add a manifest and preserved-output test**
 
 Require these stable outputs:
 
@@ -1175,7 +1175,7 @@ static func sha256_text(value: String) -> String:
 Canonicalization sorts dictionary keys only. Arrays already carrying semantic order—including `fleet`—must remain in their supplied order. Findings are sorted before report construction by their stable contract. `RideFidelityArtifacts.canonical_json(value)` is only `return CanonicalData.canonical_json(value)`; it must not carry a second `_canonical` implementation. Later foundation/config/catalog/report code reuses this same utility instead of introducing another canonical JSON encoder.
 Before serialization, recursively reject non-finite numeric values. `null` is legal only where the report schema explicitly declares absence, including `radius_m[i] == null` paired with `radius_unbounded[i] == true`; it is never a stand-in for malformed arithmetic.
 
-- [ ] **Step 6: Implement checked text and PNG writes**
+- [x] **Step 6: Implement checked text and PNG writes**
 
 ```gdscript
 static func write_text_checked(path: String, content: String) -> PackedStringArray:
@@ -1196,7 +1196,7 @@ static func save_png_checked(image: Image, path: String) -> PackedStringArray:
 	return PackedStringArray() if error == OK and FileAccess.file_exists(path) and FileAccess.get_file_as_bytes(path).size() > 0 else PackedStringArray(["artifact_write: PNG failed '%s' (%s)" % [path, error_string(error)]])
 ```
 
-- [ ] **Step 7: Move existing render logic behind `RideFidelityArtifacts` without deleting capability**
+- [x] **Step 7: Move existing render logic behind `RideFidelityArtifacts` without deleting capability**
 
 Keep side/profile, top, elevation, and the existing speed/normal/lateral/pitch/roll-rate/AGL strips.
 Add longitudinal proper-g, reconstructed curvature, radius, roll-acceleration, and jerk strips. Keep
@@ -1244,7 +1244,7 @@ role/RGBA. Format floats with six digits after the decimal point. A synthetic el
 JSON fixture and exact Markdown string pin keys, order, relative path, numeric formatting,
 all-unbounded radius behavior, and the absence of `source_filtered`.
 
-- [ ] **Step 8: Add synchronized POV mappings and generated POV frames**
+- [x] **Step 8: Add synchronized POV mappings and generated POV frames**
 
 `pov-map.json` carries `schema_version: "fidelity-pov-map@1"`. Successful records come only from
 validated observation `alignment` objects and link source ID, source landmark, alignment
@@ -1269,7 +1269,7 @@ near `0.08 m`, far `5000 m`, center-row route basis, and eye position
 `pose.origin + pose.basis.y * 0.35`. Do not apply the viewer's speed-dependent FOV widening. Render
 the generic track/terrain inspection layer only; do not embed source-video frames.
 
-- [ ] **Step 9: Add the unscored review checklist and complete issue 1–16 traceability**
+- [x] **Step 9: Add the unscored review checklist and complete issue 1–16 traceability**
 
 Write exactly five ordered checklist sections for shaping, feel, speed perception,
 terrain/clearance, and support overlap. Every prompt is catalog-owned: map catalog category
@@ -1300,7 +1300,7 @@ godot --headless --path godot --script res://smoke.gd
 
 Verify this command through GitHub Actions only; do not launch local Godot.
 
-- [ ] **Step 11: Commit report and artifact support**
+- [x] **Step 11: Commit report and artifact support**
 
 ```powershell
 git add godot/canonical_data.gd godot/fidelity_artifacts.gd godot/fidelity_artifact_tests.gd godot/_inspect.gd godot/smoke.gd

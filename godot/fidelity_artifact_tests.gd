@@ -34,7 +34,129 @@ static func run() -> PackedStringArray:
 	_test_center_row_alignment_selectors(artifacts, errors)
 	_test_route_sampling(errors)
 	_test_checked_writes(artifacts, errors)
+	_test_write_pack(artifacts, errors)
 	return errors
+
+
+## One deterministic pack: the contracted output set, its reopened manifest, and the checked
+## sidecars that make each rendered PNG readable without a font.
+static func _test_write_pack(artifacts: Script, errors: PackedStringArray) -> void:
+	var directory := "user://artifact-pack"
+	_reset_directory(directory)
+	var report: Dictionary = _build(artifacts, _pack_fixture())
+	var failures: Array = Array(artifacts.write_pack(directory, report, _pack_routes()))
+	_expect(errors, failures.is_empty(), "a valid pack writes cleanly: %s" % str(failures))
+	_expect(errors, _relative_files(directory) == PackedStringArray(EXPECTED_PACK_FILES),
+		"the pack writes exactly the contracted output set")
+	_expect_pack_text(artifacts, directory, report, errors)
+	_expect_pack_manifest(directory, errors)
+
+	var repeat := "user://artifact-pack-repeat"
+	_reset_directory(repeat)
+	artifacts.write_pack(repeat, report, _pack_routes())
+	_expect(errors, FileAccess.get_file_as_bytes("%s/manifest.json" % directory)
+		== FileAccess.get_file_as_bytes("%s/manifest.json" % repeat),
+		"identical input writes a byte-identical pack")
+
+	var route := _pack_route(42)
+	_expect(errors, artifacts.side_image(route, 0, 40).get_size() == Vector2i(1100, 700)
+		and artifacts.top_image(route).get_size() == Vector2i(1100, 700)
+		and artifacts.elevation_image(route).get_size() == Vector2i(1100, 700),
+		"the inspector's side, top, and elevation renders survive the move")
+	var rendered: Dictionary = artifacts.channels(route)
+	_expect(errors, rendered.strips.size() == 11
+		and rendered.image.get_size() == Vector2i(1400, 1650),
+		"the channel render survives the move and carries all eleven strips")
+	_expect_pack_failures(artifacts, errors)
+
+
+static func _expect_pack_text(
+	artifacts: Script, directory: String, report: Dictionary, errors: PackedStringArray
+) -> void:
+	for case in [
+		["audit.json", artifacts.canonical_json(report)],
+		["audit.md", artifacts.markdown(report)],
+		["review/pov-map.json", artifacts.canonical_json(report.pov_map)],
+		["review/issue-coverage.json", artifacts.canonical_json(report.issue_coverage)],
+		["review/pov-map.md", _expected_standalone("POV map", "Checklist")],
+		["review/checklist.md", _expected_standalone("Checklist", "Issue coverage")],
+		["review/issue-coverage.md", _expected_standalone("Issue coverage", "Render requests")],
+		["review/seed-11/channels.md", EXPECTED_CHANNELS_MARKDOWN],
+	]:
+		_expect(errors, FileAccess.get_file_as_string("%s/%s" % [directory, case[0]]) == case[1],
+			"%s is the contracted projection" % case[0])
+	_expect(errors, FileAccess.get_file_as_string("%s/review/seed-11/channels.json" % directory)
+		== artifacts.canonical_json(_expected_legend(11)),
+		"the channel legend binds eleven ordered strips to its reopened image")
+
+
+static func _expect_pack_manifest(directory: String, errors: PackedStringArray) -> void:
+	var text := FileAccess.get_file_as_string("%s/manifest.json" % directory)
+	var manifest: Variant = JSON.parse_string(text)
+	if not manifest is Dictionary:
+		errors.append("manifest.json does not reopen as JSON")
+		return
+	_expect(errors, manifest.keys() == ["files", "generation_counts", "schema_version"],
+		"the manifest has exactly the three contracted top-level keys")
+	_expect(errors, manifest.schema_version == "fidelity-artifact-manifest@1",
+		"the manifest declares its schema")
+	_expect(errors, text.contains('"generation_counts":{"1":1,"11":1,"20260809":1,"42":1}'),
+		"the manifest copies the report's integer generation counts unchanged")
+	var by_path := {}
+	var paths := []
+	for file in manifest.files:
+		paths.append(file.path)
+		by_path[file.path] = file
+	var expected_paths := EXPECTED_PACK_FILES.duplicate()
+	expected_paths.erase("manifest.json")
+	_expect(errors, paths == expected_paths,
+		"the manifest lists every artifact except itself, sorted by path")
+	var audit: Dictionary = by_path.get("audit.json", {})
+	_expect(errors, audit.keys() == ["artifact_kind", "beat_id", "byte_size", "height", "kind",
+		"path", "seed", "sha256", "width"], "file records carry exactly the contracted keys")
+	_expect(errors, audit.get("kind") == "json" and audit.get("artifact_kind") == "audit"
+		and audit.get("seed") == null and audit.get("beat_id") == null
+		and audit.get("width") == null and audit.get("height") == null,
+		"inapplicable manifest members are explicit nulls")
+	_expect(errors, audit.get("sha256") == FileAccess.get_sha256("%s/audit.json" % directory)
+		and audit.get("byte_size") == FileAccess.get_file_as_bytes(
+			"%s/audit.json" % directory).size(),
+		"manifest sizes and hashes come from the reopened bytes")
+	for case in [
+		["review/seed-11/channels.png", "channels", 11, null, 1400, 1650],
+		["review/seed-11/channels.json", "channels", 11, null, null, null],
+		["review/seed-11/top.png", "top", 11, null, 1100, 700],
+		["review/seed-20260809/elevation.png", "elevation", 20260809, null, 1100, 700],
+		["review/seed-42/elements/act-one__00__loop.png", "element", 42, "act-one/00/loop", 1100, 700],
+		["review/seed-42/pov/act-one__00__loop.png", "pov", 42, "act-one/00/loop", 1440, 900],
+		["review/checklist.md", "checklist", null, null, null, null],
+	]:
+		var record: Dictionary = by_path.get(case[0], {})
+		_expect(errors, record.get("artifact_kind") == case[1] and record.get("seed") == case[2]
+			and record.get("beat_id") == case[3] and record.get("width") == case[4]
+			and record.get("height") == case[5],
+			"%s is described by its own render, not by its request" % case[0])
+
+
+static func _expect_pack_failures(artifacts: Script, errors: PackedStringArray) -> void:
+	var directory := "user://artifact-pack-invalid"
+	_reset_directory(directory)
+	var mismatched: Dictionary = _build(artifacts, _pack_fixture())
+	for request in mismatched.render_requests:
+		if request.artifact_kind == "element":
+			request.path = "review/seed-42/elements/act-one-00-loop.png"
+	_expect_contains(errors, Array(artifacts.write_pack(directory, mismatched, _pack_routes())),
+		"artifact_write", "a mismatched render path is an operational failure")
+	_expect(errors, not FileAccess.file_exists("%s/manifest.json" % directory),
+		"a failed pack never claims a manifest")
+	var report: Dictionary = _build(artifacts, _pack_fixture())
+	var incomplete := _pack_routes()
+	incomplete.erase(20260809)
+	_expect_contains(errors, Array(artifacts.write_pack(directory, report, incomplete)),
+		"artifact_write", "a missing generated route is an operational failure")
+	_expect_contains(errors,
+		Array(artifacts.write_pack(directory, {"status": "invalid-input"}, _pack_routes())),
+		"artifact_write", "an invalid report never writes a pack")
 
 
 ## Writes are operational: an unopenable destination is an error, and a landed file is reopened.
@@ -816,6 +938,155 @@ Gap: youtube.unaligned — alignment-not-present (video.crest)
 | review/seed-42/pov/act-one__00__loop.png | pov | 42 | act-one/00/loop |
 | review/seed-42/top.png | top | 42 |  |
 """
+
+
+const EXPECTED_PACK_FILES := [
+	"audit.json", "audit.md", "manifest.json",
+	"review/checklist.md", "review/issue-coverage.json", "review/issue-coverage.md",
+	"review/pov-map.json", "review/pov-map.md",
+	"review/seed-11/channels.json", "review/seed-11/channels.md", "review/seed-11/channels.png",
+	"review/seed-11/elevation.png", "review/seed-11/top.png",
+	"review/seed-20260809/channels.json", "review/seed-20260809/channels.md",
+	"review/seed-20260809/channels.png", "review/seed-20260809/elevation.png",
+	"review/seed-20260809/top.png",
+	"review/seed-42/channels.json", "review/seed-42/channels.md", "review/seed-42/channels.png",
+	"review/seed-42/elements/act-one__00__loop.png", "review/seed-42/elevation.png",
+	"review/seed-42/pov/act-one__00__loop.png", "review/seed-42/top.png",
+]
+
+## Eleven constant channels over level, straight, unbanked track: every plot rule is predictable.
+const EXPECTED_CHANNEL_SPECS := [
+	["speed_kmh", "Speed", "km/h", 36.0],
+	["normal_g", "Normal proper acceleration", "g", 1.0],
+	["lateral_g", "Lateral proper acceleration", "g", 0.0],
+	["longitudinal_proper_g", "Longitudinal proper acceleration", "g", 0.0],
+	["pitch_deg", "Pitch", "deg", 0.0],
+	["roll_rate_dps", "Roll rate", "deg/s", 0.0],
+	["agl_m", "Height above ground", "m", 30.0],
+	["reconstructed_curvature_inv_m", "Reconstructed curvature", "1/m", 0.0],
+	["radius_m", "Radius", "m", null],
+	["roll_acceleration_dps2", "Roll acceleration", "deg/s^2", 0.0],
+	["jerk_mps3", "Inertial jerk magnitude", "m/s^3", 0.0],
+]
+
+const EXPECTED_CHANNELS_MARKDOWN := """# Channel legend — seed 11
+
+Image: review/seed-11/channels.png (1400x1650)
+
+| index | channel | label | unit | plot min | plot max | bounded | unbounded | series | color |
+| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| 0 | speed_kmh | Speed | km/h | 36.000000 | 36.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 1 | normal_g | Normal proper acceleration | g | 1.000000 | 1.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 2 | lateral_g | Lateral proper acceleration | g | 0.000000 | 0.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 3 | longitudinal_proper_g | Longitudinal proper acceleration | g | 0.000000 | 0.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 4 | pitch_deg | Pitch | deg | 0.000000 | 0.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 5 | roll_rate_dps | Roll rate | deg/s | 0.000000 | 0.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 6 | agl_m | Height above ground | m | 30.000000 | 30.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 7 | reconstructed_curvature_inv_m | Reconstructed curvature | 1/m | 0.000000 | 0.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 8 | radius_m | Radius | m | 0.000000 | 1.000000 | 0 | 41 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 9 | roll_acceleration_dps2 | Roll acceleration | deg/s^2 | 0.000000 | 0.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+| 10 | jerk_mps3 | Inertial jerk magnitude | m/s^3 | 0.000000 | 0.001000 | 41 | 0 | raw_generated | 0.550000, 0.950000, 1.000000, 1.000000 |
+"""
+
+
+static func _expected_legend(seed_value: int) -> Dictionary:
+	var strips := []
+	for index in EXPECTED_CHANNEL_SPECS.size():
+		var spec: Array = EXPECTED_CHANNEL_SPECS[index]
+		var constant: Variant = spec[3]
+		var unbounded: bool = constant == null
+		strips.append({
+			"index": index, "channel_id": spec[0], "label": spec[1], "unit": spec[2],
+			"plot_min": 0.0 if unbounded else float(constant),
+			"plot_max": 1.0 if unbounded else float(constant) + 0.001,
+			"bounded_count": 0 if unbounded else 41, "unbounded_count": 41 if unbounded else 0,
+			"series": [{"role": "raw_generated", "color_rgba": [0.55, 0.95, 1.0, 1.0]}],
+		})
+	return {
+		"schema_version": "fidelity-channel-legend@1",
+		"image_path": "review/seed-%d/channels.png" % seed_value, "seed": seed_value,
+		"width": 1400, "height": 1650, "strips": strips,
+	}
+
+
+## The standalone review files are the same body the aggregate audit prints, under their own title.
+static func _expected_standalone(title: String, next_title: String) -> String:
+	var body: String = EXPECTED_MARKDOWN.split("## %s\n" % title)[1].split(
+		"\n\n## %s" % next_title)[0]
+	return "# %s\n\n%s\n" % [title, body]
+
+
+static func _pack_fixture() -> Dictionary:
+	var fixture := _valid_fixture()
+	fixture.seed_measurements[1].beats[0].merge({"start_distance": 0.0, "end_distance": 200.0})
+	return fixture
+
+
+static func _pack_routes() -> Dictionary:
+	var routes := {}
+	for seed_value in [11, 42, 20260809]:
+		routes[seed_value] = _pack_route(seed_value)
+	return routes
+
+
+static func _pack_route(seed_value: int) -> Dictionary:
+	var route := {
+		"seed": seed_value, "length": 200.0, "duration": 20.0,
+		"positions": PackedVector3Array(), "tangents": PackedVector3Array(),
+		"ups": PackedVector3Array(), "rights": PackedVector3Array(),
+		"curvatures": PackedVector3Array(), "banks": PackedFloat32Array(),
+		"speeds": PackedFloat32Array(), "normal_g": PackedFloat32Array(),
+		"lateral_g": PackedFloat32Array(), "longitudinal_g": PackedFloat32Array(),
+		"roll_rates": PackedFloat32Array(), "distances": PackedFloat32Array(),
+		"times": PackedFloat32Array(),
+		"terrain": {
+			"relief": 1.0, "face_height": 0.0, "apron_height": 0.0,
+			"edge_normal": Vector2(0.0, -1.0), "edge_offset": 0.0, "apron_width": 1.0,
+			"face_width": 1.0, "wobble_amplitude": 0.0, "wobble_wavelength": 1.0,
+			"detail_amplitude": 0.0, "noise_seed": 0,
+		},
+		"sections": [{
+			"kind": "FVD", "name": "loop", "element": {"kind": "loop"}, "phase": "act one",
+			"start_index": 0, "end_index": 40, "start_time": 0.0,
+		}],
+	}
+	for index in 41:
+		route.positions.append(Vector3(index * 5.0, 30.0, 0.0))
+		route.tangents.append(Vector3.RIGHT)
+		route.ups.append(Vector3.UP)
+		route.rights.append(Vector3.BACK)
+		route.curvatures.append(Vector3.ZERO)
+		route.banks.append(0.0)
+		route.speeds.append(10.0)
+		route.normal_g.append(1.0)
+		route.lateral_g.append(0.0)
+		route.longitudinal_g.append(0.0)
+		route.roll_rates.append(0.0)
+		route.distances.append(index * 5.0)
+		route.times.append(index * 0.5)
+	return route
+
+
+static func _relative_files(directory: String, prefix: String = "") -> PackedStringArray:
+	var output := PackedStringArray()
+	for name in DirAccess.get_files_at(directory):
+		output.append(prefix + name)
+	for name in DirAccess.get_directories_at(directory):
+		output.append_array(_relative_files("%s/%s" % [directory, name], "%s%s/" % [prefix, name]))
+	output.sort()
+	return output
+
+
+static func _reset_directory(directory: String) -> void:
+	if not DirAccess.dir_exists_absolute(directory):
+		DirAccess.make_dir_recursive_absolute(directory)
+		return
+	for name in DirAccess.get_directories_at(directory):
+		_reset_directory("%s/%s" % [directory, name])
+	for name in DirAccess.get_files_at(directory):
+		DirAccess.remove_absolute("%s/%s" % [directory, name])
+	DirAccess.remove_absolute(directory)
+	DirAccess.make_dir_recursive_absolute(directory)
 
 
 static func _reverse_dictionaries(value: Variant) -> Variant:

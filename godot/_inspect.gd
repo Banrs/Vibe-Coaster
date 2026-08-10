@@ -1,13 +1,13 @@
 extends SceneTree
 
 ## Inspection harness (not part of the ride or the smoke gate): dumps per-element geometry
-## stats and phase tables, and renders PNGs — element side views, top/elevation, and 6-channel
-## ride traces (speed/normal g/lateral g/pitch/roll rate/AGL) — for visual comparison against
-## the measured references in docs/TELEMETRY.md.
+## stats and phase tables, and renders PNGs — element side views, top/elevation, and the stacked
+## ride-channel traces — for visual comparison against the measured references in
+## docs/TELEMETRY.md. Every render lives in RideFidelityArtifacts, which the audit pack shares.
 ## Run: godot --headless --path godot --script res://_inspect.gd  [output dir via INSPECT_OUT]
 
 const Generator := preload("res://generator.gd")
-const Terrain := preload("res://terrain.gd")
+const Artifacts := preload("res://fidelity_artifacts.gd")
 
 var OUT: String = OS.get_environment("INSPECT_OUT") if OS.get_environment("INSPECT_OUT") != "" else OS.get_user_data_dir() + "/inspect"
 
@@ -32,9 +32,9 @@ func _initialize() -> void:
 			stats.width, stats.height, stats.r_apex, stats.r_valley,
 		])
 		if kind in ["hill", "immelmann", "loop", "cutback", "twisted_drop", "dive", "wave_turn", "overbank", "turn"]:
-			_render_side(route, a, b, "%s/%s_%d.png" % [OUT, kind, a])
-	_render_top(route, "%s/top.png" % OUT)
-	_render_elevation(route, "%s/elevation.png" % OUT)
+			Artifacts.side_image(route, a, b).save_png("%s/%s_%d.png" % [OUT, kind, a])
+	Artifacts.top_image(route).save_png("%s/top.png" % OUT)
+	Artifacts.elevation_image(route).save_png("%s/elevation.png" % OUT)
 	quit(0)
 
 
@@ -92,92 +92,15 @@ func _stats(route: Dictionary, a: int, b: int) -> Dictionary:
 	}
 
 
-func _render_side(route: Dictionary, a: int, b: int, path: String) -> void:
-	var direction := Vector2.ZERO
-	for i in range(a, b + 1):
-		direction += Vector2(route.positions[i].x - route.positions[a].x, route.positions[i].z - route.positions[a].z)
-	if direction.length() < 1.0:
-		direction = Vector2(route.tangents[a].x, route.tangents[a].z)
-	direction = direction.normalized()
-	var points := PackedVector2Array()
-	for i in range(a, b + 1):
-		var p: Vector3 = route.positions[i]
-		points.append(Vector2(Vector2(p.x - route.positions[a].x, p.z - route.positions[a].z).dot(direction), p.y))
-	_plot(points, path)
-
-
-func _render_top(route: Dictionary, path: String) -> void:
-	var points := PackedVector2Array()
-	for i in route.positions.size():
-		points.append(Vector2(route.positions[i].x, route.positions[i].z))
-	_plot(points, path)
-
-
-func _render_elevation(route: Dictionary, path: String) -> void:
-	var points := PackedVector2Array()
-	for i in route.positions.size():
-		points.append(Vector2(route.distances[i], route.positions[i].y))
-	_plot(points, path)
-
-
-## Stacked strips against ride time: speed km/h · normal g · lateral g · pitch° · roll°/s ·
-## height AGL. Section boundaries ticked. This is the "ride it yourself" trace.
+## Stacked strips against ride time — the "ride it yourself" trace, now eleven channels deep.
 func _render_channels(route: Dictionary, path: String) -> void:
-	var count: int = route.positions.size()
-	var channels := [
-		{"label": "speed", "values": PackedFloat32Array()},
-		{"label": "normal g", "values": PackedFloat32Array()},
-		{"label": "lateral g", "values": PackedFloat32Array()},
-		{"label": "pitch", "values": PackedFloat32Array()},
-		{"label": "roll rate", "values": PackedFloat32Array()},
-		{"label": "AGL", "values": PackedFloat32Array()},
-	]
-	for i in count:
-		channels[0].values.append(route.speeds[i] * 3.6)
-		channels[1].values.append(route.normal_g[i])
-		channels[2].values.append(route.lateral_g[i])
-		channels[3].values.append(rad_to_deg(asin(clampf(route.tangents[i].y, -1.0, 1.0))))
-		channels[4].values.append(route.roll_rates[i])
-		channels[5].values.append(route.positions[i].y - Terrain.height(route.terrain, route.positions[i].x, route.positions[i].z))
-	var marks := PackedFloat32Array()
-	for section in route.sections:
-		marks.append(section.start_time)
-	const W := 1400
-	const STRIP := 150
-	var image := Image.create(W, STRIP * channels.size(), false, Image.FORMAT_RGB8)
-	image.fill(Color(0.09, 0.10, 0.12))
-	var t_max: float = route.times[-1]
-	for c in channels.size():
-		var values: PackedFloat32Array = channels[c].values
-		var low := INF
-		var high := -INF
-		for v in values:
-			low = minf(low, v)
-			high = maxf(high, v)
-		var span := maxf(high - low, 0.001)
-		var y0 := c * STRIP
-		for x in W:
-			image.set_pixel(x, y0, Color(0.25, 0.25, 0.30))
-		if low < 0.0 and high > 0.0:
-			var zero_y := y0 + STRIP - 8 - int((0.0 - low) / span * (STRIP - 16))
-			for x in range(0, W, 2):
-				image.set_pixel(x, zero_y, Color(0.28, 0.24, 0.24))
-		for mark in marks:
-			var mx := clampi(int(mark / t_max * (W - 1)), 0, W - 1)
-			for y in range(y0, y0 + STRIP, 4):
-				image.set_pixel(mx, y, Color(0.30, 0.27, 0.20))
-		for i in range(1, values.size()):
-			var x0 := int(route.times[i - 1] / t_max * (W - 1))
-			var x1 := int(route.times[i] / t_max * (W - 1))
-			var py0 := y0 + STRIP - 8 - int((values[i - 1] - low) / span * (STRIP - 16))
-			var py1 := y0 + STRIP - 8 - int((values[i] - low) / span * (STRIP - 16))
-			var steps := maxi(absi(x1 - x0) + absi(py1 - py0), 1)
-			for s in steps + 1:
-				var x := clampi(roundi(lerpf(x0, x1, float(s) / steps)), 0, W - 1)
-				var y := clampi(roundi(lerpf(py0, py1, float(s) / steps)), y0 + 1, y0 + STRIP - 1)
-				image.set_pixel(x, y, Color(0.55, 0.95, 1.0))
-		print("CHANNEL %-10s [%8.2f, %8.2f]" % [channels[c].label, low, high])
-	image.save_png(path)
+	var rendered: Dictionary = Artifacts.channels(route)
+	rendered.image.save_png(path)
+	for strip in rendered.strips:
+		print("CHANNEL %-30s [%10.3f, %10.3f] %4d bounded %4d unbounded" % [
+			strip.channel_id, strip.plot_min, strip.plot_max,
+			strip.bounded_count, strip.unbounded_count,
+		])
 
 
 func _print_phases(route: Dictionary) -> void:
@@ -189,34 +112,3 @@ func _print_phases(route: Dictionary) -> void:
 			section.end_time - section.start_time,
 			section.entry_speed, section.exit_speed,
 		])
-
-
-func _plot(points: PackedVector2Array, path: String, marks: PackedFloat32Array = PackedFloat32Array()) -> void:
-	var low := Vector2(INF, INF)
-	var high := Vector2(-INF, -INF)
-	for p in points:
-		low = low.min(p)
-		high = high.max(p)
-	var span: Vector2 = (high - low).max(Vector2(1, 1))
-	const W := 1100
-	const H := 700
-	const M := 40.0
-	var scale: float = minf((W - 2.0 * M) / span.x, (H - 2.0 * M) / span.y)
-	var image := Image.create(W, H, false, Image.FORMAT_RGB8)
-	image.fill(Color(0.09, 0.10, 0.12))
-	for mark in marks:
-		var mx := clampi(int((mark - low.x) * scale + M), 0, W - 1)
-		for y in range(0, H, 3):
-			image.set_pixel(mx, y, Color(0.35, 0.30, 0.20))
-	for i in range(1, points.size()):
-		var p0: Vector2 = (points[i - 1] - low) * scale
-		var p1: Vector2 = (points[i] - low) * scale
-		var steps := maxi(ceili(p0.distance_to(p1)), 1)
-		for s in steps + 1:
-			var q: Vector2 = p0.lerp(p1, float(s) / steps)
-			var x := clampi(int(q.x + M), 1, W - 2)
-			var y := clampi(H - 1 - int(q.y + M), 1, H - 2)
-			for dx in range(-1, 2):
-				for dy in range(-1, 2):
-					image.set_pixel(x + dx, y + dy, Color(0.55, 0.95, 1.0))
-	image.save_png(path)

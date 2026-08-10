@@ -101,7 +101,17 @@ const CATALOG := {
 			"row_seat": "unknown", "device": "unknown", "sample_rate_hz": null, "axis_mapping": {}, "reliability": "Built-ride leading-view overlay with sparse displayed-channel landmarks only; uploader labels remain unmapped.",
 			"processing": ["Sparse manual live-player sampling of uploader-rendered labels only; no video, frame, or raw trace artifact is committed."],
 			"caveats": ["Uploader warnings cover consumer-grade sensors, presentation editing, limited sampling, interpolation, and video-frame-rate data loss.", "Raw sample rate, calibration, orientation, filtering, sensor location, row, device, and edit decision list are unknown.", "The three negative Long. labels are sparse approximate unmapped rendered spot checks, not a dense trace or comparison band.", "No generated alignment is established."],
-			"windows": [{"id": "0ua.station_dispatch", "time_s": 0.06}, {"id": "0ua.park_straight", "time_s": 25.25}, {"id": "0ua.park_hill_turn", "time_s": 49.171226}, {"id": "0ua.cliff_approach", "time_s": 74.18}, {"id": "0ua.high_terrain_turn", "time_s": 100.45}, {"id": "0ua.cliff_descent", "time_s": 124.37}, {"id": "0ua.fast_park_return", "time_s": 149.39}, {"id": "0ua.compact_park_descent", "time_s": 174.40}, {"id": "0ua.station_return", "time_s": 204.44}],
+			"windows": [
+				{"id": "0ua.station_dispatch", "time_s": 0.06},
+				{"id": "0ua.park_straight", "time_s": 25.25},
+				{"id": "0ua.park_hill_turn", "time_s": 49.171226},
+				{"id": "0ua.cliff_approach", "time_s": 74.18},
+				{"id": "0ua.high_terrain_turn", "time_s": 100.45},
+				{"id": "0ua.cliff_descent", "time_s": 124.37},
+				{"id": "0ua.fast_park_return", "time_s": 149.39},
+				{"id": "0ua.compact_park_descent", "time_s": 174.40},
+				{"id": "0ua.station_return", "time_s": 204.44}
+			],
 		},
 		"youtube.coastertalk.edited.seNR": {
 			"initial_state": "review_pending", "state": "review_pending",
@@ -125,7 +135,17 @@ const CATALOG := {
 			"row_seat": "unknown", "device": "unknown", "sample_rate_hz": null, "axis_mapping": {}, "reliability": "Built-ride centered rear-facing view with sparse night landmarks; observation prompts only and exact row undisclosed.",
 			"processing": ["Sparse manual live-player review only; no video or frame artifact is committed."],
 			"caveats": ["Native sample rate, camera calibration, axis mapping, and generated alignment are unknown.", "Lower-right watermark, night exposure, motion blur, and rapid camera roll limit element-shape certainty."],
-			"windows": [{"id": "j54.station_dispatch", "time_s": 0.07}, {"id": "j54.park_straight", "time_s": 29.99}, {"id": "j54.park_bank", "time_s": 59.07}, {"id": "j54.rocky_descent", "time_s": 89.18}, {"id": "j54.elevated_crest", "time_s": 120.71}, {"id": "j54.steep_segment", "time_s": 139.36}, {"id": "j54.park_return", "time_s": 159.43}, {"id": "j54.support_passage", "time_s": 179.50}, {"id": "j54.station_return", "time_s": 219.65}],
+			"windows": [
+				{"id": "j54.station_dispatch", "time_s": 0.07},
+				{"id": "j54.park_straight", "time_s": 29.99},
+				{"id": "j54.park_bank", "time_s": 59.07},
+				{"id": "j54.rocky_descent", "time_s": 89.18},
+				{"id": "j54.elevated_crest", "time_s": 120.71},
+				{"id": "j54.steep_segment", "time_s": 139.36},
+				{"id": "j54.park_return", "time_s": 159.43},
+				{"id": "j54.support_passage", "time_s": 179.50},
+				{"id": "j54.station_return", "time_s": 219.65}
+			],
 		},
 		"youtube.falcon.cgi.NFV": {
 			"initial_state": "corroborative", "state": "review_pending",
@@ -161,7 +181,19 @@ const CATALOG := {
 			"row_seat": "not applicable", "device": "not applicable", "sample_rate_hz": null, "axis_mapping": {}, "reliability": "NoLimits2 precreation with mixed third-person and virtual POV; model-to-model evidence only.",
 			"processing": ["Sparse manual live-player review only; no video or frame artifact is committed."],
 			"caveats": ["Synthetic low-detail terrain and scenery and expressly variable shaping limit as-built correspondence.", "Clifftop shaping and order remain unconfirmed; real built-ride POV controls wherever sources disagree.", "This simulation cannot establish measured truth, transfer its clock, or supply generated alignment."],
-			"windows": [{"id": "poco.opening", "time_s": 0.10}, {"id": "poco.park_element", "time_s": 43.63}, {"id": "poco.desert_curve", "time_s": 88.56}, {"id": "poco.elevated_arch", "time_s": 133.76}, {"id": "poco.supported_grade", "time_s": 148.74}, {"id": "poco.low_return", "time_s": 163.71}, {"id": "poco.virtual_pov_start", "time_s": 170.69}, {"id": "poco.steep_ascent", "time_s": 178.69}, {"id": "poco.rocky_ascent", "time_s": 223.89}, {"id": "poco.modeled_hill", "time_s": 268.82}, {"id": "poco.park_return", "time_s": 314.02}],
+			"windows": [
+				{"id": "poco.opening", "time_s": 0.10},
+				{"id": "poco.park_element", "time_s": 43.63},
+				{"id": "poco.desert_curve", "time_s": 88.56},
+				{"id": "poco.elevated_arch", "time_s": 133.76},
+				{"id": "poco.supported_grade", "time_s": 148.74},
+				{"id": "poco.low_return", "time_s": 163.71},
+				{"id": "poco.virtual_pov_start", "time_s": 170.69},
+				{"id": "poco.steep_ascent", "time_s": 178.69},
+				{"id": "poco.rocky_ascent", "time_s": 223.89},
+				{"id": "poco.modeled_hill", "time_s": 268.82},
+				{"id": "poco.park_return", "time_s": 314.02}
+			],
 		},
 		"youtube.falcon.sdXGD9kMR7s": {
 			"initial_state": "observation_only", "state": "observation_only",
@@ -173,7 +205,17 @@ const CATALOG := {
 			"row_seat": "front-row view per title; exact camera mount undisclosed", "device": "unknown", "sample_rate_hz": null, "axis_mapping": {}, "reliability": "Built-ride front-row view per title with sparse visual landmarks; observation prompts only.",
 			"processing": ["Sparse manual live-player review only; no video or frame artifact is committed."],
 			"caveats": ["Native sample rate, camera calibration, axis mapping, and generated alignment are unknown.", "Leading car nose, curved bar, lower-right watermark, sun glare, and lens or dust spots obstruct the view.", "The editorial length card is not telemetry."],
-			"windows": [{"id": "sdx.station_dispatch", "time_s": 0.07}, {"id": "sdx.park_straight", "time_s": 28.93}, {"id": "sdx.park_bank", "time_s": 58.81}, {"id": "sdx.rock_face_pitch", "time_s": 88.87}, {"id": "sdx.cliff_edge", "time_s": 118.94}, {"id": "sdx.elevated_crest", "time_s": 138.86}, {"id": "sdx.low_terrain_turn", "time_s": 158.97}, {"id": "sdx.park_run", "time_s": 178.88}, {"id": "sdx.station_return", "time_s": 218.91}],
+			"windows": [
+				{"id": "sdx.station_dispatch", "time_s": 0.07},
+				{"id": "sdx.park_straight", "time_s": 28.93},
+				{"id": "sdx.park_bank", "time_s": 58.81},
+				{"id": "sdx.rock_face_pitch", "time_s": 88.87},
+				{"id": "sdx.cliff_edge", "time_s": 118.94},
+				{"id": "sdx.elevated_crest", "time_s": 138.86},
+				{"id": "sdx.low_terrain_turn", "time_s": 158.97},
+				{"id": "sdx.park_run", "time_s": 178.88},
+				{"id": "sdx.station_return", "time_s": 218.91}
+			],
 		},
 		"youtube.i305.overlay.wX7": {
 			"initial_state": "corroborative", "state": "review_pending",

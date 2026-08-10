@@ -20,7 +20,11 @@ Reviewed on 2026-08-10 against `docs/TELEMETRY.md`, `docs/TELEMETRY-I305.md`, `d
 - The independent media durations and publish dates are J54 `240.881 s` / `2026-01-05`, sdX `239.061 s` / `2026-01-01`, poco `328.521 s` / `2023-06-04`, and 0Ua `213.541 s` / `2026-04-14`. Durations are source-local media-element readbacks, not ride-duration targets.
 - J54 is a built-ride centered rear-facing view with exact row and mount undisclosed; sdX is a built-ride front-row view per title with mount undisclosed; poco is a NoLimits2 precreation mixing third-person and virtual POV; 0Ua is a built-ride leading-view appearance with exact row and mount undisclosed.
 - The historical `docs/RESEARCH.md:64` claim that J54 has “zero obstruction” is preserved verbatim as provenance but is overstated and contradicted by the live review. The structured obstruction list—watermark, night exposure, motion blur, and rapid camera roll—governs reviewed observations.
-- The three retained 0Ua `Long.` labels are negative (`-0.30 g`, `-0.19 g`, and approximately `-0.58 g`) and remain approximate, unmapped uploader-rendered spot checks. Uploader warnings cover consumer-grade sensors, presentation editing, limited sampling, interpolation, and video-frame-rate data loss; raw cadence, calibration, orientation, filtering, sensor location, row/device, and edit decisions remain unknown.
+- The three retained 0Ua `Long.` labels are negative (`-0.30 g`, `-0.19 g`, and approximately
+  `-0.58 g`) and remain approximate, unmapped uploader-rendered spot checks.
+  Uploader warnings cover consumer-grade sensors, presentation editing, limited sampling,
+  interpolation, and video-frame-rate data loss; raw cadence, calibration, orientation, filtering,
+  sensor location, row/device, and edit decisions remain unknown.
 - Sparse points are not a dense trace. Separate video clocks may be compared only landmark-to-landmark: no global offset, duration ratio, proportional scaling, warping, or source-to-generated alignment exists.
 - Poco is historical model-to-model context only and cannot constrain as-built geometry, timing, clifftop order, or telemetry; real built-ride POV governs wherever sources disagree.
 

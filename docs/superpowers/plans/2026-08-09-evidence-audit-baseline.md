@@ -1025,6 +1025,11 @@ Task 7A's pure report contract is exact:
   Identity, Fleet, Measurements, Findings, Observed only, Evidence gaps, Recommendation, Evidence
   snapshot, POV map, Checklist, Issue coverage, Render requests; rows follow the already-contracted
   array orders.
+- Task 7A physical-line review thresholds are 55 soft / 80 absolute for `canonical_data.gd`, 560 /
+  750 for `fidelity_artifacts.gd`, an expected test size no greater than 621 with 635 soft / 700
+  absolute for `fidelity_artifact_tests.gd`, and exactly two added `smoke.gd` lines. These are stops,
+  not quotas; never pack lines, couple expected values to fixtures, weaken mutations, or add generic
+  schema machinery to meet them.
 
 - [ ] **Step 1: Create the SceneTree runner and add canonical JSON/Markdown ordering tests**
 

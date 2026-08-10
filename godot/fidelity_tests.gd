@@ -883,6 +883,9 @@ static func _test_fleet_validation(fidelity: Script, errors: PackedStringArray) 
 	var malformed_loads := _comparison_fleet(CANONICAL_FLEET)
 	malformed_loads[0].beats[0].rows[0].loads = NAN
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(malformed_loads, catalog), "measurement-invalid", "malformed selected loads container")
+	var malformed_unavailable := _held_comparison_fleet(CANONICAL_FLEET)
+	malformed_unavailable[0].beats[0].rows[0].loads.normal_held_positive = {"_unavailable": {"0.80": NAN}}
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(malformed_unavailable, _comparison_catalog("normal_held_positive", 0.8)), "measurement-invalid", "malformed selected unavailable record")
 	var nonfinite_duration := _comparison_fleet(CANONICAL_FLEET)
 	nonfinite_duration[0].beats[0].rows[0].window_seconds = INF
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(nonfinite_duration, catalog), "measurement-invalid", "non-finite selected duration")

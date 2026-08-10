@@ -959,6 +959,13 @@ static func _test_fleet_validation(fidelity: Script, errors: PackedStringArray) 
 			errors, fidelity.compare_fleet(malformed_position, position_catalog),
 			"measurement-invalid", "position selector rejects a %s row position" % value_case.label
 		)
+	var row_id_position_control := _row_selection_fleet(CANONICAL_FLEET)
+	row_id_position_control[0].beats[0].rows[1].erase("position")
+	_expect(
+		errors,
+		fidelity.compare_fleet(row_id_position_control, catalog).get("findings", []).size() == 1,
+		"a row-ID selector does not consume an unrelated row position"
+	)
 	var malformed_unavailable := _held_comparison_fleet(CANONICAL_FLEET)
 	malformed_unavailable[0].beats[0].rows[0].loads.normal_held_positive = {"_unavailable": {"0.80": NAN}}
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(malformed_unavailable, _comparison_catalog("normal_held_positive", 0.8)), "measurement-invalid", "malformed selected unavailable record")

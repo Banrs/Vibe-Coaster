@@ -139,39 +139,15 @@ static func build_terrain_mesh(built: Dictionary) -> ArrayMesh:
 
 
 static func pose_at_distance(built: Dictionary, distance: float) -> Transform3D:
-	var distances: PackedFloat32Array = built.distances
-	var wrapped := fposmod(distance, float(built.length))
-	var index := _lower_index(distances, wrapped)
-	var amount := inverse_lerp(distances[index], distances[index + 1], wrapped)
-	var p0: Vector3 = built.positions[index]
-	var p1: Vector3 = built.positions[index + 1]
-	var basis0 := Basis(built.rights[index], built.ups[index], -built.tangents[index])
-	var basis1 := Basis(built.rights[index + 1], built.ups[index + 1], -built.tangents[index + 1])
-	var orientation := basis0.get_rotation_quaternion().slerp(basis1.get_rotation_quaternion(), amount)
-	return Transform3D(Basis(orientation).orthonormalized(), p0.lerp(p1, amount))
+	return RouteSampling.pose_at_distance(built, distance)
 
 
 static func distance_at_time(built: Dictionary, time: float) -> float:
-	var times: PackedFloat32Array = built.times
-	var wrapped := fposmod(time, float(built.duration))
-	var index := _lower_index(times, wrapped)
-	return lerpf(
-		built.distances[index],
-		built.distances[index + 1],
-		inverse_lerp(times[index], times[index + 1], wrapped)
-	)
+	return RouteSampling.distance_at_time(built, time)
 
 
 static func _lower_index(values: PackedFloat32Array, value: float) -> int:
-	var low := 0
-	var high := values.size() - 1
-	while high - low > 1:
-		var middle := floori((low + high) * 0.5)
-		if values[middle] <= value:
-			low = middle
-		else:
-			high = middle
-	return low
+	return RouteSampling.lower_index(values, value)
 
 
 func _configure_world() -> void:

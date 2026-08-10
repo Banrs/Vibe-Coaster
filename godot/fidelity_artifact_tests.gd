@@ -25,7 +25,7 @@ static func run() -> PackedStringArray:
 	var artifacts: Script = load(ARTIFACTS_PATH)
 	var references: Script = load(REFERENCES_PATH)
 	_test_canonical_data(canonical_data, artifacts, errors)
-	_test_complete_report(artifacts, errors)
+	_test_complete_report(artifacts, canonical_data.sha256_text(canonical_data.canonical_json(_valid_catalog())), errors)
 	_test_report_determinism(artifacts, errors)
 	_test_invalid_envelope(artifacts, errors)
 	_test_invalid_links_and_coverage(artifacts, errors)
@@ -73,10 +73,10 @@ static func _test_canonical_data(
 		"SHA-256 hashes the exact supplied UTF-8 text")
 
 
-static func _test_complete_report(artifacts: Script, errors: PackedStringArray) -> void:
+static func _test_complete_report(artifacts: Script, oracle: String, errors: PackedStringArray) -> void:
 	var actual: Dictionary = _build(artifacts, _valid_fixture())
 	_expect(errors, actual == _expected_report(),
-		"valid inputs produce the complete pure report contract")
+		"complete report mismatch; oracle=%s report=%s" % [oracle, actual.get("catalog", {}).get("canonical_sha256", "")])
 	_expect(errors, artifacts.markdown(actual) == EXPECTED_MARKDOWN,
 		"Markdown is the normative literal projection")
 
@@ -185,6 +185,8 @@ static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedSt
 	var cases := [
 		["catalog identity fields are guarded", "catalog",
 			func(value: Dictionary): value.catalog.schema_version = "2"],
+		["catalog canonicalization rejects unconsumed NAN", "canonical",
+			func(value: Dictionary): value.catalog["unconsumed"] = NAN],
 		["catalog record containers are guarded", "catalog",
 			func(value: Dictionary): value.catalog.observations = {}],
 		["source windows are guarded", "source",
@@ -382,7 +384,6 @@ static func _valid_fixture() -> Dictionary:
 static func _valid_catalog() -> Dictionary:
 	return {
 		"schema_version": 2, "catalog_version": "test",
-		"canonical_sha256": "c".repeat(64),
 		"selectors": {"selector.loop": {
 			"compiled_anchor": {"story_slot_id": "act1.loop", "window_role": "core"},
 		}},
@@ -464,7 +465,7 @@ static func _expected_report() -> Dictionary:
 		"legacy_base_commit": "3fa14885bef2daf3a7d9c0e544424cb6a296fd99",
 		"catalog": {
 			"schema_version": 2, "catalog_version": "test",
-			"canonical_sha256": "c".repeat(64), "validation_status": "valid",
+			"canonical_sha256": "__CALIBRATE_CATALOG_SHA256__", "validation_status": "valid",
 		},
 		"fleet": [11, 42, 20260809, 1],
 		"measurement_summaries": [

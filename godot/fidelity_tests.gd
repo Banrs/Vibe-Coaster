@@ -377,6 +377,18 @@ static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringAr
 	var bad_role := catalog.duplicate(true)
 	bad_role.selectors["semantic.act1.loop.core"].legacy_anchor.window_role = "core"
 	_expect_contains(errors, fidelity.validate_catalog(bad_role), "window_role", "legacy anchors only permit whole")
+	for anchor_case in [
+		{"branch": "legacy_anchor", "field": "phase", "value": 42},
+		{"branch": "legacy_anchor", "field": "kind", "value": []},
+		{"branch": "compiled_anchor", "field": "story_slot_id", "value": NAN},
+		{"branch": "compiled_anchor", "field": "window_role", "value": true},
+	]:
+		var bad_anchor_type := catalog.duplicate(true)
+		bad_anchor_type.selectors["semantic.act1.loop.core"][anchor_case.branch][anchor_case.field] = anchor_case.value
+		_expect_contains(
+			errors, fidelity.validate_catalog(bad_anchor_type), anchor_case.branch,
+			"%s %s requires a non-empty String" % [anchor_case.branch, anchor_case.field]
+		)
 	var bad_transform := catalog.duplicate(true)
 	bad_transform.transforms["fictional.gz-positive@1"].axis = "longitudinal_g"
 	_expect_contains(errors, fidelity.validate_catalog(bad_transform), "Gx+", "unsupported positive longitudinal transform is rejected")
@@ -880,12 +892,83 @@ static func _test_fleet_validation(fidelity: Script, errors: PackedStringArray) 
 	missing_then_nonfinite[0].beats[0].rows[0].loads.erase("normal_peak_positive")
 	missing_then_nonfinite[0].beats[1].rows[0].loads.normal_peak_positive = NAN
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(missing_then_nonfinite, catalog), "measurement-invalid", "a missing metric does not hide a later non-finite selected metric")
+	var row_gap_then_nonfinite := _compiled_reducer_fleet(CANONICAL_FLEET)
+	row_gap_then_nonfinite[0].beats[0].rows[0].row_id = "missing-row"
+	row_gap_then_nonfinite[0].beats[1].rows[0].loads.normal_peak_positive = NAN
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(row_gap_then_nonfinite, catalog), "measurement-invalid", "a row gap does not hide a later non-finite selected metric")
+	var row_gap_then_missing := _compiled_reducer_fleet(CANONICAL_FLEET)
+	row_gap_then_missing[0].beats[0].rows[0].row_id = "missing-row"
+	row_gap_then_missing[0].beats[1].rows[0].loads.erase("normal_peak_positive")
+	var row_gap_precedence: Dictionary = fidelity.compare_fleet(row_gap_then_missing, catalog)
+	_expect(
+		errors,
+		row_gap_precedence.get("evidence_gaps", []).size() == 1
+			and row_gap_precedence.evidence_gaps[0].reason == "row-not-found",
+		"an ordinary row gap keeps precedence over an ordinary metric gap"
+	)
 	var malformed_loads := _comparison_fleet(CANONICAL_FLEET)
 	malformed_loads[0].beats[0].rows[0].loads = NAN
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(malformed_loads, catalog), "measurement-invalid", "malformed selected loads container")
+	for field in ["phase", "kind"]:
+		for value_case in [
+			{"label": "missing", "erase": true},
+			{"label": "empty", "value": ""},
+			{"label": "non-string", "value": 42},
+			{"label": "NaN", "value": NAN},
+		]:
+			var malformed_legacy_discriminator := _comparison_fleet(CANONICAL_FLEET)
+			if value_case.get("erase", false):
+				malformed_legacy_discriminator[0].beats[0].erase(field)
+			else:
+				malformed_legacy_discriminator[0].beats[0][field] = value_case.value
+			_expect_invalid_comparison(
+				errors, fidelity.compare_fleet(malformed_legacy_discriminator, catalog),
+				"measurement-invalid", "schema-1 %s %s discriminator" % [field, value_case.label]
+			)
+	for field in ["story_slot_id", "window_role"]:
+		for value_case in [
+			{"label": "missing", "erase": true},
+			{"label": "empty", "value": ""},
+			{"label": "non-string", "value": []},
+			{"label": "NaN", "value": NAN},
+		]:
+			var malformed_compiled_discriminator := _compiled_reducer_fleet(CANONICAL_FLEET)
+			if value_case.get("erase", false):
+				malformed_compiled_discriminator[0].beats[0].erase(field)
+			else:
+				malformed_compiled_discriminator[0].beats[0][field] = value_case.value
+			_expect_invalid_comparison(
+				errors, fidelity.compare_fleet(malformed_compiled_discriminator, catalog),
+				"measurement-invalid", "schema-2 %s %s discriminator" % [field, value_case.label]
+			)
+	var position_catalog := _comparison_catalog()
+	position_catalog.observations[0].alignment.generated_row_selector = {"position": "front"}
+	for value_case in [
+		{"label": "missing", "erase": true},
+		{"label": "empty", "value": ""},
+		{"label": "non-string", "value": 42},
+		{"label": "NaN", "value": NAN},
+		{"label": "unsupported", "value": "middle"},
+	]:
+		var malformed_position := _row_selection_fleet(CANONICAL_FLEET)
+		if value_case.get("erase", false):
+			malformed_position[0].beats[0].rows[1].erase("position")
+		else:
+			malformed_position[0].beats[0].rows[1].position = value_case.value
+		_expect_invalid_comparison(
+			errors, fidelity.compare_fleet(malformed_position, position_catalog),
+			"measurement-invalid", "position selector rejects a %s row position" % value_case.label
+		)
 	var malformed_unavailable := _held_comparison_fleet(CANONICAL_FLEET)
 	malformed_unavailable[0].beats[0].rows[0].loads.normal_held_positive = {"_unavailable": {"0.80": NAN}}
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(malformed_unavailable, _comparison_catalog("normal_held_positive", 0.8)), "measurement-invalid", "malformed selected unavailable record")
+	var dual_held := _held_comparison_fleet(CANONICAL_FLEET)
+	dual_held[0].beats[0].rows[0].loads.normal_held_positive["_unavailable"] = {"0.80": {"status": "unavailable", "reason": "insufficient_duration"}}
+	_expect_invalid_comparison(errors, fidelity.compare_fleet(dual_held, _comparison_catalog("normal_held_positive", 0.8)), "measurement-invalid", "held metric cannot be both available and unavailable")
+	for invalid_reason in [42, [], true]:
+		var non_string_reason := _held_comparison_fleet(CANONICAL_FLEET)
+		non_string_reason[0].beats[0].rows[0].loads.normal_held_positive = {"_unavailable": {"0.80": {"status": "unavailable", "reason": invalid_reason}}}
+		_expect_invalid_comparison(errors, fidelity.compare_fleet(non_string_reason, _comparison_catalog("normal_held_positive", 0.8)), "measurement-invalid", "held unavailability reason must be a String")
 	var nonfinite_duration := _comparison_fleet(CANONICAL_FLEET)
 	nonfinite_duration[0].beats[0].rows[0].window_seconds = INF
 	_expect_invalid_comparison(errors, fidelity.compare_fleet(nonfinite_duration, catalog), "measurement-invalid", "non-finite selected duration")

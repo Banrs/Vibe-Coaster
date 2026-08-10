@@ -26,6 +26,13 @@ static func run() -> PackedStringArray:
 	_test_non_grid_measurement(fidelity, errors)
 	_test_row_windows(fidelity, errors)
 	_test_transition_windows(fidelity, errors)
+	_test_straight_reconstruction(fidelity, errors)
+	_test_constant_radius_reconstruction(fidelity, errors)
+	_test_unclamped_radius_reconstruction(fidelity, errors)
+	_test_force_integrity_mismatch(fidelity, errors)
+	_test_nonuniform_quadratic_acceleration(fidelity, errors)
+	_test_reconstruction_seam_channels(fidelity, errors)
+	_test_route_reconstruction_embedding(fidelity, errors)
 	_test_composite_grouping(fidelity, errors)
 	_test_legacy_characterization(fidelity, errors)
 	_test_catalog_validation(fidelity, errors)
@@ -170,6 +177,104 @@ static func _test_transition_windows(fidelity: Script, errors: PackedStringArray
 	var boundary: Dictionary = fidelity.measure_route(_transition_route(0.3), [0.0])
 	var boundary_flow: Dictionary = boundary.beats[0].flow
 	_expect(errors, boundary_flow.get("status", "") == "evidence-gap" and boundary_flow.get("reason", "") == "boundary_unavailable", "boundary-limited transition reports unavailable evidence rather than zero")
+
+
+static func _test_straight_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
+	if not _require_reconstruction(fidelity, errors):
+		return
+	var route := _analytic_straight_route(20.0, 2.0, 100.0)
+	var before := route.duplicate(true)
+	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	var repeated: Dictionary = fidelity.reconstruct_channels(route)
+	_expect_close(errors, _max_abs(channels.curvature), 0.0, "straight route has zero geometric curvature")
+	_expect_close(errors, _array_peak(channels.reconstructed_normal_g), 1.0, "level straight reconstructs one normal g")
+	_expect_close(errors, _max_abs(channels.reconstructed_longitudinal_g), 0.0, "constant speed reconstructs zero longitudinal proper g")
+	_expect(errors, channels.radius_m.size() == route.positions.size() and channels.radius_unbounded.size() == route.positions.size(), "straight radius arrays match the raw sample count")
+	for index in route.positions.size():
+		_expect(errors, channels.radius_m[index] == null and channels.radius_unbounded[index], "straight radius sample %d is JSON-safe and unbounded" % index)
+	_expect(errors, not channels.has("comparison_channels"), "raw reconstruction does not invent source filtering")
+	_expect(errors, route == before, "reconstruction does not mutate the route")
+	_expect(errors, channels == repeated, "reconstruction is deterministic")
+
+
+static func _test_constant_radius_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
+	if not _require_reconstruction(fidelity, errors):
+		return
+	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
+	route.curvatures.fill(Vector3.ZERO)
+	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	_expect_close_tol(errors, _median_finite(channels.radius_m), 50.0, 0.75, "circle reconstructs geometric radius")
+	_expect_close_tol(errors, _median_packed(channels.curvature), 0.02, 0.0003, "circle reconstructs curvature")
+	_expect_close(errors, _max_abs_vector(channels.authored_curvature_vector), 0.0, "reconstruction preserves deliberately incorrect authored curvature")
+	_expect_close_tol(errors, _median_vector_length(channels.geometric_authored_curvature_error_vector), 0.02, 0.0003, "geometric/authored curvature error exposes the mismatch")
+
+
+static func _test_unclamped_radius_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
+	if not _require_reconstruction(fidelity, errors):
+		return
+	var channels: Dictionary = fidelity.reconstruct_channels(
+		_analytic_circle_route(100.0, 20000.0, 10.0, 20.0)
+	)
+	_expect_close_tol(errors, _median_finite(channels.radius_m), 20000.0, 2500.0, "large geometric radius is not clamped to 10 km")
+	_expect(errors, not _any_true(channels.radius_unbounded), "large finite geometry is not labelled unbounded")
+
+
+static func _test_force_integrity_mismatch(fidelity: Script, errors: PackedStringArray) -> void:
+	if not _require_reconstruction(fidelity, errors):
+		return
+	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
+	route.lateral_g.fill(0.0)
+	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	var expected_lateral := 25.0 * 25.0 / 50.0 / 9.80665
+	_expect_close_tol(errors, _median_packed(channels.normal_force_error_g), 0.0, 0.002, "normal force error keeps its axis and sign")
+	_expect_close_tol(errors, _median_packed(channels.lateral_force_error_g), expected_lateral, 0.002, "lateral force error is reconstructed minus authored")
+	_expect_close_tol(errors, _median_packed(channels.longitudinal_force_error_g), 0.0, 0.002, "longitudinal force error keeps its axis and sign")
+	_expect_close_tol(errors, channels.force_error_peak_g, expected_lateral, 0.002, "force error aggregate is the largest absolute per-axis error")
+	_expect_close_tol(errors, _median_vector_length(channels.force_authored_curvature_error_vector), 0.02, 0.0003, "force/authored-curvature error exposes the mismatch")
+	_expect(errors, not channels.has("filtered_positions") and not channels.has("smoothed_positions"), "reconstruction never creates smoothed geometry")
+	_expect(errors, channels.has("jerk_mps3") and _max_abs_vector(channels.jerk_mps3) > 0.0, "reconstruction emits raw inertial jerk")
+	_expect(errors, not channels.has("comparison_channels"), "force reconstruction stays raw without an explicit source filter")
+
+
+static func _test_nonuniform_quadratic_acceleration(fidelity: Script, errors: PackedStringArray) -> void:
+	if not _require_reconstruction(fidelity, errors):
+		return
+	var channels: Dictionary = fidelity.reconstruct_channels(_nonuniform_quadratic_route())
+	for acceleration in channels.inertial_acceleration_mps2:
+		_expect(errors, acceleration.distance_to(Vector3(2.0, 0.0, 0.0)) < 0.001, "nonuniform quadratic positions reconstruct constant 2 m/s^2 acceleration")
+	_expect(errors, _max_abs_vector(channels.jerk_mps3) < 0.001, "constant nonuniform acceleration has zero jerk")
+
+
+static func _test_reconstruction_seam_channels(fidelity: Script, errors: PackedStringArray) -> void:
+	if not _require_reconstruction(fidelity, errors):
+		return
+	var route := _curvature_direction_seam_route()
+	var seam: int = route.sections[1].start_index
+	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	for key in ["curvature_vector", "curvature_vector_ds", "curvature_vector_d2s", "curvature", "curvature_ds", "curvature_d2s", "authored_curvature_vector", "authored_curvature_vector_ds", "authored_curvature_vector_d2s", "authored_curvature_ds", "roll_acceleration_dps2", "seam_indices", "seam_markers", "jerk_mps3"]:
+		_expect(errors, channels.has(key), "reconstruction emits raw %s" % key)
+	_expect_close_tol(errors, channels.curvature[seam - 2], channels.curvature[seam + 2], 0.001, "equal curvature magnitudes survive a direction-changing seam")
+	_expect(errors, channels.authored_curvature_vector_ds[seam].length() > 0.05, "unsmoothed raw curvature-vector derivative exposes the seam direction change")
+	_expect(errors, _max_abs(channels.authored_curvature_ds) < 0.0001, "equal raw curvature magnitude has near-zero scalar derivative")
+	_expect_close_tol(errors, _median_packed(channels.roll_acceleration_dps2), 50.0, 0.01, "roll acceleration differentiates degrees per second on physical time")
+	_expect(errors, channels.seam_indices.has(seam), "reconstruction preserves declared seam indices")
+	_expect(errors, channels.seam_markers.size() == 1 and channels.seam_markers[0].sample_index == seam, "seam marker identifies the raw section boundary exactly once")
+	_expect(errors, not channels.has("comparison_channels"), "raw seam reconstruction never filters geometry")
+
+
+static func _test_route_reconstruction_embedding(fidelity: Script, errors: PackedStringArray) -> void:
+	if not _require_reconstruction(fidelity, errors):
+		return
+	var measured: Dictionary = fidelity.measure_route(_measurement_route(), [0.0])
+	_expect(errors, measured.has("reconstruction"), "route measurement includes reconstruction at route scope")
+	_expect(errors, _count_dictionary_key(measured, "reconstruction") == 1, "route measurement includes exactly one reconstruction payload")
+
+
+static func _require_reconstruction(fidelity: Script, errors: PackedStringArray) -> bool:
+	if _script_has_method(fidelity, "reconstruct_channels"):
+		return true
+	errors.append("RideFidelity.reconstruct_channels is missing")
+	return false
 
 
 static func _test_composite_grouping(fidelity: Script, errors: PackedStringArray) -> void:
@@ -621,6 +726,160 @@ static func _uniform_route(seconds: float) -> Dictionary:
 	}
 
 
+static func _analytic_straight_route(speed: float, seconds: float, sample_hz: float) -> Dictionary:
+	var count := roundi(seconds * sample_hz) + 1
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var curvatures := PackedVector3Array()
+	var scalars := PackedFloat32Array()
+	var distances := PackedFloat32Array()
+	var times := PackedFloat32Array()
+	for index in count:
+		var time := index / sample_hz
+		positions.append(Vector3(speed * time, 0.0, 0.0))
+		tangents.append(Vector3.RIGHT)
+		ups.append(Vector3.UP)
+		rights.append(Vector3.FORWARD)
+		curvatures.append(Vector3.ZERO)
+		scalars.append(0.0)
+		distances.append(speed * time)
+		times.append(time)
+	var normal := PackedFloat32Array(scalars)
+	normal.fill(1.0)
+	var speeds := PackedFloat32Array(scalars)
+	speeds.fill(speed)
+	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, scalars, scalars, scalars, speeds, distances, times, [])
+
+
+static func _analytic_circle_route(speed: float, radius: float, seconds: float, sample_hz: float) -> Dictionary:
+	var count := roundi(seconds * sample_hz) + 1
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var curvatures := PackedVector3Array()
+	var lateral := PackedFloat32Array()
+	var scalars := PackedFloat32Array()
+	var distances := PackedFloat32Array()
+	var times := PackedFloat32Array()
+	for index in count:
+		var time := index / sample_hz
+		var angle := speed * time / radius
+		var inward := Vector3(-cos(angle), 0.0, -sin(angle))
+		positions.append(Vector3(radius * (cos(angle) - 1.0), 0.0, radius * sin(angle)))
+		tangents.append(Vector3(-sin(angle), 0.0, cos(angle)))
+		ups.append(Vector3.UP)
+		rights.append(inward)
+		curvatures.append(inward / radius)
+		lateral.append(speed * speed / radius / 9.80665)
+		scalars.append(0.0)
+		distances.append(speed * time)
+		times.append(time)
+	var normal := PackedFloat32Array(scalars)
+	normal.fill(1.0)
+	var speeds := PackedFloat32Array(scalars)
+	speeds.fill(speed)
+	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, scalars, scalars, speeds, distances, times, [])
+
+
+static func _nonuniform_quadratic_route() -> Dictionary:
+	var times := PackedFloat32Array([0.0, 0.07, 0.21, 0.5, 0.9, 1.4])
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var curvatures := PackedVector3Array()
+	var normal := PackedFloat32Array()
+	var lateral := PackedFloat32Array()
+	var longitudinal := PackedFloat32Array()
+	var roll_rates := PackedFloat32Array()
+	var speeds := PackedFloat32Array()
+	var distances := PackedFloat32Array()
+	for time in times:
+		var distance := 5.0 * time + time * time
+		positions.append(Vector3(distance, 0.0, 0.0))
+		tangents.append(Vector3.RIGHT)
+		ups.append(Vector3.UP)
+		rights.append(Vector3.FORWARD)
+		curvatures.append(Vector3.ZERO)
+		normal.append(1.0)
+		lateral.append(0.0)
+		longitudinal.append(2.0 / 9.80665)
+		roll_rates.append(0.0)
+		# Deliberately inconsistent: acceleration must come from raw position/time, not this channel.
+		speeds.append(5.0)
+		distances.append(distance)
+	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, longitudinal, roll_rates, speeds, distances, times, [])
+
+
+static func _curvature_direction_seam_route() -> Dictionary:
+	const SPEED := 25.0
+	const RADIUS := 50.0
+	const SAMPLE_HZ := 100.0
+	const SEAM := 100
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var curvatures := PackedVector3Array()
+	var normal := PackedFloat32Array()
+	var lateral := PackedFloat32Array()
+	var longitudinal := PackedFloat32Array()
+	var roll_rates := PackedFloat32Array()
+	var speeds := PackedFloat32Array()
+	var distances := PackedFloat32Array()
+	var times := PackedFloat32Array()
+	for index in 201:
+		var angle := (index - SEAM) * SPEED / SAMPLE_HZ / RADIUS
+		if index <= SEAM:
+			var horizontal_inward := Vector3(-cos(angle), 0.0, -sin(angle))
+			positions.append(Vector3(RADIUS * cos(angle), 0.0, RADIUS * sin(angle)))
+			tangents.append(Vector3(-sin(angle), 0.0, cos(angle)))
+			ups.append(Vector3.UP)
+			rights.append(horizontal_inward)
+			curvatures.append(horizontal_inward / RADIUS)
+			normal.append(1.0)
+			lateral.append(SPEED * SPEED / RADIUS / 9.80665)
+		else:
+			var vertical_inward := Vector3(0.0, cos(angle), -sin(angle))
+			positions.append(Vector3(RADIUS, RADIUS - RADIUS * cos(angle), RADIUS * sin(angle)))
+			tangents.append(Vector3(0.0, sin(angle), cos(angle)))
+			ups.append(vertical_inward)
+			rights.append(Vector3.LEFT)
+			curvatures.append(vertical_inward / RADIUS)
+			normal.append(SPEED * SPEED / RADIUS / 9.80665 + vertical_inward.y)
+			lateral.append(0.0)
+		longitudinal.append(0.0)
+		roll_rates.append(index * 0.5)
+		speeds.append(SPEED)
+		distances.append(index * SPEED / SAMPLE_HZ)
+		times.append(index / SAMPLE_HZ)
+	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, longitudinal, roll_rates, speeds, distances, times, [
+		{"kind": "FVD", "name": "before", "element": {"kind": "before"}, "phase": "act one", "start_index": 0, "end_index": SEAM},
+		{"kind": "FVD", "name": "after", "element": {"kind": "after"}, "phase": "act one", "start_index": SEAM, "end_index": 200},
+	])
+
+
+static func _analytic_route(
+	positions: PackedVector3Array, tangents: PackedVector3Array, ups: PackedVector3Array,
+	rights: PackedVector3Array, curvatures: PackedVector3Array, normal: PackedFloat32Array,
+	lateral: PackedFloat32Array, longitudinal: PackedFloat32Array, roll_rates: PackedFloat32Array,
+	speeds: PackedFloat32Array, distances: PackedFloat32Array, times: PackedFloat32Array, sections: Array
+) -> Dictionary:
+	var banks := PackedFloat32Array()
+	banks.resize(times.size())
+	banks.fill(0.0)
+	return {
+		"seed": 500, "length": distances[-1], "duration": times[-1],
+		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
+		"curvatures": curvatures, "banks": banks, "speeds": speeds,
+		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
+		"roll_rates": roll_rates, "distances": distances, "times": times, "sections": sections,
+	}
+
+
 static func _times_100hz(count: int) -> PackedFloat32Array:
 	var times := PackedFloat32Array()
 	for index in count:
@@ -795,6 +1054,71 @@ static func _array_peak(values: PackedFloat32Array) -> float:
 	for value in values:
 		peak = maxf(peak, value)
 	return peak
+
+
+static func _max_abs(values: PackedFloat32Array) -> float:
+	var peak := 0.0
+	for value in values:
+		peak = maxf(peak, absf(value))
+	return peak
+
+
+static func _max_abs_vector(values: PackedVector3Array) -> float:
+	var peak := 0.0
+	for value in values:
+		peak = maxf(peak, value.length())
+	return peak
+
+
+static func _median_packed(values: PackedFloat32Array) -> float:
+	var copy := []
+	for value in values:
+		copy.append(value)
+	copy.sort()
+	return float(copy[copy.size() / 2])
+
+
+static func _median_vector_length(values: PackedVector3Array) -> float:
+	var lengths := []
+	for value in values:
+		lengths.append(value.length())
+	lengths.sort()
+	return float(lengths[lengths.size() / 2])
+
+
+static func _median_finite(values: Array) -> float:
+	var finite := []
+	for value in values:
+		if value != null and is_finite(float(value)):
+			finite.append(float(value))
+	finite.sort()
+	return float(finite[finite.size() / 2])
+
+static func _any_true(values: Array) -> bool:
+	for value in values:
+		if value:
+			return true
+	return false
+
+
+static func _count_dictionary_key(value: Variant, key: String) -> int:
+	var count := 0
+	if value is Dictionary:
+		if value.has(key):
+			count += 1
+		for child in value.values():
+			count += _count_dictionary_key(child, key)
+	elif value is Array:
+		for child in value:
+			count += _count_dictionary_key(child, key)
+	return count
+
+
+static func _expect_close_tol(
+	errors: PackedStringArray, actual: float, expected: float, tolerance: float, message: String
+) -> void:
+	if absf(actual - expected) > tolerance:
+		errors.append("%s: got %s, expected %s +/- %s" % [message, actual, expected, tolerance])
 
 
 static func _expect_contains(errors: PackedStringArray, values: PackedStringArray, needle: String, message: String) -> void:

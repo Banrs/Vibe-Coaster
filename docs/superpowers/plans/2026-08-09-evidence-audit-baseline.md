@@ -535,113 +535,90 @@ git commit -m "fix: measure fidelity in physical time"
 - Consumes: route `positions`, `times`, `distances`, `speeds`, `tangents`, `ups`, `rights`, `curvatures`, three proper-g arrays, and `roll_rates`.
 - Produces: `reconstruct_channels(route: Dictionary) -> Dictionary`, included in `measure_route`.
 
-- [ ] **Step 1: Add a straight constant-speed reconstruction test**
+- [ ] **Step 1: Add straight, unbounded-radius, and raw-integrity regressions**
 
 ```gdscript
 static func _test_straight_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
 	var route := _analytic_straight_route(20.0, 2.0, 100.0)
+	var before := route.duplicate(true)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
+	var repeated: Dictionary = fidelity.reconstruct_channels(route)
 	_expect_close(errors, _max_abs(channels.curvature), 0.0, "straight route has zero geometric curvature")
-	_expect_close(errors, _maximum(channels.reconstructed_normal_g), 1.0, "level straight reconstructs one normal g")
+	_expect_close(errors, _array_peak(channels.reconstructed_normal_g), 1.0, "level straight reconstructs one normal g")
 	_expect_close(errors, _max_abs(channels.reconstructed_longitudinal_g), 0.0, "constant speed reconstructs zero longitudinal proper g")
+	for index in route.positions.size():
+		_expect(errors, channels.radius_m[index] == null and channels.radius_unbounded[index], "straight radius is JSON-safe and unbounded")
+	_expect(errors, route == before and channels == repeated, "raw reconstruction is read-only and deterministic")
+	_expect(errors, not channels.has("comparison_channels"), "raw reconstruction does not invent source filtering")
 ```
 
-- [ ] **Step 2: Add a constant-radius horizontal circle test**
+- [ ] **Step 2: Add independent and unclamped circle regressions**
 
 ```gdscript
 static func _test_constant_radius_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
 	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
+	route.curvatures.fill(Vector3.ZERO)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
 	_expect_close_tol(errors, _median_finite(channels.radius_m), 50.0, 0.75, "circle reconstructs geometric radius")
 	_expect_close_tol(errors, _median_packed(channels.curvature), 0.02, 0.0003, "circle reconstructs curvature")
+	_expect_close(errors, _max_abs_vector(channels.authored_curvature_vector), 0.0, "incorrect authored curvature is preserved separately")
+	_expect_close_tol(errors, _median_vector_length(channels.geometric_authored_curvature_error_vector), 0.02, 0.0003, "geometric/authored mismatch is exposed")
 ```
 
-- [ ] **Step 3: Add authored-versus-reconstructed force mismatch and jerk tests**
+Also reconstruct a `20,000 m` radius circle and require a finite median near `20,000 m`, never the legacy `10,000 m` clamp and never `radius_unbounded=true`.
+
+- [ ] **Step 3: Add exact force-error and nonuniform derivative regressions**
 
 ```gdscript
 static func _test_force_integrity_mismatch(fidelity: Script, errors: PackedStringArray) -> void:
 	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
 	route.lateral_g.fill(0.0)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
-	_expect(errors, channels.force_error_peak_g > 0.5, "incorrect authored force is exposed")
-	_expect(errors, not channels.has("filtered_positions"), "reconstruction never creates smoothed geometry")
-	_expect(errors, channels.has("jerk_mps3"), "reconstruction emits inertial jerk")
+	var expected_lateral := 25.0 * 25.0 / 50.0 / 9.80665
+	_expect_close_tol(errors, _median_packed(channels.normal_force_error_g), 0.0, 0.002, "normal force error keeps its axis")
+	_expect_close_tol(errors, _median_packed(channels.lateral_force_error_g), expected_lateral, 0.002, "lateral error is reconstructed minus authored")
+	_expect_close_tol(errors, channels.force_error_peak_g, expected_lateral, 0.002, "aggregate is the largest absolute axis error")
 ```
+
+Add an irregular grid at times `[0.0, 0.07, 0.21, 0.5, 0.9, 1.4]` with `x(t)=5t+t²`; every reconstructed acceleration must be `(2,0,0) m/s²` within `0.001`, with jerk below `0.001`. Assert `measure_route` contains exactly one route-level `reconstruction` key.
 
 - [ ] **Step 4: Add a boundary curvature-vector derivative test**
 
-Construct a synthetic route whose curvature vector changes direction but not magnitude across a declared section seam. Assert raw `curvature_vector`, `curvature_vector_ds`, `curvature_vector_d2s`, scalar curvature magnitude, roll acceleration, and the seam index are emitted without filtering. Require the vector derivative to expose the direction jump even though the scalar magnitude stays equal, and require a separately labelled evidence-filtered comparison not to replace any raw array.
+Construct continuous horizontal and vertical `50 m` radius arcs meeting with a common tangent. The second half uses `right=Vector3.LEFT` and `up=vertical_inward`, preserving an orthonormal rider frame. Assert raw/reconstructed curvature-vector and scalar derivatives, authored curvature derivatives, `50 deg/s²` roll acceleration, one stable seam marker, and no `comparison_channels`. Require `authored_curvature_vector_ds[seam].length() > 0.05` while the maximum absolute authored scalar-curvature derivative remains below `0.0001`; this prevents a hidden smoothing pass from erasing a direction jump whose magnitude is unchanged.
 
-- [ ] **Step 5: Run tests and verify `reconstruct_channels` is missing**
+- [ ] **Step 5: Commit and push the test-only RED checkpoint**
 
 ```powershell
-& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+git add docs/superpowers/plans/2026-08-09-evidence-audit-baseline.md godot/fidelity_tests.gd
+git commit -m "test: specify raw fidelity reconstruction"
+git push
 ```
 
-Expected: focused failures state that reconstruction channels are absent.
+Expected: pull-request CI fails because `RideFidelity.reconstruct_channels` is missing; import must still parse. Record the run ID and failing output in the task report before writing production code.
 
 - [ ] **Step 6: Implement reconstruction from generated samples**
 
-```gdscript
-const G0 := 9.80665
-const GRAVITY := Vector3.DOWN * G0
+Reconstruct geometry independently from raw positions: normalize the nonuniform-distance derivative of position, differentiate that tangent against distance, and reject any residual tangential component. Preserve `route.curvatures` only as a separately labelled authored channel. Emit geometric-versus-authored and force-derived-versus-authored curvature-vector errors so copied or force-fitted curvature cannot pass as an independent geometry measurement.
 
-static func reconstruct_channels(route: Dictionary) -> Dictionary:
-	var count: int = route.positions.size()
-	var inertial := PackedVector3Array()
-	var curvature_vector := PackedVector3Array()
-	var curvature := PackedFloat32Array()
-	var radius_m := []
-	var radius_unbounded := []
-	var reconstructed_normal := PackedFloat32Array()
-	var reconstructed_lateral := PackedFloat32Array()
-	var reconstructed_longitudinal := PackedFloat32Array()
-	for i in count:
-		var acceleration := _time_derivative_vec3(route.times, route.speeds, route.tangents, i)
-		var proper := acceleration - GRAVITY
-		var v2 := maxf(route.speeds[i] * route.speeds[i], 0.000001)
-		var tangential := route.tangents[i] * acceleration.dot(route.tangents[i])
-		var kappa_vector := (acceleration - tangential) / v2
-		var kappa := kappa_vector.length()
-		inertial.append(acceleration)
-		curvature_vector.append(kappa_vector)
-		curvature.append(kappa)
-		radius_m.append(null if kappa <= 0.000001 else 1.0 / kappa)
-		radius_unbounded.append(kappa <= 0.000001)
-		reconstructed_normal.append(proper.dot(route.ups[i]) / G0)
-		reconstructed_lateral.append(proper.dot(route.rights[i]) / G0)
-		reconstructed_longitudinal.append(proper.dot(route.tangents[i]) / G0)
-	return {
-		"inertial_acceleration_mps2": inertial,
-		"curvature_vector": curvature_vector,
-		"curvature": curvature,
-		"radius_m": radius_m,
-		"radius_unbounded": radius_unbounded,
-		"reconstructed_normal_g": reconstructed_normal,
-		"reconstructed_lateral_g": reconstructed_lateral,
-		"reconstructed_longitudinal_g": reconstructed_longitudinal,
-	}
-```
+Reconstruct inertial acceleration directly as the nonuniform-time second derivative of position, subtract gravity, and project proper acceleration into the raw rider frame. Emit per-axis reconstructed-minus-authored force errors; `force_error_peak_g` is the maximum absolute axis error across all samples. Derive the authored-force curvature vector from gravity plus the three authored proper-force axes, reject its tangential component, and divide by validated positive `speed²` without an epsilon denominator repair.
 
-Use centered differences internally and one-sided differences only at route endpoints. Compute `curvature_vector_ds` and `curvature_vector_d2s` against distance before deriving any scalar summaries; also compute roll acceleration and inertial jerk against time, force error per axis, geometric-versus-authored curvature-vector error, and raw seam windows. Straight samples serialize radius as `null` with `radius_unbounded=true`; never emit infinity, clamp radius, or substitute a large finite value. Do not mutate or duplicate `route.positions` into a fitted path.
+Every derivative uses the original strictly increasing coordinate array and the derivative of the unique local three-point quadratic: centered at interior samples and one-sided at endpoints. Obtain second derivatives directly from that quadratic rather than differentiating a first-derivative array. Apply the same rule to raw curvature-vector/scalar derivatives, roll acceleration, and acceleration-to-jerk differentiation. Preserve sorted unique nonzero section-start seam indices and compact raw seam windows.
 
-- [ ] **Step 7: Add explicitly labelled evidence filtering**
+Use `CURVATURE_ZERO_EPS := 1e-9`. Straight samples serialize radius as `null` with `radius_unbounded=true`; never emit infinity, clamp radius, or substitute a large finite value. `reconstruct_channels` is raw-only: it must not mutate, filter, fit, smooth, repair, or duplicate `route.positions`. Include one route-level reconstruction in `measure_route`, never one copy per beat.
 
-When a catalog observation names processing, emit `comparison_channels: {source_filtered: ..., filter_id: ...}`. Keep `generated_raw` and `reconstructed_raw` adjacent in the report. Reuse `Verify.filter` only when the observation explicitly calls for the existing 5 Hz human-tolerance chain; do not apply it globally.
+- [ ] **Step 7: Keep evidence filtering outside raw reconstruction**
 
-- [ ] **Step 8: Run reconstruction tests and smoke**
+`reconstruct_channels(route)` has no catalog input and emits no `comparison_channels`. Later comparison/artifact code may reuse `Verify.filter` only when an observation explicitly names the existing 100 Hz, 5 Hz human-tolerance chain. Such output is labelled `source_filtered` with a stable filter ID and never replaces or feeds positions, frames, curvature, radius, derivatives, acceleration, jerk, or generated raw channels.
+
+- [ ] **Step 8: Commit production and require the GREEN CI gate**
 
 ```powershell
-& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
-& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
-```
-
-- [ ] **Step 9: Commit smoothing-integrity diagnostics**
-
-```powershell
-git add godot/fidelity.gd godot/fidelity_tests.gd
+git add godot/fidelity.gd
 git commit -m "feat: reconstruct route fidelity channels"
+git push
 ```
+
+Expected: the same pull-request CI import, smoke, and viewer job passes. Record its run ID and pristine result in the task report, then self-review the complete two-commit task diff.
 
 ### Task 6: Implement deterministic fleet comparison and recommendation
 

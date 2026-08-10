@@ -2,6 +2,8 @@ extends SceneTree
 
 const FIDELITY_PATH := "res://fidelity.gd"
 const REFERENCES_PATH := "res://fidelity_references.gd"
+const GENERATOR_PATH := "res://generator.gd"
+const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
 
 
 func _initialize() -> void:
@@ -17,12 +19,40 @@ static func run() -> PackedStringArray:
 		errors.append("RideFidelity is missing")
 		return errors
 	var fidelity: Script = load(FIDELITY_PATH)
+	_test_legacy_input_boundary(errors)
 	_test_held_values(fidelity, errors)
 	_test_composite_grouping(fidelity, errors)
+	_test_legacy_characterization(fidelity, errors)
 	_test_catalog_validation(fidelity, errors)
 	_test_route_measurements(fidelity, errors)
 	_test_reference_catalog(fidelity, errors)
 	return errors
+
+
+static func _test_legacy_input_boundary(errors: PackedStringArray) -> void:
+	if not ResourceLoader.exists(GENERATOR_PATH):
+		errors.append("RideGenerator is missing")
+		return
+	var generator: Script = load(GENERATOR_PATH)
+	var route: Variant = generator.build(42)
+	_expect(errors, route is Dictionary, "legacy generator build returns a Dictionary")
+	if not route is Dictionary:
+		return
+	_expect(errors, LEGACY_BASE_COMMIT == "3fa14885bef2daf3a7d9c0e544424cb6a296fd99", "legacy report contract pins the pre-foundation commit")
+	for key in ["positions", "tangents", "ups", "rights", "curvatures"]:
+		_expect(errors, route.get(key) is PackedVector3Array, "legacy generator keeps packed vector channel %s" % key)
+	for key in [
+		"banks", "speeds", "normal_g", "lateral_g", "longitudinal_g", "roll_rates",
+		"distances", "times",
+	]:
+		_expect(errors, route.get(key) is PackedFloat32Array, "legacy generator keeps packed float channel %s" % key)
+	for key in ["section_indices", "lsm_ids"]:
+		_expect(errors, route.get(key) is PackedInt32Array, "legacy generator keeps packed integer channel %s" % key)
+	_expect(errors, route.get("sections") is Array, "legacy generator keeps sections")
+	for script_path in [FIDELITY_PATH, "res://_inspect.gd", "res://fidelity_tests.gd"]:
+		var dependencies := ResourceLoader.get_dependencies(script_path)
+		for forbidden_path in ["res://ride_route.gd", "res://motion_trajectory.gd", "res://legacy_route_adapter.gd"]:
+			_expect(errors, not dependencies.has(forbidden_path), "%s does not import %s" % [script_path, forbidden_path])
 
 
 static func _test_held_values(fidelity: Script, errors: PackedStringArray) -> void:
@@ -44,6 +74,19 @@ static func _test_composite_grouping(fidelity: Script, errors: PackedStringArray
 	_expect(errors, bands[0].first == 0 and bands[0].last == 18, "the composite beat spans both sections")
 	_expect(errors, bands[1].kind == "Transfer", "a grade section is a distinct named beat")
 	_expect(errors, bands[2].beat_id == "act-one/02/turn", "later beats advance the phase ordinal")
+
+
+static func _test_legacy_characterization(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _legacy_characterization_route()
+	var before := route.duplicate(true)
+	var bands: Array = fidelity.element_bands(route, 2.0)
+	if bands.is_empty():
+		errors.append("legacy characterization produces element bands")
+		return
+	_expect(errors, bands[0].beat_id == "act-one/00/hill", "legacy adapter keeps its stable beat ID")
+	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row enters after its offset")
+	fidelity.measure_route(route, [0.0, 2.0])
+	_expect(errors, route == before, "fidelity measurement is read-only")
 
 
 static func _test_catalog_validation(fidelity: Script, errors: PackedStringArray) -> void:
@@ -140,8 +183,9 @@ static func _grouping_route() -> Dictionary:
 	}
 
 
-static func _measurement_route() -> Dictionary:
+static func _measurement_route(shared_element_identity: bool = true) -> Dictionary:
 	var shared := {"kind": "hill", "rise": 10.0}
+	var second_element: Dictionary = shared if shared_element_identity else shared.duplicate(true)
 	var positions := PackedVector3Array()
 	var tangents := PackedVector3Array()
 	var ups := PackedVector3Array()
@@ -189,11 +233,19 @@ static func _measurement_route() -> Dictionary:
 		"times": times,
 		"sections": [
 			{"kind": "FVD", "name": "hill-a", "element": shared, "phase": "act one", "start_index": 0, "end_index": 10},
-			{"kind": "FVD", "name": "hill-b", "element": shared, "phase": "act one", "start_index": 10, "end_index": 20},
+			{"kind": "FVD", "name": "hill-b", "element": second_element, "phase": "act one", "start_index": 10, "end_index": 20},
 			{"kind": "GRADE", "name": "Transfer", "element": {}, "phase": "act one", "start_index": 20, "end_index": 30},
 			{"kind": "CLOSURE", "name": "Closure", "element": {}, "phase": "run home", "start_index": 30, "end_index": 40},
 		],
 	}
+
+
+static func _legacy_characterization_route() -> Dictionary:
+	var route := _measurement_route(false)
+	route["sections"][0]["element"] = route.sections[1].element
+	route["sections"][0]["phase"] = "act one"
+	route["sections"][1]["phase"] = "act one"
+	return route
 
 
 static func _valid_catalog() -> Dictionary:

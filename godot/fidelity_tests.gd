@@ -699,7 +699,7 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		{"label":"Long.","display_value":-0.58,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[-0.58,-0.57]},
 	]
 	_expect(errors, all_readouts == expected_readouts, "live reviews contain exactly three sign-reviewed unmapped Long. values")
-	var executable_collections_empty := catalog.get("selectors", {}).is_empty() and catalog.get("observations", []).is_empty() and catalog.get("targets", []).is_empty()
+	var executable_collections_empty: bool = catalog.get("selectors", {}).is_empty() and catalog.get("observations", []).is_empty() and catalog.get("targets", []).is_empty()
 	_expect(errors, executable_collections_empty, "live POV review does not create selectors, observations, or targets")
 	var prompts := {}
 	var prompt_ids := []

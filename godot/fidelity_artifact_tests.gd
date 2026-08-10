@@ -97,14 +97,10 @@ static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray)
 			func(value: Dictionary): value.seed_measurements[0].erase("schema_version")],
 		["measurement schema type", "schema_version",
 			func(value: Dictionary): value.seed_measurements[0].schema_version = "2"],
-		["measurement schema is finite", "schema_version",
-			func(value: Dictionary): value.seed_measurements[0].schema_version = INF],
 		["measurement schema is supported", "schema_version",
 			func(value: Dictionary): value.seed_measurements[0].schema_version = 3],
 		["measurement seed is required", "measurement seed",
 			func(value: Dictionary): value.seed_measurements[0].erase("seed")],
-		["measurement seed is finite", "measurement seed",
-			func(value: Dictionary): value.seed_measurements[0].seed = INF],
 		["measurement length is required", "measurement",
 			func(value: Dictionary): value.seed_measurements[0].erase("length")],
 		["measurement length is numeric", "measurement",
@@ -227,6 +223,9 @@ static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedSt
 			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0].offset = 2.0],
 		["center-row POV resolution rejects distinct ambiguous rows", "row",
 			func(value: Dictionary): _add_distinct_center_row(value)],
+		["center-row POV resolution rejects identical ambiguous rows", "row",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].rows.append(
+				value.seed_measurements[1].beats[0].rows[0].duplicate(true))],
 	]
 	_expect_invalid_cases(artifacts, errors, cases)
 

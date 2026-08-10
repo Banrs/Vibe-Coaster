@@ -30,6 +30,9 @@ static func run() -> PackedStringArray:
 	_test_invalid_envelope(artifacts, errors)
 	_test_invalid_links_and_coverage(artifacts, errors)
 	_test_committed_catalog(artifacts, references, errors)
+	_test_element_render_request_filter(artifacts, errors)
+	_test_nested_alias_isolation(artifacts, errors)
+	_test_center_row_alignment_selectors(artifacts, errors)
 	return errors
 
 
@@ -90,6 +93,26 @@ static func _test_report_determinism(artifacts: Script, errors: PackedStringArra
 
 static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray) -> void:
 	var cases := [
+		["measurement schema missing", "schema_version", func(v: Dictionary): v.seed_measurements[0].erase("schema_version")],
+		["measurement schema type", "schema_version", func(v: Dictionary): v.seed_measurements[0].schema_version = "2"],
+		["measurement schema is finite", "schema_version", func(v: Dictionary): v.seed_measurements[0].schema_version = INF],
+		["measurement schema is supported", "schema_version", func(v: Dictionary): v.seed_measurements[0].schema_version = 3],
+		["measurement seed is required", "measurement seed", func(v: Dictionary): v.seed_measurements[0].erase("seed")],
+		["measurement seed is finite", "measurement seed", func(v: Dictionary): v.seed_measurements[0].seed = INF],
+		["measurement length is required", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("length")],
+		["measurement length is numeric", "measurement", func(v: Dictionary): v.seed_measurements[0].length = "111"],
+		["measurement duration is required", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("duration")],
+		["measurement duration is numeric", "measurement", func(v: Dictionary): v.seed_measurements[0].duration = "11"],
+		["measurement duration is finite", "measurement", func(v: Dictionary): v.seed_measurements[0].duration = NAN],
+		["measurement dimensions missing", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("dimensions")],
+		["measurement dimensions type", "measurement", func(v: Dictionary): v.seed_measurements[0].dimensions = []],
+		["measurement beats are required", "measurement", func(v: Dictionary): v.seed_measurements[0].erase("beats")],
+		["measurement beats have Array type", "measurement", func(v: Dictionary): v.seed_measurements[0].beats = {}],
+		["force missing", "force", func(v: Dictionary): v.seed_measurements[0].reconstruction.erase("force_error_peak_g")],
+		["force type", "force", func(v: Dictionary): v.seed_measurements[0].reconstruction.force_error_peak_g = "0.01"],
+		["force finite", "force", func(v: Dictionary): v.seed_measurements[0].reconstruction.force_error_peak_g = NAN],
+		["seams missing", "seam", func(v: Dictionary): v.seed_measurements[0].reconstruction.erase("seam_indices")],
+		["measurement seams type", "seam", func(v: Dictionary): v.seed_measurements[0].reconstruction.seam_indices = {}],
 		["base commit must be lowercase 40-hex", "legacy_base_commit",
 			func(value: Dictionary): value.legacy_base_commit = "ABC"],
 		["comparison has the exact Task 6 algebra", "comparison",
@@ -140,6 +163,15 @@ static func _test_invalid_envelope(artifacts: Script, errors: PackedStringArray)
 
 static func _test_invalid_links_and_coverage(artifacts: Script, errors: PackedStringArray) -> void:
 	var cases := [
+		["catalog identity fields are guarded", "catalog", func(v: Dictionary): v.catalog.schema_version = "2"],
+		["catalog record containers are guarded", "catalog", func(v: Dictionary): v.catalog.observations = {}],
+		["source windows are guarded", "source", func(v: Dictionary): v.catalog.sources["source.raw"].windows[0] = {}],
+		["source-ID arrays are guarded", "source", func(v: Dictionary): v.catalog.review_prompts[0].source_ids = []],
+		["compiled anchor guard", "anchor", func(v: Dictionary): v.catalog.selectors["selector.loop"].compiled_anchor = {}],
+		["alignments are guarded", "alignment", func(v: Dictionary): v.catalog.observations[0].alignment = null],
+		["measurement beats are guarded", "beat", func(v: Dictionary): v.seed_measurements[1].beats[0] = []],
+		["measurement rows are guarded", "row", func(v: Dictionary): v.seed_measurements[1].beats[0].rows[0] = []],
+		["required projection leaf guard", "state", func(v: Dictionary): v.catalog.sources["source.raw"].erase("state")],
 		["observation source links resolve", "observation",
 			func(value: Dictionary): value.catalog.observations[0].source_id = "missing"],
 		["target observation links resolve", "target",
@@ -191,6 +223,59 @@ static func _test_committed_catalog(
 		"committed unaligned catalog produces no POV PNG requests")
 
 
+static func _test_element_render_request_filter(artifacts: Script, errors: PackedStringArray) -> void:
+	var fixture := _valid_fixture()
+	for kind in ["hill", "immelmann", "cutback", "twisted_drop", "dive", "wave_turn", "overbank", "turn", "brake_run"]:
+		var beat: Dictionary = fixture.seed_measurements[1].beats[0].duplicate(true)
+		beat.beat_id = "beat-%s" % kind
+		beat.kind = kind
+		beat.story_slot_id = "act1.%s" % kind
+		fixture.seed_measurements[1].beats.append(beat)
+	var actual := []
+	for request in _build(artifacts, fixture).get("render_requests", []):
+		if request.get("artifact_kind") == "element":
+			actual.append(request.get("beat_id"))
+	_expect(errors, actual == ["beat-cutback", "beat-dive", "beat-hill", "beat-immelmann", "beat-loop",
+		"beat-overbank", "beat-turn", "beat-twisted_drop", "beat-wave_turn"],
+		"only the exact nine retained side-view beat kinds produce element render requests")
+
+
+static func _test_nested_alias_isolation(artifacts: Script, errors: PackedStringArray) -> void:
+	var source_fixture := _valid_fixture()
+	var source_report: Dictionary = _build(artifacts, source_fixture)
+	source_fixture.comparison.findings[0].metric = "changed"
+	source_fixture.seed_measurements[1].dimensions.width = 99.0
+	source_fixture.seed_measurements[1].beats[0].kind = "changed"
+	source_fixture.catalog.sources["source.raw"].fallback_citations[0].section_id = "changed"
+	source_fixture.catalog.sources["source.raw"].windows[1].window_s[0] = 9.0
+	source_fixture.catalog.observations[0].alignment.generated_anchor.semantic_selector_id = "changed"
+	_expect(errors, source_report == _expected_report(), "caller nested mutations do not change the completed report")
+	var report_fixture := _valid_fixture()
+	var mutable_report: Dictionary = _build(artifacts, report_fixture)
+	mutable_report.findings[0].metric = "changed"
+	mutable_report.measurement_summaries[1].dimensions.width = 99.0
+	mutable_report.measurement_summaries[1].beats[0].kind = "changed"
+	mutable_report.evidence_snapshot[0].fallback_citations[0].section_id = "changed"
+	mutable_report.pov_map.source_landmarks[1].source_time.window_s[0] = 9.0
+	mutable_report.pov_map.records[0].generated_anchor.semantic_selector_id = "changed"
+	_expect(errors, report_fixture == _valid_fixture(), "completed-report nested mutations do not change caller inputs")
+
+
+static func _test_center_row_alignment_selectors(artifacts: Script, errors: PackedStringArray) -> void:
+	for selector in [{"row_id": "row-edge"}, {"position": "front"}, {"offset": 2.0}, null]:
+		var fixture := _valid_fixture()
+		fixture.seed_measurements[1].beats[0].rows.append({
+			"row_id": "row-edge", "position": "front", "offset": 2.0,
+			"window_start_s": 8.0, "window_end_s": 9.0,
+		})
+		fixture.catalog.observations[0].alignment.generated_row_selector = selector
+		if selector == null:
+			fixture.catalog.observations[0].alignment.row_compatibility = "row-independent"
+		var records: Array = _build(artifacts, fixture).get("pov_map", {}).get("records", [])
+		_expect(errors, records.size() == 2 and records[0].generated_window_s == [10.1, 11.9],
+			"every valid evidence row selector resolves the unique zero-offset POV center row")
+
+
 static func _expect_invalid_cases(
 	artifacts: Script, errors: PackedStringArray, cases: Array
 ) -> void:
@@ -237,7 +322,7 @@ static func _valid_fixture() -> Dictionary:
 		"window_role": "core", "kind": "loop", "window_s": [10.0, 12.0],
 		"rows": [{
 			"row_id": "row-02", "position": "intermediate",
-			"window_start_s": 10.1, "window_end_s": 11.9,
+			"offset": 0.0, "window_start_s": 10.1, "window_end_s": 11.9,
 		}],
 	}]
 	return {
@@ -350,7 +435,7 @@ static func _expected_report() -> Dictionary:
 				"window_role": "core", "kind": "loop", "window_s": [10.0, 12.0],
 				"rows": [{
 					"row_id": "row-02", "position": "intermediate",
-					"window_start_s": 10.1, "window_end_s": 11.9,
+					"offset": 0.0, "window_start_s": 10.1, "window_end_s": 11.9,
 				}],
 			}]),
 			_measurement_summary(20260809, 109.0, 19.0, []),

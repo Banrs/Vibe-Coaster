@@ -451,7 +451,7 @@ static func _issue_coverage(
 			if issue_id in gap.get("issues", []):
 				gap_evidence.append(str(gap.id))
 		if measured_targets.is_empty() and prompt_evidence.is_empty() and gap_evidence.is_empty():
-				errors.append("artifact_report: issue %d has no traceability links" % issue_id)
+			errors.append("artifact_report: issue %d has no traceability links" % issue_id)
 		var record := {
 			"issue_id": issue_id, "issue_text": _ISSUE_TEXT.get(issue_id, "Issue %d" % issue_id),
 			"linked_measurement_ids": [], "linked_target_ids": [],

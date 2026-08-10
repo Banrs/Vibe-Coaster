@@ -180,7 +180,12 @@ const CATALOG := {
 			"review_path": "docs/evidence/fidelity/youtube/poco8rOnW18-review.json", "review_sha256": "99f44129f2731e65170fc524b3dc32dc7e7e022034596ae96642cea0af1c9fd0",
 			"row_seat": "not applicable", "device": "not applicable", "sample_rate_hz": null, "axis_mapping": {}, "reliability": "NoLimits2 precreation with mixed third-person and virtual POV; model-to-model evidence only.",
 			"processing": ["Sparse manual live-player review only; no video or frame artifact is committed."],
-			"caveats": ["Synthetic low-detail terrain and scenery and expressly variable shaping limit as-built correspondence.", "Clifftop shaping and order remain unconfirmed; real built-ride POV controls wherever sources disagree.", "This simulation cannot establish measured truth, transfer its clock, or supply generated alignment."],
+			"caveats": [
+				"Native sample rate is unknown.",
+				"Synthetic low-detail terrain and scenery and expressly variable shaping limit as-built correspondence.",
+				"Clifftop shaping and order remain unconfirmed; real built-ride POV controls wherever sources disagree.",
+				"This simulation cannot establish measured truth, transfer its clock, or supply generated alignment."
+			],
 			"windows": [
 				{"id": "poco.opening", "time_s": 0.10},
 				{"id": "poco.park_element", "time_s": 43.63},

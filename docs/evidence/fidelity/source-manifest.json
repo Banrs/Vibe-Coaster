@@ -107,7 +107,7 @@
       "metadata_artifact_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-oembed.json",
       "metadata_artifact_sha256": "595aa5253b41a2557e3a33bcbd2695a74d9723bb1e49e84fc9f75c4910a26aaf",
       "review_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-review.json",
-      "review_sha256": "d78534c443817d95b33163136ac1451ae4747dcdebb8266e4cf7fd7f4b2cb9e0"
+      "review_sha256": "a15e577ee4f0d9915eb48ce08ad8c71d68b12635af01179a80d645cd282d676d"
     },
     {
       "source_id": "youtube.falcon.cgi.NFV",

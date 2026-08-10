@@ -13,13 +13,20 @@ Reviewed on 2026-08-10 against `docs/TELEMETRY.md`, `docs/TELEMETRY-I305.md`, `d
 - All three RideForcesDB sources use the mutually exclusive `raw_fetch_unavailable` branch: a diagnostic path and digest plus non-empty, structured `docs/TELEMETRY.md` fallback citations. None has an artifact path or digest for a raw payload.
 - The 50 Hz and 11-sample/0.22 s smoothing statements in RideForcesDB reviews are provenance of the already-reviewed telemetry corpus only. With no raw payload committed, they are not represented as independently reverified native cadence or newly executed processing.
 - Sparse live-reviewed source-local landmarks are retained for the four named POVs. Empty `alignment` arrays and explicit `alignment_status` fields mean that none is mapped to a generated selector. No cross-video clock, source-to-generated clock, force-axis mapping for unknown-axis video, or executable comparison band has been invented.
-- The final review SHA-256 values are `d78534c443817d95b33163136ac1451ae4747dcdebb8266e4cf7fd7f4b2cb9e0` (J54), `9dd4b8ed8f5d4bfd8b67f2218c65ed681fcb912fe55a5599e34770919d6192df` (sdX), `99f44129f2731e65170fc524b3dc32dc7e7e022034596ae96642cea0af1c9fd0` (poco), and `4e0af882b0280a9d7c7638b2f33a68af7909a6d1d085e61adac987d7869632ba` (0Ua); the manifest and catalog mirror these exact file digests.
+- The final review SHA-256 values are:
+  - J54 `a15e577ee4f0d9915eb48ce08ad8c71d68b12635af01179a80d645cd282d676d`;
+  - sdX `9dd4b8ed8f5d4bfd8b67f2218c65ed681fcb912fe55a5599e34770919d6192df`;
+  - poco `99f44129f2731e65170fc524b3dc32dc7e7e022034596ae96642cea0af1c9fd0`;
+  - 0Ua `4e0af882b0280a9d7c7638b2f33a68af7909a6d1d085e61adac987d7869632ba`.
+  The manifest and catalog mirror these exact file digests.
 
 ## Live POV adjudication
 
 - The independent media durations and publish dates are J54 `240.881 s` / `2026-01-05`, sdX `239.061 s` / `2026-01-01`, poco `328.521 s` / `2023-06-04`, and 0Ua `213.541 s` / `2026-04-14`. Durations are source-local media-element readbacks, not ride-duration targets.
 - J54 is a built-ride centered rear-facing view with exact row and mount undisclosed; sdX is a built-ride front-row view per title with mount undisclosed; poco is a NoLimits2 precreation mixing third-person and virtual POV; 0Ua is a built-ride leading-view appearance with exact row and mount undisclosed.
-- The historical `docs/RESEARCH.md:64` claim that J54 has “zero obstruction” is preserved verbatim as provenance but is overstated and contradicted by the live review. The structured obstruction list—watermark, night exposure, motion blur, and rapid camera roll—governs reviewed observations.
+- The historical `docs/RESEARCH.md:64` “zero obstruction” wording was removed from reviewed provenance because the live review contradicted it.
+  The structured obstruction list—watermark, night exposure, motion blur, and rapid camera roll—governs reviewed observations, while the
+  rear-facing view and confirmed forward-time element order remain retained provenance.
 - The three retained 0Ua `Long.` labels are negative (`-0.30 g`, `-0.19 g`, and approximately
   `-0.58 g`) and remain approximate, unmapped uploader-rendered spot checks.
   Uploader warnings cover consumer-grade sensors, presentation editing, limited sampling,

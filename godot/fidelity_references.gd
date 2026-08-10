@@ -100,7 +100,12 @@ const CATALOG := {
 			"review_path": "docs/evidence/fidelity/youtube/0UaOSBGSx20-review.json", "review_sha256": "4e0af882b0280a9d7c7638b2f33a68af7909a6d1d085e61adac987d7869632ba",
 			"row_seat": "unknown", "device": "unknown", "sample_rate_hz": null, "axis_mapping": {}, "reliability": "Built-ride leading-view overlay with sparse displayed-channel landmarks only; uploader labels remain unmapped.",
 			"processing": ["Sparse manual live-player sampling of uploader-rendered labels only; no video, frame, or raw trace artifact is committed."],
-			"caveats": ["Uploader warnings cover consumer-grade sensors, presentation editing, limited sampling, interpolation, and video-frame-rate data loss.", "Raw sample rate, calibration, orientation, filtering, sensor location, row, device, and edit decision list are unknown.", "The three negative Long. labels are sparse approximate unmapped rendered spot checks, not a dense trace or comparison band.", "No generated alignment is established."],
+			"caveats": [
+				"Uploader warnings cover consumer-grade sensors, presentation editing, limited sampling, interpolation, and video-frame-rate data loss.",
+				"Raw sample rate, calibration, orientation, filtering, sensor location, row, device, and edit decision list are unknown.",
+				"The three negative Long. labels are sparse approximate unmapped rendered spot checks, not a dense trace or comparison band.",
+				"No generated alignment is established.",
+			],
 			"windows": [
 				{"id": "0ua.station_dispatch", "time_s": 0.06},
 				{"id": "0ua.park_straight", "time_s": 25.25},
@@ -131,7 +136,7 @@ const CATALOG := {
 			"promotion_prerequisites": ["Review exact source-local landmarks with uncertainty and row/camera context.", "Commit qualifying content provenance and complete landmark-to-generated alignment; never infer force axes or transfer another video's clock."],
 			"url": "https://www.youtube.com/watch?v=J54WKu2nU6o", "video_id": "J54WKu2nU6o", "retrieved_on": "2026-08-10", "retrieval_context": "captured YouTube oEmbed response and sparse live-player review",
 			"metadata_artifact_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-oembed.json", "metadata_artifact_sha256": "595aa5253b41a2557e3a33bcbd2695a74d9723bb1e49e84fc9f75c4910a26aaf",
-			"review_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-review.json", "review_sha256": "d78534c443817d95b33163136ac1451ae4747dcdebb8266e4cf7fd7f4b2cb9e0",
+			"review_path": "docs/evidence/fidelity/youtube/J54WKu2nU6o-review.json", "review_sha256": "a15e577ee4f0d9915eb48ce08ad8c71d68b12635af01179a80d645cd282d676d",
 			"row_seat": "unknown", "device": "unknown", "sample_rate_hz": null, "axis_mapping": {}, "reliability": "Built-ride centered rear-facing view with sparse night landmarks; observation prompts only and exact row undisclosed.",
 			"processing": ["Sparse manual live-player review only; no video or frame artifact is committed."],
 			"caveats": ["Native sample rate, camera calibration, axis mapping, and generated alignment are unknown.", "Lower-right watermark, night exposure, motion blur, and rapid camera roll limit element-shape certainty."],
@@ -261,7 +266,15 @@ const CATALOG := {
 		{"id": "review.speed_perception", "category": "speed perception", "prompt": "Compare generated speed perception against source-local terrain, support, and park-reference landmarks only; do not infer speed from a global POV duration ratio.", "source_ids": ["youtube.falcon.backward.J54WKu2nU6o", "youtube.falcon.sdXGD9kMR7s"], "issues": [2, 6, 8, 11, 12]},
 		{"id": "review.element_shaping", "category": "element shaping", "prompt": "Do crests, pullouts, inversions, and roll timing read as deliberate family-specific shapes?", "source_ids": ["youtube.falcon.forward.cUURkqyn4Zs", "youtube.falcon.cgi.NFV"], "issues": [4, 5, 14, 16]},
 		{"id": "review.support_overlap", "category": "support overlap", "prompt": "Do side and top views expose any track/support overlap around inversions or crossings?", "source_ids": ["youtube.falcon.cgi.NFV"], "issues": [7, 16]},
-		{"id": "review.coastertalk_overlay_spot_checks", "category": "ride feel", "prompt": "Review the three source-local uploader-labelled Long. spot checks (-0.30 g, -0.19 g, and approximately -0.58 g) only as unscored, approximate, unmapped rendered labels; they are not a calibrated trace, rider-axis trace, or comparison band.", "source_ids": ["youtube.coastertalk.continuous.0Ua"], "issues": [3, 10, 13, 15, 16]},
+		{
+			"id": "review.coastertalk_overlay_spot_checks",
+			"category": "ride feel",
+			"prompt": "Review the three source-local uploader-labelled Long. spot checks (-0.30 g, -0.19 g, and " + \
+				"approximately -0.58 g) only as unscored, approximate, unmapped rendered labels; they are not a " + \
+				"rider-axis trace or comparison band.",
+			"source_ids": ["youtube.coastertalk.continuous.0Ua"],
+			"issues": [3, 10, 13, 15, 16],
+		},
 		{"id": "review.terrain_clearance", "category": "terrain/clearance", "prompt": "Compare the generated cliff, high-terrain, and low-return views landmark-to-landmark against the real built-ride POVs; do not infer an AGL band or proportionally scale independent video clocks.", "source_ids": ["youtube.coastertalk.continuous.0Ua", "youtube.falcon.backward.J54WKu2nU6o", "youtube.falcon.sdXGD9kMR7s"], "issues": [6, 8, 12]},
 	],
 	"evidence_gaps": [

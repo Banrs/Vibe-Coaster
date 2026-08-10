@@ -11,14 +11,6 @@ const METRICS := [
 	"normal_held_positive", "normal_held_negative",
 	"lateral_peak_absolute", "longitudinal_held_positive",
 	"longitudinal_peak_positive", "longitudinal_peak_negative",
-	"onset_peak", "roll_rate_peak",
-	"length", "height", "width", "min_pitch", "max_pitch", "max_bank",
-	"apex_radius", "valley_radius", "entry_speed", "exit_speed",
-	"duration", "speed_loss", "average_speed", "dead_zone_share",
-	"speed_share_100", "speed_share_200", "flat_seconds", "beat_count",
-	"agl_min", "agl_median", "agl_max", "terrain_hugging_share",
-	"transition_force_swing", "transition_seconds", "bank_handoff", "roll_rate_handoff",
-	"flat_dwell", "same_kind_adjacency",
 ]
 const HOLD_SECONDS := [0.2, 0.5, 0.8, 1.0, 1.1, 1.4, 2.0, 2.4, 2.78, 3.0, 4.0, 6.8, 12.0]
 const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
@@ -118,7 +110,7 @@ static func compare_fleet(seed_measurements: Array, catalog: Dictionary) -> Dict
 		fleet.append(int(measurement.seed))
 
 	var targets: Array = catalog.get("targets", [])
-	targets = targets.duplicate(true)
+	targets = targets.duplicate()
 	targets.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
 		return str(first.get("id", "")) < str(second.get("id", ""))
 	)
@@ -165,7 +157,7 @@ static func compare_fleet(seed_measurements: Array, catalog: Dictionary) -> Dict
 			))
 
 	var observed_only := []
-	var sorted_observations := observations.duplicate(true)
+	var sorted_observations := observations.duplicate()
 	sorted_observations.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
 		return str(first.get("id", "")) < str(second.get("id", ""))
 	)
@@ -1017,8 +1009,8 @@ static func _bands_for_row(
 		var window_end := clampf(
 			end_distance + row_offset, route_start_distance, route_end_distance
 		)
-		var low_time: float = _time_at_distance(route, window_start)
-		var high_time: float = _time_at_distance(route, window_end)
+		var low_time: float = _value_at_coordinate(route.distances, route.times, window_start)
+		var high_time: float = _value_at_coordinate(route.distances, route.times, window_end)
 		if high_time <= low_time:
 			continue
 		# Adjacent beat windows are half-open; only a route-boundary window owns its endpoint.
@@ -1077,24 +1069,22 @@ static func _sample_filtered_window(
 	return output
 
 
-static func _time_at_distance(route: Dictionary, distance: float) -> float:
-	if distance <= route.distances[0]:
-		return route.times[0]
-	if distance >= route.distances[-1]:
-		return route.times[-1]
+static func _value_at_coordinate(
+	coordinates: PackedFloat32Array, values: PackedFloat32Array, at: float
+) -> float:
+	if at <= coordinates[0]:
+		return values[0]
+	if at >= coordinates[-1]:
+		return values[-1]
 	var low := 0
-	var high: int = route.distances.size() - 1
+	var high := coordinates.size() - 1
 	while low + 1 < high:
 		var middle := floori((low + high) * 0.5)
-		if route.distances[middle] <= distance:
+		if coordinates[middle] <= at:
 			low = middle
 		else:
 			high = middle
-	return lerpf(
-		route.times[low],
-		route.times[high],
-		inverse_lerp(route.distances[low], route.distances[high], distance)
-	)
+	return lerpf(values[low], values[high], inverse_lerp(coordinates[low], coordinates[high], at))
 
 
 static func _row_position(index: int, count: int) -> String:
@@ -1294,7 +1284,7 @@ static func _time_window_extrema(
 	times: PackedFloat32Array, values: PackedFloat32Array, start_s: float, end_s: float
 ) -> Dictionary:
 	# Transition windows are [start, end), so an adjacent seam sample is owned once.
-	var minimum := _value_at_time(times, values, start_s)
+	var minimum := _value_at_coordinate(times, values, start_s)
 	var maximum := minimum
 	for index in times.size():
 		if times[index] <= start_s or times[index] >= end_s:
@@ -1304,31 +1294,13 @@ static func _time_window_extrema(
 	return {"minimum": minimum, "maximum": maximum}
 
 
-static func _value_at_time(
-	times: PackedFloat32Array, values: PackedFloat32Array, at_s: float
-) -> float:
-	if at_s <= times[0]:
-		return values[0]
-	if at_s >= times[-1]:
-		return values[-1]
-	var low := 0
-	var high := times.size() - 1
-	while low + 1 < high:
-		var middle := floori((low + high) * 0.5)
-		if times[middle] <= at_s:
-			low = middle
-		else:
-			high = middle
-	return lerpf(values[low], values[high], inverse_lerp(times[low], times[high], at_s))
-
-
 static func _seam_handoff(
 	times: PackedFloat32Array, values: PackedFloat32Array, seam_s: float
 ) -> float:
 	var step := 1.0 / Verify.SAMPLE_HZ
 	return absf(
-		_value_at_time(times, values, seam_s + step)
-		- _value_at_time(times, values, seam_s - step)
+		_value_at_coordinate(times, values, seam_s + step)
+		- _value_at_coordinate(times, values, seam_s - step)
 	)
 
 

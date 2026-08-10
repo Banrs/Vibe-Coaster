@@ -314,56 +314,46 @@ func _expect_shape(route: Dictionary, issues: PackedStringArray) -> void:
 ## stretch on the VALUE with the measured HOLD kept — Gz+ ×1.333, Gz− ×1.5, Gy ×1.567.
 
 
-## One entry per beat: the kind, the 100 Hz window it occupies, and the filtered series inside it.
-func _element_bands(route: Dictionary) -> Array:
-	return Fidelity.element_bands(route)
-
-
-## Largest value the window sustains for `seconds` without interruption, signed by `polarity`:
-## the same largest-rectangle held curve the duration envelope is read off. −INF when the window
-## is shorter than the hold being asked for, which fails any band that asks for one.
-func _held(values: PackedFloat32Array, polarity: float, seconds: float) -> float:
-	return Fidelity.held(values, polarity, seconds)
-
-
+## `element_bands` supplies each beat's filtered 100 Hz series; `held` returns −INF when the beat
+## is shorter than the requested duration, which fails any band that asks for one.
 ## Every band here is the measured counterpart scaled per axis on the VALUE with the measured HOLD
 ## kept, and every one of them asks for a value the beat SUSTAINS. That is the point: a spike cannot
 ## satisfy `held`, so an element cannot pass by touching its band for one sample on its way past.
 func _expect_bands(route: Dictionary, issues: PackedStringArray) -> void:
 	var valley := 0.0
 	var seen := {}
-	for band in _element_bands(route):
-		var peak: float = _held(band.normal, 1.0, 0.0)
+	for band in Fidelity.element_bands(route):
+		var peak: float = Fidelity.held(band.normal, 1.0, 0.0)
 		seen[band.kind] = true
 		match band.kind:
 			"Entry launch":
-				var held: float = _held(band.longitudinal, 1.0, BOOST_HOLD)
+				var held: float = Fidelity.held(band.longitudinal, 1.0, BOOST_HOLD)
 				_expect(issues, held >= ENTRY_LAUNCH_G.x and held <= ENTRY_LAUNCH_G.y, "the entry launch holds %.2f g for %.1f s, outside %s" % [held, BOOST_HOLD, str(ENTRY_LAUNCH_G)])
 			"LSM2 boost", "LSM3 boost":
-				var held: float = _held(band.longitudinal, 1.0, BOOST_HOLD)
+				var held: float = Fidelity.held(band.longitudinal, 1.0, BOOST_HOLD)
 				_expect(issues, held >= LSM_BOOST_G.x and held <= LSM_BOOST_G.y, "'%s' holds %.2f g for %.1f s, outside %s" % [band.kind, held, BOOST_HOLD, str(LSM_BOOST_G)])
 			"twisted_drop":
-				var lateral: float = maxf(_held(band.lateral, 1.0, 0.0), -_held(band.lateral, -1.0, 0.0))
-				var airtime: float = _held(band.normal, -1.0, 0.8)
+				var lateral: float = maxf(Fidelity.held(band.lateral, 1.0, 0.0), -Fidelity.held(band.lateral, -1.0, 0.0))
+				var airtime: float = Fidelity.held(band.normal, -1.0, 0.8)
 				_expect(issues, lateral >= DROP_LATERAL_G.x and lateral <= DROP_LATERAL_G.y, "the twisted drop snaps to %.2f g of lateral, outside %s" % [lateral, str(DROP_LATERAL_G)])
 				_expect(issues, airtime <= DROP_AIRTIME_G, "the twisted drop only unloads to %.2f g for 0.8 s" % airtime)
 			"immelmann":
-				var held: float = _held(band.normal, 1.0, 2.2)
+				var held: float = Fidelity.held(band.normal, 1.0, 2.2)
 				_expect(issues, held >= IMMELMANN_HOLD_G, "the immelmann only holds %.2f g for 2.2 s" % held)
 				_expect(issues, peak <= IMMELMANN_PEAK_G, "the immelmann peaks at %.2f g" % peak)
 			"loop":
-				var lobe: float = _held(band.normal, 1.0, 0.8)
-				var apex: float = _held(band.normal, 1.0, 3.0)
+				var lobe: float = Fidelity.held(band.normal, 1.0, 0.8)
+				var apex: float = Fidelity.held(band.normal, 1.0, 3.0)
 				_expect(issues, lobe >= LOOP_LOBE_G and peak <= LOOP_PEAK_G, "the loop's entry lobe holds %.2f g and peaks at %.2f" % [lobe, peak])
 				_expect(issues, apex >= LOOP_APEX_G, "the loop's apex falls to %.2f g — the dip has to stay loaded" % apex)
 			"cutback":
-				var held: float = _held(band.normal, 1.0, 1.5)
+				var held: float = Fidelity.held(band.normal, 1.0, 1.5)
 				_expect(issues, peak >= CUTBACK_PEAK_G.x and peak <= CUTBACK_PEAK_G.y, "the cutback peaks at %.2f g, outside %s" % [peak, str(CUTBACK_PEAK_G)])
 				_expect(issues, held >= CUTBACK_HOLD_G, "the cutback only holds %.2f g for 1.5 s" % held)
 			"hill":
-				var crest: float = _held(band.normal, -1.0, 0.8)
+				var crest: float = Fidelity.held(band.normal, -1.0, 0.8)
 				if band.element.has("structure_rise"):
-					var float_ceiling: float = _held(band.normal, -1.0, CAMELBACK_FLOAT_HOLD)
+					var float_ceiling: float = Fidelity.held(band.normal, -1.0, CAMELBACK_FLOAT_HOLD)
 					_expect(issues, float_ceiling <= CAMELBACK_FLOAT_G, "the camelback crest never floats: its quietest %.0f s still reaches %.2f g" % [CAMELBACK_FLOAT_HOLD, float_ceiling])
 				else:
 					_expect(issues, crest <= CREST_G.y and crest >= CREST_G.x, "an airtime crest holds %.2f g for 0.8 s, outside %s" % [crest, str(CREST_G)])
@@ -371,30 +361,30 @@ func _expect_bands(route: Dictionary, issues: PackedStringArray) -> void:
 				if band.element.has("camelback"):
 					if band.element.exit_pitch_deg > 1.0:
 						_expect(issues, peak >= CAMELBACK_PEAK_G.x and peak <= CAMELBACK_PEAK_G.y, "the camelback pull-up peaks at %.2f g, outside %s" % [peak, str(CAMELBACK_PEAK_G)])
-						_expect(issues, _held(band.normal, 1.0, CAMELBACK_HOLD) >= CAMELBACK_HOLD_G, "the camelback pull-up only holds %.2f g for %.1f s" % [_held(band.normal, 1.0, CAMELBACK_HOLD), CAMELBACK_HOLD])
+						_expect(issues, Fidelity.held(band.normal, 1.0, CAMELBACK_HOLD) >= CAMELBACK_HOLD_G, "the camelback pull-up only holds %.2f g for %.1f s" % [Fidelity.held(band.normal, 1.0, CAMELBACK_HOLD), CAMELBACK_HOLD])
 					else:
 						_expect(issues, peak >= CAMELBACK_EXIT_G.x and peak <= CAMELBACK_EXIT_G.y, "the camelback exit pullout peaks at %.2f g, outside %s" % [peak, str(CAMELBACK_EXIT_G)])
 				elif band.element.has("cliff_dive"):
 					_expect(issues, peak >= DIVE_PULLOUT_G.x and peak <= DIVE_PULLOUT_G.y, "the cliff-dive pullout peaks at %.2f g, outside %s" % [peak, str(DIVE_PULLOUT_G)])
-					_expect(issues, _held(band.normal, 1.0, 1.5) >= DIVE_PULLOUT_HOLD_G, "the cliff-dive pullout only holds %.2f g for 1.5 s" % _held(band.normal, 1.0, 1.5))
+					_expect(issues, Fidelity.held(band.normal, 1.0, 1.5) >= DIVE_PULLOUT_HOLD_G, "the cliff-dive pullout only holds %.2f g for 1.5 s" % Fidelity.held(band.normal, 1.0, 1.5))
 				elif band.phase == "act one":
-					valley = maxf(valley, _held(band.normal, 1.0, 1.0))
+					valley = maxf(valley, Fidelity.held(band.normal, 1.0, 1.0))
 	_expect(issues, seen.has("immelmann") or seen.has("loop"), "no inversion carries a load band")
 	_expect(issues, valley >= VALLEY_G.x and valley <= VALLEY_G.y, "act one's strongest valley holds %.2f g for 1 s, outside %s" % [valley, str(VALLEY_G)])
 
 
 func _print_bands(route: Dictionary) -> void:
 	print("  seed 42 held-value bands (peak | held 0.5 s | held 1.5 s | held 3.0 s):")
-	for band in _element_bands(route):
+	for band in Fidelity.element_bands(route):
 		print(
 			"    %-16s %4.1f s  Gz %5.2f |%5.2f |%5.2f |%5.2f   Gz- %5.2f |%5.2f   Gy %5.2f |%5.2f   Gx %5.2f |%5.2f   onset %5.1f"
 			% [
 				band.kind, band.seconds,
-				_held(band.normal, 1.0, 0.0), _held(band.normal, 1.0, 0.5),
-				_held(band.normal, 1.0, 1.5), _held(band.normal, 1.0, 3.0),
-				_held(band.normal, -1.0, 0.0), _held(band.normal, -1.0, 1.0),
-				_held(band.lateral, 1.0, 0.0), _held(band.lateral, -1.0, 0.0),
-				_held(band.longitudinal, 1.0, 0.0), _held(band.longitudinal, 1.0, 0.5),
+				Fidelity.held(band.normal, 1.0, 0.0), Fidelity.held(band.normal, 1.0, 0.5),
+				Fidelity.held(band.normal, 1.0, 1.5), Fidelity.held(band.normal, 1.0, 3.0),
+				Fidelity.held(band.normal, -1.0, 0.0), Fidelity.held(band.normal, -1.0, 1.0),
+				Fidelity.held(band.lateral, 1.0, 0.0), Fidelity.held(band.lateral, -1.0, 0.0),
+				Fidelity.held(band.longitudinal, 1.0, 0.0), Fidelity.held(band.longitudinal, 1.0, 0.5),
 				maxf(
 					Verify.peak_onset(band.normal),
 					maxf(Verify.peak_onset(band.lateral), Verify.peak_onset(band.longitudinal))

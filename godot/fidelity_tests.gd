@@ -43,15 +43,14 @@ static func run() -> PackedStringArray:
 	_test_route_measurements(fidelity, errors)
 	_test_reference_catalog(fidelity, errors)
 	_test_comparison_catalog_contract(fidelity, errors)
-	if _require_comparison_api(fidelity, errors):
-		_test_target_classification(fidelity, errors)
-		_test_comparison_reducers(fidelity, errors)
-		_test_selector_and_row_resolution(fidelity, errors)
-		_test_observed_only_and_evidence_gaps(fidelity, errors)
-		_test_fleet_validation(fidelity, errors)
-		_test_recommendation_eligibility(fidelity, errors)
-		_test_recommendation_ranking(fidelity, errors)
-		_test_comparison_determinism(fidelity, errors)
+	_test_target_classification(fidelity, errors)
+	_test_comparison_reducers(fidelity, errors)
+	_test_selector_and_row_resolution(fidelity, errors)
+	_test_observed_only_and_evidence_gaps(fidelity, errors)
+	_test_fleet_validation(fidelity, errors)
+	_test_recommendation_eligibility(fidelity, errors)
+	_test_recommendation_ranking(fidelity, errors)
+	_test_comparison_determinism(fidelity, errors)
 	return errors
 
 
@@ -198,8 +197,6 @@ static func _test_transition_windows(fidelity: Script, errors: PackedStringArray
 
 
 static func _test_straight_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _require_reconstruction(fidelity, errors):
-		return
 	var route := _analytic_straight_route(20.0, 2.0, 100.0)
 	var before := route.duplicate(true)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
@@ -220,8 +217,6 @@ static func _test_straight_reconstruction(fidelity: Script, errors: PackedString
 
 
 static func _test_constant_radius_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _require_reconstruction(fidelity, errors):
-		return
 	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
 	route.curvatures.fill(Vector3.ZERO)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
@@ -232,8 +227,6 @@ static func _test_constant_radius_reconstruction(fidelity: Script, errors: Packe
 
 
 static func _test_unclamped_radius_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _require_reconstruction(fidelity, errors):
-		return
 	var channels: Dictionary = fidelity.reconstruct_channels(
 		_analytic_circle_route(100.0, 20000.0, 10.0, 20.0)
 	)
@@ -242,8 +235,6 @@ static func _test_unclamped_radius_reconstruction(fidelity: Script, errors: Pack
 
 
 static func _test_force_integrity_mismatch(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _require_reconstruction(fidelity, errors):
-		return
 	var route := _analytic_circle_route(25.0, 50.0, 4.0, 100.0)
 	route.lateral_g.fill(0.0)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
@@ -266,8 +257,6 @@ static func _test_force_integrity_mismatch(fidelity: Script, errors: PackedStrin
 
 
 static func _test_nonuniform_quadratic_acceleration(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _require_reconstruction(fidelity, errors):
-		return
 	var channels: Dictionary = fidelity.reconstruct_channels(_nonuniform_quadratic_route())
 	for acceleration in channels.inertial_acceleration_mps2:
 		_expect(errors, acceleration.distance_to(Vector3(2.0, 0.0, 0.0)) < 0.001, "nonuniform quadratic positions reconstruct constant 2 m/s^2 acceleration")
@@ -275,8 +264,6 @@ static func _test_nonuniform_quadratic_acceleration(fidelity: Script, errors: Pa
 
 
 static func _test_reconstruction_seam_channels(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _require_reconstruction(fidelity, errors):
-		return
 	var route := _curvature_direction_seam_route()
 	var seam: int = route.sections[1].start_index
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
@@ -292,18 +279,9 @@ static func _test_reconstruction_seam_channels(fidelity: Script, errors: PackedS
 
 
 static func _test_route_reconstruction_embedding(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _require_reconstruction(fidelity, errors):
-		return
 	var measured: Dictionary = fidelity.measure_route(_measurement_route(), [0.0])
 	_expect(errors, measured.has("reconstruction"), "route measurement includes reconstruction at route scope")
 	_expect(errors, _count_dictionary_key(measured, "reconstruction") == 1, "route measurement includes exactly one reconstruction payload")
-
-
-static func _require_reconstruction(fidelity: Script, errors: PackedStringArray) -> bool:
-	if _script_has_method(fidelity, "reconstruct_channels"):
-		return true
-	errors.append("RideFidelity.reconstruct_channels is missing")
-	return false
 
 
 static func _test_composite_grouping(fidelity: Script, errors: PackedStringArray) -> void:
@@ -337,18 +315,25 @@ static func _test_catalog_validation(fidelity: Script, errors: PackedStringArray
 	_expect_contains(errors, fidelity.validate_catalog(catalog), "schema version 2", "schema-v1 catalogs are rejected")
 
 
+## Cases are [readable name, diagnostic substring, exact one-mutation callable].
+static func _expect_catalog_invalid_cases(
+	fidelity: Script, errors: PackedStringArray, catalog: Dictionary, cases: Array
+) -> void:
+	for case in cases:
+		var invalid := catalog.duplicate(true)
+		var mutate: Callable = case[2]
+		mutate.call(invalid)
+		_expect_contains(errors, fidelity.validate_catalog(invalid), case[1], case[0])
+
+
 static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _valid_catalog_v2()
 	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "complete schema-v2 catalog validates")
-	var bad_state := catalog.duplicate(true)
-	bad_state.sources["rideforcesdb.tormenta.6383"].state = "trusted"
-	_expect_contains(errors, fidelity.validate_catalog(bad_state), "invalid state", "unknown evidence state is rejected")
-	var bad_ceiling := catalog.duplicate(true)
-	bad_ceiling.sources["rideforcesdb.tormenta.6383"].initial_state = "observation_only"
-	_expect_contains(errors, fidelity.validate_catalog(bad_ceiling), "permission ceiling", "source state cannot exceed its initial permission ceiling")
-	var bad_permissions := catalog.duplicate(true)
-	bad_permissions.sources["rideforcesdb.tormenta.6383"].permitted_axes.append("pitch_deg")
-	_expect_contains(errors, fidelity.validate_catalog(bad_permissions), "permitted_axes", "non-force permitted axes are rejected")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["unknown evidence state is rejected", "invalid state", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].state = "trusted"],
+		["source state cannot exceed its initial permission ceiling", "permission ceiling", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].initial_state = "observation_only"],
+		["non-force permitted axes are rejected", "permitted_axes", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].permitted_axes.append("pitch_deg")],
+	])
 	var malformed_source := catalog.duplicate(true)
 	malformed_source.sources["rideforcesdb.tormenta.6383"].caveats = null
 	malformed_source.sources["rideforcesdb.tormenta.6383"].permitted_axes = "normal_g"
@@ -358,144 +343,97 @@ static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringAr
 	bad_union.sources["rideforcesdb.tormenta.6383"].artifact_path = "docs/evidence/fidelity/rideforcesdb/6383-raw.json"
 	bad_union.sources["rideforcesdb.tormenta.6383"].artifact_sha256 = "d".repeat(64)
 	_expect_contains(errors, fidelity.validate_catalog(bad_union), "acquisition", "acquisition branches cannot be mixed")
-	var missing_fallback := catalog.duplicate(true)
-	missing_fallback.sources["rideforcesdb.tormenta.6383"].erase("fallback_citations")
-	_expect_contains(errors, fidelity.validate_catalog(missing_fallback), "fallback_citations", "unavailable raw acquisition keeps structured fallback citations")
-	var bad_path := catalog.duplicate(true)
-	bad_path.sources["rideforcesdb.tormenta.6383"].diagnostic_path = "../6383-diagnostic.json"
-	_expect_contains(errors, fidelity.validate_catalog(bad_path), "diagnostic_path", "artifact paths cannot traverse parents")
-	var bad_hash := catalog.duplicate(true)
-	bad_hash.sources["rideforcesdb.tormenta.6383"].diagnostic_sha256 = "abc"
-	_expect_contains(errors, fidelity.validate_catalog(bad_hash), "diagnostic_sha256", "non-SHA-256 digest is rejected")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["unavailable raw acquisition keeps structured fallback citations", "fallback_citations", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].erase("fallback_citations")],
+		["artifact paths cannot traverse parents", "diagnostic_path", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].diagnostic_path = "../6383-diagnostic.json"],
+		["non-SHA-256 digest is rejected", "diagnostic_sha256", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].diagnostic_sha256 = "abc"],
+	])
 	var bad_metadata_union := catalog.duplicate(true)
 	bad_metadata_union.sources["youtube.falcon.sdXGD9kMR7s"].metadata_diagnostic_path = "docs/evidence/fidelity/youtube/sdXGD9kMR7s-oembed.json"
 	bad_metadata_union.sources["youtube.falcon.sdXGD9kMR7s"].metadata_diagnostic_sha256 = "d".repeat(64)
 	_expect_contains(errors, fidelity.validate_catalog(bad_metadata_union), "metadata", "metadata provenance branches cannot be mixed")
-	var bad_anchor := catalog.duplicate(true)
-	bad_anchor.selectors["semantic.act1.loop.core"].erase("compiled_anchor")
-	_expect_contains(errors, fidelity.validate_catalog(bad_anchor), "compiled_anchor", "selectors require compiled anchors")
-	var bad_role := catalog.duplicate(true)
-	bad_role.selectors["semantic.act1.loop.core"].legacy_anchor.window_role = "core"
-	_expect_contains(errors, fidelity.validate_catalog(bad_role), "window_role", "legacy anchors only permit whole")
-	for anchor_case in [
-		["legacy_anchor", "phase", 42], ["legacy_anchor", "kind", []],
-		["compiled_anchor", "story_slot_id", NAN], ["compiled_anchor", "window_role", true],
-	]:
-		var bad_anchor_type := catalog.duplicate(true)
-		bad_anchor_type.selectors["semantic.act1.loop.core"][anchor_case[0]][anchor_case[1]] = anchor_case[2]
-		_expect_contains(
-			errors, fidelity.validate_catalog(bad_anchor_type), anchor_case[0],
-			"%s %s requires a non-empty String" % [anchor_case[0], anchor_case[1]]
-		)
-	var bad_transform := catalog.duplicate(true)
-	bad_transform.transforms["fictional.gz-positive@1"].axis = "longitudinal_g"
-	_expect_contains(errors, fidelity.validate_catalog(bad_transform), "Gx+", "unsupported positive longitudinal transform is rejected")
-	var bad_formula := catalog.duplicate(true)
-	bad_formula.transforms["fictional.gz-positive@1"].formula = "target_force_g = observed_force_g"
-	_expect_contains(errors, fidelity.validate_catalog(bad_formula), "formula", "approved transform formula is immutable")
-	var bad_approval := catalog.duplicate(true)
-	bad_approval.transforms["fictional.gz-positive@1"].approval = "rejected"
-	_expect_contains(errors, fidelity.validate_catalog(bad_approval), "approval provenance", "approved transform provenance is immutable")
-	var bad_date := catalog.duplicate(true)
-	bad_date.sources["rideforcesdb.tormenta.6383"].retrieved_on = "2026-99-99"
-	_expect_contains(errors, fidelity.validate_catalog(bad_date), "retrieved_on", "impossible retrieval dates are rejected")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["selectors require compiled anchors", "compiled_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].erase("compiled_anchor")],
+		["legacy anchors only permit whole", "window_role", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].legacy_anchor.window_role = "core"],
+	])
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["legacy_anchor phase requires a non-empty String", "legacy_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].legacy_anchor.phase = 42],
+		["legacy_anchor kind requires a non-empty String", "legacy_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].legacy_anchor.kind = []],
+		["compiled_anchor story_slot_id requires a non-empty String", "compiled_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].compiled_anchor.story_slot_id = NAN],
+		["compiled_anchor window_role requires a non-empty String", "compiled_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].compiled_anchor.window_role = true],
+	])
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["unsupported positive longitudinal transform is rejected", "Gx+", func(value: Dictionary): value.transforms["fictional.gz-positive@1"].axis = "longitudinal_g"],
+		["approved transform formula is immutable", "formula", func(value: Dictionary): value.transforms["fictional.gz-positive@1"].formula = "target_force_g = observed_force_g"],
+		["approved transform provenance is immutable", "approval provenance", func(value: Dictionary): value.transforms["fictional.gz-positive@1"].approval = "rejected"],
+		["impossible retrieval dates are rejected", "retrieved_on", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].retrieved_on = "2026-99-99"],
+	])
 	var duplicate := catalog.duplicate(true)
 	duplicate.review_prompts = [
 		{"id": "review.same", "category": "feel", "prompt": "First", "source_ids": [], "issues": [1]},
 		{"id": "review.same", "category": "feel", "prompt": "Second", "source_ids": [], "issues": [2]},
 	]
 	_expect_contains(errors, fidelity.validate_catalog(duplicate), "duplicate id", "record IDs are unique across collections")
-	if not _script_has_method(fidelity, "validate_catalog_artifacts"):
-		errors.append("RideFidelity.validate_catalog_artifacts is missing")
-	else:
-		_expect(errors, fidelity.validate_catalog_artifacts(catalog).is_empty(), "committed fixture artifacts validate offline")
-		var missing_artifact := catalog.duplicate(true)
-		missing_artifact.sources["rideforcesdb.tormenta.6383"].diagnostic_path = "docs/evidence/fidelity/missing.json"
-		_expect_contains(errors, fidelity.validate_catalog_artifacts(missing_artifact), "missing", "missing evidence artifact is rejected")
-		var mismatched_artifact := catalog.duplicate(true)
-		mismatched_artifact.sources["rideforcesdb.tormenta.6383"].diagnostic_sha256 = "0".repeat(64)
-		_expect_contains(errors, fidelity.validate_catalog_artifacts(mismatched_artifact), "digest mismatch", "artifact hash mismatches are rejected")
+	_expect(errors, fidelity.validate_catalog_artifacts(catalog).is_empty(), "committed fixture artifacts validate offline")
+	var missing_artifact := catalog.duplicate(true)
+	missing_artifact.sources["rideforcesdb.tormenta.6383"].diagnostic_path = "docs/evidence/fidelity/missing.json"
+	_expect_contains(errors, fidelity.validate_catalog_artifacts(missing_artifact), "missing", "missing evidence artifact is rejected")
+	var mismatched_artifact := catalog.duplicate(true)
+	mismatched_artifact.sources["rideforcesdb.tormenta.6383"].diagnostic_sha256 = "0".repeat(64)
+	_expect_contains(errors, fidelity.validate_catalog_artifacts(mismatched_artifact), "digest mismatch", "artifact hash mismatches are rejected")
 
 
 static func _test_executable_promotion(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _valid_promotion_catalog()
 	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "independently corroborated source-local observation and derived target validate")
-	var no_corroboration := catalog.duplicate(true)
-	no_corroboration.observations[0].corroborating_observation_ids = []
-	_expect_contains(errors, fidelity.validate_catalog(no_corroboration), "requires corroboration", "corroborative source cannot promote alone")
-	var self_corroboration := catalog.duplicate(true)
-	self_corroboration.observations[0].corroborating_observation_ids = ["tormenta.loop.primary"]
-	_expect_contains(errors, fidelity.validate_catalog(self_corroboration), "independent", "an observation cannot corroborate itself")
-	var dangling_corroboration := catalog.duplicate(true)
-	dangling_corroboration.observations[1].corroborating_observation_ids = ["missing"]
-	_expect_contains(errors, fidelity.validate_catalog(dangling_corroboration), "non-executable", "corroborative observations cannot carry unchecked links")
-	var bad_window := catalog.duplicate(true)
-	bad_window.observations[0].source_window_id = "invented.window"
-	_expect_contains(errors, fidelity.validate_catalog(bad_window), "source_window_id", "observations resolve declared source-local windows")
-	var malformed_range := catalog.duplicate(true)
-	malformed_range.observations[0].raw_range = [{}, {}]
-	_expect_contains(errors, fidelity.validate_catalog(malformed_range), "invalid raw_range", "malformed ranges return diagnostics instead of raising")
-	var bad_alignment := catalog.duplicate(true)
-	bad_alignment.observations[0].alignment.source_landmark_id = "invented.landmark"
-	_expect_contains(errors, fidelity.validate_catalog(bad_alignment), "source_landmark_id", "alignment resolves the selected source window")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["corroborative source cannot promote alone", "requires corroboration", func(value: Dictionary): value.observations[0].corroborating_observation_ids = []],
+		["an observation cannot corroborate itself", "independent", func(value: Dictionary): value.observations[0].corroborating_observation_ids = ["tormenta.loop.primary"]],
+		["corroborative observations cannot carry unchecked links", "non-executable", func(value: Dictionary): value.observations[1].corroborating_observation_ids = ["missing"]],
+		["observations resolve declared source-local windows", "source_window_id", func(value: Dictionary): value.observations[0].source_window_id = "invented.window"],
+		["malformed ranges return diagnostics instead of raising", "invalid raw_range", func(value: Dictionary): value.observations[0].raw_range = [{}, {}]],
+		["alignment resolves the selected source window", "source_landmark_id", func(value: Dictionary): value.observations[0].alignment.source_landmark_id = "invented.landmark"],
+	])
 	var bad_ceiling := catalog.duplicate(true)
 	bad_ceiling.sources["test.primary"].initial_state = "observation_only"
 	bad_ceiling.sources["test.primary"].state = "observation_only"
 	_expect_contains(errors, fidelity.validate_catalog(bad_ceiling), "permission ceiling", "observation-only sources cannot promote force evidence")
-	var wrong_selector := catalog.duplicate(true)
-	wrong_selector.targets[0].semantic_selector_id = "missing"
-	_expect_contains(errors, fidelity.validate_catalog(wrong_selector), "must match observation", "target selector is derived from its observation")
-	var invented_raw := catalog.duplicate(true)
-	invented_raw.targets[0].raw_range = [2.1, 3.0]
-	_expect_contains(errors, fidelity.validate_catalog(invented_raw), "raw_range", "target raw range is derived from its observation")
-	var invented_target := catalog.duplicate(true)
-	invented_target.targets[0].target_range = [999.0, 1000.0]
-	_expect_contains(errors, fidelity.validate_catalog(invented_target), "target_range", "target range is derived by the approved transform")
-	var missing_observation := catalog.duplicate(true)
-	missing_observation.targets[0].observation_id = "missing"
-	_expect_contains(errors, fidelity.validate_catalog(missing_observation), "unknown observation", "targets require an executable observation")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["target selector is derived from its observation", "must match observation", func(value: Dictionary): value.targets[0].semantic_selector_id = "missing"],
+		["target raw range is derived from its observation", "raw_range", func(value: Dictionary): value.targets[0].raw_range = [2.1, 3.0]],
+		["target range is derived by the approved transform", "target_range", func(value: Dictionary): value.targets[0].target_range = [999.0, 1000.0]],
+		["targets require an executable observation", "unknown observation", func(value: Dictionary): value.targets[0].observation_id = "missing"],
+	])
 
 
 static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _valid_promotion_catalog()
 	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "comparison execution policy validates")
-	var missing_aggregation := catalog.duplicate(true)
-	missing_aggregation.targets[0].erase("aggregation")
-	_expect_contains(errors, fidelity.validate_catalog(missing_aggregation), "aggregation", "targets require an aggregation policy")
-	for reducer in ["sum", "time_weighted_sum", "unknown"]:
-		var bad_row := catalog.duplicate(true)
-		bad_row.targets[0].aggregation.row = reducer
-		_expect_contains(errors, fidelity.validate_catalog(bad_row), "aggregation", "row reducer %s is rejected" % reducer)
-		var bad_beat := catalog.duplicate(true)
-		bad_beat.targets[0].aggregation.beat = reducer
-		_expect_contains(errors, fidelity.validate_catalog(bad_beat), "aggregation", "beat reducer %s is rejected" % reducer)
-	var weighted_seed := catalog.duplicate(true)
-	weighted_seed.targets[0].aggregation.seed = "time_weighted_mean"
-	_expect_contains(errors, fidelity.validate_catalog(weighted_seed), "aggregation", "seed reduction cannot be time weighted")
-	var malformed_aggregation := catalog.duplicate(true)
-	malformed_aggregation.targets[0].aggregation = {"row": "median", "beat": "median", "seed": "median", "extra": "median"}
-	_expect_contains(errors, fidelity.validate_catalog(malformed_aggregation), "aggregation", "aggregation fields are exact")
-	for key in ["row", "beat", "seed"]:
-		var missing_reducer := catalog.duplicate(true)
-		missing_reducer.targets[0].aggregation.erase(key)
-		_expect_contains(errors, fidelity.validate_catalog(missing_reducer), "aggregation", "aggregation requires %s" % key)
-	for reducer in ["sum", "time_weighted_sum", "time_weighted_mean", "unknown"]:
-		var bad_seed := catalog.duplicate(true)
-		bad_seed.targets[0].aggregation.seed = reducer
-		_expect_contains(errors, fidelity.validate_catalog(bad_seed), "aggregation", "seed reducer %s is rejected" % reducer)
-	var non_dictionary_aggregation := catalog.duplicate(true)
-	non_dictionary_aggregation.targets[0].aggregation = ["median", "median", "median"]
-	_expect_contains(errors, fidelity.validate_catalog(non_dictionary_aggregation), "aggregation", "aggregation must be a Dictionary")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["targets require an aggregation policy", "aggregation", func(value: Dictionary): value.targets[0].erase("aggregation")],
+		["row reducer sum is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.row = "sum"],
+		["beat reducer sum is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.beat = "sum"],
+		["row reducer time_weighted_sum is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.row = "time_weighted_sum"],
+		["beat reducer time_weighted_sum is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.beat = "time_weighted_sum"],
+		["row reducer unknown is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.row = "unknown"],
+		["beat reducer unknown is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.beat = "unknown"],
+		["seed reduction cannot be time weighted", "aggregation", func(value: Dictionary): value.targets[0].aggregation.seed = "time_weighted_mean"],
+		["aggregation fields are exact", "aggregation", func(value: Dictionary): value.targets[0].aggregation = {"row": "median", "beat": "median", "seed": "median", "extra": "median"}],
+		["aggregation requires row", "aggregation", func(value: Dictionary): value.targets[0].aggregation.erase("row")],
+		["aggregation requires beat", "aggregation", func(value: Dictionary): value.targets[0].aggregation.erase("beat")],
+		["aggregation requires seed", "aggregation", func(value: Dictionary): value.targets[0].aggregation.erase("seed")],
+		["seed reducer sum is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.seed = "sum"],
+		["seed reducer time_weighted_sum is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.seed = "time_weighted_sum"],
+		["seed reducer time_weighted_mean is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.seed = "time_weighted_mean"],
+		["seed reducer unknown is rejected", "aggregation", func(value: Dictionary): value.targets[0].aggregation.seed = "unknown"],
+		["aggregation must be a Dictionary", "aggregation", func(value: Dictionary): value.targets[0].aggregation = ["median", "median", "median"]],
+	])
 
-	var missing_row_selector := catalog.duplicate(true)
-	missing_row_selector.observations[0].alignment.erase("generated_row_selector")
-	_expect_contains(errors, fidelity.validate_catalog(missing_row_selector), "generated_row_selector", "alignment requires a generated row selector field")
-	var independent_with_selector := catalog.duplicate(true)
-	independent_with_selector.observations[0].alignment.row_compatibility = "row-independent"
-	_expect_contains(errors, fidelity.validate_catalog(independent_with_selector), "generated_row_selector", "row-independent alignment requires null row selector")
-	var same_row_without_selector := catalog.duplicate(true)
-	same_row_without_selector.observations[0].alignment.generated_row_selector = null
-	_expect_contains(errors, fidelity.validate_catalog(same_row_without_selector), "generated_row_selector", "same-row alignment requires an exact row selector")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["alignment requires a generated row selector field", "generated_row_selector", func(value: Dictionary): value.observations[0].alignment.erase("generated_row_selector")],
+		["row-independent alignment requires null row selector", "generated_row_selector", func(value: Dictionary): value.observations[0].alignment.row_compatibility = "row-independent"],
+		["same-row alignment requires an exact row selector", "generated_row_selector", func(value: Dictionary): value.observations[0].alignment.generated_row_selector = null],
+	])
 	var transformed_without_selector := catalog.duplicate(true)
 	transformed_without_selector.observations[0].alignment.row_compatibility = "explicit-row-transform"
 	transformed_without_selector.observations[0].alignment.generated_row_selector = null
@@ -503,15 +441,11 @@ static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedSt
 	var transformed_with_selector := catalog.duplicate(true)
 	transformed_with_selector.observations[0].alignment.row_compatibility = "explicit-row-transform"
 	_expect(errors, fidelity.validate_catalog(transformed_with_selector).is_empty(), "explicit-row-transform accepts an exact selector")
-	var multiple_selector_fields := catalog.duplicate(true)
-	multiple_selector_fields.observations[0].alignment.generated_row_selector = {"row_id": "row-02", "position": "rear"}
-	_expect_contains(errors, fidelity.validate_catalog(multiple_selector_fields), "generated_row_selector", "row selector has exactly one field")
-	var bad_position := catalog.duplicate(true)
-	bad_position.observations[0].alignment.generated_row_selector = {"position": "middle"}
-	_expect_contains(errors, fidelity.validate_catalog(bad_position), "generated_row_selector", "row selector position is exact")
-	var bad_offset := catalog.duplicate(true)
-	bad_offset.observations[0].alignment.generated_row_selector = {"offset": NAN}
-	_expect_contains(errors, fidelity.validate_catalog(bad_offset), "generated_row_selector", "row selector offset is finite")
+	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
+		["row selector has exactly one field", "generated_row_selector", func(value: Dictionary): value.observations[0].alignment.generated_row_selector = {"row_id": "row-02", "position": "rear"}],
+		["row selector position is exact", "generated_row_selector", func(value: Dictionary): value.observations[0].alignment.generated_row_selector = {"position": "middle"}],
+		["row selector offset is finite", "generated_row_selector", func(value: Dictionary): value.observations[0].alignment.generated_row_selector = {"offset": NAN}],
+	])
 	for malformed_selector in [
 		[], {"unknown": "row-01"}, {"row_id": ""}, {"row_id": 2}, {"position": null},
 		{"offset": 2}, {"offset": "2.0"},
@@ -545,9 +479,6 @@ static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedSt
 
 
 static func _test_route_measurements(fidelity: Script, errors: PackedStringArray) -> void:
-	if not _script_has_method(fidelity, "measure_route"):
-		errors.append("RideFidelity.measure_route is missing")
-		return
 	var measured: Dictionary = fidelity.measure_route(_measurement_route(), [0.0, 2.0])
 	_expect(errors, measured.get("beats", []).size() == 3, "measurement retains composite, grade, and closure beats")
 	if measured.get("beats", []).is_empty():
@@ -578,9 +509,8 @@ static func _test_reference_catalog(fidelity: Script, errors: PackedStringArray)
 	var catalog: Dictionary = references.CATALOG
 	for error in fidelity.validate_catalog(catalog):
 		errors.append("reference catalog: %s" % error)
-	if _script_has_method(fidelity, "validate_catalog_artifacts"):
-		for error in fidelity.validate_catalog_artifacts(catalog):
-			errors.append("reference catalog artifact: %s" % error)
+	for error in fidelity.validate_catalog_artifacts(catalog):
+		errors.append("reference catalog artifact: %s" % error)
 	_test_manifest_parity(catalog, errors)
 	var covered := {}
 	for collection in [catalog.get("targets", []), catalog.get("review_prompts", []), catalog.get("evidence_gaps", [])]:
@@ -627,15 +557,6 @@ static func _test_manifest_parity(catalog: Dictionary, errors: PackedStringArray
 	actual_ids.sort()
 	_expect(errors, actual_ids == expected_ids, "reference catalog source IDs exactly match the manifest")
 	_expect(errors, catalog.get("selectors", {}).is_empty(), "baseline catalog has no unreferenced semantic selectors")
-
-
-static func _require_comparison_api(fidelity: Script, errors: PackedStringArray) -> bool:
-	var available := true
-	for method_name in ["classify_value", "normalized_miss", "compare_fleet"]:
-		if not _script_has_method(fidelity, method_name):
-			errors.append("RideFidelity.%s is missing" % method_name)
-			available = false
-	return available
 
 
 static func _test_target_classification(fidelity: Script, errors: PackedStringArray) -> void:
@@ -859,6 +780,9 @@ static func _test_observed_only_and_evidence_gaps(fidelity: Script, errors: Pack
 
 static func _test_fleet_validation(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _comparison_catalog()
+	var isolated := _held_comparison_fleet([0, 1])
+	isolated[0].beats[0].rows[0].loads.normal_held_positive["0.80"] = 99.0
+	_expect(errors, isolated[1].beats[0].rows[0].loads.normal_held_positive["0.80"] == 1.5, "nested seed-0 mutation does not leak into seed-1 fixture")
 	var catalog_invalid := catalog.duplicate(true)
 	catalog_invalid.targets[0].erase("aggregation")
 	_expect(errors, fidelity.compare_fleet([], catalog_invalid) == {"status": "invalid-input", "reason": "catalog-invalid"}, "catalog validation has first precedence")
@@ -1043,8 +967,10 @@ static func _test_recommendation_ranking(fidelity: Script, errors: PackedStringA
 
 static func _test_comparison_determinism(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _comparison_catalog()
+	var catalog_before := catalog.duplicate(true)
 	var fleet := _comparison_fleet(CANONICAL_FLEET)
 	var comparison: Dictionary = fidelity.compare_fleet(fleet, catalog)
+	_expect(errors, catalog == catalog_before, "comparison does not reorder its catalog inputs")
 	var expected_top_keys := PackedStringArray(["fleet", "findings", "observed_only", "evidence_gaps", "recommendation"])
 	var actual_top_keys := PackedStringArray(comparison.keys())
 	expected_top_keys.sort()
@@ -1081,6 +1007,12 @@ static func _test_comparison_determinism(fidelity: Script, errors: PackedStringA
 	_expect(errors, comparison.get("findings", []) == perturbed_comparison.get("findings", []), "dictionary insertion order does not affect findings")
 	_expect(errors, _count_dictionary_key(comparison, "score") == 0, "comparison recursively forbids score")
 	_expect(errors, _count_dictionary_key(comparison, "total_score") == 0, "comparison recursively forbids total_score")
+	if not finding.is_empty():
+		finding.anchor.kind = "mutated"
+		finding.aggregation.row = "maximum"
+		finding.raw_range[0] = -999.0
+		finding.target_range[0] = -999.0
+		_expect(errors, catalog == catalog_before, "returned finding fields cannot mutate the catalog")
 
 
 static func _first_finding(comparison: Dictionary, errors: PackedStringArray, message: String) -> Dictionary:
@@ -1672,71 +1604,65 @@ static func _compiled_reducer_fleet(seeds: Array) -> Array:
 	return fleet
 
 
-static func _held_comparison_fleet(seeds: Array) -> Array:
+static func _repeat_measurement_template(seeds: Array, template: Dictionary) -> Array:
 	var fleet := []
 	for seed_value in seeds:
-		fleet.append({
-			"schema_version": 1, "seed": seed_value,
-			"beats": [_legacy_comparison_beat(
-				"legacy-held", "act one", "hill",
-				[_comparison_row("row-01", "front", 0.0, 5.0, 1.5, "normal_held_positive", 0.8)]
-			)],
-		})
+		var measurement := template.duplicate(true)
+		measurement.seed = seed_value
+		fleet.append(measurement)
 	return fleet
+
+
+static func _held_comparison_fleet(seeds: Array) -> Array:
+	return _repeat_measurement_template(seeds, {
+		"schema_version": 1, "seed": 0,
+		"beats": [_legacy_comparison_beat(
+			"legacy-held", "act one", "hill",
+			[_comparison_row("row-01", "front", 0.0, 5.0, 1.5, "normal_held_positive", 0.8)]
+		)],
+	})
 
 
 static func _legacy_occurrence_fleet(seeds: Array) -> Array:
-	var fleet := []
-	for seed_value in seeds:
-		fleet.append({
-			"schema_version": 1, "seed": seed_value,
-			"beats": [
-				_legacy_comparison_beat("legacy-match-01", "act one", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 1.0)], 99),
-				_legacy_comparison_beat("legacy-wrong-kind", "act one", "turn", [_comparison_row("row-01", "front", 0.0, 1.0, 99.0)], 0),
-				_legacy_comparison_beat("legacy-wrong-phase", "other", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 98.0)], 0),
-				_legacy_comparison_beat("legacy-match-02", "act one", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 3.0)], 0),
-			],
-		})
-	return fleet
+	return _repeat_measurement_template(seeds, {
+		"schema_version": 1, "seed": 0,
+		"beats": [
+			_legacy_comparison_beat("legacy-match-01", "act one", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 1.0)], 99),
+			_legacy_comparison_beat("legacy-wrong-kind", "act one", "turn", [_comparison_row("row-01", "front", 0.0, 1.0, 99.0)], 0),
+			_legacy_comparison_beat("legacy-wrong-phase", "other", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 98.0)], 0),
+			_legacy_comparison_beat("legacy-match-02", "act one", "hill", [_comparison_row("row-01", "front", 0.0, 1.0, 3.0)], 0),
+		],
+	})
 
 
 static func _compiled_fallback_trap_fleet(seeds: Array) -> Array:
-	var fleet := []
-	for seed_value in seeds:
-		var beat := _compiled_comparison_beat(
-			"compiled-wrong", "wrong.slot", "core",
-			[_comparison_row("row-01", "front", 0.0, 2.0, 1.5)]
-		)
-		beat.phase = "act one"
-		beat.kind = "hill"
-		fleet.append({"schema_version": 2, "seed": seed_value, "beats": [beat]})
-	return fleet
+	var beat := _compiled_comparison_beat(
+		"compiled-wrong", "wrong.slot", "core",
+		[_comparison_row("row-01", "front", 0.0, 2.0, 1.5)]
+	)
+	beat.phase = "act one"
+	beat.kind = "hill"
+	return _repeat_measurement_template(seeds, {"schema_version": 2, "seed": 0, "beats": [beat]})
 
 
 static func _compiled_wrong_role_fleet(seeds: Array) -> Array:
-	var fleet := []
-	for seed_value in seeds:
-		var beat := _compiled_comparison_beat(
-			"compiled-wrong-role", "act1.hill", "entry",
-			[_comparison_row("row-01", "front", 0.0, 2.0, 1.5)]
-		)
-		beat.phase = "act one"
-		beat.kind = "hill"
-		fleet.append({"schema_version": 2, "seed": seed_value, "beats": [beat]})
-	return fleet
+	var beat := _compiled_comparison_beat(
+		"compiled-wrong-role", "act1.hill", "entry",
+		[_comparison_row("row-01", "front", 0.0, 2.0, 1.5)]
+	)
+	beat.phase = "act one"
+	beat.kind = "hill"
+	return _repeat_measurement_template(seeds, {"schema_version": 2, "seed": 0, "beats": [beat]})
 
 
 static func _row_selection_fleet(seeds: Array) -> Array:
-	var fleet := []
-	for seed_value in seeds:
-		fleet.append({
-			"schema_version": 1, "seed": seed_value,
-			"beats": [_legacy_comparison_beat("legacy-hill", "act one", "hill", [
-				_comparison_row("row-01", "front", 0.0, 1.0, 1.0),
-				_comparison_row("row-02", "rear", 2.0, 3.0, 2.0),
-			])],
-		})
-	return fleet
+	return _repeat_measurement_template(seeds, {
+		"schema_version": 1, "seed": 0,
+		"beats": [_legacy_comparison_beat("legacy-hill", "act one", "hill", [
+			_comparison_row("row-01", "front", 0.0, 1.0, 1.0),
+			_comparison_row("row-02", "rear", 2.0, 3.0, 2.0),
+		])],
+	})
 
 
 static func _ambiguous_row_fleet(seeds: Array) -> Array:
@@ -1748,24 +1674,21 @@ static func _ambiguous_row_fleet(seeds: Array) -> Array:
 
 
 static func _observed_only_fleet(seeds: Array) -> Array:
-	var fleet := []
-	for seed_value in seeds:
-		fleet.append({
-			"schema_version": 2, "seed": seed_value,
-			"beats": [
-				_compiled_comparison_beat("target-hill", "act1.hill", "core", [_comparison_row("row-01", "front", 0.0, 2.0, 0.5)]),
-				_compiled_comparison_beat("entry-b", "act1.entry", "entry", [
-					_comparison_row("row-02", "rear", 2.0, 3.0, 6.0),
-					_comparison_row("row-01", "front", 0.0, 1.0, 7.0),
-				]),
-				_compiled_comparison_beat("entry-a", "act1.entry", "entry", [
-					_comparison_row("row-02", "rear", 2.0, 4.0, 8.0),
-					_comparison_row("row-01", "front", 0.0, 2.0, 9.0),
-				]),
-				_compiled_comparison_beat("exit-a", "act1.exit", "exit", [_comparison_row("row-01", "front", 0.0, 1.0, 10.0)]),
-			],
-		})
-	return fleet
+	return _repeat_measurement_template(seeds, {
+		"schema_version": 2, "seed": 0,
+		"beats": [
+			_compiled_comparison_beat("target-hill", "act1.hill", "core", [_comparison_row("row-01", "front", 0.0, 2.0, 0.5)]),
+			_compiled_comparison_beat("entry-b", "act1.entry", "entry", [
+				_comparison_row("row-02", "rear", 2.0, 3.0, 6.0),
+				_comparison_row("row-01", "front", 0.0, 1.0, 7.0),
+			]),
+			_compiled_comparison_beat("entry-a", "act1.entry", "entry", [
+				_comparison_row("row-02", "rear", 2.0, 4.0, 8.0),
+				_comparison_row("row-01", "front", 0.0, 2.0, 9.0),
+			]),
+			_compiled_comparison_beat("exit-a", "act1.exit", "exit", [_comparison_row("row-01", "front", 0.0, 1.0, 10.0)]),
+		],
+	})
 
 
 static func _ranking_catalog(specs: Array) -> Dictionary:
@@ -2070,10 +1993,3 @@ static func _expect_contains(errors: PackedStringArray, values: PackedStringArra
 		if value.contains(needle):
 			return
 	errors.append("%s: %s" % [message, str(values)])
-
-
-static func _script_has_method(script: Script, method_name: String) -> bool:
-	for method in script.get_script_method_list():
-		if method.name == method_name:
-			return true
-	return false

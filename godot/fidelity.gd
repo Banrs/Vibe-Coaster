@@ -240,15 +240,22 @@ static func _comparison_measurement_is_valid(measurement_value: Variant) -> bool
 	var beats_value: Variant = measurement.get("beats")
 	if not beats_value is Array:
 		return false
+	var discriminator_fields := ["phase", "kind"]
+	if int(measurement.schema_version) == 2:
+		discriminator_fields = ["story_slot_id", "window_role"]
 	var beat_ids := {}
 	for beat_value in beats_value:
 		if not beat_value is Dictionary:
 			return false
 		var beat: Dictionary = beat_value
 		var beat_id_value: Variant = beat.get("beat_id")
-		if not beat_id_value is String or str(beat_id_value) == "" or beat_ids.has(beat_id_value):
+		if not _nonempty_string(beat_id_value) or beat_ids.has(beat_id_value):
 			return false
 		beat_ids[beat_id_value] = true
+		for field in discriminator_fields:
+			var discriminator_value: Variant = beat.get(field)
+			if not _nonempty_string(discriminator_value):
+				return false
 		var rows_value: Variant = beat.get("rows")
 		if not rows_value is Array:
 			return false
@@ -258,7 +265,7 @@ static func _comparison_measurement_is_valid(measurement_value: Variant) -> bool
 				return false
 			var row: Dictionary = row_value
 			var row_id_value: Variant = row.get("row_id")
-			if not row_id_value is String or str(row_id_value) == "" or row_ids.has(row_id_value):
+			if not _nonempty_string(row_id_value) or row_ids.has(row_id_value):
 				return false
 			row_ids[row_id_value] = true
 	return true
@@ -293,16 +300,7 @@ static func _resolve_comparison_samples(
 	else:
 		for beat_value in beats:
 			var beat: Dictionary = beat_value
-			var story_slot_value: Variant = beat.get("story_slot_id")
-			var window_role_value: Variant = beat.get("window_role")
-			if (
-				story_slot_value is String
-				and window_role_value is String
-				and str(story_slot_value) != ""
-				and str(window_role_value) != ""
-				and story_slot_value == anchor.story_slot_id
-				and window_role_value == anchor.window_role
-			):
+			if beat.story_slot_id == anchor.story_slot_id and beat.window_role == anchor.window_role:
 				selected_beats.append(beat)
 		selected_beats.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
 			return str(first.beat_id) < str(second.beat_id)
@@ -328,7 +326,10 @@ static func _resolve_comparison_samples(
 				if row_selector.has("row_id"):
 					matches = row.get("row_id") == row_selector.row_id
 				elif row_selector.has("position"):
-					matches = row.get("position") == row_selector.position
+					var position_value: Variant = row.get("position")
+					if position_value not in ["front", "intermediate", "rear"]:
+						return {"invalid": true}
+					matches = position_value == row_selector.position
 				else:
 					if not _finite_number(row.get("offset")):
 						return {"invalid": true}
@@ -349,9 +350,6 @@ static func _resolve_comparison_samples(
 		for row_value in selected_rows:
 			var row: Dictionary = row_value
 			selected_pairs.append({"beat": beat, "row": row})
-	if first_row_gap != "":
-		return {"reason": first_row_gap, "branch": branch, "anchor": anchor}
-
 	var samples := []
 	var first_metric_gap := ""
 	for pair_value in selected_pairs:
@@ -371,6 +369,8 @@ static func _resolve_comparison_samples(
 			"value": float(metric_result.value),
 			"seconds": float(metric_result.seconds),
 		})
+	if first_row_gap != "":
+		return {"reason": first_row_gap, "branch": branch, "anchor": anchor}
 	if first_metric_gap != "":
 		return {"reason": first_metric_gap, "branch": branch, "anchor": anchor}
 	return {"samples": samples, "branch": branch, "anchor": anchor}
@@ -392,26 +392,36 @@ static func _resolve_comparison_metric(row: Dictionary, observation: Dictionary)
 			return {"invalid": true}
 		var held_values: Dictionary = stored_value
 		var hold_key := _hold_key(float(observation.hold_seconds))
-		if held_values.has(hold_key):
+		var unavailable_value: Variant = held_values.get("_unavailable", {})
+		if not unavailable_value is Dictionary:
+			return {"invalid": true}
+		var unavailable: Dictionary = unavailable_value
+		var has_available := held_values.has(hold_key)
+		var has_unavailable := unavailable.has(hold_key)
+		if has_available and has_unavailable:
+			return {"invalid": true}
+		if has_available:
 			if not _finite_number(held_values[hold_key]):
 				return {"invalid": true}
 			return {
 				"value": float(held_values[hold_key]),
 				"seconds": float(observation.hold_seconds),
 			}
-		if held_values.has("_unavailable"):
-			var unavailable_value: Variant = held_values["_unavailable"]
-			if not unavailable_value is Dictionary:
+		if has_unavailable:
+			var record_value: Variant = unavailable[hold_key]
+			if not record_value is Dictionary:
 				return {"invalid": true}
-			var unavailable: Dictionary = unavailable_value
-			if unavailable.has(hold_key):
-				var record_value: Variant = unavailable[hold_key]
-				if not record_value is Dictionary:
-					return {"invalid": true}
-				var record: Dictionary = record_value
-				if record.get("status") != "unavailable" or str(record.get("reason", "")).strip_edges() == "":
-					return {"invalid": true}
-				return {"reason": "metric-unavailable"}
+			var record: Dictionary = record_value
+			var status_value: Variant = record.get("status")
+			var reason_value: Variant = record.get("reason")
+			if (
+				not _nonempty_string(status_value)
+				or status_value != "unavailable"
+				or not _nonempty_string(reason_value)
+				or str(reason_value).strip_edges() == ""
+			):
+				return {"invalid": true}
+			return {"reason": "metric-unavailable"}
 		return {"reason": "metric-not-found"}
 	if not _finite_number(stored_value):
 		return {"invalid": true}
@@ -1512,7 +1522,10 @@ static func _validate_selectors(
 			errors.append("selector '%s' requires legacy_anchor" % selector_id)
 		else:
 			_require_exact_keys(legacy, ["phase", "kind", "occurrence", "window_role"], "selector '%s' legacy_anchor" % selector_id, errors)
-			if str(legacy.get("phase", "")) == "" or str(legacy.get("kind", "")) == "":
+			if (
+				not _nonempty_string(legacy.get("phase"))
+				or not _nonempty_string(legacy.get("kind"))
+			):
 				errors.append("selector '%s' has an incomplete legacy_anchor" % selector_id)
 			if typeof(legacy.get("occurrence")) != TYPE_INT or int(legacy.get("occurrence", -1)) < 0:
 				errors.append("selector '%s' has invalid legacy occurrence" % selector_id)
@@ -1523,7 +1536,10 @@ static func _validate_selectors(
 			errors.append("selector '%s' requires compiled_anchor" % selector_id)
 		else:
 			_require_exact_keys(compiled, ["story_slot_id", "window_role"], "selector '%s' compiled_anchor" % selector_id, errors)
-			if str(compiled.get("story_slot_id", "")) == "" or str(compiled.get("window_role", "")) == "":
+			if (
+				not _nonempty_string(compiled.get("story_slot_id"))
+				or not _nonempty_string(compiled.get("window_role"))
+			):
 				errors.append("selector '%s' has an incomplete compiled_anchor" % selector_id)
 
 
@@ -2320,6 +2336,10 @@ static func _valid_date(value: String) -> bool:
 
 static func _finite_number(value: Variant) -> bool:
 	return typeof(value) in [TYPE_INT, TYPE_FLOAT] and is_finite(float(value))
+
+
+static func _nonempty_string(value: Variant) -> bool:
+	return value is String and str(value) != ""
 
 
 static func _positive_number(value: Variant) -> bool:

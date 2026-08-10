@@ -21,6 +21,11 @@ static func run() -> PackedStringArray:
 	var fidelity: Script = load(FIDELITY_PATH)
 	_test_legacy_input_boundary(errors)
 	_test_held_values(fidelity, errors)
+	_test_exact_duration_hold(fidelity, errors)
+	_test_time_weighted_pacing(fidelity, errors)
+	_test_non_grid_measurement(fidelity, errors)
+	_test_row_windows(fidelity, errors)
+	_test_transition_windows(fidelity, errors)
 	_test_composite_grouping(fidelity, errors)
 	_test_legacy_characterization(fidelity, errors)
 	_test_catalog_validation(fidelity, errors)
@@ -63,6 +68,108 @@ static func _test_held_values(fidelity: Script, errors: PackedStringArray) -> vo
 	_expect_close(errors, fidelity.held(positive, 1.0, 0.02), 2.0, "three samples hold +2 g")
 	_expect_close(errors, fidelity.held(negative, -1.0, 0.02), -1.0, "three samples hold -1 g")
 	_expect(errors, is_inf(fidelity.held(positive, 1.0, 0.05)), "a hold longer than the series returns infinity")
+	_expect_close(errors, fidelity.held(positive, 1.0, 0.0), 2.0, "zero-second hold retains peak semantics")
+
+
+static func _test_exact_duration_hold(fidelity: Script, errors: PackedStringArray) -> void:
+	var exact := PackedFloat32Array()
+	exact.resize(81)
+	exact.fill(-0.75)
+	_expect_close(errors, fidelity.held(exact, -1.0, 0.8), -0.75, "81 samples contain exactly 0.8 seconds at 100 Hz")
+	_expect(errors, fidelity.held(exact, -1.0, 0.804) == -INF, "81 samples do not contain a 0.804-second hold")
+	var non_grid := PackedFloat32Array(exact)
+	non_grid.append(-0.75)
+	_expect_close(errors, fidelity.held(non_grid, -1.0, 0.804), -0.75, "82 samples contain the ceiling interval count for 0.804 seconds")
+
+
+static func _test_time_weighted_pacing(fidelity: Script, errors: PackedStringArray) -> void:
+	var measured: Dictionary = fidelity.measure_route(_irregular_pacing_route(), [0.0])
+	var pacing: Dictionary = measured.beats[0].pacing
+	_expect_close(errors, pacing.dead_zone_share, 0.2 / 1.3, "dead-zone share is weighted by elapsed seconds")
+	_expect_close(errors, pacing.speed_share_200, 1.1 / 1.3, "speed share is weighted by elapsed seconds")
+
+
+static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _moving_window_route(false)
+	var before := route.duplicate(true)
+	var measured: Dictionary = fidelity.measure_route(route, [0.0])
+	_expect(errors, route == before, "non-grid production measurement is read-only")
+	if measured.get("beats", []).size() < 2:
+		errors.append("moving fixture produces the selected beat")
+		return
+	var row: Dictionary = measured.beats[1].rows[0]
+	_expect(errors, row.has("window_start_s") and row.has("window_end_s"), "row reports physical force-window bounds")
+	if row.has("window_start_s"):
+		_expect_close(errors, row.window_start_s, 0.003, "force grid anchors at the non-grid physical beat start")
+	if row.has("window_end_s"):
+		_expect_close(errors, row.window_end_s, 0.913, "force grid stops at the selected beat end")
+	_expect(errors, row.window_seconds >= 0.81, "selected physical window supports a 0.804-second hold without crossing its end")
+	var held_values: Dictionary = row.loads.get("normal_held_positive", {})
+	var selected_held := float(held_values.get("0.80", -INF))
+	_expect(errors, is_finite(selected_held) and selected_held < 2.0, "selected held value excludes the preceding higher-force beat")
+	_expect(errors, not held_values.has("1.00"), "an unavailable hold never emits a numeric sentinel")
+	var unavailable: Dictionary = held_values.get("_unavailable", {}).get("1.00", {})
+	_expect(errors, unavailable.get("status", "") == "unavailable" and unavailable.get("reason", "") == "insufficient_duration", "an unavailable hold reports its physical-duration gap")
+	var selected_band := {}
+	for band in fidelity.element_bands(route):
+		if band.beat_id.ends_with("/selected"):
+			selected_band = band
+	if selected_band.is_empty():
+		errors.append("non-grid element bands retain the selected beat")
+	else:
+		var arbitrary_hold: float = fidelity.held(selected_band.normal, 1.0, 0.804)
+		_expect(errors, is_finite(arbitrary_hold) and arbitrary_hold < 2.0, "production's anchored force grid supports an arbitrary 0.804-second hold")
+	var irregular_route := _moving_window_route(true)
+	var irregular_before := irregular_route.duplicate(true)
+	var irregular: Dictionary = fidelity.measure_route(irregular_route, [0.0])
+	_expect(errors, irregular_route == irregular_before, "irregular-knot production measurement is read-only")
+	if irregular.get("beats", []).size() >= 2:
+		var irregular_held: Dictionary = irregular.beats[1].rows[0].loads.get("normal_held_positive", {})
+		_expect_close(errors, float(irregular_held.get("0.80", -INF)), float(held_values.get("0.80", -INF)), "a collinear native knot outside the selected window leaves the held result unchanged")
+
+
+static func _test_row_windows(fidelity: Script, errors: PackedStringArray) -> void:
+	var bands: Array = fidelity.element_bands(_measurement_route(false), 2.0)
+	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row begins at the shifted first-element start")
+	_expect_close(errors, bands[0].window_end_distance, 12.0, "rear row ends at the shifted first-element end")
+	_expect(errors, bands[-1].window_end_distance <= 40.0, "terminal row window clips instead of wrapping closure data")
+	var attributed := 0
+	for band in fidelity.element_bands(_row_pulse_route(), 2.0):
+		if _array_peak(band.normal) > 1.5:
+			attributed += 1
+	_expect(errors, attributed == 1, "rear-row force pulse is attributed once across shifted element windows")
+
+
+static func _test_transition_windows(fidelity: Script, errors: PackedStringArray) -> void:
+	var measured: Dictionary = fidelity.measure_route(_transition_route(1.5), [0.0])
+	var flow: Dictionary = measured.beats[0].flow
+	_expect(errors, flow.has("transition_before_s") and flow.has("transition_after_s"), "flow reports explicit before/after transition windows")
+	if flow.has("transition_before_s") and flow.has("transition_after_s"):
+		_expect_close(errors, flow.transition_before_s[0], 1.0, "before transition window begins 0.5 seconds before the seam")
+		_expect_close(errors, flow.transition_before_s[1], 1.5, "before transition window ends at the seam")
+		_expect_close(errors, flow.transition_after_s[0], 1.5, "after transition window begins at the seam")
+		_expect_close(errors, flow.transition_after_s[1], 2.0, "after transition window ends 0.5 seconds after the seam")
+	_expect_close(errors, flow.transition_force_swing, 4.0, "transition force swing compares before/after extrema")
+	_expect_close(errors, flow.get("bank_handoff", -INF), 45.0, "transition reports the bank handoff across the seam")
+	_expect_close(errors, flow.get("roll_rate_handoff", -INF), 75.0, "transition reports the roll-rate handoff across the seam")
+	_expect_close(errors, flow.transition_seconds, 1.0, "full before/after transition windows span one second")
+	var half_open: Dictionary = fidelity._time_window_extrema(
+		PackedFloat32Array([0.0, 0.5, 1.0]), PackedFloat32Array([1.0, 1.0, 10.0]), 0.0, 1.0
+	)
+	_expect_close(errors, half_open.maximum, 1.0, "a transition's before window does not double-own its seam sample")
+	var coarse_handoff: float = fidelity._seam_handoff(
+		PackedFloat32Array([0.0, 0.99, 1.0, 1.01, 2.0]),
+		PackedFloat32Array([-20.0, -20.0, 0.0, 25.0, 25.0]), 1.0
+	)
+	var refined_handoff: float = fidelity._seam_handoff(
+		PackedFloat32Array([0.0, 0.99, 0.995, 1.0, 1.01, 2.0]),
+		PackedFloat32Array([-20.0, -20.0, -10.0, 0.0, 25.0, 25.0]), 1.0
+	)
+	_expect_close(errors, coarse_handoff, 45.0, "transition handoff samples fixed physical offsets around the seam")
+	_expect_close(errors, refined_handoff, coarse_handoff, "a collinear native knot does not change transition handoff")
+	var boundary: Dictionary = fidelity.measure_route(_transition_route(0.3), [0.0])
+	var boundary_flow: Dictionary = boundary.beats[0].flow
+	_expect(errors, boundary_flow.get("status", "") == "evidence-gap" and boundary_flow.get("reason", "") == "boundary_unavailable", "boundary-limited transition reports unavailable evidence rather than zero")
 
 
 static func _test_composite_grouping(fidelity: Script, errors: PackedStringArray) -> void:
@@ -377,6 +484,150 @@ static func _measurement_route(shared_element_identity: bool = true) -> Dictiona
 	}
 
 
+static func _irregular_pacing_route() -> Dictionary:
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var curvatures := PackedVector3Array()
+	var banks := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
+	var speeds := PackedFloat32Array([10.0, 60.0, 60.0, 60.0, 10.0])
+	var normal := PackedFloat32Array([1.0, 2.0, 2.0, 2.0, 1.0])
+	var lateral := PackedFloat32Array([0.0, 0.5, 0.5, 0.5, 0.0])
+	var longitudinal := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
+	var roll_rates := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
+	var distances := PackedFloat32Array([0.0, 2.0, 5.0, 11.0, 13.0])
+	var times := PackedFloat32Array([0.0, 0.2, 0.5, 1.1, 1.3])
+	for index in times.size():
+		positions.append(Vector3(distances[index], 5.0, 0.0))
+		tangents.append(Vector3.RIGHT)
+		ups.append(Vector3.UP)
+		rights.append(Vector3.FORWARD)
+		curvatures.append(Vector3.ZERO)
+	return {
+		"seed": 8, "length": 13.0, "duration": 1.3,
+		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
+		"curvatures": curvatures, "banks": banks, "speeds": speeds,
+		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
+		"roll_rates": roll_rates, "distances": distances, "times": times,
+		"sections": [{"kind": "FVD", "name": "pacing", "element": {"kind": "pacing"}, "phase": "act one", "start_index": 0, "end_index": 4}],
+	}
+
+
+static func _moving_window_route(extra_preceding_knot: bool) -> Dictionary:
+	var times := PackedFloat32Array([0.0, 0.003, 0.303, 0.613, 0.913, 0.914, 1.0])
+	var normal := PackedFloat32Array([4.0, 1.5, 1.5, 1.5, 1.5, -3.0, -3.0])
+	if extra_preceding_knot:
+		times.insert(1, 0.0015)
+		normal.insert(1, 2.75)
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var curvatures := PackedVector3Array()
+	var banks := PackedFloat32Array()
+	var speeds := PackedFloat32Array()
+	var lateral := PackedFloat32Array()
+	var longitudinal := PackedFloat32Array()
+	var roll_rates := PackedFloat32Array()
+	var distances := PackedFloat32Array()
+	for index in times.size():
+		var distance := times[index] * 10.0
+		positions.append(Vector3(distance, 5.0, 0.0))
+		tangents.append(Vector3.RIGHT)
+		ups.append(Vector3.UP)
+		rights.append(Vector3.FORWARD)
+		curvatures.append(Vector3.ZERO)
+		banks.append(0.0)
+		speeds.append(10.0)
+		lateral.append(0.0)
+		longitudinal.append(0.0)
+		roll_rates.append(0.0)
+		distances.append(distance)
+	var selected_first := 2 if extra_preceding_knot else 1
+	var selected_last := selected_first + 3
+	return {
+		"seed": 9, "length": distances[-1], "duration": times[-1],
+		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
+		"curvatures": curvatures, "banks": banks, "speeds": speeds,
+		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
+		"roll_rates": roll_rates, "distances": distances, "times": times,
+		"sections": [
+			{"kind": "FVD", "name": "before", "element": {"kind": "before"}, "phase": "act one", "start_index": 0, "end_index": selected_first},
+			{"kind": "FVD", "name": "selected", "element": {"kind": "selected"}, "phase": "act one", "start_index": selected_first, "end_index": selected_last},
+			{"kind": "GRADE", "name": "after", "element": {}, "phase": "act one", "start_index": selected_last, "end_index": times.size() - 1},
+		],
+	}
+
+
+static func _row_pulse_route() -> Dictionary:
+	var route := _measurement_route(false)
+	# Keep the pulse off the shared section endpoint: interpolation and the causal load filter
+	# legitimately spread a seam impulse across both physical windows.
+	route.curvatures[11] = Vector3(0.0, 0.5, 0.0)
+	return route
+
+
+static func _transition_route(seam_seconds: float) -> Dictionary:
+	var route := _uniform_route(3.0)
+	var seam := roundi(seam_seconds * 100.0)
+	for index in route.times.size():
+		if index < seam:
+			route.banks[index] = -20.0
+			route.roll_rates[index] = -30.0
+		elif index > seam:
+			route.banks[index] = 25.0
+			route.roll_rates[index] = 45.0
+		if index >= seam - 50 and index < seam:
+			route.normal_g[index] = 3.0
+		elif index > seam and index <= seam + 50:
+			route.normal_g[index] = -1.0
+	route.sections = [
+		{"kind": "FVD", "name": "before", "element": {"kind": "before"}, "phase": "act one", "start_index": 0, "end_index": seam},
+		{"kind": "FVD", "name": "after", "element": {"kind": "after"}, "phase": "act one", "start_index": seam, "end_index": route.times.size() - 1},
+	]
+	return route
+
+
+static func _uniform_route(seconds: float) -> Dictionary:
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var curvatures := PackedVector3Array()
+	var scalar := PackedFloat32Array()
+	var count := roundi(seconds * 100.0) + 1
+	for index in count:
+		var time := index * 0.01
+		positions.append(Vector3(time * 10.0, 5.0, 0.0))
+		tangents.append(Vector3.RIGHT)
+		ups.append(Vector3.UP)
+		rights.append(Vector3.FORWARD)
+		curvatures.append(Vector3.ZERO)
+		scalar.append(0.0)
+	var normal := PackedFloat32Array(scalar)
+	normal.fill(1.0)
+	var speeds := PackedFloat32Array(scalar)
+	speeds.fill(10.0)
+	var distances := PackedFloat32Array(scalar)
+	for index in count:
+		distances[index] = index * 0.1
+	return {
+		"seed": 10, "length": distances[-1], "duration": seconds,
+		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
+		"curvatures": curvatures, "banks": PackedFloat32Array(scalar), "speeds": speeds,
+		"normal_g": normal, "lateral_g": PackedFloat32Array(scalar), "longitudinal_g": PackedFloat32Array(scalar),
+		"roll_rates": PackedFloat32Array(scalar), "distances": distances, "times": _times_100hz(count), "sections": [],
+	}
+
+
+static func _times_100hz(count: int) -> PackedFloat32Array:
+	var times := PackedFloat32Array()
+	for index in count:
+		times.append(index * 0.01)
+	return times
+
+
 static func _legacy_characterization_route() -> Dictionary:
 	var route := _measurement_route(false)
 	route["sections"][0]["element"] = route.sections[1].element
@@ -537,6 +788,13 @@ static func _expect(errors: PackedStringArray, condition: bool, message: String)
 static func _expect_close(errors: PackedStringArray, actual: float, expected: float, message: String) -> void:
 	if not is_equal_approx(actual, expected):
 		errors.append("%s: got %s, expected %s" % [message, actual, expected])
+
+
+static func _array_peak(values: PackedFloat32Array) -> float:
+	var peak := -INF
+	for value in values:
+		peak = maxf(peak, value)
+	return peak
 
 
 static func _expect_contains(errors: PackedStringArray, values: PackedStringArray, needle: String, message: String) -> void:

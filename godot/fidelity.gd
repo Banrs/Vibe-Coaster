@@ -17,20 +17,27 @@ const METRICS := [
 	"duration", "speed_loss", "average_speed", "dead_zone_share",
 	"speed_share_100", "speed_share_200", "flat_seconds", "beat_count",
 	"agl_min", "agl_median", "agl_max", "terrain_hugging_share",
-	"transition_force_swing", "transition_seconds", "bank_handoff",
+	"transition_force_swing", "transition_seconds", "bank_handoff", "roll_rate_handoff",
 	"flat_dwell", "same_kind_adjacency",
 ]
 const HOLD_SECONDS := [0.2, 0.5, 0.8, 1.0, 1.1, 1.4, 2.0, 2.4, 2.78, 3.0, 4.0, 6.8, 12.0]
 const TERRAIN_HUGGING_AGL := 20.0
+const TRANSITION_WINDOW_SECONDS := 0.5
 
 
 ## Largest value a window sustains for `seconds`, signed by `polarity`. This is the same
 ## held-curve convention used by the load verifier and the smoke fidelity bands.
 static func held(values: PackedFloat32Array, polarity: float, seconds: float) -> float:
-	var window := roundi(seconds * Verify.SAMPLE_HZ) + 1
-	if window >= values.size():
+	if not is_finite(seconds) or seconds < 0.0 or values.is_empty():
+		return -INF
+	var window := _hold_window_samples(seconds)
+	if window > values.size():
 		return -INF
 	return Verify._held_curve(values, polarity)[window] * polarity
+
+
+static func _hold_window_samples(seconds: float) -> int:
+	return ceili(seconds * Verify.SAMPLE_HZ - 1e-9) + 1
 
 
 ## One filtered band per flown beat. Consecutive FVD sections that carry the same element
@@ -68,6 +75,8 @@ static func measure_route(route: Dictionary, row_offsets: Array) -> Dictionary:
 				"offset": float(row_offsets[row_index]),
 				"window_start_distance": band.window_start_distance,
 				"window_end_distance": band.window_end_distance,
+				"window_start_s": band.window_start_s,
+				"window_end_s": band.window_end_s,
 				"window_seconds": band.seconds,
 				"loads": _load_metrics(band),
 			})
@@ -182,21 +191,28 @@ static func _bands_for_row(
 	var longitudinal: PackedFloat32Array = series.longitudinal
 	var roll: PackedFloat32Array = series.roll
 	var bands := []
-	var route_length := float(route.get("length", route.distances[-1]))
-	for beat in beats:
+	var route_start_distance := float(route.distances[0])
+	var route_end_distance := float(route.distances[-1])
+	for beat_index in beats.size():
+		var beat: Dictionary = beats[beat_index]
 		var start_distance: float = route.distances[beat.first]
 		var end_distance: float = route.distances[beat.last]
-		var window_start := minf(start_distance + row_offset, route_length)
-		var window_end := minf(end_distance + row_offset, route_length)
+		var window_start := clampf(
+			start_distance + row_offset, route_start_distance, route_end_distance
+		)
+		var window_end := clampf(
+			end_distance + row_offset, route_start_distance, route_end_distance
+		)
 		var low_time: float = _time_at_distance(route, window_start)
 		var high_time: float = _time_at_distance(route, window_end)
-		var low: int = mini(floori(low_time * Verify.SAMPLE_HZ), normal.size() - 1)
-		var high: int = mini(floori(high_time * Verify.SAMPLE_HZ), normal.size() - 1)
-		if high - low < 4:
-			if not include_short:
-				continue
-			high = mini(maxi(low + 1, high), normal.size() - 1)
-		if high <= low:
+		if high_time <= low_time:
+			continue
+		# Adjacent beat windows are half-open; only a route-boundary window owns its endpoint.
+		var include_end := is_equal_approx(window_end, route_end_distance)
+		var band_normal := _sample_filtered_window(normal, low_time, high_time, include_end)
+		if band_normal.size() < 5 and not include_short:
+			continue
+		if band_normal.is_empty():
 			continue
 		bands.append({
 			"kind": beat.kind,
@@ -210,13 +226,41 @@ static func _bands_for_row(
 			"row_offset": row_offset,
 			"window_start_distance": window_start,
 			"window_end_distance": window_end,
+			"window_start_s": low_time,
+			"window_end_s": high_time,
 			"seconds": high_time - low_time,
-			"normal": normal.slice(low, high + 1),
-			"lateral": lateral.slice(low, high + 1),
-			"longitudinal": longitudinal.slice(low, high + 1),
-			"roll": roll.slice(low, high + 1),
+			"normal": band_normal,
+			"lateral": _sample_filtered_window(lateral, low_time, high_time, include_end),
+			"longitudinal": _sample_filtered_window(
+				longitudinal, low_time, high_time, include_end
+			),
+			"roll": _sample_filtered_window(roll, low_time, high_time, include_end),
 		})
 	return bands
+
+
+## Interpolate the globally filtered 100 Hz series onto a fresh grid anchored at the selected
+## physical start. The half-open option gives each adjacent beat seam sample one owner.
+static func _sample_filtered_window(
+	values: PackedFloat32Array, start_s: float, end_s: float, include_end: bool
+) -> PackedFloat32Array:
+	var output := PackedFloat32Array()
+	if values.is_empty() or end_s < start_s:
+		return output
+	var available_end := (values.size() - 1) / Verify.SAMPLE_HZ
+	var sample_end := minf(end_s, available_end)
+	var count := floori(maxf(0.0, sample_end - start_s) * Verify.SAMPLE_HZ + 1e-7) + 1
+	for index in count:
+		var at := start_s + index / Verify.SAMPLE_HZ
+		if at > sample_end + 1e-7:
+			break
+		if not include_end and at >= end_s - 1e-7:
+			break
+		var position := at * Verify.SAMPLE_HZ
+		var low := clampi(floori(position), 0, values.size() - 1)
+		var high := mini(low + 1, values.size() - 1)
+		output.append(lerpf(values[low], values[high], position - low))
+	return output
 
 
 static func _time_at_distance(route: Dictionary, distance: float) -> float:
@@ -271,9 +315,20 @@ static func _load_metrics(band: Dictionary) -> Dictionary:
 
 static func _hold_values(values: PackedFloat32Array, polarity: float) -> Dictionary:
 	var output := {}
+	var unavailable := {}
+	var curve := Verify._held_curve(values, polarity)
 	for seconds in HOLD_SECONDS:
-		if roundi(seconds * Verify.SAMPLE_HZ) + 1 < values.size():
-			output[_hold_key(seconds)] = held(values, polarity, seconds)
+		var key := _hold_key(seconds)
+		var window := _hold_window_samples(seconds)
+		if window > values.size():
+			unavailable[key] = {
+				"status": "unavailable",
+				"reason": "insufficient_duration",
+			}
+		else:
+			output[key] = curve[window] * polarity
+	if not unavailable.is_empty():
+		output["_unavailable"] = unavailable
 	return output
 
 
@@ -322,32 +377,38 @@ static func _geometry_metrics(route: Dictionary, first: int, last: int) -> Dicti
 static func _pacing_metrics(route: Dictionary, first: int, last: int) -> Dictionary:
 	var duration: float = route.times[last] - route.times[first]
 	var length: float = route.distances[last] - route.distances[first]
-	var dead_count := 0
-	var speed_100_count := 0
-	var speed_200_count := 0
+	var measured_seconds := 0.0
+	var dead_seconds := 0.0
+	var speed_100_seconds := 0.0
+	var speed_200_seconds := 0.0
 	var flat_seconds := 0.0
-	var count := last - first + 1
-	for i in range(first, last + 1):
+	# Each interval is classified by its left endpoint, so every elapsed second is owned once.
+	for i in range(first, last):
+		var seconds: float = route.times[i + 1] - route.times[i]
+		if seconds <= 0.0:
+			continue
+		measured_seconds += seconds
 		if (
 			route.normal_g[i] >= 0.75
 			and route.normal_g[i] <= 1.25
 			and absf(route.lateral_g[i]) <= 0.25
 			and absf(route.longitudinal_g[i]) <= 0.25
 		):
-			dead_count += 1
+			dead_seconds += seconds
 		if route.speeds[i] >= 100.0 / 3.6:
-			speed_100_count += 1
+			speed_100_seconds += seconds
 		if route.speeds[i] >= 200.0 / 3.6:
-			speed_200_count += 1
-		if i < last and absf(_pitch_degrees(route.tangents[i])) <= 5.0 and absf(route.banks[i]) <= 5.0:
-			flat_seconds += route.times[i + 1] - route.times[i]
+			speed_200_seconds += seconds
+		if absf(_pitch_degrees(route.tangents[i])) <= 5.0 and absf(route.banks[i]) <= 5.0:
+			flat_seconds += seconds
+	var divisor := measured_seconds if measured_seconds > 0.0 else 1.0
 	return {
 		"duration": duration,
 		"speed_loss": float(route.speeds[first] - route.speeds[last]),
-		"average_speed": length / maxf(duration, 0.0001),
-		"dead_zone_share": float(dead_count) / maxi(count, 1),
-		"speed_share_100": float(speed_100_count) / maxi(count, 1),
-		"speed_share_200": float(speed_200_count) / maxi(count, 1),
+		"average_speed": length / duration if duration > 0.0 else 0.0,
+		"dead_zone_share": dead_seconds / divisor if measured_seconds > 0.0 else 0.0,
+		"speed_share_100": speed_100_seconds / divisor if measured_seconds > 0.0 else 0.0,
+		"speed_share_200": speed_200_seconds / divisor if measured_seconds > 0.0 else 0.0,
 		"flat_seconds": flat_seconds,
 	}
 
@@ -377,32 +438,84 @@ static func _terrain_metrics(route: Dictionary, first: int, last: int) -> Dictio
 static func _flow_metrics(
 	route: Dictionary, definitions: Array, beat_index: int, pacing: Dictionary
 ) -> Dictionary:
-	if beat_index + 1 >= definitions.size():
-		return {
-			"transition_force_swing": 0.0,
-			"transition_seconds": 0.0,
-			"bank_handoff": 0.0,
-			"flat_dwell": pacing.flat_seconds,
-			"same_kind_adjacency": 0.0,
-		}
 	var beat: Dictionary = definitions[beat_index]
-	var next: Dictionary = definitions[beat_index + 1]
-	var a: int = beat.last
-	var b: int = next.first
-	var swing := maxf(
-		absf(route.normal_g[b] - route.normal_g[a]),
-		maxf(
-			absf(route.lateral_g[b] - route.lateral_g[a]),
-			absf(route.longitudinal_g[b] - route.longitudinal_g[a])
-		)
-	)
-	return {
-		"transition_force_swing": swing,
-		"transition_seconds": maxf(0.0, route.times[b] - route.times[a]),
-		"bank_handoff": absf(route.banks[b] - route.banks[a]),
+	var output := {
 		"flat_dwell": pacing.flat_seconds,
-		"same_kind_adjacency": 1.0 if beat.kind == next.kind else 0.0,
+		"same_kind_adjacency": 0.0,
 	}
+	if beat_index + 1 >= definitions.size():
+		output["status"] = "evidence-gap"
+		output["reason"] = "terminal_beat"
+		return output
+	var next: Dictionary = definitions[beat_index + 1]
+	output.same_kind_adjacency = 1.0 if beat.kind == next.kind else 0.0
+	var seam_s: float = route.times[next.first]
+	var before_start := seam_s - TRANSITION_WINDOW_SECONDS
+	var after_end := seam_s + TRANSITION_WINDOW_SECONDS
+	if before_start < route.times[0] - 1e-7 or after_end > route.times[-1] + 1e-7:
+		output["status"] = "evidence-gap"
+		output["reason"] = "boundary_unavailable"
+		return output
+	output["transition_before_s"] = [before_start, seam_s]
+	output["transition_after_s"] = [seam_s, after_end]
+	var swing := 0.0
+	for values in [route.normal_g, route.lateral_g, route.longitudinal_g]:
+		var before := _time_window_extrema(route.times, values, before_start, seam_s)
+		var after := _time_window_extrema(route.times, values, seam_s, after_end)
+		swing = maxf(
+			swing,
+			maxf(absf(before.maximum - after.minimum), absf(after.maximum - before.minimum))
+		)
+	output["transition_force_swing"] = swing
+	output["transition_seconds"] = TRANSITION_WINDOW_SECONDS * 2.0
+	output["bank_handoff"] = _seam_handoff(route.times, route.banks, seam_s)
+	var roll_rates: PackedFloat32Array = route.get("roll_rates", PackedFloat32Array())
+	output["roll_rate_handoff"] = (
+		_seam_handoff(route.times, roll_rates, seam_s) if not roll_rates.is_empty() else 0.0
+	)
+	return output
+
+
+static func _time_window_extrema(
+	times: PackedFloat32Array, values: PackedFloat32Array, start_s: float, end_s: float
+) -> Dictionary:
+	# Transition windows are [start, end), so an adjacent seam sample is owned once.
+	var minimum := _value_at_time(times, values, start_s)
+	var maximum := minimum
+	for index in times.size():
+		if times[index] <= start_s or times[index] >= end_s:
+			continue
+		minimum = minf(minimum, values[index])
+		maximum = maxf(maximum, values[index])
+	return {"minimum": minimum, "maximum": maximum}
+
+
+static func _value_at_time(
+	times: PackedFloat32Array, values: PackedFloat32Array, at_s: float
+) -> float:
+	if at_s <= times[0]:
+		return values[0]
+	if at_s >= times[-1]:
+		return values[-1]
+	var low := 0
+	var high := times.size() - 1
+	while low + 1 < high:
+		var middle := floori((low + high) * 0.5)
+		if times[middle] <= at_s:
+			low = middle
+		else:
+			high = middle
+	return lerpf(values[low], values[high], inverse_lerp(times[low], times[high], at_s))
+
+
+static func _seam_handoff(
+	times: PackedFloat32Array, values: PackedFloat32Array, seam_s: float
+) -> float:
+	var step := 1.0 / Verify.SAMPLE_HZ
+	return absf(
+		_value_at_time(times, values, seam_s + step)
+		- _value_at_time(times, values, seam_s - step)
+	)
 
 
 static func _aggregate_loads(beats: Array) -> Dictionary:
@@ -438,12 +551,14 @@ static func _aggregate_flow(beats: Array) -> Dictionary:
 		"transition_force_swing": 0.0,
 		"transition_seconds": 0.0,
 		"bank_handoff": 0.0,
+		"roll_rate_handoff": 0.0,
 		"flat_dwell": 0.0,
 		"same_kind_adjacency": 0.0,
 	}
 	for beat in beats:
 		for metric in output:
-			output[metric] = maxf(output[metric], beat.flow[metric])
+			if beat.flow.has(metric) and is_finite(float(beat.flow[metric])):
+				output[metric] = maxf(output[metric], float(beat.flow[metric]))
 	return output
 
 

@@ -630,7 +630,22 @@ Expected: the same pull-request CI import, smoke, and viewer job passes. Record 
 - Consumes: `measure_route` results and schema-v2 catalog.
 - Produces: `compare_fleet(seed_measurements, catalog) -> Dictionary`.
 
-- [ ] **Step 1: Add table-driven classification tests**
+- [ ] **Step 1: Extend the catalog contract with only the execution policy comparison needs**
+
+Add mandatory target field `aggregation := {row, beat, seed}`. `row` and `beat` allow
+`minimum`, `maximum`, `median`, or `time_weighted_mean`; `seed` allows `minimum`, `maximum`, or
+`median`. Reject `sum` and `time_weighted_sum`: they change the metric's units and therefore cannot
+be classified against the existing target band. Add mandatory
+`observation.alignment.generated_row_selector`, either `null` or exactly one of
+`{"row_id": String}`, `{"position": "front"|"intermediate"|"rear"}`, or a finite
+`{"offset": float}`. `row-independent` requires `null`; `same-row` and
+`explicit-row-transform` require an exact selector. Source `row_seat` remains provenance text and is
+never parsed. A held-metric observation/target must use a duration exactly present in
+`HOLD_SECONDS`; non-grid durations remain supported by the public `held()` primitive but cannot be
+looked up from the fixed measurement dictionary under a rounded alias. Update the strict schema-v2
+validation tests before adding comparison tests.
+
+- [ ] **Step 2: Add table-driven classification and normalization tests**
 
 ```gdscript
 static func _test_target_classification(fidelity: Script, errors: PackedStringArray) -> void:
@@ -642,11 +657,40 @@ static func _test_target_classification(fidelity: Script, errors: PackedStringAr
 		_expect(errors, fidelity.classify_value(case.value, case.band) == case.expected, "classification %s" % case.expected)
 ```
 
-- [ ] **Step 2: Add observed-only and evidence-gap cases**
+- [ ] **Step 3: Add exact selector, row, and reduction tests**
 
-Assert a measured metric without an executable target emits `observed-only`; an executable semantic selector whose applicable legacy/compiled anchor or row does not match emits `evidence-gap` with target ID, `semantic_selector_id`, branch, and reason.
+Representation is selected only from `measure_route.schema_version`: schema 1 uses `legacy`; schema
+2 uses `compiled`; mixed representations reject the comparison. For legacy, `occurrence` is the
+zero-based occurrence in measurement order among exact `(phase, kind)` matches, never the stored
+phase-wide ordinal. For compiled, match exact non-empty `story_slot_id` plus `window_role`; a
+compiled miss never falls back to legacy. Multiple compiled matches are reduced by the declared
+beat reducer.
 
-- [ ] **Step 3: Add aggregation and deterministic ranking tests**
+Resolve rows before beats. `row-independent` selects all rows; other compatibility modes require
+exactly one matching row. Match IDs and positions exactly and offsets within `0.000001`. A numeric
+base sample carries value, beat ID, row ID, and support duration. For held metrics support duration
+is the requested `hold_seconds`; for other metrics it is the row's physical `window_seconds`.
+Resolution is all-or-nothing across the selected row/beat set: any missing or explicitly unavailable
+selected metric makes that target/seed an evidence gap, so a favorable surviving subset is never
+reduced. Any non-finite numeric value or duration in fields consumed by comparison is malformed
+input and rejects the whole comparison as `measurement-invalid`; it is never recast as an evidence gap. Row-reduced retained duration is the
+maximum contributing duration because rows are simultaneous views; beat-reduced duration is their sum. `time_weighted_mean` is
+`sum(value * seconds) / sum(seconds)` in stable order.
+
+Table-test every reducer, unequal durations, exact and missing rows, ambiguous rows, legacy
+occurrence, compiled roles, no compiled-to-legacy fallback, unavailable held values, and stable
+retained-duration arithmetic.
+
+- [ ] **Step 4: Add catalog-driven observed-only and target evidence-gap cases**
+
+Keep result kinds separate. `findings` contains only target comparisons with at least one available
+seed. `observed_only` contains successfully resolved numeric samples for catalog observations not
+referenced by a target; do not enumerate measurement metrics that have no catalog provenance.
+`evidence_gaps` contains at most one record per `(target_id, seed)`, at the first failed stage, with
+one of `anchor-not-found`, `row-not-found`, `row-ambiguous`, `metric-not-found`, or
+`metric-unavailable`. A target's seed results plus gaps cover the fleet exactly once.
+
+- [ ] **Step 5: Add fleet validation, aggregation, and deterministic ranking tests**
 
 ```gdscript
 static func _test_recommendation_ranking(fidelity: Script, errors: PackedStringArray) -> void:
@@ -660,17 +704,33 @@ static func _test_recommendation_ranking(fidelity: Script, errors: PackedStringA
 	_expect(errors, comparison.findings == reordered.findings, "finding order is independent of input map order")
 ```
 
-- [ ] **Step 4: Add the eligibility boundary and explicit no-result tests**
+The fleet must contain each canonical seed exactly once. Preserve input order only at top-level
+`fleet`; sort all nested seed results numerically. Duplicate, missing, extra, non-integer, malformed,
+or mixed-schema inputs reject the whole comparison without partial findings, using exactly
+`{"status":"invalid-input","reason":...}` where reason is `catalog-invalid`, `fleet-invalid`,
+`measurement-invalid`, or `mixed-representation` in that validation precedence. Beat IDs must be
+unique within one seed measurement; row IDs must be unique only within their containing beat and
+normally repeat across different beats.
 
-Require medium/high-confidence evidence and at least eight of fifteen affected seeds. Seven misses are ineligible; eight are eligible. Low-confidence evidence never recommends. An empty eligible set emits `{"status":"no-eligible-finding"}`.
+- [ ] **Step 6: Add the eligibility boundary and explicit no-result tests**
 
-- [ ] **Step 5: Run tests and verify comparison APIs fail**
+`affected_count` counts only `under` and `over`; gaps and `within` remain in the fifteen-seed
+prevalence denominator. Recommendation severity is the median normalized miss of affected seeds,
+not the separately reported target-declared fleet reduction. Require medium/high confidence and at
+least eight affected seeds. Seven misses are ineligible; eight are eligible; low confidence is
+always ineligible. An empty eligible set emits exactly `{"status":"no-eligible-finding"}`.
+
+- [ ] **Step 7: Run tests remotely and verify comparison APIs fail**
 
 ```powershell
-& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
+git push
+gh run watch --exit-status
 ```
 
-- [ ] **Step 6: Implement exact normalization and target-specific aggregation**
+Do not launch local Godot on this machine. Record the failing GitHub Actions run and confirm the
+failure is caused by the absent comparison contract, not a fixture or parser defect.
+
+- [ ] **Step 8: Implement the minimum comparison pipeline**
 
 ```gdscript
 static func normalized_miss(value: float, target_range: Array) -> float:
@@ -683,20 +743,37 @@ static func normalized_miss(value: float, target_range: Array) -> float:
 	return distance / denominator
 ```
 
-Apply each target's declared seed/beat/row aggregation (`minimum`, `maximum`, `median`, or time-weighted `sum`) before classification. Sort finding IDs and tie-break by normalized median miss descending, prevalence descending, confidence high before medium, then target ID ascending.
+Implement three small private stages: resolve selector/rows, reduce declared values/durations, and
+build one target finding. Pre-index catalog records once; do not add a generic scoring or query
+framework. Classification is numeric and inclusive at both endpoints. Reduce rows, then beats, then
+the available seed values for the reported `fleet_value`/`fleet_status`. Ranking remains independent
+of that fleet reducer.
 
-- [ ] **Step 7: Emit provenance and evidence gaps without an overall score**
+- [ ] **Step 9: Emit the exact deterministic result algebra without an overall score**
 
-Every finding contains target ID, observation/source IDs, transform ID, `semantic_selector_id`, resolved representation branch/anchor, row, retained duration, raw and target bands, per-seed values/statuses, prevalence, confidence, and caveats. Do not emit `score`, `total_score`, or a weighted cross-dimension scalar.
+Return `{fleet, findings, observed_only, evidence_gaps, recommendation}`. Every finding contains
+target/observation IDs; sorted unique primary and corroborating source IDs/caveats; transform and
+semantic-selector IDs; dimension/metric/hold duration; resolved branch, anchor, row compatibility,
+and row selector; declared aggregation; raw/target bands; seed-sorted results with values, statuses,
+misses, retained seconds, beat IDs, and row IDs; fleet value/status; total retained seconds; affected,
+available, and gap counts; prevalence; normalized median miss; and observation confidence.
 
-- [ ] **Step 8: Run focused tests and smoke**
+Sort findings by target ID, observed-only records by `(observation_id, seed, beat_id, row_id)`, gaps
+by `(target_id, seed)`, and nested identifiers lexicographically. Rank eligible findings by normalized
+median miss descending, prevalence descending, confidence high before medium, then target ID
+ascending. Emit either a compact `recommended` projection or exact no-result object. Recursively
+forbid `score`, `total_score`, and any weighted cross-dimension scalar.
+
+- [ ] **Step 10: Push GREEN and verify focused tests and smoke in GitHub Actions**
 
 ```powershell
-& $portableGodot --headless --path '.\godot' --script 'res://fidelity_tests.gd'
-& $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
+git push
+gh run watch --exit-status
 ```
 
-- [ ] **Step 9: Commit the comparison engine**
+Confirm import, focused fidelity tests through smoke, the unchanged seed sweep, and viewer all pass.
+
+- [ ] **Step 11: Commit the comparison engine**
 
 ```powershell
 git add godot/fidelity.gd godot/fidelity_tests.gd

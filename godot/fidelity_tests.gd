@@ -1135,7 +1135,7 @@ static func _count_dictionary_key(value: Variant, key: String) -> int:
 static func _expect_close_tol(
 	errors: PackedStringArray, actual: float, expected: float, tolerance: float, message: String
 ) -> void:
-	if absf(actual - expected) > tolerance:
+	if not is_finite(actual) or absf(actual - expected) > tolerance:
 		errors.append("%s: got %s, expected %s +/- %s" % [message, actual, expected, tolerance])
 
 

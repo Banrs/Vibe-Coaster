@@ -693,6 +693,16 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 		_expect(errors,
 			str(review.get("independent_timeline", {}).get("continuity", "")).to_lower().contains("no cross-source clock or timestamp mapping is asserted"),
 			"%s keeps an independent source clock" % fixture.source_id)
+		if fixture.source_id == "youtube.falcon.backward.J54WKu2nU6o":
+			var repository_reviews: Array = review.get("provenance", {}).get("repository_review", [])
+			var repository_claim := ""
+			if not repository_reviews.is_empty() and repository_reviews[0] is Dictionary:
+				repository_claim = str(repository_reviews[0].get("claim", "")).to_lower()
+			_expect(errors,
+				repository_claim.contains("rear-facing")
+				and repository_claim.contains("order")
+				and not repository_claim.contains("zero obstruction"),
+				"J54 repository provenance retains rear-facing/order without the stale obstruction claim")
 	var expected_readouts := [
 		{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
 		{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
@@ -716,24 +726,34 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 	var speed_prompt := "Compare generated speed perception against source-local terrain, support, and park-reference landmarks only; " + \
 		"do not infer speed from a global POV duration ratio."
 	_expect(errors, prompts.get("review.speed_perception", {}).get("prompt") == speed_prompt, "speed prompt forbids duration scaling")
-	var overlay_prompt: Dictionary = prompts.get("review.coastertalk_overlay_spot_checks", {})
+	var expected_overlay_prompt := {
+		"id": "review.coastertalk_overlay_spot_checks",
+		"category": "ride feel",
+		"prompt": "Review the three source-local uploader-labelled Long. spot checks (-0.30 g, -0.19 g, and " + \
+			"approximately -0.58 g) only as unscored, approximate, unmapped rendered labels; they are not a " + \
+			"rider-axis trace or comparison band.",
+		"source_ids": ["youtube.coastertalk.continuous.0Ua"],
+		"issues": [3,10,13,15,16],
+	}
 	_expect(errors,
-		overlay_prompt.get("category") == "ride feel"
-		and overlay_prompt.get("source_ids") == ["youtube.coastertalk.continuous.0Ua"]
-		and overlay_prompt.get("issues") == [3,10,13,15,16],
-		"overlay prompt pins category, source, and issues")
-	var overlay_text := str(overlay_prompt.get("prompt", ""))
-	_expect(errors, overlay_text.contains("calibrated trace") and overlay_text.contains("band"), "overlay prompt explicitly forbids trace and band promotion")
-	var terrain_prompt: Dictionary = prompts.get("review.terrain_clearance", {})
+		prompts.get("review.coastertalk_overlay_spot_checks", {}) == expected_overlay_prompt,
+		"overlay prompt matches the complete approved record")
+	var expected_terrain_prompt := {
+		"id": "review.terrain_clearance",
+		"category": "terrain/clearance",
+		"prompt": "Compare the generated cliff, high-terrain, and low-return views landmark-to-landmark " + \
+			"against the real built-ride POVs; do not infer an AGL band or proportionally scale independent " + \
+			"video clocks.",
+		"source_ids": [
+			"youtube.coastertalk.continuous.0Ua",
+			"youtube.falcon.backward.J54WKu2nU6o",
+			"youtube.falcon.sdXGD9kMR7s",
+		],
+		"issues": [6,8,12],
+	}
 	_expect(errors,
-		terrain_prompt.get("category") == "terrain/clearance"
-		and terrain_prompt.get("source_ids") == ["youtube.coastertalk.continuous.0Ua","youtube.falcon.backward.J54WKu2nU6o","youtube.falcon.sdXGD9kMR7s"]
-		and terrain_prompt.get("issues") == [6,8,12],
-		"terrain prompt pins category, sources, and issues")
-	var terrain_text := str(terrain_prompt.get("prompt", ""))
-	_expect(errors,
-		terrain_text.contains("proportional") and terrain_text.contains("independent video clocks") and terrain_text.contains("AGL band"),
-		"terrain prompt forbids clock alignment and AGL inference")
+		prompts.get("review.terrain_clearance", {}) == expected_terrain_prompt,
+		"terrain-clearance prompt matches the complete approved record")
 	var gaps := {}
 	for gap in catalog.get("evidence_gaps", []):
 		gaps[gap.get("id")] = gap

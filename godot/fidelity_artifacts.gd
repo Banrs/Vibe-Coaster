@@ -71,12 +71,15 @@ static func build_report(
 	var fleet: Array = comparison_projection.fleet
 	var by_seed := _validate_measurements(seed_measurements, fleet, errors)
 	var counts_projection := _validate_counts(generation_counts, fleet, errors)
+	var catalog_projectable := false
 	if not catalog is Dictionary:
 		errors.append("artifact_report: catalog must be a Dictionary")
 	else:
-		for error in _FIDELITY.validate_catalog(catalog):
+		var catalog_errors := _FIDELITY.validate_catalog(catalog)
+		catalog_projectable = catalog_errors.is_empty()
+		for error in catalog_errors:
 			errors.append("artifact_report: %s" % error)
-	if not errors.is_empty():
+	if not catalog_projectable:
 		return _invalid(errors)
 	var catalog_context := _catalog_context(catalog, by_seed, comparison_projection, errors)
 	var pov_map := {

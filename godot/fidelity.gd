@@ -1419,7 +1419,7 @@ static func validate_catalog(catalog: Dictionary) -> PackedStringArray:
 	var errors := PackedStringArray()
 	if catalog.get("schema_version") != 2:
 		errors.append("catalog schema version 2 is required")
-	if str(catalog.get("catalog_version", "")) == "":
+	if not _nonempty_string(catalog.get("catalog_version")):
 		errors.append("catalog_version is missing")
 	var selectors := _dictionary_collection(catalog, "selectors", errors)
 	var sources := _dictionary_collection(catalog, "sources", errors)

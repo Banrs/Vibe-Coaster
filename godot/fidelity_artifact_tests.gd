@@ -33,6 +33,7 @@ static func run() -> PackedStringArray:
 	_test_element_render_request_filter(artifacts, errors)
 	_test_center_row_alignment_selectors(artifacts, errors)
 	_test_route_sampling(errors)
+	_test_pov_camera(artifacts, errors)
 	_test_checked_writes(artifacts, errors)
 	_test_write_pack(artifacts, errors)
 	return errors
@@ -235,6 +236,124 @@ static func _sampling_route() -> Dictionary:
 		"ups": PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP]),
 		"rights": PackedVector3Array([Vector3.BACK, Vector3.RIGHT, Vector3.FORWARD]),
 	}
+
+
+## The approved POV camera, restated from the plan rather than read back from the renderer: a
+## 1440x900 frame, a 72 degree vertical FOV, a 0.08 m near plane, a 5000 m far plane, and an eye
+## 0.35 m over the centre-row pose, with none of the viewer's speed-dependent widening.
+const CONTRACT_POV_SIZE := Vector2i(1440, 900)
+const CONTRACT_POV_FOV_DEG := 72.0
+const CONTRACT_POV_NEAR_M := 0.08
+const CONTRACT_POV_EYE_UP_M := 0.35
+const POV_GROUND_COLOR := Color(0.45, 0.36, 0.26)
+const POV_TRACE_COLOR := Color(0.55, 0.95, 1.0)
+
+
+## Pin the projection itself, not the constants that spell it: known world geometry is projected
+## from the contract above and matched against the pixel it has to light, so an intrinsic that
+## drifts moves a rendered feature off its contracted pixel and turns this red.
+static func _test_pov_camera(artifacts: Script, errors: PackedStringArray) -> void:
+	# The pack fixture is a straight 200 m loop along +X at y = 30 over flat ground, so 10 s in
+	# the eye sits at (100, 30.35, 0), looks down +X with +Z to its right, and the 40 m ground
+	# grid steps away from x = 80 — the far grid line is 300 m ahead.
+	var image: Image = artifacts.pov_image(_pack_route(11), 10.0)
+	_expect(errors, image.get_size() == CONTRACT_POV_SIZE,
+		"the POV render is the contracted %s frame, not %s" % [CONTRACT_POV_SIZE, image.get_size()])
+	if image.get_size() != CONTRACT_POV_SIZE:
+		return
+	var knot := _pov_pixel(320.0, -(30.0 + CONTRACT_POV_EYE_UP_M), 300.0)
+	var ground_row := _pov_top_row_in_column(image, POV_GROUND_COLOR, 1200)
+	_expect(errors, ground_row == roundi(knot.y),
+		"the ground 300 m ahead lands where the %.1f degree vertical FOV puts it: row %d, not %d"
+			% [CONTRACT_POV_FOV_DEG, roundi(knot.y), ground_row])
+	_expect(errors, _pov_is(image, roundi(knot.x), roundi(knot.y), POV_GROUND_COLOR),
+		"the grid knot 320 m right of that line lights its contracted pixel (%d, %d)"
+			% [roundi(knot.x), roundi(knot.y)])
+
+	# The rails ride 1.05 m under the pose, so the eye offset alone sets how steeply they fall
+	# away from the vanishing point: 0.95 m right of and 1.40 m under the eye, 4 m ahead.
+	var rail_under_eye := 1.05 + CONTRACT_POV_EYE_UP_M
+	var rail := _pov_pixel(0.95, -rail_under_eye, 4.0)
+	var rail_columns := _pov_columns(image, POV_TRACE_COLOR, roundi(rail.y), CONTRACT_POV_SIZE.x / 2)
+	_expect(errors, rail_columns == PackedInt32Array([roundi(rail.x)]),
+		"the eye rides %.2f m over the pose: the right rail 4 m ahead holds row %d at column %d, not %s"
+			% [CONTRACT_POV_EYE_UP_M, roundi(rail.y), roundi(rail.x), str(rail_columns)])
+
+	# The rail is carried past the last sample in front of the eye — 2 m ahead — to the near
+	# plane, so it leaves through the bottom edge instead of stopping at that sample.
+	var bottom := float(CONTRACT_POV_SIZE.y - 1)
+	var last_sample := _pov_pixel(0.95, -rail_under_eye, 2.0)
+	var at_near := _pov_pixel(0.95, -rail_under_eye, CONTRACT_POV_NEAR_M)
+	var exit_column := roundi(last_sample.lerp(
+		at_near, (bottom - last_sample.y) / (at_near.y - last_sample.y)).x)
+	var edge_column := _pov_last_column(image, POV_TRACE_COLOR, CONTRACT_POV_SIZE.y - 1)
+	_expect(errors, edge_column == exit_column,
+		"the rail runs on to the %.2f m near plane and leaves the bottom edge at column %d, not %d"
+			% [CONTRACT_POV_NEAR_M, exit_column, edge_column])
+
+	# Track behind the eye is clipped there, not smeared back in mirrored above the horizon: the
+	# highest rail pixels are the far knots 98 m ahead, the last samples before the loop wraps.
+	var far_left := _pov_pixel(-0.95, -rail_under_eye, 98.0)
+	var far_right := _pov_pixel(0.95, -rail_under_eye, 98.0)
+	var top_row := _pov_top_row(image, POV_TRACE_COLOR)
+	_expect(errors, top_row == roundi(far_right.y),
+		"no rail is drawn above the far knot 98 m ahead on row %d, but row %d carries one"
+			% [roundi(far_right.y), top_row])
+	var top_columns := _pov_columns(image, POV_TRACE_COLOR, roundi(far_right.y), 0)
+	_expect(errors, top_columns == PackedInt32Array([roundi(far_left.x), roundi(far_right.x)]),
+		"that far pair sits at the contracted columns %d and %d, not %s"
+			% [roundi(far_left.x), roundi(far_right.x), str(top_columns)])
+
+
+## The contracted pinhole: a point `right_m` right of, `above_eye_m` over, and `depth_m` in front
+## of the eye, in frame pixels.
+static func _pov_pixel(right_m: float, above_eye_m: float, depth_m: float) -> Vector2:
+	var half_height := depth_m * tan(deg_to_rad(CONTRACT_POV_FOV_DEG) * 0.5)
+	var half_width := half_height * CONTRACT_POV_SIZE.x / CONTRACT_POV_SIZE.y
+	return Vector2(
+		(0.5 + 0.5 * right_m / half_width) * CONTRACT_POV_SIZE.x,
+		(0.5 - 0.5 * above_eye_m / half_height) * CONTRACT_POV_SIZE.y
+	)
+
+
+## Rendered colours are quantized to eight bits per channel, so pixels match by nearness.
+static func _pov_is(image: Image, column: int, row: int, color: Color) -> bool:
+	var pixel := image.get_pixel(column, row)
+	return (absf(pixel.r - color.r) <= 0.01 and absf(pixel.g - color.g) <= 0.01
+		and absf(pixel.b - color.b) <= 0.01)
+
+
+static func _pov_top_row_in_column(image: Image, color: Color, column: int) -> int:
+	for row in image.get_height():
+		if _pov_is(image, column, row, color):
+			return row
+	return -1
+
+
+static func _pov_top_row(image: Image, color: Color) -> int:
+	for row in image.get_height():
+		for column in image.get_width():
+			if _pov_is(image, column, row, color):
+				return row
+	return -1
+
+
+static func _pov_last_column(image: Image, color: Color, row: int) -> int:
+	for step in image.get_width():
+		var column := image.get_width() - 1 - step
+		if _pov_is(image, column, row, color):
+			return column
+	return -1
+
+
+static func _pov_columns(
+	image: Image, color: Color, row: int, from_column: int
+) -> PackedInt32Array:
+	var columns := PackedInt32Array()
+	for column in range(from_column, image.get_width()):
+		if _pov_is(image, column, row, color):
+			columns.append(column)
+	return columns
 
 
 static func _test_canonical_data(

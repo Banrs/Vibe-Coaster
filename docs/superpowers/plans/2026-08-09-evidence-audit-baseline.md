@@ -82,6 +82,12 @@ RouteSampling.pose_at_distance(route: Dictionary, distance_m: float) -> Transfor
 
 ---
 
+> **On the checkboxes below.** Tasks 1–7 were executed on `codex/fvd-first-generator`; their
+> record is that branch's history and its CI runs, not these boxes. Execution resumed mid-Task 7,
+> and from there only steps actually verified by the resuming reviewer were ticked. Unticked boxes
+> in Tasks 1–7 therefore mean "completed earlier, not re-verified here" — not "outstanding".
+> Tasks 8 and 9 are ticked in full and were verified step by step.
+
 ### Task 1: Characterize the existing diagnostic contract
 
 **Files:**
@@ -1467,15 +1473,15 @@ flag any production file above 1,000 physical lines or test file above 1,500. Ea
 a reviewer-recorded keep/simplify decision; any actionable simplify decision blocks completion until
 implemented and reverified. File splitting and line minification do not count as reduction.
 
-- [ ] **Step 1: Add the exact offline audit command and output contract to `README.md`**
+- [x] **Step 1: Add the exact offline audit command and output contract to `README.md`**
 
 Document the portable command from Task 8, `INSPECT_OUT`, the fixed fleet order, JSON/Markdown/manifest and review-pack paths, offline behavior, and the rule that fidelity misses do not fail while malformed evidence/generation/physics/write failures do.
 
-- [ ] **Step 2: Update `CLAUDE.md` architecture notes without claiming the legacy ride is correct**
+- [x] **Step 2: Update `CLAUDE.md` architecture notes without claiming the legacy ride is correct**
 
 State that `_inspect.gd` preserves the existing diagnostic images and now adds reconstructed longitudinal/curvature/radius/roll-acceleration/jerk channels, evidence-linked review prompts, explicit POV mapping gaps, and checked writes. Keep the approved force-informed hybrid design authoritative: FVD is preferred where it gives superior rider-dynamics control, not forced onto layout, terrain, closure, or exact-geometry work better solved by another physically coherent method.
 
-- [ ] **Step 3: Update open-issues audit and promotion guidance**
+- [x] **Step 3: Update open-issues audit and promotion guidance**
 
 For issues 1–16, link the deterministic `review/issue-coverage.json`/Markdown artifacts without
 marking a ride-quality issue solved from a diagnostic result alone. Document that a finding becomes
@@ -1483,7 +1489,7 @@ a future hard gate only through a new Superpowers design cycle with reviewed exe
 an explicit threshold and scope, a focused failing test, and proof that the promoted gate does not
 reward geometry smoothing, radius manipulation, or hidden drive.
 
-- [ ] **Step 4: Scan for forbidden live-network runtime dependencies and overall scores**
+- [x] **Step 4: Scan for forbidden live-network runtime dependencies and overall scores**
 
 ```powershell
 $networkCodeHits = rg -n 'HTTPRequest|HTTPClient|WebSocketPeer|WebSocketMultiplayerPeer|StreamPeerTCP' godot --glob '*.gd'
@@ -1496,7 +1502,7 @@ if ($scoreHits) { throw "forbidden overall fidelity score found:`n$scoreHits" }
 
 URLs are allowed only in `fidelity_references.gd` as inert provenance strings. The class scan rejects executable network clients independently of literal provenance.
 
-- [ ] **Step 5: Inspect the final diff for behavior changes**
+- [x] **Step 5: Inspect the final diff for behavior changes**
 
 ```powershell
 git diff --stat 1b612990edbf52a1ce0f7e4e9149192376b7efad..HEAD
@@ -1505,11 +1511,11 @@ git diff 1b612990edbf52a1ce0f7e4e9149192376b7efad..HEAD -- godot/generator.gd go
 
 Expected: the second command is empty. If it is not, revert the out-of-scope behavior change and rerun Task 8 verification.
 
-- [ ] **Step 6: Adversarially review evidence and math**
+- [x] **Step 6: Adversarially review evidence and math**
 
 Check every executable observation against its committed artifact, exact window, row, axis, processing, transform, confidence, and corroboration. Recompute at least one held value, one time-weighted share, one row shift, one transition window, one curvature/radius case, and one normalized miss independently. Confirm stable IDs and finding order, canonical fleet order, one build per seed, checked writes, and no smoothed geometry path.
 
-- [ ] **Step 7: Run the final fresh verification commands**
+- [x] **Step 7: Run the final fresh verification commands**
 
 ```powershell
 & $portableGodot --headless --path '.\godot' --editor --quit
@@ -1518,13 +1524,13 @@ Check every executable observation against its committed artifact, exact window,
 & $portableGodot --headless --path '.\godot' --script 'res://smoke.gd'
 ```
 
-- [ ] **Step 8: Commit operator documentation**
+- [x] **Step 8: Commit operator documentation**
 
 ```powershell
 git add README.md CLAUDE.md docs/ISSUES.md
 git commit -m "docs: document offline fidelity baseline"
 ```
 
-- [ ] **Step 9: Record the final handoff condition**
+- [x] **Step 9: Record the final handoff condition**
 
 The next ride-behavior plan may start only when: catalog validation passes offline; the exact fleet is generated once; two audits have byte-identical JSON, Markdown, and manifests; all manifest files exist and hash correctly; fresh POV/PNG artifacts were visually inspected; import, focused tests, and smoke pass; and the diff contains no generator, elements, viewer, terrain, or verifier behavior change.

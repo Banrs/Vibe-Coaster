@@ -1289,7 +1289,7 @@ appenders project POV map, checklist, and issue coverage for both aggregate `aud
 standalone Markdown files; the pack writer never revisits catalog/comparison inputs or adds separate
 public formatter methods.
 
-- [ ] **Step 10: Retain the pre-registered artifact suite and run the focused and smoke gates**
+- [x] **Step 10: Retain the pre-registered artifact suite and run the focused and smoke gates**
 
 Task 7C adds inspector delegation only. It must not re-register or otherwise alter the smoke harness;
 the unchanged smoke command continues to execute both focused suites before generator checks.

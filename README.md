@@ -13,14 +13,14 @@ inspection layer (placeholder train, simple track and pillars).
 
 - Records chased honestly: ~340 km/h via a downhill tunnel launch, a ~250 m camelback
   (structure above its valley), a ~90° cliff dive down ~0.8× the escarpment relief, a
-  75–95 m Immelmann (tallest-inversion class), a helical-leg vertical loop, a cutback,
+  80–100 m Immelmann (tallest-inversion class), a helical-leg vertical loop, a cutback,
   9–10.5 km of track.
 - Falcon's Flight's skeleton in five cohesive gestures — twisted side-drop into one flowing
   low act, a boosted-then-coasting decelerating cliff climb, one crest hold with an
   outward-banked rim turn, a monotonic 90° dive into the tunnel launch and camelback, and a
   single sweeping return arc home — with Tormenta's inversion act grafted where its physics
-  belongs (act one, at 42–50 m/s). No lifts: a ~4 g air-powered entry launch plus two short
-  ~2 g LSM boosters (one of them the record launch), every climb an unpowered coast.
+  belongs (act one, at 42–50 m/s). No lifts: a ~4 g air-powered entry launch plus two 
+  ~2 g LSM boosters (one of them the record launch).
 - Exactly three boost zones, no mid-course brake, one continuous energy arc after the tunnel
   launch, and one deliberate slow beat (the crest hold).
 - A ~2041 human-load envelope: duration-stretched ASTM F2291 curves at +8.0/−3.0 Gz ·

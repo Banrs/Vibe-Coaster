@@ -29,8 +29,10 @@ static func run() -> PackedStringArray:
 		return errors
 	var canonical_data: Script = load(CANONICAL_PATH)
 	var artifacts: Script = load(ARTIFACTS_PATH)
+	var fidelity: Script = load(FIDELITY_PATH)
 	var references: Script = load(REFERENCES_PATH)
 	_test_canonical_data(canonical_data, artifacts, errors)
+	_test_authoritative_catalog_validation(artifacts, fidelity, errors)
 	_test_successful_report(artifacts, errors)
 	_test_invalid_inputs(artifacts, errors)
 	_test_committed_catalog(artifacts, references, errors)
@@ -472,7 +474,7 @@ static func _test_successful_report(artifacts: Script, errors: PackedStringArray
 	source_fixture.comparison.findings[0].metric = "changed"
 	source_fixture.seed_measurements[1].dimensions.width = 99.0
 	source_fixture.seed_measurements[1].beats[0].kind = "changed"
-	source_fixture.catalog.sources["source.raw"].fallback_citations[0].section_id = "changed"
+	source_fixture.catalog.sources["youtube.unaligned"].fallback_citations[0].section_id = "changed"
 	source_fixture.catalog.sources["source.raw"].windows[1].window_s[0] = 9.0
 	source_fixture.catalog.observations[0].alignment.generated_anchor.semantic_selector_id = "changed"
 	source_fixture.generation_counts["42"] = 2
@@ -482,11 +484,24 @@ static func _test_successful_report(artifacts: Script, errors: PackedStringArray
 	mutable_report.findings[0].metric = "changed"
 	mutable_report.measurement_summaries[1].dimensions.width = 99.0
 	mutable_report.measurement_summaries[1].beats[0].kind = "changed"
-	mutable_report.evidence_snapshot[0].fallback_citations[0].section_id = "changed"
+	mutable_report.evidence_snapshot[1].fallback_citations[0].section_id = "changed"
 	mutable_report.pov_map.source_landmarks[1].source_time.window_s[0] = 9.0
 	_expect(errors, mutable_report.pov_map.records[1].source_time.window_s[0] == 2.0, "source times are independent")
 	mutable_report.pov_map.records[0].generated_anchor.semantic_selector_id = "changed"
 	_expect(errors, report_fixture == _valid_fixture(), "completed-report nested mutations do not change caller inputs")
+
+
+static func _test_authoritative_catalog_validation(
+	artifacts: Script, fidelity: Script, errors: PackedStringArray
+) -> void:
+	_expect(errors, fidelity.validate_catalog(_valid_catalog()).is_empty(),
+		"artifact fixture is valid under RideFidelity")
+	var fixture := _valid_fixture()
+	fixture.catalog.transforms = []
+	var report := _build(artifacts, fixture)
+	_expect(errors, report.get("status") == "invalid-input"
+		and "\n".join(report.get("errors", [])).contains("transforms"),
+		"artifact reports delegate semantic catalog validation")
 
 
 static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -> void:
@@ -649,15 +664,37 @@ static func _test_committed_catalog(
 		"evidence_gaps": [], "recommendation": {"status": "no-eligible-finding"},
 	}
 	var report: Dictionary = _build(artifacts, fixture)
-	var expected_gap_ids := []
+	var expected_gaps := []
 	for source_id in fixture.catalog.sources:
-		if str(source_id).begins_with("youtube.") and not fixture.catalog.sources[source_id].windows.is_empty():
-			expected_gap_ids.append("%s/alignment-not-present" % source_id)
-	expected_gap_ids.sort()
-	var actual_gap_ids: Array = report.get("pov_map", {}).get("gaps", []).map(
-		func(gap: Dictionary): return gap.get("id"))
-	_expect(errors, actual_gap_ids == expected_gap_ids,
-		"committed source-level no-alignment gaps are complete and sorted")
+		var source: Dictionary = fixture.catalog.sources[source_id]
+		if not str(source_id).begins_with("youtube.") or source.windows.is_empty():
+			continue
+		var landmark_ids := PackedStringArray()
+		for window in source.windows:
+			landmark_ids.append(str(window.id))
+		landmark_ids.sort()
+		expected_gaps.append([
+			"%s/alignment-not-present" % source_id,
+			str(source_id),
+			"alignment-not-present",
+			Array(landmark_ids),
+		])
+	expected_gaps.sort_custom(func(a: Array, b: Array): return str(a[0]) < str(b[0]))
+	var actual_gaps := []
+	for gap in report.get("pov_map", {}).get("gaps", []):
+		var landmark_ids := PackedStringArray()
+		for landmark_id in gap.get("source_landmark_ids", []):
+			landmark_ids.append(str(landmark_id))
+		landmark_ids.sort()
+		actual_gaps.append([
+			str(gap.get("id", "")),
+			str(gap.get("source_id", "")),
+			str(gap.get("reason", "")),
+			Array(landmark_ids),
+		])
+	actual_gaps.sort_custom(func(a: Array, b: Array): return str(a[0]) < str(b[0]))
+	_expect(errors, actual_gaps == expected_gaps,
+		"committed no-alignment gaps preserve exact source/landmark associations")
 	_expect(errors, report.get("pov_map", {}).get("records", []).is_empty(),
 		"committed unaligned catalog produces no POV mappings")
 	_expect(errors, report.get("render_requests", []).filter(
@@ -770,32 +807,54 @@ static func _valid_catalog() -> Dictionary:
 	return {
 		"schema_version": 2, "catalog_version": "test",
 		"selectors": {"selector.loop": {
+			"legacy_anchor": {"phase": "act-one", "kind": "loop", "occurrence": 0, "window_role": "whole"},
 			"compiled_anchor": {"story_slot_id": "act1.loop", "window_role": "core"},
+		}},
+		"transforms": {"observed.identity@1": {
+			"kind": "identity", "factor": 1.0,
+			"formula": "target_value = observed_value", "approval": "identity; no transform",
 		}},
 		"sources": {
 			"source.raw": {
-				"state": "executable", "acquisition": "raw",
+				"initial_state": "executable", "state": "executable",
+				"permitted_contributions": ["quantitative force targets"],
+				"permitted_axes": ["normal_g"],
+				"promotion_prerequisites": ["raw artifact and metadata retained"],
+				"acquisition": "raw", "url": "https://example.invalid/raw",
+				"recording_id": "fixture-raw", "retrieved_on": "2026-08-09",
+				"retrieval_context": "artifact test fixture",
 				"artifact_path": "evidence/raw.json", "artifact_sha256": "a".repeat(64),
-				"diagnostic_path": "evidence/raw-diagnostic.json", "diagnostic_sha256": "f".repeat(64),
 				"metadata_artifact_path": "evidence/raw-metadata.json", "metadata_artifact_sha256": "9".repeat(64),
 				"review_path": "evidence/raw-review.json", "review_sha256": "b".repeat(64),
-				"fallback_citations": [{
-					"document": "docs/TELEMETRY.md", "section_id": "fixture",
-					"source_windows_used": [[1.25, 3.0]],
-				}],
-				"url": "https://example.invalid/raw", "processing": ["excluded"],
+				"row_seat": "row-02", "device": "fixture sensor", "sample_rate_hz": 100.0,
+				"axis_mapping": {"sensor_z": "normal_g"}, "reliability": "fixture",
+				"processing": ["excluded"], "caveats": [],
 				"windows": [
-					{"id": "landmark.point", "time_s": 1.25},
+					{"id": "landmark.point", "window_s": [1.0, 1.5]},
 					{"id": "landmark.window", "window_s": [2.0, 3.0]},
 				],
 			},
 			"youtube.unaligned": {
-				"state": "observation_only",
+				"initial_state": "observation_only", "state": "observation_only",
+				"permitted_contributions": ["qualitative review"], "permitted_axes": [],
+				"promotion_prerequisites": ["raw sampled telemetry required for targets"],
+				"acquisition": "raw_fetch_unavailable", "url": "https://example.invalid/video",
+				"video_id": "video", "retrieved_on": "2026-08-09",
+				"retrieval_context": "artifact test fixture",
+				"diagnostic_path": "evidence/video-fetch-diagnostic.json",
+				"diagnostic_sha256": "c".repeat(64),
 				"metadata_diagnostic_path": "evidence/video-diagnostic.json",
 				"metadata_diagnostic_sha256": "d".repeat(64),
 				"review_path": "evidence/video-review.json",
 				"review_sha256": "e".repeat(64),
-				"video_id": "video", "windows": [{"id": "video.crest", "time_s": 4.0}],
+				"fallback_citations": [{
+					"document": "docs/TELEMETRY.md", "section_id": "fixture", "line_anchor": "fixture",
+					"columns_used": ["time"], "source_windows_used": [[3.5, 4.5]],
+				}],
+				"row_seat": "unknown", "device": "unknown", "sample_rate_hz": null,
+				"axis_mapping": {}, "reliability": "observation only",
+				"processing": ["metadata only"], "caveats": ["sample rate unknown"],
+				"windows": [{"id": "video.crest", "time_s": 4.0}],
 			},
 		},
 		"observations": [
@@ -804,7 +863,10 @@ static func _valid_catalog() -> Dictionary:
 		],
 		"targets": [{
 			"id": "target.load", "observation_id": "obs.window",
-			"semantic_selector_id": "selector.loop", "issues": [1, 9],
+			"semantic_selector_id": "selector.loop", "dimension": "loads",
+			"metric": "normal_peak_positive", "hold_seconds": null,
+			"raw_range": [1.0, 1.5], "target_range": [1.0, 1.5], "issues": [1, 9],
+			"aggregation": {"row": "maximum", "beat": "maximum", "seed": "median"},
 		}],
 		"review_prompts": [
 			_prompt("prompt.shaping", "shaping", [2, 14]),
@@ -822,7 +884,12 @@ static func _valid_catalog() -> Dictionary:
 
 static func _aligned_observation(observation_id: String, landmark_id: String) -> Dictionary:
 	return {
-		"id": observation_id, "source_id": "source.raw",
+		"id": observation_id, "state": "executable", "source_id": "source.raw",
+		"source_window_id": landmark_id, "source_axis": "sensor_z", "mapped_axis": "normal_g",
+		"row_seat": "row-02", "duration_s": 0.5 if landmark_id == "landmark.point" else 1.0,
+		"metric": "normal_peak_positive", "hold_seconds": null, "raw_range": [1.0, 1.5],
+		"transform_id": "observed.identity@1", "confidence": "high",
+		"confidence_rationale": "fixture", "corroborating_observation_ids": [],
 		"semantic_selector_id": "selector.loop",
 		"alignment": {
 			"source_landmark_id": landmark_id,
@@ -830,6 +897,7 @@ static func _aligned_observation(observation_id: String, landmark_id: String) ->
 			"method": "fixture alignment", "uncertainty_s": 0.1,
 			"row_compatibility": "same-row",
 			"generated_row_selector": {"row_id": "row-02"},
+			"rationale": "fixture",
 		},
 	}
 
@@ -850,7 +918,7 @@ static func _expected_report() -> Dictionary:
 		"legacy_base_commit": "3fa14885bef2daf3a7d9c0e544424cb6a296fd99",
 		"catalog": {
 			"schema_version": 2, "catalog_version": "test",
-			"canonical_sha256": "fd2fb5d8ae1cd756bc501f32ac9951479c13b7c1d7e915be9974fb1a5c06a285", "validation_status": "valid",
+			"canonical_sha256": "2fc1b0c7df31bf9a6fff87cee24ff5e0dce85b02bcd2508110c87ab43f124d8b", "validation_status": "valid",
 		},
 		"fleet": [11, 42, 20260809, 1],
 		"generation_counts": {"11": 1, "42": 1, "20260809": 1, "1": 1},
@@ -875,21 +943,23 @@ static func _expected_report() -> Dictionary:
 			{
 				"source_id": "source.raw", "state": "executable", "acquisition": "raw",
 				"artifact_path": "evidence/raw.json", "artifact_sha256": "a".repeat(64),
-				"diagnostic_path": "evidence/raw-diagnostic.json", "diagnostic_sha256": "f".repeat(64),
 				"metadata_artifact_path": "evidence/raw-metadata.json",
 				"metadata_artifact_sha256": "9".repeat(64),
 				"review_path": "evidence/raw-review.json", "review_sha256": "b".repeat(64),
-				"fallback_citations": [{
-					"document": "docs/TELEMETRY.md", "section_id": "fixture",
-					"source_windows_used": [[1.25, 3.0]],
-				}],
 			},
 			{
 				"source_id": "youtube.unaligned", "state": "observation_only",
+				"acquisition": "raw_fetch_unavailable",
+				"diagnostic_path": "evidence/video-fetch-diagnostic.json",
+				"diagnostic_sha256": "c".repeat(64),
 				"metadata_diagnostic_path": "evidence/video-diagnostic.json",
 				"metadata_diagnostic_sha256": "d".repeat(64),
 				"review_path": "evidence/video-review.json",
 				"review_sha256": "e".repeat(64),
+				"fallback_citations": [{
+					"document": "docs/TELEMETRY.md", "section_id": "fixture", "line_anchor": "fixture",
+					"columns_used": ["time"], "source_windows_used": [[3.5, 4.5]],
+				}],
 			},
 		],
 		"pov_map": _expected_pov_map(),
@@ -913,7 +983,7 @@ static func _measurement_summary(
 
 static func _expected_pov_map() -> Dictionary:
 	var records := []
-	for spec in [["obs.point", "landmark.point", {"kind": "point", "time_s": 1.25}],
+	for spec in [["obs.point", "landmark.point", {"kind": "window", "window_s": [1.0, 1.5]}],
 		["obs.window", "landmark.window", {"kind": "window", "window_s": [2.0, 3.0]}]]:
 		records.append({
 			"source_id": "source.raw", "source_landmark_id": spec[1],
@@ -928,7 +998,10 @@ static func _expected_pov_map() -> Dictionary:
 	return {
 		"schema_version": "fidelity-pov-map@1",
 		"source_landmarks": [
-			{"source_id": "source.raw", "landmark_id": "landmark.point", "source_time": {"kind": "point", "time_s": 1.25}},
+			{
+				"source_id": "source.raw", "landmark_id": "landmark.point",
+				"source_time": {"kind": "window", "window_s": [1.0, 1.5]},
+			},
 			{
 				"source_id": "source.raw", "landmark_id": "landmark.window",
 				"source_time": {"kind": "window", "window_s": [2.0, 3.0]},
@@ -1060,12 +1133,12 @@ recommended: target.load
 | source | state | acquisition |
 | --- | --- | --- |
 | source.raw | executable | raw |
-| youtube.unaligned | observation_only |  |
+| youtube.unaligned | observation_only | raw_fetch_unavailable |
 
 ## POV map
 | source | landmark | observation | generated beat | source time |
 | --- | --- | --- | --- | --- |
-| source.raw | landmark.point | obs.point | act-one/00/loop | point 1.250000 |
+| source.raw | landmark.point | obs.point | act-one/00/loop | window 1.000000–1.500000 |
 | source.raw | landmark.window | obs.window | act-one/00/loop | window 2.000000–3.000000 |
 Gap: youtube.unaligned — alignment-not-present (video.crest)
 

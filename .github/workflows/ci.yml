@@ -23,6 +23,10 @@ jobs:
           mkdir -p out/legacy-audit
           set -o pipefail
           INSPECT_OUT="$PWD/out/legacy-audit" godot --headless --path godot --script res://_inspect.gd 2>&1 | tee out/legacy-audit-stdout.txt
+      - name: Characterize seed 42 stable beat IDs
+        env:
+          INVENTORY_OUT: ${{ github.workspace }}/out/seed-42-element-payload.txt
+        run: godot --headless --path godot --script res://_ci_legacy_inventory.gd
       - name: Inventory complete audit pack
         if: ${{ always() }}
         shell: bash
@@ -42,6 +46,7 @@ jobs:
             out/legacy-audit
             out/legacy-audit-stdout.txt
             out/legacy-audit-file-list.txt
+            out/seed-42-element-payload.txt
           if-no-files-found: error
 
   godot:

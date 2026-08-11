@@ -11,6 +11,11 @@ validation are the product; visuals are a deliberately generic inspection layer.
 > changing poor generated behavior. Required commands, safety verification, deterministic public
 > inputs, and the documented creative ride arc remain in force unless the approved design states
 > otherwise.
+>
+> That design is a force-informed **hybrid**, not an FVD monoculture. FVD is preferred where
+> authoring in the rider's frame gives superior rider-dynamics control; it is not to be forced
+> onto layout, terrain fitting, closure, or exact-geometry work that another physically coherent
+> method solves better. Choosing the other method there is following the design, not deviating.
 
 Run both checks before and after any change:
 
@@ -39,12 +44,41 @@ local timings.
   Butterworth → duration-dependent envelope usage (held-curve), plus push-pull, the 0.2 s
   reversal rule, pairwise combined-axis ellipses, onset (least-squares over 100 ms), and the
   structural checks (frames, seams, terrain/self clearance). Parametric — no element names.
-- `godot/main.gd` — viewer: meshes, cameras, seven rows, metrics HUD, seed key (N).
-- `godot/smoke.gd` — headless gate: toolkit self-tests, template probes, and multi-seed
-  generator validation (same seed twice bit-identical; every seed passes every check).
-- `godot/_inspect.gd` — inspection harness (not a gate): per-element stats, phase tables,
-  and PNG renders (element shapes, top/elevation, 6-channel ride traces) for comparing
-  seeds against the measured references.
+- `godot/main.gd` — viewer: meshes, cameras, seven rows, metrics HUD, seed key (N). Its
+  static sampling API is a thin delegate to `route_sampling.gd`; behavior is unchanged.
+- `godot/route_sampling.gd` — the one route time/distance/pose interpolation, shared by the
+  viewer and the deterministic POV artifacts. `godot/canonical_data.gd` — the one canonical
+  JSON + SHA-256 implementation, shared by catalog and report code.
+- `godot/smoke.gd` — headless gate: toolkit self-tests, template probes, both focused
+  fidelity suites, and multi-seed generator validation (same seed twice bit-identical). Be
+  precise about its coverage: structure, seams, terrain clearance and self-clearance are
+  gated on all fifteen seeds, but the load envelope (`validate_loads`) is gated only on the
+  three deep seeds 11/42/20260809 — the twelve sweep seeds are deliberately ungated on loads
+  for CI time. Widen that only with a measured CI-time budget.
+- `godot/fidelity_references.gd` — the committed evidence catalog: sources, transforms,
+  selectors, review prompts, evidence gaps. Catalog `2026-08-10.evidence-baseline.2` holds 12
+  sources (12 corroborative/observation-only/review-pending, none `executable`), 6 transforms,
+  6 review prompts, 5 evidence gaps — and empty `selectors`, `observations` and `targets`, so
+  no comparison band exists yet. URLs live here (and in
+  `docs/evidence/fidelity/`) as inert provenance strings only; no network client exists.
+- `godot/fidelity.gd` — read-only measurement and comparison: catalog validation, beat/row
+  bands, exact held values, time-weighted pacing shares, transition windows, raw channel
+  reconstruction, fleet comparison, deterministic recommendation. `godot/fidelity_artifacts.gd`
+  — deterministic report/Markdown, checked writes, and the render helpers.
+- `godot/_inspect.gd` — inspection harness (not a gate) and the offline fidelity-audit runner.
+  It keeps every existing diagnostic — per-element stats, phase tables, element side views,
+  top/elevation, the stacked ride traces — and adds reconstructed longitudinal proper
+  acceleration, curvature, radius, roll acceleration and jerk channels, evidence-linked
+  review prompts and issue coverage, an explicit POV map that names its alignment gaps rather
+  than inventing a mapping, and checked writes with a hashed manifest. Operational failures
+  (catalog, generation, physical consistency, artifact writes) exit 1; fidelity misses are
+  diagnostic and exit 0. See README for the command and the full output contract.
+
+Diagnostic results are evidence to read, not verdicts. A `no-eligible-finding` recommendation
+means no catalogued evidence was eligible, not that the ride is right; a green audit never
+licenses closing a ride-quality issue. Filtering is allowed only for the human-tolerance
+verifier or an explicitly catalogued evidence comparison, and must be labelled — generated
+positions stay raw for physics, verification, and generated-channel measurement.
 
 ## Generator contract
 

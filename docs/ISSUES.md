@@ -40,6 +40,58 @@ root `CLAUDE.md` holds the contract.
     solving (search coarse, integrate the accepted geometry fine), caching Godot + imports
     on CI, splitting the gate into parallel jobs.
 
+## Audit coverage for issues 1–16
+
+The offline fidelity baseline (see README) emits a deterministic traceability record for every
+issue in this list: `review/issue-coverage.json` and `review/issue-coverage.md` under
+`INSPECT_OUT`, with `review/checklist.md` holding the review prompts and `audit.md` holding the
+evidence snapshot, POV map, and gap list. Each record links the issue to the evidence IDs,
+review prompts, and generated artifacts that bear on it.
+
+**No issue here is closed by an audit result.** As of the 2026-08-11 baseline, every one of the
+sixteen is in state `review-prompt` or `evidence-gap`: catalog
+`2026-08-10.evidence-baseline.2` holds no `executable` source and empty `selectors`,
+`observations` and `targets`, so the run legitimately produces zero findings and the
+recommendation `no-eligible-finding`. That is the contracted output for an empty eligible set —
+it records that nothing was eligible to compare against, not that the ride is right. A
+diagnostic number, a green run, or an unlinked artifact is never sufficient to mark a
+ride-quality issue solved; only measurement against reviewed evidence, or an explicit user
+decision, closes one.
+
+### Promoting a finding to a hard gate
+
+A finding becomes an enforced gate only through a new Superpowers design cycle that establishes,
+in writing and in code:
+
+1. Reviewed **executable** evidence — a committed source artifact or content digest, retrieval
+   date, exact window, axis mapping, row/seat, transform ID, confidence rationale, and the
+   required corroborating links. Corroborative, observation-only, and review-pending sources
+   cannot define a band.
+2. An explicit **threshold and scope**: which metric, which axis and polarity, which selector
+   and window role, which seeds, and what counts as a miss.
+3. A **focused failing test** that fails before the change and passes after, plus a decision on
+   whether the check joins the smoke gate or stays diagnostic.
+4. Proof that the promoted gate **cannot be satisfied by cheating**: it must not reward geometry
+   smoothing, a fitted or clamped radius, a viewer-only path, or hidden drive. Generated
+   positions stay raw integrator output; any filtering must be the labelled human-tolerance
+   filter or a catalogued evidence comparison.
+
+## Known limitations of the baseline itself
+
+- The radius strip in the channel sheets is degenerate. Near-straight track yields enormous
+  finite radii, so the linear plot range runs to ~5.4e8 m (seed 42), ~7.7e8 m (seed 11) and
+  ~8.0e8 m (seed 20260809), collapsing all small-radius detail onto the baseline. The sidecar
+  legend declares the non-finite (`unbounded`) counts honestly, but the strip is not usefully
+  readable as drawn. Lives in `godot/fidelity_artifacts.gd`.
+- Issue coverage links only `review/seed-42/channels.png` as the generated artifact for every
+  issue, and only issues 9, 12, 14 and 15 carry their real titles — the rest render as
+  "Issue N". The top, elevation, and element side views are written and hashed but never linked
+  from the coverage record, so the support-overlap and element-shaping prompts point at a
+  channel sheet rather than the views they ask for.
+- The POV map is entirely gaps: no source landmark has a committed alignment, so no POV frames
+  are rendered. This is correct behavior (an unresolved alignment is an evidence gap, never a
+  fallback), not a missing feature.
+
 ## Recommended approach
 
 Compare the ride element by element against real high-thrill coasters — not just the two

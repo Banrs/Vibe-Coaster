@@ -71,6 +71,13 @@ static func build_report(
 	var fleet: Array = comparison_projection.fleet
 	var by_seed := _validate_measurements(seed_measurements, fleet, errors)
 	var counts_projection := _validate_counts(generation_counts, fleet, errors)
+	if not catalog is Dictionary:
+		errors.append("artifact_report: catalog must be a Dictionary")
+	else:
+		for error in _FIDELITY.validate_catalog(catalog):
+			errors.append("artifact_report: %s" % error)
+	if not errors.is_empty():
+		return _invalid(errors)
 	var catalog_context := _catalog_context(catalog, by_seed, comparison_projection, errors)
 	var pov_map := {
 		"schema_version": "fidelity-pov-map@1", "source_landmarks": catalog_context.source_landmarks,
@@ -291,10 +298,12 @@ static func _validate_counts(value: Variant, fleet: Array, errors: Array[String]
 	return projection
 
 static func _catalog_context(
-	value: Variant, by_seed: Dictionary, comparison: Dictionary, errors: Array[String]
+	catalog: Dictionary, by_seed: Dictionary, comparison: Dictionary, errors: Array[String]
 ) -> Dictionary:
 	var context := {
-		"identity": {"schema_version": 0, "catalog_version": ""},
+		"identity": {
+			"schema_version": catalog.schema_version, "catalog_version": catalog.catalog_version,
+		},
 		"evidence_snapshot": [], "source_landmarks": [], "source_times": {},
 		"unaligned_candidates": {}, "pov_records": [], "pov_gaps": [],
 		"checklist": [], "issue_coverage": {},
@@ -309,32 +318,12 @@ static func _catalog_context(
 			"linked_measurement_ids": [], "linked_target_ids": [],
 			"linked_evidence_ids": [], "generated_artifact_paths": [], "state": "evidence-gap",
 		})
-	if not value is Dictionary:
-		errors.append("artifact_report: catalog must be a Dictionary")
-		return context
-	var catalog: Dictionary = value
-	var schema_version: Variant = catalog.get("schema_version")
-	var catalog_version := _required_string(catalog, "catalog_version", "catalog", errors)
-	if typeof(schema_version) != TYPE_INT or schema_version != 2:
-		errors.append("artifact_report: catalog schema_version must be integer 2")
-	else:
-		context.identity = {"schema_version": schema_version, "catalog_version": catalog_version}
-	var sources_value: Variant = catalog.get("sources")
-	var selectors_value: Variant = catalog.get("selectors")
-	if not sources_value is Dictionary or not selectors_value is Dictionary:
-		errors.append("artifact_report: catalog sources and selectors have invalid types")
-		return context
-	var sources: Dictionary = sources_value
-	var selectors: Dictionary = selectors_value
+	var sources: Dictionary = catalog.sources
+	var selectors: Dictionary = catalog.selectors
 	for source_id_value in sources:
-		if typeof(source_id_value) != TYPE_STRING:
-			errors.append("artifact_report: catalog source IDs must be nonempty Strings")
-			continue
 		var source_id: String = source_id_value
-		if source_id.is_empty():
-			errors.append("artifact_report: catalog source IDs must be nonempty Strings")
-			continue
-		_source_projection(source_id, sources[source_id], context, errors)
+		var source: Dictionary = sources[source_id]
+		_source_projection(source_id, source, context)
 	context.evidence_snapshot.sort_custom(
 		func(a: Dictionary, b: Dictionary) -> bool: return a.source_id < b.source_id)
 	context.source_landmarks.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -350,60 +339,21 @@ static func _catalog_context(
 				finding_targets[target_id] = true
 	var observation_sources := {}
 	var compiled_anchors := {}
-	for observation in _dictionary_records(catalog.get("observations"), "catalog observations", errors):
-		var entry_errors := errors.size()
-		var observation_id := _required_string(observation, "id", "observation", errors)
-		var source_id := _required_string(observation, "source_id", "observation", errors)
-		var selector_id := _required_string(observation, "semantic_selector_id", "observation", errors)
-		if observation_id.is_empty() or observation_sources.has(observation_id):
-			errors.append("artifact_report: observation IDs must be nonempty and unique")
-			continue
+	for observation_value in catalog.observations:
+		var observation: Dictionary = observation_value
+		var observation_id: String = observation.id
+		var source_id: String = observation.source_id
+		var selector_id: String = observation.semantic_selector_id
 		observation_sources[observation_id] = source_id
-		if not sources.has(source_id):
-			errors.append("artifact_report: observation source_id does not resolve: %s" % source_id)
-		if not selectors.has(selector_id):
-			errors.append("artifact_report: observation semantic_selector_id does not resolve: %s" % selector_id)
-		if not observation.has("alignment"):
-			continue
-		var alignment_value: Variant = observation.get("alignment")
-		if not alignment_value is Dictionary:
-			errors.append("artifact_report: observation alignment must be a Dictionary")
-			continue
-		var alignment: Dictionary = alignment_value
-		var landmark_id := _required_string(alignment, "source_landmark_id", "alignment", errors)
-		var method := _required_string(alignment, "method", "alignment", errors)
-		var row_compatibility := _required_string(alignment, "row_compatibility", "alignment", errors)
-		var uncertainty: Variant = alignment.get("uncertainty_s")
-		if not _finite_number(uncertainty):
-			errors.append("artifact_report: alignment uncertainty_s must be finite numeric")
-		var generated_anchor: Variant = alignment.get("generated_anchor")
-		if not generated_anchor is Dictionary:
-			errors.append("artifact_report: alignment generated_anchor must be a Dictionary")
-		elif (generated_anchor.size() != 1
-			or typeof(generated_anchor.get("semantic_selector_id")) != TYPE_STRING
-			or generated_anchor.get("semantic_selector_id") != selector_id):
-			errors.append("artifact_report: generated_anchor must match observation semantic_selector_id")
+		var alignment: Dictionary = observation.alignment
+		var landmark_id: String = alignment.source_landmark_id
 		var landmark_key := "%s/%s" % [source_id, landmark_id]
-		if not context.source_times.has(landmark_key):
-			errors.append("artifact_report: source_landmark_id does not resolve: %s" % landmark_id)
-		if selectors.has(selector_id) and not compiled_anchors.has(selector_id):
-			var selector_value: Variant = selectors[selector_id]
-			if not selector_value is Dictionary:
-				errors.append("artifact_report: selector records must be Dictionaries")
-			else:
-				var selector: Dictionary = selector_value
-				var anchor_value: Variant = selector.get("compiled_anchor")
-				if not anchor_value is Dictionary:
-					errors.append("artifact_report: selector compiled anchor must be a Dictionary")
-				else:
-					var anchor: Dictionary = anchor_value
-					var story_slot := _required_string(anchor, "story_slot_id", "compiled anchor", errors)
-					var window_role := _required_string(anchor, "window_role", "compiled anchor", errors)
-					if not story_slot.is_empty() and not window_role.is_empty():
-						compiled_anchors[selector_id] = {
-							"story_slot_id": story_slot, "window_role": window_role,
-						}
-		if errors.size() != entry_errors or not by_seed.has(42) or not compiled_anchors.has(selector_id):
+		if not compiled_anchors.has(selector_id):
+			var anchor: Dictionary = selectors[selector_id].compiled_anchor
+			compiled_anchors[selector_id] = {
+				"story_slot_id": anchor.story_slot_id, "window_role": anchor.window_role,
+			}
+		if not by_seed.has(42):
 			continue
 		var resolution := _center_row_resolution(by_seed[42], compiled_anchors[selector_id], errors)
 		if resolution.is_empty():
@@ -412,8 +362,9 @@ static func _catalog_context(
 		context.pov_records.append({
 			"source_id": source_id, "source_landmark_id": landmark_id,
 			"source_time": context.source_times[landmark_key].duplicate(true), "observation_id": observation_id,
-			"semantic_selector_id": selector_id, "alignment_method": method,
-			"uncertainty_s": uncertainty, "row_compatibility": row_compatibility,
+			"semantic_selector_id": selector_id, "alignment_method": alignment.method,
+			"uncertainty_s": alignment.uncertainty_s,
+			"row_compatibility": alignment.row_compatibility,
 			"generated_seed": 42, "generated_anchor": {"semantic_selector_id": selector_id},
 			"generated_beat_id": resolution.beat_id, "generated_time_s": generated_time,
 			"generated_window_s": [resolution.window_start_s, resolution.window_end_s],
@@ -421,18 +372,13 @@ static func _catalog_context(
 		})
 		context.unaligned_candidates.erase(source_id)
 
-	for target in _dictionary_records(catalog.get("targets"), "catalog targets", errors):
-		var target_id := _required_string(target, "id", "target", errors)
-		var observation_id := _required_string(target, "observation_id", "target", errors)
-		var selector_id := _required_string(target, "semantic_selector_id", "target", errors)
-		var issues := _validated_issues(target.get("issues"), "target", errors)
-		if not observation_sources.has(observation_id):
-			errors.append("artifact_report: target observation_id does not resolve: %s" % target_id)
-		if not selectors.has(selector_id):
-			errors.append("artifact_report: target semantic_selector_id does not resolve: %s" % target_id)
-		if not finding_targets.has(target_id) or not observation_sources.has(observation_id):
+	for target_value in catalog.targets:
+		var target: Dictionary = target_value
+		var target_id: String = target.id
+		var observation_id: String = target.observation_id
+		if not finding_targets.has(target_id):
 			continue
-		for issue_id in issues:
+		for issue_id in target.issues:
 			var record: Dictionary = coverage_records[issue_id - 1]
 			record.state = "measured"
 			record.linked_measurement_ids.append("seed-42")
@@ -440,36 +386,32 @@ static func _catalog_context(
 			record.linked_evidence_ids.append_array([observation_id, observation_sources[observation_id]])
 			record.generated_artifact_paths.append("review/seed-42/channels.png")
 
-	for prompt in _dictionary_records(catalog.get("review_prompts"), "catalog review_prompts", errors):
-		var prompt_id := _required_string(prompt, "id", "prompt", errors)
-		var category := _required_string(prompt, "category", "prompt", errors)
-		var prompt_text := _required_string(prompt, "prompt", "prompt", errors)
-		var source_ids := _validated_source_ids(prompt.get("source_ids"), "prompt", sources, errors)
-		var issues := _validated_issues(prompt.get("issues"), "prompt", errors)
-		var category_id: String = _CATEGORY_IDS.get(category, "")
+	for prompt_value in catalog.review_prompts:
+		var prompt: Dictionary = prompt_value
+		var source_ids: Array = prompt.source_ids
+		var category_id: String = _CATEGORY_IDS.get(prompt.category, "")
 		if category_id.is_empty():
 			errors.append("artifact_report: prompt has unknown checklist category")
 		else:
 			checklist_rows[category_id].append({
-				"id": prompt_id, "prompt": prompt_text,
+				"id": prompt.id, "prompt": prompt.prompt,
 				"evidence_ids": _sorted_unique(source_ids),
 				"generated_artifact_paths": ["review/seed-42/channels.png"],
 			})
-		for issue_id in issues:
+		for issue_id in prompt.issues:
 			var record: Dictionary = coverage_records[issue_id - 1]
 			if record.state == "measured":
 				continue
 			record.state = "review-prompt"
-			record.linked_evidence_ids.append_array([prompt_id] + source_ids)
+			record.linked_evidence_ids.append_array([prompt.id] + source_ids)
 			record.generated_artifact_paths.append("review/seed-42/channels.png")
 
-	for gap in _dictionary_records(catalog.get("evidence_gaps"), "catalog evidence_gaps", errors):
-		var gap_id := _required_string(gap, "id", "gap", errors)
-		_validated_source_ids(gap.get("source_ids"), "gap", sources, errors)
-		for issue_id in _validated_issues(gap.get("issues"), "gap", errors):
+	for gap_value in catalog.evidence_gaps:
+		var gap: Dictionary = gap_value
+		for issue_id in gap.issues:
 			var record: Dictionary = coverage_records[issue_id - 1]
 			if record.state == "evidence-gap":
-				record.linked_evidence_ids.append(gap_id)
+				record.linked_evidence_ids.append(gap.id)
 
 	for spec in _CHECKLIST_SPECS:
 		var rows: Array = checklist_rows[spec[0]]
@@ -503,90 +445,26 @@ static func _required_string(record: Dictionary, key: String, label: String, err
 	errors.append("artifact_report: %s %s must be a nonempty String" % [label, key])
 	return ""
 
-static func _dictionary_records(value: Variant, label: String, errors: Array[String]) -> Array:
-	var output := []
-	if not value is Array:
-		errors.append("artifact_report: %s must be an Array" % label)
-		return output
-	for record_value in value:
-		if not record_value is Dictionary:
-			errors.append("artifact_report: %s entries must be Dictionaries" % label)
-		else:
-			output.append(record_value)
-	return output
-
-static func _validated_source_ids(
-	value: Variant, label: String, sources: Dictionary, errors: Array[String]
-) -> Array:
-	var output := []
-	if not value is Array:
-		errors.append("artifact_report: %s source_ids must be an Array" % label)
-		return output
-	for source_id_value in value:
-		if typeof(source_id_value) != TYPE_STRING:
-			errors.append("artifact_report: %s source_ids must contain Strings" % label)
-			continue
-		var source_id: String = source_id_value
-		output.append(source_id)
-		if not sources.has(source_id):
-			errors.append("artifact_report: %s source_id does not resolve: %s" % [label, source_id])
-	return output
-
-static func _validated_issues(value: Variant, label: String, errors: Array[String]) -> Array:
-	var output := []
-	if not value is Array:
-		errors.append("artifact_report: %s issues must be an Array" % label)
-		return output
-	for issue_id in value:
-		if typeof(issue_id) != TYPE_INT or issue_id < 1 or issue_id > 16:
-			errors.append("artifact_report: %s issue ID must be an integer from 1 through 16" % label)
-		else:
-			output.append(issue_id)
-	return output
-
 static func _source_projection(
-	source_id: String, value: Variant, context: Dictionary, errors: Array[String]
+	source_id: String, source: Dictionary, context: Dictionary
 ) -> void:
-	if not value is Dictionary:
-		errors.append("artifact_report: source records must be Dictionaries")
-		return
-	var source: Dictionary = value
-	var snapshot := {"source_id": source_id, "state": _required_string(source, "state", "source", errors)}
+	var snapshot := {"source_id": source_id, "state": source.state}
 	if source.has("acquisition"):
-		snapshot["acquisition"] = _required_string(source, "acquisition", "source", errors)
+		snapshot["acquisition"] = source.acquisition
 	for stem in _PAIR_STEMS:
 		var path_key := "%s_path" % stem
 		if source.has(path_key):
-			snapshot[path_key] = _required_string(source, path_key, "source", errors)
+			snapshot[path_key] = source[path_key]
 			var hash_key := "%s_sha256" % stem
-			snapshot[hash_key] = _required_string(source, hash_key, "source", errors)
+			snapshot[hash_key] = source[hash_key]
 	if source.has("fallback_citations"):
-		var citations: Variant = source.get("fallback_citations")
-		if not citations is Array:
-			errors.append("artifact_report: source fallback_citations must be an Array")
-		else:
-			snapshot["fallback_citations"] = citations.duplicate(true)
+		snapshot["fallback_citations"] = source.fallback_citations.duplicate(true)
 	context.evidence_snapshot.append(snapshot)
 	var landmark_ids := []
-	var windows: Variant = source.get("windows")
-	if not windows is Array:
-		errors.append("artifact_report: source windows must be an Array")
-		return
-	var seen := {}
-	for landmark_value in windows:
-		if not landmark_value is Dictionary:
-			errors.append("artifact_report: source window entries must be Dictionaries")
-			continue
+	for landmark_value in source.windows:
 		var landmark: Dictionary = landmark_value
-		var landmark_id := _required_string(landmark, "id", "source landmark", errors)
-		if landmark_id.is_empty() or seen.has(landmark_id):
-			errors.append("artifact_report: source landmark IDs must be nonempty and unique")
-			continue
-		seen[landmark_id] = true
+		var landmark_id: String = landmark.id
 		var source_time := _source_time(landmark)
-		if source_time.is_empty():
-			errors.append("artifact_report: source landmark has invalid tagged time")
-			continue
 		landmark_ids.append(landmark_id)
 		context.source_landmarks.append({
 			"source_id": source_id, "landmark_id": landmark_id, "source_time": source_time,

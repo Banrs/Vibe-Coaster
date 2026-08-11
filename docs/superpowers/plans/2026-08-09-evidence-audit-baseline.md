@@ -1317,7 +1317,7 @@ git commit -m "feat: write checked fidelity review artifacts"
 - Consumes: `RideGenerator.build`, `RideElements.ROW_OFFSETS`, validated catalog, `measure_route`, `compare_fleet`, and `RideFidelityArtifacts`.
 - Produces: complete deterministic baseline pack and generation work counters.
 
-- [ ] **Step 1: Add the canonical fleet constant and one-build spy test**
+- [x] **Step 1: Add the canonical fleet constant and one-build spy test**
 
 ```gdscript
 const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
@@ -1338,7 +1338,7 @@ static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray
 The spy also asserts that the returned `generation_counts` has exactly the fleet mapped to String
 keys and that every value is integer `1`.
 
-- [ ] **Step 2: Implement `_run_audit(seeds, build_route, measure_route, compare_fleet)` as injectable orchestration**
+- [x] **Step 2: Implement `_run_audit(seeds, build_route, measure_route, compare_fleet)` as injectable orchestration**
 
 ```gdscript
 static func _run_audit(seeds: Array, build_route: Callable, measure_route: Callable, compare_fleet: Callable) -> Dictionary:
@@ -1363,17 +1363,17 @@ copy retained in `report.generation_counts`.
 
 Do not build deep-review seeds a second time; retain those three already-built route dictionaries only until artifact writing completes.
 
-- [ ] **Step 3: Make operational errors fail and fidelity misses remain diagnostic**
+- [x] **Step 3: Make operational errors fail and fidelity misses remain diagnostic**
 
 Before generation, validate the catalog and artifact root. During generation, record distinct `generation`, `physical_consistency`, and `artifact_write` errors with catalog version and seed. A comparison result containing `under` or `over` findings still exits 0 when all operational work succeeds.
 
-- [ ] **Step 4: Run the focused one-build test**
+- [x] **Step 4: Run the focused one-build test**
 
 ```powershell
 & $portableGodot --headless --path '.\godot' --script 'res://fidelity_artifact_tests.gd'
 ```
 
-- [ ] **Step 5: Run two clean full audits**
+- [x] **Step 5: Run two clean full audits**
 
 ```powershell
 $workspace = (Resolve-Path '.').Path
@@ -1385,7 +1385,7 @@ $env:INSPECT_OUT = Join-Path $workspace 'out\fidelity-baseline-b'
 if ($LASTEXITCODE -ne 0) { throw "baseline B failed: $LASTEXITCODE" }
 ```
 
-- [ ] **Step 6: Compare deterministic text artifacts byte for byte**
+- [x] **Step 6: Compare deterministic text artifacts byte for byte**
 
 ```powershell
 $textArtifacts = @(
@@ -1404,7 +1404,7 @@ foreach ($relative in $textArtifacts) {
 }
 ```
 
-- [ ] **Step 7: Verify the artifact manifest and generated images**
+- [x] **Step 7: Verify the artifact manifest and generated images**
 
 ```powershell
 $manifest = Get-Content -Raw 'out\fidelity-baseline-a\manifest.json' | ConvertFrom-Json
@@ -1420,7 +1420,7 @@ if ($manifest.schema_version -ne 'fidelity-artifact-manifest@1') { throw 'unexpe
 if (($manifest.files | Where-Object kind -eq 'png').Count -lt 12) { throw 'review PNG pack is incomplete' }
 ```
 
-- [ ] **Step 8: Inspect fresh seed-11, seed-42, and seed-20260809 channel/top/elevation images, seed-42 profiles, and generated POV frames**
+- [x] **Step 8: Inspect fresh seed-11, seed-42, and seed-20260809 channel/top/elevation images, seed-42 profiles, and generated POV frames**
 
 Check that every image is non-empty, legible when paired with its canonical sidecar legend, contains
 the one declared raw-generated trace, and has no clipped trace or blank viewport. Review
@@ -1429,7 +1429,7 @@ observations in `out/fidelity-baseline-a/manual-inspection.md`, explicitly outsi
 manifest/text comparison; generated `audit.md` remains canonical and contains prompts/results only.
 Do not convert subjective checks into scores.
 
-- [ ] **Step 9: Run required import, focused tests, and smoke from clean portable app-data directories**
+- [x] **Step 9: Run required import, focused tests, and smoke from clean portable app-data directories**
 
 ```powershell
 & $portableGodot --headless --path '.\godot' --editor --quit
@@ -1442,7 +1442,7 @@ if ($LASTEXITCODE -ne 0) { throw "artifact tests failed: $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "smoke failed: $LASTEXITCODE" }
 ```
 
-- [ ] **Step 10: Commit the completed runner**
+- [x] **Step 10: Commit the completed runner**
 
 ```powershell
 git add godot/_inspect.gd godot/fidelity_artifact_tests.gd

@@ -331,6 +331,11 @@ static func _use_numeric_alignment_landmark(catalog: Dictionary) -> void:
 	catalog.observations[0].alignment.source_landmark_id = 9
 
 
+static func _use_numeric_observation_source(catalog: Dictionary) -> void:
+	catalog.observations[0].source_id = 7
+	catalog.observations[0].corroborating_observation_ids = []
+
+
 static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _valid_catalog_v2()
 	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "complete schema-v2 catalog validates")
@@ -343,6 +348,8 @@ static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringAr
 	coercion_catalog.observations[0].source_window_id = "9"
 	coercion_catalog.observations[0].alignment.source_landmark_id = "9"
 	coercion_catalog.sources["7"] = coercion_catalog.sources["test.primary"].duplicate(true)
+	coercion_catalog.sources["7"].initial_state = "executable"
+	coercion_catalog.sources["7"].state = "executable"
 	coercion_catalog.observations[0].id = "8"
 	coercion_catalog.targets[0].observation_id = "8"
 	coercion_catalog.sources["test.secondary"].windows.append(
@@ -358,11 +365,11 @@ static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringAr
 		["schema_version requires integer 2", "schema version",
 			func(value: Dictionary): value.schema_version = 2.0],
 		["catalog collection IDs require non-empty Strings", "id",
-			func(value: Dictionary): value.sources[10] = value.sources["test.primary"].duplicate(true)],
+			func(value: Dictionary): value.selectors[10] = value.selectors["semantic.act1.loop.core"].duplicate(true)],
 		["catalog record IDs require non-empty Strings", "id",
 			func(value: Dictionary): value.review_prompts[0].id = 10],
 		["observation references require non-empty Strings", "source_id",
-			func(value: Dictionary): value.observations[0].source_id = 7],
+			func(value: Dictionary): _use_numeric_observation_source(value)],
 		["target references require non-empty Strings", "observation_id",
 			func(value: Dictionary): value.targets[0].observation_id = 8],
 		["source window IDs require Strings", "window id",

@@ -5,7 +5,11 @@ const ARTIFACTS_PATH := "res://fidelity_artifacts.gd"
 const REFERENCES_PATH := "res://fidelity_references.gd"
 const SAMPLING_PATH := "res://route_sampling.gd"
 const VIEWER_PATH := "res://main.gd"
+const FIDELITY_PATH := "res://fidelity.gd"
+const INSPECT_PATH := "res://_inspect.gd"
 const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
+const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+const DEEP_REVIEW_SEEDS := [11, 42, 20260809]
 
 
 func _initialize() -> void:
@@ -36,7 +40,62 @@ static func run() -> PackedStringArray:
 	_test_pov_camera(artifacts, errors)
 	_test_checked_writes(artifacts, errors)
 	_test_write_pack(artifacts, errors)
+	_test_audit_fleet(errors)
 	return errors
+
+
+## The audit orchestration seam, exercised with spies only: no generator, no catalog, no files.
+static func _test_audit_fleet(errors: PackedStringArray) -> void:
+	if not ResourceLoader.exists(INSPECT_PATH):
+		errors.append("the inspector is missing")
+		return
+	var inspect: Script = load(INSPECT_PATH)
+	var fidelity: Script = load(FIDELITY_PATH)
+	_expect(errors, inspect.get_script_constant_map().get("AUDIT_SEEDS") == AUDIT_SEEDS,
+		"the inspector pins the canonical fifteen-seed fleet in its documented order")
+	_expect(errors, fidelity.get_script_constant_map().get("CANONICAL_FLEET") == AUDIT_SEEDS,
+		"the audited fleet is the fleet the comparison calls canonical")
+	_test_one_build_per_seed(Callable(inspect, "_run_audit"), errors)
+
+
+static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray) -> void:
+	if not runner.is_valid():
+		errors.append("the inspector exposes no static _run_audit orchestration seam")
+		return
+	var calls := {}
+	var build := func(seed_value: int) -> Dictionary:
+		calls[seed_value] = int(calls.get(seed_value, 0)) + 1
+		return {"seed": seed_value}
+	var measure := func(route: Dictionary) -> Dictionary: return {"seed": route.seed}
+	var compare := func(measurements: Array) -> Dictionary: return {"fleet": measurements.map(func(item): return item.seed)}
+	var report: Dictionary = runner.call(AUDIT_SEEDS, build, measure, compare)
+	_expect(errors, report.get("fleet") == AUDIT_SEEDS, "report preserves canonical fleet")
+	for seed_value in AUDIT_SEEDS:
+		_expect(errors, calls.get(seed_value, 0) == 1, "seed %d is generated once" % seed_value)
+	_expect(errors, calls.size() == AUDIT_SEEDS.size(), "the audit generates nothing outside the fleet")
+	var expected_measurements := AUDIT_SEEDS.map(func(seed_value: int): return {"seed": seed_value})
+	_expect(errors, report.get("measurements") == expected_measurements,
+		"every seed is measured once, in fleet order")
+	_expect(errors, report.get("comparison") == {"fleet": AUDIT_SEEDS},
+		"the fleet comparison sees exactly the ordered measurements")
+	var expected_routes := {}
+	for seed_value in DEEP_REVIEW_SEEDS:
+		expected_routes[seed_value] = {"seed": seed_value}
+	_expect(errors, report.get("routes_by_seed") == expected_routes,
+		"only the deep-review seeds retain their already-built route")
+	var expected_counts := {}
+	for seed_value in AUDIT_SEEDS:
+		expected_counts[str(seed_value)] = 1
+	var counts: Variant = report.get("generation_counts")
+	_expect(errors, counts is Dictionary and counts == expected_counts,
+		"generation counts are the fleet under String keys, each generated once")
+	if not counts is Dictionary:
+		return
+	var counted: Dictionary = counts
+	for key in counted:
+		_expect(errors, typeof(key) == TYPE_STRING, "generation-count key '%s' is a String" % str(key))
+		_expect(errors, typeof(counted[key]) == TYPE_INT,
+			"generation-count value for '%s' is an integer" % str(key))
 
 
 ## One deterministic pack: the contracted output set, its reopened manifest, and the checked

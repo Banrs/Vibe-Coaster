@@ -326,6 +326,11 @@ static func _expect_catalog_invalid_cases(
 		_expect_contains(errors, fidelity.validate_catalog(invalid), case[1], case[0])
 
 
+static func _use_numeric_alignment_landmark(catalog: Dictionary) -> void:
+	catalog.observations[0].source_window_id = 9
+	catalog.observations[0].alignment.source_landmark_id = 9
+
+
 static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _valid_catalog_v2()
 	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "complete schema-v2 catalog validates")
@@ -333,6 +338,46 @@ static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringAr
 	numeric_version.catalog_version = 7
 	_expect_contains(errors, fidelity.validate_catalog(numeric_version), "catalog_version",
 		"catalog_version requires a non-empty String")
+	var coercion_catalog := _valid_promotion_catalog()
+	coercion_catalog.sources["test.primary"].windows[0].id = "9"
+	coercion_catalog.observations[0].source_window_id = "9"
+	coercion_catalog.observations[0].alignment.source_landmark_id = "9"
+	coercion_catalog.sources["7"] = coercion_catalog.sources["test.primary"].duplicate(true)
+	coercion_catalog.observations[0].id = "8"
+	coercion_catalog.targets[0].observation_id = "8"
+	coercion_catalog.sources["test.secondary"].windows.append(
+		{"id": "unused.window", "window_s": [20.0, 22.0]}
+	)
+	coercion_catalog.review_prompts = [{
+		"id": "review.coercion", "category": "feel", "prompt": "Compare the sustained force feel.",
+		"source_ids": ["7"], "issues": [1],
+	}]
+	_expect(errors, fidelity.validate_catalog(coercion_catalog).is_empty(),
+		"catalog coercion fixture validates before mutation")
+	_expect_catalog_invalid_cases(fidelity, errors, coercion_catalog, [
+		["schema_version requires integer 2", "schema version",
+			func(value: Dictionary): value.schema_version = 2.0],
+		["catalog collection IDs require non-empty Strings", "id",
+			func(value: Dictionary): value.sources[10] = value.sources["test.primary"].duplicate(true)],
+		["catalog record IDs require non-empty Strings", "id",
+			func(value: Dictionary): value.review_prompts[0].id = 10],
+		["observation references require non-empty Strings", "source_id",
+			func(value: Dictionary): value.observations[0].source_id = 7],
+		["target references require non-empty Strings", "observation_id",
+			func(value: Dictionary): value.targets[0].observation_id = 8],
+		["source window IDs require Strings", "window id",
+			func(value: Dictionary): value.sources["test.secondary"].windows[1].id = 10],
+		["auxiliary source_ids entries require Strings", "source_ids",
+			func(value: Dictionary): value.review_prompts[0].source_ids[0] = 7],
+		["alignment landmarks require non-empty Strings", "alignment",
+			func(value: Dictionary): _use_numeric_alignment_landmark(value)],
+		["alignment methods require non-empty Strings", "alignment",
+			func(value: Dictionary): value.observations[0].alignment.method = 7],
+		["prompt text requires a non-empty String", "text",
+			func(value: Dictionary): value.review_prompts[0].prompt = 7],
+		["prompt categories require non-empty Strings", "category",
+			func(value: Dictionary): value.review_prompts[0].category = 7],
+	])
 	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
 		["unknown evidence state is rejected", "invalid state", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].state = "trusted"],
 		["source state cannot exceed its initial permission ceiling", "permission ceiling", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].initial_state = "observation_only"],

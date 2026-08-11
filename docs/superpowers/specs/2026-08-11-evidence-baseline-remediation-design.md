@@ -1,6 +1,7 @@
 # Evidence Baseline Remediation Design
 
-**Status:** recommended approach approved in conversation; written-spec review pending.
+**Status:** approved in conversation; independent correctness, lean, verification, and final-delta
+reviews passed on 2026-08-11.
 
 ## Authority and purpose
 
@@ -94,8 +95,10 @@ migrates them atomically to `RideRoute`, avoiding an API created only to be remo
 ### 2. Preflighted, manifest-last artifact publication
 
 The artifact owner exposes one narrow `invalidate_pack(root: String) -> PackedStringArray` operation.
-It accepts only a nonempty absolute root, creates that exact directory when necessary, removes only
-an existing `manifest.json`, and verifies that the success marker is absent. The inspector validates
+It accepts only a nonempty absolute non-volume root, never trims or rewrites that root, creates that
+exact directory when necessary, removes only an existing `manifest.json`, and verifies that the
+success marker is absent. Filesystem volume roots are rejected as an unsafe output scope. The
+inspector validates
 the root and invokes this operation before catalog validation or generation, so any later
 operational failure cannot leave a previous run advertised as current. Failures before an output
 root can be validated cannot safely invalidate an unknown location.
@@ -113,9 +116,11 @@ deterministic pipeline:
    used by element or POV requests, additionally call `RideFidelity.element_bands(route, 0.0)` once,
    index unique raw beat IDs, and require request ID, kind, and ordered in-range
    native/time/distance span parity. The report's copied span is not the rendering authority.
-4. Build the fixed text payloads and in-memory images, including channel data calculated once. Sort
-   jobs by audit-relative forward-slash path.
-5. Write each job, reopen its bytes, compare exact UTF-8 bytes for text, decode PNGs and verify their
+4. Build lightweight fixed-text and render job specifications, sort them by audit-relative
+   forward-slash path, then render and publish one job at a time. Never retain the complete image
+   pack in memory. Calculate each channel bundle once and project its Markdown only from its reopened
+   canonical legend JSON.
+5. Reopen each written job, compare exact UTF-8 bytes for text, decode PNGs and verify their
    dimensions, then calculate size and SHA-256 from those reopened bytes. Channel Markdown is
    projected from the reopened canonical legend JSON.
 6. If any step fails, ensure `manifest.json` is absent and return `artifact_write:` errors. Partial
@@ -164,16 +169,23 @@ Specifically, it calls:
 
 The helper returns the deep analysis when requested so smoke does not analyze the same route twice.
 Seed scheduling remains in smoke and the inspector. It does not include ride-shape aspirations,
-length/top-speed bands, determinism repeats, template probes, or other smoke-only policy. The
-inspector prefixes resulting failures with `physical_consistency`, records catalog version and seed,
-and exits 1. Fidelity `under`/`over` findings remain diagnostic and exit 0.
+length/top-speed bands, determinism repeats, template probes, or other smoke-only policy.
+
+The existing-signature `_run_audit` validates every nonempty built route with this entry point before
+measurement or deep-route retention. It records generation counts at the build boundary, returns
+sorted `operational_errors`, does not measure or retain an invalid route, and does not call the fleet
+comparison when any operational error exists. The caller appends those returned errors and takes the
+real `_fail() -> 1` path. The missing-route guard moves into `_run_audit`; `_built` becomes only
+`Generator.build(seed)`. This keeps the callable builder seam and one-build counts unchanged while
+correcting orchestration behavior. Failures are prefixed with `physical_consistency`, record catalog
+version and seed, and exit 1. Fidelity `under`/`over` findings remain diagnostic and exit 0.
 
 Focused tests exercise the pure helper with structurally valid synthetic clearance and load
-failures, including the deterministic result shape and early structure stop. The existing
-`_run_audit` one-build-per-seed callable spy stays unchanged; no validator injection seam or test
-hook is added. Inspector mapping from returned issues to operational errors is a direct caller
-responsibility and is verified in the final GitHub audit. No production tolerance, filter, or seed
-exception changes.
+failures, including the deterministic result shape and early structure stop. A real 1,001-sample
+straight-route fixture then exercises `_run_audit`: one route passes, one deliberately fails terrain
+clearance, the failed seed is neither measured nor retained, comparison is skipped, exact formatted
+operational errors are returned, and both seeds still have one build. No validator injection seam or
+test hook is added. No production tolerance, filter, or seed exception changes.
 
 ### 5. Complete issue traceability
 
@@ -199,7 +211,21 @@ the force/angle/speed/AGL/curvature/radius/roll-acceleration/jerk channels neede
 flow, and thrill after later ride changes. The inspector stops separately rendering undocumented
 root-level duplicates such as `top.png`, `elevation.png`, and `channels_<seed>.png`; this removes
 repeated CPU work without removing any diagnostic capability or canonical review artifact. Console
-diagnostics remain.
+diagnostics remain as deterministic machine-readable canonical JSON after the literal prefixes
+`PHASE `, `ELEM `, and `CHANNEL `. Phase records carry seed, zero-based section ordinal, exact name
+and kind, length, duration, and entry/exit speed. Element records use
+`RideFidelity.element_bands` once and carry seed, stable beat ID and kind plus every retained raw
+force/angle/geometry statistic. Channel records are projected from the reopened checked legend and
+carry seed, channel ID, plot bounds, and bounded/unbounded counts. This keeps the old shaping,
+force/angle, geometry, flow, thrill, and speed-review capability while making identity unambiguous.
+
+Diagnostic radii must not silently cap nearly straight geometry. `_stats` becomes static and treats
+only an exactly zero curvature magnitude as unbounded: the corresponding radius is `null` and its
+explicit `*_radius_unbounded` field is `true`. Every positive finite curvature reports the exact
+reciprocal, however large, with the flag `false`. `ELEM` JSON carries both
+nullable `apex_radius_m`/`valley_radius_m` values and their Boolean unbounded flags. This changes only
+diagnostic projection; route arrays, generator physics, physical validation, and rendering do not
+change.
 
 No alias-copy layer is added. If a legacy filename later proves to be an external public contract,
 that compatibility decision requires evidence and a separate design; current README/CLAUDE output
@@ -254,7 +280,9 @@ Each slice follows RED → GitHub-observed expected failure → minimum GREEN �
 review. No two implementers edit the shared artifact files concurrently.
 
 1. Authoritative catalog validation and deletion of shadow checks/tests.
-2. Run-level invalidation, pack preflight, route/beat binding, and exact reopened-byte text checks.
+2A. Pack request/route preflight and route/beat binding.
+2B. Run-level and writer-level stale-success invalidation.
+2C. Checked-job publication and exact reopened-byte verification.
 3. Camera-space near/far clipping.
 4. Shared physical validation and inspector operational handling.
 5. Exact issue text and review-artifact traceability projection.
@@ -277,8 +305,9 @@ GitHub run and uploaded artifact remain the evidence.
 The temporary job also captures both inspector logs, extracts deterministic `PHASE`, `ELEM`, and
 `CHANNEL` characterization lines, and requires those extracts to be byte-identical. It asserts that
 phase rows remain present; element rows retain length, entry/exit speed, pitch range, bank, normal-G,
-width, height, apex radius, and valley radius fields; and all documented channel IDs remain present
-for each deep seed. The extracts are uploaded with the pack. This preserves the old shaping,
+width, height, nullable apex/valley radii, and their Boolean unbounded fields; and all documented
+channel IDs remain present for each deep seed. The verifier type-checks the nullable-number/Boolean
+pairs. The extracts are uploaded with the pack. This preserves the old shaping,
 force/angle, and flow-review diagnostics without retaining duplicate root-level PNG aliases.
 
 Focused GitHub tests start with a pre-existing manifest and prove that explicit run invalidation,

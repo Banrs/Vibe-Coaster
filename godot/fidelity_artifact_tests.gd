@@ -620,6 +620,14 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 		"invalid reports return only status and errors")
 	_expect(errors, result.errors == sorted_errors and result.errors.size() >= 2,
 		"all invalid-input diagnostics are stable and sorted")
+	var retained := _valid_fixture()
+	retained.legacy_base_commit = "BAD"
+	retained.seed_measurements[1].beats[0].rows[0].offset = 2.0
+	var retained_result: Dictionary = _build(artifacts, retained)
+	_expect_contains(errors, retained_result.get("errors", []), "legacy_base_commit",
+		"combined invalid input retains the base diagnostic")
+	_expect_contains(errors, retained_result.get("errors", []), "exactly one center row",
+		"non-catalog errors preserve retained artifact diagnostics")
 
 
 static func _test_committed_catalog(

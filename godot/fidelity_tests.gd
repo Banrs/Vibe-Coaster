@@ -329,6 +329,10 @@ static func _expect_catalog_invalid_cases(
 static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringArray) -> void:
 	var catalog := _valid_catalog_v2()
 	_expect(errors, fidelity.validate_catalog(catalog).is_empty(), "complete schema-v2 catalog validates")
+	var numeric_version := catalog.duplicate(true)
+	numeric_version.catalog_version = 7
+	_expect_contains(errors, fidelity.validate_catalog(numeric_version), "catalog_version",
+		"catalog_version requires a non-empty String")
 	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
 		["unknown evidence state is rejected", "invalid state", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].state = "trusted"],
 		["source state cannot exceed its initial permission ceiling", "permission ceiling", func(value: Dictionary): value.sources["rideforcesdb.tormenta.6383"].initial_state = "observation_only"],

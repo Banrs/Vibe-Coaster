@@ -1,6 +1,7 @@
 extends SceneTree
 
 const RideGenerator := preload("res://generator.gd")
+const G0 := 9.80665
 
 const STORY_IDS := [
 	"station-launch",
@@ -48,8 +49,8 @@ func _initialize() -> void:
 		"the full cliff dive is monotonic and steep while its literal core stays unloaded")
 	_expect(_lsm3_feeds_camelback(route),
 		"LSM3 reaches the 340 km/h class and directly feeds the marquee camelback")
-	_expect(_launch_speeds_match_the_default_vision(route),
-		"the entry launch and LSM2 reach their explicit near-future speed classes")
+	_expect(_lsm2_speed_matches_the_default_vision(route),
+		"LSM2 reaches its explicit near-future speed class")
 	_expect(_public_arrays_are_shaped(route),
 		"all public trajectory arrays are packed, aligned, and nontrivial")
 	_expect(_public_trajectory_is_physical(route),
@@ -60,6 +61,8 @@ func _initialize() -> void:
 		"at least two distinct inversion windows put rider-up substantially below world-up")
 	_expect(_turning_features_are_material(route),
 		"the cutback, wave turn, and return create real lateral displacement and heading change")
+	_check_station_launch_contract(route)
+	_check_opener_contract(route)
 	_check_act_one_contract(route)
 	for error in _errors:
 		printerr(error)
@@ -189,15 +192,12 @@ func _lsm3_feeds_camelback(route: Dictionary) -> bool:
 		and route.speeds[last] >= route.speeds[first] + 20.0 and int(camel.first) == last + 1
 
 
-func _launch_speeds_match_the_default_vision(route: Dictionary) -> bool:
-	var launch := _window(route, "station-launch")
+func _lsm2_speed_matches_the_default_vision(route: Dictionary) -> bool:
 	var lsm2 := _role(route, "escarpment-climb", "lsm2")
-	if launch.is_empty() or lsm2.is_empty():
+	if lsm2.is_empty():
 		return false
-	var launch_speed := float(route.speeds[int(launch.last)])
 	var lsm2_speed := float(route.speeds[int(lsm2.last)])
-	return launch_speed >= 85.0 and launch_speed <= 98.0 \
-		and lsm2_speed >= 57.0 and lsm2_speed <= 64.0
+	return lsm2_speed >= 57.0 and lsm2_speed <= 64.0
 
 
 func _public_arrays_are_shaped(route: Dictionary) -> bool:
@@ -326,6 +326,155 @@ func _turning_features_are_material(route: Dictionary) -> bool:
 		and _window_turns(route, raceway, 25.0, deg_to_rad(25.0))
 
 
+func _check_station_launch_contract(route: Dictionary) -> void:
+	var launch := _window(route, "station-launch")
+	if launch.is_empty():
+		_expect(false, "station-launch public window is missing"); return
+	var roles: Array = launch.get("role_windows", [])
+	_expect(roles.size() == 1, "station-launch has %d roles; required 1" % roles.size())
+	if roles.size() == 1:
+		var role: Dictionary = roles[0]
+		_expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] == [
+			"launch", "launch", "station-launch/launch/00-launch"],
+			"station-launch role identity observed %s; required launch/launch/station-launch/launch/00-launch" %
+				str([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")]))
+		_expect(int(role.first) == int(launch.first) and int(role.last) == int(launch.last) \
+			and int(role.first_span) == int(launch.first_span) \
+			and int(role.last_span) == int(launch.last_span),
+			"station-launch role must contiguously own the whole window")
+	var first := int(launch.first); var last := int(launch.last)
+	_expect_range("station-launch start speed", float(route.speeds[first]), 5.999, 6.001, "m/s")
+	_expect_range("station-launch exit speed", float(route.speeds[last]), 75.0, 78.0, "m/s")
+	var bad_id := -1; var peak_drive := 0.0; var minimum_drive := INF
+	var maximum_height_delta := 0.0; var maximum_abs_tangent_y := 0.0; var minimum_up_dot := INF
+	var forward := Vector3(route.tangents[first].x, 0.0, route.tangents[first].z).normalized()
+	var right := forward.cross(Vector3.UP); var maximum_lateral := 0.0
+	for index in range(first, last + 1):
+		peak_drive = maxf(peak_drive, float(route.drive_g[index]))
+		minimum_drive = minf(minimum_drive, float(route.drive_g[index]))
+		maximum_height_delta = maxf(maximum_height_delta,
+			absf(route.positions[index].y - route.positions[first].y))
+		maximum_abs_tangent_y = maxf(maximum_abs_tangent_y, absf(route.tangents[index].y))
+		maximum_lateral = maxf(maximum_lateral,
+			absf((route.positions[index] - route.positions[first]).dot(right)))
+		minimum_up_dot = minf(minimum_up_dot, route.ups[index].dot(Vector3.UP))
+		if bad_id < 0 and int(route.propulsion_ids[index]) != 1:
+			bad_id = index
+	_expect(bad_id < 0, "station-launch sample %d uses propulsion ID %d; required ID 1" % [
+		bad_id, int(route.propulsion_ids[bad_id]) if bad_id >= 0 else 1])
+	_expect_range("station-launch peak drive", peak_drive, 3.8, 4.2, "g")
+	_expect_min("station-launch minimum drive", minimum_drive, 0.0, "g")
+	_expect_min("station-launch contiguous drive >= 3.8 g hold",
+		_held_at_least(route.drive_g, route.times, launch, 3.8), 1.3, "s")
+	_expect_max("station-launch vertical deviation", maximum_height_delta, 0.1, "m")
+	_expect_max("station-launch absolute tangent vertical component",
+		maximum_abs_tangent_y, sin(deg_to_rad(1.0)), "ratio")
+	_expect_max("station-launch lateral deviation", maximum_lateral, 0.1, "m")
+	_expect_max("station-launch heading excursion", _turn_measure(route, launch).x, 1.0, "deg")
+	_expect_min("station-launch minimum rider-up dot world-up", minimum_up_dot, 0.999, "ratio")
+	_expect_max("station-launch sampled normal/lateral/drive onset magnitude",
+		_sampled_peak_vector_onset(route, first, last), 24.5, "g/s")
+
+
+func _check_opener_contract(route: Dictionary) -> void:
+	var whole := _window(route, "opener")
+	if whole.is_empty():
+		_expect(false, "opener public window is missing"); return
+	var roles: Array = whole.get("role_windows", [])
+	var expected := [
+		["twisted-drop", "twisted_drop", "opener/twisted-drop/00-twisted_drop"],
+		["teardrop", "overbank", "opener/teardrop/00-overbank"],
+		["release", "hill", "opener/release/00-hill"],
+	]
+	_expect(roles.size() == expected.size(), "opener has %d roles; required %d" % [
+		roles.size(), expected.size()])
+	if roles.size() != expected.size():
+		return
+	var next_sample := int(whole.first); var next_span := int(whole.first_span)
+	for index in roles.size():
+		var role: Dictionary = roles[index]
+		_expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] \
+			== expected[index], "opener role %d identity observed %s; required %s" % [
+			index, str([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")]),
+			str(expected[index])])
+		_expect(int(role.first) == next_sample and int(role.first_span) == next_span,
+			"opener role %d starts sample/span %d/%d; required %d/%d" % [index,
+				int(role.first), int(role.first_span), next_sample, next_span])
+		next_sample = int(role.last) + 1; next_span = int(role.last_span) + 1
+	_expect(next_sample == int(whole.last) + 1 and next_span == int(whole.last_span) + 1,
+		"opener roles do not contiguously cover the whole window")
+	var first := int(whole.first); var last := int(whole.last)
+	var drop: Dictionary = roles[0]
+	var apex := _maximum_height_index(route, int(drop.first), int(drop.last)); var nadir := apex
+	for index in range(apex + 1, int(drop.last) + 1):
+		if route.positions[index].y < route.positions[nadir].y:
+			nadir = index
+	var non_descent := -1
+	var min_normal := INF; var max_normal := -INF; var peak_lateral := 0.0
+	var peak_drive := 0.0; var peak_roll := 0.0; var maximum_energy_excess := -INF
+	var initial_energy := 0.5 * float(route.speeds[first]) ** 2 + G0 * route.positions[first].y
+	var previous_energy := initial_energy
+	var resistance_work := 0.0
+	for index in range(first, last + 1):
+		min_normal = minf(min_normal, float(route.normal_g[index]))
+		max_normal = maxf(max_normal, float(route.normal_g[index]))
+		peak_lateral = maxf(peak_lateral, absf(float(route.lateral_g[index])))
+		peak_drive = maxf(peak_drive, absf(float(route.drive_g[index])))
+		peak_roll = maxf(peak_roll, absf(float(route.roll_rates[index])))
+		if index > apex and index <= nadir and non_descent < 0 \
+				and route.positions[index].y >= route.positions[index - 1].y:
+			non_descent = index
+		if index > first:
+			var energy := 0.5 * float(route.speeds[index]) ** 2 + G0 * route.positions[index].y
+			var interval_work := -0.5 * G0 * (float(route.longitudinal_g[index - 1]) \
+				+ float(route.longitudinal_g[index])) \
+				* (float(route.distances[index]) - float(route.distances[index - 1]))
+			maximum_energy_excess = maxf(maximum_energy_excess,
+				energy - previous_energy - maxf(0.5, interval_work * 0.001))
+			previous_energy = energy
+			resistance_work += interval_work
+	_expect(_all_propulsion_zero(route, first, last), "opener propulsion IDs must all be 0")
+	_expect_max("opener absolute drive", peak_drive, 0.000001, "g")
+	_expect_range("twisted-drop prominence", _prominence(route, drop), 100.0, 140.0, "m")
+	_expect_min("twisted-drop apex-to-nadir drop",
+		route.positions[apex].y - route.positions[nadir].y, 100.0, "m")
+	_expect(non_descent < 0, "twisted-drop apex-to-nadir descent stops being strict at sample %d" % non_descent)
+	_expect_min("twisted-drop lateral range", _turn_measure(route, drop).y, 5.0, "m")
+	_expect_min("opener minimum rider-up dot world-up", _minimum_up_dot(route, first, last), 0.15, "ratio")
+	_expect_range("opener unwrapped heading excursion", _turn_measure(route, whole).x, 60.0, 160.0, "deg")
+	_expect_range("opener handoff speed", float(route.speeds[last]), 61.5, 62.5, "m/s")
+	_expect_max("opener handoff height delta", absf(route.positions[last].y - route.positions[first].y), 10.0, "m")
+	_expect_max("opener handoff pitch", absf(rad_to_deg(asin(clampf(route.tangents[last].y, -1.0, 1.0)))), 3.0, "deg")
+	_expect_min("opener handoff up-dot", route.ups[last].dot(Vector3.UP), 0.99, "ratio")
+	_expect_min("opener minimum normal", min_normal, -1.0, "g")
+	_expect_max("opener maximum normal", max_normal, 5.2, "g")
+	_expect_max("opener peak absolute lateral", peak_lateral, 1.5, "g")
+	_expect_max("opener peak absolute roll rate", peak_roll, 120.0, "deg/s")
+	_expect_max("opener sampled normal/lateral/drive onset magnitude",
+		_sampled_peak_vector_onset(route, first, last), 24.5, "g/s")
+	var analytic_onset: Variant = whole.get("peak_analytic_normal_onset_gps")
+	_expect(typeof(analytic_onset) == TYPE_FLOAT and is_finite(float(analytic_onset)),
+		"opener exposes finite peak_analytic_normal_onset_gps; observed %s" % str(analytic_onset))
+	if typeof(analytic_onset) == TYPE_FLOAT:
+		_expect_max("opener analytic normal onset", float(analytic_onset), 24.5, "g/s")
+	_expect_max("opener monotonic specific-energy excess", maximum_energy_excess, 0.0, "J/kg")
+	var energy_loss := initial_energy - previous_energy
+	_expect_min("opener specific-energy loss", energy_loss, 800.0, "J/kg")
+	_expect_max("opener resistance-work closure", absf(energy_loss - resistance_work),
+		maxf(0.5, resistance_work * 0.001), "J/kg")
+	var launch := _window(route, "station-launch")
+	var sequence_duration := float(route.times[last]) - float(route.times[int(launch.first)])
+	var sequence_distance := float(route.distances[last]) - float(route.distances[int(launch.first)])
+	var sequence_roles: Array = launch.get("role_windows", []) + roles
+	for role in sequence_roles:
+		_expect_max("launch/opener %s time share" % role.id,
+			(float(route.times[int(role.last)]) - float(route.times[int(role.first)])) / sequence_duration,
+			0.5, "ratio")
+		_expect_max("launch/opener %s distance share" % role.id,
+			(float(route.distances[int(role.last)]) - float(route.distances[int(role.first)])) / sequence_distance,
+			0.5, "ratio")
+
+
 func _check_act_one_contract(route: Dictionary) -> void:
 	var whole := _window(route, "act-one")
 	if whole.is_empty():
@@ -421,6 +570,35 @@ func _prominence(route: Dictionary, window: Dictionary) -> float:
 	var last := int(window.last)
 	return _maximum_height(route, first, last) \
 		- maxf(route.positions[first].y, route.positions[last].y)
+
+
+func _sampled_peak_vector_onset(route: Dictionary, first: int, last: int) -> float:
+	var peak := 0.0
+	for index in range(maxi(first, 1), last + 1):
+		var delta := Vector3(
+			float(route.normal_g[index]) - float(route.normal_g[index - 1]),
+			float(route.lateral_g[index]) - float(route.lateral_g[index - 1]),
+			float(route.drive_g[index]) - float(route.drive_g[index - 1]))
+		peak = maxf(peak, delta.length() \
+			/ (float(route.times[index]) - float(route.times[index - 1])))
+	return peak
+
+
+func _held_at_least(values: Variant, times: Variant, window: Dictionary, limit: float) -> float:
+	var held := 0.0; var longest := 0.0
+	for index in range(int(window.first) + 1, int(window.last) + 1):
+		var before := float(values[index - 1]); var after := float(values[index])
+		var duration := float(times[index]) - float(times[index - 1])
+		if before >= limit and after >= limit:
+			held += duration
+		elif before >= limit:
+			held += duration * (before - limit) / (before - after)
+			longest = maxf(longest, held); held = 0.0
+		elif after >= limit:
+			held = duration * (after - limit) / (after - before)
+		else:
+			longest = maxf(longest, held); held = 0.0
+	return maxf(longest, held)
 
 
 func _held_at_most(route: Dictionary, window: Dictionary, use_up_dot: bool, limit: float) -> float:

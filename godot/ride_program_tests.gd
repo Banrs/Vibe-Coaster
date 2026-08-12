@@ -473,7 +473,7 @@ func _plan_evidence_is_within_tolerance(plan: Dictionary) -> bool:
 	for tolerance in tolerances:
 		if not _positive_finite(tolerance):
 			return false
-	for field in ["residuals", "fine_residuals"]:
+	for field in ["residuals", "fine_residuals", "production_residuals"]:
 		var residuals: Variant = plan.get(field)
 		if not residuals is Array or residuals.size() != ids.size():
 			return false

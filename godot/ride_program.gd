@@ -166,7 +166,7 @@ static func compile(
 		Motion.quintic(4.785225, 1.0), 0.0, 0.0, 0.0, "exit")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
-	var settings := _settings(COARSE_STEP_S)
+	var settings := _settings(0.01)
 	_begin_gesture(gestures, "raceway-return", spans.size())
 	_add_raceway(spans, metadata, propulsion)
 	_end_gesture(gestures, metadata, spans.size() - 1)
@@ -183,7 +183,7 @@ static func compile(
 			% str(landmark_errors), "landmarks",
 			{"landmark_report": landmark_report, "misses": landmark_errors})
 	var capture_start := _last_state(prefix)
-	var capture := _solve_capture(capture_start, layout, settings)
+	var capture := _solve_capture(capture_start, layout, _settings(COARSE_STEP_S))
 	if not capture.ok:
 		capture["landmark_report"] = landmark_report
 		return capture
@@ -194,6 +194,15 @@ static func compile(
 			capture.unique_evaluations, capture.residuals, capture.margins)
 		capture_failure["landmark_report"] = landmark_report
 		return capture_failure
+	var production_residuals := _capture_residuals(_last_state(capture_route), layout)
+	var production_margins := _capture_margins(capture.coefficients, capture_route, layout)
+	if not _capture_converged(production_residuals):
+		return _capture_failure("capture missed its production boundary",
+			capture.unique_evaluations, production_residuals, production_margins)
+	for margin in production_margins.values():
+		if not is_finite(float(margin)) or float(margin) < 0.0:
+			return _capture_failure("production capture violates an inequality",
+				capture.unique_evaluations, production_residuals, production_margins)
 	var brake := _solve_brakes(_last_state(capture_route), layout, settings)
 	if not brake.ok:
 		brake["landmark_report"] = landmark_report
@@ -244,7 +253,8 @@ static func compile(
 			"residual_tolerances": CAPTURE_RESIDUAL_TOLERANCES,
 			"residuals": capture.residuals,
 			"fine_residuals": capture.fine_residuals,
-			"margins": capture.margins,
+			"production_residuals": production_residuals,
+			"margins": production_margins,
 			"conditioning": capture.conditioning,
 			"positive_drive_allowed": false,
 		},
@@ -356,20 +366,20 @@ static func _return_spans() -> Array:
 	# Coupled authored values close pose, speed, and the fixed 4.4 s brake distance.
 	return [
 		_return_span("raceway/turn-a-entry", 1.25,
-			Motion.quintic(1.0, 1.4081465362721832), -1.3041741299231535),
-		_return_span("raceway/turn-a-core", 4.73017127898945,
-			Motion.constant(1.4081465362721832)),
+			Motion.quintic(1.0, 1.4092518463936181), -1.3057663235881098),
+		_return_span("raceway/turn-a-core", 4.721066107858114,
+			Motion.constant(1.4092518463936181)),
 		_return_span("raceway/turn-a-exit-pullup", 1.25,
-			Motion.quintic(1.4081465362721832, 3.0), 1.3041741299231535),
-		_return_span("raceway/airtime-unload", 5.549695767280095,
+			Motion.quintic(1.4092518463936181, 3.0), 1.3057663235881098),
+		_return_span("raceway/airtime-unload", 5.550132620465743,
 			Motion.quintic(3.0, -1.25)),
 		_return_span("raceway/airtime-recovery", 6.0, Motion.quintic(-1.25, 3.0)),
 		_return_span("raceway/turn-b-entry", 1.25,
-			Motion.quintic(3.0, 2.185928988417269), 2.0274122110920154),
-		_return_span("raceway/turn-b-core", 11.360371490348415,
-			Motion.constant(2.185928988417269)),
+			Motion.quintic(3.0, 2.1849373856103447), 2.026977850357263),
+		_return_span("raceway/turn-b-core", 11.368597538216235,
+			Motion.constant(2.1849373856103447)),
 		_return_span("raceway/turn-b-exit", 1.25,
-			Motion.quintic(2.185928988417269, 1.0), -2.0274122110920154),
+			Motion.quintic(2.1849373856103447, 1.0), -2.026977850357263),
 	]
 
 

@@ -121,7 +121,8 @@ func _build(document: Dictionary) -> Dictionary:
 
 func _call_build_config(document: Dictionary, overrides: Array[Dictionary]) -> Dictionary:
 	var method := {}
-	for candidate in RideGenerator.get_script_method_list():
+	var generator := RideGenerator.new()
+	for candidate in generator.get_script().get_script_method_list():
 		if candidate.get("name", "") == "build_config":
 			method = candidate
 			break

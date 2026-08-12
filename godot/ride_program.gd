@@ -608,7 +608,7 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 			return _capture_failure("capture Jacobian is singular", cache.size(),
 				base.residuals, base.margins)
 		for index in 5:
-			coefficients[index] = clampf(coefficients[index] - 0.7 * step[index],
+			coefficients[index] = clampf(coefficients[index] - step[index],
 				CAPTURE_COEFFICIENT_BOUNDS[index][0], CAPTURE_COEFFICIENT_BOUNDS[index][1])
 	var coarse := _capture_evaluation(start, layout, coefficients, settings, cache)
 	if not coarse.ok:

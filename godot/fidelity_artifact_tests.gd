@@ -150,7 +150,9 @@ static func _test_write_pack(artifacts: Script, errors: PackedStringArray) -> vo
 	_expect(errors, rendered.strips.size() == 11
 		and rendered.image.get_size() == Vector2i(1400, 1650),
 		"the channel render survives the move and carries all eleven strips")
-	_expect(errors, rendered.image.get_pixel(349, 4).distance_to(Color(0.30, 0.27, 0.20)) < 0.01,
+	var separator: Color = rendered.image.get_pixel(349, 4)
+	_expect(errors, absf(separator.r - 0.30) < 0.01 and absf(separator.g - 0.27) < 0.01 \
+		and absf(separator.b - 0.20) < 0.01,
 		"channel separators retain an interior native role boundary")
 	_expect_pack_failures(artifacts, errors)
 

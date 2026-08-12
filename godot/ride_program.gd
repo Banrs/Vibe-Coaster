@@ -122,11 +122,13 @@ static func compile(
 	_add(spans, metadata, propulsion, "rim/slow-crest", 2.90, "moving",
 		1.0, 0.0, 0.0, 0.0, "slow-crest")
 	_add(spans, metadata, propulsion, "rim/outward-bank", 1.40, "moving",
-		Motion.quintic(1.0, 1.15), 0.0, 0.0,
-		Motion.compact_pulse(deg_to_rad(52.0)), "outward-rim")
+		Motion.quintic(1.0, 1.493674785), Motion.compact_pulse(0.05), 0.0,
+		Motion.compact_pulse(deg_to_rad(84.15)), "outward-rim")
+	_add(spans, metadata, propulsion, "rim/outward-arc", 1.0, "moving",
+		1.493674785, 0.0, 0.0, 0.0, "outward-rim")
 	_add(spans, metadata, propulsion, "rim/outward-release", 1.40, "moving",
-		Motion.quintic(1.15, 1.0), 0.0, 0.0,
-		Motion.compact_pulse(deg_to_rad(-52.0)), "outward-rim")
+		Motion.quintic(1.493674785, 1.0), Motion.compact_pulse(-0.05), 0.0,
+		Motion.compact_pulse(deg_to_rad(-84.15)), "outward-rim")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "cliff-dive", spans.size(), "dive")
@@ -155,7 +157,7 @@ static func compile(
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
 	_add(spans, metadata, propulsion, "camelback/pull-up", 1.997005, "moving",
 		Motion.quintic(1.0, 4.933250), 0.0, 0.0, 0.0, "rise")
-	_add(spans, metadata, propulsion, "camelback/unload", 3.121247, "moving",
+	_add(spans, metadata, propulsion, "camelback/unload", 3.2, "moving",
 		Motion.quintic(4.933250, -1.286153), 0.0, 0.0, 0.0, "rise")
 	_add(spans, metadata, propulsion, "camelback/crest", 3.852550, "moving",
 		-1.286153, 0.0, 0.0, 0.0, "crest")

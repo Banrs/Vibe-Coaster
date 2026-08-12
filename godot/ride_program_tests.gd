@@ -54,49 +54,73 @@ func _initialize() -> void:
 
 
 func _test_sustained_brake_closes_without_padding() -> void:
-	var station := Vector3(174.262812, 0.0, 0.0)
-	var start := {
-		"position_m": Vector3.ZERO,
-		"tangent": Vector3.RIGHT,
-		"rider_up": Vector3.UP,
-		"speed_mps": 69.0,
-		"distance_m": 0.0,
-		"time_s": 0.0,
-	}
-	var layout := {
-		"station_position_m": station,
-		"station_tangent": Vector3.RIGHT,
-		"station_up": Vector3.UP,
-	}
-	var solved: Dictionary = RideProgram._solve_brakes(
-		start, layout, RideProgram._settings(0.05))
-	if not _expect(solved.get("ok", false),
-			"the reviewed 4.4 s final brake closes without a padding coast: %s" % str(solved)):
-		return
-	var spans: Array = solved.get("spans", [])
-	var ids := []
-	var active_duration_s := 0.0
-	for span: Dictionary in spans:
-		ids.append(span.get("span_id", ""))
-		if str(span.get("span_id", "")).begins_with("brakes/"):
-			active_duration_s += float(span.get("duration_s", 0.0))
-	_expect(ids == ["brakes/engage", "brakes/hold", "brakes/release", "station/creep"],
-		"the terminal program contains only the sustained brake and station creep")
-	_expect(RideProgram._validate_control_seams(spans).is_empty(),
-		"the sustained brake and station handoff match C2 control jets")
-	_expect(absf(active_duration_s - 4.4) <= 0.000001,
-		"the active final brake retains the observed 4.4 second duration")
-	var route := Motion.integrate(start, spans, RideProgram._settings(0.01))
-	if not _expect(route.get("ok", false),
-			"the sustained brake fixture integrates through the central motion kernel"):
-		return
-	var handoff := Motion.sample_time(route, 4.4)
-	_expect(absf(float(handoff.get("speed_mps", -1.0)) - 2.0) <= 0.0001,
-		"the moving brake reaches exactly 2 m/s at its native station handoff")
-	_expect(route.position_m[-1].distance_to(station) <= 0.05,
-		"the authored terminal spans consume their physical station distance")
-	_expect(absf(float(route.speed_mps[-1]) - 1.0) <= 0.001,
-		"the station creep reaches the preset terminal speed")
+	var fixtures := [
+		{"id": "legacy", "speed_mps": 69.0, "remaining_m": 174.262812},
+		{"id": "reserve", "speed_mps": 69.835737, "remaining_m": 192.741825},
+	]
+	var solved_fixtures := []
+	for fixture: Dictionary in fixtures:
+		var start := {"position_m": Vector3.ZERO, "tangent": Vector3.RIGHT,
+			"rider_up": Vector3.UP, "speed_mps": fixture.speed_mps,
+			"distance_m": 0.0, "time_s": 0.0}
+		var layout := {"station_position_m": Vector3(fixture.remaining_m, 0.0, 0.0),
+			"station_tangent": Vector3.RIGHT, "station_up": Vector3.UP}
+		var solved := RideProgram._solve_brakes(start, layout, RideProgram._settings(0.05))
+		if not _expect(solved.get("ok", false),
+				"the %s brake owner consumes its full distance: %s" % [fixture.id, str(solved)]):
+			return
+		solved_fixtures.append({"fixture": fixture, "start": start,
+			"layout": layout, "solved": solved})
+	var active_durations := []
+	for item: Dictionary in solved_fixtures:
+		var fixture: Dictionary = item.fixture
+		var solved: Dictionary = item.solved
+		var repeated := RideProgram._solve_brakes(
+			item.start, item.layout, RideProgram._settings(0.05))
+		_expect(var_to_bytes(solved) == var_to_bytes(repeated),
+			"the %s brake solve is byte-identical" % fixture.id)
+		var spans: Array = solved.get("spans", [])
+		var ids := []
+		var active_duration_s := 0.0
+		for span: Dictionary in spans:
+			ids.append(span.get("span_id", ""))
+			if str(span.get("span_id", "")).begins_with("brakes/"):
+				active_duration_s += float(span.get("duration_s", 0.0))
+		active_durations.append(active_duration_s)
+		_expect(ids == ["brakes/engage", "brakes/hold", "brakes/release", "station/creep"],
+			"the %s terminal program has only three brakes and creep" % fixture.id)
+		_expect(RideProgram._validate_control_seams(spans).is_empty(),
+			"the %s brake and station seams are C2" % fixture.id)
+		var route := Motion.integrate(item.start, spans, RideProgram._settings(0.01))
+		if not _expect(route.get("ok", false), "%s brakes integrate centrally" % fixture.id):
+			continue
+		var handoff := Motion.sample_time(route, active_duration_s)
+		_expect(absf(float(handoff.get("speed_mps", -1.0)) - 2.0) <= 0.0001,
+			"the %s moving handoff reaches 2 m/s" % fixture.id)
+		_expect(route.position_m[-1].distance_to(item.layout.station_position_m) <= 0.05 \
+			and absf(float(route.speed_mps[-1]) - 1.0) <= 0.001,
+			"the %s terminal reaches station at 1 m/s" % fixture.id)
+		var passive := true
+		for drive_g in route.drive_g:
+			passive = passive and float(drive_g) <= 0.000001
+		_expect(passive, "the %s brake samples never add drive" % fixture.id)
+		var report: Dictionary = solved.get("report", {})
+		var values: Variant = report.get("accepted_values")
+		var bounds: Variant = report.get("parameter_bounds")
+		var count := int(report.get("unique_evaluations", -1))
+		if not _expect(values is Array and values.size() == 2 and bounds is Array \
+				and bounds.size() == 2 and count >= 1 and count <= 24 \
+				and report.get("max_unique_evaluations", -1) == 24,
+				"the %s brake publishes bounded solve evidence" % fixture.id):
+			continue
+		for index in 2:
+			_expect(_finite_number(values[index]) and bounds[index] is Array \
+				and bounds[index].size() == 2 and values[index] >= bounds[index][0] \
+				and values[index] <= bounds[index][1],
+				"the %s brake parameter %d is finite and in bounds" % [fixture.id, index])
+	_expect(active_durations.size() == 2 \
+		and active_durations[1] >= active_durations[0] + 0.3,
+		"the reserve fixture materially lengthens active braking")
 
 
 func _test_material_return_recipe() -> void:

@@ -585,7 +585,10 @@ func _check_act_one_contract(route: Dictionary) -> void:
 		_expect_max("act-one analytic normal onset", float(analytic_onset), 24.5, "g/s")
 	var immelmann: Dictionary = roles[0]; var cutback: Dictionary = roles[1]
 	var loop: Dictionary = roles[2]; var airtime: Dictionary = roles[3]; var wave: Dictionary = roles[4]
-	_expect_range("Immelmann prominence", _prominence(route, immelmann), 90.0, 110.0, "m")
+	var immelmann_first := int(immelmann.first)
+	var immelmann_rise := _maximum_height(route, immelmann_first, int(immelmann.last)) \
+		- float(route.positions[immelmann_first].y)
+	_expect_range("Immelmann rise", immelmann_rise, 90.0, 110.0, "m")
 	_expect_min("Immelmann substantially inverted hold",
 		_held_at_most(route, immelmann, true, -0.5), 1.5, "s")
 	var cutback_turn := _turn_measure(route, cutback)
@@ -603,6 +606,16 @@ func _check_act_one_contract(route: Dictionary) -> void:
 	_expect_range("wave-turn prominence", _prominence(route, wave), 5.0, 30.0, "m")
 	_expect_range("wave-turn unwrapped heading excursion", wave_turn.x, 20.0, 80.0, "deg")
 	_expect_range("wave-turn lateral range", wave_turn.y, 10.0, 150.0, "m")
+	var recovery_labels := ["Immelmann", "cutback", "helical-loop", "airtime-hill", "wave-turn"]
+	for role_index in roles.size():
+		var role: Dictionary = roles[role_index]
+		var role_last := int(role.last)
+		var maximum_pitch_deg := 8.0 if role_index == 0 else 3.0
+		_expect_max("%s exit pitch" % recovery_labels[role_index],
+			absf(rad_to_deg(asin(clampf(route.tangents[role_last].y, -1.0, 1.0)))),
+			maximum_pitch_deg, "deg")
+		_expect_min("%s exit up-dot" % recovery_labels[role_index],
+			route.ups[role_last].dot(Vector3.UP), 0.99, "ratio")
 
 
 func _prominence(route: Dictionary, window: Dictionary) -> float:

@@ -555,12 +555,15 @@ func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> b
 	var report: Variant = compiled.get("landmark_report")
 	var trajectory := _integrated_trajectory(compiled, layout)
 	if not report is Dictionary or not trajectory.get("ok", false):
+		if compiled.get("ok", false):
+			printerr("landmark debug: report=%s trajectory=%s" % [str(report), str(trajectory)])
 		return false
 	var station_position: Vector3 = layout.station_position_m
 	var station_up: Vector3 = layout.station_up.normalized()
 	for landmark_id in LANDMARK_BANDS:
 		var state: Variant = report.get(landmark_id)
 		if not state is Dictionary:
+			printerr("landmark debug: missing %s" % landmark_id)
 			return false
 		var time_s: Variant = state.get("time_s")
 		var position: Variant = state.get("position_m")
@@ -572,6 +575,7 @@ func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> b
 				or not rider_up is Vector3 or not rider_up.is_finite() \
 				or tangent.length_squared() < 0.99 or rider_up.length_squared() < 0.99 \
 				or not _finite_number(speed):
+			printerr("landmark debug: malformed %s %s" % [landmark_id, str(state)])
 			return false
 		var sampled := Motion.sample_time(trajectory, float(time_s))
 		if sampled.is_empty() or absf(float(sampled.time_s) - float(time_s)) > 0.000000001 \
@@ -579,18 +583,23 @@ func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> b
 				or tangent.distance_to(sampled.tangent) > 0.00001 \
 				or rider_up.distance_to(sampled.rider_up) > 0.00001 \
 				or absf(float(speed) - float(sampled.speed_mps)) > 0.001:
+			printerr("landmark debug: replay mismatch %s state=%s sampled=%s" \
+				% [landmark_id, str(state), str(sampled)])
 			return false
 		var band: Dictionary = LANDMARK_BANDS[landmark_id]
 		var height_m: float = (position - station_position).dot(station_up)
 		if (band.height_m != null and not _inside(height_m, band.height_m)) \
 				or not _inside(float(speed), band.speed_mps) \
 				or absf(tangent.normalized().dot(station_up)) > band.maximum_abs_tangent_y:
+			printerr("landmark debug: band miss %s height=%.6f speed=%.6f tangent=%.6f band=%s" \
+				% [landmark_id, height_m, speed, tangent.normalized().dot(station_up), str(band)])
 			return false
 	var return_entry: Dictionary = report.return_entry
 	var reported_headroom: Variant = return_entry.get("energy_headroom_j_per_kg")
 	if not _finite_number(reported_headroom) or float(reported_headroom) <= 0.0:
 		return false
 	if not _shape_evidence_matches_trajectory(compiled, report, trajectory):
+		printerr("landmark debug: shape mismatch %s" % str(report.get("shape_evidence")))
 		return false
 	var relative_height: float = (return_entry.position_m - station_position).dot(station_up)
 	var expected_headroom: float = (

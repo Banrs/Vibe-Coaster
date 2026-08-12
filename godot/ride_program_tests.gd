@@ -191,6 +191,9 @@ func _test_capture_accepts_varied_station_frames() -> void:
 			continue
 		_expect(int(solved.get("unique_evaluations", 41)) <= 40,
 			"capture solves within 40 evaluations for %s" % fixture.id)
+		_expect(maxf(absf(float(solved.coefficients[0])),
+			absf(float(solved.coefficients[1]))) > 0.75,
+			"the short %s capture exercises restored lateral authority" % fixture.id)
 		for step_and_field in [[0.05, "residuals"], [0.025, "fine_residuals"], [0.01, ""]]:
 			var measured := _integrated_capture_residuals(
 				fixture, solved.coefficients, float(step_and_field[0]))

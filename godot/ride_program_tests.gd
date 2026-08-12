@@ -698,7 +698,7 @@ func _shape_evidence_matches_trajectory(
 		and _reported_near(evidence, "rim_exit_pitch_rad", rim_exit_pitch, 0.00001) \
 		and _reported_near(evidence, "rim_exit_up_dot", rim_exit_up_dot, 0.00001) \
 		and rim_exit_bank <= deg_to_rad(2.0) \
-		and absf(rim_exit_pitch) <= deg_to_rad(3.0) and rim_exit_up_dot >= 0.99
+		and absf(rim_exit_pitch) <= deg_to_rad(0.5) and rim_exit_up_dot >= 0.99
 
 
 func _compiled_gesture(compiled: Dictionary, story_id: String) -> Dictionary:

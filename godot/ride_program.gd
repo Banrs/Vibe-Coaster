@@ -120,7 +120,7 @@ static func compile(
 	_begin_gesture(gestures, "clifftop-suspense", spans.size())
 	_add(spans, metadata, propulsion, "rim/slow-crest", 2.90, "moving",
 		1.0, 0.0, 0.0, 0.0, "slow-crest")
-	_add(spans, metadata, propulsion, "rim/outward-bank", 1.40, "moving",
+	_add(spans, metadata, propulsion, "rim/outward-bank", 1.45, "moving",
 		Motion.quintic(1.0, 1.493674785), Motion.compact_pulse(0.05), 0.0,
 		Motion.compact_pulse(deg_to_rad(84.15)), "outward-rim")
 	_add(spans, metadata, propulsion, "rim/outward-arc", 1.0, "moving",

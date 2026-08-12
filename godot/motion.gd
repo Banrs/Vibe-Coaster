@@ -56,6 +56,18 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 	return Vector3.ZERO
 
 
+static func profile_peak_abs_derivative(profile: Dictionary) -> float:
+	match profile.get("kind", ""):
+		"constant":
+			return 0.0
+		"quintic":
+			return 1.875 * absf(float(profile.to) - float(profile.from))
+		"compact_pulse":
+			return 3.5663941463932597 * absf(float(profile.amplitude))
+	assert(false, "invalid motion profile")
+	return 0.0
+
+
 ## Returns resistance, dq/dv, and d2q/dv2.
 static func resistance(speed_mps: float, rolling_mps2: float, aero_per_m: float) -> Vector3:
 	return Vector3(

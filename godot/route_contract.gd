@@ -228,6 +228,11 @@ static func _validate(
 	var window_ids := {}
 	for gesture in compiled.gesture_spans:
 		_validate_window_record(gesture, span_count, "gesture", "", window_ids, errors)
+		var peak_onset: Variant = gesture.get("peak_analytic_normal_onset_gps")
+		if typeof(peak_onset) != TYPE_FLOAT and typeof(peak_onset) != TYPE_INT:
+			errors.append("gesture peak_analytic_normal_onset_gps must be a finite nonnegative scalar")
+		elif not is_finite(float(peak_onset)) or float(peak_onset) < 0.0:
+			errors.append("gesture peak_analytic_normal_onset_gps must be a finite nonnegative scalar")
 		if int(gesture.get("first_span", -1)) != next_gesture_span:
 			errors.append("gesture windows do not cover spans in order")
 		next_gesture_span = int(gesture.get("last_span", -1)) + 1
@@ -400,6 +405,7 @@ static func _gesture_windows(gestures: Array, trajectory: Dictionary) -> Array:
 	var windows := []
 	for gesture in gestures:
 		var window := _sample_window(gesture, trajectory)
+		window["peak_analytic_normal_onset_gps"] = float(gesture.peak_analytic_normal_onset_gps)
 		var roles := []
 		for role in gesture.role_windows:
 			roles.append(_sample_window(role, trajectory))

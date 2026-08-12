@@ -133,9 +133,9 @@ static func compile(
 	_begin_gesture(gestures, "cliff-dive", spans.size(), "dive")
 	_add(spans, metadata, propulsion, "dive/commit", 1.068877, "moving",
 		Motion.quintic(1.0, -1.3), 0.0, 0.0, 0.0, "commit")
-	_add(spans, metadata, propulsion, "dive/vertical-entry", 0.679547, "moving",
+	_add(spans, metadata, propulsion, "dive/vertical-entry", 0.86, "moving",
 		Motion.quintic(-1.3, 0.0), 0.0, 0.0, 0.0, "vertical-entry")
-	_add(spans, metadata, propulsion, "dive/core", 2.027297, "moving",
+	_add(spans, metadata, propulsion, "dive/core", 1.76, "moving",
 		0.0, 0.0, 0.0, 0.0, "core")
 	_add(spans, metadata, propulsion, "dive/pullout", 1.330518, "moving",
 		Motion.quintic(0.0, 4.895984), 0.0, 0.0, 0.0, "pullout")

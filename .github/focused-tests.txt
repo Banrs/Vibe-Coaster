@@ -1,3 +1,4 @@
+res://generator_config_material_tests.gd
 res://motion_tests.gd
 res://route_contract_tests.gd
 res://ride_program_tests.gd

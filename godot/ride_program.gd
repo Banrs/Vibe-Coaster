@@ -461,8 +461,6 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 				base.residuals, base.margins, {"conditioning": conditioning})
 		if _capture_converged(residuals):
 			break
-		if iteration == 5:
-			break
 		var step := _linear_solve(jacobian, base.scaled)
 		if step.is_empty():
 			return _capture_failure("capture Jacobian is singular", cache.size(),

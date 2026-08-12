@@ -22,6 +22,9 @@ static func compile(
 	var station_error := _validate_station_layout(layout, initial_state)
 	if not station_error.is_empty():
 		return _failure(station_error, "input")
+	var capture_seed: Variant = layout.get("capture_seed", [0.0, 0.0, 0.0, 0.0, 0.0])
+	if not capture_seed is Array or capture_seed.size() != 5:
+		return _capture_failure("capture seed must contain five coefficients", 0)
 	var spans: Array = []
 	var metadata: Array = []
 	var gestures: Array = []
@@ -112,7 +115,8 @@ static func compile(
 		initial_state.position_m)
 	var landmark_errors := _validate_landmark_report(landmark_report)
 	if not landmark_errors.is_empty():
-		return _failure("upstream landmark solve missed its physical envelope", "landmarks",
+		return _failure("upstream landmark solve missed its physical envelope: %s" \
+			% str(landmark_errors), "landmarks",
 			{"landmark_report": landmark_report, "misses": landmark_errors})
 	var capture_start := _last_state(prefix)
 	var capture := _solve_capture(capture_start, layout, settings)

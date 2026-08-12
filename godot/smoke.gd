@@ -146,7 +146,7 @@ func _generator_errors() -> PackedStringArray:
 				issues.append("%s are not deterministic" % field)
 		Verify.validate_structure(route, issues)
 		Verify.validate_seams(route, issues)
-		Verify.validate_clearance(route, route.terrain, route.tunnel_sections, issues)
+		Verify.validate_clearance(route, route.terrain, issues)
 		Verify.validate_self_clearance(route, issues)
 		var analysis: Dictionary = Verify.analyze(route, Elements.ROW_OFFSETS)
 		Verify.validate_loads(analysis, issues)
@@ -220,7 +220,7 @@ func _sweep_errors() -> PackedStringArray:
 		var issues := PackedStringArray()
 		Verify.validate_structure(route, issues)
 		Verify.validate_seams(route, issues)
-		Verify.validate_clearance(route, route.terrain, route.tunnel_sections, issues)
+		Verify.validate_clearance(route, route.terrain, issues)
 		Verify.validate_self_clearance(route, issues)
 		for issue in issues:
 			errors.append("sweep seed %d: %s" % [seed_value, issue])

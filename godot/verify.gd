@@ -395,7 +395,8 @@ static func validate_structure(route: Dictionary, issues: PackedStringArray) -> 
 	var count: int = route.positions.size()
 	var fields := [
 		"tangents", "ups", "rights", "curvatures", "banks", "speeds", "normal_g", "lateral_g",
-		"longitudinal_g", "roll_rates", "distances", "times", "section_indices", "lsm_ids",
+		"longitudinal_g", "drive_g", "roll_rates", "distances", "times", "span_indices",
+		"gesture_indices", "propulsion_ids", "minimum_speeds",
 	]
 	_require(issues, count > 1000, "route has too few samples")
 	for field in fields:
@@ -409,7 +410,7 @@ static func validate_structure(route: Dictionary, issues: PackedStringArray) -> 
 		_require(issues, route.positions[i].is_finite() and tangent.is_finite() and up.is_finite() and right.is_finite(), "non-finite frame at sample %d" % i)
 		_require(issues, absf(tangent.length_squared() - 1.0) < 0.002 and absf(up.length_squared() - 1.0) < 0.002 and absf(right.length_squared() - 1.0) < 0.002, "non-unit frame at sample %d" % i)
 		_require(issues, absf(tangent.dot(up)) < 0.002 and absf(tangent.dot(right)) < 0.002 and absf(up.dot(right)) < 0.002, "non-orthogonal frame at sample %d" % i)
-		var minimum_speed: float = route.sections[route.section_indices[i]].get("minimum_speed", 4.0)
+		var minimum_speed: float = route.minimum_speeds[i]
 		_require(issues, is_finite(route.speeds[i]) and route.speeds[i] > minimum_speed, "invalid or stalled speed at sample %d" % i)
 		if i > 0:
 			_require(issues, route.distances[i] > route.distances[i - 1] and route.times[i] > route.times[i - 1], "non-monotone route at sample %d" % i)
@@ -417,42 +418,42 @@ static func validate_structure(route: Dictionary, issues: PackedStringArray) -> 
 			return
 
 
-## Discrete C4 continuity at every section seam, judged from the sampled curvature series, plus
-## bank/roll continuity. Works for any element mix — nothing is authored twice here.
+## Independent sampled C4 and bank continuity at every native motion-span seam.
 static func validate_seams(route: Dictionary, issues: PackedStringArray) -> void:
-	for section_index in range(1, route.sections.size()):
-		var section: Dictionary = route.sections[section_index]
-		var seam: int = section.start_index
+	for seam in range(1, route.span_indices.size()):
+		if route.span_indices[seam] == route.span_indices[seam - 1]:
+			continue
 		if seam < 2 or seam + 2 >= route.positions.size():
 			continue
+		var context := "sample %d, span %d, %s" % [
+			seam, route.span_indices[seam], _semantic_window_id(route, seam)]
 		var ds_before: float = route.distances[seam] - route.distances[seam - 1]
 		var ds_after: float = route.distances[seam + 1] - route.distances[seam]
 		var first_before: Vector3 = (route.curvatures[seam] - route.curvatures[seam - 1]) / ds_before
 		var first_after: Vector3 = (route.curvatures[seam + 1] - route.curvatures[seam]) / ds_after
-		_require(issues, first_before.distance_to(first_after) < 0.0012, "C3 curvature slope jumps at '%s'" % section.name)
+		_require(issues, first_before.distance_to(first_after) < 0.0012,
+			"C3 curvature slope jumps at %s" % context)
 		var ds_outer_before: float = route.distances[seam - 1] - route.distances[seam - 2]
 		var ds_outer_after: float = route.distances[seam + 2] - route.distances[seam + 1]
 		var previous_first: Vector3 = (route.curvatures[seam - 1] - route.curvatures[seam - 2]) / ds_outer_before
 		var next_first: Vector3 = (route.curvatures[seam + 2] - route.curvatures[seam + 1]) / ds_outer_after
 		var second_before: Vector3 = (first_before - previous_first) * 2.0 / (ds_before + ds_outer_before)
 		var second_after: Vector3 = (next_first - first_after) * 2.0 / (ds_after + ds_outer_after)
-		_require(issues, second_before.distance_to(second_after) < 0.0025, "C4 curvature acceleration jumps at '%s'" % section.name)
+		_require(issues, second_before.distance_to(second_after) < 0.0025,
+			"C4 curvature acceleration jumps at %s" % context)
 		var bank_step: float = absf(angle_difference(deg_to_rad(route.banks[seam]), deg_to_rad(route.banks[seam - 1])))
-		_require(issues, bank_step < deg_to_rad(4.0), "bank jumps %.1f° at '%s'" % [rad_to_deg(bank_step), section.name])
+		_require(issues, bank_step < deg_to_rad(4.0),
+			"bank jumps %.1f° at %s" % [rad_to_deg(bank_step), context])
 
 
 static func validate_clearance(
-	route: Dictionary, terrain: Dictionary, tunnel_sections: Array, issues: PackedStringArray
+	route: Dictionary, terrain: Dictionary, issues: PackedStringArray
 ) -> void:
 	const RAIL_DROP := 1.55
 	const TERRAIN_CLEARANCE := 2.0
-	var tunnel_ranges: Array[Vector2i] = []
-	for index in tunnel_sections:
-		var section: Dictionary = route.sections[index]
-		tunnel_ranges.append(Vector2i(section.start_index, section.end_index))
 	for i in route.positions.size():
 		var in_tunnel := false
-		for tunnel in tunnel_ranges:
+		for tunnel in route.tunnel_ranges:
 			if i >= tunnel.x and i <= tunnel.y:
 				in_tunnel = true
 				break
@@ -463,9 +464,16 @@ static func validate_clearance(
 		if rail.y - ground < TERRAIN_CLEARANCE:
 			issues.append(
 				"terrain intersects track near '%s' at (%.0f, %.0f): %.2f m clearance"
-				% [route.sections[route.section_indices[i]].name, rail.x, rail.z, rail.y - ground]
+				% [_semantic_window_id(route, i), rail.x, rail.z, rail.y - ground]
 			)
 			return
+
+
+static func _semantic_window_id(route: Dictionary, sample: int) -> String:
+	var index: int = route.gesture_indices[sample]
+	if index < 0 or index >= route.gesture_windows.size():
+		return "unowned"
+	return str(route.gesture_windows[index].get("window_id", "unowned"))
 
 
 static func validate_self_clearance(route: Dictionary, issues: PackedStringArray) -> void:

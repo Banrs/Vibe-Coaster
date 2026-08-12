@@ -278,7 +278,9 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 
 	var speed_miss := route.duplicate(true)
 	var sample := int(speed_miss.speeds.size() / 2)
-	speed_miss.minimum_speeds[sample] = speed_miss.speeds[sample] + 1.0
+	var minimum_speeds: PackedFloat32Array = speed_miss.minimum_speeds
+	minimum_speeds[sample] = speed_miss.speeds[sample] + 1.0
+	speed_miss.minimum_speeds = minimum_speeds
 	issues.clear()
 	RideVerify.validate_structure(speed_miss, issues)
 	_expect(_contains(issues, "invalid or stalled speed at sample %d" % sample),
@@ -292,10 +294,12 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 			break
 	if not _expect(seam >= 0, "the public route exposes a testable native span seam"):
 		return
-	seam_miss.curvatures[seam] += Vector3.ONE
+	var curvatures: PackedVector3Array = seam_miss.curvatures
+	curvatures[seam] += Vector3.ONE
+	seam_miss.curvatures = curvatures
 	issues.clear()
 	RideVerify.validate_seams(seam_miss, issues)
-	_expect(_contains(issues, "span %d" % seam),
+	_expect(_contains(issues, "sample %d" % seam),
 		"the verifier checks geometry at native span boundaries")
 
 

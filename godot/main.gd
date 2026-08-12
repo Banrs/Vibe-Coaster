@@ -6,7 +6,7 @@ const TIE_SPACING := 4.0
 const SUPPORT_SPACING := 32.0
 const TUNNEL_SPACING := 12.0
 const DEFAULT_SEED := 42
-const ROW_OFFSETS := RideElements.ROW_OFFSETS
+const ROW_OFFSETS := RouteContract.ROW_OFFSETS
 const CAMERA_NAMES := ["POV", "Chase", "Overview", "Fly"]
 
 var route: Dictionary
@@ -60,7 +60,7 @@ static func validate_route(built: Dictionary, built_analysis: Dictionary) -> Pac
 	var errors := PackedStringArray()
 	RideVerify.validate_structure(built, errors)
 	RideVerify.validate_seams(built, errors)
-	RideVerify.validate_clearance(built, built.terrain, built.tunnel_sections, errors)
+	RideVerify.validate_clearance(built, built.terrain, errors)
 	RideVerify.validate_self_clearance(built, errors)
 	RideVerify.validate_loads(built_analysis, errors)
 	if ROW_OFFSETS.size() != 7:
@@ -265,7 +265,7 @@ func _build_launches() -> void:
 		var distance := 0.0
 		while distance < route.length:
 			var index := _lower_index(route.distances, distance)
-			if route.lsm_ids[index] == launch:
+			if route.propulsion_ids[index] == launch:
 				var pose := pose_at_distance(route, distance)
 				pose.origin -= pose.basis.y * 0.94
 				poses.append(pose)
@@ -302,13 +302,12 @@ func _build_scenery() -> void:
 	_build_tunnel()
 
 
-## Crude rock boxes following the track frame through whichever sections the generator buried.
+## Crude rock boxes following the track frame through the authored tunnel ranges.
 func _build_tunnel() -> void:
 	var rock := Color("5c4638")
-	for index in route.tunnel_sections:
-		var section: Dictionary = route.sections[index]
-		var start: int = section.start_index
-		var end: int = section.end_index
+	for sample_range: Vector2i in route.tunnel_ranges:
+		var start: int = sample_range.x
+		var end: int = sample_range.y
 		var spacing: float = route.distances[start + 1] - route.distances[start]
 		var step := maxi(1, roundi(TUNNEL_SPACING / maxf(spacing, 0.1)))
 		var i := start
@@ -364,12 +363,17 @@ func _update_ride(delta: float) -> void:
 		sin(angle) * overview_radius
 	)
 	$OverviewCamera.look_at(overview_center, Vector3.UP)
-	var section: Dictionary = route.sections[route.section_indices[row_sample]]
+	var gesture: Dictionary = route.gesture_windows[route.gesture_indices[row_sample]]
+	var role_name := str(gesture.get("diagnostic_kind", ""))
+	for role: Dictionary in gesture.get("role_windows", []):
+		if row_sample >= int(role.first) and row_sample <= int(role.last):
+			role_name = str(role.get("display_name", role.get("id", role_name)))
+			break
 	var altitude := row_pose.origin.y - terrain_height(row_pose.origin.x, row_pose.origin.z)
 	var row_analysis: Dictionary = analysis.rows[selected_row]
-	var element_kind: String = section.get("element", {}).get("kind", "")
 	metrics.text = (
-		"Seed %d  ·  %s  ·  %s\n" % [route.seed, section.name, element_kind if not element_kind.is_empty() else section.kind]
+		"Seed %d  ·  %s  ·  %s\n" % [route.seed,
+			gesture.get("display_name", gesture.story_slot_id), role_name]
 		+ "%.0f km/h  ·  %.0f m AGL  ·  Row %d  ·  Bank %+.0f°  ·  Roll %+.0f°/s\n"
 		% [speed * 3.6, altitude, selected_row + 1, route.banks[row_sample], force.roll_rate]
 		+ "Gz %+.2f  ·  Gy %+.2f  ·  Gx %+.2f  ·  envelope +%.0f%% / −%.0f%%\n"

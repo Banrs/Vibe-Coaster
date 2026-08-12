@@ -9,6 +9,7 @@ var _errors := PackedStringArray()
 func _initialize() -> void:
 	_test_c2_profiles()
 	_test_resistance_law()
+	_test_constant_rolling_coast()
 	_test_straight_coast()
 	_test_straight_launch()
 	_test_pitched_gravity_cancellation()
@@ -58,6 +59,29 @@ func _test_resistance_law() -> void:
 	var stopped := Motion.resistance(0.0, 0.15, 0.002)
 	_expect_vector(stopped, Vector3(0.15, 0.0, 0.004),
 		"resistance is smooth and one-sided at zero forward speed")
+
+
+func _test_constant_rolling_coast() -> void:
+	var rolling := 0.2
+	var duration := 2.0
+	var initial_speed := 12.0
+	var settings := _vacuum_settings(0.01)
+	settings.rolling_mps2 = rolling
+	var route := Motion.integrate(_initial(initial_speed), [
+		_span("rolling-coast", duration, "moving", 1.0, 0.0, 0.0, 0.0),
+	], settings)
+	if not _expect_route(route, "constant rolling-resistance coast integrates"):
+		return
+	var expected_speed := initial_speed - rolling * duration
+	var expected_distance := initial_speed * duration - 0.5 * rolling * duration * duration
+	_expect_close(route.speed_mps[-1], expected_speed,
+		"constant rolling resistance reduces speed linearly")
+	_expect_close(route.position_m[-1].x, expected_distance,
+		"constant rolling resistance gives the analytic coast position")
+	_expect_close(0.5 * (initial_speed * initial_speed - route.speed_mps[-1] * route.speed_mps[-1]),
+		rolling * route.distance_m[-1], "rolling work equals mechanical energy loss per unit mass")
+	_expect_close(route.longitudinal_g[-1], -rolling / Motion.G0,
+		"rolling loss appears in longitudinal proper g without gravity")
 
 
 func _test_straight_coast() -> void:
@@ -227,12 +251,20 @@ func _test_exact_span_boundary_splitting() -> void:
 
 
 func _test_degenerate_frame_rejection() -> void:
-	var route := Motion.integrate(_initial(10.0, Vector3.ZERO, Vector3.UP), [
-		_span("invalid", 1.0, "moving", 1.0, 0.0, 0.0, 0.0),
-	], _vacuum_settings(0.01))
-	_expect(not route.get("ok", true), "zero tangent is rejected before integration")
-	_expect(_contains(route.get("errors", []), "tangent"),
-		"degenerate-frame rejection identifies the tangent")
+	var invalid_span := [_span("invalid", 1.0, "moving", 1.0, 0.0, 0.0, 0.0)]
+	_expect_rejected(Motion.integrate(
+		_initial(10.0, Vector3.ZERO, Vector3.UP), invalid_span, _vacuum_settings(0.01)
+	), "tangent", "zero tangent is rejected before integration")
+	_expect_rejected(Motion.integrate(
+		_initial(10.0, Vector3.RIGHT, Vector3.ZERO), invalid_span, _vacuum_settings(0.01)
+	), "rider_up", "zero rider up is rejected before integration")
+	_expect_rejected(Motion.integrate(
+		_initial(10.0, Vector3.RIGHT, Vector3.RIGHT), invalid_span, _vacuum_settings(0.01)
+	), "orthogonal", "collinear tangent and rider up are rejected before integration")
+	_expect_rejected(Motion.integrate(
+		_initial(10.0, Vector3(NAN, 0.0, 0.0), Vector3.UP),
+		invalid_span, _vacuum_settings(0.01)
+	), "finite", "non-finite frame input is rejected before integration")
 
 
 func _test_rk4_step_halving() -> void:
@@ -311,7 +343,7 @@ func _test_dense_output_distance_and_defect() -> void:
 	_expect_close(by_time.get("distance_m", -1.0), sampled.get("distance_m", -2.0),
 		"time and distance sampling are inverse-consistent")
 	var probe_time := 0.25
-	var half_width := 0.0001
+	var half_width := 0.001
 	var before: Dictionary = Motion.sample_time(route, probe_time - half_width)
 	var center: Dictionary = Motion.sample_time(route, probe_time)
 	var after: Dictionary = Motion.sample_time(route, probe_time + half_width)
@@ -319,8 +351,10 @@ func _test_dense_output_distance_and_defect() -> void:
 		- before.get("position_m", Vector3.ZERO)) / (2.0 * half_width)
 	var expected_velocity: Vector3 = center.get("tangent", Vector3.ZERO) \
 		* float(center.get("speed_mps", 0.0))
+	# PackedVector3 is Float32; the 2 ms central difference keeps its amplified position
+	# quantization below this tolerance while remaining local to one 10 ms native interval.
 	_expect_vector(finite_difference, expected_velocity,
-		"independent finite difference bounds dense dr/dt minus vT", 0.001)
+		"independent finite difference bounds dense dr/dt minus vT", 0.002)
 
 
 func _initial(

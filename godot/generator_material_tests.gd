@@ -47,7 +47,9 @@ func _initialize() -> void:
 	_expect(_dive_core_descends_monotonically(route),
 		"the cliff-dive core loses height monotonically")
 	_expect(_lsm3_feeds_camelback(route),
-		"LSM3 materially raises speed and directly feeds the marquee camelback")
+		"LSM3 reaches the 340 km/h class and directly feeds the marquee camelback")
+	_expect(_launch_speeds_match_the_default_vision(route),
+		"the entry launch and LSM2 reach their explicit near-future speed classes")
 	_expect(_public_arrays_are_shaped(route),
 		"all public trajectory arrays are packed, aligned, and nontrivial")
 	_expect(_public_trajectory_is_physical(route),
@@ -144,9 +146,11 @@ func _climb_is_unpowered_and_slows(route: Dictionary) -> bool:
 		return false
 	var first := int(climb.first)
 	var last := int(climb.last)
+	var crest_duration := float(route.times[int(crest.last)]) - float(route.times[int(crest.first)])
 	return _all_propulsion_zero(route, first, int(crest.last)) \
 		and route.speeds[last] < route.speeds[first] - 10.0 \
-		and route.speeds[int(crest.first)] <= 22.0
+		and route.speeds[int(crest.first)] <= 10.0 \
+		and crest_duration >= 2.9 and crest_duration <= 4.2
 
 
 func _dive_core_descends_monotonically(route: Dictionary) -> bool:
@@ -156,7 +160,15 @@ func _dive_core_descends_monotonically(route: Dictionary) -> bool:
 	for index in range(int(core.first) + 1, int(core.last) + 1):
 		if route.positions[index].y >= route.positions[index - 1].y:
 			return false
-	return true
+	var drop_m := float(route.positions[int(core.first)].y - route.positions[int(core.last)].y)
+	var minimum_tangent_y := 1.0
+	var maximum_abs_normal_g := 0.0
+	for index in range(int(core.first), int(core.last) + 1):
+		minimum_tangent_y = minf(minimum_tangent_y, route.tangents[index].y)
+		maximum_abs_normal_g = maxf(maximum_abs_normal_g, absf(float(route.normal_g[index])))
+	return drop_m >= 140.0 and drop_m <= 175.0 \
+		and minimum_tangent_y <= -sin(deg_to_rad(75.0)) \
+		and maximum_abs_normal_g <= 0.35
 
 
 func _lsm3_feeds_camelback(route: Dictionary) -> bool:
@@ -169,7 +181,19 @@ func _lsm3_feeds_camelback(route: Dictionary) -> bool:
 	for index in range(first, last + 1):
 		if route.propulsion_ids[index] != 3:
 			return false
-	return route.speeds[last] >= route.speeds[first] + 20.0 and int(camel.first) <= last + 1
+	return route.speeds[last] >= 90.0 and route.speeds[last] <= 98.0 \
+		and route.speeds[last] >= route.speeds[first] + 20.0 and int(camel.first) == last + 1
+
+
+func _launch_speeds_match_the_default_vision(route: Dictionary) -> bool:
+	var launch := _window(route, "station-launch")
+	var lsm2 := _role(route, "escarpment-climb", "lsm2")
+	if launch.is_empty() or lsm2.is_empty():
+		return false
+	var launch_speed := float(route.speeds[int(launch.last)])
+	var lsm2_speed := float(route.speeds[int(lsm2.last)])
+	return launch_speed >= 85.0 and launch_speed <= 98.0 \
+		and lsm2_speed >= 75.0 and lsm2_speed <= 85.0
 
 
 func _public_arrays_are_shaped(route: Dictionary) -> bool:
@@ -253,11 +277,16 @@ func _vertical_features_are_material(route: Dictionary) -> bool:
 	var camel_last := int(camel.last)
 	var apex := _maximum_height_index(route, camel_first, camel_last)
 	var span := camel_last - camel_first
+	var prominence := float(route.positions[apex].y) \
+		- maxf(float(route.positions[camel_first].y), float(route.positions[camel_last].y))
+	var horizontal_delta: Vector3 = route.positions[camel_last] - route.positions[camel_first]
+	horizontal_delta.y = 0.0
+	var width_height_ratio := horizontal_delta.length() / prominence if prominence > 0.0 else 0.0
 	return crest_high - climb_start >= 100.0 and dive_drop >= 100.0 \
 		and apex >= camel_first + maxi(1, int(span / 5.0)) \
 		and apex <= camel_last - maxi(1, int(span / 5.0)) \
-		and route.positions[apex].y - route.positions[camel_first].y >= 50.0 \
-		and route.positions[apex].y - route.positions[camel_last].y >= 50.0
+		and prominence >= 240.0 and prominence <= 260.0 \
+		and width_height_ratio >= 1.55 and width_height_ratio <= 2.10
 
 
 func _inversions_are_material(route: Dictionary) -> bool:

@@ -178,9 +178,9 @@ func _test_station_local_program_compiles() -> void:
 func _test_capture_accepts_varied_station_frames() -> void:
 	var fixtures := [
 		_capture_fixture("rotated", Vector3(120.0, 15.0, -80.0),
-			Vector3(0.8, 0.0, 0.6), 62.0, 650.0, 8.0, -4.0, 2.0, 1.0, 8.0),
+			Vector3(0.8, 0.0, 0.6), 62.0, 350.0, 8.0, -4.0, 2.0, 1.0, 8.0),
 		_capture_fixture("rotated-mirrored-holonomy", Vector3(-260.0, 31.0, 190.0),
-			Vector3(-0.6, 0.0, 0.8), 70.0, 700.0, -8.0, 4.0, -2.0, -1.0, -12.0),
+			Vector3(-0.6, 0.0, 0.8), 70.0, 380.0, -8.0, 4.0, -2.0, -1.0, -12.0),
 	]
 	var settings: Dictionary = RideProgram._settings(0.05)
 	for fixture: Dictionary in fixtures:
@@ -220,7 +220,7 @@ func _capture_fixture(
 		tangent, deg_to_rad(roll_deg))
 	return {"id": id, "layout": {
 		"station_position_m": station, "station_tangent": forward, "station_up": up,
-		"reserved_corridor": {"minimum_length_m": 1686.3294193226},
+		"reserved_corridor": {"minimum_length_m": 450.0},
 		"capture_half_width_m": CAPTURE_HALF_WIDTH_M,
 		"capture_half_height_m": CAPTURE_HALF_HEIGHT_M,
 	}, "state": {
@@ -323,7 +323,7 @@ func _layout() -> Dictionary:
 		"station_position_m": Vector3.ZERO,
 		"station_tangent": Vector3.RIGHT,
 		"station_up": Vector3.UP,
-		"reserved_corridor": {"minimum_length_m": 1686.3294193226},
+		"reserved_corridor": {"minimum_length_m": 450.0},
 		"capture_half_width_m": CAPTURE_HALF_WIDTH_M,
 		"capture_half_height_m": CAPTURE_HALF_HEIGHT_M,
 	}

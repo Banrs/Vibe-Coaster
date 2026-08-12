@@ -15,12 +15,6 @@ const PRESET_ID := "future-hybrid@1"
 const STATION_SPEED_MPS := 6.0
 const STATION_HEIGHT_M := 20.0
 const INTEGRATION_STEP_S := 0.01
-const RETURN_ENTRY_MAX_SPEED_MPS := 92.0
-const CAPTURE_DURATION_S := 8.0
-const BRAKE_PEAK_G := 1.2
-const COMPACT_PULSE_AREA := 100.0 / 231.0
-const STATION_CREEP_RESERVE_M := 20.0
-const APPROACH_CLEARANCE_M := 100.0
 
 
 static func build(seed_value: int) -> Dictionary:
@@ -87,19 +81,15 @@ static func _layout(terrain: Dictionary, rng: RandomNumberGenerator) -> Dictiona
 	)
 	var station_position := Vector3(station_2d.x, STATION_HEIGHT_M, station_2d.y)
 	var tangent := Vector3(along.x, 0.0, along.y).normalized()
-	# Worst supported capture travel plus the conservative average-pulse stopping distance.
-	var capture_length := RETURN_ENTRY_MAX_SPEED_MPS * CAPTURE_DURATION_S
-	var brake_length := (RETURN_ENTRY_MAX_SPEED_MPS ** 2 - 2.0 ** 2) / (
-		2.0 * Motion.G0 * BRAKE_PEAK_G * COMPACT_PULSE_AREA)
-	var approach_length := capture_length + brake_length + STATION_CREEP_RESERVE_M \
-		+ APPROACH_CLEARANCE_M
+	var approach := RideProgram.station_approach_envelope()
+	var approach_length: float = approach.minimum_length_m
 	return {
 		"terrain_frame": {"inward": inward, "along": along},
 		"station_position_m": station_position,
 		"station_tangent": tangent,
 		"station_up": Vector3.UP,
-		"capture_half_width_m": 150.0,
-		"capture_half_height_m": 75.0,
+		"capture_half_width_m": approach.half_width_m,
+		"capture_half_height_m": approach.half_height_m,
 		"reserved_corridor": {
 			"approach_start_m": station_position - tangent * approach_length,
 			"station_position_m": station_position,

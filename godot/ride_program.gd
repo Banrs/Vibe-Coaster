@@ -15,7 +15,10 @@ const RETURN_BANK_TRANSITION_S := 1.25
 const RETURN_SETTLE_S := 1.0
 const RETURN_HILL_NORMAL_G := 3.0
 const RETURN_HILL_AIR_G := -1.0
-const BRAKE_ENVELOPE_MARGIN_M := 50.0
+const BRAKE_DURATIONS_S := [0.6, 3.2, 0.6]
+const BRAKE_PEAK_LIMIT_G := 2.25
+const BRAKE_SOLVE_ITERATIONS := 48
+const TERMINAL_DISTANCE_TOLERANCE_M := 0.05
 const RETURN_RESIDUAL_TOLERANCES := [2.0, 2.0, 1.0, 0.01, 0.01]
 const CAPTURE_RESIDUAL_TOLERANCES := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
 const RETURN_VARIABLE_BOUNDS := [
@@ -541,14 +544,10 @@ static func _add_capture_and_brakes(
 ) -> void:
 	for capture_span: Dictionary in _capture_spans(coefficients):
 		_add_record(spans, metadata, propulsion, capture_span, "capture", 0, 2.0)
-	if brake.coast_duration_s > 0.000001:
-		_add(spans, metadata, propulsion, "brakes/coast", brake.coast_duration_s, "moving",
-			brake.support_normal_g, brake.support_lateral_g, 0.0, 0.0, "brakes")
-	_add(spans, metadata, propulsion, "brakes/moving", brake.brake_duration_s, "moving",
-		brake.support_normal_g, brake.support_lateral_g,
-		Motion.compact_pulse(brake.brake_peak_g), 0.0, "brakes")
-	_add(spans, metadata, propulsion, "station/creep", brake.station_duration_s, "station",
-		brake.support_normal_g, brake.support_lateral_g, 0.0, 0.0, "station", 0, 0.0)
+	for terminal_span: Dictionary in brake.spans:
+		var station_mode: bool = terminal_span.mode == "station"
+		_add_record(spans, metadata, propulsion, terminal_span,
+			"station" if station_mode else "brakes", 0, 0.0 if station_mode else 2.0)
 
 
 static func _capture_spans(coefficients: Array) -> Array:
@@ -842,7 +841,6 @@ static func _solve_brakes(
 	var remaining: float = (layout.station_position_m - start.position_m).dot(forward)
 	if remaining <= 0.0:
 		return _failure("station lies behind the solved capture", "brake")
-	var support := Vector2(1.0, 0.0)
 	var station_duration := _coast_time(2.0, 1.0)
 	var station_distance := _coast_distance(2.0, 1.0)
 	if not is_finite(station_duration) or not is_finite(station_distance):
@@ -850,130 +848,75 @@ static func _solve_brakes(
 	if absf(start.tangent.normalized().dot(forward) - 1.0) > 0.00001 \
 			or start.rider_up.normalized().distance_to(layout.station_up.normalized()) > 0.00001:
 		return _failure("capture terminal frame is not the straight station frame", "brake")
-	var wanted_moving := remaining - station_distance
-	if wanted_moving <= 0.0:
+	if remaining <= station_distance:
 		return _failure("reserved approach is shorter than the station creep", "brake")
 	var production := _settings(0.01)
-	var low := _brake_for_coast(start, 0.0, production)
-	if not low.ok:
-		return low
-	var natural_time := _coast_time(start.speed_mps, 2.0)
-	if not is_finite(natural_time) or natural_time <= 0.02:
-		return _failure("capture exit has no moving-brake envelope", "brake")
-	var high_coast := maxf(natural_time - 0.02, 0.0)
-	var high := _brake_for_coast(start, high_coast, production)
-	if not high.ok:
-		return high
-	if wanted_moving < low.distance_m + BRAKE_ENVELOPE_MARGIN_M \
-			or wanted_moving > high.distance_m - BRAKE_ENVELOPE_MARGIN_M:
-		return _failure("reserved moving-brake distance %.3f m is outside [%.3f, %.3f] m" %
-			[wanted_moving, low.distance_m + BRAKE_ENVELOPE_MARGIN_M,
-				high.distance_m - BRAKE_ENVELOPE_MARGIN_M], "brake")
-	var chosen := low
-	var coast_low := 0.0
-	var coast_high := high_coast
-	for _iteration in 42:
-		var coast := 0.5 * (coast_low + coast_high)
-		var candidate := _brake_for_coast(start, coast, production)
-		if not candidate.ok:
-			return candidate
-		chosen = candidate
-		if candidate.distance_m < wanted_moving:
-			coast_low = coast
+	var peak_low := 0.0
+	var peak_high := BRAKE_PEAK_LIMIT_G
+	var chosen := Motion.integrate(start, _brake_spans(peak_low), production)
+	if not chosen.get("ok", false):
+		return _failure("unbraked terminal fixture failed integration", "brake")
+	var strongest := Motion.integrate(start, _brake_spans(peak_high), production)
+	if strongest.get("ok", false) and float(strongest.speed_mps[-1]) > 2.0:
+		return _failure("preset brake authority cannot reach the 2 m/s boundary", "brake")
+	if not strongest.get("ok", false) and not _is_speed_floor_failure(strongest):
+		return _failure("maximum brake candidate failed central integration", "brake")
+	for _iteration in BRAKE_SOLVE_ITERATIONS:
+		var peak := 0.5 * (peak_low + peak_high)
+		var candidate := Motion.integrate(start, _brake_spans(peak), production)
+		if candidate.get("ok", false):
+			peak_low = peak
+			chosen = candidate
+		elif _is_speed_floor_failure(candidate):
+			peak_high = peak
 		else:
-			coast_high = coast
-	var distance_error: float = chosen.distance_m + station_distance - remaining
-	if absf(distance_error) > 0.05 or absf(chosen.exit_speed_mps - 2.0) > 0.0001:
+			return _failure("brake candidate failed central integration: %s" % ", ".join(
+				candidate.get("errors", [])), "brake")
+	var exit_speed: float = chosen.speed_mps[-1]
+	var moving_distance: float = chosen.distance_m[-1] - float(start.get("distance_m", 0.0))
+	var distance_error: float = moving_distance + station_distance - remaining
+	if absf(distance_error) > TERMINAL_DISTANCE_TOLERANCE_M \
+			or absf(exit_speed - 2.0) > 0.0001:
 		return _failure("brake solve missed distance/speed boundary", "brake")
+	var terminal_spans := _brake_spans(peak_low)
+	terminal_spans.append(Motion.span("station/creep", station_duration, "station",
+		Motion.constant(1.0), Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0)))
 	return {
 		"ok": true,
 		"errors": PackedStringArray(),
-		"coast_duration_s": chosen.coast_duration_s,
-		"brake_duration_s": chosen.brake_duration_s,
-		"brake_peak_g": -1.2,
-		"station_duration_s": station_duration,
-		"support_normal_g": support.x,
-		"support_lateral_g": support.y,
+		"spans": terminal_spans,
 		"report": {
-			"moving_boundary_speed_mps": chosen.exit_speed_mps,
+			"active_duration_s": BRAKE_DURATIONS_S[0] + BRAKE_DURATIONS_S[1]
+				+ BRAKE_DURATIONS_S[2],
+			"brake_peak_g": -peak_low,
+			"moving_boundary_speed_mps": exit_speed,
 			"terminal_creep_speed_mps": 1.0,
 			"remaining_distance_m": remaining,
-			"moving_distance_m": chosen.distance_m,
+			"moving_distance_m": moving_distance,
 			"station_distance_m": station_distance,
 			"distance_residual_m": distance_error,
-			"lower_envelope_margin_m": wanted_moving - low.distance_m,
-			"upper_envelope_margin_m": high.distance_m - wanted_moving,
 			"positive_drive_allowed": false,
 		},
 	}
 
 
-static func _brake_for_coast(
-	start: Dictionary, coast_duration: float, settings: Dictionary
-) -> Dictionary:
-	var duration_low := 0.0001
-	var duration_high := 1.0
-	var high_route := _scalar_brake(start.speed_mps, coast_duration, duration_high, settings.step_s)
-	while high_route.ok and high_route.speed_mps > 2.0 and duration_high < 90.0:
-		duration_high *= 2.0
-		high_route = _scalar_brake(start.speed_mps, coast_duration, duration_high, settings.step_s)
-	if duration_high >= 90.0 and high_route.ok and high_route.speed_mps > 2.0:
-		return _failure("brake pulse cannot reach the 2 m/s boundary", "brake")
-	var chosen := {}
-	for _iteration in 48:
-		var duration := 0.5 * (duration_low + duration_high)
-		var route := _scalar_brake(start.speed_mps, coast_duration, duration, settings.step_s)
-		if route.ok and route.speed_mps >= 2.0:
-			duration_low = duration
-			chosen = route
-		else:
-			duration_high = duration
-	if chosen.is_empty():
-		return _failure("brake duration has no valid speed-floor side", "brake")
-	return {
-		"ok": true,
-		"errors": PackedStringArray(),
-		"coast_duration_s": coast_duration,
-		"brake_duration_s": duration_low,
-		"exit_speed_mps": float(chosen.speed_mps),
-		"distance_m": float(chosen.distance_m),
-	}
+static func _brake_spans(peak_g: float) -> Array:
+	return [
+		Motion.span("brakes/engage", BRAKE_DURATIONS_S[0], "moving",
+			Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, -peak_g),
+			Motion.constant(0.0)),
+		Motion.span("brakes/hold", BRAKE_DURATIONS_S[1], "moving",
+			Motion.constant(1.0), Motion.constant(0.0), Motion.constant(-peak_g),
+			Motion.constant(0.0)),
+		Motion.span("brakes/release", BRAKE_DURATIONS_S[2], "moving",
+			Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(-peak_g, 0.0),
+			Motion.constant(0.0)),
+	]
 
 
-static func _scalar_brake(
-	initial_speed: float, coast_duration: float, brake_duration: float, step_s: float
-) -> Dictionary:
-	var state := Vector2(initial_speed, 0.0)
-	if coast_duration > 0.000001:
-		state = _scalar_span(state, coast_duration, Motion.constant(0.0), step_s)
-	state = _scalar_span(state, brake_duration, Motion.compact_pulse(-1.2), step_s)
-	return {"ok": state.x >= 2.0, "speed_mps": state.x, "distance_m": state.y}
-
-
-static func _scalar_span(
-	initial: Vector2, duration: float, drive: Dictionary, step_s: float
-) -> Vector2:
-	var speed := initial.x
-	var distance := initial.y
-	var elapsed := 0.0
-	while elapsed < duration - 0.000000000001:
-		var h := minf(step_s, duration - elapsed)
-		var k1 := _scalar_derivative(speed, drive, elapsed / duration)
-		var k2 := _scalar_derivative(speed + 0.5 * h * k1.x, drive,
-			(elapsed + 0.5 * h) / duration)
-		var k3 := _scalar_derivative(speed + 0.5 * h * k2.x, drive,
-			(elapsed + 0.5 * h) / duration)
-		var k4 := _scalar_derivative(speed + h * k3.x, drive, (elapsed + h) / duration)
-		speed += h / 6.0 * (k1.x + 2.0 * k2.x + 2.0 * k3.x + k4.x)
-		distance += h / 6.0 * (k1.y + 2.0 * k2.y + 2.0 * k3.y + k4.y)
-		elapsed += h
-	return Vector2(speed, distance)
-
-
-static func _scalar_derivative(speed: float, drive: Dictionary, u: float) -> Vector2:
-	var resistance := ROLLING_MPS2 + AERO_PER_M * speed * speed
-	return Vector2(Motion.G0 * Motion.profile_sample(drive, clampf(u, 0.0, 1.0)).x
-		- resistance, speed)
+static func _is_speed_floor_failure(route: Dictionary) -> bool:
+	var errors: PackedStringArray = route.get("errors", PackedStringArray())
+	return errors.size() == 1 and "moving speed floor" in errors[0]
 
 
 static func _coast_time(from_speed: float, to_speed: float) -> float:

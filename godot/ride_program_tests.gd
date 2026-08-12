@@ -99,6 +99,8 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			active_duration_s += float(span.get("duration_s", 0.0))
 	_expect(ids == ["brakes/engage", "brakes/hold", "brakes/release", "station/creep"],
 		"the terminal program contains only the sustained brake and station creep")
+	_expect(RideProgram._validate_control_seams(spans).is_empty(),
+		"the sustained brake and station handoff match C2 control jets")
 	_expect(absf(active_duration_s - 4.4) <= 0.000001,
 		"the active final brake retains the observed 4.4 second duration")
 	var route := Motion.integrate(start, spans, RideProgram._settings(0.01))

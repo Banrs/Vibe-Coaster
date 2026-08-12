@@ -485,7 +485,7 @@ static func _test_successful_report(artifacts: Script, errors: PackedStringArray
 		"Markdown is the normative literal projection")
 
 	var fixture := _valid_fixture()
-	var before := fixture.duplicate(true)
+	var before: Dictionary = fixture.duplicate(true)
 	var report_a: Dictionary = _build(artifacts, fixture)
 	var report_b: Dictionary = _build(artifacts, _reverse_dictionaries(fixture))
 	_expect(errors, fixture == before, "report construction does not mutate public inputs")

@@ -74,7 +74,7 @@ static func _test_native_input_boundary(fidelity: Script, errors: PackedStringAr
 		_expect(errors, route.get(key) is PackedInt32Array, "generator keeps packed integer channel %s" % key)
 	_expect(errors, route.get("gesture_windows") is Array, "generator exposes native gesture windows")
 	_expect(errors, not route.has("sections"), "generator exposes no legacy sections")
-	var before := route.duplicate(true)
+	var before: Dictionary = route.duplicate(true)
 	var measured: Dictionary = fidelity.measure_route(route, [0.0])
 	_expect(errors, measured.get("schema_version") == 2, "native route measurement emits schema 2")
 	_expect(errors, route == before, "native route measurement is read-only")
@@ -119,7 +119,7 @@ static func _test_time_weighted_pacing(fidelity: Script, errors: PackedStringArr
 
 static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArray) -> void:
 	var route := _moving_window_route(false)
-	var before := route.duplicate(true)
+	var before: Dictionary = route.duplicate(true)
 	var measured: Dictionary = fidelity.measure_route(route, [0.0])
 	_expect(errors, route == before, "non-grid production measurement is read-only")
 	if measured.get("beats", []).size() < 2:
@@ -202,7 +202,7 @@ static func _test_transition_windows(fidelity: Script, errors: PackedStringArray
 
 static func _test_straight_reconstruction(fidelity: Script, errors: PackedStringArray) -> void:
 	var route := _analytic_straight_route(20.0, 2.0, 100.0)
-	var before := route.duplicate(true)
+	var before: Dictionary = route.duplicate(true)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
 	var repeated: Dictionary = fidelity.reconstruct_channels(route)
 	_expect_close(errors, _max_abs(channels.curvature), 0.0, "straight route has zero geometric curvature")
@@ -294,7 +294,7 @@ static func _test_semantic_window_order(fidelity: Script, errors: PackedStringAr
 		_role_window("act1.hill", "entry", "hill-entry", "Hill entry", 0, 4),
 		_role_window("act1.hill", "core", "hill", "Hill", 5, 19),
 	]
-	var before := route.duplicate(true)
+	var before: Dictionary = route.duplicate(true)
 	var measured: Dictionary = fidelity.measure_route(route, [0.0, 2.0])
 	var beats: Array = measured.get("beats", [])
 	_expect(errors, measured.get("schema_version") == 2, "native semantic measurement emits schema 2")

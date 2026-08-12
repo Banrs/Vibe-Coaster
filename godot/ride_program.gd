@@ -353,22 +353,23 @@ static func _add_raceway(s: Array, m: Array, p: PackedInt32Array) -> void:
 
 
 static func _return_spans() -> Array:
+	# Coupled authored values close pose, speed, and the fixed 4.4 s brake distance.
 	return [
 		_return_span("raceway/turn-a-entry", 1.25,
-			Motion.quintic(1.0, 1.4091492735897806), -1.3056186886306929),
-		_return_span("raceway/turn-a-core", 4.721907973119217,
-			Motion.constant(1.4091492735897806)),
+			Motion.quintic(1.0, 1.4081465362721832), -1.3041741299231535),
+		_return_span("raceway/turn-a-core", 4.73017127898945,
+			Motion.constant(1.4081465362721832)),
 		_return_span("raceway/turn-a-exit-pullup", 1.25,
-			Motion.quintic(1.4091492735897806, 3.0), 1.3056186886306929),
-		_return_span("raceway/airtime-unload", 5.550092462787166,
+			Motion.quintic(1.4081465362721832, 3.0), 1.3041741299231535),
+		_return_span("raceway/airtime-unload", 5.549695767280095,
 			Motion.quintic(3.0, -1.25)),
 		_return_span("raceway/airtime-recovery", 6.0, Motion.quintic(-1.25, 3.0)),
 		_return_span("raceway/turn-b-entry", 1.25,
-			Motion.quintic(3.0, 2.185028968780876), 2.0270179908248642),
-		_return_span("raceway/turn-b-core", 11.367836298532046,
-			Motion.constant(2.185028968780876)),
+			Motion.quintic(3.0, 2.185928988417269), 2.0274122110920154),
+		_return_span("raceway/turn-b-core", 11.360371490348415,
+			Motion.constant(2.185928988417269)),
 		_return_span("raceway/turn-b-exit", 1.25,
-			Motion.quintic(2.185028968780876, 1.0), -2.0270179908248642),
+			Motion.quintic(2.185928988417269, 1.0), -2.0274122110920154),
 	]
 
 

@@ -35,6 +35,7 @@ const CAPTURE_LATERAL_LIMIT_G := 0.55
 const CAPTURE_NORMAL_DELTA_LIMIT_G := 0.45
 const CAPTURE_ROLL_REACH_RAD := 1.2
 const CAPTURE_PULSE_AREA_S := 2.0 * 3.5 * (100.0 / 231.0)
+const CAPTURE_RESIDUAL_LIMITS := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
 const LANDMARK_BANDS := {
 	"launch_exit": {"height_m": Vector2(-5.0, 5.0), "speed_mps": Vector2(85.0, 98.0),
 		"maximum_abs_tangent_y": 0.05},
@@ -58,6 +59,7 @@ var _errors := PackedStringArray()
 
 
 func _initialize() -> void:
+	_test_capture_accepts_varied_station_frames()
 	_test_station_local_program_compiles()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
@@ -77,17 +79,21 @@ func _test_station_local_program_compiles() -> void:
 	_expect(not compiled.get("spans", []).is_empty(), "the compiled program contains motion spans")
 	_expect(compiled.get("capture_plan", {}).get("unique_evaluations", 41) <= 40,
 		"the accepted capture stays within its public evaluation budget")
-	_expect(_return_topology_ids(compiled) == RETURN_TOPOLOGY_IDS,
-		"the global return has the fixed reviewed topology in order")
+	var return_indices := _return_span_indices(compiled)
+	_expect(_return_topology_is_contiguous(compiled, return_indices),
+		"the exact 11-span raceway is consecutive and immediately precedes capture")
 	_expect(_return_and_terminal_drive_is_nonpositive(compiled),
 		"every global-return, capture, brake, and station drive profile is nonpositive")
-	var return_evidence := _return_evidence(compiled, _layout())
+	var return_evidence := _return_evidence(compiled, _layout(), return_indices)
 	_expect(_return_energy_is_monotonic(return_evidence),
 		"the raceway monotonically loses specific energy: %s" % str(return_evidence))
 	_expect(_return_has_two_material_turns(return_evidence),
 		"the raceway contains two coordinated material turns: %s" % str(return_evidence))
 	_expect(_return_has_two_material_hills(return_evidence),
 		"the raceway contains two material airtime hills: %s" % str(return_evidence))
+	_expect(_return_extent_is_material(return_evidence),
+		"the raceway remains a fast 1.1-3.0 km return without a dominant turn: %s"
+		% str(return_evidence))
 	_expect(_inside(float(return_evidence.get("capture_speed_mps", -INF)),
 		RETURN_CAPTURE_SPEED_MPS),
 		"the raceway enters capture at 48-82 m/s: %s" % str(return_evidence))
@@ -123,6 +129,72 @@ func _test_station_local_program_compiles() -> void:
 	var terminal: Dictionary = compiled.get("spans", [])[-1]
 	_expect(terminal.get("mode", "") == "station", "the compiled program ends in station mode")
 	_expect(_structural_terminal(terminal), "the compiled program ends on structural controls")
+
+
+func _test_capture_accepts_varied_station_frames() -> void:
+	var fixtures := [
+		_capture_fixture("rotated", Vector3(120.0, 15.0, -80.0),
+			Vector3(0.8, 0.0, 0.6), 62.0, 650.0, 8.0, -4.0, 2.0, 1.0, 8.0),
+		_capture_fixture("rotated-mirrored-holonomy", Vector3(-260.0, 31.0, 190.0),
+			Vector3(-0.6, 0.0, 0.8), 70.0, 700.0, -8.0, 4.0, -2.0, -1.0, -12.0),
+	]
+	var settings: Dictionary = RideProgram._settings(0.05)
+	for fixture: Dictionary in fixtures:
+		var solved: Dictionary = RideProgram._solve_capture(
+			fixture.state, fixture.layout, settings)
+		if not _expect(solved.get("ok", false),
+				"capture accepts the %s fixture: %s" % [fixture.id, str(solved)]):
+			continue
+		_expect(int(solved.get("unique_evaluations", 41)) <= 40 \
+				and _residuals_are_within(solved.get("residuals", []), CAPTURE_RESIDUAL_LIMITS) \
+				and _residuals_are_within(
+					solved.get("fine_residuals", []), CAPTURE_RESIDUAL_LIMITS),
+			"capture solves coarse and fine residuals within 40 evaluations for %s"
+			% fixture.id)
+		var route: Dictionary = Motion.integrate(fixture.state,
+			RideProgram._capture_spans(solved.coefficients), RideProgram._settings(0.01))
+		var residuals: Array = []
+		if route.get("ok", false):
+			residuals = RideProgram._capture_residuals(
+				Motion.sample_time(route, float(route.time_s[-1])), fixture.layout)
+		_expect(route.get("ok", false) and _residuals_are_within(
+				residuals, CAPTURE_RESIDUAL_LIMITS),
+			"accepted %s capture reintegrates to its five-axis residual contract: %s"
+			% [fixture.id, str(residuals)])
+
+
+func _capture_fixture(
+	id: String, station: Vector3, forward: Vector3, speed_mps: float, along_m: float,
+	cross_m: float, height_m: float, yaw_deg: float, pitch_deg: float, roll_deg: float
+) -> Dictionary:
+	forward = forward.normalized()
+	var up := Vector3.UP
+	var right := forward.cross(up).normalized()
+	var horizontal := forward.rotated(up, deg_to_rad(yaw_deg))
+	var tangent := (horizontal * cos(deg_to_rad(pitch_deg))
+		+ up * sin(deg_to_rad(pitch_deg))).normalized()
+	var rider_up := (up - tangent * up.dot(tangent)).normalized().rotated(
+		tangent, deg_to_rad(roll_deg))
+	return {"id": id, "layout": {
+		"station_position_m": station, "station_tangent": forward, "station_up": up,
+		"reserved_corridor": {"minimum_length_m": 1686.3294193226},
+		"capture_half_width_m": CAPTURE_HALF_WIDTH_M,
+		"capture_half_height_m": CAPTURE_HALF_HEIGHT_M,
+	}, "state": {
+		"position_m": station - forward * along_m + right * cross_m + up * height_m,
+		"tangent": tangent, "rider_up": rider_up, "speed_mps": speed_mps,
+		"distance_m": 3100.0, "time_s": 42.0,
+	}}
+
+
+func _residuals_are_within(residuals: Variant, limits: Array) -> bool:
+	if not residuals is Array or residuals.size() != limits.size():
+		return false
+	for index in limits.size():
+		if not _finite_number(residuals[index]) \
+				or absf(float(residuals[index])) > float(limits[index]):
+			return false
+	return true
 
 
 func _test_malformed_capture_is_structured() -> void:
@@ -210,13 +282,28 @@ func _brake_spans_have_no_positive_drive(compiled: Dictionary) -> bool:
 	return true
 
 
-func _return_topology_ids(compiled: Dictionary) -> Array:
-	var ids := []
-	for span in compiled.get("spans", []):
-		var span_id := str(span.get("span_id", ""))
-		if span_id.begins_with("raceway/"):
-			ids.append(span_id)
-	return ids
+func _return_span_indices(compiled: Dictionary) -> Dictionary:
+	var result := {}
+	for index in compiled.get("spans", []).size():
+		var id := str(compiled.spans[index].get("span_id", ""))
+		if not id.begins_with("raceway/"):
+			continue
+		if not RETURN_TOPOLOGY_IDS.has(id) or result.has(id):
+			return {}
+		result[id] = index
+	return result if result.size() == RETURN_TOPOLOGY_IDS.size() else {}
+
+
+func _return_topology_is_contiguous(compiled: Dictionary, indices: Dictionary) -> bool:
+	if indices.size() != RETURN_TOPOLOGY_IDS.size():
+		return false
+	var first := int(indices.get(RETURN_TOPOLOGY_IDS[0], -1))
+	for offset in RETURN_TOPOLOGY_IDS.size():
+		if int(indices.get(RETURN_TOPOLOGY_IDS[offset], -1)) != first + offset:
+			return false
+	var spans: Array = compiled.get("spans", [])
+	return first >= 0 and first + RETURN_TOPOLOGY_IDS.size() < spans.size() \
+		and spans[first + RETURN_TOPOLOGY_IDS.size()].get("span_id", "") == "capture/early"
 
 
 func _return_and_terminal_drive_is_nonpositive(compiled: Dictionary) -> bool:
@@ -245,15 +332,18 @@ func _profile_is_nonpositive(profile: Dictionary) -> bool:
 	return false
 
 
-func _return_evidence(compiled: Dictionary, layout: Dictionary) -> Dictionary:
+func _return_evidence(
+	compiled: Dictionary, layout: Dictionary, indices: Dictionary
+) -> Dictionary:
 	var trajectory := _integrated_trajectory(compiled, layout)
-	var spans: Array = compiled.get("spans", [])
-	var first_return := _span_index(spans, RETURN_TOPOLOGY_IDS[0])
-	var first_capture := _span_index(spans, "capture/early")
-	if not trajectory.get("ok", false) or first_return < 0 or first_capture < 0:
+	if not trajectory.get("ok", false) or indices.size() != RETURN_TOPOLOGY_IDS.size():
 		return {}
-	var start_sample := _first_sample_for_span(trajectory.span_index, first_return)
-	var capture_sample := _first_sample_for_span(trajectory.span_index, first_capture)
+	var first_return := int(indices["raceway/bank-in-a"])
+	var first_capture := int(indices["raceway/roll-settle"]) + 1
+	var start_sample := _owned_span_bounds(
+		trajectory.span_index, first_return, first_return).x
+	var capture_sample := _owned_span_bounds(
+		trajectory.span_index, first_capture, first_capture).x
 	if start_sample < 0 or capture_sample <= start_sample:
 		return {}
 	var up: Vector3 = layout.station_up.normalized()
@@ -270,24 +360,35 @@ func _return_evidence(compiled: Dictionary, layout: Dictionary) -> Dictionary:
 		reference_up = reference_up.normalized()
 		actual_up = actual_up.normalized()
 		roll = atan2(tangent.dot(reference_up.cross(actual_up)), reference_up.dot(actual_up))
-	var first_energy := _specific_energy(trajectory, start_sample, layout)
-	var previous_energy := first_energy
+	var first_energy: float = _specific_energy(trajectory, start_sample, layout)
+	var previous_energy: float = first_energy
 	var maximum_energy_rise := 0.0
+	var minimum_speed: float = trajectory.speed_mps[start_sample]
 	for sample_index in range(start_sample + 1, capture_sample + 1):
-		var energy := _specific_energy(trajectory, sample_index, layout)
+		var energy: float = _specific_energy(trajectory, sample_index, layout)
 		maximum_energy_rise = maxf(maximum_energy_rise, energy - previous_energy)
 		previous_energy = energy
+		minimum_speed = minf(minimum_speed, float(trajectory.speed_mps[sample_index]))
 	var speed: float = trajectory.speed_mps[capture_sample]
 	return {
 		"maximum_energy_rise_j_per_kg": maximum_energy_rise,
 		"energy_loss_j_per_kg": first_energy - previous_energy,
+		"length_m": float(trajectory.distance_m[capture_sample])
+			- float(trajectory.distance_m[start_sample]),
+		"duration_s": float(trajectory.time_s[capture_sample])
+			- float(trajectory.time_s[start_sample]),
+		"minimum_speed_mps": minimum_speed,
 		"turns": [
-			_return_turn_evidence(trajectory, first_return, first_return + 2),
-			_return_turn_evidence(trajectory, first_return + 5, first_return + 7),
+			_return_turn_evidence(trajectory, int(indices["raceway/bank-in-a"]),
+				int(indices["raceway/bank-out-a"]), up),
+			_return_turn_evidence(trajectory, int(indices["raceway/bank-in-b"]),
+				int(indices["raceway/bank-out-b"]), up),
 		],
 		"hills": [
-			_return_hill_evidence(trajectory, first_return + 3, first_return + 4, up),
-			_return_hill_evidence(trajectory, first_return + 8, first_return + 9, up),
+			_return_hill_evidence(trajectory, int(indices["raceway/hill-a-rise"]),
+				int(indices["raceway/hill-a-release"]), up),
+			_return_hill_evidence(trajectory, int(indices["raceway/hill-b-rise"]),
+				int(indices["raceway/hill-b-release"]), up),
 		],
 		"capture_speed_mps": speed,
 		"capture_entry_margins_m": {
@@ -307,18 +408,19 @@ func _return_evidence(compiled: Dictionary, layout: Dictionary) -> Dictionary:
 	}
 
 
-func _span_index(spans: Array, id: String) -> int:
-	for index in spans.size():
-		if spans[index].get("span_id", "") == id:
-			return index
-	return -1
-
-
-func _first_sample_for_span(owners: PackedInt32Array, span_index: int) -> int:
+func _owned_span_bounds(
+	owners: PackedInt32Array, first_span: int, last_span: int
+) -> Vector2i:
+	var result := Vector2i(-1, -1)
 	for sample_index in owners.size():
-		if owners[sample_index] == span_index:
-			return sample_index
-	return -1
+		var owner := int(owners[sample_index])
+		if owner >= first_span and owner <= last_span:
+			if result.x < 0:
+				result.x = sample_index
+			result.y = sample_index
+		elif result.x >= 0 and owner > last_span:
+			break
+	return result
 
 
 func _specific_energy(trajectory: Dictionary, sample_index: int, layout: Dictionary) -> float:
@@ -328,35 +430,86 @@ func _specific_energy(trajectory: Dictionary, sample_index: int, layout: Diction
 
 
 func _return_turn_evidence(
-	trajectory: Dictionary, first_span: int, last_span: int
+	trajectory: Dictionary, first_span: int, last_span: int, up: Vector3
 ) -> Dictionary:
-	var bounds := _trajectory_span_bounds(trajectory, first_span, last_span)
+	var bounds := _owned_span_bounds(trajectory.span_index, first_span, last_span)
+	if bounds.x < 0 or bounds.y <= bounds.x:
+		return {}
 	var maximum_lateral := 0.0
+	var maximum_bank := 0.0
+	var signed_heading := 0.0
+	var previous: Vector3 = trajectory.tangent[bounds.x]
+	previous -= up * previous.dot(up)
+	if previous.length_squared() <= 0.000001:
+		return {}
+	previous = previous.normalized()
 	for sample_index in range(bounds.x, bounds.y + 1):
+		var horizontal: Vector3 = trajectory.tangent[sample_index]
+		horizontal -= up * horizontal.dot(up)
+		if horizontal.length_squared() <= 0.000001:
+			return {}
+		horizontal = horizontal.normalized()
+		if sample_index > bounds.x:
+			signed_heading += atan2(up.dot(previous.cross(horizontal)), previous.dot(horizontal))
+		previous = horizontal
 		maximum_lateral = maxf(maximum_lateral,
 			absf(float(trajectory.lateral_g[sample_index])))
+		maximum_bank = maxf(maximum_bank, _trajectory_bank(
+			trajectory.tangent[sample_index], trajectory.rider_up[sample_index]))
 	return {
-		"heading_change_rad": _trajectory_heading_change(trajectory.tangent, bounds),
-		"maximum_bank_rad": _trajectory_maximum_bank(
-			trajectory.tangent, trajectory.rider_up, bounds),
+		"signed_heading_change_rad": signed_heading,
+		"maximum_bank_rad": maximum_bank,
 		"maximum_lateral_g": maximum_lateral,
+		"duration_s": float(trajectory.time_s[bounds.y])
+			- float(trajectory.time_s[bounds.x]),
+		"distance_m": float(trajectory.distance_m[bounds.y])
+			- float(trajectory.distance_m[bounds.x]),
 	}
 
 
 func _return_hill_evidence(
 	trajectory: Dictionary, first_span: int, last_span: int, up: Vector3
 ) -> Dictionary:
-	var bounds := _trajectory_span_bounds(trajectory, first_span, last_span)
-	var minimum_height := INF
-	var maximum_height := -INF
-	var minimum_normal := INF
+	var bounds := _owned_span_bounds(trajectory.span_index, first_span, last_span)
+	if bounds.x < 0 or bounds.y - bounds.x < 2:
+		return {}
+	var apex := bounds.x
 	for sample_index in range(bounds.x, bounds.y + 1):
-		var height: float = trajectory.position_m[sample_index].dot(up)
-		minimum_height = minf(minimum_height, height)
-		maximum_height = maxf(maximum_height, height)
-		minimum_normal = minf(minimum_normal, float(trajectory.normal_g[sample_index]))
-	return {"vertical_excursion_m": maximum_height - minimum_height,
-		"minimum_normal_g": minimum_normal}
+		if trajectory.position_m[sample_index].dot(up) \
+				> trajectory.position_m[apex].dot(up):
+			apex = sample_index
+	var maximum_ascent := -INF
+	for sample_index in range(bounds.x, apex + 1):
+		maximum_ascent = maxf(maximum_ascent, trajectory.tangent[sample_index].dot(up))
+	var minimum_descent := INF
+	for sample_index in range(apex, bounds.y + 1):
+		minimum_descent = minf(minimum_descent, trajectory.tangent[sample_index].dot(up))
+	var apex_height: float = trajectory.position_m[apex].dot(up)
+	return {
+		"apex_is_interior": apex > bounds.x and apex < bounds.y,
+		"entry_prominence_m": apex_height - trajectory.position_m[bounds.x].dot(up),
+		"exit_prominence_m": apex_height - trajectory.position_m[bounds.y].dot(up),
+		"maximum_ascent_slope": maximum_ascent,
+		"minimum_descent_slope": minimum_descent,
+		"low_normal_held_s": _linear_held_at_or_below(trajectory.time_s,
+			trajectory.normal_g, bounds, 0.25),
+	}
+
+
+func _linear_held_at_or_below(
+	times: PackedFloat64Array, values: PackedFloat64Array, bounds: Vector2i, threshold: float
+) -> float:
+	var result := 0.0
+	for index in range(bounds.x + 1, bounds.y + 1):
+		var before: float = values[index - 1]
+		var after: float = values[index]
+		var duration: float = times[index] - times[index - 1]
+		if before <= threshold and after <= threshold:
+			result += duration
+		elif (before <= threshold) != (after <= threshold):
+			var crossing := clampf((threshold - before) / (after - before), 0.0, 1.0)
+			result += duration * (crossing if before <= threshold else 1.0 - crossing)
+	return result
 
 
 func _return_energy_is_monotonic(evidence: Dictionary) -> bool:
@@ -372,8 +525,12 @@ func _return_has_two_material_turns(evidence: Dictionary) -> bool:
 		return false
 	for turn in turns:
 		if not turn is Dictionary \
-				or float(turn.get("heading_change_rad", 0.0)) < deg_to_rad(10.0) \
-				or float(turn.get("maximum_bank_rad", 0.0)) < deg_to_rad(15.0) \
+				or not _finite_number(turn.get("signed_heading_change_rad")) \
+				or absf(float(turn.signed_heading_change_rad)) < deg_to_rad(10.0) \
+				or absf(float(turn.signed_heading_change_rad)) > deg_to_rad(225.0) \
+				or not _finite_number(turn.get("maximum_bank_rad")) \
+				or float(turn.maximum_bank_rad) < deg_to_rad(15.0) \
+				or not _finite_number(turn.get("maximum_lateral_g")) \
 				or float(turn.get("maximum_lateral_g", INF)) > 0.05:
 			return false
 	return true
@@ -385,8 +542,30 @@ func _return_has_two_material_hills(evidence: Dictionary) -> bool:
 		return false
 	for hill in hills:
 		if not hill is Dictionary \
-				or float(hill.get("vertical_excursion_m", 0.0)) < 5.0 \
-				or float(hill.get("minimum_normal_g", INF)) > 0.25:
+				or not hill.get("apex_is_interior", false) \
+				or float(hill.get("entry_prominence_m", 0.0)) < 5.0 \
+				or float(hill.get("exit_prominence_m", 0.0)) < 5.0 \
+				or float(hill.get("maximum_ascent_slope", 0.0)) <= 0.05 \
+				or float(hill.get("minimum_descent_slope", 0.0)) >= -0.05 \
+				or float(hill.get("low_normal_held_s", 0.0)) < 0.25:
+			return false
+	return true
+
+
+func _return_extent_is_material(evidence: Dictionary) -> bool:
+	var length: Variant = evidence.get("length_m")
+	var duration: Variant = evidence.get("duration_s")
+	var minimum_speed: Variant = evidence.get("minimum_speed_mps")
+	var turns: Variant = evidence.get("turns")
+	if not _finite_number(length) or float(length) < 1100.0 or float(length) > 3000.0 \
+			or not _positive_finite(duration) or not _finite_number(minimum_speed) \
+			or float(minimum_speed) < 45.0 or not turns is Array or turns.size() != 2:
+		return false
+	for turn in turns:
+		if not turn is Dictionary or not _finite_number(turn.get("duration_s")) \
+				or not _finite_number(turn.get("distance_m")) \
+				or float(turn.duration_s) / float(duration) > 0.55 \
+				or float(turn.distance_m) / float(length) > 0.55:
 			return false
 	return true
 

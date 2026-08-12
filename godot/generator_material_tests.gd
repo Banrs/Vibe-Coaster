@@ -283,7 +283,7 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 	speed_miss.minimum_speeds = minimum_speeds
 	issues.clear()
 	RideVerify.validate_structure(speed_miss, issues)
-	_expect(_contains(issues, "invalid or stalled speed at sample %d" % sample),
+	_expect(issues.has("invalid or stalled speed at sample %d" % sample),
 		"the verifier reads the public per-sample minimum speed")
 
 	var seam_miss := route.duplicate(true)
@@ -292,14 +292,15 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 		if seam_miss.span_indices[index] != seam_miss.span_indices[index - 1]:
 			seam = index
 			break
-	if not _expect(seam >= 0, "the public route exposes a testable native span seam"):
+	_expect(seam >= 0, "the public route exposes a testable native span seam")
+	if seam < 0:
 		return
 	var curvatures: PackedVector3Array = seam_miss.curvatures
 	curvatures[seam] += Vector3.ONE
 	seam_miss.curvatures = curvatures
 	issues.clear()
 	RideVerify.validate_seams(seam_miss, issues)
-	_expect(_contains(issues, "sample %d" % seam),
+	_expect(str(issues).contains("sample %d" % seam),
 		"the verifier checks geometry at native span boundaries")
 
 
@@ -449,8 +450,9 @@ func _check_opener_contract(route: Dictionary) -> void:
 	var non_descent := -1
 	var min_normal := INF; var max_normal := -INF; var peak_lateral := 0.0
 	var peak_drive := 0.0; var peak_roll := 0.0; var maximum_energy_excess := -INF
-	var initial_energy := 0.5 * float(route.speeds[first]) ** 2 + G0 * route.positions[first].y
-	var previous_energy := initial_energy
+	var initial_energy: float = 0.5 * float(route.speeds[first]) ** 2 \
+		+ G0 * float(route.positions[first].y)
+	var previous_energy: float = initial_energy
 	var resistance_work := 0.0
 	for index in range(first, last + 1):
 		min_normal = minf(min_normal, float(route.normal_g[index]))
@@ -462,7 +464,8 @@ func _check_opener_contract(route: Dictionary) -> void:
 				and route.positions[index].y >= route.positions[index - 1].y:
 			non_descent = index
 		if index > first:
-			var energy := 0.5 * float(route.speeds[index]) ** 2 + G0 * route.positions[index].y
+			var energy: float = 0.5 * float(route.speeds[index]) ** 2 \
+				+ G0 * float(route.positions[index].y)
 			var interval_work := -0.5 * G0 * (float(route.longitudinal_g[index - 1]) \
 				+ float(route.longitudinal_g[index])) \
 				* (float(route.distances[index]) - float(route.distances[index - 1]))
@@ -495,7 +498,7 @@ func _check_opener_contract(route: Dictionary) -> void:
 	if typeof(analytic_onset) == TYPE_FLOAT:
 		_expect_max("opener analytic normal onset", float(analytic_onset), 24.5, "g/s")
 	_expect_max("opener monotonic specific-energy excess", maximum_energy_excess, 0.0, "J/kg")
-	var energy_loss := initial_energy - previous_energy
+	var energy_loss: float = initial_energy - previous_energy
 	_expect_min("opener specific-energy loss", energy_loss, 800.0, "J/kg")
 	_expect_max("opener resistance-work closure", absf(energy_loss - resistance_work),
 		maxf(0.5, resistance_work * 0.001), "J/kg")

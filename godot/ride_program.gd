@@ -324,30 +324,30 @@ static func _add_act_one(spans: Array, metadata: Array, propulsion: PackedInt32A
 	_add(spans, metadata, propulsion, "act-one/airtime-unload", 0.48089366108653, "moving",
 		Motion.quintic(5.19999979865927, -0.45), 0.0, 0.0, 0.0,
 		"airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-crest", 1.7936931571445, "moving",
+	_add(spans, metadata, propulsion, "act-one/airtime-crest", 2.40, "moving",
 		-0.45, 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-fall", 0.579759539647, "moving",
+	_add(spans, metadata, propulsion, "act-one/airtime-fall", 0.52, "moving",
 		Motion.quintic(-0.45, 5.199946698098), 0.0, 0.0, 0.0,
 		"airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-release", 0.579759539647, "moving",
+	_add(spans, metadata, propulsion, "act-one/airtime-release", 0.52, "moving",
 		Motion.quintic(5.199946698098, 1.0), 0.0, 0.0, 0.0,
 		"airtime-hills", 0, 2.0, "hill")
 
 	_add(spans, metadata, propulsion, "act-one/wave-rise", 0.500000000067, "moving",
-		Motion.quintic(1.0, 2.000380212), Motion.compact_pulse(1.083606852), 0.0,
+		Motion.quintic(1.0, 4.42), Motion.compact_pulse(0.50), 0.0,
 		Motion.compact_pulse(deg_to_rad(120.0)), "wave-turn", 0, 2.0, "wave_turn")
 	_add(spans, metadata, propulsion, "act-one/wave-unload", 0.500000000067, "moving",
-		Motion.quintic(2.000380212, -0.599999972), Motion.compact_pulse(1.083606852), 0.0,
+		Motion.quintic(4.42, -0.599999972), Motion.compact_pulse(0.50), 0.0,
 		Motion.compact_pulse(deg_to_rad(120.0)), "wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-crest", 2.199999528604, "moving",
-		-0.599999972, Motion.compact_pulse(1.083606852), 0.0, 0.0,
+	_add(spans, metadata, propulsion, "act-one/wave-crest", 2.52, "moving",
+		-0.599999972, Motion.compact_pulse(0.50), 0.0, 0.0,
 		"wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-fall", 1.299999999316, "moving",
-		Motion.quintic(-0.599999972, 5.2), Motion.compact_pulse(1.083606852), 0.0,
-		Motion.compact_pulse(deg_to_rad(-33.272585436)), "wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-release", 1.299999999316, "moving",
-		Motion.quintic(5.2, 1.0), Motion.compact_pulse(1.083606852), 0.0,
-		Motion.compact_pulse(deg_to_rad(-33.272585436)), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-fall", 1.14, "moving",
+		Motion.quintic(-0.599999972, 5.2), Motion.compact_pulse(0.50), 0.0,
+		Motion.compact_pulse(deg_to_rad(-44.56)), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-release", 1.14, "moving",
+		Motion.quintic(5.2, 1.0), Motion.compact_pulse(0.50), 0.0,
+		Motion.compact_pulse(deg_to_rad(-44.56)), "wave-turn", 0, 2.0, "wave_turn")
 
 
 static func _add_raceway(s: Array, m: Array, p: PackedInt32Array) -> void:

@@ -21,7 +21,7 @@ const BRAKE_SOLVE_ITERATIONS := 48
 const TERMINAL_DISTANCE_TOLERANCE_M := 0.05
 const CAPTURE_RESIDUAL_TOLERANCES := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
 const CAPTURE_COEFFICIENT_BOUNDS := [
-	[-0.55, 0.55], [-0.55, 0.55], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
+	[-0.9, 0.9], [-0.9, 0.9], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
 ]
 
 

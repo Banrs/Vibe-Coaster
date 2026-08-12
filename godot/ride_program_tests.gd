@@ -2,6 +2,19 @@ extends SceneTree
 
 const Motion := preload("res://motion.gd")
 const RideProgram := preload("res://ride_program.gd")
+const RETURN_TOPOLOGY_IDS := [
+	"raceway/bank-in-a",
+	"raceway/arc-a",
+	"raceway/bank-out-a",
+	"raceway/hill-a-rise",
+	"raceway/hill-a-release",
+	"raceway/bank-in-b",
+	"raceway/arc-b",
+	"raceway/bank-out-b",
+	"raceway/hill-b-rise",
+	"raceway/hill-b-release",
+	"raceway/roll-settle",
+]
 
 var _errors := PackedStringArray()
 
@@ -23,6 +36,21 @@ func _test_station_local_program_compiles() -> void:
 	_expect(not compiled.get("spans", []).is_empty(), "the compiled program contains motion spans")
 	_expect(compiled.get("capture_plan", {}).get("unique_evaluations", 41) <= 40,
 		"the accepted capture stays within its public evaluation budget")
+	_expect(_return_topology_ids(compiled) == RETURN_TOPOLOGY_IDS,
+		"the global return has the fixed reviewed topology in order")
+	_expect(_return_and_terminal_drive_is_nonpositive(compiled),
+		"every global-return, capture, brake, and station drive profile is nonpositive")
+	_expect(_return_plan_is_bounded(compiled),
+		"the solved global-return plan publishes residual evidence within 42 evaluations")
+	_expect(_capture_plan_is_bounded(compiled),
+		"the solved station capture publishes evidence within 40 coarse evaluations")
+	_expect(_terminal_contract_is_fixed(compiled, _layout()),
+		"the compiled endpoint contract fixes the requested station frame and terminal speed")
+	_expect(not _contains_fallback_or_repair_field(compiled),
+		"the compiled program contains no fallback or repair field")
+	var repeated := _compile(_layout())
+	_expect(var_to_bytes(compiled) == var_to_bytes(repeated),
+		"the same public compile request produces a byte-identical deterministic result")
 	var brake: Dictionary = compiled.get("brake_plan", {})
 	_expect(brake.get("positive_drive_allowed", true) == false,
 		"the brake plan forbids positive drive")
@@ -103,6 +131,91 @@ func _brake_spans_have_no_positive_drive(compiled: Dictionary) -> bool:
 			if Motion.profile_sample(spans[span_index].drive_g, u).x > 0.000001:
 				return false
 	return true
+
+
+func _return_topology_ids(compiled: Dictionary) -> Array:
+	var ids := []
+	for span in compiled.get("spans", []):
+		var span_id := str(span.get("span_id", ""))
+		if span_id.begins_with("raceway/"):
+			ids.append(span_id)
+	return ids
+
+
+func _return_and_terminal_drive_is_nonpositive(compiled: Dictionary) -> bool:
+	var spans: Array = compiled.get("spans", [])
+	var first_return := -1
+	for index in spans.size():
+		if spans[index].get("span_id", "") == RETURN_TOPOLOGY_IDS[0]:
+			first_return = index
+			break
+	if first_return < 0:
+		return false
+	for index in range(first_return, spans.size()):
+		if not _profile_is_nonpositive(spans[index].get("drive_g", {})):
+			return false
+	return true
+
+
+func _profile_is_nonpositive(profile: Dictionary) -> bool:
+	match profile.get("kind", ""):
+		"constant":
+			return float(profile.get("value", INF)) <= 0.0
+		"quintic":
+			return maxf(float(profile.get("from", INF)), float(profile.get("to", INF))) <= 0.0
+		"compact_pulse":
+			return float(profile.get("amplitude", INF)) <= 0.0
+	return false
+
+
+func _return_plan_is_bounded(compiled: Dictionary) -> bool:
+	var plan: Dictionary = compiled.get("return_plan", {})
+	var evaluations := int(plan.get("unique_evaluations", -1))
+	return plan.get("status", "") == "solved" \
+		and plan.get("variables") is Array and not plan.variables.is_empty() \
+		and plan.get("residuals") is Array and not plan.residuals.is_empty() \
+		and plan.get("fine_residuals") is Array and not plan.fine_residuals.is_empty() \
+		and plan.get("margins") is Dictionary and not plan.margins.is_empty() \
+		and evaluations >= 1 and evaluations <= 42 \
+		and plan.get("max_unique_evaluations", -1) == 42 \
+		and plan.get("positive_drive_allowed", true) == false
+
+
+func _capture_plan_is_bounded(compiled: Dictionary) -> bool:
+	var plan: Dictionary = compiled.get("capture_plan", {})
+	var evaluations := int(plan.get("unique_evaluations", -1))
+	return evaluations >= 1 and evaluations <= 40 \
+		and plan.get("max_unique_coarse_evaluations", -1) == 40
+
+
+func _terminal_contract_is_fixed(compiled: Dictionary, layout: Dictionary) -> bool:
+	var contract: Dictionary = compiled.get("terminal_contract", {})
+	return contract.get("station_position_m") == layout.station_position_m \
+		and contract.get("station_tangent") == layout.station_tangent \
+		and contract.get("station_up") == layout.station_up \
+		and absf(float(contract.get("terminal_speed_mps", -1.0)) - 1.0) <= 0.000001 \
+		and _positive_finite(contract.get("position_tolerance_m")) \
+		and _positive_finite(contract.get("angle_tolerance_rad")) \
+		and _positive_finite(contract.get("speed_tolerance_mps"))
+
+
+func _positive_finite(value: Variant) -> bool:
+	return (value is float or value is int) and is_finite(float(value)) and float(value) > 0.0
+
+
+func _contains_fallback_or_repair_field(value: Variant) -> bool:
+	if value is Dictionary:
+		for key in value:
+			var field := str(key).to_lower()
+			if field.contains("fallback") or field.contains("repair"):
+				return true
+			if _contains_fallback_or_repair_field(value[key]):
+				return true
+	elif value is Array:
+		for item in value:
+			if _contains_fallback_or_repair_field(item):
+				return true
+	return false
 
 
 func _expect(condition: bool, message: String) -> bool:

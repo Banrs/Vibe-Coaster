@@ -5,6 +5,9 @@ extends RefCounted
 
 const GENERATOR_VERSION := "time-domain-v1"
 const ROW_OFFSETS := [0.0, 2.15, 4.30, 6.45, 8.60, 10.75, 12.90]
+const INITIAL_POSITION_TOLERANCE_M := 0.000001
+const INITIAL_FRAME_TOLERANCE := 0.000001
+const INITIAL_SPEED_TOLERANCE_MPS := 0.000001
 
 const _TRAJECTORY_FIELDS := {
 	"time_s": TYPE_PACKED_FLOAT64_ARRAY,
@@ -117,9 +120,7 @@ static func _validate(
 	var errors := PackedStringArray()
 	if terrain.is_empty():
 		errors.append("terrain is empty")
-	for key in ["position_m", "tangent", "rider_up", "speed_mps"]:
-		if not initial_state.has(key):
-			errors.append("initial state is missing %s" % key)
+	_validate_initial_state(initial_state, errors)
 	if not trajectory.get("ok", false):
 		errors.append("motion trajectory was not accepted")
 	var count := -1
@@ -156,6 +157,9 @@ static func _validate(
 		if typeof(generation_stats.get("repair_count")) != TYPE_INT \
 				or generation_stats.repair_count != 0:
 			errors.append("compiled program must report zero repairs")
+	if not errors.is_empty():
+		return errors
+	_validate_terminal_contract(compiled, trajectory, errors)
 	if not errors.is_empty():
 		return errors
 	var span_count: int = compiled.spans.size()
@@ -218,12 +222,7 @@ static func _validate(
 		errors.append("trajectory does not contain every compiled span")
 	if propulsion_zones != PackedInt32Array([1, 2, 3]):
 		errors.append("positive propulsion zones must be exactly [1, 2, 3] in order")
-	if count >= 2 and (
-		trajectory.position_m[0] != initial_state.position_m
-		or trajectory.tangent[0] != initial_state.tangent
-		or trajectory.rider_up[0] != initial_state.rider_up
-		or trajectory.speed_mps[0] != initial_state.speed_mps
-	):
+	if count >= 2 and not _initial_state_matches(trajectory, initial_state):
 		errors.append("trajectory does not begin at the declared initial state")
 	var next_gesture_span := 0
 	var window_ids := {}
@@ -287,6 +286,88 @@ static func _validate_window_record(
 	_validate_span_range(Vector2i(record.get("first_span", -1), record.get("last_span", -1)), span_count, label, errors)
 
 
+static func _validate_initial_state(
+	initial_state: Dictionary, errors: PackedStringArray
+) -> void:
+	for key in ["position_m", "tangent", "rider_up"]:
+		var value: Variant = initial_state.get(key)
+		if not (value is Vector3) or not value.is_finite():
+			errors.append("initial state %s must be a finite Vector3" % key)
+	var speed: Variant = initial_state.get("speed_mps")
+	if not _finite_number(speed):
+		errors.append("initial state speed_mps must be finite")
+	if not errors.is_empty():
+		return
+	var tangent: Vector3 = initial_state.tangent
+	var rider_up: Vector3 = initial_state.rider_up
+	if tangent.length_squared() <= INITIAL_FRAME_TOLERANCE * INITIAL_FRAME_TOLERANCE:
+		errors.append("initial state tangent must be nonzero")
+	elif (rider_up - tangent.normalized() * rider_up.dot(tangent.normalized())).length_squared() \
+			<= INITIAL_FRAME_TOLERANCE * INITIAL_FRAME_TOLERANCE:
+		errors.append("initial state frame must be nondegenerate")
+
+
+static func _initial_state_matches(trajectory: Dictionary, initial_state: Dictionary) -> bool:
+	var expected_tangent: Vector3 = initial_state.tangent.normalized()
+	var expected_up: Vector3 = initial_state.rider_up \
+		- expected_tangent * initial_state.rider_up.dot(expected_tangent)
+	expected_up = expected_up.normalized()
+	return trajectory.position_m[0].distance_to(initial_state.position_m) \
+			<= INITIAL_POSITION_TOLERANCE_M \
+		and trajectory.tangent[0].distance_to(expected_tangent) <= INITIAL_FRAME_TOLERANCE \
+		and trajectory.rider_up[0].distance_to(expected_up) <= INITIAL_FRAME_TOLERANCE \
+		and absf(trajectory.speed_mps[0] - float(initial_state.speed_mps)) \
+			<= INITIAL_SPEED_TOLERANCE_MPS
+
+
+static func _validate_terminal_contract(
+	compiled: Dictionary, trajectory: Dictionary, errors: PackedStringArray
+) -> void:
+	var contract: Variant = compiled.get("terminal_contract")
+	if not (contract is Dictionary):
+		errors.append("compiled program is missing terminal_contract")
+		return
+	for key in ["station_position_m", "station_tangent", "station_up"]:
+		var value: Variant = contract.get(key)
+		if not (value is Vector3) or not value.is_finite():
+			errors.append("terminal_contract %s must be a finite Vector3" % key)
+	for key in ["terminal_speed_mps", "position_tolerance_m", "angle_tolerance_rad",
+			"speed_tolerance_mps"]:
+		if not _finite_number(contract.get(key)):
+			errors.append("terminal_contract %s must be finite" % key)
+	for key in ["position_tolerance_m", "angle_tolerance_rad", "speed_tolerance_mps"]:
+		if _finite_number(contract.get(key)) and float(contract[key]) <= 0.0:
+			errors.append("terminal_contract %s must be positive" % key)
+	if not errors.is_empty():
+		return
+	var target_tangent: Vector3 = contract.station_tangent
+	var target_up: Vector3 = contract.station_up
+	if target_tangent.length_squared() <= 0.0 or target_up.length_squared() <= 0.0 \
+			or absf(target_tangent.normalized().dot(target_up.normalized())) > 0.000001:
+		errors.append("terminal_contract station frame must be nondegenerate and orthogonal")
+		return
+	var last: int = trajectory.position_m.size() - 1
+	if trajectory.position_m[last].distance_to(contract.station_position_m) \
+			> float(contract.position_tolerance_m):
+		errors.append("terminal position exceeds position_tolerance_m")
+	if _angle_between(trajectory.tangent[last], target_tangent) \
+			> float(contract.angle_tolerance_rad):
+		errors.append("terminal tangent exceeds angle_tolerance_rad")
+	if _angle_between(trajectory.rider_up[last], target_up) > float(contract.angle_tolerance_rad):
+		errors.append("terminal up exceeds angle_tolerance_rad")
+	if absf(trajectory.speed_mps[last] - float(contract.terminal_speed_mps)) \
+			> float(contract.speed_tolerance_mps):
+		errors.append("terminal speed exceeds speed_tolerance_mps")
+
+
+static func _finite_number(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value))
+
+
+static func _angle_between(first: Vector3, second: Vector3) -> float:
+	return acos(clampf(first.normalized().dot(second.normalized()), -1.0, 1.0))
+
+
 static func _valid_slug(value: String) -> bool:
 	if value.is_empty() or value.begins_with("-") or value.begins_with("_") \
 			or value.ends_with("-") or value.ends_with("_"):
@@ -328,8 +409,8 @@ static func _gesture_windows(gestures: Array, trajectory: Dictionary) -> Array:
 
 
 static func _sample_window(record: Dictionary, trajectory: Dictionary) -> Dictionary:
-	var first := trajectory.span_index.find(int(record.first_span))
-	var last := trajectory.span_index.rfind(int(record.last_span))
+	var first: int = trajectory.span_index.find(int(record.first_span))
+	var last: int = trajectory.span_index.rfind(int(record.last_span))
 	var window := {
 		"display_name": str(record.get("display_name", "")),
 		"diagnostic_kind": str(record.get("diagnostic_kind", "")),
@@ -354,8 +435,8 @@ static func _sample_window(record: Dictionary, trajectory: Dictionary) -> Dictio
 static func _tunnel_ranges(span_ranges: Array, trajectory: Dictionary) -> Array:
 	var ranges := []
 	for span_range: Vector2i in span_ranges:
-		var first := trajectory.span_index.find(span_range.x)
-		var last := trajectory.span_index.rfind(span_range.y)
+		var first: int = trajectory.span_index.find(span_range.x)
+		var last: int = trajectory.span_index.rfind(span_range.y)
 		ranges.append(Vector2i(first, last))
 	return ranges
 

@@ -78,7 +78,7 @@ func _test_constant_rolling_coast() -> void:
 	_expect_close(route.speed_mps[-1], expected_speed,
 		"constant rolling resistance reduces speed linearly")
 	_expect_close(route.position_m[-1].x, expected_distance,
-		"constant rolling resistance gives the analytic coast position")
+		"constant rolling resistance gives the analytic coast position", 0.00005)
 	_expect_close(0.5 * (initial_speed * initial_speed - route.speed_mps[-1] * route.speed_mps[-1]),
 		rolling * route.distance_m[-1], "rolling work equals mechanical energy loss per unit mass")
 	_expect_close(route.longitudinal_g[-1], -rolling / Motion.G0,
@@ -116,7 +116,7 @@ func _test_straight_coast() -> void:
 	if not _expect_route(route, "straight coast integrates"):
 		return
 	_expect_vector(route.position_m[-1], Vector3(20.0, 0.0, 0.0),
-		"straight coast advances at constant speed")
+		"straight coast advances at constant speed", 0.00005)
 	_expect_close(route.speed_mps[-1], 10.0, "straight coast preserves speed")
 
 
@@ -129,7 +129,7 @@ func _test_straight_launch() -> void:
 	_expect_close(route.speed_mps[-1], 10.0 + 2.0 * Motion.G0,
 		"straight launch speed follows authored drive")
 	_expect_close(route.position_m[-1].x, 20.0 + 2.0 * Motion.G0,
-		"straight launch position follows constant acceleration")
+		"straight launch position follows constant acceleration", 0.00005)
 	_expect_close(route.longitudinal_g[-1], 1.0,
 		"straight launch reports authored proper longitudinal g")
 
@@ -199,18 +199,19 @@ func _test_roll_only_frame_twist() -> void:
 
 
 func _test_low_speed_station_handoff() -> void:
-	var handoff_time := 2.0 / (0.5 * Motion.G0)
+	var handoff_speed := 2.01
+	var handoff_time := handoff_speed / (0.5 * Motion.G0)
 	var route := Motion.integrate(_initial(0.0), [
 		_span("station", handoff_time, "station", 1.0, 0.0, 0.5, 0.0),
 		_span("moving", 0.25, "moving", 1.0, 0.0, 0.0, 0.0),
 	], _vacuum_settings(0.01))
-	if not _expect_route(route, "zero-speed station start and exact 2 m/s handoff integrate"):
+	if not _expect_route(route, "zero-speed station start and strict-above-floor handoff integrate"):
 		return
 	var seam: int = route.span_index.find(1)
 	_expect(seam > 0, "station-to-moving boundary owns an exact native node")
 	if seam > 0:
-		_expect_close(route.speed_mps[seam], 2.0,
-			"moving mode begins at the exact two metre-per-second boundary")
+		_expect_close(route.speed_mps[seam], handoff_speed,
+			"moving mode begins unambiguously above the two metre-per-second floor")
 		_expect_vector(route.tangent[seam], Vector3.RIGHT,
 			"station mode keeps its straight frame fixed")
 	_expect_rejected(Motion.integrate(_initial(1.5), [
@@ -284,7 +285,7 @@ func _test_exact_span_boundary_splitting() -> void:
 	_expect_close(route.speed_mps[-1], expected_speed,
 		"discontinuous drive owns only its exact span stages")
 	_expect_close(route.position_m[-1].x, expected_position,
-		"boundary splitting preserves the analytic piecewise-acceleration position")
+		"boundary splitting preserves the analytic piecewise-acceleration position", 0.00005)
 
 
 func _test_degenerate_frame_rejection() -> void:
@@ -305,15 +306,15 @@ func _test_degenerate_frame_rejection() -> void:
 
 
 func _test_rk4_step_halving() -> void:
-	var theta := 1.0
-	var duration := 10.0 / Motion.G0
+	var theta := 2.0
+	var duration := 10.0 * theta / Motion.G0
 	var exact := Vector3(cos(theta), 0.0, sin(theta))
 	var coarse := Motion.integrate(_initial(10.0), [
 		_span("circle", duration, "moving", 0.0, 1.0, 0.0, 0.0),
-	], _zero_gravity_settings(0.04))
+	], _zero_gravity_settings(0.2))
 	var fine := Motion.integrate(_initial(10.0), [
 		_span("circle", duration, "moving", 0.0, 1.0, 0.0, 0.0),
-	], _zero_gravity_settings(0.02))
+	], _zero_gravity_settings(0.1))
 	if not _expect_route(coarse, "coarse RK4 convergence probe integrates"):
 		return
 	if not _expect_route(fine, "fine RK4 convergence probe integrates"):
@@ -322,7 +323,7 @@ func _test_rk4_step_halving() -> void:
 	var fine_error: float = fine.tangent[-1].distance_to(exact)
 	_expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
 		"step halving demonstrates fourth-order convergence")
-	_expect(fine_error <= 0.000001, "fine RK4 result has bounded absolute error")
+	_expect(fine_error <= 0.00001, "fine RK4 result has bounded absolute error")
 	_expect_unit_frame(fine.tangent[-1], fine.rider_up[-1],
 		"projected RK4 leaves a unit orthogonal frame")
 

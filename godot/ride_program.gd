@@ -536,7 +536,7 @@ static func _solve_brakes(
 			coast_low = coast
 		else:
 			coast_high = coast
-	var distance_error := chosen.distance_m + station_distance - remaining
+	var distance_error: float = chosen.distance_m + station_distance - remaining
 	if absf(distance_error) > 0.05 or absf(chosen.exit_speed_mps - 2.0) > 0.0001:
 		return _failure("brake solve missed distance/speed boundary", "brake")
 	return {

@@ -163,7 +163,9 @@ static func integrate(
 			_set_native_controls(result, result.time_s.size() - 1, span_index, motion_span,
 				0.0, tangent, up, speed, gravity, rolling, aero)
 		while span_elapsed < float(motion_span.duration_s) - 0.000000000001:
-			var h: float = minf(step_s, float(motion_span.duration_s) - span_elapsed)
+			var remaining_s: float = float(motion_span.duration_s) - span_elapsed
+			var h := remaining_s if remaining_s <= step_s + maxf(0.000000000001,
+				step_s * 0.00000001) else step_s
 			var error := _rk4_derivative(derivatives[0], position, tangent, up, speed,
 				motion_span, span_elapsed, gravity, rolling, aero, false)
 			if not error.is_empty():

@@ -17,7 +17,27 @@ jobs:
           include-templates: false
       - name: Import project
         run: godot --headless --path godot --editor --quit
+      - name: Run focused test manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=.github/focused-tests.txt
+          test -s "$manifest"
+          while IFS= read -r script || [[ -n "$script" ]]; do
+            [[ -z "$script" || "$script" == \#* ]] && continue
+            path="godot/${script#res://}"
+            test -f "$path"
+            godot --headless --path godot --script "$script"
+          done < "$manifest"
       - name: Validate ride and meshes
         run: godot --headless --path godot --script res://smoke.gd
       - name: Exercise viewer runtime
         run: godot --headless --path godot --quit-after 120
+      - name: Upload bounded CI diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics
+          path: out/ci-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

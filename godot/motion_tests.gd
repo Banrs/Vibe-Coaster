@@ -310,8 +310,13 @@ func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
 		"sub-nanosecond boundary roundoff is folded into the adjacent RK step")
 	_expect(route.span_index.find(1) == 50,
 		"the exact boundary node remains owned by the next span")
-	var public_times := PackedFloat32Array(route.time_s)
-	var public_distances := PackedFloat32Array(route.distance_m)
+	var public_times := PackedFloat32Array()
+	var public_distances := PackedFloat32Array()
+	public_times.resize(route.time_s.size())
+	public_distances.resize(route.distance_m.size())
+	for index in route.time_s.size():
+		public_times[index] = route.time_s[index]
+		public_distances[index] = route.distance_m[index]
 	for index in range(1, public_times.size()):
 		_expect(public_times[index] > public_times[index - 1]
 			and public_distances[index] > public_distances[index - 1],

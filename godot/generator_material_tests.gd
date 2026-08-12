@@ -29,11 +29,15 @@ var _errors := PackedStringArray()
 func _initialize() -> void:
 	var route := RideGenerator.build(42)
 	_expect(not route.is_empty() and route.get("ok", true) and route.get("errors", []).is_empty(),
-		"seed 42 generates successfully")
+		"seed 42 generates successfully: errors=%s failure=%s" % [
+			str(route.get("errors", [])), str(route.get("failure", {})),
+		])
 	_expect(route.get("generator_version", "") == "time-domain-v1",
 		"the public route identifies the time-domain generator")
 	_expect(_story_windows_are_complete(route),
 		"ten stable, ordered, non-empty story windows are public")
+	_expect(_diagnostic_windows_are_stable(route),
+		"diagnostic windows have unique stable IDs and distinguish repeated roles")
 	_expect(_propulsion_and_work_are_honest(route),
 		"propulsion IDs are exactly 1/2/3 and generation integrates once without repair")
 	_expect(_has_material_legacy_delta(route),
@@ -64,6 +68,37 @@ func _story_windows_are_complete(route: Dictionary) -> bool:
 			return false
 		previous_last = last
 	return true
+
+
+func _diagnostic_windows_are_stable(route: Dictionary) -> bool:
+	var seen := {}
+	var retained := {}
+	var giant_inversions := []
+	for gesture in route.get("gesture_windows", []):
+		for window in [gesture] + gesture.get("role_windows", []):
+			var window_id := str(window.get("window_id", ""))
+			if window_id.is_empty() or seen.has(window_id):
+				return false
+			seen[window_id] = true
+			var kind := str(window.get("diagnostic_kind", ""))
+			if not kind.is_empty():
+				retained[kind] = true
+			if gesture.get("story_slot_id") == "act-one" \
+					and window.get("id") == "giant-inversion":
+				giant_inversions.append(window)
+	if not retained.has_all([
+		"hill", "immelmann", "loop", "cutback", "twisted_drop", "dive",
+		"wave_turn", "overbank", "turn",
+	]):
+		return false
+	return giant_inversions.size() == 2 \
+		and giant_inversions[0].get("occurrence") == 0 \
+		and giant_inversions[0].get("diagnostic_kind") == "immelmann" \
+		and giant_inversions[0].get("window_id") \
+			== "act-one/giant-inversion/00-immelmann" \
+		and giant_inversions[1].get("occurrence") == 1 \
+		and giant_inversions[1].get("diagnostic_kind") == "loop" \
+		and giant_inversions[1].get("window_id") == "act-one/giant-inversion/01-loop"
 
 
 func _propulsion_and_work_are_honest(route: Dictionary) -> bool:

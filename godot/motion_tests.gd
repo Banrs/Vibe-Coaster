@@ -201,7 +201,7 @@ func _test_roll_only_frame_twist() -> void:
 func _test_low_speed_station_handoff() -> void:
 	var handoff_time := 2.0 / (0.5 * Motion.G0)
 	var route := Motion.integrate(_initial(0.0), [
-		_span("station", handoff_time, "station", 0.0, 0.0, 0.5, 0.0),
+		_span("station", handoff_time, "station", 1.0, 0.0, 0.5, 0.0),
 		_span("moving", 0.25, "moving", 1.0, 0.0, 0.0, 0.0),
 	], _vacuum_settings(0.01))
 	if not _expect_route(route, "zero-speed station start and exact 2 m/s handoff integrate"):
@@ -238,6 +238,18 @@ func _test_low_speed_station_handoff() -> void:
 		_span("transverse", 0.1, "station", 1.0, 0.0, 0.5, 0.0),
 	], _zero_gravity_settings(0.01)), "station transverse",
 		"station mode rejects transverse controls")
+	var tolerated_station := Motion.integrate(_initial(5.0), [
+		_span("roundoff", 0.1, "station", 1.0,
+			0.5 * Motion.STATION_TRANSVERSE_TOLERANCE_G, 0.0, 0.0),
+	], _settings(0.01))
+	if _expect_route(tolerated_station, "station accepts sub-tolerance transverse roundoff"):
+		_expect_vector(tolerated_station.tangent[-1], Vector3.RIGHT,
+			"station freezes its frame when transverse roundoff is tolerated")
+	_expect_rejected(Motion.integrate(_initial(5.0), [
+		_span("tilted", 0.1, "station", 1.0,
+			2.0 * Motion.STATION_TRANSVERSE_TOLERANCE_G, 0.0, 0.0),
+	], _settings(0.01)), "station transverse",
+		"station rejects transverse acceleration above its physical tolerance")
 	_expect_rejected(Motion.integrate(_initial(0.0), [
 		_span("rolling", 0.1, "station", 0.0, 0.0, 0.5, 0.1),
 	], _zero_gravity_settings(0.01)), "station roll",
@@ -360,8 +372,9 @@ func _test_dense_output_distance_and_defect() -> void:
 	var sampled: Dictionary = Motion.sample_distance(route, midpoint)
 	_expect_close(float(sampled.get("distance_m", -1.0)), midpoint,
 		"dense distance inversion is monotone and returns the requested coordinate")
-	_expect(route.dense_output.get("max_kinematic_defect_mps", INF) <= 0.001,
-		"dense output quantifies a bounded dr/dt minus vT defect")
+	var kinematic_defect: float = route.dense_output.get("max_kinematic_defect_mps", INF)
+	_expect(kinematic_defect >= 0.0 and kinematic_defect <= 0.00001,
+		"dense output measures its actual dr/dt minus returned vT defect")
 	var by_time: Dictionary = Motion.sample_time(route, sampled.get("time_s", -1.0))
 	_expect_vector(by_time.get("position_m", Vector3.INF), sampled.get("position_m", Vector3.ZERO),
 		"time and distance sampling agree on position", 0.000001)

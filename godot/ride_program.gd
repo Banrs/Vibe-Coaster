@@ -37,20 +37,9 @@ static func compile(
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "opener", spans.size(), "twisted_drop")
-	_add(spans, metadata, propulsion, "opener/pull-up", 1.35, "moving",
-		Motion.quintic(1.0, 3.1), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "entry")
-	_add(spans, metadata, propulsion, "opener/rising", 2.75, "moving",
-		Motion.quintic(3.1, 0.82), 0.0, 0.0, 0.0, "climb")
-	_add(spans, metadata, propulsion, "opener/crest", 1.15, "moving",
-		Motion.quintic(0.82, -0.55), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(24.0)), "crest")
-	_add(spans, metadata, propulsion, "opener/twisted-drop", 3.10, "moving",
-		Motion.quintic(-0.55, 1.0), Motion.compact_pulse(0.62), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(-72.0)), "core")
-	_add(spans, metadata, propulsion, "opener/pullout", 1.25, "moving",
-		Motion.quintic(1.0, 3.8), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "exit")
+	_add_balanced_feature(spans, metadata, propulsion, "opener",
+		[0.834, 0.834, 2.095, 2.095, 0.820, 0.820],
+		[1.0, 3.79, 1.0, -1.08, 1.0, 3.76, 1.0], 0.10, deg_to_rad(10.0))
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "act-one", spans.size())
@@ -59,69 +48,55 @@ static func compile(
 
 	_begin_gesture(gestures, "escarpment-climb", spans.size())
 	_add(spans, metadata, propulsion, "climb/lsm2-entry", 0.30, "moving",
-		Motion.quintic(1.0, 2.6), Motion.constant(0.0), Motion.quintic(0.0, 1.58),
+		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 0.10),
 		Motion.constant(0.0), "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/lsm2-core", 1.70, "moving",
-		2.6, 0.0, 1.58, 0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/lsm2-core", 0.40, "moving",
+		1.0, 0.0, 0.10, 0.0, "lsm2", 2)
 	_add(spans, metadata, propulsion, "climb/lsm2-release", 0.30, "moving",
-		2.6, 0.0, Motion.quintic(1.58, 0.0), 0.0, "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/pull-up", 1.30, "moving",
-		Motion.quintic(2.6, 0.84), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "unpowered-climb")
-	_add(spans, metadata, propulsion, "climb/coast", 8.80, "moving",
-		0.84, 0.0, 0.0, 0.0, "unpowered-climb")
+		1.0, 0.0, Motion.quintic(0.10, 0.0), 0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/pull-up", 1.80, "moving",
+		Motion.quintic(1.0, 4.5), 0.0, 0.0, 0.0, "unpowered-climb")
+	_add(spans, metadata, propulsion, "climb/pull-up-release", 1.80, "moving",
+		Motion.quintic(4.5, 0.0), 0.0, 0.0, 0.0, "unpowered-climb")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "clifftop-suspense", spans.size())
-	_add(spans, metadata, propulsion, "rim/slow-crest", 1.30, "moving",
-		Motion.quintic(0.84, 0.12), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(18.0)), "slow-crest")
-	_add(spans, metadata, propulsion, "rim/outward", 4.60, "moving",
-		Motion.quintic(0.12, 0.62), Motion.compact_pulse(0.34), 0.0,
-		Motion.compact_pulse(deg_to_rad(36.0)), "outward-rim", 0, 2.0, "turn")
-	_add(spans, metadata, propulsion, "rim/dive-entry", 1.30, "moving",
-		Motion.quintic(0.62, -0.20), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.quintic(0.0, deg_to_rad(-18.0)), "exit")
+	_add(spans, metadata, propulsion, "rim/ballistic-crest", 3.74, "moving",
+		0.0, 0.0, 0.0, 0.0, "slow-crest")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "cliff-dive", spans.size(), "dive")
-	_add(spans, metadata, propulsion, "dive/rotate", 1.40, "moving",
-		Motion.quintic(-0.20, 0.05), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.quintic(deg_to_rad(-18.0), 0.0), "entry")
-	_add(spans, metadata, propulsion, "dive/core", 4.10, "moving",
-		0.05, 0.0, 0.0, 0.0, "core")
-	_add(spans, metadata, propulsion, "dive/pullout", 1.50, "moving",
-		Motion.quintic(0.05, 4.1), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "exit")
+	_add(spans, metadata, propulsion, "dive/core", 3.80, "moving",
+		0.0, 0.0, 0.0, 0.0, "core")
+	_add(spans, metadata, propulsion, "dive/pullout", 1.70, "moving",
+		Motion.quintic(0.0, 4.5), 0.0, 0.0, 0.0, "exit")
+	_add(spans, metadata, propulsion, "dive/pullout-release", 1.80, "moving",
+		Motion.quintic(4.5, 1.0), 0.0, 0.0, 0.0, "exit")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "tunnel-lsm3", spans.size())
 	_add(spans, metadata, propulsion, "tunnel/lsm3-entry", 0.30, "moving",
-		Motion.quintic(4.1, 1.0), Motion.constant(0.0), Motion.quintic(0.0, 1.45),
+		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 0.75),
 		Motion.constant(0.0), "core", 3)
-	_add(spans, metadata, propulsion, "tunnel/lsm3-core", 1.50, "moving",
-		1.0, 0.0, 1.45, 0.0, "core", 3)
+	_add(spans, metadata, propulsion, "tunnel/lsm3-core", 1.20, "moving",
+		1.0, 0.0, 0.75, 0.0, "core", 3)
 	_add(spans, metadata, propulsion, "tunnel/lsm3-release", 0.30, "moving",
-		1.0, 0.0, Motion.quintic(1.45, 0.0), 0.0, "core", 3)
+		1.0, 0.0, Motion.quintic(0.75, 0.0), 0.0, "core", 3)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
-	_add(spans, metadata, propulsion, "camelback/pull-up", 1.35, "moving",
-		Motion.quintic(1.0, 3.8), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "entry")
-	_add(spans, metadata, propulsion, "camelback/rise", 2.35, "moving",
-		Motion.quintic(3.8, 0.52), 0.0, 0.0, 0.0, "rise")
-	_add(spans, metadata, propulsion, "camelback/crest", 1.75, "moving",
-		Motion.quintic(0.52, -0.35), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "crest")
-	_add(spans, metadata, propulsion, "camelback/fall", 1.90, "moving",
-		Motion.quintic(-0.35, 0.52), 0.0, 0.0, 0.0, "fall")
-	_add(spans, metadata, propulsion, "camelback/pullout-rise", 0.325, "moving",
-		Motion.quintic(0.52, 3.8), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "exit")
-	_add(spans, metadata, propulsion, "camelback/pullout-release", 0.325, "moving",
-		Motion.quintic(3.8, 1.0), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "exit")
+	_add(spans, metadata, propulsion, "camelback/pull-up", 1.70, "moving",
+		Motion.quintic(1.0, 4.5), 0.0, 0.0, 0.0, "rise")
+	_add(spans, metadata, propulsion, "camelback/pull-up-release", 1.70, "moving",
+		Motion.quintic(4.5, 0.0), 0.0, 0.0, 0.0, "rise")
+	_add(spans, metadata, propulsion, "camelback/crest", 3.98, "moving",
+		0.0, 0.0, 0.0, 0.0, "crest")
+	_add(spans, metadata, propulsion, "camelback/fall", 4.20, "moving",
+		0.0, 0.0, 0.0, 0.0, "fall")
+	_add(spans, metadata, propulsion, "camelback/pullout", 1.30, "moving",
+		Motion.quintic(0.0, 4.5), 0.0, 0.0, 0.0, "exit")
+	_add(spans, metadata, propulsion, "camelback/pullout-release", 2.00, "moving",
+		Motion.quintic(4.5, 1.0), 0.0, 0.0, 0.0, "exit")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "raceway-return", spans.size())
@@ -133,17 +108,27 @@ static func compile(
 	if not prefix.get("ok", false):
 		return _failure("prefix integration failed: %s" % ", ".join(
 			prefix.get("errors", [])), "prefix")
+	var landmark_report := _landmark_report(prefix, gestures, metadata,
+		initial_state.position_m)
+	var landmark_errors := _validate_landmark_report(landmark_report)
+	if not landmark_errors.is_empty():
+		return _failure("upstream landmark solve missed its physical envelope", "landmarks",
+			{"landmark_report": landmark_report, "misses": landmark_errors})
 	var capture_start := _last_state(prefix)
 	var capture := _solve_capture(capture_start, layout, settings)
 	if not capture.ok:
+		capture["landmark_report"] = landmark_report
 		return capture
 	var capture_spans: Array = _capture_spans(capture.coefficients)
 	var capture_route := Motion.integrate(capture_start, capture_spans, settings)
 	if not capture_route.get("ok", false):
-		return _capture_failure("accepted capture did not reintegrate",
+		var capture_failure := _capture_failure("accepted capture did not reintegrate",
 			capture.unique_evaluations, capture.residuals, capture.margins)
+		capture_failure["landmark_report"] = landmark_report
+		return capture_failure
 	var brake := _solve_brakes(_last_state(capture_route), layout, settings)
 	if not brake.ok:
+		brake["landmark_report"] = landmark_report
 		return brake
 
 	_begin_gesture(gestures, "brakes-station-capture", spans.size())
@@ -192,44 +177,40 @@ static func compile(
 			"positive_drive_allowed": false,
 		},
 		"brake_plan": brake.report,
+		"landmark_report": landmark_report,
 		"settings": _settings(0.01),
 	}
 
 
 static func _add_act_one(spans: Array, metadata: Array, propulsion: PackedInt32Array) -> void:
-	_add(spans, metadata, propulsion, "act-one/immelmann-entry", 2.2, "moving",
-		Motion.quintic(3.8, 4.2), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(52.0)), "giant-inversion", 0, 2.0, "immelmann")
-	_add(spans, metadata, propulsion, "act-one/immelmann-apex", 2.6, "moving",
-		Motion.quintic(4.2, 0.25), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(74.0)), "giant-inversion", 0, 2.0, "immelmann")
-	_add(spans, metadata, propulsion, "act-one/cutback-rise", 1.6, "moving",
-		Motion.quintic(0.25, 3.6), Motion.compact_pulse(-0.85), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(-88.0)), "cutback", 0, 2.0, "cutback")
-	_add(spans, metadata, propulsion, "act-one/cutback-release", 1.6, "moving",
-		Motion.quintic(3.6, 1.0), Motion.compact_pulse(0.85), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(88.0)), "cutback", 0, 2.0, "cutback")
-	_add(spans, metadata, propulsion, "act-one/loop-rise", 2.7, "moving",
-		Motion.quintic(1.0, 4.7), Motion.compact_pulse(0.42), Motion.constant(0.0),
-		Motion.constant(0.0), "giant-inversion", 0, 2.0, "loop")
-	_add(spans, metadata, propulsion, "act-one/loop-release", 2.7, "moving",
-		Motion.quintic(4.7, 1.0), Motion.compact_pulse(-0.42), Motion.constant(0.0),
-		Motion.constant(0.0), "giant-inversion", 0, 2.0, "loop")
-	_add(spans, metadata, propulsion, "act-one/hills-rise", 3.2, "moving",
-		Motion.quintic(1.0, -0.75), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(34.0)), "airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/hills-release", 3.2, "moving",
-		Motion.quintic(-0.75, 1.0), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(-34.0)), "airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/wave-turn-rise", 2.0, "moving",
-		Motion.quintic(1.0, 2.4), Motion.compact_pulse(0.72), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(-62.0)), "wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-turn-release", 2.0, "moving",
-		Motion.quintic(2.4, 1.0), Motion.compact_pulse(-0.72), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(62.0)), "wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/release", 2.2, "moving",
-		Motion.quintic(1.0, 1.0), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "exit")
+	_add_balanced_feature(spans, metadata, propulsion, "act-one",
+		[0.946, 0.946, 2.339, 2.339, 0.839, 0.839],
+		[1.0, 3.29, 1.0, -0.72, 1.0, 3.56, 1.0], 0.10, deg_to_rad(10.0))
+
+
+static func _add_balanced_feature(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, prefix: String,
+	durations: Array, loads: Array, lateral_peak: float, roll_peak: float
+) -> void:
+	var roles := ["entry", "rise", "airtime", "airtime", "pullout", "exit"]
+	for index in 6:
+		var lateral: Variant = 0.0
+		var roll: Variant = 0.0
+		if index == 1:
+			lateral = Motion.compact_pulse(lateral_peak)
+			roll = Motion.compact_pulse(roll_peak)
+		elif index == 2:
+			lateral = Motion.compact_pulse(-lateral_peak)
+			roll = Motion.compact_pulse(roll_peak)
+		elif index == 3:
+			lateral = Motion.compact_pulse(lateral_peak)
+			roll = Motion.compact_pulse(-roll_peak)
+		elif index == 4:
+			lateral = Motion.compact_pulse(-lateral_peak)
+			roll = Motion.compact_pulse(-roll_peak)
+		_add(spans, metadata, propulsion, "%s/%02d" % [prefix, index], durations[index],
+			"moving", Motion.quintic(loads[index], loads[index + 1]), lateral, 0.0,
+			roll, roles[index])
 
 
 static func _add_raceway(spans: Array, metadata: Array, propulsion: PackedInt32Array) -> void:
@@ -677,6 +658,91 @@ static func _last_state(route: Dictionary) -> Dictionary:
 		"distance_m": route.distance_m[-1],
 		"time_s": route.time_s[-1],
 	}
+
+
+static func _landmark_report(
+	trajectory: Dictionary, gestures: Array, metadata: Array, station_position: Vector3
+) -> Dictionary:
+	var gesture_ends := {}
+	for gesture in gestures:
+		gesture_ends[gesture.story_slot_id] = int(gesture.last_span)
+	var camel_apex_span := -1
+	var lsm2_exit_span := -1
+	for index in metadata.size():
+		if metadata[index].span_id == "camelback/crest":
+			camel_apex_span = index
+		elif metadata[index].span_id == "climb/lsm2-release":
+			lsm2_exit_span = index
+	var targets := {
+		"launch_exit": {"span": gesture_ends["station-launch"], "height_m": [-5.0, 5.0],
+			"speed_mps": [85.0, 98.0], "maximum_abs_tangent_y": 0.05},
+		"act_one_exit": {"span": gesture_ends["act-one"], "height_m": [-40.0, 40.0],
+			"speed_mps": [40.0, 70.0], "maximum_abs_tangent_y": 0.18},
+		"lsm2_exit": {"span": lsm2_exit_span, "height_m": [-20.0, 20.0],
+			"speed_mps": [75.0, 85.0], "maximum_abs_tangent_y": 0.12},
+		"cliff_crest": {"span": gesture_ends["clifftop-suspense"],
+			"height_m": [150.0, 175.0], "speed_mps": [2.0, 10.0],
+			"maximum_abs_tangent_y": 0.22},
+		"dive_exit": {"span": gesture_ends["cliff-dive"], "height_m": [-20.0, 20.0],
+			"speed_mps": [55.0, 70.0]},
+		"lsm3_exit": {"span": gesture_ends["tunnel-lsm3"], "height_m": [-20.0, 20.0],
+			"speed_mps": [90.0, 98.0]},
+		"camelback_apex": {"span": camel_apex_span, "height_m": [240.0, 260.0],
+			"speed_mps": [50.0, 68.0]},
+		"return_entry": {"span": gesture_ends["marquee-camelback"],
+			"height_m": [-20.0, 20.0], "speed_mps": [70.0, 92.0],
+			"maximum_abs_tangent_y": 0.18},
+	}
+	var report := {}
+	for landmark_id in targets.keys():
+		var target: Dictionary = targets[landmark_id]
+		var sample_index := _span_end_sample(trajectory.span_index, target.span)
+		var position: Vector3 = trajectory.position_m[sample_index]
+		var tangent: Vector3 = trajectory.tangent[sample_index]
+		var rider_up: Vector3 = trajectory.rider_up[sample_index]
+		report[landmark_id] = {
+			"span_index": target.span,
+			"sample_index": sample_index,
+			"height_m": position.y - station_position.y,
+			"position_m": position,
+			"speed_mps": trajectory.speed_mps[sample_index],
+			"tangent": tangent.normalized(),
+			"rider_up": rider_up.normalized(),
+			"tangent_y": tangent.y,
+			"time_s": trajectory.time_s[sample_index],
+			"target_height_m": target.height_m,
+			"target_speed_mps": target.speed_mps,
+			"maximum_abs_tangent_y": target.get("maximum_abs_tangent_y", null),
+		}
+	var return_entry: Dictionary = report.return_entry
+	return_entry["energy_headroom_j_per_kg"] = (
+		0.5 * float(return_entry.speed_mps) ** 2
+		+ Motion.G0 * float(return_entry.height_m) - 0.5
+	)
+	return report
+
+
+static func _span_end_sample(span_indices: PackedInt32Array, span_index: int) -> int:
+	for sample_index in span_indices.size():
+		if span_indices[sample_index] > span_index:
+			return sample_index
+	return span_indices.size() - 1
+
+
+static func _validate_landmark_report(report: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	for landmark_id in report.keys():
+		var record: Dictionary = report[landmark_id]
+		if record.height_m < record.target_height_m[0] \
+				or record.height_m > record.target_height_m[1]:
+			errors.append("%s height %.3f m" % [landmark_id, record.height_m])
+		if record.speed_mps < record.target_speed_mps[0] \
+				or record.speed_mps > record.target_speed_mps[1]:
+			errors.append("%s speed %.3f m/s" % [landmark_id, record.speed_mps])
+		if record.maximum_abs_tangent_y != null \
+				and absf(record.tangent_y) > record.maximum_abs_tangent_y:
+			errors.append("%s tangent_y %.5f" % [landmark_id, record.tangent_y])
+	return errors
 
 
 static func _settings(step_s: float) -> Dictionary:

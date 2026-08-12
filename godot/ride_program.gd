@@ -1063,7 +1063,7 @@ static func _landmark_report(
 	var targets := {
 		"launch_exit": {"sample": _span_end_sample(trajectory.span_index,
 			gesture_ranges["station-launch"].y), "height_m": [-5.0, 5.0],
-			"speed_mps": [85.0, 98.0], "maximum_abs_tangent_y": 0.05},
+			"speed_mps": [75.0, 78.0], "maximum_abs_tangent_y": 0.05},
 		"act_one_exit": {"sample": _span_end_sample(trajectory.span_index,
 			gesture_ranges["act-one"].y), "height_m": [-40.0, 40.0],
 			"speed_mps": [40.0, 70.0], "maximum_abs_tangent_y": 0.18},

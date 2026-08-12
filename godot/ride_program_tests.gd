@@ -37,7 +37,7 @@ const CAPTURE_ROLL_REACH_RAD := 1.2
 const CAPTURE_PULSE_AREA_S := 2.0 * 3.5 * (100.0 / 231.0)
 const CAPTURE_RESIDUAL_LIMITS := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
 const LANDMARK_BANDS := {
-	"launch_exit": {"height_m": Vector2(-5.0, 5.0), "speed_mps": Vector2(85.0, 98.0),
+	"launch_exit": {"height_m": Vector2(-5.0, 5.0), "speed_mps": Vector2(75.0, 78.0),
 		"maximum_abs_tangent_y": 0.05},
 	"act_one_exit": {"height_m": Vector2(-40.0, 40.0), "speed_mps": Vector2(40.0, 70.0),
 		"maximum_abs_tangent_y": 0.18},

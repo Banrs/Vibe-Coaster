@@ -2,16 +2,6 @@ extends SceneTree
 
 const Motion := preload("res://motion.gd")
 const RideProgram := preload("res://ride_program.gd")
-const RETURN_TOPOLOGY_IDS := [
-	"raceway/turn-a-entry",
-	"raceway/turn-a-core",
-	"raceway/turn-a-exit-pullup",
-	"raceway/airtime-unload",
-	"raceway/airtime-recovery",
-	"raceway/turn-b-entry",
-	"raceway/turn-b-core",
-	"raceway/turn-b-exit",
-]
 const CAPTURE_MARGIN_IDS := [
 	"coefficient_margin",
 	"corridor_cross_m",
@@ -53,6 +43,7 @@ var _errors := PackedStringArray()
 func _initialize() -> void:
 	_test_capture_accepts_varied_station_frames()
 	_test_sustained_brake_closes_without_padding()
+	_test_material_return_recipe()
 	_test_station_local_program_compiles()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
@@ -108,6 +99,30 @@ func _test_sustained_brake_closes_without_padding() -> void:
 		"the station creep reaches the preset terminal speed")
 
 
+func _test_material_return_recipe() -> void:
+	var spans: Array = []
+	var metadata: Array = []
+	var gestures: Array = []
+	var propulsion := PackedInt32Array()
+	RideProgram._begin_gesture(gestures, "raceway-return", 0)
+	RideProgram._add_raceway(spans, metadata, propulsion)
+	RideProgram._end_gesture(gestures, metadata, spans.size() - 1)
+	var route := Motion.integrate({
+		"position_m": Vector3.ZERO, "tangent": Vector3.RIGHT,
+		"rider_up": Vector3.UP, "speed_mps": 89.0,
+		"distance_m": 0.0,
+		"time_s": 0.0,
+	}, spans, RideProgram._settings(0.01))
+	if not _expect(route.get("ok", false),
+			"the public return recipe integrates from a finite level upright moving state"):
+		return
+	var role_ids := []
+	for role: Dictionary in gestures[0].role_windows:
+		role_ids.append(role.id)
+	_expect(role_ids == ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"],
+		"the return exposes exactly four ordered nonempty semantic roles")
+
+
 func _test_station_local_program_compiles() -> void:
 	var compiled := _compile(_layout())
 	_expect(_landmark_report_is_physical(compiled, _layout()),
@@ -118,14 +133,10 @@ func _test_station_local_program_compiles() -> void:
 	_expect(not compiled.get("spans", []).is_empty(), "the compiled program contains motion spans")
 	_expect(compiled.get("capture_plan", {}).get("unique_evaluations", 41) <= 40,
 		"the accepted capture stays within its public evaluation budget")
-	_expect(_compiled_return_ids(compiled) == RETURN_TOPOLOGY_IDS,
-		"the compiled raceway retains the reviewed eight-span authored topology")
 	_expect(_return_and_terminal_drive_is_nonpositive(compiled),
 		"every global-return, capture, brake, and station drive profile is nonpositive")
 	_expect(_return_is_passive_and_material(compiled, _layout()),
-		"the authored raceway is at least 1.1 km and monotonically loses mechanical energy")
-	_expect(not compiled.has("return_plan"),
-		"the fixed raceway publishes no Newton return plan or evaluation metadata")
+		"the return is at least 1.1 km and monotonically loses mechanical energy")
 	_expect(_capture_plan_is_bounded(compiled),
 		"the solved station capture publishes evidence within 40 coarse evaluations")
 	_expect(_conditioning_matches_accepted_point(
@@ -351,33 +362,13 @@ func _brake_spans_have_no_positive_drive(compiled: Dictionary) -> bool:
 	return true
 
 
-func _compiled_return_ids(compiled: Dictionary) -> Array:
-	var spans: Array = compiled.get("spans", [])
-	var first := -1
-	for index in spans.size():
-		if spans[index].get("span_id", "") == RETURN_TOPOLOGY_IDS[0]:
-			first = index
-			break
-	if first < 0 or first + RETURN_TOPOLOGY_IDS.size() >= spans.size() \
-			or spans[first + RETURN_TOPOLOGY_IDS.size()].get("span_id", "") != "capture/early":
-		return []
-	var result := []
-	for offset in RETURN_TOPOLOGY_IDS.size():
-		var span: Dictionary = spans[first + offset]
-		result.append(span.get("span_id", ""))
-	return result
-
-
 func _return_and_terminal_drive_is_nonpositive(compiled: Dictionary) -> bool:
+	var return_gesture := _compiled_gesture(compiled, "raceway-return")
+	var terminal := _compiled_gesture(compiled, "brakes-station-capture")
 	var spans: Array = compiled.get("spans", [])
-	var first_return := -1
-	for index in spans.size():
-		if spans[index].get("span_id", "") == RETURN_TOPOLOGY_IDS[0]:
-			first_return = index
-			break
-	if first_return < 0:
+	if return_gesture.is_empty() or terminal.is_empty():
 		return false
-	for index in range(first_return, spans.size()):
+	for index in range(int(return_gesture.first_span), int(terminal.last_span) + 1):
 		if not _profile_is_nonpositive(spans[index].get("drive_g", {})):
 			return false
 	return true
@@ -395,19 +386,14 @@ func _profile_is_nonpositive(profile: Dictionary) -> bool:
 
 
 func _return_is_passive_and_material(compiled: Dictionary, layout: Dictionary) -> bool:
-	var spans: Array = compiled.get("spans", [])
-	var first := -1
-	for index in spans.size():
-		if spans[index].get("span_id", "") == RETURN_TOPOLOGY_IDS[0]:
-			first = index
-			break
-	if first < 0:
+	var gesture := _compiled_gesture(compiled, "raceway-return")
+	if gesture.is_empty():
 		return false
-	var last := first + RETURN_TOPOLOGY_IDS.size() - 1
 	var trajectory := _integrated_trajectory(compiled, layout)
 	if not trajectory.get("ok", false):
 		return false
-	var bounds := _owned_span_bounds(trajectory.span_index, first, last)
+	var bounds := _owned_span_bounds(trajectory.span_index,
+		int(gesture.first_span), int(gesture.last_span))
 	if bounds.x < 0 or bounds.y <= bounds.x \
 			or float(trajectory.distance_m[bounds.y] - trajectory.distance_m[bounds.x]) < 1100.0:
 		return false

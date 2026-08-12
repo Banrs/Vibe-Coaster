@@ -10,6 +10,29 @@ const COMPACT_PULSE_AREA := 100.0 / 231.0
 const COARSE_STEP_S := 0.05
 const FINE_STEP_S := 0.025
 const MAX_CAPTURE_EVALUATIONS := 40
+const MAX_RETURN_EVALUATIONS := 24
+const RETURN_PARAMETER_IDS := [
+	"turn_a_bank_rad", "turn_a_core_s", "height_a_half_s",
+	"turn_b_bank_rad", "turn_b_core_s", "height_b_recovery_s",
+]
+const RETURN_PARAMETER_BOUNDS := [
+	[0.349065850398866, 0.8377580409572781], [2.5, 7.0], [6.0, 11.0],
+	[1.0471975511965976, 1.3599968197358412], [1.5, 5.0], [0.9, 3.5],
+]
+const RETURN_SEED := [0.4886921905584123, 4.5, 8.4, 1.3439035240356338, 2.9, 1.8]
+const RETURN_OUTPUT_IDS := [
+	"station_forward_m", "height_m", "cross_track_m", "yaw_rad", "pitch_rad", "roll_rad",
+]
+const RETURN_OUTPUT_BOUNDS := [
+	[-450.0, -405.0], [-30.0, 30.0], [-50.0, 50.0],
+	[-0.13962634015954636, 0.13962634015954636],
+	[-0.08726646259971647, 0.08726646259971647],
+	[-0.13962634015954636, 0.13962634015954636],
+]
+const RETURN_OUTPUT_SCALES := [
+	15.0, 15.0, 25.0, 0.06981317007977318, 0.04363323129985824, 0.06981317007977318,
+]
+const RETURN_FINE_TOLERANCES := [0.01, 0.01, 0.01, 0.0001, 0.0001, 0.0001]
 const STATION_APPROACH_LENGTH_M := 450.0
 const CAPTURE_HALF_WIDTH_M := 150.0
 const CAPTURE_HALF_HEIGHT_M := 75.0
@@ -166,9 +189,15 @@ static func compile(
 		Motion.quintic(4.785225, 1.0), 0.0, 0.0, 0.0, "exit")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
+	var return_prefix := Motion.integrate(initial_state, spans, _settings(COARSE_STEP_S))
+	if not return_prefix.get("ok", false):
+		return _failure("upstream return handoff failed integration", "return")
+	var solved_return := _solve_return(_last_state(return_prefix), layout)
+	if not solved_return.ok:
+		return solved_return
 	var settings := _settings(0.01)
 	_begin_gesture(gestures, "raceway-return", spans.size())
-	_add_raceway(spans, metadata, propulsion)
+	_add_raceway(spans, metadata, propulsion, solved_return.parameters)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	var prefix := Motion.integrate(initial_state, spans, settings)
@@ -239,6 +268,7 @@ static func compile(
 		"propulsion_by_span": propulsion,
 		"minimum_speed_by_span": minimum_speeds,
 		"tunnel_span_ranges": tunnels,
+		"return_plan": solved_return.report,
 		"capture_plan": {
 			"status": "solved",
 			"coefficients": capture.coefficients,
@@ -350,44 +380,136 @@ static func _add_act_one(spans: Array, metadata: Array, propulsion: PackedInt32A
 		Motion.compact_pulse(deg_to_rad(-44.56)), "wave-turn", 0, 2.0, "wave_turn")
 
 
-static func _add_raceway(s: Array, m: Array, p: PackedInt32Array) -> void:
-	var roles := ["turn-a", "turn-a", "turn-a", "airtime", "airtime", "turn-b",
-		"turn-b", "turn-b"]
-	var kinds := ["overbank", "overbank", "overbank", "hill", "hill", "overbank",
-		"overbank", "overbank"]
-	var authored := _return_spans()
-	for i in authored.size():
-		_add_record(s, m, p, authored[i], roles[i], 0, 2.0, kinds[i])
+static func _add_raceway(
+	s: Array, m: Array, p: PackedInt32Array, parameters: Array = []
+) -> void:
+	var authored := _return_spans(RETURN_SEED if parameters.is_empty() else parameters)
+	var role_ids := ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"]
+	var role_ends := [3, 7, 10, 15]
+	var first := 0
+	for role_index in 4:
+		for i in range(first, role_ends[role_index]):
+			_add_record(s, m, p, authored[i], role_ids[role_index], 0, 45.0,
+				"overbank" if role_index % 2 == 0 else "hill")
+		first = role_ends[role_index]
 
 
-static func _return_spans() -> Array:
-	# Coupled authored values close pose, speed, and the fixed 4.4 s brake distance.
+static func _return_spans(v: Array) -> Array:
+	var normal_a := 1.0 / cos(float(v[0]))
+	var normal_b := 1.0 / cos(float(v[3]))
+	var low_a := 0.5 - 0.25 / float(v[2])
+	var roll_a := float(v[0]) / (1.5 * COMPACT_PULSE_AREA)
+	var roll_b := float(v[3]) / (1.5 * COMPACT_PULSE_AREA)
 	return [
-		_return_span("raceway/turn-a-entry", 1.25,
-			Motion.quintic(1.0, 1.4129335456995342), -1.3110436935369763),
-		_return_span("raceway/turn-a-core", 4.690993618069899,
-			Motion.constant(1.4129335456995342)),
-		_return_span("raceway/turn-a-exit-pullup", 1.25,
-			Motion.quintic(1.4129335456995342, 3.0), 1.3110436935369763),
-		_return_span("raceway/airtime-unload", 5.551574183618875,
-			Motion.quintic(3.0, -1.25)),
-		_return_span("raceway/airtime-recovery", 6.0, Motion.quintic(-1.25, 3.0)),
-		_return_span("raceway/turn-b-entry", 1.25,
-			Motion.quintic(3.0, 2.1816724714487536), 2.0255446051559503),
-		_return_span("raceway/turn-b-core", 11.395767596205758,
-			Motion.constant(2.1816724714487536)),
-		_return_span("raceway/turn-b-exit", 1.25,
-			Motion.quintic(2.1816724714487536, 1.0), -2.0255446051559503),
+		_return_span("raceway/turn-a/entry", 1.5, 1.0, normal_a, roll_a),
+		_return_span("raceway/turn-a/core", v[1], normal_a, normal_a),
+		_return_span("raceway/turn-a/exit", 1.5, normal_a, 1.0, -roll_a),
+		_return_span("raceway/height-a/pullup", 0.5, 1.0, 1.5),
+		_return_span("raceway/height-a/unload", v[2], 1.5, low_a),
+		_return_span("raceway/height-a/recovery", v[2], low_a, 1.5),
+		_return_span("raceway/height-a/release", 0.5, 1.5, 1.0),
+		_return_span("raceway/turn-b/entry", 1.5, 1.0, normal_b, roll_b),
+		_return_span("raceway/turn-b/core", v[4], normal_b, normal_b),
+		_return_span("raceway/turn-b/exit", 1.5, normal_b, 1.0, -roll_b),
+		_return_span("raceway/height-b/pullup", 0.4, 1.0, 2.5),
+		_return_span("raceway/height-b/unload", 1.4, 2.5, -0.6),
+		_return_span("raceway/height-b/crest", 0.4, -0.6, -0.6),
+		_return_span("raceway/height-b/recovery", v[5], -0.6, 2.5),
+		_return_span("raceway/height-b/release", 0.4, 2.5, 1.0),
 	]
 
 
-static func _return_span(
-	id: String, duration_s: float, normal: Dictionary, roll_peak_rad_s: float = 0.0
-) -> Dictionary:
-	var roll := Motion.constant(0.0) if absf(roll_peak_rad_s) < 0.000001 \
-		else Motion.compact_pulse(roll_peak_rad_s)
+static func _return_span(id: String, duration_s: float, from_g: float, to_g: float,
+	roll_peak_rad_s: float = 0.0) -> Dictionary:
+	var normal := Motion.constant(from_g) if is_equal_approx(from_g, to_g) \
+		else Motion.quintic(from_g, to_g)
+	var roll := Motion.constant(0.0) if absf(roll_peak_rad_s) < 0.000001 else Motion.compact_pulse(roll_peak_rad_s)
 	return Motion.span(id, duration_s, "moving", normal, Motion.constant(0.0),
 		Motion.constant(0.0), roll)
+
+
+static func _solve_return(start: Dictionary, layout: Dictionary) -> Dictionary:
+	var parameters := RETURN_SEED.duplicate()
+	var coarse := _return_evaluation(start, layout, parameters, _settings(COARSE_STEP_S), 1)
+	if not coarse.ok:
+		return coarse
+	var fine := _return_evaluation(start, layout, parameters, _settings(FINE_STEP_S), 2)
+	if not fine.ok:
+		return fine
+	var evaluation_count := 2
+	if not _margins_are_valid(coarse.margins) or not _margins_are_valid(fine.margins):
+		return _failure("initial return point misses the capture-entry basin", "return",
+			{"evaluation_count": evaluation_count, "margins": fine.margins})
+	for index in 6:
+		if absf(fine.residuals[index] - coarse.residuals[index]) \
+				> RETURN_FINE_TOLERANCES[index]:
+			return _failure("return coarse/fine observations disagree", "return",
+				{"evaluation_count": evaluation_count, "coarse": coarse.residuals,
+				"fine": fine.residuals})
+	var jacobian: Array = []
+	for _row in 6:
+		jacobian.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+	for column in 6:
+		var parameter_scale: float = 0.5 * (RETURN_PARAMETER_BOUNDS[column][1] - RETURN_PARAMETER_BOUNDS[column][0])
+		var delta := maxf(0.00001, 0.002 * parameter_scale)
+		var probe := parameters.duplicate()
+		probe[column] += delta
+		evaluation_count += 1
+		var evaluated := _return_evaluation(
+			start, layout, probe, _settings(FINE_STEP_S), evaluation_count)
+		if not evaluated.ok:
+			return evaluated
+		for row in 6:
+			jacobian[row][column] = (evaluated.residuals[row] - fine.residuals[row]) \
+				/ delta * parameter_scale / RETURN_OUTPUT_SCALES[row]
+	var conditioning := _matrix_conditioning(jacobian)
+	conditioning["evaluated_vector"] = parameters.duplicate()
+	if not conditioning.ok:
+		return _failure("return Jacobian is ill-conditioned", "return",
+			{"evaluation_count": evaluation_count, "conditioning": conditioning})
+	var margins: Dictionary = fine.margins.duplicate(true)
+	for index in 6:
+		margins["parameter_%s" % RETURN_PARAMETER_IDS[index]] = minf(
+		parameters[index] - RETURN_PARAMETER_BOUNDS[index][0], RETURN_PARAMETER_BOUNDS[index][1] - parameters[index])
+	return {"ok": true, "parameters": parameters, "report": {
+		"parameter_ids": RETURN_PARAMETER_IDS,
+		"parameter_bounds": RETURN_PARAMETER_BOUNDS, "accepted_values": parameters,
+		"residual_ids": RETURN_OUTPUT_IDS, "residual_bounds": RETURN_OUTPUT_BOUNDS,
+		"coarse_fine_tolerances": RETURN_FINE_TOLERANCES,
+		"unique_evaluations": evaluation_count, "max_unique_evaluations": MAX_RETURN_EVALUATIONS,
+		"coarse_observation": coarse.residuals, "fine_observation": fine.residuals,
+		"conditioning": conditioning, "margins": margins,
+		"positive_drive_allowed": false}}
+
+
+static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
+	settings: Dictionary, evaluation_number: int) -> Dictionary:
+	if evaluation_number > MAX_RETURN_EVALUATIONS:
+		return _failure("return exceeded its evaluation cap", "return")
+	var route := Motion.integrate(start, _return_spans(parameters), settings)
+	if not route.get("ok", false):
+		return _failure("return candidate failed integration", "return")
+	return _return_observation(route, layout)
+
+
+static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictionary:
+	var state := _last_state(route)
+	var capture := _capture_residuals(state, layout)
+	var residuals := [(state.position_m - layout.station_position_m).dot(
+		layout.station_tangent.normalized()), capture[1], capture[0], capture[2], capture[3], capture[4]]
+	var margins := {}
+	for index in 6:
+		margins["basin_%s" % RETURN_OUTPUT_IDS[index]] = minf(
+			residuals[index] - RETURN_OUTPUT_BOUNDS[index][0],
+			RETURN_OUTPUT_BOUNDS[index][1] - residuals[index])
+	return {"ok": true, "residuals": residuals, "margins": margins}
+
+
+static func _margins_are_valid(margins: Dictionary) -> bool:
+	for margin in margins.values():
+		if not is_finite(float(margin)) or float(margin) < 0.0:
+			return false
+	return true
 
 
 static func _approach_length(layout: Dictionary) -> float:

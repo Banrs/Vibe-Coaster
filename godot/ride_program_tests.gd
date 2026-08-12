@@ -136,7 +136,12 @@ func _test_station_local_program_compiles() -> void:
 	_expect(_return_and_terminal_drive_is_nonpositive(compiled),
 		"every global-return, capture, brake, and station drive profile is nonpositive")
 	_expect(_return_is_passive_and_material(compiled, _layout()),
-		"the return is at least 1.1 km and monotonically loses mechanical energy")
+		"the integrated return meets every public materiality and passivity threshold")
+	var return_plan: Dictionary = compiled.get("return_plan", {})
+	_expect(return_plan.get("unique_evaluations", -1) == 8 \
+		and return_plan.get("max_unique_evaluations", -1) == 24 \
+		and _conditioning_matches_accepted_point(return_plan, "accepted_values"),
+		"the return publishes bounded conditioning tied to its accepted vector")
 	_expect(_capture_plan_is_bounded(compiled),
 		"the solved station capture publishes evidence within 40 coarse evaluations")
 	_expect(_conditioning_matches_accepted_point(
@@ -387,28 +392,55 @@ func _profile_is_nonpositive(profile: Dictionary) -> bool:
 
 func _return_is_passive_and_material(compiled: Dictionary, layout: Dictionary) -> bool:
 	var gesture := _compiled_gesture(compiled, "raceway-return")
-	if gesture.is_empty():
+	var terminal := _compiled_gesture(compiled, "brakes-station-capture")
+	var roles: Array = gesture.get("role_windows", [])
+	var role_ids := []
+	for role: Dictionary in roles:
+		role_ids.append(role.get("id", ""))
+	if role_ids != ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"] \
+			or terminal.is_empty() or int(gesture.last_span) + 1 != int(terminal.first_span):
 		return false
 	var trajectory := _integrated_trajectory(compiled, layout)
 	if not trajectory.get("ok", false):
 		return false
 	var bounds := _owned_span_bounds(trajectory.span_index,
 		int(gesture.first_span), int(gesture.last_span))
-	if bounds.x < 0 or bounds.y <= bounds.x \
-			or float(trajectory.distance_m[bounds.y] - trajectory.distance_m[bounds.x]) < 1100.0:
-		return false
+	for role_index in roles.size():
+		var role: Dictionary = roles[role_index]
+		var owned := _owned_span_bounds(trajectory.span_index,
+			int(role.first_span), int(role.last_span))
+		if owned.x < 0 or owned.y <= owned.x:
+			return false
+		if role_index % 2 == 0:
+			if _trajectory_heading_change(trajectory.tangent, owned) < deg_to_rad(20.0) \
+					or _trajectory_cross_track(trajectory.position_m, trajectory.tangent, owned) < 25.0:
+				return false
+		else:
+			var apex := _maximum_trajectory_height(trajectory, owned)
+			var boundary := maxf(trajectory.position_m[owned.x].y, trajectory.position_m[owned.y].y)
+			if apex <= owned.x or apex >= owned.y \
+					or trajectory.position_m[apex].y - boundary < 8.0 \
+					or _linear_held_at_or_below(trajectory.time_s,
+						trajectory.normal_g, owned, 0.5) < 0.35:
+				return false
 	var up: Vector3 = layout.station_up.normalized()
-	var previous: float = 0.5 * float(trajectory.speed_mps[bounds.x]) ** 2 + Motion.G0 * (
+	var initial: float = 0.5 * float(trajectory.speed_mps[bounds.x]) ** 2 + Motion.G0 * (
 		trajectory.position_m[bounds.x] - layout.station_position_m).dot(up)
+	var previous := initial
+	var minimum_speed: float = trajectory.speed_mps[bounds.x]
 	for sample_index in range(bounds.x + 1, bounds.y + 1):
+		minimum_speed = minf(minimum_speed, trajectory.speed_mps[sample_index])
 		var energy: float = 0.5 * float(trajectory.speed_mps[sample_index]) ** 2 + Motion.G0 * (
 			trajectory.position_m[sample_index] - layout.station_position_m).dot(up)
-		if energy - previous > 0.01:
+		if energy - previous > 0.05:
 			return false
 		previous = energy
-	return true
-
-
+	var length_m: float = trajectory.distance_m[bounds.y] - trajectory.distance_m[bounds.x]
+	var station_forward: float = (trajectory.position_m[bounds.y] \
+		- layout.station_position_m).dot(layout.station_tangent.normalized())
+	return length_m >= 1100.0 and length_m <= 3000.0 and initial - previous >= 50.0 \
+		and trajectory.speed_mps[bounds.x] - trajectory.speed_mps[bounds.y] >= 5.0 \
+		and minimum_speed >= 45.0 and station_forward >= -450.0 and station_forward <= -405.0
 func _owned_span_bounds(
 	owners: PackedInt32Array, first_span: int, last_span: int
 ) -> Vector2i:
@@ -606,7 +638,7 @@ func _shape_evidence_matches_trajectory(
 	var rim_bounds := _trajectory_span_bounds(trajectory,
 		int(rim.first_span), int(rim.last_span))
 	var crest_apex := _maximum_trajectory_height(trajectory, crest_bounds)
-	var held_s := _held_at_or_below(
+	var held_s := _linear_held_at_or_below(
 		trajectory.time_s, trajectory.speed_mps, slow_bounds, 22.0)
 	var cliff_prominence := float(trajectory.position_m[crest_apex].y) \
 		- float(trajectory.position_m[climb_entry].y)
@@ -685,18 +717,6 @@ func _maximum_trajectory_height(trajectory: Dictionary, bounds: Vector2i) -> int
 		if trajectory.position_m[index].y > trajectory.position_m[result].y:
 			result = index
 	return result
-
-
-func _held_at_or_below(
-	times: PackedFloat64Array, values: PackedFloat64Array, bounds: Vector2i, threshold: float
-) -> float:
-	var result := 0.0
-	for index in range(bounds.x + 1, bounds.y + 1):
-		if 0.5 * (values[index - 1] + values[index]) <= threshold:
-			result += times[index] - times[index - 1]
-	return result
-
-
 func _trajectory_heading_change(tangents: PackedVector3Array, bounds: Vector2i) -> float:
 	var first := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
 	var last := Vector2(tangents[bounds.y].x, tangents[bounds.y].z).normalized()
@@ -708,9 +728,14 @@ func _trajectory_cross_track(
 ) -> float:
 	var forward := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
 	var right := Vector2(-forward.y, forward.x)
-	var delta := Vector2(positions[bounds.y].x - positions[bounds.x].x,
-		positions[bounds.y].z - positions[bounds.x].z)
-	return absf(delta.dot(right))
+	var low := INF
+	var high := -INF
+	for index in range(bounds.x, bounds.y + 1):
+		var point := Vector2(positions[index].x - positions[bounds.x].x,
+			positions[index].z - positions[bounds.x].z).dot(right)
+		low = minf(low, point)
+		high = maxf(high, point)
+	return high - low
 
 
 func _trajectory_maximum_bank(

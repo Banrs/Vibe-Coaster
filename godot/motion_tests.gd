@@ -20,6 +20,7 @@ func _initialize() -> void:
 	_test_roll_only_frame_twist()
 	_test_low_speed_station_handoff()
 	_test_exact_span_boundary_splitting()
+	_test_boundary_roundoff_does_not_emit_a_sliver()
 	_test_degenerate_frame_rejection()
 	_test_rk4_step_halving()
 	_test_dense_output_native_identity()
@@ -295,6 +296,30 @@ func _test_exact_span_boundary_splitting() -> void:
 		"discontinuous drive owns only its exact span stages")
 	_expect_close(route.position_m[-1].x, expected_position,
 		"boundary splitting preserves the analytic piecewise-acceleration position", 0.00005)
+
+
+func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
+	const DURATION_S := 0.500000000067
+	var route := Motion.integrate(_initial(10.0), [
+		_span("first", DURATION_S, "moving", 1.0, 0.0, 0.0, 0.0),
+		_span("second", DURATION_S, "moving", 1.0, 0.0, 0.0, 0.0),
+	], _zero_gravity_settings(0.01))
+	if not _expect_route(route, "roundoff-adjacent span boundaries integrate"):
+		return
+	_expect(route.time_s.size() == 101,
+		"sub-nanosecond boundary roundoff is folded into the adjacent RK step")
+	_expect(route.span_index.find(1) == 50,
+		"the exact boundary node remains owned by the next span")
+	var public_times := PackedFloat32Array(route.time_s)
+	var public_distances := PackedFloat32Array(route.distance_m)
+	for index in range(1, public_times.size()):
+		_expect(public_times[index] > public_times[index - 1]
+			and public_distances[index] > public_distances[index - 1],
+			"public-compatible time and distance stay strict at sample %d" % index)
+	_expect_close(route.time_s[-1], 2.0 * DURATION_S,
+		"roundoff folding retains the exact terminal time")
+	_expect_close(route.position_m[-1].x, 20.0 * DURATION_S,
+		"roundoff folding retains the analytic terminal position")
 
 
 func _test_degenerate_frame_rejection() -> void:

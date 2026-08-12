@@ -249,6 +249,9 @@ static func _validate_measurements(value: Variant, fleet: Array, errors: Array[S
 			if not beat_id.is_empty():
 				beat_ids[beat_id] = true
 			_required_string(beat, "kind", "measurement beat", errors)
+			if schema_version == 2:
+				_required_string(beat, "story_slot_id", "schema-2 measurement beat", errors)
+				_required_string(beat, "window_role", "schema-2 measurement beat", errors)
 		if errors.size() != entry_error_count:
 			continue
 		var summary := {
@@ -786,12 +789,16 @@ static func _channels_image(route: Dictionary, descriptors: Array) -> Image:
 			var zero_y := top + _STRIP_HEIGHT - 8 - int(-low / span * (_STRIP_HEIGHT - 16))
 			for x in range(0, _CHANNEL_WIDTH, 2):
 				image.set_pixel(x, clampi(zero_y, top + 1, top + _STRIP_HEIGHT - 1), Color(0.28, 0.24, 0.24))
-		for section in route.sections:
-			var mark := clampi(
-				int(float(section.start_time) / duration * (_CHANNEL_WIDTH - 1)), 0, _CHANNEL_WIDTH - 1
-			)
-			for y in range(top, top + _STRIP_HEIGHT, 4):
-				image.set_pixel(mark, y, Color(0.30, 0.27, 0.20))
+		for gesture in route.get("gesture_windows", []):
+			var marks := [float(gesture.start_time_s)]
+			for window in gesture.get("role_windows", []):
+				if not marks.has(float(window.start_time_s)):
+					marks.append(float(window.start_time_s))
+			for start_time in marks:
+				var mark := clampi(int(start_time / duration * (_CHANNEL_WIDTH - 1)),
+					0, _CHANNEL_WIDTH - 1)
+				for y in range(top, top + _STRIP_HEIGHT, 4):
+					image.set_pixel(mark, y, Color(0.30, 0.27, 0.20))
 		for index in range(1, values.size()):
 			if not _finite_number(values[index]) or not _finite_number(values[index - 1]):
 				continue

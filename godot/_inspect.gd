@@ -14,11 +14,15 @@ const Generator := preload("res://generator.gd")
 const Artifacts := preload("res://fidelity_artifacts.gd")
 const Fidelity := preload("res://fidelity.gd")
 const References := preload("res://fidelity_references.gd")
-const Elements := preload("res://elements.gd")
+const RouteContract := preload("res://route_contract.gd")
 const Verify := preload("res://verify.gd")
 
 const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 const DEEP_REVIEW_SEEDS := [11, 42, 20260809]
+const SIDE_VIEW_KINDS := [
+	"hill", "immelmann", "loop", "cutback", "twisted_drop",
+	"dive", "wave_turn", "overbank", "turn",
+]
 ## The pinned pre-foundation legacy commit this baseline measures (plan Task 1, Step 0).
 const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
 
@@ -108,7 +112,7 @@ func _built(seed_value: int) -> Dictionary:
 func _measured(route: Dictionary) -> Dictionary:
 	if not route.has("positions"):
 		return {"schema_version": 1, "seed": int(route.get("seed", 0)), "beats": []}
-	return Fidelity.measure_route(route, Elements.ROW_OFFSETS)
+	return Fidelity.measure_route(route, RouteContract.ROW_OFFSETS)
 
 
 func _compared(measurements: Array) -> Dictionary:
@@ -167,8 +171,8 @@ func _print_diagnostics(routes_by_seed: Dictionary) -> void:
 		_render_channels(deep, "%s/channels_%d.png" % [OUT, seed_value])
 	var route: Dictionary = routes_by_seed[42]
 	_print_phases(route)
-	for g in _element_groups(route):
-		var kind: String = g.kind
+	for g in _diagnostic_windows(route):
+		var kind: String = g.diagnostic_kind
 		var a: int = g.first
 		var b: int = g.last
 		var stats := _stats(route, a, b)
@@ -177,8 +181,7 @@ func _print_diagnostics(routes_by_seed: Dictionary) -> void:
 			stats.min_pitch, stats.max_pitch, stats.max_bank, stats.min_n, stats.max_n,
 			stats.width, stats.height, stats.r_apex, stats.r_valley,
 		])
-		if kind in ["hill", "immelmann", "loop", "cutback", "twisted_drop", "dive", "wave_turn", "overbank", "turn"]:
-			_save(Artifacts.side_image(route, a, b), "%s/%s_%d.png" % [OUT, kind, a])
+		_save(Artifacts.side_image(route, a, b), "%s/%s_%d.png" % [OUT, kind, a])
 	_save(Artifacts.top_image(route), "%s/top.png" % OUT)
 	_save(Artifacts.elevation_image(route), "%s/elevation.png" % OUT)
 
@@ -188,26 +191,17 @@ func _save(image: Image, path: String) -> void:
 		_operational.append(str(error))
 
 
-func _element_groups(route: Dictionary) -> Array:
-	var groups := []
-	var current := {}
-	for i in route.sections.size():
-		var section: Dictionary = route.sections[i]
-		var element: Dictionary = section.get("element", {})
-		var kind: String = element.get("kind", section.get("kind", "?"))
-		if section.get("kind") == "GRADE" or section.get("kind") == "CLOSURE":
-			kind = section.name
-		if current.get("element_id") == element.get("kind", "") + str(element.get("rise", element.get("apex_height", element.get("height", i)))):
-			current.last = section.end_index
-			continue
-		current = {
-			"kind": kind,
-			"first": section.start_index,
-			"last": section.end_index,
-			"element_id": element.get("kind", "") + str(element.get("rise", element.get("apex_height", element.get("height", i)))),
-		}
-		groups.append(current)
-	return groups
+static func _diagnostic_windows(route: Dictionary) -> Array:
+	var windows := []
+	for gesture in route.get("gesture_windows", []):
+		var has_shaping_role := false
+		for window in gesture.get("role_windows", []):
+			if window.get("diagnostic_kind", "") in SIDE_VIEW_KINDS:
+				windows.append(window)
+				has_shaping_role = true
+		if not has_shaping_role and gesture.get("diagnostic_kind", "") in SIDE_VIEW_KINDS:
+			windows.append(gesture)
+	return windows
 
 
 func _stats(route: Dictionary, a: int, b: int) -> Dictionary:
@@ -254,11 +248,12 @@ func _render_channels(route: Dictionary, path: String) -> void:
 
 
 func _print_phases(route: Dictionary) -> void:
-	for section in route.sections:
-		var element: Dictionary = section.get("element", {})
+	for window in route.get("gesture_windows", []):
+		var first: int = window.first
+		var last: int = window.last
 		print("PHASE %-24s %-13s %6.0f m %6.1f s  v %5.1f -> %5.1f m/s" % [
-			section.name, element.get("kind", section.kind),
-			section.end_distance - section.start_distance,
-			section.end_time - section.start_time,
-			section.entry_speed, section.exit_speed,
+			window.display_name, window.story_slot_id,
+			route.distances[last] - route.distances[first],
+			route.times[last] - route.times[first],
+			route.speeds[first], route.speeds[last],
 		])

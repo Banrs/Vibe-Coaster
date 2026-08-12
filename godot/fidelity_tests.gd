@@ -21,7 +21,7 @@ static func run() -> PackedStringArray:
 		return errors
 	var fidelity: Script = load(FIDELITY_PATH)
 	_test_tolerance_oracle(errors)
-	_test_legacy_input_boundary(errors)
+	_test_native_input_boundary(fidelity, errors)
 	_test_held_values(fidelity, errors)
 	_test_exact_duration_hold(fidelity, errors)
 	_test_time_weighted_pacing(fidelity, errors)
@@ -35,8 +35,7 @@ static func run() -> PackedStringArray:
 	_test_nonuniform_quadratic_acceleration(fidelity, errors)
 	_test_reconstruction_seam_channels(fidelity, errors)
 	_test_route_reconstruction_embedding(fidelity, errors)
-	_test_composite_grouping(fidelity, errors)
-	_test_legacy_characterization(fidelity, errors)
+	_test_semantic_window_order(fidelity, errors)
 	_test_catalog_validation(fidelity, errors)
 	_test_catalog_v2_validation(fidelity, errors)
 	_test_executable_promotion(fidelity, errors)
@@ -54,26 +53,31 @@ static func run() -> PackedStringArray:
 	return errors
 
 
-static func _test_legacy_input_boundary(errors: PackedStringArray) -> void:
+static func _test_native_input_boundary(fidelity: Script, errors: PackedStringArray) -> void:
 	if not ResourceLoader.exists(GENERATOR_PATH):
 		errors.append("RideGenerator is missing")
 		return
 	var generator: Script = load(GENERATOR_PATH)
 	var route: Variant = generator.build(42)
-	_expect(errors, route is Dictionary, "legacy generator build returns a Dictionary")
+	_expect(errors, route is Dictionary, "generator build returns a Dictionary")
 	if not route is Dictionary:
 		return
 	_expect(errors, LEGACY_BASE_COMMIT == "3fa14885bef2daf3a7d9c0e544424cb6a296fd99", "legacy report contract pins the pre-foundation commit")
 	for key in ["positions", "tangents", "ups", "rights", "curvatures"]:
-		_expect(errors, route.get(key) is PackedVector3Array, "legacy generator keeps packed vector channel %s" % key)
+		_expect(errors, route.get(key) is PackedVector3Array, "generator keeps packed vector channel %s" % key)
 	for key in [
 		"banks", "speeds", "normal_g", "lateral_g", "longitudinal_g", "roll_rates",
 		"distances", "times",
 	]:
-		_expect(errors, route.get(key) is PackedFloat32Array, "legacy generator keeps packed float channel %s" % key)
-	for key in ["section_indices", "lsm_ids"]:
-		_expect(errors, route.get(key) is PackedInt32Array, "legacy generator keeps packed integer channel %s" % key)
-	_expect(errors, route.get("sections") is Array, "legacy generator keeps sections")
+		_expect(errors, route.get(key) is PackedFloat32Array, "generator keeps packed float channel %s" % key)
+	for key in ["span_indices", "gesture_indices", "propulsion_ids"]:
+		_expect(errors, route.get(key) is PackedInt32Array, "generator keeps packed integer channel %s" % key)
+	_expect(errors, route.get("gesture_windows") is Array, "generator exposes native gesture windows")
+	_expect(errors, not route.has("sections"), "generator exposes no legacy sections")
+	var before := route.duplicate(true)
+	var measured: Dictionary = fidelity.measure_route(route, [0.0])
+	_expect(errors, measured.get("schema_version") == 2, "native route measurement emits schema 2")
+	_expect(errors, route == before, "native route measurement is read-only")
 	for script_path in [FIDELITY_PATH, "res://_inspect.gd", "res://fidelity_tests.gd"]:
 		var dependencies := ResourceLoader.get_dependencies(script_path)
 		for forbidden_path in ["res://ride_route.gd", "res://motion_trajectory.gd", "res://legacy_route_adapter.gd"]:
@@ -153,9 +157,9 @@ static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArr
 
 
 static func _test_row_windows(fidelity: Script, errors: PackedStringArray) -> void:
-	var bands: Array = fidelity.element_bands(_measurement_route(false), 2.0)
+	var bands: Array = fidelity.element_bands(_measurement_route(), 2.0)
 	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row begins at the shifted first-element start")
-	_expect_close(errors, bands[0].window_end_distance, 12.0, "rear row ends at the shifted first-element end")
+	_expect_close(errors, bands[0].window_end_distance, 21.0, "rear row ends at the shifted semantic-window end")
 	_expect(errors, bands[-1].window_end_distance <= 40.0, "terminal row window clips instead of wrapping closure data")
 	var attributed := 0
 	for band in fidelity.element_bands(_row_pulse_route(), 2.0):
@@ -265,7 +269,7 @@ static func _test_nonuniform_quadratic_acceleration(fidelity: Script, errors: Pa
 
 static func _test_reconstruction_seam_channels(fidelity: Script, errors: PackedStringArray) -> void:
 	var route := _curvature_direction_seam_route()
-	var seam: int = route.sections[1].start_index
+	var seam: int = route.span_indices.find(1)
 	var channels: Dictionary = fidelity.reconstruct_channels(route)
 	for key in ["curvature_vector", "curvature_vector_ds", "curvature_vector_d2s", "curvature", "curvature_ds", "curvature_d2s", "authored_curvature_vector", "authored_curvature_vector_ds", "authored_curvature_vector_d2s", "authored_curvature_ds", "roll_acceleration_dps2", "seam_indices", "seam_markers", "jerk_mps3"]:
 		_expect(errors, channels.has(key), "reconstruction emits raw %s" % key)
@@ -273,8 +277,8 @@ static func _test_reconstruction_seam_channels(fidelity: Script, errors: PackedS
 	_expect(errors, channels.authored_curvature_vector_ds[seam].length() > 0.05, "unsmoothed raw curvature-vector derivative exposes the seam direction change")
 	_expect(errors, _max_abs(channels.authored_curvature_ds) < 0.0001, "equal raw curvature magnitude has near-zero scalar derivative")
 	_expect_close_tol(errors, _median_packed(channels.roll_acceleration_dps2), 50.0, 0.01, "roll acceleration differentiates degrees per second on physical time")
-	_expect(errors, channels.seam_indices.has(seam), "reconstruction preserves declared seam indices")
-	_expect(errors, channels.seam_markers.size() == 1 and channels.seam_markers[0].sample_index == seam, "seam marker identifies the raw section boundary exactly once")
+	_expect(errors, channels.seam_indices == PackedInt32Array([seam]), "reconstruction preserves each native span transition exactly once")
+	_expect(errors, channels.seam_markers.size() == 1 and channels.seam_markers[0].sample_index == seam, "seam marker identifies the native span boundary exactly once")
 	_expect(errors, not channels.has("comparison_channels"), "raw seam reconstruction never filters geometry")
 
 
@@ -284,30 +288,31 @@ static func _test_route_reconstruction_embedding(fidelity: Script, errors: Packe
 	_expect(errors, _count_dictionary_key(measured, "reconstruction") == 1, "route measurement includes exactly one reconstruction payload")
 
 
-static func _test_composite_grouping(fidelity: Script, errors: PackedStringArray) -> void:
-	var route := _grouping_route()
-	var bands: Array = fidelity.element_bands(route)
-	_expect(errors, bands.size() == 3, "two sections sharing one element form one beat")
-	if bands.size() != 3:
-		return
-	_expect(errors, bands[0].kind == "hill", "the composite beat keeps its element kind")
-	_expect(errors, bands[0].beat_id == "act-one/00/hill", "the composite beat gets a stable ID")
-	_expect(errors, bands[0].first == 0 and bands[0].last == 18, "the composite beat spans both sections")
-	_expect(errors, bands[1].kind == "Transfer", "a grade section is a distinct named beat")
-	_expect(errors, bands[2].beat_id == "act-one/02/turn", "later beats advance the phase ordinal")
-
-
-static func _test_legacy_characterization(fidelity: Script, errors: PackedStringArray) -> void:
-	var route := _legacy_characterization_route()
+static func _test_semantic_window_order(fidelity: Script, errors: PackedStringArray) -> void:
+	var route := _measurement_route()
+	route.gesture_windows[0].role_windows = [
+		_role_window("act1.hill", "entry", "hill-entry", "Hill entry", 0, 4),
+		_role_window("act1.hill", "core", "hill", "Hill", 5, 19),
+	]
 	var before := route.duplicate(true)
-	var bands: Array = fidelity.element_bands(route, 2.0)
-	if bands.is_empty():
-		errors.append("legacy characterization produces element bands")
+	var measured: Dictionary = fidelity.measure_route(route, [0.0, 2.0])
+	var beats: Array = measured.get("beats", [])
+	_expect(errors, measured.get("schema_version") == 2, "native semantic measurement emits schema 2")
+	_expect(errors, beats.size() == 4, "flattened role windows produce one ordered beat each")
+	if beats.size() != 4:
 		return
-	_expect(errors, bands[0].beat_id == "act-one/00/hill", "legacy adapter keeps its stable beat ID")
-	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row enters after its offset")
-	fidelity.measure_route(route, [0.0, 2.0])
-	_expect(errors, route == before, "fidelity measurement is read-only")
+	_expect(errors, beats.map(func(beat: Dictionary): return beat.beat_id) == [
+		"act1.hill/entry/00-hill-entry", "act1.hill/core/00-hill",
+		"act1.transfer/whole/00-transfer",
+		"return.capture/whole/00-capture",
+	], "measurement preserves native role-window order and stable IDs")
+	_expect(errors, beats[1].story_slot_id == "act1.hill" and beats[1].window_role == "core",
+		"measurement retains compiled selector discriminators")
+	_expect(errors, beats[1].occurrence == 0 and beats[1].kind == "hill"
+		and beats[1].name == "Hill", "measurement retains role diagnostic metadata")
+	_expect(errors, beats[1].start_distance == 5.0 and beats[1].end_distance == 19.0,
+		"measurement uses the native role bounds without widening")
+	_expect(errors, route == before, "semantic measurement is read-only")
 
 
 static func _test_catalog_validation(fidelity: Script, errors: PackedStringArray) -> void:
@@ -536,20 +541,21 @@ static func _test_comparison_catalog_contract(fidelity: Script, errors: PackedSt
 
 static func _test_route_measurements(fidelity: Script, errors: PackedStringArray) -> void:
 	var measured: Dictionary = fidelity.measure_route(_measurement_route(), [0.0, 2.0])
-	_expect(errors, measured.get("beats", []).size() == 3, "measurement retains composite, grade, and closure beats")
+	_expect(errors, measured.get("beats", []).size() == 3,
+		"measurement retains hill, transfer, and capture role windows")
 	if measured.get("beats", []).is_empty():
 		return
 	var beat: Dictionary = measured.beats[0]
 	_expect(errors, beat.rows.size() == 2, "every requested train row is measured")
 	if beat.rows.size() == 2:
 		_expect_close(errors, beat.rows[1].window_start_distance, 2.0, "rear-row window starts when that row reaches the beat")
-		_expect_close(errors, beat.rows[1].window_end_distance, 22.0, "rear-row window ends when that row leaves the beat")
+		_expect_close(errors, beat.rows[1].window_end_distance, 21.0, "rear-row window ends when that row leaves the beat")
 		_expect_close(errors, beat.rows[1].loads.normal_peak_positive, 1.0, "constant synthetic normal load remains one g")
 		_expect_close(errors, beat.rows[1].loads.lateral_peak_absolute, 0.0, "constant synthetic lateral load remains zero")
-	_expect_close(errors, beat.geometry.length, 20.0, "beat geometry reports track length")
+	_expect_close(errors, beat.geometry.length, 19.0, "beat geometry reports track length")
 	_expect_close(errors, beat.geometry.height, 10.0, "beat geometry reports vertical scale")
-	_expect_close(errors, beat.geometry.width, 20.0, "beat geometry reports plan displacement")
-	_expect_close(errors, beat.pacing.duration, 2.0, "beat pacing reports elapsed duration")
+	_expect_close(errors, beat.geometry.width, 19.0, "beat geometry reports plan displacement")
+	_expect_close(errors, beat.pacing.duration, 1.9, "beat pacing reports elapsed duration")
 	_expect_close(errors, beat.pacing.speed_loss, 0.0, "constant speed has no energy loss")
 	_expect_close(errors, beat.terrain.agl_median, 5.0, "terrain scorecard reports median AGL")
 	_expect_close(errors, beat.flow.transition_force_swing, 0.0, "constant-force seam has no transition swing")
@@ -1318,39 +1324,7 @@ static func _expect_invalid_comparison(
 	_expect(errors, actual == {"status": "invalid-input", "reason": reason}, "%s rejects the whole comparison" % message)
 
 
-static func _grouping_route() -> Dictionary:
-	var shared := {"kind": "hill", "rise": 12.0}
-	var other := {"kind": "turn", "heading_change_deg": 30.0}
-	var count := 31
-	var times := PackedFloat32Array()
-	var distances := PackedFloat32Array()
-	var normal := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	for i in count:
-		times.append(i * 0.01)
-		distances.append(float(i))
-		normal.append(1.0)
-		lateral.append(0.0)
-		longitudinal.append(0.0)
-	return {
-		"times": times,
-		"distances": distances,
-		"normal_g": normal,
-		"lateral_g": lateral,
-		"longitudinal_g": longitudinal,
-		"sections": [
-			{"kind": "FVD", "name": "hill-a", "element": shared, "phase": "act one", "start_index": 0, "end_index": 9},
-			{"kind": "FVD", "name": "hill-b", "element": shared, "phase": "act one", "start_index": 9, "end_index": 18},
-			{"kind": "GRADE", "name": "Transfer", "element": {}, "phase": "act one", "start_index": 18, "end_index": 24},
-			{"kind": "FVD", "name": "turn", "element": other, "phase": "act one", "start_index": 24, "end_index": 30},
-		],
-	}
-
-
-static func _measurement_route(shared_element_identity: bool = true) -> Dictionary:
-	var shared := {"kind": "hill", "rise": 10.0}
-	var second_element: Dictionary = shared if shared_element_identity else shared.duplicate(true)
+static func _measurement_route() -> Dictionary:
 	var positions := PackedVector3Array()
 	var tangents := PackedVector3Array()
 	var ups := PackedVector3Array()
@@ -1396,11 +1370,11 @@ static func _measurement_route(shared_element_identity: bool = true) -> Dictiona
 		"roll_rates": roll_rates,
 		"distances": distances,
 		"times": times,
-		"sections": [
-			{"kind": "FVD", "name": "hill-a", "element": shared, "phase": "act one", "start_index": 0, "end_index": 10},
-			{"kind": "FVD", "name": "hill-b", "element": second_element, "phase": "act one", "start_index": 10, "end_index": 20},
-			{"kind": "GRADE", "name": "Transfer", "element": {}, "phase": "act one", "start_index": 20, "end_index": 30},
-			{"kind": "CLOSURE", "name": "Closure", "element": {}, "phase": "run home", "start_index": 30, "end_index": 40},
+		"span_indices": _span_indices(41, [20, 30]),
+		"gesture_windows": [
+			_gesture_window("act1.hill", "core", "hill", "Hill", 0, 19),
+			_gesture_window("act1.transfer", "whole", "transfer", "Transfer", 20, 29),
+			_gesture_window("return.capture", "whole", "capture", "Capture", 30, 40),
 		],
 	}
 
@@ -1431,7 +1405,9 @@ static func _irregular_pacing_route() -> Dictionary:
 		"curvatures": curvatures, "banks": banks, "speeds": speeds,
 		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
 		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"sections": [{"kind": "FVD", "name": "pacing", "element": {"kind": "pacing"}, "phase": "act one", "start_index": 0, "end_index": 4}],
+		"span_indices": _span_indices(times.size(), []),
+		"gesture_windows": [_gesture_window(
+			"act1.pacing", "whole", "pacing", "Pacing", 0, times.size() - 1)],
 	}
 
 
@@ -1473,18 +1449,19 @@ static func _moving_window_route(extra_preceding_knot: bool) -> Dictionary:
 		"curvatures": curvatures, "banks": banks, "speeds": speeds,
 		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
 		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"sections": [
-			{"kind": "FVD", "name": "before", "element": {"kind": "before"}, "phase": "act one", "start_index": 0, "end_index": selected_first},
-			{"kind": "FVD", "name": "selected", "element": {"kind": "selected"}, "phase": "act one", "start_index": selected_first, "end_index": selected_last},
-			{"kind": "GRADE", "name": "after", "element": {}, "phase": "act one", "start_index": selected_last, "end_index": times.size() - 1},
+		"span_indices": _span_indices(times.size(), [selected_first, selected_last + 1]),
+		"gesture_windows": [
+			_gesture_window("act1.before", "whole", "before", "Before", 0, selected_first - 1),
+			_gesture_window("act1.selected", "core", "selected", "Selected", selected_first, selected_last),
+			_gesture_window("act1.after", "whole", "after", "After", selected_last + 1, times.size() - 1),
 		],
 	}
 
 
 static func _row_pulse_route() -> Dictionary:
-	var route := _measurement_route(false)
-	# Keep the pulse off the shared section endpoint: interpolation and the causal load filter
-	# legitimately spread a seam impulse across both physical windows.
+	var route := _measurement_route()
+	# Keep the pulse off a semantic boundary: interpolation and the causal load filter can
+	# legitimately spread a boundary impulse across adjacent physical windows.
 	route.curvatures[11] = Vector3(0.0, 0.5, 0.0)
 	return route
 
@@ -1503,9 +1480,10 @@ static func _transition_route(seam_seconds: float) -> Dictionary:
 			route.normal_g[index] = 3.0
 		elif index > seam and index <= seam + 50:
 			route.normal_g[index] = -1.0
-	route.sections = [
-		{"kind": "FVD", "name": "before", "element": {"kind": "before"}, "phase": "act one", "start_index": 0, "end_index": seam},
-		{"kind": "FVD", "name": "after", "element": {"kind": "after"}, "phase": "act one", "start_index": seam, "end_index": route.times.size() - 1},
+	route.span_indices = _span_indices(route.times.size(), [seam])
+	route.gesture_windows = [
+		_gesture_window("act1.before", "whole", "before", "Before", 0, seam - 1),
+		_gesture_window("act1.after", "whole", "after", "After", seam, route.times.size() - 1),
 	]
 	return route
 
@@ -1538,7 +1516,10 @@ static func _uniform_route(seconds: float) -> Dictionary:
 		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
 		"curvatures": curvatures, "banks": PackedFloat32Array(scalar), "speeds": speeds,
 		"normal_g": normal, "lateral_g": PackedFloat32Array(scalar), "longitudinal_g": PackedFloat32Array(scalar),
-		"roll_rates": PackedFloat32Array(scalar), "distances": distances, "times": _times_100hz(count), "sections": [],
+		"roll_rates": PackedFloat32Array(scalar), "distances": distances,
+		"times": _times_100hz(count), "span_indices": _span_indices(count, []),
+		"gesture_windows": [_gesture_window(
+			"whole.route", "whole", "route", "Route", 0, count - 1)],
 	}
 
 
@@ -1672,17 +1653,16 @@ static func _curvature_direction_seam_route() -> Dictionary:
 		speeds.append(SPEED)
 		distances.append(index * SPEED / SAMPLE_HZ)
 		times.append(index / SAMPLE_HZ)
-	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, longitudinal, roll_rates, speeds, distances, times, [
-		{"kind": "FVD", "name": "before", "element": {"kind": "before"}, "phase": "act one", "start_index": 0, "end_index": SEAM},
-		{"kind": "FVD", "name": "after", "element": {"kind": "after"}, "phase": "act one", "start_index": SEAM, "end_index": 200},
-	])
+	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral,
+		longitudinal, roll_rates, speeds, distances, times, [SEAM])
 
 
 static func _analytic_route(
 	positions: PackedVector3Array, tangents: PackedVector3Array, ups: PackedVector3Array,
 	rights: PackedVector3Array, curvatures: PackedVector3Array, normal: PackedFloat32Array,
 	lateral: PackedFloat32Array, longitudinal: PackedFloat32Array, roll_rates: PackedFloat32Array,
-	speeds: PackedFloat32Array, distances: PackedFloat32Array, times: PackedFloat32Array, sections: Array
+	speeds: PackedFloat32Array, distances: PackedFloat32Array, times: PackedFloat32Array,
+	span_starts: Array
 ) -> Dictionary:
 	var banks := PackedFloat32Array()
 	banks.resize(times.size())
@@ -1692,7 +1672,8 @@ static func _analytic_route(
 		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
 		"curvatures": curvatures, "banks": banks, "speeds": speeds,
 		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
-		"roll_rates": roll_rates, "distances": distances, "times": times, "sections": sections,
+		"roll_rates": roll_rates, "distances": distances, "times": times,
+		"span_indices": _span_indices(times.size(), span_starts), "gesture_windows": [],
 	}
 
 
@@ -1703,12 +1684,38 @@ static func _times_100hz(count: int) -> PackedFloat32Array:
 	return times
 
 
-static func _legacy_characterization_route() -> Dictionary:
-	var route := _measurement_route(false)
-	route["sections"][0]["element"] = route.sections[1].element
-	route["sections"][0]["phase"] = "act one"
-	route["sections"][1]["phase"] = "act one"
-	return route
+static func _span_indices(count: int, span_starts: Array) -> PackedInt32Array:
+	var owners := PackedInt32Array()
+	owners.resize(count)
+	var span_index := 0
+	for sample_index in count:
+		if span_index < span_starts.size() and sample_index == int(span_starts[span_index]):
+			span_index += 1
+		owners[sample_index] = span_index
+	return owners
+
+
+static func _gesture_window(
+	story_slot_id: String, role: String, kind: String, display_name: String,
+	first: int, last: int, occurrence: int = 0
+) -> Dictionary:
+	return {
+		"story_slot_id": story_slot_id,
+		"role_windows": [_role_window(
+			story_slot_id, role, kind, display_name, first, last, occurrence)],
+	}
+
+
+static func _role_window(
+	story_slot_id: String, role: String, kind: String, display_name: String,
+	first: int, last: int, occurrence: int = 0
+) -> Dictionary:
+	return {
+		"id": role, "display_name": display_name, "diagnostic_kind": kind,
+		"occurrence": occurrence,
+		"window_id": "%s/%s/%02d-%s" % [story_slot_id, role, occurrence, kind],
+		"first": first, "last": last,
+	}
 
 
 static func _comparison_catalog(

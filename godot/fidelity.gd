@@ -593,8 +593,7 @@ static func _hold_window_samples(seconds: float) -> int:
 	return ceili(seconds * Verify.SAMPLE_HZ - 1e-9) + 1
 
 
-## One filtered band per flown beat. Consecutive FVD sections that carry the same element
-## Dictionary are one composite beat; grades and the closure remain named beats of their own.
+## One filtered band per native semantic role window, in compiled route order.
 static func element_bands(route: Dictionary, row_offset: float = 0.0) -> Array:
 	return _bands_for_row(
 		route, _beat_definitions(route), row_offset, _row_series(route, row_offset), false
@@ -636,8 +635,9 @@ static func measure_route(route: Dictionary, row_offsets: Array) -> Dictionary:
 		var pacing := _pacing_metrics(route, definition.first, definition.last)
 		measured_beats.append({
 			"beat_id": definition.beat_id,
-			"phase": definition.phase,
-			"ordinal": definition.ordinal,
+			"story_slot_id": definition.story_slot_id,
+			"window_role": definition.window_role,
+			"occurrence": definition.occurrence,
 			"kind": definition.kind,
 			"name": definition.name,
 			"start_distance": float(route.distances[definition.first]),
@@ -653,7 +653,7 @@ static func measure_route(route: Dictionary, row_offsets: Array) -> Dictionary:
 	var route_pacing := _pacing_metrics(route, 0, route.positions.size() - 1)
 	route_pacing["beat_count"] = measured_beats.size()
 	return {
-		"schema_version": 1,
+		"schema_version": 2,
 		"seed": int(route.get("seed", 0)),
 		"length": float(route.get("length", route.distances[-1])),
 		"duration": float(route.get("duration", route.times[-1])),
@@ -790,7 +790,9 @@ static func reconstruct_channels(route: Dictionary) -> Dictionary:
 		)
 
 	var roll_derivatives: Dictionary = _quadratic_float_derivatives(times, route.roll_rates)
-	var seam_indices: PackedInt32Array = _reconstruction_seam_indices(route.sections, count)
+	var seam_indices: PackedInt32Array = _reconstruction_seam_indices(
+		route.span_indices, count
+	)
 	return {
 		"curvature_vector": curvature_vector,
 		"curvature_vector_ds": curvature_vector_derivatives.first,
@@ -829,7 +831,7 @@ static func _validate_reconstruction_input(route: Dictionary) -> int:
 	assert(count >= 3)
 	for key in [
 		"times", "distances", "speeds", "tangents", "ups", "rights", "curvatures",
-		"normal_g", "lateral_g", "longitudinal_g", "roll_rates",
+		"normal_g", "lateral_g", "longitudinal_g", "roll_rates", "span_indices",
 	]:
 		assert(route[key].size() == count)
 	for index in range(1, count):
@@ -894,15 +896,14 @@ static func _quadratic_local_indices(index: int, count: int) -> Vector3i:
 	return Vector3i(index - 1, index, index + 1)
 
 
-static func _reconstruction_seam_indices(sections: Array, count: int) -> PackedInt32Array:
-	var unique: Dictionary = {}
-	for section in sections:
-		var sample_index: int = int(section.start_index)
-		if sample_index > 0 and sample_index < count:
-			unique[sample_index] = true
-	var sorted := PackedInt32Array(unique.keys())
-	sorted.sort()
-	return sorted
+static func _reconstruction_seam_indices(
+	span_indices: PackedInt32Array, count: int
+) -> PackedInt32Array:
+	var seams := PackedInt32Array()
+	for sample_index in range(1, count):
+		if span_indices[sample_index] != span_indices[sample_index - 1]:
+			seams.append(sample_index)
+	return seams
 
 
 static func _reconstruction_seam_markers(
@@ -923,33 +924,24 @@ static func _reconstruction_seam_markers(
 
 static func _beat_definitions(route: Dictionary) -> Array:
 	var beats := []
-	var ordinals := {}
-	for section in route.sections:
-		var element: Dictionary = section.get("element", {})
-		var kind: String = element.get("kind", "") if section.kind == "FVD" else section.name
-		if kind == "":
-			continue
-		if (
-			not beats.is_empty()
-			and section.kind == "FVD"
-			and beats[-1].kind == kind
-			and is_same(beats[-1].element, element)
-		):
-			beats[-1].last = section.end_index
-			continue
-		var phase: String = section.get("phase", "unassigned")
-		var ordinal: int = ordinals.get(phase, 0)
-		ordinals[phase] = ordinal + 1
-		beats.append({
-			"kind": kind,
-			"name": str(section.get("name", kind)),
-			"element": element,
-			"phase": phase,
-			"ordinal": ordinal,
-			"beat_id": "%s/%02d/%s" % [_slug(phase), ordinal, _slug(kind)],
-			"first": section.start_index,
-			"last": section.end_index,
-		})
+	for gesture_value in route.gesture_windows:
+		var gesture: Dictionary = gesture_value
+		for role_value in gesture.role_windows:
+			var role: Dictionary = role_value
+			var window_role := str(role.id)
+			var kind := str(role.get("diagnostic_kind", window_role))
+			if kind.is_empty():
+				kind = window_role
+			beats.append({
+				"beat_id": str(role.window_id),
+				"story_slot_id": str(gesture.story_slot_id),
+				"window_role": window_role,
+				"occurrence": int(role.occurrence),
+				"kind": kind,
+				"name": str(role.get("display_name", kind)),
+				"first": int(role.first),
+				"last": int(role.last),
+			})
 	return beats
 
 
@@ -1022,9 +1014,10 @@ static func _bands_for_row(
 			continue
 		bands.append({
 			"kind": beat.kind,
-			"element": beat.element,
-			"phase": beat.phase,
 			"beat_id": beat.beat_id,
+			"story_slot_id": beat.story_slot_id,
+			"window_role": beat.window_role,
+			"occurrence": beat.occurrence,
 			"first": beat.first,
 			"last": beat.last,
 			"start_distance": route.distances[beat.first],
@@ -2343,10 +2336,3 @@ static func _nonnegative_number(value: Variant) -> bool:
 
 static func _number_close(value: Variant, expected: float) -> bool:
 	return _finite_number(value) and is_equal_approx(float(value), expected)
-
-
-static func _slug(value: String) -> String:
-	var output := value.strip_edges().to_lower().replace("_", "-").replace(" ", "-")
-	while output.contains("--"):
-		output = output.replace("--", "-")
-	return output if output != "" else "unassigned"

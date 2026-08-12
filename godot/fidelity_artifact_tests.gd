@@ -40,6 +40,7 @@ static func run() -> PackedStringArray:
 	_test_center_row_alignment_selectors(artifacts, errors)
 	_test_route_sampling(errors)
 	_test_pov_camera(artifacts, errors)
+	_test_native_inspector_windows(errors)
 	_test_checked_writes(artifacts, errors)
 	_test_write_pack(artifacts, errors)
 	_test_audit_fleet(errors)
@@ -58,6 +59,26 @@ static func _test_audit_fleet(errors: PackedStringArray) -> void:
 	_expect(errors, fidelity.get_script_constant_map().get("CANONICAL_FLEET") == AUDIT_SEEDS,
 		"the audited fleet is the fleet the comparison calls canonical")
 	_test_one_build_per_seed(Callable(inspect, "_run_audit"), errors)
+
+
+## The native route owns semantic gesture/role windows; the inspector must not recover legacy
+## element groups or let non-shaping roles leak into the retained side-view diagnostics.
+static func _test_native_inspector_windows(errors: PackedStringArray) -> void:
+	var inspect: Script = load(INSPECT_PATH)
+	var project := Callable(inspect, "_diagnostic_windows")
+	_expect(errors, project.is_valid(), "the inspector exposes native diagnostic-window projection")
+	if not project.is_valid():
+		return
+	var windows: Array = project.call(_pack_route(42))
+	_expect(errors, windows.map(func(window: Dictionary): return window.window_id) == [
+		"act-one/giant-inversion/00-loop", "brakes-station-capture/whole/00-dive",
+	], "the inspector retains shaping windows in native order")
+	if windows.size() != 2:
+		return
+	_expect(errors, windows[0].first == 0 and windows[0].last == 9,
+		"the inspector preserves native shaping sample bounds")
+	_expect(errors, windows[1].first == 20 and windows[1].last == 40,
+		"the inspector retains a whole-gesture shaping fallback when roles are connective")
 
 
 static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray) -> void:
@@ -129,6 +150,8 @@ static func _test_write_pack(artifacts: Script, errors: PackedStringArray) -> vo
 	_expect(errors, rendered.strips.size() == 11
 		and rendered.image.get_size() == Vector2i(1400, 1650),
 		"the channel render survives the move and carries all eleven strips")
+	_expect(errors, rendered.image.get_pixel(349, 4).distance_to(Color(0.30, 0.27, 0.20)) < 0.01,
+		"channel separators retain an interior native role boundary")
 	_expect_pack_failures(artifacts, errors)
 
 
@@ -586,7 +609,12 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 			func(value: Dictionary): value.seed_measurements[1].beats[0] = []],
 		["measurement beat IDs are unique per seed", "duplicate measurement beat",
 			func(value: Dictionary): value.seed_measurements[1].beats.append(
-				{"beat_id": "act-one/00/loop", "kind": "brake_run"})],
+				{"beat_id": "act-one/00/loop", "story_slot_id": "act1.brakes",
+					"window_role": "core", "kind": "brake_run"})],
+		["schema-2 beats require story identity", "story_slot_id",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].erase("story_slot_id")],
+		["schema-2 beats require role identity", "window_role",
+			func(value: Dictionary): value.seed_measurements[1].beats[0].erase("window_role")],
 		["projected beat render paths conflict",
 			"artifact_report: render request path has conflicting payload: review/seed-42/elements/act-one__00__loop.png",
 			func(value: Dictionary): _append_copy(value.seed_measurements[1].beats, 0, {"beat_id": "act-one__00__loop"})],
@@ -1265,16 +1293,37 @@ static func _pack_route(seed_value: int) -> Dictionary:
 		"speeds": PackedFloat32Array(), "normal_g": PackedFloat32Array(),
 		"lateral_g": PackedFloat32Array(), "longitudinal_g": PackedFloat32Array(),
 		"roll_rates": PackedFloat32Array(), "distances": PackedFloat32Array(),
-		"times": PackedFloat32Array(),
+		"times": PackedFloat32Array(), "span_indices": PackedInt32Array(),
 		"terrain": {
 			"relief": 1.0, "face_height": 0.0, "apron_height": 0.0,
 			"edge_normal": Vector2(0.0, -1.0), "edge_offset": 0.0, "apron_width": 1.0,
 			"face_width": 1.0, "wobble_amplitude": 0.0, "wobble_wavelength": 1.0,
 			"detail_amplitude": 0.0, "noise_seed": 0,
 		},
-		"sections": [{
-			"kind": "FVD", "name": "loop", "element": {"kind": "loop"}, "phase": "act one",
-			"start_index": 0, "end_index": 40, "start_time": 0.0,
+		"gesture_windows": [{
+			"story_slot_id": "act-one", "display_name": "Act One",
+			"first": 0, "last": 19, "start_time_s": 0.0, "end_time_s": 9.5,
+			"start_distance_m": 0.0, "end_distance_m": 95.0,
+			"role_windows": [{
+				"id": "giant-inversion", "display_name": "Loop", "diagnostic_kind": "loop",
+				"window_id": "act-one/giant-inversion/00-loop", "first": 0, "last": 9,
+				"start_time_s": 0.0, "end_time_s": 4.5,
+			}, {
+				"id": "handoff", "display_name": "Handoff", "diagnostic_kind": "",
+				"window_id": "act-one/handoff/00", "first": 10, "last": 19,
+				"start_time_s": 5.0, "end_time_s": 9.5,
+			}],
+		}, {
+			"story_slot_id": "brakes-station-capture", "display_name": "Brakes Station Capture",
+			"diagnostic_kind": "dive",
+			"window_id": "brakes-station-capture/whole/00-dive",
+			"first": 20, "last": 40, "start_time_s": 10.0, "end_time_s": 20.0,
+			"start_distance_m": 100.0, "end_distance_m": 200.0,
+			"role_windows": [{
+				"id": "brakes", "display_name": "Brakes", "diagnostic_kind": "",
+				"window_id": "brakes-station-capture/brakes/00-brake_run", "first": 20, "last": 40,
+				"start_time_s": 10.0, "end_time_s": 20.0,
+			}],
 		}],
 	}
 	for index in 41:
@@ -1291,6 +1340,7 @@ static func _pack_route(seed_value: int) -> Dictionary:
 		route.roll_rates.append(0.0)
 		route.distances.append(index * 5.0)
 		route.times.append(index * 0.5)
+		route.span_indices.append(0 if index < 20 else 1)
 	return route
 
 

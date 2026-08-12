@@ -720,7 +720,8 @@ static func _solve_brakes(
 	var distance_error: float = moving_distance + station_distance - remaining
 	if absf(distance_error) > TERMINAL_DISTANCE_TOLERANCE_M \
 			or absf(exit_speed - 2.0) > 0.0001:
-		return _failure("brake solve missed distance/speed boundary", "brake")
+		return _failure("brake solve missed distance/speed boundary: %.6f m, %.6f m/s" \
+			% [distance_error, exit_speed], "brake")
 	var terminal_spans := _brake_spans(peak_low)
 	terminal_spans.append(Motion.span("station/creep", station_duration, "station",
 		Motion.constant(1.0), Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0)))

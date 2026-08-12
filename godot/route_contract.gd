@@ -97,6 +97,7 @@ static func build(
 		"roll_rates": _degrees(trajectory.roll_rate_rad_s),
 		"distances": _float32(trajectory.distance_m),
 		"times": _float32(trajectory.time_s),
+		"span_indices": trajectory.span_index,
 		"gesture_indices": gesture_indices,
 		"propulsion_ids": propulsion_ids,
 		"minimum_speeds": minimum_speeds,

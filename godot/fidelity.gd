@@ -1417,7 +1417,7 @@ const TARGET_FIELDS := [
 
 static func validate_catalog(catalog: Dictionary) -> PackedStringArray:
 	var errors := PackedStringArray()
-	if catalog.get("schema_version") != 2:
+	if typeof(catalog.get("schema_version")) != TYPE_INT or catalog.get("schema_version") != 2:
 		errors.append("catalog schema version 2 is required")
 	if not _nonempty_string(catalog.get("catalog_version")):
 		errors.append("catalog_version is missing")
@@ -1465,10 +1465,13 @@ static func _dictionary_collection(
 	catalog: Dictionary, key: String, errors: PackedStringArray
 ) -> Dictionary:
 	var value: Variant = catalog.get(key)
-	if value is Dictionary:
-		return value
-	errors.append("catalog %s must be a Dictionary" % key)
-	return {}
+	if not value is Dictionary:
+		errors.append("catalog %s must be a Dictionary" % key)
+		return {}
+	for collection_key in value:
+		if not _nonempty_string(collection_key):
+			errors.append("catalog %s has non-String id '%s'" % [key, collection_key])
+	return value
 
 
 static func _array_collection(catalog: Dictionary, key: String, errors: PackedStringArray) -> Array:
@@ -1710,6 +1713,8 @@ static func _validate_windows(source_id: String, source: Dictionary, errors: Pac
 			errors.append("source '%s' window %d must be a Dictionary" % [source_id, index])
 			continue
 		var window_id := str(window.get("id", ""))
+		if not _nonempty_string(window.get("id")):
+			errors.append("source '%s' has non-String window id '%s'" % [source_id, window_id])
 		if window_id == "" or seen.has(window_id):
 			errors.append("source '%s' has invalid or duplicate window id '%s'" % [source_id, window_id])
 		seen[window_id] = true
@@ -1782,6 +1787,8 @@ static func _validate_observations(
 			continue
 		_reject_unknown_keys(observation, OBSERVATION_FIELDS, "observation %d" % index, errors)
 		var observation_id := str(observation.get("id", ""))
+		if not _nonempty_string(observation.get("id")):
+			errors.append("observation %d has a non-String id '%s'" % [index, observation_id])
 		_claim_id(observation_id, "observation", seen_ids, errors)
 		if observation_id != "":
 			by_id[observation_id] = observation
@@ -1800,6 +1807,10 @@ static func _validate_observations(
 		_validate_range("observation", observation_id, "raw_range", observation.get("raw_range"), false, errors)
 		if not _positive_number(observation.get("duration_s")):
 			errors.append("observation '%s' has invalid duration_s" % observation_id)
+		if not _nonempty_string(observation.get("source_id")):
+			errors.append("observation '%s' has a non-String source_id" % observation_id)
+		if not _nonempty_string(observation.get("source_window_id")):
+			errors.append("observation '%s' has a non-String source_window_id" % observation_id)
 		var source_id := str(observation.get("source_id", ""))
 		var source: Variant = sources.get(source_id)
 		if not source is Dictionary:
@@ -1941,7 +1952,11 @@ static func _validate_targets(
 			continue
 		_reject_unknown_keys(target, TARGET_FIELDS, "target %d" % index, errors)
 		var target_id := str(target.get("id", ""))
+		if not _nonempty_string(target.get("id")):
+			errors.append("target %d has a non-String id '%s'" % [index, target_id])
 		_claim_id(target_id, "target", seen_ids, errors)
+		if not _nonempty_string(target.get("observation_id")):
+			errors.append("target '%s' has a non-String observation_id" % target_id)
 		var observation_id := str(target.get("observation_id", ""))
 		var observation: Variant = observations.get(observation_id)
 		if not observation is Dictionary or observation.get("state") != "executable":
@@ -2066,7 +2081,7 @@ static func _validate_alignment(
 		errors.append("observation '%s' alignment has invalid generated_anchor" % observation_id)
 	elif generated.size() != 1:
 		errors.append("observation '%s' alignment generated_anchor has unsupported fields" % observation_id)
-	if str(alignment.get("source_landmark_id", "")) == "" or str(alignment.get("method", "")) == "" or str(alignment.get("rationale", "")) == "":
+	if not _nonempty_string(alignment.get("source_landmark_id")) or not _nonempty_string(alignment.get("method")) or not _nonempty_string(alignment.get("rationale")):
 		errors.append("observation '%s' has incomplete alignment" % observation_id)
 	if not _nonnegative_number(alignment.get("uncertainty_s")):
 		errors.append("observation '%s' alignment has invalid uncertainty_s" % observation_id)
@@ -2112,10 +2127,12 @@ static func _validate_auxiliary_records(
 			errors.append("%s record %d must be a Dictionary" % [key, index])
 			continue
 		var record_id := str(record.get("id", ""))
+		if not _nonempty_string(record.get("id")):
+			errors.append("%s record %d has a non-String id '%s'" % [key, index, record_id])
 		_claim_id(record_id, key, seen_ids, errors)
-		if str(record.get("prompt", record.get("description", ""))) == "":
+		if not _nonempty_string(record.get("prompt", record.get("description"))):
 			errors.append("%s '%s' is missing text" % [key, record_id])
-		if key == "review_prompts" and str(record.get("category", "")) == "":
+		if key == "review_prompts" and not _nonempty_string(record.get("category")):
 			errors.append("review_prompts '%s' is missing category" % record_id)
 		_validate_issues(key, record_id, record.get("issues"), errors)
 		_referenced_ids(key, record_id, "source_ids", record.get("source_ids"), sources, true, errors)
@@ -2222,6 +2239,8 @@ static func _referenced_ids(
 	var seen := {}
 	for referenced_id in value:
 		var text := str(referenced_id)
+		if not _nonempty_string(referenced_id):
+			errors.append("%s '%s' has a non-String %s entry" % [record_kind, record_id, key])
 		if text == "" or seen.has(text):
 			errors.append("%s '%s' has duplicate or empty %s" % [record_kind, record_id, key])
 		elif not known.has(text):

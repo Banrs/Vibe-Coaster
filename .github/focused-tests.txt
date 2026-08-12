@@ -1,1 +1,2 @@
 res://motion_tests.gd
+res://generator_material_tests.gd

@@ -30,6 +30,11 @@ func _test_fixed_terminal_contract_accepts_matching_trajectory() -> void:
 		"the accepted synthetic contract preserves its complete gesture window")
 	_expect(route.gesture_windows[0].get("peak_analytic_normal_onset_gps") == 7.875,
 		"the public gesture window preserves its compiled analytic normal onset")
+	_expect(route.get("span_indices") == fixture.trajectory.span_index,
+		"the public route preserves native motion-span ownership")
+	for legacy_field in ["sections", "section_indices", "lsm_ids", "tunnel_sections"]:
+		_expect(not route.has(legacy_field),
+			"the public route does not expose legacy field '%s'" % legacy_field)
 
 
 func _test_fixed_terminal_contract_rejects_endpoint_misses() -> void:

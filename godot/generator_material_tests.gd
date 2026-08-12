@@ -203,7 +203,7 @@ func _lsm2_speed_matches_the_default_vision(route: Dictionary) -> bool:
 func _public_arrays_are_shaped(route: Dictionary) -> bool:
 	var keys := ["times", "distances", "positions", "tangents", "ups", "rights", "curvatures",
 		"banks", "speeds", "normal_g", "lateral_g", "longitudinal_g", "drive_g", "roll_rates",
-		"gesture_indices", "propulsion_ids", "minimum_speeds"]
+		"span_indices", "gesture_indices", "propulsion_ids", "minimum_speeds"]
 	var count := -1
 	for key in keys:
 		var values: Variant = route.get(key)

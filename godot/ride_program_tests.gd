@@ -35,7 +35,7 @@ const LANDMARK_BANDS := {
 		"maximum_abs_tangent_y": 0.18},
 	"lsm2_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(57.0, 64.0),
 		"maximum_abs_tangent_y": 0.12},
-	"cliff_crest": {"height_m": Vector2(150.0, 175.0), "speed_mps": Vector2(5.0, 22.0),
+	"cliff_crest": {"height_m": null, "speed_mps": Vector2(5.0, 22.0),
 		"maximum_abs_tangent_y": 0.22},
 	"dive_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(55.0, 70.0),
 		"maximum_abs_tangent_y": 0.22},
@@ -582,7 +582,8 @@ func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> b
 			return false
 		var band: Dictionary = LANDMARK_BANDS[landmark_id]
 		var height_m: float = (position - station_position).dot(station_up)
-		if not _inside(height_m, band.height_m) or not _inside(float(speed), band.speed_mps) \
+		if (band.height_m != null and not _inside(height_m, band.height_m)) \
+				or not _inside(float(speed), band.speed_mps) \
 				or absf(tangent.normalized().dot(station_up)) > band.maximum_abs_tangent_y:
 			return false
 	var return_entry: Dictionary = report.return_entry

@@ -10,6 +10,17 @@ const COMPACT_PULSE_AREA := 100.0 / 231.0
 const COARSE_STEP_S := 0.05
 const FINE_STEP_S := 0.025
 const MAX_CAPTURE_EVALUATIONS := 40
+const MAX_RETURN_EVALUATIONS := 42
+const RETURN_BANK_TRANSITION_S := 1.25
+const RETURN_SETTLE_S := 1.0
+const RETURN_HILL_NORMAL_G := 3.0
+const RETURN_HILL_AIR_G := -1.0
+const BRAKE_ENVELOPE_MARGIN_M := 50.0
+const RETURN_RESIDUAL_TOLERANCES := [2.0, 2.0, 1.0, 0.01, 0.01]
+const CAPTURE_RESIDUAL_TOLERANCES := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
+const RETURN_VARIABLE_BOUNDS := [
+	[-0.75, 0.75], [2.0, 14.0], [2.0, 5.0], [-0.75, 0.75], [2.0, 14.0],
+]
 const CAPTURE_COEFFICIENT_BOUNDS := [
 	[-0.55, 0.55], [-0.55, 0.55], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
 ]
@@ -51,62 +62,81 @@ static func compile(
 
 	_begin_gesture(gestures, "escarpment-climb", spans.size())
 	_add(spans, metadata, propulsion, "climb/lsm2-entry", 0.30, "moving",
-		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 0.10),
+		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 1.3),
 		Motion.constant(0.0), "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/lsm2-core", 0.40, "moving",
-		1.0, 0.0, 0.10, 0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/lsm2-core", 0.190736, "moving",
+		1.0, 0.0, 1.3, 0.0, "lsm2", 2)
 	_add(spans, metadata, propulsion, "climb/lsm2-release", 0.30, "moving",
-		1.0, 0.0, Motion.quintic(0.10, 0.0), 0.0, "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/pull-up", 1.80, "moving",
-		Motion.quintic(1.0, 4.5), 0.0, 0.0, 0.0, "unpowered-climb")
-	_add(spans, metadata, propulsion, "climb/pull-up-release", 1.80, "moving",
-		Motion.quintic(4.5, 0.0), 0.0, 0.0, 0.0, "unpowered-climb")
+		1.0, 0.0, Motion.quintic(1.3, 0.0), 0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/pull-up", 2.219925, "moving",
+		Motion.quintic(1.0, 3.894889), 0.0, 0.0, 0.0, "unpowered-climb")
+	_add(spans, metadata, propulsion, "climb/unload", 2.186308, "moving",
+		Motion.quintic(3.894889, 0.0), 0.0, 0.0, 0.0, "unpowered-climb")
+	_add(spans, metadata, propulsion, "climb/ballistic", 3.289977, "moving",
+		0.0, 0.0, 0.0, 0.0, "unpowered-climb")
+	_add(spans, metadata, propulsion, "climb/level", 0.307367, "moving",
+		Motion.quintic(0.0, 1.0), 0.0, 0.0, 0.0, "unpowered-climb")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "clifftop-suspense", spans.size())
-	_add(spans, metadata, propulsion, "rim/ballistic-crest", 3.74, "moving",
-		0.0, 0.0, 0.0, 0.0, "slow-crest")
+	_add(spans, metadata, propulsion, "rim/slow-crest", 2.90, "moving",
+		1.0, 0.0, 0.0, 0.0, "slow-crest")
+	_add(spans, metadata, propulsion, "rim/outward-bank", 1.40, "moving",
+		Motion.quintic(1.0, 1.15), 0.0, 0.0,
+		Motion.compact_pulse(deg_to_rad(52.0)), "outward-rim")
+	_add(spans, metadata, propulsion, "rim/outward-release", 1.40, "moving",
+		Motion.quintic(1.15, 1.0), 0.0, 0.0,
+		Motion.compact_pulse(deg_to_rad(-52.0)), "outward-rim")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "cliff-dive", spans.size(), "dive")
-	_add(spans, metadata, propulsion, "dive/core", 3.80, "moving",
+	_add(spans, metadata, propulsion, "dive/commit", 1.068877, "moving",
+		Motion.quintic(1.0, -1.3), 0.0, 0.0, 0.0, "commit")
+	_add(spans, metadata, propulsion, "dive/vertical-entry", 0.679547, "moving",
+		Motion.quintic(-1.3, 0.0), 0.0, 0.0, 0.0, "vertical-entry")
+	_add(spans, metadata, propulsion, "dive/core", 2.027297, "moving",
 		0.0, 0.0, 0.0, 0.0, "core")
-	_add(spans, metadata, propulsion, "dive/pullout", 1.70, "moving",
-		Motion.quintic(0.0, 4.5), 0.0, 0.0, 0.0, "exit")
-	_add(spans, metadata, propulsion, "dive/pullout-release", 1.80, "moving",
-		Motion.quintic(4.5, 1.0), 0.0, 0.0, 0.0, "exit")
+	_add(spans, metadata, propulsion, "dive/pullout", 1.330518, "moving",
+		Motion.quintic(0.0, 4.895984), 0.0, 0.0, 0.0, "pullout")
+	_add(spans, metadata, propulsion, "dive/pullout-release", 2.159790, "moving",
+		Motion.quintic(4.895984, 1.0), 0.0, 0.0, 0.0, "exit")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "tunnel-lsm3", spans.size())
 	_add(spans, metadata, propulsion, "tunnel/lsm3-entry", 0.30, "moving",
-		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 0.75),
+		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 2.0),
 		Motion.constant(0.0), "core", 3)
-	_add(spans, metadata, propulsion, "tunnel/lsm3-core", 1.20, "moving",
-		1.0, 0.0, 0.75, 0.0, "core", 3)
+	_add(spans, metadata, propulsion, "tunnel/lsm3-core", 1.633337, "moving",
+		1.0, 0.0, 2.0, 0.0, "core", 3)
 	_add(spans, metadata, propulsion, "tunnel/lsm3-release", 0.30, "moving",
-		1.0, 0.0, Motion.quintic(0.75, 0.0), 0.0, "core", 3)
+		1.0, 0.0, Motion.quintic(2.0, 0.0), 0.0, "core", 3)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
-	_add(spans, metadata, propulsion, "camelback/pull-up", 1.70, "moving",
-		Motion.quintic(1.0, 4.5), 0.0, 0.0, 0.0, "rise")
-	_add(spans, metadata, propulsion, "camelback/pull-up-release", 1.70, "moving",
-		Motion.quintic(4.5, 0.0), 0.0, 0.0, 0.0, "rise")
-	_add(spans, metadata, propulsion, "camelback/crest", 3.98, "moving",
-		0.0, 0.0, 0.0, 0.0, "crest")
-	_add(spans, metadata, propulsion, "camelback/fall", 4.20, "moving",
-		0.0, 0.0, 0.0, 0.0, "fall")
-	_add(spans, metadata, propulsion, "camelback/pullout", 1.30, "moving",
-		Motion.quintic(0.0, 4.5), 0.0, 0.0, 0.0, "exit")
-	_add(spans, metadata, propulsion, "camelback/pullout-release", 2.00, "moving",
-		Motion.quintic(4.5, 1.0), 0.0, 0.0, 0.0, "exit")
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "raceway-return", spans.size())
-	_add_raceway(spans, metadata, propulsion)
+	_add(spans, metadata, propulsion, "camelback/pull-up", 1.997005, "moving",
+		Motion.quintic(1.0, 4.933250), 0.0, 0.0, 0.0, "rise")
+	_add(spans, metadata, propulsion, "camelback/unload", 3.121247, "moving",
+		Motion.quintic(4.933250, -1.286153), 0.0, 0.0, 0.0, "rise")
+	_add(spans, metadata, propulsion, "camelback/crest", 3.852550, "moving",
+		-1.286153, 0.0, 0.0, 0.0, "crest")
+	_add(spans, metadata, propulsion, "camelback/fall", 4.566536, "moving",
+		Motion.quintic(-1.286153, 4.785225), 0.0, 0.0, 0.0, "fall")
+	_add(spans, metadata, propulsion, "camelback/pullout-release", 0.794140, "moving",
+		Motion.quintic(4.785225, 1.0), 0.0, 0.0, 0.0, "exit")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	var settings := _settings(COARSE_STEP_S)
+	var upstream := Motion.integrate(initial_state, spans, settings)
+	if not upstream.get("ok", false):
+		return _failure("upstream integration failed: %s" % ", ".join(
+			upstream.get("errors", [])), "prefix")
+	var return_plan := _solve_return(_last_state(upstream), layout, settings)
+	if not return_plan.get("ok", false):
+		return return_plan
+	_begin_gesture(gestures, "raceway-return", spans.size())
+	_add_raceway(spans, metadata, propulsion, return_plan.variables)
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
 	var prefix := Motion.integrate(initial_state, spans, settings)
 	if not prefix.get("ok", false):
 		return _failure("prefix integration failed: %s" % ", ".join(
@@ -175,13 +205,25 @@ static func compile(
 			"unique_evaluations": capture.unique_evaluations,
 			"max_unique_coarse_evaluations": MAX_CAPTURE_EVALUATIONS,
 			"residual_ids": ["cross_track_m", "height_m", "yaw_rad", "pitch_rad", "roll_rad"],
+			"residual_tolerances": CAPTURE_RESIDUAL_TOLERANCES,
 			"residuals": capture.residuals,
 			"fine_residuals": capture.fine_residuals,
 			"margins": capture.margins,
+			"conditioning": capture.conditioning,
 			"positive_drive_allowed": false,
 		},
+		"return_plan": return_plan.plan,
 		"brake_plan": brake.report,
 		"landmark_report": landmark_report,
+		"terminal_contract": {
+			"station_position_m": layout.station_position_m,
+			"station_tangent": layout.station_tangent,
+			"station_up": layout.station_up,
+			"terminal_speed_mps": 1.0,
+			"position_tolerance_m": 0.1,
+			"angle_tolerance_rad": 0.00002,
+			"speed_tolerance_mps": 0.001,
+		},
 		"settings": _settings(0.01),
 	}
 
@@ -217,22 +259,188 @@ static func _add_balanced_feature(
 			roll, roles[index])
 
 
-static func _add_raceway(spans: Array, metadata: Array, propulsion: PackedInt32Array) -> void:
-	_add(spans, metadata, propulsion, "raceway/overbank", 10.0, "moving",
-		Motion.quintic(1.0, 1.0), Motion.compact_pulse(0.52), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(48.0)), "overbank", 0, 2.0, "overbank")
-	_add(spans, metadata, propulsion, "raceway/airtime-one", 9.0, "moving",
-		Motion.quintic(1.0, 1.0), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "airtime-release", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "raceway/turn", 12.0, "moving",
-		Motion.quintic(1.0, 1.0), Motion.compact_pulse(-0.38), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(-38.0)), "raceway-arc", 0, 2.0, "turn")
-	_add(spans, metadata, propulsion, "raceway/airtime-two", 9.0, "moving",
-		Motion.quintic(1.0, 1.0), Motion.constant(0.0), Motion.constant(0.0),
-		Motion.constant(0.0), "airtime-release", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "raceway/home", 14.0, "moving",
-		Motion.quintic(1.0, 1.0), Motion.compact_pulse(0.28), Motion.constant(0.0),
-		Motion.compact_pulse(deg_to_rad(24.0)), "raceway-arc", 0, 2.0, "turn")
+static func _add_raceway(s: Array, m: Array, p: PackedInt32Array, v: Array) -> void:
+	var roles := ["arc-a", "arc-a", "arc-a", "hill-a", "hill-a", "arc-b", "arc-b",
+		"arc-b", "hill-b", "hill-b", "exit"]
+	var kinds := ["overbank", "overbank", "overbank", "hill", "hill", "turn", "turn",
+		"turn", "hill", "hill", ""]
+	var authored := _return_spans(v)
+	for i in 11:
+		_add_record(s, m, p, authored[i], roles[i], 0, 2.0, kinds[i])
+
+
+static func _return_spans(v: Array) -> Array:
+	var a := 1.0 / cos(float(v[0])); var b := 1.0 / cos(float(v[3])); var h := float(v[2])
+	var air_a := RETURN_HILL_AIR_G - 0.5 * RETURN_BANK_TRANSITION_S * (
+		a + 2.0 * RETURN_HILL_NORMAL_G + b - 4.0) / h
+	var air_b := RETURN_HILL_AIR_G - (0.5 * RETURN_BANK_TRANSITION_S * (
+		b + RETURN_HILL_NORMAL_G - 2.0) + 0.5 * RETURN_SETTLE_S * (
+		RETURN_HILL_NORMAL_G - 1.0)) / h
+	return [
+		_return_span("raceway/bank-in-a", RETURN_BANK_TRANSITION_S, 1.0, a, v[0]),
+		_return_span("raceway/arc-a", v[1], a, a),
+		_return_span("raceway/bank-out-a", RETURN_BANK_TRANSITION_S, a,
+			RETURN_HILL_NORMAL_G, -float(v[0])),
+		_return_span("raceway/hill-a-rise", h, RETURN_HILL_NORMAL_G, air_a),
+		_return_span("raceway/hill-a-release", h, air_a, RETURN_HILL_NORMAL_G),
+		_return_span("raceway/bank-in-b", RETURN_BANK_TRANSITION_S,
+			RETURN_HILL_NORMAL_G, b, v[3]), _return_span("raceway/arc-b", v[4], b, b),
+		_return_span("raceway/bank-out-b", RETURN_BANK_TRANSITION_S, b,
+			RETURN_HILL_NORMAL_G, -float(v[3])),
+		_return_span("raceway/hill-b-rise", h, RETURN_HILL_NORMAL_G, air_b),
+		_return_span("raceway/hill-b-release", h, air_b, RETURN_HILL_NORMAL_G),
+		_return_span("raceway/roll-settle", RETURN_SETTLE_S, RETURN_HILL_NORMAL_G, 1.0)]
+
+
+static func _return_span(id: String, t: float, a: float, b: float, area: float = 0.0) -> Dictionary:
+	var roll := Motion.constant(0.0) if absf(area) < 0.000001 else Motion.compact_pulse(
+		area / (t * COMPACT_PULSE_AREA))
+	return Motion.span(id, t, "moving", Motion.quintic(a, b), Motion.constant(0.0),
+		Motion.constant(0.0), roll)
+
+
+static func _solve_return(start: Dictionary, layout: Dictionary, settings: Dictionary) -> Dictionary:
+	var v := _return_seed(start, layout); var cache := {}; var conditioning := {}
+	for iteration in 6:
+		var base := _return_evaluation(start, layout, v, settings, cache)
+		if not base.ok:
+			return base
+		var jacobian := [[0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0],
+			[0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0],
+			[0.0, 0.0, 0.0, 0.0, 0.0]]
+		for column in 5:
+			var probe := v.duplicate(); var delta := [0.02, 0.2, 0.1, 0.02, 0.2][column]
+			if probe[column] + delta > RETURN_VARIABLE_BOUNDS[column][1]:
+				delta = -delta
+			probe[column] += delta
+			var evaluated := _return_evaluation(start, layout, probe, settings, cache)
+			if not evaluated.ok:
+				return evaluated
+			for row in 5:
+				jacobian[row][column] = (evaluated.scaled[row] - base.scaled[row]) / delta
+		conditioning = _matrix_conditioning(jacobian)
+		conditioning["evaluated_vector"] = v.duplicate()
+		if not conditioning.ok:
+			return _return_failure("return Jacobian is ill-conditioned", cache, conditioning)
+		if _residuals_within(base.residuals, RETURN_RESIDUAL_TOLERANCES):
+			break
+		if iteration == 5:
+			break
+		var step := _linear_solve(jacobian, base.scaled)
+		if step.is_empty():
+			return _return_failure("return Jacobian is singular", cache, conditioning)
+		for i in 5:
+			v[i] = clampf(v[i] - 0.7 * step[i], RETURN_VARIABLE_BOUNDS[i][0],
+				RETURN_VARIABLE_BOUNDS[i][1])
+	var coarse := _return_evaluation(start, layout, v, settings, cache)
+	var fine_settings := settings.duplicate(); fine_settings.step_s = FINE_STEP_S
+	var fine := _return_evaluation(start, layout, v, fine_settings, cache)
+	if not coarse.ok:
+		return coarse
+	if not fine.ok:
+		return fine
+	if not _residuals_within(coarse.residuals, RETURN_RESIDUAL_TOLERANCES) \
+			or not _residuals_within(fine.residuals, RETURN_RESIDUAL_TOLERANCES) \
+			or _maximum_normalized_delta(coarse.residuals, fine.residuals,
+				RETURN_RESIDUAL_TOLERANCES) > 0.02:
+		return _return_failure("return solve missed its coarse/fine contract", cache,
+			conditioning, fine.residuals)
+	for margin in fine.margins.values():
+		if not is_finite(float(margin)) or float(margin) < 0.0:
+			return _return_failure("return solve violates an inequality", cache, conditioning,
+				fine.residuals, fine.margins)
+	return {"ok": true, "variables": v, "plan": {"status": "solved", "variables": v,
+		"variable_bounds": RETURN_VARIABLE_BOUNDS, "residual_ids": ["along_track_m",
+			"cross_track_m", "height_m", "yaw_rad", "roll_rad"],
+		"residual_tolerances": RETURN_RESIDUAL_TOLERANCES, "residuals": coarse.residuals,
+		"fine_residuals": fine.residuals, "margins": fine.margins,
+		"conditioning": conditioning, "unique_evaluations": cache.size(),
+		"max_unique_evaluations": MAX_RETURN_EVALUATIONS, "positive_drive_allowed": false}}
+
+
+static func _return_failure(message: String, cache: Dictionary, conditioning: Dictionary = {},
+	residuals: Array = [], margins: Dictionary = {}) -> Dictionary:
+	return _failure(message, "return", {"evaluation_count": cache.size(),
+		"conditioning": conditioning, "residuals": residuals, "margins": margins})
+
+
+static func _return_seed(start: Dictionary, layout: Dictionary) -> Array:
+	var up: Vector3 = layout.station_up.normalized(); var forward: Vector3 = layout.station_tangent.normalized()
+	var target := layout.station_position_m - forward * _approach_length(layout)
+	var desired: Vector3 = target - start.position_m; desired -= up * desired.dot(up)
+	desired = forward if desired.length_squared() < 0.000001 else desired.normalized()
+	var heading: Vector3 = start.tangent - up * start.tangent.dot(up); heading = heading.normalized()
+	var bank := deg_to_rad(32.0); var a := atan2(heading.cross(desired).dot(up), heading.dot(desired))
+	var b := atan2(desired.cross(forward).dot(up), desired.dot(forward))
+	var rate := Motion.G0 * tan(bank) / maxf(start.speed_mps, 45.0)
+	var ta := clampf(absf(a) / rate, 2.0, 14.0); var tb := clampf(absf(b) / rate, 2.0, 14.0)
+	var hill := clampf(0.25 * (start.position_m.distance_to(target) / maxf(start.speed_mps, 45.0)
+		- 3.0 * RETURN_BANK_TRANSITION_S - RETURN_SETTLE_S - ta - tb), 2.0, 5.0)
+	return [-signf(a) * bank if absf(a) > 0.01 else bank, ta, hill,
+		-signf(b) * bank if absf(b) > 0.01 else -bank, tb]
+
+
+static func _return_evaluation(start: Dictionary, layout: Dictionary, v: Array,
+	settings: Dictionary, cache: Dictionary) -> Dictionary:
+	var key := "%.6f:%s" % [float(settings.step_s), str(v)]
+	if cache.has(key):
+		return cache[key]
+	if cache.size() >= MAX_RETURN_EVALUATIONS:
+		return _return_failure("return exceeded its evaluation budget", cache)
+	var route := Motion.integrate(start, _return_spans(v), settings)
+	if not route.get("ok", false):
+		cache[key] = {}
+		var rejected := _return_failure("return candidate failed", cache)
+		cache[key] = rejected
+		return rejected
+	var end := _last_state(route); var forward: Vector3 = layout.station_tangent.normalized()
+	var up: Vector3 = layout.station_up.normalized(); var right := forward.cross(up).normalized()
+	var delta: Vector3 = end.position_m - (layout.station_position_m - forward * _approach_length(layout))
+	var reference_up := (up - end.tangent * up.dot(end.tangent)).normalized()
+	var actual_up := (end.rider_up - end.tangent * end.rider_up.dot(end.tangent)).normalized()
+	var r := [delta.dot(forward), delta.dot(right), delta.dot(up),
+		atan2(end.tangent.dot(right), end.tangent.dot(forward)),
+		atan2(end.tangent.dot(reference_up.cross(actual_up)), reference_up.dot(actual_up))]
+	var result := {"ok": true, "residuals": r, "scaled": [r[0] / 500.0, r[1] / 500.0,
+		r[2] / 100.0, r[3] / 0.5, r[4] / 0.5], "margins": _return_margins(route, v, layout)}
+	cache[key] = result; return result
+
+
+static func _return_margins(route: Dictionary, v: Array, layout: Dictionary) -> Dictionary:
+	var bound := INF; var min_speed := INF; var min_normal := INF; var max_normal := 0.0
+	var max_roll := 0.0
+	var first_energy := 0.0; var previous_energy := 0.0; var energy_step := INF
+	for i in v.size():
+		bound = minf(bound, minf(v[i] - RETURN_VARIABLE_BOUNDS[i][0],
+			RETURN_VARIABLE_BOUNDS[i][1] - v[i]))
+	for i in route.position_m.size():
+		var energy: float = 0.5 * route.speed_mps[i] ** 2 + Motion.G0 * (
+			route.position_m[i] - layout.station_position_m).dot(layout.station_up)
+		if i == 0:
+			first_energy = energy
+		else:
+			energy_step = minf(energy_step, previous_energy - energy)
+		previous_energy = energy; min_speed = minf(min_speed, route.speed_mps[i])
+		min_normal = minf(min_normal, route.normal_g[i])
+		max_normal = maxf(max_normal, absf(route.normal_g[i])); max_roll = maxf(max_roll,
+			absf(route.roll_rate_rad_s[i]))
+	var pitch := asin(clampf(route.tangent[-1].dot(layout.station_up.normalized()), -1.0, 1.0))
+	return {"variable_bounds": bound, "material_bank_rad": minf(absf(v[0]), absf(v[3]))
+		- deg_to_rad(15.0), "speed_floor_mps": min_speed - 45.0,
+		"material_arc_s": minf(v[1], v[4]) - 2.0, "airtime_normal_g": 0.25 - min_normal,
+		"exit_speed_low_mps": route.speed_mps[-1] - 48.0,
+		"exit_speed_high_mps": 82.0 - route.speed_mps[-1], "capture_pitch_rad": 0.15 - absf(pitch),
+		"normal_force_g": 4.5 - max_normal, "roll_rate_rad_s": deg_to_rad(120.0) - max_roll,
+		"monotone_energy_j_per_kg": energy_step + 0.001,
+		"total_energy_loss_j_per_kg": first_energy - previous_energy - 100.0}
+
+
+static func _approach_length(layout: Dictionary) -> float:
+	var corridor: Variant = layout.get("reserved_corridor")
+	if corridor is Dictionary:
+		return float(corridor.get("minimum_length_m", 0.0))
+	return 8.0 * 92.0 + (92.0 ** 2 - 2.0 ** 2) / (
+		2.0 * Motion.G0 * 1.2 * COMPACT_PULSE_AREA) + _coast_distance(2.0, 1.0) + 100.0
 
 
 static func _add_capture_and_brakes(
@@ -276,13 +484,12 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 			CAPTURE_COEFFICIENT_BOUNDS[index][0], CAPTURE_COEFFICIENT_BOUNDS[index][1])
 	var cache := {}
 	var residuals: Array = []
-	for _iteration in 6:
+	var conditioning := {}
+	for iteration in 6:
 		var base := _capture_evaluation(start, layout, coefficients, settings, cache)
 		if not base.ok:
 			return base
 		residuals = base.residuals
-		if _capture_converged(residuals):
-			break
 		var jacobian: Array = []
 		for row in 5:
 			jacobian.append([0.0, 0.0, 0.0, 0.0, 0.0])
@@ -297,6 +504,15 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 				return evaluated
 			for row in 5:
 				jacobian[row][column] = (evaluated.scaled[row] - base.scaled[row]) / delta
+		conditioning = _matrix_conditioning(jacobian)
+		conditioning["evaluated_vector"] = coefficients.duplicate()
+		if not conditioning.ok:
+			return _capture_failure("capture Jacobian is ill-conditioned", cache.size(),
+				base.residuals, base.margins, {"conditioning": conditioning})
+		if _capture_converged(residuals):
+			break
+		if iteration == 5:
+			break
 		var step := _linear_solve(jacobian, base.scaled)
 		if step.is_empty():
 			return _capture_failure("capture Jacobian is singular", cache.size(),
@@ -304,8 +520,6 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 		for index in 5:
 			coefficients[index] = clampf(coefficients[index] - 0.7 * step[index],
 				CAPTURE_COEFFICIENT_BOUNDS[index][0], CAPTURE_COEFFICIENT_BOUNDS[index][1])
-		if cache.size() >= MAX_CAPTURE_EVALUATIONS - 1:
-			break
 	var coarse := _capture_evaluation(start, layout, coefficients, settings, cache)
 	if not coarse.ok:
 		return coarse
@@ -324,10 +538,12 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 		coarse.residuals, fine.residuals) > 0.02:
 		return _capture_failure("capture coarse/fine residuals disagree", cache.size(),
 			fine.residuals, fine.margins, {"coarse_residuals": coarse.residuals.duplicate()})
-	for margin in fine.margins.values():
-		if float(margin) < 0.0:
+	var margins := _capture_margins(coefficients, fine.route, layout)
+	for margin in margins.values():
+		if not is_finite(float(margin)) or float(margin) < 0.0:
 			return _capture_failure("solved capture violates an inequality: %s" %
-				str(fine.margins), cache.size(), fine.residuals, fine.margins)
+				str(margins), cache.size(), fine.residuals, margins,
+				{"conditioning": conditioning})
 	return {
 		"ok": true,
 		"errors": PackedStringArray(),
@@ -335,7 +551,8 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 		"residuals": coarse.residuals,
 		"fine_residuals": fine.residuals,
 		"unique_evaluations": cache.size(),
-		"margins": _capture_margins(coefficients, fine.route, layout),
+		"margins": margins,
+		"conditioning": conditioning,
 	}
 
 
@@ -424,6 +641,8 @@ static func _capture_inequality_margins(route: Dictionary, layout: Dictionary) -
 	var half_height: float = layout.get("capture_half_height_m", 75.0)
 	var maximum_cross := 0.0
 	var maximum_height := 0.0
+	var minimum_forward_low := INF
+	var minimum_forward_high := INF
 	var minimum_speed := INF
 	var maximum_normal := 0.0
 	var maximum_lateral := 0.0
@@ -432,6 +651,10 @@ static func _capture_inequality_margins(route: Dictionary, layout: Dictionary) -
 		var delta: Vector3 = route.position_m[index] - layout.station_position_m
 		maximum_cross = maxf(maximum_cross, absf(delta.dot(right)))
 		maximum_height = maxf(maximum_height, absf(delta.dot(up)))
+		var forward_offset := delta.dot(forward)
+		minimum_forward_low = minf(minimum_forward_low,
+			_approach_length(layout) + forward_offset)
+		minimum_forward_high = minf(minimum_forward_high, -forward_offset)
 		minimum_speed = minf(minimum_speed, route.speed_mps[index])
 		maximum_normal = maxf(maximum_normal, absf(route.normal_g[index]))
 		maximum_lateral = maxf(maximum_lateral, absf(route.lateral_g[index]))
@@ -439,6 +662,8 @@ static func _capture_inequality_margins(route: Dictionary, layout: Dictionary) -
 	return {
 		"corridor_cross_m": half_width - maximum_cross,
 		"corridor_height_m": half_height - maximum_height,
+		"corridor_forward_low_m": minimum_forward_low,
+		"corridor_forward_high_m": minimum_forward_high,
 		"speed_floor_mps": minimum_speed - 2.0,
 		"normal_force_g": 8.0 - maximum_normal,
 		"lateral_force_g": 4.7 - maximum_lateral,
@@ -447,13 +672,14 @@ static func _capture_inequality_margins(route: Dictionary, layout: Dictionary) -
 
 
 static func _linear_solve(matrix: Array, residual: Array) -> Array:
+	var size := matrix.size()
 	var augmented: Array = []
-	for row in 5:
+	for row in size:
 		augmented.append(matrix[row].duplicate())
 		augmented[row].append(residual[row])
-	for column in 5:
+	for column in size:
 		var pivot := column
-		for row in range(column + 1, 5):
+		for row in range(column + 1, size):
 			if absf(augmented[row][column]) > absf(augmented[pivot][column]):
 				pivot = row
 		if absf(augmented[pivot][column]) < 0.000000001:
@@ -462,18 +688,59 @@ static func _linear_solve(matrix: Array, residual: Array) -> Array:
 		augmented[column] = augmented[pivot]
 		augmented[pivot] = temporary
 		var divisor: float = augmented[column][column]
-		for index in range(column, 6):
+		for index in range(column, size + 1):
 			augmented[column][index] /= divisor
-		for row in 5:
+		for row in size:
 			if row == column:
 				continue
 			var factor: float = augmented[row][column]
-			for index in range(column, 6):
+			for index in range(column, size + 1):
 				augmented[row][index] -= factor * augmented[column][index]
 	var solution := []
-	for row in 5:
-		solution.append(augmented[row][5])
+	for row in size:
+		solution.append(augmented[row][size])
 	return solution
+
+
+static func _matrix_conditioning(matrix: Array) -> Dictionary:
+	var work := matrix.duplicate(true)
+	var low := INF
+	var high := 0.0
+	for column in work.size():
+		var pivot := column
+		for row in range(column + 1, work.size()):
+			if absf(work[row][column]) > absf(work[pivot][column]):
+				pivot = row
+		var magnitude := absf(work[pivot][column])
+		low = minf(low, magnitude)
+		high = maxf(high, magnitude)
+		if magnitude < 0.000001:
+			return {"ok": false, "minimum_pivot": magnitude, "pivot_ratio": 0.0}
+		var temporary = work[column]
+		work[column] = work[pivot]
+		work[pivot] = temporary
+		for row in range(column + 1, work.size()):
+			var factor: float = work[row][column] / work[column][column]
+			for index in range(column, work.size()):
+				work[row][index] -= factor * work[column][index]
+	var ratio := low / high
+	return {"ok": ratio >= 0.0001, "minimum_pivot": low,
+		"maximum_pivot": high, "pivot_ratio": ratio}
+
+
+static func _residuals_within(residuals: Array, tolerances: Array) -> bool:
+	for index in residuals.size():
+		if not is_finite(float(residuals[index])) \
+				or absf(float(residuals[index])) > float(tolerances[index]):
+			return false
+	return residuals.size() == tolerances.size()
+
+
+static func _maximum_normalized_delta(a: Array, b: Array, scales: Array) -> float:
+	var result := 0.0
+	for index in a.size():
+		result = maxf(result, absf(float(a[index]) - float(b[index])) / float(scales[index]))
+	return result
 
 
 static func _solve_brakes(
@@ -505,9 +772,11 @@ static func _solve_brakes(
 	var high := _brake_for_coast(start, high_coast, production)
 	if not high.ok:
 		return high
-	if wanted_moving < low.distance_m - 0.05 or wanted_moving > high.distance_m + 0.05:
+	if wanted_moving < low.distance_m + BRAKE_ENVELOPE_MARGIN_M \
+			or wanted_moving > high.distance_m - BRAKE_ENVELOPE_MARGIN_M:
 		return _failure("reserved moving-brake distance %.3f m is outside [%.3f, %.3f] m" %
-			[wanted_moving, low.distance_m, high.distance_m], "brake")
+			[wanted_moving, low.distance_m + BRAKE_ENVELOPE_MARGIN_M,
+				high.distance_m - BRAKE_ENVELOPE_MARGIN_M], "brake")
 	var chosen := low
 	var coast_low := 0.0
 	var coast_high := high_coast
@@ -540,6 +809,8 @@ static func _solve_brakes(
 			"moving_distance_m": chosen.distance_m,
 			"station_distance_m": station_distance,
 			"distance_residual_m": distance_error,
+			"lower_envelope_margin_m": wanted_moving - low.distance_m,
+			"upper_envelope_margin_m": high.distance_m - wanted_moving,
 			"positive_drive_allowed": false,
 		},
 	}
@@ -667,45 +938,69 @@ static func _last_state(route: Dictionary) -> Dictionary:
 static func _landmark_report(
 	trajectory: Dictionary, gestures: Array, metadata: Array, station_position: Vector3
 ) -> Dictionary:
-	var gesture_ends := {}
+	var gesture_ranges := {}
 	for gesture in gestures:
-		gesture_ends[gesture.story_slot_id] = int(gesture.last_span)
-	var camel_apex_span := -1
+		gesture_ranges[gesture.story_slot_id] = Vector2i(
+			int(gesture.first_span), int(gesture.last_span))
 	var lsm2_exit_span := -1
+	var slow_crest_span := -1
+	var rim_first_span := -1
 	for index in metadata.size():
-		if metadata[index].span_id == "camelback/crest":
-			camel_apex_span = index
-		elif metadata[index].span_id == "climb/lsm2-release":
+		if metadata[index].span_id == "climb/lsm2-release":
 			lsm2_exit_span = index
+		elif metadata[index].span_id == "rim/slow-crest":
+			slow_crest_span = index
+		elif metadata[index].span_id == "rim/outward-bank":
+			rim_first_span = index
+	var cliff_range: Vector2i = gesture_ranges["clifftop-suspense"]
+	var climb_range: Vector2i = gesture_ranges["escarpment-climb"]
+	var dive_range: Vector2i = gesture_ranges["cliff-dive"]
+	var camel_range: Vector2i = gesture_ranges["marquee-camelback"]
+	var cliff_samples := _span_sample_bounds(
+		trajectory.span_index, lsm2_exit_span + 1, cliff_range.y)
+	var dive_samples := _span_sample_bounds(
+		trajectory.span_index, dive_range.x, dive_range.y)
+	var camel_samples := _span_sample_bounds(
+		trajectory.span_index, camel_range.x, camel_range.y)
+	var slow_crest_samples := _span_sample_bounds(
+		trajectory.span_index, slow_crest_span, slow_crest_span)
+	var rim_samples := _span_sample_bounds(
+		trajectory.span_index, rim_first_span, cliff_range.y)
+	var cliff_apex := _maximum_height_sample(trajectory.position_m, cliff_samples)
+	var camel_apex := _maximum_height_sample(trajectory.position_m, camel_samples)
 	var targets := {
-		"launch_exit": {"span": gesture_ends["station-launch"], "height_m": [-5.0, 5.0],
+		"launch_exit": {"sample": _span_end_sample(trajectory.span_index,
+			gesture_ranges["station-launch"].y), "height_m": [-5.0, 5.0],
 			"speed_mps": [85.0, 98.0], "maximum_abs_tangent_y": 0.05},
-		"act_one_exit": {"span": gesture_ends["act-one"], "height_m": [-40.0, 40.0],
+		"act_one_exit": {"sample": _span_end_sample(trajectory.span_index,
+			gesture_ranges["act-one"].y), "height_m": [-40.0, 40.0],
 			"speed_mps": [40.0, 70.0], "maximum_abs_tangent_y": 0.18},
-		"lsm2_exit": {"span": lsm2_exit_span, "height_m": [-20.0, 20.0],
+		"lsm2_exit": {"sample": _span_end_sample(trajectory.span_index, lsm2_exit_span),
+			"height_m": [-20.0, 20.0],
 			"speed_mps": [57.0, 64.0], "maximum_abs_tangent_y": 0.12},
-		"cliff_crest": {"span": gesture_ends["clifftop-suspense"],
-			"height_m": [150.0, 175.0], "speed_mps": [5.0, 22.0],
+		"cliff_crest": {"sample": cliff_apex,
+			"height_m": null, "speed_mps": [5.0, 22.0],
 			"maximum_abs_tangent_y": 0.22},
-		"dive_exit": {"span": gesture_ends["cliff-dive"], "height_m": [-20.0, 20.0],
+		"dive_exit": {"sample": dive_samples.y, "height_m": [-20.0, 20.0],
 			"speed_mps": [55.0, 70.0]},
-		"lsm3_exit": {"span": gesture_ends["tunnel-lsm3"], "height_m": [-20.0, 20.0],
+		"lsm3_exit": {"sample": _span_end_sample(trajectory.span_index,
+			gesture_ranges["tunnel-lsm3"].y), "height_m": [-20.0, 20.0],
 			"speed_mps": [90.0, 98.0]},
-		"camelback_apex": {"span": camel_apex_span, "height_m": [240.0, 260.0],
+		"camelback_apex": {"sample": camel_apex, "height_m": null,
 			"speed_mps": [50.0, 68.0]},
-		"return_entry": {"span": gesture_ends["marquee-camelback"],
+		"return_entry": {"sample": camel_samples.y,
 			"height_m": [-20.0, 20.0], "speed_mps": [78.0, 92.0],
 			"maximum_abs_tangent_y": 0.18},
 	}
 	var report := {}
 	for landmark_id in targets.keys():
 		var target: Dictionary = targets[landmark_id]
-		var sample_index := _span_end_sample(trajectory.span_index, target.span)
+		var sample_index: int = target.sample
 		var position: Vector3 = trajectory.position_m[sample_index]
 		var tangent: Vector3 = trajectory.tangent[sample_index]
 		var rider_up: Vector3 = trajectory.rider_up[sample_index]
 		report[landmark_id] = {
-			"span_index": target.span,
+			"span_index": trajectory.span_index[sample_index],
 			"sample_index": sample_index,
 			"height_m": position.y - station_position.y,
 			"position_m": position,
@@ -723,7 +1018,143 @@ static func _landmark_report(
 		0.5 * float(return_entry.speed_mps) ** 2
 		+ Motion.G0 * float(return_entry.height_m) - 0.5
 	)
+	var dive_start_y: float = trajectory.position_m[dive_samples.x].y
+	var dive_end_y: float = trajectory.position_m[dive_samples.y].y
+	var camel_start: Vector3 = trajectory.position_m[camel_samples.x]
+	var camel_end: Vector3 = trajectory.position_m[camel_samples.y]
+	var prominence: float = trajectory.position_m[camel_apex].y \
+		- maxf(camel_start.y, camel_end.y)
+	var width := Vector2(camel_end.x - camel_start.x,
+		camel_end.z - camel_start.z).length()
+	var rim_exit := rim_samples.y
+	var rim_exit_tangent: Vector3 = trajectory.tangent[rim_exit]
+	var rim_exit_up: Vector3 = trajectory.rider_up[rim_exit]
+	report["shape_evidence"] = {
+		"crest_held_at_or_below_22_mps_s": _held_at_or_below(
+			trajectory.time_s, trajectory.speed_mps, slow_crest_samples, 22.0),
+		"cliff_prominence_m": trajectory.position_m[cliff_apex].y
+			- trajectory.position_m[_span_sample_bounds(
+				trajectory.span_index, climb_range.x, climb_range.x).x].y,
+		"rim_heading_change_rad": _heading_change(trajectory.tangent, rim_samples),
+		"rim_cross_track_m": _cross_track_displacement(
+			trajectory.position_m, trajectory.tangent, rim_samples),
+		"rim_maximum_bank_rad": _maximum_world_bank(
+			trajectory.tangent, trajectory.rider_up, rim_samples),
+		"rim_exit_bank_rad": _world_bank(rim_exit_tangent, rim_exit_up),
+		"rim_exit_pitch_rad": asin(clampf(rim_exit_tangent.y, -1.0, 1.0)),
+		"rim_exit_up_dot": rim_exit_up.dot(Vector3.UP),
+		"dive_drop_m": dive_start_y - dive_end_y,
+		"dive_minimum_tangent_y": _minimum_tangent_y(trajectory.tangent, dive_samples),
+		"dive_maximum_height_step_m": _maximum_height_step(
+			trajectory.position_m, dive_samples),
+		"dive_minimum_normal_g": _minimum_value(trajectory.normal_g, dive_samples),
+		"dive_maximum_normal_g": _maximum_value(trajectory.normal_g, dive_samples),
+		"camelback_prominence_m": prominence,
+		"camelback_width_m": width,
+		"camelback_width_height_ratio": width / prominence,
+		"camelback_negative_normal_duration_s": _held_below_zero(
+			trajectory.time_s, trajectory.normal_g, camel_samples),
+	}
 	return report
+
+
+static func _span_sample_bounds(
+	span_indices: PackedInt32Array, first_span: int, last_span: int
+) -> Vector2i:
+	var first := 0
+	while first < span_indices.size() - 1 and span_indices[first] < first_span:
+		first += 1
+	return Vector2i(first, _span_end_sample(span_indices, last_span))
+
+
+static func _maximum_height_sample(
+	positions: PackedVector3Array, bounds: Vector2i
+) -> int:
+	var result := bounds.x
+	for index in range(bounds.x + 1, bounds.y + 1):
+		if positions[index].y > positions[result].y:
+			result = index
+	return result
+
+
+static func _minimum_tangent_y(tangents: PackedVector3Array, bounds: Vector2i) -> float:
+	var result := INF
+	for index in range(bounds.x, bounds.y + 1):
+		result = minf(result, tangents[index].y)
+	return result
+
+
+static func _minimum_value(values: PackedFloat64Array, bounds: Vector2i) -> float:
+	var result := INF
+	for index in range(bounds.x, bounds.y + 1):
+		result = minf(result, values[index])
+	return result
+
+
+static func _maximum_value(values: PackedFloat64Array, bounds: Vector2i) -> float:
+	var result := -INF
+	for index in range(bounds.x, bounds.y + 1):
+		result = maxf(result, values[index])
+	return result
+
+
+static func _maximum_height_step(positions: PackedVector3Array, bounds: Vector2i) -> float:
+	var result := -INF
+	for index in range(bounds.x + 1, bounds.y + 1):
+		result = maxf(result, positions[index].y - positions[index - 1].y)
+	return result
+
+
+static func _held_below_zero(
+	times: PackedFloat64Array, values: PackedFloat64Array, bounds: Vector2i
+) -> float:
+	var result := 0.0
+	for index in range(bounds.x + 1, bounds.y + 1):
+		if 0.5 * (values[index - 1] + values[index]) < 0.0:
+			result += times[index] - times[index - 1]
+	return result
+
+
+static func _held_at_or_below(
+	times: PackedFloat64Array, values: PackedFloat64Array, bounds: Vector2i, threshold: float
+) -> float:
+	var result := 0.0
+	for index in range(bounds.x + 1, bounds.y + 1):
+		if 0.5 * (values[index - 1] + values[index]) <= threshold:
+			result += times[index] - times[index - 1]
+	return result
+
+
+static func _heading_change(tangents: PackedVector3Array, bounds: Vector2i) -> float:
+	var first := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
+	var last := Vector2(tangents[bounds.y].x, tangents[bounds.y].z).normalized()
+	return acos(clampf(first.dot(last), -1.0, 1.0))
+
+
+static func _cross_track_displacement(
+	positions: PackedVector3Array, tangents: PackedVector3Array, bounds: Vector2i
+) -> float:
+	var forward := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
+	var right := Vector2(-forward.y, forward.x)
+	var delta := Vector2(positions[bounds.y].x - positions[bounds.x].x,
+		positions[bounds.y].z - positions[bounds.x].z)
+	return absf(delta.dot(right))
+
+
+static func _maximum_world_bank(
+	tangents: PackedVector3Array, rider_ups: PackedVector3Array, bounds: Vector2i
+) -> float:
+	var result := 0.0
+	for index in range(bounds.x, bounds.y + 1):
+		result = maxf(result, _world_bank(tangents[index], rider_ups[index]))
+	return result
+
+
+static func _world_bank(tangent: Vector3, rider_up: Vector3) -> float:
+	var level_up := Vector3.UP - tangent * tangent.y
+	if level_up.length_squared() <= 0.000001:
+		return INF
+	return acos(clampf(rider_up.dot(level_up.normalized()), -1.0, 1.0))
 
 
 static func _span_end_sample(span_indices: PackedInt32Array, span_index: int) -> int:
@@ -736,9 +1167,11 @@ static func _span_end_sample(span_indices: PackedInt32Array, span_index: int) ->
 static func _validate_landmark_report(report: Dictionary) -> PackedStringArray:
 	var errors := PackedStringArray()
 	for landmark_id in report.keys():
+		if landmark_id == "shape_evidence":
+			continue
 		var record: Dictionary = report[landmark_id]
-		if record.height_m < record.target_height_m[0] \
-				or record.height_m > record.target_height_m[1]:
+		if record.target_height_m != null and (record.height_m < record.target_height_m[0] \
+				or record.height_m > record.target_height_m[1]):
 			errors.append("%s height %.3f m" % [landmark_id, record.height_m])
 		if record.speed_mps < record.target_speed_mps[0] \
 				or record.speed_mps > record.target_speed_mps[1]:
@@ -746,6 +1179,42 @@ static func _validate_landmark_report(report: Dictionary) -> PackedStringArray:
 		if record.maximum_abs_tangent_y != null \
 				and absf(record.tangent_y) > record.maximum_abs_tangent_y:
 			errors.append("%s tangent_y %.5f" % [landmark_id, record.tangent_y])
+	var shape: Dictionary = report.shape_evidence
+	if shape.crest_held_at_or_below_22_mps_s < 2.7 \
+			or shape.crest_held_at_or_below_22_mps_s > 4.2:
+		errors.append("crest held <=22 m/s %.3f s" \
+			% shape.crest_held_at_or_below_22_mps_s)
+	if shape.cliff_prominence_m < 150.0 or shape.cliff_prominence_m > 175.0:
+		errors.append("cliff prominence %.3f m" % shape.cliff_prominence_m)
+	if shape.rim_heading_change_rad < deg_to_rad(15.0) \
+			or shape.rim_cross_track_m < 3.0 \
+			or shape.rim_maximum_bank_rad < deg_to_rad(20.0):
+		errors.append("rim shape heading %.1f deg, cross-track %.2f m, bank %.1f deg" % [
+			rad_to_deg(shape.rim_heading_change_rad), shape.rim_cross_track_m,
+			rad_to_deg(shape.rim_maximum_bank_rad)])
+	if shape.rim_exit_bank_rad > deg_to_rad(2.0) \
+			or absf(shape.rim_exit_pitch_rad) > deg_to_rad(3.0) \
+			or shape.rim_exit_up_dot < 0.99:
+		errors.append("rim exit bank %.2f deg, pitch %.2f deg, up-dot %.5f" % [
+			rad_to_deg(shape.rim_exit_bank_rad), rad_to_deg(shape.rim_exit_pitch_rad),
+			shape.rim_exit_up_dot])
+	if shape.dive_drop_m < 140.0 or shape.dive_drop_m > 175.0:
+		errors.append("dive drop %.3f m" % shape.dive_drop_m)
+	if shape.dive_minimum_tangent_y > -sin(deg_to_rad(75.0)):
+		errors.append("dive minimum tangent_y %.5f" % shape.dive_minimum_tangent_y)
+	if shape.dive_maximum_height_step_m > 0.01:
+		errors.append("dive rises %.5f m in one sample" % shape.dive_maximum_height_step_m)
+	if shape.dive_minimum_normal_g < -1.300001 or shape.dive_maximum_normal_g > 5.000001:
+		errors.append("dive normal range %.3f..%.3f g" % [
+			shape.dive_minimum_normal_g, shape.dive_maximum_normal_g])
+	if shape.camelback_prominence_m < 240.0 or shape.camelback_prominence_m > 260.0:
+		errors.append("camelback prominence %.3f m" % shape.camelback_prominence_m)
+	if shape.camelback_width_height_ratio < 3.1 \
+			or shape.camelback_width_height_ratio > 3.9:
+		errors.append("camelback width:height %.3f" % shape.camelback_width_height_ratio)
+	if shape.camelback_negative_normal_duration_s < 4.0:
+		errors.append("camelback negative normal duration %.3f s" \
+			% shape.camelback_negative_normal_duration_s)
 	return errors
 
 

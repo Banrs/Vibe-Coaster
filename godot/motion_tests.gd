@@ -137,7 +137,7 @@ func _test_low_speed_station_handoff() -> void:
 	], _vacuum_settings(0.01))
 	if not _expect_route(route, "zero-speed station start and exact 2 m/s handoff integrate"):
 		return
-	var seam := route.span_index.find(1)
+	var seam: int = route.span_index.find(1)
 	_expect(seam > 0, "station-to-moving boundary owns an exact native node")
 	if seam > 0:
 		_expect_close(route.speed_mps[seam], 2.0,
@@ -207,7 +207,7 @@ func _test_dense_output_distance_and_defect() -> void:
 	], _vacuum_settings(0.01))
 	if not _expect_route(route, "dense-output defect probe integrates"):
 		return
-	var midpoint := 0.5 * (route.distance_m[0] + route.distance_m[-1])
+	var midpoint: float = 0.5 * (route.distance_m[0] + route.distance_m[-1])
 	var sampled: Dictionary = Motion.sample_distance(route, midpoint)
 	_expect_close(float(sampled.get("distance_m", -1.0)), midpoint,
 		"dense distance inversion is monotone and returns the requested coordinate")

@@ -60,6 +60,7 @@ var _errors := PackedStringArray()
 
 func _initialize() -> void:
 	_test_capture_accepts_varied_station_frames()
+	_test_sustained_brake_closes_without_padding()
 	_test_station_local_program_compiles()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
@@ -67,6 +68,50 @@ func _initialize() -> void:
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
+
+
+func _test_sustained_brake_closes_without_padding() -> void:
+	var station := Vector3(174.262812, 0.0, 0.0)
+	var start := {
+		"position_m": Vector3.ZERO,
+		"tangent": Vector3.RIGHT,
+		"rider_up": Vector3.UP,
+		"speed_mps": 69.0,
+		"distance_m": 0.0,
+		"time_s": 0.0,
+	}
+	var layout := {
+		"station_position_m": station,
+		"station_tangent": Vector3.RIGHT,
+		"station_up": Vector3.UP,
+	}
+	var solved: Dictionary = RideProgram._solve_brakes(
+		start, layout, RideProgram._settings(0.05))
+	if not _expect(solved.get("ok", false),
+			"the reviewed 4.4 s final brake closes without a padding coast: %s" % str(solved)):
+		return
+	var spans: Array = solved.get("spans", [])
+	var ids := []
+	var active_duration_s := 0.0
+	for span: Dictionary in spans:
+		ids.append(span.get("span_id", ""))
+		if str(span.get("span_id", "")).begins_with("brakes/"):
+			active_duration_s += float(span.get("duration_s", 0.0))
+	_expect(ids == ["brakes/engage", "brakes/hold", "brakes/release", "station/creep"],
+		"the terminal program contains only the sustained brake and station creep")
+	_expect(absf(active_duration_s - 4.4) <= 0.000001,
+		"the active final brake retains the observed 4.4 second duration")
+	var route := Motion.integrate(start, spans, RideProgram._settings(0.01))
+	if not _expect(route.get("ok", false),
+			"the sustained brake fixture integrates through the central motion kernel"):
+		return
+	var handoff := Motion.sample_time(route, 4.4)
+	_expect(absf(float(handoff.get("speed_mps", -1.0)) - 2.0) <= 0.0001,
+		"the moving brake reaches exactly 2 m/s at its native station handoff")
+	_expect(route.position_m[-1].distance_to(station) <= 0.05,
+		"the authored terminal spans consume their physical station distance")
+	_expect(absf(float(route.speed_mps[-1]) - 1.0) <= 0.001,
+		"the station creep reaches the preset terminal speed")
 
 
 func _test_station_local_program_compiles() -> void:

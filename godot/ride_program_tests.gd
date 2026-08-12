@@ -290,7 +290,7 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 
 
 func _compile(layout: Dictionary) -> Dictionary:
-	return RideProgram.compile(42, {}, {}, layout, {
+	return RideProgram.compile(42, {}, layout, {
 		"position_m": layout.station_position_m,
 		"tangent": layout.station_tangent,
 		"rider_up": layout.station_up,

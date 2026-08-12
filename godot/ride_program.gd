@@ -26,7 +26,7 @@ const CAPTURE_COEFFICIENT_BOUNDS := [
 
 
 static func compile(
-	seed: int, config: Dictionary, terrain: Dictionary, layout: Dictionary,
+	seed: int, config: Dictionary, layout: Dictionary,
 	initial_state: Dictionary
 ) -> Dictionary:
 	var station_error := _validate_station_layout(layout, initial_state)
@@ -233,8 +233,6 @@ static func compile(
 		"generator_version": GENERATOR_VERSION,
 		"seed": seed,
 		"config": config,
-		"terrain": terrain,
-		"layout": layout,
 		"spans": spans,
 		"span_metadata": metadata,
 		"gesture_spans": gestures,

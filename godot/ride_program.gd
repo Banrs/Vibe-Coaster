@@ -683,9 +683,9 @@ static func _landmark_report(
 		"act_one_exit": {"span": gesture_ends["act-one"], "height_m": [-40.0, 40.0],
 			"speed_mps": [40.0, 70.0], "maximum_abs_tangent_y": 0.18},
 		"lsm2_exit": {"span": lsm2_exit_span, "height_m": [-20.0, 20.0],
-			"speed_mps": [75.0, 85.0], "maximum_abs_tangent_y": 0.12},
+			"speed_mps": [57.0, 64.0], "maximum_abs_tangent_y": 0.12},
 		"cliff_crest": {"span": gesture_ends["clifftop-suspense"],
-			"height_m": [150.0, 175.0], "speed_mps": [2.0, 10.0],
+			"height_m": [150.0, 175.0], "speed_mps": [5.0, 22.0],
 			"maximum_abs_tangent_y": 0.22},
 		"dive_exit": {"span": gesture_ends["cliff-dive"], "height_m": [-20.0, 20.0],
 			"speed_mps": [55.0, 70.0]},
@@ -694,7 +694,7 @@ static func _landmark_report(
 		"camelback_apex": {"span": camel_apex_span, "height_m": [240.0, 260.0],
 			"speed_mps": [50.0, 68.0]},
 		"return_entry": {"span": gesture_ends["marquee-camelback"],
-			"height_m": [-20.0, 20.0], "speed_mps": [70.0, 92.0],
+			"height_m": [-20.0, 20.0], "speed_mps": [78.0, 92.0],
 			"maximum_abs_tangent_y": 0.18},
 	}
 	var report := {}

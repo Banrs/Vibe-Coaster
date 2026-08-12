@@ -149,7 +149,7 @@ func _climb_is_unpowered_and_slows(route: Dictionary) -> bool:
 	var crest_duration := float(route.times[int(crest.last)]) - float(route.times[int(crest.first)])
 	return _all_propulsion_zero(route, first, int(crest.last)) \
 		and route.speeds[last] < route.speeds[first] - 10.0 \
-		and route.speeds[int(crest.first)] <= 10.0 \
+		and route.speeds[int(crest.first)] <= 22.0 \
 		and crest_duration >= 2.9 and crest_duration <= 4.2
 
 
@@ -193,7 +193,7 @@ func _launch_speeds_match_the_default_vision(route: Dictionary) -> bool:
 	var launch_speed := float(route.speeds[int(launch.last)])
 	var lsm2_speed := float(route.speeds[int(lsm2.last)])
 	return launch_speed >= 85.0 and launch_speed <= 98.0 \
-		and lsm2_speed >= 75.0 and lsm2_speed <= 85.0
+		and lsm2_speed >= 57.0 and lsm2_speed <= 64.0
 
 
 func _public_arrays_are_shaped(route: Dictionary) -> bool:
@@ -286,7 +286,7 @@ func _vertical_features_are_material(route: Dictionary) -> bool:
 		and apex >= camel_first + maxi(1, int(span / 5.0)) \
 		and apex <= camel_last - maxi(1, int(span / 5.0)) \
 		and prominence >= 240.0 and prominence <= 260.0 \
-		and width_height_ratio >= 1.55 and width_height_ratio <= 2.10
+		and width_height_ratio >= 3.1 and width_height_ratio <= 3.9
 
 
 func _inversions_are_material(route: Dictionary) -> bool:

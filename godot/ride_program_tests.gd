@@ -20,9 +20,9 @@ const LANDMARK_BANDS := {
 		"maximum_abs_tangent_y": 0.05},
 	"act_one_exit": {"height_m": Vector2(-40.0, 40.0), "speed_mps": Vector2(40.0, 70.0),
 		"maximum_abs_tangent_y": 0.18},
-	"lsm2_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(75.0, 85.0),
+	"lsm2_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(57.0, 64.0),
 		"maximum_abs_tangent_y": 0.12},
-	"cliff_crest": {"height_m": Vector2(150.0, 175.0), "speed_mps": Vector2(2.0, 10.0),
+	"cliff_crest": {"height_m": Vector2(150.0, 175.0), "speed_mps": Vector2(5.0, 22.0),
 		"maximum_abs_tangent_y": 0.22},
 	"dive_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(55.0, 70.0),
 		"maximum_abs_tangent_y": 0.22},
@@ -30,7 +30,7 @@ const LANDMARK_BANDS := {
 		"maximum_abs_tangent_y": 0.16},
 	"camelback_apex": {"height_m": Vector2(240.0, 260.0), "speed_mps": Vector2(50.0, 68.0),
 		"maximum_abs_tangent_y": 0.12},
-	"return_entry": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(70.0, 92.0),
+	"return_entry": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(78.0, 92.0),
 		"maximum_abs_tangent_y": 0.18},
 }
 

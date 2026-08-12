@@ -10,6 +10,7 @@ func _initialize() -> void:
 	_test_c2_profiles()
 	_test_resistance_law()
 	_test_constant_rolling_coast()
+	_test_quadratic_drag_coast()
 	_test_straight_coast()
 	_test_straight_launch()
 	_test_pitched_gravity_cancellation()
@@ -82,6 +83,30 @@ func _test_constant_rolling_coast() -> void:
 		rolling * route.distance_m[-1], "rolling work equals mechanical energy loss per unit mass")
 	_expect_close(route.longitudinal_g[-1], -rolling / Motion.G0,
 		"rolling loss appears in longitudinal proper g without gravity")
+
+
+func _test_quadratic_drag_coast() -> void:
+	var aero_per_m := 0.01
+	var duration := 1.0
+	var initial_speed := 10.0
+	var settings := _vacuum_settings(0.01)
+	settings.aero_per_m = aero_per_m
+	var route := Motion.integrate(_initial(initial_speed), [
+		_span("quadratic-coast", duration, "moving", 1.0, 0.0, 0.0, 0.0),
+	], settings)
+	if not _expect_route(route, "quadratic-drag coast integrates"):
+		return
+	var factor := 1.0 + aero_per_m * initial_speed * duration
+	var expected_speed := initial_speed / factor
+	var expected_distance := log(factor) / aero_per_m
+	_expect_close(route.speed_mps[-1], expected_speed,
+		"quadratic drag gives the analytic reciprocal speed decay")
+	_expect_close(route.position_m[-1].x, expected_distance,
+		"quadratic drag gives the analytic logarithmic coast position")
+	_expect_close(route.distance_m[-1], expected_distance,
+		"quadratic-drag distance matches the analytic position")
+	_expect_close(route.longitudinal_g[-1], -aero_per_m * expected_speed * expected_speed / Motion.G0,
+		"quadratic drag appears in longitudinal proper g")
 
 
 func _test_straight_coast() -> void:

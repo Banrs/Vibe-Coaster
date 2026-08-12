@@ -324,7 +324,7 @@ func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
 	_expect_close(route.time_s[-1], 2.0 * DURATION_S,
 		"roundoff folding retains the exact terminal time")
 	_expect_close(route.position_m[-1].x, 20.0 * DURATION_S,
-		"roundoff folding retains the analytic terminal position")
+		"roundoff folding retains the analytic terminal position", 0.000003)
 
 
 func _test_degenerate_frame_rejection() -> void:

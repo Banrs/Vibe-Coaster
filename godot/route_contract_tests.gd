@@ -6,6 +6,7 @@ var _errors := PackedStringArray()
 
 
 func _initialize() -> void:
+	_test_smoke_has_no_legacy_authoring_dependency()
 	_test_fixed_terminal_contract_accepts_matching_trajectory()
 	_test_fixed_terminal_contract_rejects_endpoint_misses()
 	_test_fixed_terminal_contract_rejects_invalid_tolerances()
@@ -14,6 +15,17 @@ func _initialize() -> void:
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
+
+
+func _test_smoke_has_no_legacy_authoring_dependency() -> void:
+	var source := FileAccess.get_file_as_string("res://smoke.gd")
+	_expect(not source.is_empty(), "the smoke gate source can be inspected")
+	for forbidden in [
+		"elements.gd", "Elements.", "RideElements", "FVD", "GRADE", "CLOSURE", "author_",
+		"integrate_fvd", "route.sections", "route.plan", "route.lsm_ids",
+	]:
+		_expect(not source.contains(forbidden),
+			"the smoke gate has no legacy authoring token '%s'" % forbidden)
 
 
 func _test_fixed_terminal_contract_accepts_matching_trajectory() -> void:

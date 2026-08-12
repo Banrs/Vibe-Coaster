@@ -140,7 +140,7 @@ static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArr
 	_expect(errors, unavailable.get("status", "") == "unavailable" and unavailable.get("reason", "") == "insufficient_duration", "an unavailable hold reports its physical-duration gap")
 	var selected_band := {}
 	for band in fidelity.element_bands(route):
-		if band.beat_id.ends_with("/selected"):
+		if band.story_slot_id == "act1.selected" and band.window_role == "core":
 			selected_band = band
 	if selected_band.is_empty():
 		errors.append("non-grid element bands retain the selected beat")

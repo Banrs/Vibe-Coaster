@@ -301,8 +301,8 @@ func _test_exact_span_boundary_splitting() -> void:
 func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
 	const DURATION_S := 0.500000000067
 	var route := Motion.integrate(_initial(10.0), [
-		_span("first", DURATION_S, "moving", 1.0, 0.0, 0.0, 0.0),
-		_span("second", DURATION_S, "moving", 1.0, 0.0, 0.0, 0.0),
+		_span("first", DURATION_S, "moving", 0.0, 0.0, 0.0, 0.0),
+		_span("second", DURATION_S, "moving", 0.0, 0.0, 0.0, 0.0),
 	], _zero_gravity_settings(0.01))
 	if not _expect_route(route, "roundoff-adjacent span boundaries integrate"):
 		return

@@ -15,6 +15,19 @@ const RETURN_TOPOLOGY_IDS := [
 	"raceway/hill-b-release",
 	"raceway/roll-settle",
 ]
+const CAPTURE_MARGIN_IDS := [
+	"coefficient_margin",
+	"corridor_cross_m",
+	"corridor_forward_high_m",
+	"corridor_forward_low_m",
+	"corridor_height_m",
+	"lateral_force_g",
+	"normal_force_g",
+	"remaining_along_track_m",
+	"roll_rate_rad_s",
+	"speed_floor_margin_mps",
+	"speed_floor_mps",
+]
 const LANDMARK_BANDS := {
 	"launch_exit": {"height_m": Vector2(-5.0, 5.0), "speed_mps": Vector2(85.0, 98.0),
 		"maximum_abs_tangent_y": 0.05},
@@ -41,6 +54,8 @@ func _initialize() -> void:
 	_test_station_local_program_compiles()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
+	_test_nonfinite_capture_margin_is_rejected()
+	_test_impossible_long_return_is_bounded_without_fallback()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -64,6 +79,15 @@ func _test_station_local_program_compiles() -> void:
 		"the solved global-return plan publishes residual evidence within 42 evaluations")
 	_expect(_capture_plan_is_bounded(compiled),
 		"the solved station capture publishes evidence within 40 coarse evaluations")
+	_expect(_conditioning_matches_accepted_point(compiled.get("return_plan", {}), "variables"),
+		"return conditioning is tied to the accepted variable vector")
+	_expect(_conditioning_matches_accepted_point(
+		compiled.get("capture_plan", {}), "coefficients"),
+		"capture conditioning is tied to the accepted coefficient vector")
+	_expect(_capture_margin_contract_is_complete(compiled),
+		"accepted capture evidence validates every required finite nonnegative margin")
+	_expect(_capture_corridor_is_longitudinally_bounded(compiled, _layout()),
+		"capture samples and margins stay between the reserved approach start and station")
 	_expect(_terminal_contract_is_fixed(compiled, _layout()),
 		"the integrated endpoint satisfies the requested station frame and terminal speed")
 	_expect(not _contains_fallback_or_repair_field(compiled),
@@ -95,7 +119,31 @@ func _test_impossible_capture_is_bounded_without_fallback() -> void:
 	layout["capture_half_width_m"] = -1.0
 	var compiled := _compile(layout)
 	_expect_capture_failure(compiled, 1, 40,
-		"an impossible negative-width capture corridor fails within the evaluation budget")
+		"an impossible negative-width capture corridor fails within the evaluation budget", true)
+
+
+func _test_nonfinite_capture_margin_is_rejected() -> void:
+	var layout := _layout()
+	layout["capture_half_width_m"] = NAN
+	var compiled := _compile(layout)
+	_expect_capture_failure(compiled, 1, 40,
+		"a nonfinite capture margin is rejected before a plan can be accepted", true)
+
+
+func _test_impossible_long_return_is_bounded_without_fallback() -> void:
+	var layout := _layout()
+	layout.reserved_corridor.minimum_length_m = 10000000.0
+	var compiled := _compile(layout)
+	_expect(not compiled.get("ok", true), "an impossible long return is rejected")
+	var failure: Dictionary = compiled.get("failure", {})
+	_expect(failure.get("stage", "") == "return",
+		"an impossible long return fails at the structured return stage")
+	var evaluations := int(failure.get("evaluation_count", -1))
+	_expect(evaluations >= 1 and evaluations <= 42,
+		"an impossible long return reports all attempted evaluations within budget")
+	_expect(not compiled.has("spans") and not failure.has("route")
+		and not failure.has("candidate") and not _contains_fallback_or_repair_field(compiled),
+		"an impossible long return exposes no candidate, fallback, or repair")
 
 
 func _compile(layout: Dictionary) -> Dictionary:
@@ -114,11 +162,13 @@ func _layout() -> Dictionary:
 		"station_position_m": Vector3.ZERO,
 		"station_tangent": Vector3.RIGHT,
 		"station_up": Vector3.UP,
+		"reserved_corridor": {"minimum_length_m": 1686.3294193226},
 	}
 
 
 func _expect_capture_failure(
-	compiled: Dictionary, minimum_evaluations: int, maximum_evaluations: int, message: String
+	compiled: Dictionary, minimum_evaluations: int, maximum_evaluations: int, message: String,
+	require_conditioning: bool = false
 ) -> void:
 	_expect(not compiled.get("ok", true), message)
 	var failure: Dictionary = compiled.get("failure", {})
@@ -130,6 +180,9 @@ func _expect_capture_failure(
 		"%s with a bounded nonnegative evaluation count" % message)
 	_expect(not compiled.has("spans") and not failure.has("route") and not failure.has("candidate"),
 		"%s without exposing or accepting a fallback candidate" % message)
+	if require_conditioning:
+		_expect(_valid_conditioning(failure.get("conditioning")),
+			"%s with conditioning from the evaluated point" % message)
 
 
 func _structural_terminal(span: Dictionary) -> bool:
@@ -232,6 +285,70 @@ func _plan_evidence_is_within_tolerance(plan: Dictionary) -> bool:
 	return true
 
 
+func _conditioning_matches_accepted_point(plan: Dictionary, vector_field: String) -> bool:
+	var vector: Variant = plan.get(vector_field)
+	var conditioning: Variant = plan.get("conditioning")
+	return vector is Array and conditioning is Dictionary \
+		and conditioning.get("ok", false) and _valid_conditioning(conditioning) \
+		and conditioning.get("evaluated_vector") == vector
+
+
+func _valid_conditioning(value: Variant) -> bool:
+	return value is Dictionary \
+		and _finite_number(value.get("minimum_pivot")) \
+		and float(value.minimum_pivot) >= 0.0 \
+		and _finite_number(value.get("pivot_ratio")) \
+		and float(value.pivot_ratio) >= 0.0
+
+
+func _capture_margin_contract_is_complete(compiled: Dictionary) -> bool:
+	var margins: Variant = compiled.get("capture_plan", {}).get("margins")
+	if not margins is Dictionary:
+		return false
+	var actual_ids: Array = margins.keys()
+	actual_ids.sort()
+	var expected_ids := CAPTURE_MARGIN_IDS.duplicate()
+	expected_ids.sort()
+	if actual_ids != expected_ids:
+		return false
+	for margin in margins.values():
+		if not _finite_number(margin) or float(margin) < 0.0:
+			return false
+	return true
+
+
+func _capture_corridor_is_longitudinally_bounded(
+	compiled: Dictionary, layout: Dictionary
+) -> bool:
+	var trajectory := _integrated_trajectory(compiled, layout)
+	if not trajectory.get("ok", false):
+		return false
+	var capture_span_indices := []
+	for span_index in compiled.get("spans", []).size():
+		if str(compiled.spans[span_index].get("span_id", "")).begins_with("capture/"):
+			capture_span_indices.append(span_index)
+	if capture_span_indices.is_empty():
+		return false
+	var forward: Vector3 = layout.station_tangent.normalized()
+	var approach_start: Vector3 = layout.station_position_m - forward * float(
+		layout.reserved_corridor.minimum_length_m)
+	var sample_count := 0
+	for sample_index in trajectory.position_m.size():
+		if not capture_span_indices.has(int(trajectory.span_index[sample_index])):
+			continue
+		sample_count += 1
+		var position: Vector3 = trajectory.position_m[sample_index]
+		if (position - approach_start).dot(forward) < 0.0 \
+				or (layout.station_position_m - position).dot(forward) < 0.0:
+			return false
+	var margins: Dictionary = compiled.get("capture_plan", {}).get("margins", {})
+	return sample_count > 0 \
+		and _finite_number(margins.get("corridor_forward_low_m")) \
+		and float(margins.corridor_forward_low_m) >= 0.0 \
+		and _finite_number(margins.get("corridor_forward_high_m")) \
+		and float(margins.corridor_forward_high_m) >= 0.0
+
+
 func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> bool:
 	var report: Variant = compiled.get("landmark_report")
 	var trajectory := _integrated_trajectory(compiled, layout)
@@ -270,11 +387,148 @@ func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> b
 	var reported_headroom: Variant = return_entry.get("energy_headroom_j_per_kg")
 	if not _finite_number(reported_headroom) or float(reported_headroom) <= 0.0:
 		return false
+	if not _shape_evidence_matches_trajectory(compiled, report, trajectory):
+		return false
 	var relative_height: float = (return_entry.position_m - station_position).dot(station_up)
 	var expected_headroom: float = (
 		0.5 * float(return_entry.speed_mps) ** 2 + Motion.G0 * relative_height - 0.5
 	)
 	return absf(float(reported_headroom) - expected_headroom) <= 0.001
+
+
+func _shape_evidence_matches_trajectory(
+	compiled: Dictionary, report: Dictionary, trajectory: Dictionary
+) -> bool:
+	var shape: Variant = report.get("shape_evidence")
+	var climb := _compiled_gesture(compiled, "escarpment-climb")
+	var cliff := _compiled_gesture(compiled, "clifftop-suspense")
+	var rim := _compiled_role(cliff, "outward-rim")
+	var slow_crest := _compiled_role(cliff, "slow-crest")
+	if not shape is Dictionary or climb.is_empty() or cliff.is_empty() \
+			or rim.is_empty() or slow_crest.is_empty():
+		return false
+	var evidence: Dictionary = shape
+	var climb_entry := _trajectory_span_bounds(trajectory,
+		int(climb.first_span), int(climb.first_span)).x
+	var crest_bounds := _trajectory_span_bounds(trajectory,
+		int(climb.first_span), int(cliff.last_span))
+	var slow_bounds := _trajectory_span_bounds(trajectory,
+		int(slow_crest.first_span), int(slow_crest.last_span))
+	var rim_bounds := _trajectory_span_bounds(trajectory,
+		int(rim.first_span), int(rim.last_span))
+	var crest_apex := _maximum_trajectory_height(trajectory, crest_bounds)
+	var held_s := _held_at_or_below(
+		trajectory.time_s, trajectory.speed_mps, slow_bounds, 22.0)
+	var cliff_prominence := float(trajectory.position_m[crest_apex].y) \
+		- float(trajectory.position_m[climb_entry].y)
+	var rim_heading := _trajectory_heading_change(trajectory.tangent, rim_bounds)
+	var rim_cross_track := _trajectory_cross_track(
+		trajectory.position_m, trajectory.tangent, rim_bounds)
+	var rim_maximum_bank := _trajectory_maximum_bank(
+		trajectory.tangent, trajectory.rider_up, rim_bounds)
+	var rim_exit: int = rim_bounds.y
+	var rim_exit_bank := _trajectory_bank(
+		trajectory.tangent[rim_exit], trajectory.rider_up[rim_exit])
+	var rim_exit_pitch := asin(clampf(trajectory.tangent[rim_exit].y, -1.0, 1.0))
+	var rim_exit_up_dot := trajectory.rider_up[rim_exit].dot(Vector3.UP)
+	return _reported_near(evidence, "crest_held_at_or_below_22_mps_s", held_s, 0.051) \
+		and held_s >= 2.7 \
+		and _reported_near(evidence, "cliff_prominence_m", cliff_prominence, 0.001) \
+		and cliff_prominence >= 150.0 and cliff_prominence <= 175.0 \
+		and _reported_near(evidence, "rim_heading_change_rad", rim_heading, 0.00001) \
+		and _reported_near(evidence, "rim_cross_track_m", rim_cross_track, 0.001) \
+		and _reported_near(evidence, "rim_maximum_bank_rad", rim_maximum_bank, 0.00001) \
+		and rim_heading >= deg_to_rad(15.0) and rim_cross_track >= 3.0 \
+		and rim_maximum_bank >= deg_to_rad(20.0) \
+		and _reported_near(evidence, "rim_exit_bank_rad", rim_exit_bank, 0.00001) \
+		and _reported_near(evidence, "rim_exit_pitch_rad", rim_exit_pitch, 0.00001) \
+		and _reported_near(evidence, "rim_exit_up_dot", rim_exit_up_dot, 0.00001) \
+		and rim_exit_bank <= deg_to_rad(2.0) \
+		and absf(rim_exit_pitch) <= deg_to_rad(3.0) and rim_exit_up_dot >= 0.99
+
+
+func _compiled_gesture(compiled: Dictionary, story_id: String) -> Dictionary:
+	for gesture in compiled.get("gesture_spans", []):
+		if gesture.get("story_slot_id", "") == story_id:
+			return gesture
+	return {}
+
+
+func _compiled_role(gesture: Dictionary, role_id: String) -> Dictionary:
+	for role in gesture.get("role_windows", []):
+		if role.get("id", "") == role_id:
+			return role
+	return {}
+
+
+func _trajectory_span_bounds(
+	trajectory: Dictionary, first_span: int, last_span: int
+) -> Vector2i:
+	var owners: PackedInt32Array = trajectory.span_index
+	var first := 0
+	while first < owners.size() - 1 and owners[first] < first_span:
+		first += 1
+	var last := first
+	while last < owners.size() - 1 and owners[last] <= last_span:
+		last += 1
+	return Vector2i(first, last)
+
+
+func _maximum_trajectory_height(trajectory: Dictionary, bounds: Vector2i) -> int:
+	var result := bounds.x
+	for index in range(bounds.x + 1, bounds.y + 1):
+		if trajectory.position_m[index].y > trajectory.position_m[result].y:
+			result = index
+	return result
+
+
+func _held_at_or_below(
+	times: PackedFloat64Array, values: PackedFloat64Array, bounds: Vector2i, threshold: float
+) -> float:
+	var result := 0.0
+	for index in range(bounds.x + 1, bounds.y + 1):
+		if 0.5 * (values[index - 1] + values[index]) <= threshold:
+			result += times[index] - times[index - 1]
+	return result
+
+
+func _trajectory_heading_change(tangents: PackedVector3Array, bounds: Vector2i) -> float:
+	var first := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
+	var last := Vector2(tangents[bounds.y].x, tangents[bounds.y].z).normalized()
+	return acos(clampf(first.dot(last), -1.0, 1.0))
+
+
+func _trajectory_cross_track(
+	positions: PackedVector3Array, tangents: PackedVector3Array, bounds: Vector2i
+) -> float:
+	var forward := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
+	var right := Vector2(-forward.y, forward.x)
+	var delta := Vector2(positions[bounds.y].x - positions[bounds.x].x,
+		positions[bounds.y].z - positions[bounds.x].z)
+	return absf(delta.dot(right))
+
+
+func _trajectory_maximum_bank(
+	tangents: PackedVector3Array, rider_ups: PackedVector3Array, bounds: Vector2i
+) -> float:
+	var result := 0.0
+	for index in range(bounds.x, bounds.y + 1):
+		result = maxf(result, _trajectory_bank(tangents[index], rider_ups[index]))
+	return result
+
+
+func _trajectory_bank(tangent: Vector3, rider_up: Vector3) -> float:
+	var level_up := Vector3.UP - tangent * tangent.y
+	if level_up.length_squared() <= 0.000001:
+		return INF
+	return acos(clampf(rider_up.dot(level_up.normalized()), -1.0, 1.0))
+
+
+func _reported_near(
+	report: Dictionary, key: String, expected: float, tolerance: float
+) -> bool:
+	var actual: Variant = report.get(key)
+	return _finite_number(actual) and absf(float(actual) - expected) <= tolerance
 
 
 func _inside(value: float, band: Vector2) -> bool:

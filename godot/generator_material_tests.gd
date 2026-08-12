@@ -44,8 +44,8 @@ func _initialize() -> void:
 		"seed 42 materially differs from legacy in at least three measured dimensions")
 	_expect(_climb_is_unpowered_and_slows(route),
 		"the post-LSM2 escarpment climb is unpowered and decelerates into the slow crest")
-	_expect(_dive_core_descends_monotonically(route),
-		"the cliff-dive core loses height monotonically")
+	_expect(_dive_is_physical(route),
+		"the full cliff dive is monotonic and steep while its literal core stays unloaded")
 	_expect(_lsm3_feeds_camelback(route),
 		"LSM3 reaches the 340 km/h class and directly feeds the marquee camelback")
 	_expect(_launch_speeds_match_the_default_vision(route),
@@ -152,19 +152,22 @@ func _climb_is_unpowered_and_slows(route: Dictionary) -> bool:
 		and route.speeds[int(crest.first)] <= 22.0 \
 		and crest_duration >= 2.9 and crest_duration <= 4.2
 
-
-func _dive_core_descends_monotonically(route: Dictionary) -> bool:
+func _dive_is_physical(route: Dictionary) -> bool:
+	var dive := _window(route, "cliff-dive")
 	var core := _role(route, "cliff-dive", "core")
-	if core.is_empty():
+	if dive.is_empty() or core.is_empty():
 		return false
-	for index in range(int(core.first) + 1, int(core.last) + 1):
+	var dive_first := int(dive.first)
+	var dive_last := int(dive.last)
+	for index in range(dive_first + 1, dive_last + 1):
 		if route.positions[index].y >= route.positions[index - 1].y:
 			return false
-	var drop_m := float(route.positions[int(core.first)].y - route.positions[int(core.last)].y)
+	var drop_m := float(route.positions[dive_first].y - route.positions[dive_last].y)
 	var minimum_tangent_y := 1.0
+	for index in range(dive_first, dive_last + 1):
+		minimum_tangent_y = minf(minimum_tangent_y, route.tangents[index].y)
 	var maximum_abs_normal_g := 0.0
 	for index in range(int(core.first), int(core.last) + 1):
-		minimum_tangent_y = minf(minimum_tangent_y, route.tangents[index].y)
 		maximum_abs_normal_g = maxf(maximum_abs_normal_g, absf(float(route.normal_g[index])))
 	return drop_m >= 140.0 and drop_m <= 175.0 \
 		and minimum_tangent_y <= -sin(deg_to_rad(75.0)) \

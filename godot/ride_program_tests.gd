@@ -808,6 +808,20 @@ func _shape_evidence_matches_trajectory(
 		trajectory.position_m, trajectory.tangent, rim_bounds)
 	var rim_maximum_bank := _trajectory_maximum_bank(
 		trajectory.tangent, trajectory.rider_up, rim_bounds)
+	var negative_rim_bank := PackedFloat64Array()
+	negative_rim_bank.resize(trajectory.time_s.size())
+	var rim_maximum_lateral_g := 0.0
+	for index in range(rim_bounds.x, rim_bounds.y + 1):
+		negative_rim_bank[index] = -_trajectory_bank(
+			trajectory.tangent[index], trajectory.rider_up[index])
+		rim_maximum_lateral_g = maxf(
+			rim_maximum_lateral_g, absf(float(trajectory.lateral_g[index])))
+	var rim_held_bank_s := _linear_held_at_or_below(
+		trajectory.time_s, negative_rim_bank, rim_bounds, -deg_to_rad(40.0))
+	var rim_duration_s: float = trajectory.time_s[rim_bounds.y] \
+		- trajectory.time_s[rim_bounds.x]
+	var rim_distance_m: float = trajectory.distance_m[rim_bounds.y] \
+		- trajectory.distance_m[rim_bounds.x]
 	var rim_exit: int = rim_bounds.y
 	var rim_exit_bank := _trajectory_bank(
 		trajectory.tangent[rim_exit], trajectory.rider_up[rim_exit])
@@ -820,8 +834,10 @@ func _shape_evidence_matches_trajectory(
 		and _reported_near(evidence, "rim_heading_change_rad", rim_heading, 0.00001) \
 		and _reported_near(evidence, "rim_cross_track_m", rim_cross_track, 0.001) \
 		and _reported_near(evidence, "rim_maximum_bank_rad", rim_maximum_bank, 0.00001) \
-		and rim_heading >= deg_to_rad(15.0) and rim_cross_track >= 3.0 \
-		and rim_maximum_bank >= deg_to_rad(20.0) \
+		and rim_heading >= deg_to_rad(110.0) and rim_heading <= deg_to_rad(170.0) \
+		and rim_held_bank_s >= 1.0 and rim_maximum_lateral_g <= 0.05 \
+		and rim_duration_s >= 3.5 and rim_duration_s <= 6.0 \
+		and rim_distance_m >= 40.0 and rim_distance_m <= 160.0 \
 		and _reported_near(evidence, "rim_exit_bank_rad", rim_exit_bank, 0.00001) \
 		and _reported_near(evidence, "rim_exit_pitch_rad", rim_exit_pitch, 0.00001) \
 		and _reported_near(evidence, "rim_exit_up_dot", rim_exit_up_dot, 0.00001) \

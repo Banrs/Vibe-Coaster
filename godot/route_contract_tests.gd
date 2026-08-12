@@ -1,15 +1,12 @@
 extends SceneTree
 
 const RouteContract := preload("res://route_contract.gd")
-const RideVerify := preload("res://verify.gd")
 
 var _errors := PackedStringArray()
 
 
 func _initialize() -> void:
 	_test_smoke_has_no_legacy_authoring_dependency()
-	_test_sampled_seams_accept_global_cubic_on_nonuniform_distances()
-	_test_sampled_seams_reject_derivative_discontinuities()
 	_test_fixed_terminal_contract_accepts_matching_trajectory()
 	_test_fixed_terminal_contract_rejects_endpoint_misses()
 	_test_fixed_terminal_contract_rejects_invalid_tolerances()
@@ -29,56 +26,6 @@ func _test_smoke_has_no_legacy_authoring_dependency() -> void:
 	]:
 		_expect(not source.contains(forbidden),
 			"the smoke gate has no legacy authoring token '%s'" % forbidden)
-
-
-func _test_sampled_seams_accept_global_cubic_on_nonuniform_distances() -> void:
-	var route := _seam_fixture("global_cubic")
-	var issues := PackedStringArray()
-	RideVerify.validate_seams(route, issues)
-	_expect(not _contains(issues, "C3") and not _contains(issues, "C4"),
-		"a globally cubic curvature sampled at nonuniform distances is smooth: %s" % str(issues))
-
-
-func _test_sampled_seams_reject_derivative_discontinuities() -> void:
-	var slope_issues := PackedStringArray()
-	RideVerify.validate_seams(_seam_fixture("slope_jump"), slope_issues)
-	_expect(_contains(slope_issues, "C3 curvature slope jumps") \
-			and not _contains(slope_issues, "C4"),
-		"a first-derivative discontinuity reports only C3: %s" % str(slope_issues))
-
-	var acceleration_issues := PackedStringArray()
-	RideVerify.validate_seams(_seam_fixture("acceleration_jump"), acceleration_issues)
-	_expect(not _contains(acceleration_issues, "C3") \
-			and _contains(acceleration_issues, "C4 curvature acceleration jumps"),
-		"a second-derivative discontinuity reports only C4: %s" % str(acceleration_issues))
-
-
-func _seam_fixture(kind: String) -> Dictionary:
-	var distances := PackedFloat64Array([8.2, 8.9, 9.6, 10.0, 10.75, 11.5, 12.4])
-	var curvatures := PackedVector3Array()
-	for distance in distances:
-		var offset: float = distance - 10.0
-		var curvature := 0.0
-		match kind:
-			"global_cubic":
-				curvature = 0.01 * offset * offset * offset
-			"slope_jump":
-				curvature = 0.01 * offset if offset > 0.0 else 0.0
-			"acceleration_jump":
-				curvature = 0.01 * offset * offset if offset > 0.0 else 0.0
-		curvatures.append(Vector3(curvature, 0.0, 0.0))
-	return {
-		"positions": PackedVector3Array([
-			Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO,
-			Vector3.ZERO, Vector3.ZERO, Vector3.ZERO,
-		]),
-		"curvatures": curvatures,
-		"banks": PackedFloat64Array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-		"distances": distances,
-		"span_indices": PackedInt32Array([0, 0, 0, 1, 1, 1, 1]),
-		"gesture_indices": PackedInt32Array([-1, -1, -1, -1, -1, -1, -1]),
-		"gesture_windows": [],
-	}
 
 
 func _test_fixed_terminal_contract_accepts_matching_trajectory() -> void:

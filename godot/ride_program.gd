@@ -111,7 +111,7 @@ static func compile(
 		Motion.quintic(1.0, 3.894889), 0.0, 0.0, 0.0, "unpowered-climb")
 	_add(spans, metadata, propulsion, "climb/unload", 2.186308, "moving",
 		Motion.quintic(3.894889, 0.0), 0.0, 0.0, 0.0, "unpowered-climb")
-	_add(spans, metadata, propulsion, "climb/ballistic", 3.289977, "moving",
+	_add(spans, metadata, propulsion, "climb/ballistic", 3.34, "moving",
 		0.0, 0.0, 0.0, 0.0, "unpowered-climb")
 	_add(spans, metadata, propulsion, "climb/level", 0.307367, "moving",
 		Motion.quintic(0.0, 1.0), 0.0, 0.0, 0.0, "unpowered-climb")
@@ -125,7 +125,7 @@ static func compile(
 		Motion.compact_pulse(deg_to_rad(84.15)), "outward-rim")
 	_add(spans, metadata, propulsion, "rim/outward-arc", 1.0, "moving",
 		1.493674785, 0.0, 0.0, 0.0, "outward-rim")
-	_add(spans, metadata, propulsion, "rim/outward-release", 1.40, "moving",
+	_add(spans, metadata, propulsion, "rim/outward-release", 1.45, "moving",
 		Motion.quintic(1.493674785, 1.0), Motion.compact_pulse(-0.05), 0.0,
 		Motion.compact_pulse(deg_to_rad(-84.15)), "outward-rim")
 	_end_gesture(gestures, metadata, spans.size() - 1)

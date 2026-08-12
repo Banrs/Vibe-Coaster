@@ -41,19 +41,59 @@ static func compile(
 	var gestures: Array = []
 	var propulsion := PackedInt32Array()
 
-	_begin_gesture(gestures, "station-launch", spans.size())
-	_add(spans, metadata, propulsion, "launch/settle", 0.03, "station",
-		1.0, 0.0, 4.0, 0.0, "station", 1, 0.0)
-	_add(spans, metadata, propulsion, "launch/core", 1.30, "moving",
-		1.0, 0.0, 4.0, 0.0, "core", 1)
-	_add(spans, metadata, propulsion, "launch/release", 0.30, "moving",
-		1.0, 0.0, Motion.quintic(4.0, 0.0), 0.0, "core", 1)
+	_begin_gesture(gestures, "station-launch", spans.size(), "launch")
+	_add(spans, metadata, propulsion, "launch/ramp", 0.31, "station",
+		1.0, 0.0, Motion.quintic(0.0, 4.0), 0.0, "launch", 1, 0.0, "launch")
+	_add(spans, metadata, propulsion, "launch/core", 1.4928103277564437, "moving",
+		1.0, 0.0, 4.0, 0.0, "launch", 1, 2.0, "launch")
+	_add(spans, metadata, propulsion, "launch/release", 0.31, "moving",
+		1.0, 0.0, Motion.quintic(4.0, 0.0), 0.0, "launch", 1, 2.0, "launch")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "opener", spans.size(), "twisted_drop")
-	_add_balanced_feature(spans, metadata, propulsion, "opener",
-		[0.834, 0.834, 2.095, 2.095, 0.820, 0.820],
-		[1.0, 3.79, 1.0, -1.08, 1.0, 3.76, 1.0], 0.10, deg_to_rad(10.0))
+	_add(spans, metadata, propulsion, "crest/rise-shoulder", 1.2, "moving",
+		Motion.quintic(1.0, 3.7), 0.0, 0.0, 0.0,
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "crest/twist-in", 1.2, "moving",
+		Motion.quintic(3.7, 1.0), Motion.compact_pulse(0.2), 0.0,
+		Motion.compact_pulse(0.43676864531157017),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/commit", 4.79999999999999, "moving",
+		Motion.quintic(1.0, -0.9), Motion.compact_pulse(-0.2), 0.0,
+		Motion.compact_pulse(0.43676864531157017),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/core", 3.094817391662892, "moving",
+		Motion.quintic(-0.9, 1.0), Motion.compact_pulse(0.2), 0.0,
+		Motion.compact_pulse(-0.6784482475514162),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/pullout", 0.8000000000000002, "moving",
+		Motion.quintic(1.0, 3.7), Motion.compact_pulse(-0.2), 0.0,
+		Motion.compact_pulse(-0.6784482475514162),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/release", 1.9672258362758237, "moving",
+		Motion.quintic(3.7, 1.0), 0.0, 0.0, 0.0,
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "teardrop/bank-in", 1.5000000000043456, "moving",
+		Motion.quintic(1.0, 1.235677199441744), 0.0, 0.0,
+		Motion.compact_pulse(0.966940012289401), "teardrop", 0, 2.0, "overbank")
+	_add(spans, metadata, propulsion, "teardrop/overbanked-arc", 11.232051014082609,
+		"moving", 1.235677199441744, 0.0, 0.0, 0.0,
+		"teardrop", 0, 2.0, "overbank")
+	_add(spans, metadata, propulsion, "teardrop/bank-out", 1.5000000000043456, "moving",
+		Motion.quintic(1.235677199441744, 1.0), 0.0, 0.0,
+		Motion.compact_pulse(-0.966940012289401), "teardrop", 0, 2.0, "overbank")
+	_add(spans, metadata, propulsion, "release/rise-shoulder", 1.0, "moving",
+		Motion.quintic(1.0, 3.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/unload", 1.0, "moving",
+		Motion.quintic(3.0, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/crest", 2.434565445080618, "moving",
+		Motion.quintic(1.0, -0.55), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/fall", 2.4562596640024132, "moving",
+		Motion.quintic(-0.55, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/pullout", 1.0, "moving",
+		Motion.quintic(1.0, 3.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/settle", 1.0, "moving",
+		Motion.quintic(3.0, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "act-one", spans.size())
@@ -307,31 +347,6 @@ static func _add_act_one(spans: Array, metadata: Array, propulsion: PackedInt32A
 	_add(spans, metadata, propulsion, "act-one/wave-release", 1.299999999316, "moving",
 		Motion.quintic(5.2, 1.0), Motion.compact_pulse(1.083606852), 0.0,
 		Motion.compact_pulse(deg_to_rad(-33.272585436)), "wave-turn", 0, 2.0, "wave_turn")
-
-
-static func _add_balanced_feature(
-	spans: Array, metadata: Array, propulsion: PackedInt32Array, prefix: String,
-	durations: Array, loads: Array, lateral_peak: float, roll_peak: float
-) -> void:
-	var roles := ["entry", "rise", "airtime", "airtime", "pullout", "exit"]
-	for index in 6:
-		var lateral: Variant = 0.0
-		var roll: Variant = 0.0
-		if index == 1:
-			lateral = Motion.compact_pulse(lateral_peak)
-			roll = Motion.compact_pulse(roll_peak)
-		elif index == 2:
-			lateral = Motion.compact_pulse(-lateral_peak)
-			roll = Motion.compact_pulse(roll_peak)
-		elif index == 3:
-			lateral = Motion.compact_pulse(lateral_peak)
-			roll = Motion.compact_pulse(-roll_peak)
-		elif index == 4:
-			lateral = Motion.compact_pulse(-lateral_peak)
-			roll = Motion.compact_pulse(-roll_peak)
-		_add(spans, metadata, propulsion, "%s/%02d" % [prefix, index], durations[index],
-			"moving", Motion.quintic(loads[index], loads[index + 1]), lateral, 0.0,
-			roll, roles[index])
 
 
 static func _add_raceway(s: Array, m: Array, p: PackedInt32Array, v: Array) -> void:

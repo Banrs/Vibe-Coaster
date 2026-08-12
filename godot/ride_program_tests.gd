@@ -657,6 +657,10 @@ func _shape_evidence_matches_trajectory(
 		trajectory.tangent[rim_exit], trajectory.rider_up[rim_exit])
 	var rim_exit_pitch := asin(clampf(trajectory.tangent[rim_exit].y, -1.0, 1.0))
 	var rim_exit_up_dot: float = trajectory.rider_up[rim_exit].dot(Vector3.UP)
+	printerr("shape replay: held=%.9f prominence=%.9f heading=%.9f cross=%.9f bank=%.9f lateral=%.9f duration=%.9f distance=%.9f exit_bank=%.9f pitch=%.9f up=%.9f" % [
+		rim_held_bank_s, cliff_prominence, rim_heading, rim_cross_track,
+		rim_maximum_bank, rim_maximum_lateral_g, rim_duration_s, rim_distance_m,
+		rim_exit_bank, rim_exit_pitch, rim_exit_up_dot])
 	return _reported_near(evidence, "crest_held_at_or_below_22_mps_s", held_s, 0.051) \
 		and held_s >= 2.7 \
 		and _reported_near(evidence, "cliff_prominence_m", cliff_prominence, 0.001) \

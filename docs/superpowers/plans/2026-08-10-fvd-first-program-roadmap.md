@@ -3,6 +3,26 @@
 > **Status:** approved design decomposition. Execute with
 > `superpowers:subagent-driven-development`, test-first, one implementation task at a time.
 
+## Current state (verified 2026-08-12)
+
+Step 1 of the execution order is built: `2026-08-09-evidence-audit-baseline.md` was implemented and
+closed out at `6d5716e`, and `codex/fvd-first-generator` has been merged into `main` and deleted.
+`2026-08-11-evidence-baseline-remediation.md` — which corrects and simplifies that baseline — is the
+active work and is the effective step 1b before the route/config foundation.
+
+**Next action: `2026-08-11-evidence-baseline-remediation.md`, Task 1, Step 1.** All 45 of its step
+checkboxes are open, but catalog-validation delegation work (`a588b9e`…`a2445a8`) already landed
+after the plan was written without ticking any box. Reconcile the plan against the code before
+executing it, rather than assuming Task 1 is untouched.
+
+All gates verified green at `a2445a8` with `out/tools/godot-4.7.1/Godot_v4.7.1-stable_win64_console.exe`:
+editor import, `res://smoke.gd` (~248 s local; 12/12 seeds build and place clean, 7.6–10.2 km),
+`res://fidelity_tests.gd`, and `res://fidelity_artifact_tests.gd` all exit 0.
+
+Incidental, not acted on: `RideGenerator._approach_run` (`godot/generator.gd:2588`) has no callers
+anywhere in the repository — leftover from an earlier launch-corridor solve, while its sibling
+`_approach_heading` is still live.
+
 ## Authority
 
 - Product/design authority: `../specs/2026-08-09-fvd-first-configurable-generator-design.md`.

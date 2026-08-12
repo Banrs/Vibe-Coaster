@@ -10,6 +10,7 @@ func _initialize() -> void:
 	_test_fixed_terminal_contract_rejects_endpoint_misses()
 	_test_fixed_terminal_contract_rejects_invalid_tolerances()
 	_test_initial_state_uses_tight_finite_tolerances()
+	_test_gesture_analytic_onset_contract()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -27,6 +28,8 @@ func _test_fixed_terminal_contract_accepts_matching_trajectory() -> void:
 		and route.gesture_windows[0].get("first", -1) == 0 \
 		and route.gesture_windows[0].get("last", -1) == 3,
 		"the accepted synthetic contract preserves its complete gesture window")
+	_expect(route.gesture_windows[0].get("peak_analytic_normal_onset_gps") == 7.875,
+		"the public gesture window preserves its compiled analytic normal onset")
 
 
 func _test_fixed_terminal_contract_rejects_endpoint_misses() -> void:
@@ -80,6 +83,21 @@ func _test_initial_state_uses_tight_finite_tolerances() -> void:
 	_expect_rejected(nonfinite, "finite", "a non-finite initial state")
 
 
+func _test_gesture_analytic_onset_contract() -> void:
+	var missing := _fixture()
+	missing.compiled.gesture_spans[0].erase("peak_analytic_normal_onset_gps")
+	_expect_rejected(missing, "peak_analytic_normal_onset_gps",
+		"a gesture missing analytic normal onset")
+	var nonfinite := _fixture()
+	nonfinite.compiled.gesture_spans[0].peak_analytic_normal_onset_gps = NAN
+	_expect_rejected(nonfinite, "peak_analytic_normal_onset_gps",
+		"a gesture with non-finite analytic normal onset")
+	var negative := _fixture()
+	negative.compiled.gesture_spans[0].peak_analytic_normal_onset_gps = -0.001
+	_expect_rejected(negative, "peak_analytic_normal_onset_gps",
+		"a gesture with negative analytic normal onset")
+
+
 func _fixture() -> Dictionary:
 	var station_position := Vector3(3.0, 0.0, 0.0)
 	var spans := [{"span_id": "one"}, {"span_id": "two"}, {"span_id": "three"}]
@@ -91,6 +109,7 @@ func _fixture() -> Dictionary:
 		"window_id": "synthetic/whole/00",
 		"first_span": 0,
 		"last_span": 2,
+		"peak_analytic_normal_onset_gps": 7.875,
 		"role_windows": [{
 			"id": "core",
 			"display_name": "Core",

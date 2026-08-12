@@ -8,6 +8,7 @@ var _errors := PackedStringArray()
 
 func _initialize() -> void:
 	_test_c2_profiles()
+	_test_profile_peak_abs_derivative()
 	_test_resistance_law()
 	_test_constant_rolling_coast()
 	_test_quadratic_drag_coast()
@@ -51,6 +52,19 @@ func _test_c2_profiles() -> void:
 	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only(),
 		"profile records are immutable")
 	_expect(span_record.is_read_only(), "span records are immutable")
+
+
+func _test_profile_peak_abs_derivative() -> void:
+	_expect_close(Motion.profile_peak_abs_derivative(Motion.constant(-4.0)), 0.0,
+		"constant profile has zero peak derivative")
+	_expect_close(Motion.profile_peak_abs_derivative(Motion.quintic(1.0, 5.2)), 7.875,
+		"rising quintic reports its exact analytic peak derivative")
+	_expect_close(Motion.profile_peak_abs_derivative(Motion.quintic(5.2, 1.0)), 7.875,
+		"falling quintic has the same absolute peak derivative")
+	_expect_close(Motion.profile_peak_abs_derivative(Motion.compact_pulse(3.0)),
+		10.699182439179779, "positive compact pulse reports its exact analytic peak derivative")
+	_expect_close(Motion.profile_peak_abs_derivative(Motion.compact_pulse(-3.0)),
+		10.699182439179779, "negative compact pulse has the same absolute peak derivative")
 
 
 func _test_resistance_law() -> void:

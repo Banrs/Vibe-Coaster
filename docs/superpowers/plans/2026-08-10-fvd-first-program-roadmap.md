@@ -5,15 +5,13 @@
 
 ## Current state (verified 2026-08-12)
 
-Step 1 of the execution order is built: `2026-08-09-evidence-audit-baseline.md` was implemented and
-closed out at `6d5716e`, and `codex/fvd-first-generator` has been merged into `main` and deleted.
-`2026-08-11-evidence-baseline-remediation.md` — which corrects and simplifies that baseline — is the
-active work and is the effective step 1b before the route/config foundation.
+The deterministic legacy audit is built and its last complete GitHub artifact is preserved beneath
+ignored `out/baselines/legacy-audit-2a891d2`. The user stopped further evidence-baseline remediation
+because it did not materially change the ride.
 
-**Next action: `2026-08-11-evidence-baseline-remediation.md`, Task 1, Step 1.** All 45 of its step
-checkboxes are open, but catalog-validation delegation work (`a588b9e`…`a2445a8`) already landed
-after the plan was written without ticking any box. Reconcile the plan against the code before
-executing it, rather than assuming Task 1 is untouched.
+**Next action: `2026-08-12-material-generator-vertical-slice.md`, Task 1.** Its accompanying execution
+addendum, `../specs/2026-08-12-material-generator-vertical-slice-design.md`, preserves the approved
+product and physics contracts but supersedes the adapter-first, dormant-candidate execution order.
 
 All gates verified green at `a2445a8` with `out/tools/godot-4.7.1/Godot_v4.7.1-stable_win64_console.exe`:
 editor import, `res://smoke.gd` (~248 s local; 12/12 seeds build and place clean, 7.6–10.2 km),
@@ -36,47 +34,28 @@ anywhere in the repository — leftover from an earlier launch-corridor solve, w
 
 ## Execution order
 
-1. `2026-08-09-evidence-audit-baseline.md`
-   - Execute against the untouched legacy route dictionary.
-   - Establish corrected measurement semantics, reviewed source records, deterministic reports,
-     visual artifacts, and a one-build-per-seed baseline before behavior changes.
-2. `2026-08-09-route-config-foundation.md`
-   - Introduce the final immutable Route/Trajectory boundary through one temporary adapter.
-   - Migrate all consumers atomically and add deterministic configuration/planning.
-3. `2026-08-09-time-domain-motion-kernel.md`
-   - Add the approved time-domain FVD law, packed dense sampler, analytic boundary jets, bounded
-     solver, and station-capture validation behind tests; legacy behavior remains authoritative.
-4. `2026-08-09-default-ride-recipes.md`
-   - Compile the complete approved story into one MotionProgram and one candidate RideRoute.
-   - Keep the legacy runtime public until the candidate fleet passes every prerequisite gate.
-5. `2026-08-09-runtime-cutover-and-polish.md`
-   - Cut over the only runtime path, delete legacy FVD/grade/closure/repair execution, rerun the
-     same audit, and accept at most three shared evidence-backed refinements.
-   - Preserve element geometry profiles plus force/angle/speed/AGL/curvature/radius/jerk outputs.
-
-The audit implementation comes first because it is the pre-change oracle. Its final typed-route
-migration and post-change run still occur at the design's fidelity gate; this is one tool and one
-catalog, not two audit systems. Stable semantic selectors carry explicit legacy-beat and
-compiled-story-slot anchors so target identity survives the migration without an implicit remap.
+Execute `2026-08-12-material-generator-vertical-slice.md` in order. The earlier route foundation,
+kernel, recipes, and runtime-cutover plans remain design history but are superseded as executable
+plans: do not build their temporary adapter, ten-class scaffold, dormant candidate, or delayed
+legacy deletion. The material plan retains their useful tests and contracts while moving the first
+complete public cutover to its second acceptance boundary.
 
 ## Shared contracts
 
-- `RideCatalog` is the only configuration/story/recipe catalog:
-  `PRESET_ID == "future-hybrid@1"`, `data`, `validate`, `content_hash`.
-- `CanonicalData` is the only canonical JSON/SHA-256 implementation.
-- `MotionTrajectory.create(channels, dense_sampler)` copies a closed set of singular SI packed
-  channels, including authored `drive_g` and total proper `longitudinal_g`. One immutable packed
-  sampler owns all dense interpolation and interval estimates; hot consumers reuse a typed
-  `MotionSample`, and no per-step RefCounted objects, mutable append API, or alternate geometry
-  path exists.
-- `MotionSpan` stores each authored control as its own Float64 coefficient channel. `MotionProgram`
-  derives stable role-level span windows, and `RideRoute` projects them to exact native/time/distance
-  windows without widening unresolved selectors.
-- `RideGenerator.build(seed) -> RideRoute` and
+- `ride_program.gd` owns the sole configuration/story/recipe catalog and preset ID; no parallel
+  catalog exists.
+- `CanonicalData` remains the sole canonical JSON/SHA-256 implementation.
+- `motion.gd` stores controls as typed Float64 coefficient data and produces one packed native
+  trajectory plus dynamics-derived dense output. No per-step Dictionary/RefCounted allocation or
+  alternate geometry path exists.
+- The validated packed route Dictionary is the stable public consumer boundary. It owns the
+  trajectory data/handle and exact gesture-role sample/time/distance windows; internal typed structs
+  may serve the hot loop but do not create a second public route type.
+- `RideGenerator.build(seed) -> Dictionary` and
   `build_config(file_config, cli_overrides) -> {ok, route, resolved_config, plan, errors}`.
-- `RideCompiler.compile(plan, kernel_config) -> {ok, route, program, report, error}` performs the
-  accepted candidate's only full-resolution integration, then revalidates capture/handoff/endpoint
-  invariants on that same trajectory without retry or reintegration.
+- Program compilation performs the accepted route's only full-resolution integration, then
+  revalidates capture/handoff/endpoint invariants on that same trajectory without retry or
+  reintegration.
 
 ## Non-negotiable gates
 

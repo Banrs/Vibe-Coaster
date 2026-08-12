@@ -11,6 +11,11 @@ validation are the product; visuals are a deliberately generic inspection layer.
 > changing poor generated behavior. Required commands, safety verification, deterministic public
 > inputs, and the documented creative ride arc remain in force unless the approved design states
 > otherwise.
+> `docs/superpowers/specs/2026-08-12-material-generator-vertical-slice-design.md` is the approved
+> execution addendum and `docs/superpowers/plans/2026-08-12-material-generator-vertical-slice.md` is
+> the active plan. They supersede the adapter-first/dormant-candidate order in the older route,
+> kernel, recipe, and cutover plans; the next product checkpoint must materially replace the public
+> generated ride.
 >
 > That design is a force-informed **hybrid**, not an FVD monoculture. FVD is preferred where
 > authoring in the rider's frame gives superior rider-dynamics control; it is not to be forced

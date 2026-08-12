@@ -173,6 +173,8 @@ static func compile(
 	for record in metadata:
 		minimum_speeds.append(record.minimum_speed_mps)
 	for gesture in gestures:
+		gesture["peak_analytic_normal_onset_gps"] = _peak_analytic_normal_onset(
+			spans, int(gesture.first_span), int(gesture.last_span))
 		for span_index in range(int(gesture.first_span), int(gesture.last_span) + 1):
 			metadata[span_index]["gesture_id"] = gesture.story_slot_id
 			metadata[span_index]["story_slot_id"] = gesture.story_slot_id
@@ -229,9 +231,82 @@ static func compile(
 
 
 static func _add_act_one(spans: Array, metadata: Array, propulsion: PackedInt32Array) -> void:
-	_add_balanced_feature(spans, metadata, propulsion, "act-one",
-		[0.946, 0.946, 2.339, 2.339, 0.839, 0.839],
-		[1.0, 3.29, 1.0, -0.72, 1.0, 3.56, 1.0], 0.10, deg_to_rad(10.0))
+	_add(spans, metadata, propulsion, "act-one/immelmann-entry", 0.33, "moving",
+		Motion.quintic(1.0, 5.2), 0.0, 0.0, 0.0, "giant-inversion", 0, 2.0, "immelmann")
+	_add(spans, metadata, propulsion, "act-one/immelmann-hold", 2.838395758344, "moving",
+		5.2, 0.0, 0.0, 0.0, "giant-inversion", 0, 2.0, "immelmann")
+	_add(spans, metadata, propulsion, "act-one/immelmann-unload", 0.49, "moving",
+		Motion.quintic(5.2, -1.0), 0.0, 0.0, 0.0,
+		"giant-inversion", 0, 2.0, "immelmann")
+	_add(spans, metadata, propulsion, "act-one/immelmann-roll", 1.75, "moving",
+		Motion.quintic(-1.0, 0.0), Motion.compact_pulse(1.5), 0.0,
+		Motion.compact_pulse(deg_to_rad(118.8)), "giant-inversion", 0, 2.0, "immelmann")
+	_add(spans, metadata, propulsion, "act-one/immelmann-recover", 1.75, "moving",
+		Motion.quintic(0.0, 1.0), Motion.compact_pulse(1.5), 0.0,
+		Motion.compact_pulse(deg_to_rad(118.8)), "giant-inversion", 0, 2.0, "immelmann")
+
+	_add(spans, metadata, propulsion, "act-one/cutback-entry", 0.80036457, "moving",
+		Motion.quintic(1.0, 4.16194327), 0.0, 0.0,
+		Motion.compact_pulse(deg_to_rad(108.213109)), "cutback", 0, 2.0, "cutback")
+	_add(spans, metadata, propulsion, "act-one/cutback-arc", 1.67497928, "moving",
+		Motion.quintic(4.16194327, 2.62954854), 0.0, 0.0,
+		Motion.compact_pulse(deg_to_rad(108.213109)), "cutback", 0, 2.0, "cutback")
+	_add(spans, metadata, propulsion, "act-one/cutback-reverse", 2.52077154, "moving",
+		Motion.quintic(2.62954854, 3.82368727), 0.0, 0.0,
+		Motion.compact_pulse(deg_to_rad(-50.80747228)), "cutback", 0, 2.0, "cutback")
+	_add(spans, metadata, propulsion, "act-one/cutback-release", 1.17767523, "moving",
+		Motion.quintic(3.82368727, 1.0), 0.0, 0.0,
+		Motion.compact_pulse(deg_to_rad(-50.80747228)), "cutback", 0, 2.0, "cutback")
+
+	_add(spans, metadata, propulsion, "act-one/loop-entry", 0.3, "moving",
+		Motion.quintic(1.0, 4.40341684728708), Motion.compact_pulse(0.9), 0.0, 0.0,
+		"giant-inversion", 0, 2.0, "loop")
+	_add(spans, metadata, propulsion, "act-one/loop-lower-hold", 0.25, "moving",
+		4.40341684728708, Motion.compact_pulse(0.9), 0.0, 0.0,
+		"giant-inversion", 0, 2.0, "loop")
+	_add(spans, metadata, propulsion, "act-one/loop-rise", 2.4780474553844765, "moving",
+		Motion.quintic(4.40341684728708, 5.2), Motion.compact_pulse(0.9), 0.0, 0.0,
+		"giant-inversion", 0, 2.0, "loop")
+	_add(spans, metadata, propulsion, "act-one/loop-fall", 2.4780474553844765, "moving",
+		Motion.quintic(5.2, 4.40341684728708), Motion.compact_pulse(-0.9), 0.0, 0.0,
+		"giant-inversion", 0, 2.0, "loop")
+	_add(spans, metadata, propulsion, "act-one/loop-upper-hold", 0.25, "moving",
+		4.40341684728708, Motion.compact_pulse(-0.9), 0.0,
+		Motion.compact_pulse(deg_to_rad(-84.344531055)), "giant-inversion", 0, 2.0, "loop")
+	_add(spans, metadata, propulsion, "act-one/loop-release", 0.3, "moving",
+		Motion.quintic(4.40341684728708, 1.0), Motion.compact_pulse(-0.9), 0.0,
+		Motion.compact_pulse(deg_to_rad(-84.344531055)), "giant-inversion", 0, 2.0, "loop")
+
+	_add(spans, metadata, propulsion, "act-one/airtime-pull-up", 0.48089366108653, "moving",
+		Motion.quintic(1.0, 5.19999979865927), 0.0, 0.0, 0.0,
+		"airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-unload", 0.48089366108653, "moving",
+		Motion.quintic(5.19999979865927, -0.45), 0.0, 0.0, 0.0,
+		"airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-crest", 1.7936931571445, "moving",
+		-0.45, 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-fall", 0.579759539647, "moving",
+		Motion.quintic(-0.45, 5.199946698098), 0.0, 0.0, 0.0,
+		"airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-release", 0.579759539647, "moving",
+		Motion.quintic(5.199946698098, 1.0), 0.0, 0.0, 0.0,
+		"airtime-hills", 0, 2.0, "hill")
+
+	_add(spans, metadata, propulsion, "act-one/wave-rise", 0.500000000067, "moving",
+		Motion.quintic(1.0, 2.000380212), Motion.compact_pulse(1.083606852), 0.0,
+		Motion.compact_pulse(deg_to_rad(120.0)), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-unload", 0.500000000067, "moving",
+		Motion.quintic(2.000380212, -0.599999972), Motion.compact_pulse(1.083606852), 0.0,
+		Motion.compact_pulse(deg_to_rad(120.0)), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-crest", 2.199999528604, "moving",
+		-0.599999972, Motion.compact_pulse(1.083606852), 0.0, 0.0,
+		"wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-fall", 1.299999999316, "moving",
+		Motion.quintic(-0.599999972, 5.2), Motion.compact_pulse(1.083606852), 0.0,
+		Motion.compact_pulse(deg_to_rad(-33.272585436)), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-release", 1.299999999316, "moving",
+		Motion.quintic(5.2, 1.0), Motion.compact_pulse(1.083606852), 0.0,
+		Motion.compact_pulse(deg_to_rad(-33.272585436)), "wave-turn", 0, 2.0, "wave_turn")
 
 
 static func _add_balanced_feature(
@@ -1321,6 +1396,14 @@ static func _end_gesture(gestures: Array, metadata: Array, last_span: int) -> vo
 		else:
 			roles[-1].last_span = span_index
 	gesture.role_windows = roles
+
+
+static func _peak_analytic_normal_onset(spans: Array, first: int, last: int) -> float:
+	var peak := 0.0
+	for index in range(first, last + 1):
+		var span: Dictionary = spans[index]
+		peak = maxf(peak, Motion.profile_peak_abs_derivative(span.normal_g) / span.duration_s)
+	return peak
 
 
 static func _window_id(

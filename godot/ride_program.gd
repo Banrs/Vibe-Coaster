@@ -309,7 +309,7 @@ static func _solve_return(start: Dictionary, layout: Dictionary, settings: Dicti
 			[0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0],
 			[0.0, 0.0, 0.0, 0.0, 0.0]]
 		for column in 5:
-			var probe := v.duplicate(); var delta := [0.02, 0.2, 0.1, 0.02, 0.2][column]
+			var probe := v.duplicate(); var delta: float = [0.02, 0.2, 0.1, 0.02, 0.2][column]
 			if probe[column] + delta > RETURN_VARIABLE_BOUNDS[column][1]:
 				delta = -delta
 			probe[column] += delta
@@ -366,7 +366,7 @@ static func _return_failure(message: String, cache: Dictionary, conditioning: Di
 
 static func _return_seed(start: Dictionary, layout: Dictionary) -> Array:
 	var up: Vector3 = layout.station_up.normalized(); var forward: Vector3 = layout.station_tangent.normalized()
-	var target := layout.station_position_m - forward * _approach_length(layout)
+	var target: Vector3 = layout.station_position_m - forward * _approach_length(layout)
 	var desired: Vector3 = target - start.position_m; desired -= up * desired.dot(up)
 	desired = forward if desired.length_squared() < 0.000001 else desired.normalized()
 	var heading: Vector3 = start.tangent - up * start.tangent.dot(up); heading = heading.normalized()
@@ -396,8 +396,8 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, v: Array,
 	var end := _last_state(route); var forward: Vector3 = layout.station_tangent.normalized()
 	var up: Vector3 = layout.station_up.normalized(); var right := forward.cross(up).normalized()
 	var delta: Vector3 = end.position_m - (layout.station_position_m - forward * _approach_length(layout))
-	var reference_up := (up - end.tangent * up.dot(end.tangent)).normalized()
-	var actual_up := (end.rider_up - end.tangent * end.rider_up.dot(end.tangent)).normalized()
+	var reference_up: Vector3 = (up - end.tangent * up.dot(end.tangent)).normalized()
+	var actual_up: Vector3 = (end.rider_up - end.tangent * end.rider_up.dot(end.tangent)).normalized()
 	var r := [delta.dot(forward), delta.dot(right), delta.dot(up),
 		atan2(end.tangent.dot(right), end.tangent.dot(forward)),
 		atan2(end.tangent.dot(reference_up.cross(actual_up)), reference_up.dot(actual_up))]

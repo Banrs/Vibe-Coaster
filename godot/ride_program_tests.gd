@@ -445,10 +445,10 @@ func _return_is_passive_and_material(compiled: Dictionary, layout: Dictionary) -
 			or float(trajectory.distance_m[bounds.y] - trajectory.distance_m[bounds.x]) < 1100.0:
 		return false
 	var up: Vector3 = layout.station_up.normalized()
-	var previous := 0.5 * float(trajectory.speed_mps[bounds.x]) ** 2 + Motion.G0 * (
+	var previous: float = 0.5 * float(trajectory.speed_mps[bounds.x]) ** 2 + Motion.G0 * (
 		trajectory.position_m[bounds.x] - layout.station_position_m).dot(up)
 	for sample_index in range(bounds.x + 1, bounds.y + 1):
-		var energy := 0.5 * float(trajectory.speed_mps[sample_index]) ** 2 + Motion.G0 * (
+		var energy: float = 0.5 * float(trajectory.speed_mps[sample_index]) ** 2 + Motion.G0 * (
 			trajectory.position_m[sample_index] - layout.station_position_m).dot(up)
 		if energy - previous > 0.01:
 			return false

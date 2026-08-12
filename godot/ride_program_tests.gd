@@ -61,7 +61,7 @@ func _test_station_local_program_compiles() -> void:
 	_expect(_capture_plan_is_bounded(compiled),
 		"the solved station capture publishes evidence within 40 coarse evaluations")
 	_expect(_terminal_contract_is_fixed(compiled, _layout()),
-		"the compiled endpoint contract fixes the requested station frame and terminal speed")
+		"the integrated endpoint satisfies the requested station frame and terminal speed")
 	_expect(not _contains_fallback_or_repair_field(compiled),
 		"the compiled program contains no fallback or repair field")
 	var repeated := _compile(_layout())
@@ -189,9 +189,7 @@ func _return_plan_is_bounded(compiled: Dictionary) -> bool:
 	var evaluations := int(plan.get("unique_evaluations", -1))
 	return plan.get("status", "") == "solved" \
 		and plan.get("variables") is Array and not plan.variables.is_empty() \
-		and plan.get("residuals") is Array and not plan.residuals.is_empty() \
-		and plan.get("fine_residuals") is Array and not plan.fine_residuals.is_empty() \
-		and plan.get("margins") is Dictionary and not plan.margins.is_empty() \
+		and _plan_evidence_is_within_tolerance(plan) \
 		and evaluations >= 1 and evaluations <= 42 \
 		and plan.get("max_unique_evaluations", -1) == 42 \
 		and plan.get("positive_drive_allowed", true) == false
@@ -201,12 +199,39 @@ func _capture_plan_is_bounded(compiled: Dictionary) -> bool:
 	var plan: Dictionary = compiled.get("capture_plan", {})
 	var evaluations := int(plan.get("unique_evaluations", -1))
 	return evaluations >= 1 and evaluations <= 40 \
-		and plan.get("max_unique_coarse_evaluations", -1) == 40
+		and plan.get("max_unique_coarse_evaluations", -1) == 40 \
+		and _plan_evidence_is_within_tolerance(plan)
+
+
+func _plan_evidence_is_within_tolerance(plan: Dictionary) -> bool:
+	var ids: Variant = plan.get("residual_ids")
+	var tolerances: Variant = plan.get("residual_tolerances")
+	var margins: Variant = plan.get("margins")
+	if not ids is Array or ids.is_empty() or not tolerances is Array \
+			or tolerances.size() != ids.size() or not margins is Dictionary \
+			or margins.is_empty():
+		return false
+	for tolerance in tolerances:
+		if not _positive_finite(tolerance):
+			return false
+	for field in ["residuals", "fine_residuals"]:
+		var residuals: Variant = plan.get(field)
+		if not residuals is Array or residuals.size() != ids.size():
+			return false
+		for index in residuals.size():
+			if not _finite_number(residuals[index]) \
+					or absf(float(residuals[index])) > float(tolerances[index]):
+				return false
+	for margin in margins.values():
+		if not _finite_number(margin) or float(margin) < 0.0:
+			return false
+	return true
 
 
 func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> bool:
 	var report: Variant = compiled.get("landmark_report")
-	if not report is Dictionary:
+	var trajectory := _integrated_trajectory(compiled, layout)
+	if not report is Dictionary or not trajectory.get("ok", false):
 		return false
 	var station_position: Vector3 = layout.station_position_m
 	var station_up: Vector3 = layout.station_up.normalized()
@@ -214,12 +239,23 @@ func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> b
 		var state: Variant = report.get(landmark_id)
 		if not state is Dictionary:
 			return false
+		var time_s: Variant = state.get("time_s")
 		var position: Variant = state.get("position_m")
 		var tangent: Variant = state.get("tangent")
+		var rider_up: Variant = state.get("rider_up")
 		var speed: Variant = state.get("speed_mps")
-		if not position is Vector3 or not position.is_finite() \
+		if not _finite_number(time_s) or not position is Vector3 or not position.is_finite() \
 				or not tangent is Vector3 or not tangent.is_finite() \
-				or tangent.length_squared() < 0.99 or not _finite_number(speed):
+				or not rider_up is Vector3 or not rider_up.is_finite() \
+				or tangent.length_squared() < 0.99 or rider_up.length_squared() < 0.99 \
+				or not _finite_number(speed):
+			return false
+		var sampled := Motion.sample_time(trajectory, float(time_s))
+		if sampled.is_empty() or absf(float(sampled.time_s) - float(time_s)) > 0.000000001 \
+				or position.distance_to(sampled.position_m) > 0.001 \
+				or tangent.distance_to(sampled.tangent) > 0.00001 \
+				or rider_up.distance_to(sampled.rider_up) > 0.00001 \
+				or absf(float(speed) - float(sampled.speed_mps)) > 0.001:
 			return false
 		var band: Dictionary = LANDMARK_BANDS[landmark_id]
 		var height_m: float = (position - station_position).dot(station_up)
@@ -247,13 +283,51 @@ func _finite_number(value: Variant) -> bool:
 
 func _terminal_contract_is_fixed(compiled: Dictionary, layout: Dictionary) -> bool:
 	var contract: Dictionary = compiled.get("terminal_contract", {})
-	return contract.get("station_position_m") == layout.station_position_m \
-		and contract.get("station_tangent") == layout.station_tangent \
-		and contract.get("station_up") == layout.station_up \
-		and absf(float(contract.get("terminal_speed_mps", -1.0)) - 1.0) <= 0.000001 \
-		and _positive_finite(contract.get("position_tolerance_m")) \
-		and _positive_finite(contract.get("angle_tolerance_rad")) \
-		and _positive_finite(contract.get("speed_tolerance_mps"))
+	if not (contract.get("station_position_m") is Vector3) \
+			or not (contract.get("station_tangent") is Vector3) \
+			or not (contract.get("station_up") is Vector3) \
+			or contract.get("station_position_m") != layout.station_position_m \
+			or contract.get("station_tangent") != layout.station_tangent \
+			or contract.get("station_up") != layout.station_up \
+			or absf(float(contract.get("terminal_speed_mps", -1.0)) - 1.0) > 0.000001 \
+			or not _positive_finite(contract.get("position_tolerance_m")) \
+			or not _positive_finite(contract.get("angle_tolerance_rad")) \
+			or not _positive_finite(contract.get("speed_tolerance_mps")):
+		return false
+	var trajectory := _integrated_trajectory(compiled, layout)
+	if not trajectory.get("ok", false):
+		return false
+	var actual := Motion.sample_time(trajectory, float(trajectory.time_s[-1]))
+	return actual.position_m.distance_to(contract.station_position_m) \
+			<= float(contract.position_tolerance_m) \
+		and _angle_between(actual.tangent, contract.station_tangent) \
+			<= float(contract.angle_tolerance_rad) \
+		and _angle_between(actual.rider_up, contract.station_up) \
+			<= float(contract.angle_tolerance_rad) \
+		and absf(float(actual.speed_mps) - float(contract.terminal_speed_mps)) \
+			<= float(contract.speed_tolerance_mps)
+
+
+func _integrated_trajectory(compiled: Dictionary, layout: Dictionary) -> Dictionary:
+	var spans: Variant = compiled.get("spans")
+	var settings: Variant = compiled.get("settings")
+	if not spans is Array or spans.is_empty() or not settings is Dictionary:
+		return {}
+	return Motion.integrate({
+		"position_m": layout.station_position_m,
+		"tangent": layout.station_tangent,
+		"rider_up": layout.station_up,
+		"speed_mps": 6.0,
+		"distance_m": 0.0,
+		"time_s": 0.0,
+	}, spans, settings)
+
+
+func _angle_between(a: Vector3, b: Vector3) -> float:
+	if not a.is_finite() or not b.is_finite() \
+			or a.length_squared() <= 0.0 or b.length_squared() <= 0.0:
+		return INF
+	return acos(clampf(a.normalized().dot(b.normalized()), -1.0, 1.0))
 
 
 func _positive_finite(value: Variant) -> bool:

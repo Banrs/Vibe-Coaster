@@ -27,11 +27,17 @@ func _initialize() -> void:
 
 
 func _test_c2_profiles() -> void:
+	var held := Motion.constant(4.0)
+	_expect_vector(Motion.profile_sample(held, 0.37), Vector3(4.0, 0.0, 0.0),
+		"constant profile has its value and zero derivatives")
 	var transition := Motion.quintic(2.0, 5.0)
 	_expect_vector(Motion.profile_sample(transition, 0.0), Vector3(2.0, 0.0, 0.0),
 		"quintic starts with exact value and zero first/second derivatives")
 	_expect_vector(Motion.profile_sample(transition, 1.0), Vector3(5.0, 0.0, 0.0),
 		"quintic ends with exact value and zero first/second derivatives")
+	_expect_vector(Motion.profile_sample(transition, 0.25),
+		Vector3(2.310546875, 3.1640625, 16.875),
+		"quintic interior value and analytic first/second derivatives are exact")
 	var pulse := Motion.compact_pulse(3.0)
 	_expect_vector(Motion.profile_sample(pulse, 0.0), Vector3.ZERO,
 		"compact pulse has a zero C2 entry jet")
@@ -39,6 +45,10 @@ func _test_c2_profiles() -> void:
 		"compact pulse has a zero C2 exit jet")
 	_expect_close(Motion.profile_sample(pulse, 0.5).x, 3.0,
 		"compact pulse reaches its authored amplitude")
+	var span_record := Motion.span("immutable", 1.0, "moving", held, held, held, held)
+	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only(),
+		"profile records are immutable")
+	_expect(span_record.is_read_only(), "span records are immutable")
 
 
 func _test_resistance_law() -> void:
@@ -108,13 +118,23 @@ func _test_zero_gravity_circle() -> void:
 func _test_banked_lateral_curvature() -> void:
 	var bank := deg_to_rad(45.0)
 	var up := Vector3.UP.rotated(Vector3.RIGHT, bank)
+	var right := Vector3.RIGHT.cross(up)
+	var force_magnitude := sqrt(1.0 + 0.5 * 0.5)
+	var turn_angle := Motion.G0 * force_magnitude / 20.0 * 0.1
+	var acceleration_direction := (up + 0.5 * right).normalized()
+	var expected_tangent := Vector3.RIGHT * cos(turn_angle) \
+		+ acceleration_direction * sin(turn_angle)
 	var route := Motion.integrate(_initial(20.0, Vector3.RIGHT, up), [
 		_span("banked", 0.1, "moving", 1.0, 0.5, 0.0, 0.0),
 	], _zero_gravity_settings(0.001))
 	if not _expect_route(route, "banked lateral-curvature case integrates"):
 		return
-	_expect(route.tangent[-1].y > 0.02 and route.tangent[-1].z > 0.0,
-		"banked normal and lateral controls curve in their transported rider-frame directions")
+	_expect_vector(route.tangent[-1], expected_tangent,
+		"banked controls produce the analytic tangent", 0.000001)
+	_expect_close(route.curvature_m_inv[-1], Motion.G0 * force_magnitude / 400.0,
+		"banked controls produce the analytic curvature magnitude", 0.000001)
+	_expect_unit_frame(route.tangent[-1], route.rider_up[-1],
+		"banked integration preserves an orthonormal rider frame")
 
 
 func _test_roll_only_frame_twist() -> void:
@@ -144,12 +164,45 @@ func _test_low_speed_station_handoff() -> void:
 			"moving mode begins at the exact two metre-per-second boundary")
 		_expect_vector(route.tangent[seam], Vector3.RIGHT,
 			"station mode keeps its straight frame fixed")
+	_expect_rejected(Motion.integrate(_initial(1.5), [
+		_span("too-slow", 0.1, "moving", 0.0, 0.0, 0.0, 0.0),
+	], _zero_gravity_settings(0.01)), "moving speed floor",
+		"moving mode rejects an initial speed below 2 m/s")
+	_expect_rejected(Motion.integrate(_initial(2.1), [
+		_span("cross-floor", 0.1, "moving", 0.0, 0.0, -1.0, 0.0),
+	], _zero_gravity_settings(0.01)), "speed floor",
+		"moving RK stages reject crossing below 2 m/s")
+	var stop_time := 0.1 / (0.5 * Motion.G0)
+	_expect_rejected(Motion.integrate(_initial(0.1), [
+		_span("reach-zero", stop_time, "station", 0.0, 0.0, -0.5, 0.0),
+	], _zero_gravity_settings(0.01)), "nonpositive speed",
+		"speed may be zero only at the initial stage")
+	_expect_rejected(Motion.integrate(_initial(0.1), [
+		_span("cross-negative", 0.03, "station", 0.0, 0.0, -0.5, 0.0),
+	], _zero_gravity_settings(0.01)), "negative speed",
+		"station RK stages reject negative speed")
+	_expect_rejected(Motion.integrate(_initial(0.0), [
+		_span("stalled", 0.1, "station", 0.0, 0.0, 0.0, 0.0),
+	], _zero_gravity_settings(0.01)), "advance distance",
+		"every accepted station interval advances distance")
+	_expect_rejected(Motion.integrate(_initial(0.0), [
+		_span("transverse", 0.1, "station", 1.0, 0.0, 0.5, 0.0),
+	], _zero_gravity_settings(0.01)), "station transverse",
+		"station mode rejects transverse controls")
+	_expect_rejected(Motion.integrate(_initial(0.0), [
+		_span("rolling", 0.1, "station", 0.0, 0.0, 0.5, 0.1),
+	], _zero_gravity_settings(0.01)), "station roll",
+		"station mode rejects authored roll")
 
 
 func _test_exact_span_boundary_splitting() -> void:
+	var first_duration := 0.015
+	var second_duration := 0.017
+	var first_drive := 1.0
+	var second_drive := -0.5
 	var route := Motion.integrate(_initial(10.0), [
-		_span("first", 0.015, "moving", 1.0, 0.0, 0.0, 0.0),
-		_span("second", 0.017, "moving", 1.0, 0.0, 0.0, 0.0),
+		_span("first", first_duration, "moving", 1.0, 0.0, first_drive, 0.0),
+		_span("second", second_duration, "moving", 1.0, 0.0, second_drive, 0.0),
 	], _vacuum_settings(0.01))
 	if not _expect_route(route, "non-grid span boundaries integrate"):
 		return
@@ -157,6 +210,20 @@ func _test_exact_span_boundary_splitting() -> void:
 		"RK4 steps split exactly at every span boundary")
 	_expect(route.span_index == PackedInt32Array([0, 0, 1, 1, 1]),
 		"no RK stage crosses into the next owning span")
+	_expect_close(route.longitudinal_g[1], first_drive,
+		"the pre-seam native state retains the first control")
+	_expect_close(route.longitudinal_g[2], second_drive,
+		"the seam native state is owned by the second control")
+	var seam_speed := 10.0 + Motion.G0 * first_drive * first_duration
+	var expected_speed := seam_speed + Motion.G0 * second_drive * second_duration
+	var expected_position := 10.0 * first_duration \
+		+ 0.5 * Motion.G0 * first_drive * first_duration * first_duration \
+		+ seam_speed * second_duration \
+		+ 0.5 * Motion.G0 * second_drive * second_duration * second_duration
+	_expect_close(route.speed_mps[-1], expected_speed,
+		"discontinuous drive owns only its exact span stages")
+	_expect_close(route.position_m[-1].x, expected_position,
+		"boundary splitting preserves the analytic piecewise-acceleration position")
 
 
 func _test_degenerate_frame_rejection() -> void:
@@ -186,6 +253,9 @@ func _test_rk4_step_halving() -> void:
 	var fine_error: float = fine.tangent[-1].distance_to(exact)
 	_expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
 		"step halving demonstrates fourth-order convergence")
+	_expect(fine_error <= 0.000001, "fine RK4 result has bounded absolute error")
+	_expect_unit_frame(fine.tangent[-1], fine.rider_up[-1],
+		"projected RK4 leaves a unit orthogonal frame")
 
 
 func _test_dense_output_native_identity() -> void:
@@ -196,9 +266,31 @@ func _test_dense_output_native_identity() -> void:
 		return
 	for index in route.time_s.size():
 		var sampled: Dictionary = Motion.sample_time(route, route.time_s[index])
-		_expect(sampled.get("position_m") == route.position_m[index]
-			and sampled.get("speed_mps") == route.speed_mps[index],
-			"dense output reproduces native node %d exactly" % index)
+		_expect_dense_state(sampled, route, index,
+			"dense output reproduces full native state %d exactly" % index)
+	var analytic_route := Motion.integrate(_initial(10.0), [
+		_span("analytic-dense", 0.035, "moving", 1.0, 0.0, 0.25, 0.0),
+	], _vacuum_settings(0.01))
+	if not _expect_route(analytic_route, "analytic dense-output probe integrates"):
+		return
+	var sample_time := 0.0125
+	var analytic: Dictionary = Motion.sample_time(analytic_route, sample_time)
+	_expect_close(analytic.get("time_s", -1.0), sample_time,
+		"off-grid dense sample retains requested time")
+	_expect_close(analytic.get("speed_mps", -1.0), 10.0 + 0.25 * Motion.G0 * sample_time,
+		"off-grid dense speed matches analytic straight launch")
+	_expect_vector(analytic.get("position_m", Vector3.INF),
+		Vector3.RIGHT * (10.0 * sample_time + 0.125 * Motion.G0 * sample_time * sample_time),
+		"off-grid dense position matches analytic straight launch")
+	_expect_close(analytic.get("distance_m", -1.0),
+		10.0 * sample_time + 0.125 * Motion.G0 * sample_time * sample_time,
+		"off-grid dense distance matches analytic straight launch")
+	_expect_vector(analytic.get("tangent", Vector3.ZERO), Vector3.RIGHT,
+		"off-grid analytic tangent stays straight")
+	_expect_vector(analytic.get("rider_up", Vector3.ZERO), Vector3.UP,
+		"off-grid analytic rider frame stays level")
+	_expect_close(analytic.get("longitudinal_g", -1.0), 0.25,
+		"off-grid analytic state retains proper longitudinal g")
 
 
 func _test_dense_output_distance_and_defect() -> void:
@@ -213,6 +305,22 @@ func _test_dense_output_distance_and_defect() -> void:
 		"dense distance inversion is monotone and returns the requested coordinate")
 	_expect(route.dense_output.get("max_kinematic_defect_mps", INF) <= 0.001,
 		"dense output quantifies a bounded dr/dt minus vT defect")
+	var by_time: Dictionary = Motion.sample_time(route, sampled.get("time_s", -1.0))
+	_expect_vector(by_time.get("position_m", Vector3.INF), sampled.get("position_m", Vector3.ZERO),
+		"time and distance sampling agree on position", 0.000001)
+	_expect_close(by_time.get("distance_m", -1.0), sampled.get("distance_m", -2.0),
+		"time and distance sampling are inverse-consistent")
+	var probe_time := 0.25
+	var half_width := 0.0001
+	var before: Dictionary = Motion.sample_time(route, probe_time - half_width)
+	var center: Dictionary = Motion.sample_time(route, probe_time)
+	var after: Dictionary = Motion.sample_time(route, probe_time + half_width)
+	var finite_difference: Vector3 = (after.get("position_m", Vector3.ZERO)
+		- before.get("position_m", Vector3.ZERO)) / (2.0 * half_width)
+	var expected_velocity: Vector3 = center.get("tangent", Vector3.ZERO) \
+		* float(center.get("speed_mps", 0.0))
+	_expect_vector(finite_difference, expected_velocity,
+		"independent finite difference bounds dense dr/dt minus vT", 0.001)
 
 
 func _initial(
@@ -263,7 +371,53 @@ func _zero_gravity_settings(step_s: float) -> Dictionary:
 func _expect_route(route: Dictionary, message: String) -> bool:
 	var ok: bool = route.get("ok", false)
 	_expect(ok, "%s: %s" % [message, ", ".join(route.get("errors", []))])
-	return ok
+	var required := [
+		"time_s", "distance_m", "position_m", "tangent", "rider_up", "speed_mps",
+		"longitudinal_g", "span_index", "curvature_m_inv",
+	]
+	var schema_ok := true
+	var sample_count := -1
+	for key in required:
+		var values: Variant = route.get(key)
+		var packed_array: bool = values is PackedFloat64Array \
+			or values is PackedVector3Array or values is PackedInt32Array
+		if not packed_array:
+			_expect(false, "%s: trajectory channel %s is a packed array" % [message, key])
+			schema_ok = false
+			continue
+		var channel_size: int = values.size()
+		if sample_count < 0:
+			sample_count = channel_size
+		elif channel_size != sample_count:
+			_expect(false, "%s: trajectory channel %s has %d samples, expected %d"
+				% [message, key, channel_size, sample_count])
+			schema_ok = false
+	_expect(sample_count >= 2, "%s: trajectory contains initial and final native nodes" % message)
+	return ok and schema_ok and sample_count >= 2
+
+
+func _expect_rejected(route: Dictionary, fragment: String, message: String) -> void:
+	_expect(not route.get("ok", true), message)
+	_expect(_contains(route.get("errors", []), fragment),
+		"%s with a diagnostic containing '%s'" % [message, fragment])
+
+
+func _expect_unit_frame(tangent: Vector3, rider_up: Vector3, message: String) -> void:
+	_expect_close(tangent.length(), 1.0, "%s tangent is unit" % message, 0.000001)
+	_expect_close(rider_up.length(), 1.0, "%s up is unit" % message, 0.000001)
+	_expect_close(tangent.dot(rider_up), 0.0, "%s axes are orthogonal" % message, 0.000001)
+	_expect_close(tangent.cross(rider_up).length(), 1.0,
+		"%s right axis is unit" % message, 0.000001)
+
+
+func _expect_dense_state(
+	sampled: Dictionary, route: Dictionary, index: int, message: String
+) -> void:
+	for key in [
+		"time_s", "distance_m", "position_m", "tangent", "rider_up", "speed_mps",
+		"longitudinal_g", "span_index", "curvature_m_inv",
+	]:
+		_expect(sampled.get(key) == route[key][index], "%s: %s" % [message, key])
 
 
 func _contains(values: Variant, fragment: String) -> bool:

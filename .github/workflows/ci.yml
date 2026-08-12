@@ -16,23 +16,36 @@ jobs:
           use-dotnet: false
           include-templates: false
       - name: Import project
-        run: godot --headless --path godot --editor --quit
+        run: timeout 10m godot --headless --path godot --editor --quit
       - name: Run focused test manifest
         shell: bash
         run: |
           set -euo pipefail
           manifest=.github/focused-tests.txt
           test -s "$manifest"
+          mkdir -p out/ci-diagnostics
+          executed=0
           while IFS= read -r script || [[ -n "$script" ]]; do
             [[ -z "$script" || "$script" == \#* ]] && continue
+            [[ "$script" == res://* ]] || {
+              echo "Focused test entry must start with res://: $script" >&2
+              exit 1
+            }
             path="godot/${script#res://}"
             test -f "$path"
-            godot --headless --path godot --script "$script"
+            ((executed += 1))
+            log_name="${script#res://}"
+            timeout 5m godot --headless --path godot --script "$script" 2>&1 \
+              | tee "out/ci-diagnostics/${log_name//\//_}.log"
           done < "$manifest"
+          ((executed >= 1)) || {
+            echo "Focused test manifest executed no entries" >&2
+            exit 1
+          }
       - name: Validate ride and meshes
-        run: godot --headless --path godot --script res://smoke.gd
+        run: timeout 20m godot --headless --path godot --script res://smoke.gd
       - name: Exercise viewer runtime
-        run: godot --headless --path godot --quit-after 120
+        run: timeout 3m godot --headless --path godot --quit-after 120
       - name: Upload bounded CI diagnostics
         if: always()
         uses: actions/upload-artifact@v4

@@ -15,6 +15,20 @@ const RETURN_TOPOLOGY_IDS := [
 	"raceway/hill-b-release",
 	"raceway/roll-settle",
 ]
+const LANDMARK_BANDS := {
+	"act_one_exit": {"height_m": Vector2(-40.0, 40.0), "speed_mps": Vector2(40.0, 70.0),
+		"maximum_abs_tangent_y": 0.18},
+	"cliff_crest": {"height_m": Vector2(150.0, 175.0), "speed_mps": Vector2(2.0, 22.0),
+		"maximum_abs_tangent_y": 0.22},
+	"dive_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(45.0, 75.0),
+		"maximum_abs_tangent_y": 0.22},
+	"lsm3_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(65.0, 75.0),
+		"maximum_abs_tangent_y": 0.16},
+	"camelback_apex": {"height_m": Vector2(155.0, 170.0), "speed_mps": Vector2(15.0, 45.0),
+		"maximum_abs_tangent_y": 0.12},
+	"return_entry": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(45.0, 70.0),
+		"maximum_abs_tangent_y": 0.18},
+}
 
 var _errors := PackedStringArray()
 
@@ -30,6 +44,8 @@ func _initialize() -> void:
 
 func _test_station_local_program_compiles() -> void:
 	var compiled := _compile(_layout())
+	_expect(_landmark_report_is_physical(compiled, _layout()),
+		"the compiler publishes physical upstream landmarks with positive return energy")
 	if not _expect(compiled.get("ok", false),
 			"the explicit station-local return fixture compiles: %s" % str(compiled.get("errors", []))):
 		return
@@ -186,6 +202,47 @@ func _capture_plan_is_bounded(compiled: Dictionary) -> bool:
 	var evaluations := int(plan.get("unique_evaluations", -1))
 	return evaluations >= 1 and evaluations <= 40 \
 		and plan.get("max_unique_coarse_evaluations", -1) == 40
+
+
+func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> bool:
+	var report: Variant = compiled.get("landmark_report")
+	if not report is Dictionary:
+		return false
+	var station_position: Vector3 = layout.station_position_m
+	var station_up: Vector3 = layout.station_up.normalized()
+	for landmark_id in LANDMARK_BANDS:
+		var state: Variant = report.get(landmark_id)
+		if not state is Dictionary:
+			return false
+		var position: Variant = state.get("position_m")
+		var tangent: Variant = state.get("tangent")
+		var speed: Variant = state.get("speed_mps")
+		if not position is Vector3 or not position.is_finite() \
+				or not tangent is Vector3 or not tangent.is_finite() \
+				or tangent.length_squared() < 0.99 or not _finite_number(speed):
+			return false
+		var band: Dictionary = LANDMARK_BANDS[landmark_id]
+		var height_m: float = (position - station_position).dot(station_up)
+		if not _inside(height_m, band.height_m) or not _inside(float(speed), band.speed_mps) \
+				or absf(tangent.normalized().dot(station_up)) > band.maximum_abs_tangent_y:
+			return false
+	var return_entry: Dictionary = report.return_entry
+	var reported_headroom: Variant = return_entry.get("energy_headroom_j_per_kg")
+	if not _finite_number(reported_headroom) or float(reported_headroom) <= 0.0:
+		return false
+	var relative_height: float = (return_entry.position_m - station_position).dot(station_up)
+	var expected_headroom: float = (
+		0.5 * float(return_entry.speed_mps) ** 2 + Motion.G0 * relative_height - 0.5
+	)
+	return absf(float(reported_headroom) - expected_headroom) <= 0.001
+
+
+func _inside(value: float, band: Vector2) -> bool:
+	return value >= band.x and value <= band.y
+
+
+func _finite_number(value: Variant) -> bool:
+	return (value is float or value is int) and is_finite(float(value))
 
 
 func _terminal_contract_is_fixed(compiled: Dictionary, layout: Dictionary) -> bool:

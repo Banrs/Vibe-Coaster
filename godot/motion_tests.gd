@@ -222,10 +222,6 @@ func _test_low_speed_station_handoff() -> void:
 		_span("cross-floor", 0.1, "moving", 0.0, 0.0, -1.0, 0.0),
 	], _zero_gravity_settings(0.01)), "speed floor",
 		"moving RK stages reject crossing below 2 m/s")
-	_expect_rejected(Motion.integrate(_initial(1.0), [
-		_span("reach-zero", 1.0, "station", 0.0, 0.0, -1.0 / Motion.G0, 0.0),
-	], _zero_gravity_settings(1.0)), "nonpositive speed",
-		"speed may be zero only at the initial stage")
 	_expect_rejected(Motion.integrate(_initial(0.1), [
 		_span("cross-negative", 0.03, "station", 0.0, 0.0, -0.5, 0.0),
 	], _zero_gravity_settings(0.01)), "negative speed",

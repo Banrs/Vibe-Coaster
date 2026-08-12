@@ -1,6 +1,7 @@
 extends SceneTree
 
 const RideGenerator := preload("res://generator.gd")
+const RideVerify := preload("res://verify.gd")
 const G0 := 9.80665
 
 const STORY_IDS := [
@@ -55,6 +56,7 @@ func _initialize() -> void:
 		"all public trajectory arrays are packed, aligned, and nontrivial")
 	_expect(_public_trajectory_is_physical(route),
 		"public arrays form a finite monotone coherent trajectory and orthonormal frame")
+	_check_native_verifier_contract(route)
 	_expect(_vertical_features_are_material(route),
 		"the climb, dive, and camelback have material rise-apex-fall geometry")
 	_expect(_inversions_are_material(route),
@@ -264,6 +266,37 @@ func _public_trajectory_is_physical(route: Dictionary) -> bool:
 						(route.tangents[index - 1] + route.tangents[index]).normalized()) < 0.995):
 			return false
 	return absf(chord_length - distance_length) <= maxf(0.05, distance_length * 0.0001)
+
+
+func _check_native_verifier_contract(route: Dictionary) -> void:
+	var issues := PackedStringArray()
+	RideVerify.validate_structure(route, issues)
+	RideVerify.validate_seams(route, issues)
+	RideVerify.validate_clearance(route, route.terrain, issues)
+	_expect(issues.is_empty(),
+		"the independent verifier consumes the native public route: %s" % str(issues))
+
+	var speed_miss := route.duplicate(true)
+	var sample := int(speed_miss.speeds.size() / 2)
+	speed_miss.minimum_speeds[sample] = speed_miss.speeds[sample] + 1.0
+	issues.clear()
+	RideVerify.validate_structure(speed_miss, issues)
+	_expect(_contains(issues, "invalid or stalled speed at sample %d" % sample),
+		"the verifier reads the public per-sample minimum speed")
+
+	var seam_miss := route.duplicate(true)
+	var seam := -1
+	for index in range(2, seam_miss.span_indices.size() - 2):
+		if seam_miss.span_indices[index] != seam_miss.span_indices[index - 1]:
+			seam = index
+			break
+	if not _expect(seam >= 0, "the public route exposes a testable native span seam"):
+		return
+	seam_miss.curvatures[seam] += Vector3.ONE
+	issues.clear()
+	RideVerify.validate_seams(seam_miss, issues)
+	_expect(_contains(issues, "span %d" % seam),
+		"the verifier checks geometry at native span boundaries")
 
 
 func _vertical_features_are_material(route: Dictionary) -> bool:

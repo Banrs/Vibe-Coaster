@@ -145,22 +145,21 @@ func _test_capture_accepts_varied_station_frames() -> void:
 		if not _expect(solved.get("ok", false),
 				"capture accepts the %s fixture: %s" % [fixture.id, str(solved)]):
 			continue
-		_expect(int(solved.get("unique_evaluations", 41)) <= 40 \
-				and _residuals_are_within(solved.get("residuals", []), CAPTURE_RESIDUAL_LIMITS) \
-				and _residuals_are_within(
-					solved.get("fine_residuals", []), CAPTURE_RESIDUAL_LIMITS),
-			"capture solves coarse and fine residuals within 40 evaluations for %s"
-			% fixture.id)
-		var route: Dictionary = Motion.integrate(fixture.state,
-			RideProgram._capture_spans(solved.coefficients), RideProgram._settings(0.01))
-		var residuals: Array = []
-		if route.get("ok", false):
-			residuals = RideProgram._capture_residuals(
-				Motion.sample_time(route, float(route.time_s[-1])), fixture.layout)
-		_expect(route.get("ok", false) and _residuals_are_within(
-				residuals, CAPTURE_RESIDUAL_LIMITS),
-			"accepted %s capture reintegrates to its five-axis residual contract: %s"
-			% [fixture.id, str(residuals)])
+		_expect(int(solved.get("unique_evaluations", 41)) <= 40,
+			"capture solves within 40 evaluations for %s" % fixture.id)
+		for step_and_field in [[0.05, "residuals"], [0.025, "fine_residuals"], [0.01, ""]]:
+			var measured := _integrated_capture_residuals(
+				fixture, solved.coefficients, float(step_and_field[0]))
+			var field := str(step_and_field[1])
+			_expect(measured.get("ok", false) and _residuals_are_within(
+					measured.get("residuals", []), CAPTURE_RESIDUAL_LIMITS),
+				"accepted %s capture independently satisfies five axes at %.3f s: %s"
+				% [fixture.id, step_and_field[0], str(measured)])
+			if not field.is_empty():
+				_expect(_residual_vectors_near(
+					solved.get(field, []), measured.get("residuals", []), 0.0000001),
+					"reported %s match independently derived %s geometry"
+					% [field, fixture.id])
 
 
 func _capture_fixture(
@@ -193,6 +192,50 @@ func _residuals_are_within(residuals: Variant, limits: Array) -> bool:
 	for index in limits.size():
 		if not _finite_number(residuals[index]) \
 				or absf(float(residuals[index])) > float(limits[index]):
+			return false
+	return true
+
+
+func _integrated_capture_residuals(
+	fixture: Dictionary, coefficients: Array, step_s: float
+) -> Dictionary:
+	var route: Dictionary = Motion.integrate(fixture.state,
+		RideProgram._capture_spans(coefficients), RideProgram._settings(step_s))
+	if not route.get("ok", false):
+		return {"ok": false, "errors": route.get("errors", [])}
+	var terminal := Motion.sample_time(route, float(route.time_s[-1]))
+	return {"ok": true, "residuals": _independent_capture_residuals(
+		terminal, fixture.layout)}
+
+
+func _independent_capture_residuals(state: Dictionary, layout: Dictionary) -> Array:
+	var forward: Vector3 = layout.station_tangent.normalized()
+	var up: Vector3 = layout.station_up.normalized()
+	var right: Vector3 = forward.cross(up).normalized()
+	up = right.cross(forward).normalized()
+	var delta: Vector3 = state.position_m - layout.station_position_m
+	var tangent: Vector3 = state.tangent.normalized()
+	var rider_up: Vector3 = state.rider_up
+	var horizontal_length: float = sqrt(
+		tangent.dot(forward) ** 2 + tangent.dot(right) ** 2)
+	var reference_up: Vector3 = (up - tangent * up.dot(tangent)).normalized()
+	var actual_up: Vector3 = (
+		rider_up - tangent * rider_up.dot(tangent)).normalized()
+	return [
+		delta.dot(right),
+		delta.dot(up),
+		atan2(tangent.dot(right), tangent.dot(forward)),
+		atan2(tangent.dot(up), horizontal_length),
+		atan2(actual_up.dot(tangent.cross(reference_up)), actual_up.dot(reference_up)),
+	]
+
+
+func _residual_vectors_near(actual: Variant, expected: Variant, tolerance: float) -> bool:
+	if not actual is Array or not expected is Array or actual.size() != expected.size():
+		return false
+	for index in actual.size():
+		if not _finite_number(actual[index]) or not _finite_number(expected[index]) \
+				or absf(float(actual[index]) - float(expected[index])) > tolerance:
 			return false
 	return true
 

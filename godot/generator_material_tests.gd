@@ -60,6 +60,7 @@ func _initialize() -> void:
 		"at least two distinct inversion windows put rider-up substantially below world-up")
 	_expect(_turning_features_are_material(route),
 		"the cutback, wave turn, and return create real lateral displacement and heading change")
+	_check_act_one_contract(route)
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -323,6 +324,177 @@ func _turning_features_are_material(route: Dictionary) -> bool:
 	return _window_turns(route, cutback, 5.0, deg_to_rad(20.0)) \
 		and _window_turns(route, wave, 10.0, deg_to_rad(20.0)) \
 		and _window_turns(route, raceway, 25.0, deg_to_rad(25.0))
+
+
+func _check_act_one_contract(route: Dictionary) -> void:
+	var whole := _window(route, "act-one")
+	if whole.is_empty():
+		_expect(false, "act-one public window is missing"); return
+	var roles: Array = whole.get("role_windows", [])
+	var expected := [
+		["giant-inversion", "immelmann", "act-one/giant-inversion/00-immelmann"],
+		["cutback", "cutback", "act-one/cutback/00-cutback"],
+		["giant-inversion", "loop", "act-one/giant-inversion/01-loop"],
+		["airtime-hills", "hill", "act-one/airtime-hills/00-hill"],
+		["wave-turn", "wave_turn", "act-one/wave-turn/00-wave_turn"],
+	]
+	_expect(roles.size() == expected.size(), "act-one has %d roles; required %d" % [
+		roles.size(), expected.size()])
+	if roles.size() != expected.size():
+		return
+	var next_sample := int(whole.first); var next_span := int(whole.first_span)
+	for index in roles.size():
+		var role: Dictionary = roles[index]; var identity: Array = expected[index]
+		_expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] == identity,
+			"act-one role %d identity observed %s; required %s" % [index, str([
+				role.get("id"), role.get("diagnostic_kind"), role.get("window_id")]), str(identity)])
+		_expect(int(role.first) == next_sample and int(role.first_span) == next_span,
+			"act-one role %d starts sample/span %d/%d; required %d/%d" % [index,
+				int(role.first), int(role.first_span), next_sample, next_span])
+		next_sample = int(role.last) + 1; next_span = int(role.last_span) + 1
+	_expect(next_sample == int(whole.last) + 1 and next_span == int(whole.last_span) + 1,
+		"act-one roles end sample/span %d/%d; whole ends %d/%d" % [next_sample - 1,
+			next_span - 1, int(whole.last), int(whole.last_span)])
+	var first := int(whole.first); var last := int(whole.last)
+	var entry: Vector3 = route.positions[first]; var exit: Vector3 = route.positions[last]
+	_expect_range("act-one entry speed", float(route.speeds[first]), 61.5, 62.5, "m/s")
+	_expect_max("act-one entry pitch", absf(rad_to_deg(asin(clampf(route.tangents[first].y,
+		-1.0, 1.0)))), 3.0, "deg")
+	_expect_min("act-one entry up-dot", route.ups[first].dot(Vector3.UP), 0.99, "ratio")
+	_expect_range("act-one exit speed", float(route.speeds[last]), 50.0, 57.0, "m/s")
+	_expect_max("act-one entry/exit height delta", absf(exit.y - entry.y), 5.0, "m")
+	_expect_max("act-one exit pitch", absf(rad_to_deg(asin(clampf(route.tangents[last].y, -1.0, 1.0)))), 3.0, "deg")
+	_expect_min("act-one exit up-dot", route.ups[last].dot(Vector3.UP), 0.99, "ratio")
+	var minimum_normal := INF; var maximum_normal := -INF
+	var peak_lateral := 0.0; var peak_roll_deg_s := 0.0; var peak_drive := 0.0
+	var bad_propulsion_sample := -1; var bad_propulsion_id := 0
+	for index in range(first, last + 1):
+		minimum_normal = minf(minimum_normal, float(route.normal_g[index]))
+		maximum_normal = maxf(maximum_normal, float(route.normal_g[index]))
+		peak_lateral = maxf(peak_lateral, absf(float(route.lateral_g[index])))
+		peak_roll_deg_s = maxf(peak_roll_deg_s, absf(float(route.roll_rates[index])))
+		peak_drive = maxf(peak_drive, absf(float(route.drive_g[index])))
+		if bad_propulsion_sample < 0 and int(route.propulsion_ids[index]) != 0:
+			bad_propulsion_sample = index; bad_propulsion_id = int(route.propulsion_ids[index])
+	_expect(bad_propulsion_sample < 0, "act-one sample %d propulsion ID %d; required 0" % [
+		bad_propulsion_sample, bad_propulsion_id])
+	_expect_max("act-one absolute drive", peak_drive, 0.000001, "g")
+	_expect_min("act-one minimum normal", minimum_normal, -1.0, "g")
+	_expect_max("act-one maximum normal", maximum_normal, 5.2, "g")
+	_expect_max("act-one peak absolute lateral", peak_lateral, 1.5, "g")
+	_expect_max("act-one peak absolute roll rate", peak_roll_deg_s, 120.0, "deg/s")
+	var maximum_onset := 0.0
+	for index in range(maxi(first, 1), last + 1):
+		maximum_onset = maxf(maximum_onset,
+			absf(float(route.normal_g[index]) - float(route.normal_g[index - 1])) \
+			/ (float(route.times[index]) - float(route.times[index - 1])))
+	_expect_max("act-one sampled normal onset including its entry boundary", maximum_onset, 24.5, "g/s")
+	var analytic_onset: Variant = whole.get("peak_analytic_normal_onset_gps")
+	_expect(typeof(analytic_onset) == TYPE_FLOAT and is_finite(float(analytic_onset)),
+		"act-one exposes finite peak_analytic_normal_onset_gps; observed %s" % str(analytic_onset))
+	if typeof(analytic_onset) == TYPE_FLOAT:
+		_expect_max("act-one analytic normal onset", float(analytic_onset), 24.5, "g/s")
+	var immelmann: Dictionary = roles[0]; var cutback: Dictionary = roles[1]
+	var loop: Dictionary = roles[2]; var airtime: Dictionary = roles[3]; var wave: Dictionary = roles[4]
+	_expect_range("Immelmann prominence", _prominence(route, immelmann), 90.0, 110.0, "m")
+	_expect_min("Immelmann substantially inverted hold",
+		_held_at_most(route, immelmann, true, -0.5), 1.5, "s")
+	var cutback_turn := _turn_measure(route, cutback)
+	_expect_range("cutback unwrapped heading excursion", cutback_turn.x, 140.0, 210.0, "deg")
+	_expect_range("cutback lateral range", cutback_turn.y, 50.0, 160.0, "m")
+	_expect_range("helical-loop prominence", _prominence(route, loop), 60.0, 90.0, "m")
+	_expect_min("helical-loop substantially inverted hold",
+		_held_at_most(route, loop, true, -0.5), 1.0, "s")
+	_expect_min("helical-loop conservative nonlocal segment clearance",
+		_nonlocal_clearance(route, loop, 30.0), 10.0, "m")
+	_expect_range("airtime-hill prominence", _prominence(route, airtime), 10.0, 40.0, "m")
+	_expect_min("airtime-hill normal <= -0.3 g hold",
+		_held_at_most(route, airtime, false, -0.3), 1.5, "s")
+	var wave_turn := _turn_measure(route, wave)
+	_expect_range("wave-turn prominence", _prominence(route, wave), 5.0, 30.0, "m")
+	_expect_range("wave-turn unwrapped heading excursion", wave_turn.x, 20.0, 80.0, "deg")
+	_expect_range("wave-turn lateral range", wave_turn.y, 10.0, 150.0, "m")
+
+
+func _prominence(route: Dictionary, window: Dictionary) -> float:
+	var first := int(window.first)
+	var last := int(window.last)
+	return _maximum_height(route, first, last) \
+		- maxf(route.positions[first].y, route.positions[last].y)
+
+
+func _held_at_most(route: Dictionary, window: Dictionary, use_up_dot: bool, limit: float) -> float:
+	var held := 0.0; var longest := 0.0
+	for index in range(int(window.first) + 1, int(window.last) + 1):
+		var before: float = route.ups[index - 1].dot(Vector3.UP) \
+			if use_up_dot else float(route.normal_g[index - 1])
+		var after: float = route.ups[index].dot(Vector3.UP) \
+			if use_up_dot else float(route.normal_g[index])
+		var duration: float = float(route.times[index]) - float(route.times[index - 1])
+		if before <= limit and after <= limit:
+			held += duration
+		elif before <= limit:
+			held += duration * (limit - before) / (after - before)
+			longest = maxf(longest, held); held = 0.0
+		elif after <= limit:
+			held = duration * (after - limit) / (after - before)
+		else:
+			longest = maxf(longest, held); held = 0.0
+	return maxf(longest, held)
+
+
+func _turn_measure(route: Dictionary, window: Dictionary) -> Vector2:
+	var first := int(window.first)
+	var previous := Vector2(route.tangents[first].x, route.tangents[first].z)
+	if previous.length_squared() <= 0.000001:
+		return Vector2(NAN, NAN)
+	previous = previous.normalized()
+	var right := Vector2(-previous.y, previous.x)
+	var origin: Vector3 = route.positions[first]
+	var heading := 0.0; var heading_range := Vector2.ZERO
+	var lateral := Vector2.ZERO
+	for index in range(first + 1, int(window.last) + 1):
+		var current := Vector2(route.tangents[index].x, route.tangents[index].z)
+		if current.length_squared() > 0.000001:
+			current = current.normalized()
+			heading += atan2(previous.cross(current), previous.dot(current))
+			heading_range = Vector2(minf(heading_range.x, heading),
+				maxf(heading_range.y, heading))
+			previous = current
+		var offset: float = Vector2(route.positions[index].x - origin.x,
+			route.positions[index].z - origin.z).dot(right)
+		lateral = Vector2(minf(lateral.x, offset), maxf(lateral.y, offset))
+	return Vector2(rad_to_deg(heading_range.y - heading_range.x), lateral.y - lateral.x)
+
+func _nonlocal_clearance(route: Dictionary, window: Dictionary, excluded_track_m: float) -> float:
+	var result := INF
+	for left in range(int(window.first), int(window.last)):
+		for right in range(left + 2, int(window.last)):
+			if float(route.distances[right]) - float(route.distances[left + 1]) > excluded_track_m:
+				result = minf(result, _segment_clearance_lower_bound(route.positions[left],
+					route.positions[left + 1], route.positions[right], route.positions[right + 1]))
+	return result if is_finite(result) else -INF
+
+
+func _segment_clearance_lower_bound(a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> float:
+	return maxf(0.0, 0.5 * (a + b).distance_to(c + d) \
+		- 0.5 * a.distance_to(b) - 0.5 * c.distance_to(d))
+
+
+func _expect_range(label: String, value: float, minimum: float, maximum: float, unit: String) -> void:
+	_expect(value >= minimum and value <= maximum,
+		"%s observed %.3f %s; required %.3f..%.3f %s" % [
+			label, value, unit, minimum, maximum, unit])
+
+
+func _expect_min(label: String, value: float, minimum: float, unit: String) -> void:
+	_expect(value >= minimum, "%s observed %.3f %s; required >= %.3f %s" % [
+		label, value, unit, minimum, unit])
+
+
+func _expect_max(label: String, value: float, maximum: float, unit: String) -> void:
+	_expect(value <= maximum, "%s observed %.3f %s; required <= %.3f %s" % [
+		label, value, unit, maximum, unit])
 
 
 func _window_turns(

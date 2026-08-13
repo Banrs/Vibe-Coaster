@@ -50,23 +50,23 @@ func _audit() -> int:
 	var seed_42_measurement: Dictionary = {}
 	for measurement: Dictionary in audit.measurements:
 		if measurement.get("seed") == 42: seed_42_measurement = measurement
-	var manifest_bytes := FileAccess.get_file_as_bytes(OVERLAY_MANIFEST_PATH)
-	var overlays := _build_overlays(manifest_bytes, func(name: String): return OS.get_environment(name),
-		seed_42_measurement, audit.routes_by_seed.get(42, {}), References.CATALOG.transforms,
-		Callable(Overlay, "build"))
+	var local_files := _local_rfdb_files(func(name: String): return OS.get_environment(name))
+	var overlays := {}
+	if not local_files.is_empty():
+		var manifest_bytes := FileAccess.get_file_as_bytes(OVERLAY_MANIFEST_PATH)
+		overlays = _build_overlays(manifest_bytes, local_files, seed_42_measurement,
+			audit.routes_by_seed.get(42, {}), References.CATALOG.transforms,
+			Callable(Overlay, "build"))
 	if overlays.get("status") == "invalid-input":
 		for error in overlays.get("errors", ["overlay manifest is invalid"]):
 			_operational.append(str(error))
 		return _fail()
-	var report: Dictionary = Artifacts.build_report(
-		audit.measurements, audit.comparison, References.CATALOG,
-		LEGACY_BASE_COMMIT, audit.generation_counts, true
-	)
+	var report := _artifact_report(audit, References.CATALOG, LEGACY_BASE_COMMIT, overlays)
 	if report.get("schema_version") != "ride-fidelity-audit@1":
 		for error in report.get("errors", ["artifact_report: the audit report was not built"]):
 			_operational.append(str(error))
 		return _fail()
-	for error in Artifacts.write_pack(OUT, report, audit.routes_by_seed, overlays):
+	for error in _write_artifact_pack(OUT, report, audit.routes_by_seed, overlays):
 		_operational.append(str(error))
 	if not _operational.is_empty():
 		return _fail()
@@ -79,18 +79,39 @@ func _audit() -> int:
 
 
 static func _build_overlays(
-	manifest_bytes: PackedByteArray, environment_lookup: Callable,
+	manifest_bytes: PackedByteArray, local_files: Dictionary,
 	measurement: Dictionary, route: Dictionary, transforms: Dictionary, overlay_build: Callable
 ) -> Dictionary:
 	var parser := JSON.new()
 	if parser.parse(manifest_bytes.get_string_from_utf8()) != OK or not parser.data is Dictionary:
 		return {"status": "invalid-input", "errors": ["overlay manifest bytes are not JSON"]}
 	var parsed: Dictionary = parser.data
+	return overlay_build.call(parsed, manifest_bytes, local_files, measurement, route, transforms)
+
+
+static func _local_rfdb_files(environment_lookup: Callable) -> Dictionary:
 	var local_files := {}
 	for pair in [["RFDB_4804_CSV", "rfdb-4804"], ["RFDB_6383_CSV", "rfdb-6383"]]:
 		var path: Variant = environment_lookup.call(pair[0])
 		if path is String and not path.is_empty(): local_files[pair[1]] = path
-	return overlay_build.call(parsed, manifest_bytes, local_files, measurement, route, transforms)
+	return local_files
+
+
+static func _artifact_report(
+	audit: Dictionary, catalog: Dictionary, legacy_base_commit: String, overlays: Dictionary
+) -> Dictionary:
+	if overlays.is_empty():
+		return Artifacts.build_report(audit.measurements, audit.comparison, catalog,
+			legacy_base_commit, audit.generation_counts)
+	return Artifacts.build_report(audit.measurements, audit.comparison, catalog,
+		legacy_base_commit, audit.generation_counts, true)
+
+
+static func _write_artifact_pack(
+	output_dir: String, report: Dictionary, routes_by_seed: Dictionary, overlays: Dictionary
+) -> PackedStringArray:
+	if overlays.is_empty(): return Artifacts.write_pack(output_dir, report, routes_by_seed)
+	return Artifacts.write_pack(output_dir, report, routes_by_seed, overlays)
 
 
 ## The orchestration seam: every dependency is injected so the one-build-per-seed contract is

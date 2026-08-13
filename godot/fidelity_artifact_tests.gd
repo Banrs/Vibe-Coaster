@@ -67,7 +67,20 @@ static func _test_default_off_preserves_report_and_pack(
 		"rows": [{"row_id": "row-02", "position": "intermediate", "offset": 0.0,
 			"window_start_s": 4.0, "window_end_s": 6.0}],
 	}])
-	var report: Dictionary = _build(artifacts, fixture)
+	var inspect: Script = load(INSPECT_PATH)
+	var report_seam := Callable(inspect, "_artifact_report")
+	var writer_seam := Callable(inspect, "_write_artifact_pack")
+	_expect(errors, report_seam.is_valid() and writer_seam.is_valid(),
+		"the inspector exposes its off-versus-opt-in artifact seam")
+	if not report_seam.is_valid() or not writer_seam.is_valid(): return
+	var audit := {"measurements": fixture.seed_measurements, "comparison": fixture.comparison,
+		"generation_counts": fixture.generation_counts, "routes_by_seed": _pack_routes()}
+	var report: Dictionary = report_seam.call(
+		audit, fixture.catalog, fixture.legacy_base_commit, {})
+	var direct: Dictionary = _build(artifacts, fixture)
+	_expect(errors, artifacts.canonical_json(report) == artifacts.canonical_json(direct)
+		and artifacts.markdown(report) == artifacts.markdown(direct),
+		"the inspector's both-empty RFDB path is the exact legacy report call")
 	var element_paths := PackedStringArray()
 	var pov_paths := PackedStringArray()
 	for request: Dictionary in report.get("render_requests", []):
@@ -84,9 +97,9 @@ static func _test_default_off_preserves_report_and_pack(
 	var second := "user://artifact-off-second"
 	_reset_directory(first)
 	_reset_directory(second)
-	_expect(errors, artifacts.write_pack(first, report, _pack_routes()).is_empty(),
+	_expect(errors, writer_seam.call(first, report, _pack_routes(), {}).is_empty(),
 		"default pack writes the frozen compatibility fixture")
-	_expect(errors, artifacts.write_pack(second, report, _pack_routes()).is_empty(),
+	_expect(errors, writer_seam.call(second, report, _pack_routes(), {}).is_empty(),
 		"default pack repeats the frozen compatibility fixture")
 	var expected_files := PackedStringArray(EXPECTED_PACK_FILES)
 	expected_files.append("review/seed-42/elements/act-one__01__hill.png")
@@ -127,6 +140,23 @@ static func _test_opt_in_generated_midpoint_pov_requests(
 	_expect(errors, report.render_requests.filter(func(request: Dictionary):
 		return request.get("path") == "review/seed-42/pov/act-one__00__loop.png").size() == 1,
 		"an aligned midpoint request deduplicates byte-for-byte")
+	var missing_center := fixture.duplicate(true)
+	missing_center.seed_measurements[1].beats[1].rows = []
+	var missing_result: Dictionary = artifacts.build_report(missing_center.seed_measurements,
+		missing_center.comparison, missing_center.catalog, missing_center.legacy_base_commit,
+		missing_center.generation_counts, true)
+	_expect_contains(errors, missing_result.get("errors", []),
+		"midpoint POV requires exactly one center row",
+		"opt-in rejects a retained element with no center row")
+	var duplicate_center := fixture.duplicate(true)
+	duplicate_center.seed_measurements[1].beats[1].rows.append(
+		duplicate_center.seed_measurements[1].beats[1].rows[0].duplicate(true))
+	var duplicate_result: Dictionary = artifacts.build_report(duplicate_center.seed_measurements,
+		duplicate_center.comparison, duplicate_center.catalog, duplicate_center.legacy_base_commit,
+		duplicate_center.generation_counts, true)
+	_expect_contains(errors, duplicate_result.get("errors", []),
+		"midpoint POV requires exactly one center row",
+		"opt-in rejects a retained element with multiple center rows")
 	_append_copy(fixture.seed_measurements[1].beats, 0, {
 		"beat_id": "act-one__00__loop", "story_slot_id": "act1.conflict"})
 	var conflict: Dictionary = artifacts.build_report(fixture.seed_measurements, fixture.comparison,
@@ -173,6 +203,12 @@ static func _test_write_pack_overlay_additions_and_valid_gaps(
 			_expect(errors, emitted.comparisons[0].generated.window_s == null
 				and emitted.comparisons[0].generated.duration_s == null,
 				"generated gaps serialize no invented window or duration")
+		var markdown := FileAccess.get_file_as_string("%s/review/overlays/index.md" % first)
+		_expect(errors, markdown.contains("| comparison | source | generated | artifact |")
+			and markdown.contains("test-0") and markdown.contains("source-local-seconds")
+			and markdown.contains("generated-route-seconds")
+			and not markdown.contains('"samples"') and not markdown.contains('"time_s"'),
+			"overlay Markdown is a concise ordered review projection without per-sample JSON")
 
 
 static func _test_overlay_independent_plot_domains(artifacts: Script, errors: PackedStringArray) -> void:
@@ -181,9 +217,9 @@ static func _test_overlay_independent_plot_domains(artifacts: Script, errors: Pa
 	comparison.generated.window_s = [200.0, 260.0]; comparison.generated.duration_s = 60.0
 	for lane: Dictionary in comparison.lanes:
 		if lane.role in ["source_observed_smoothed", "approved_scaled_target"]:
-			lane.samples[0].time_s = 20.0; lane.samples[1].time_s = 30.0
+			lane.samples[0].time_s = 20.0; lane.samples[1].time_s = 29.999
 		elif lane.role == "generated_raw":
-			lane.samples[0].time_s = 200.0; lane.samples[1].time_s = 260.0
+			lane.samples[0].time_s = 200.0; lane.samples[1].time_s = 259.999
 	comparison.markers = [{"id": "entry", "time_s": 20.0, "uncertainty_s": 0.1},
 		{"id": "apex", "time_s": 25.0, "uncertainty_s": 0.1},
 		{"id": "exit", "time_s": 30.0, "uncertainty_s": 0.1}]
@@ -208,7 +244,14 @@ static func _test_overlay_pack_redaction_and_determinism(
 	artifacts: Script, errors: PackedStringArray
 ) -> void:
 	var local_path := "C:/Users/fixture/secret-rfdb.csv"
-	var overlays := _overlay_fixture(4)
+	var inspect: Script = load(INSPECT_PATH); var captured := {}
+	var overlays: Dictionary = Callable(inspect, "_build_overlays").call(
+		'{"fixture":true}'.to_utf8_buffer(), {"rfdb-4804": local_path}, {}, {}, {},
+		func(_manifest, _bytes, local_files, _measurement, _route, _transforms):
+			captured.local_files = local_files
+			return _overlay_fixture(4))
+	_expect(errors, captured.get("local_files") == {"rfdb-4804": local_path},
+		"the redaction fixture injects a recognizable absolute local path at the core boundary")
 	var reversed: Dictionary = _reverse_dictionaries(overlays)
 	var first := "user://overlay-redaction-a"; var second := "user://overlay-redaction-b"
 	_reset_directory(first); _reset_directory(second)
@@ -238,6 +281,7 @@ static func _test_overlay_writer_rejects_malformed_explicit_projection(
 		func(v): v.comparisons[0].lanes[1].clock = "generated", func(v): v.comparisons[0].lanes[1].samples = {},
 		func(v): v.comparisons[0].lanes[1].samples[0] = [], func(v): v.comparisons[0].lanes[1].samples[0].time_s = INF,
 		func(v): v.comparisons[0].lanes[1].samples[0].time_s = 99.0,
+		func(v): v.comparisons[0].lanes[1].samples[1].time_s = 1.0,
 		func(v): v.comparisons[0].lanes[1].samples[0].normal_g = NAN,
 		func(v): v.comparisons[0].lanes[1].samples[0].eligible = 1,
 		func(v): v.comparisons[0].markers[0].uncertainty_s = 0.0,
@@ -258,9 +302,11 @@ static func _test_overlay_writer_rejects_malformed_explicit_projection(
 
 static func _test_inspector_overlay_boundary(errors: PackedStringArray) -> void:
 	var inspect: Script = load(INSPECT_PATH)
+	var local_files_seam := Callable(inspect, "_local_rfdb_files")
 	var seam := Callable(inspect, "_build_overlays")
-	_expect(errors, seam.is_valid(), "the inspector exposes a static overlay boundary")
-	if not seam.is_valid(): return
+	_expect(errors, local_files_seam.is_valid() and seam.is_valid(),
+		"the inspector exposes a static overlay boundary")
+	if not local_files_seam.is_valid() or not seam.is_valid(): return
 	var captured := {}
 	var builder := func(manifest, bytes, local_files, measurement, route, transforms):
 		captured.merge({"manifest": manifest, "bytes": bytes, "local_files": local_files,
@@ -269,18 +315,22 @@ static func _test_inspector_overlay_boundary(errors: PackedStringArray) -> void:
 	var env := {"RFDB_4804_CSV": "a.csv", "RFDB_6383_CSV": "", "IGNORED": "secret.csv"}
 	var bytes := '{"schema_version":"fixture"}'.to_utf8_buffer()
 	var measurement := {"identity": "retained-measurement"}; var route := {"identity": "retained-route"}
-	var result: Dictionary = seam.call(bytes, func(name): return env.get(name, ""), measurement,
+	var local_files: Dictionary = local_files_seam.call(func(name): return env.get(name, ""))
+	var result: Dictionary = seam.call(bytes, local_files, measurement,
 		route, {"t": 1}, builder)
 	_expect(errors, result.status == "ok" and captured.local_files == {"rfdb-4804": "a.csv"},
 		"only the two named nonempty RFDB variables enter the transient local map")
 	_expect(errors, is_same(captured.measurement, measurement) and is_same(captured.route, route),
 		"the overlay seam receives retained seed-42 values")
-	var malformed: Dictionary = seam.call("{".to_utf8_buffer(), func(_name): return "", measurement,
+	var empty_files: Dictionary = local_files_seam.call(func(_name): return "")
+	_expect(errors, empty_files.is_empty(),
+		"both absent RFDB variables select the inspector's legacy off path")
+	var malformed: Dictionary = seam.call("{".to_utf8_buffer(), {"rfdb-4804": "bad.csv"}, measurement,
 		route, {}, builder)
 	_expect(errors, malformed.status == "invalid-input", "malformed committed manifest is operational")
 	var diagnostic := func(_m, _b, _l, _me, _r, _t):
 		var value := _overlay_fixture(1); _make_source_gap(value.comparisons[0]); return value
-	var missing: Dictionary = seam.call(bytes, func(_name): return "missing.csv", measurement,
+	var missing: Dictionary = seam.call(bytes, {"rfdb-4804": "missing.csv"}, measurement,
 		route, {}, diagnostic)
 	_expect(errors, missing.status == "ok" and missing.comparisons[0].source.status == "source_trace_unavailable",
 		"missing or hash-invalid optional CSV remains diagnostic")
@@ -364,7 +414,7 @@ static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray
 	var retained_measurement: Dictionary = report.measurements[1]
 	var retained_route: Dictionary = report.routes_by_seed[42]
 	Callable(inspect, "_build_overlays").call('{"fixture":true}'.to_utf8_buffer(),
-		func(_name): return "", retained_measurement, retained_route, {},
+		{}, retained_measurement, retained_route, {},
 		func(_m, _b, _l, measurement, route, _t):
 			captured.measurement = measurement; captured.route = route
 			return {"status": "ok"})

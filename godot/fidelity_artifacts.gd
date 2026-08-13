@@ -565,15 +565,29 @@ static func _render_requests(
 				"path": path, "seed": 42, "artifact_kind": "element", "beat_id": beat.beat_id,
 			})
 			if include_generated_povs:
-				var centers: Array = beat.get("rows", []).filter(func(row: Dictionary):
-					return _finite_number(row.get("offset")) and is_zero_approx(float(row.offset)) \
-						and _finite_number(row.get("window_start_s")) \
-						and _finite_number(row.get("window_end_s")))
-				if centers.size() == 1:
-					candidates.append({"path": "review/seed-42/pov/%s.png" % escaped,
-						"seed": 42, "artifact_kind": "pov", "beat_id": beat.beat_id,
-						"generated_time_s": (float(centers[0].window_start_s)
-							+ float(centers[0].window_end_s)) * 0.5})
+				var centers := []
+				var rows_value: Variant = beat.get("rows")
+				if rows_value is Array:
+					for row_value in rows_value:
+						if not row_value is Dictionary:
+							continue
+						var row: Dictionary = row_value
+						if not _finite_number(row.get("offset")) \
+							or not is_zero_approx(float(row.offset)):
+							continue
+						if (_finite_number(row.get("window_start_s"))
+							and _finite_number(row.get("window_end_s"))
+							and float(row.window_start_s) >= 0.0
+							and float(row.window_start_s) < float(row.window_end_s)
+							and float(row.window_end_s) <= float(seed_42.duration)):
+							centers.append(row)
+				if centers.size() != 1:
+					errors.append("artifact_report: midpoint POV requires exactly one center row: %s" % beat.beat_id)
+					continue
+				candidates.append({"path": "review/seed-42/pov/%s.png" % escaped,
+					"seed": 42, "artifact_kind": "pov", "beat_id": beat.beat_id,
+					"generated_time_s": (float(centers[0].window_start_s)
+						+ float(centers[0].window_end_s)) * 0.5})
 	for record in pov_map.records:
 		var path: String = record.generated_pov_path
 		candidates.append({
@@ -1149,7 +1163,7 @@ static func _validate_overlay_samples(lane: Dictionary, window: Variant, allow_n
 		if not _finite_number(time) or float(time) <= previous: errors.append("artifact_write: overlay %s lane sample time is invalid" % label)
 		else:
 			previous = float(time)
-			if _native_window(window) and (float(time) < float(window[0]) or float(time) > float(window[1])): errors.append("artifact_write: overlay %s lane sample time is outside its native window" % label)
+			if _native_window(window) and (float(time) < float(window[0]) or float(time) >= float(window[1])): errors.append("artifact_write: overlay %s lane sample time is outside its native window" % label)
 		if typeof(sample.get("eligible")) != TYPE_BOOL: errors.append("artifact_write: overlay %s lane sample eligible must be Boolean" % label)
 		for axis in ["normal_g", "lateral_g", "longitudinal_g"]:
 			var axis_value: Variant = sample.get(axis)
@@ -1181,10 +1195,34 @@ static func _write_overlays(root: String, overlays: Dictionary,
 	records: Array, errors: PackedStringArray) -> void:
 	var json := canonical_json(overlays)
 	_write(root, "review/overlays/index.json", "telemetry-overlay", json, null, null, records, errors)
-	_write(root, "review/overlays/index.md", "telemetry-overlay", "# Semantic telemetry overlays\n\n%s" % json, null, null, records, errors)
+	_write(root, "review/overlays/index.md", "telemetry-overlay", _overlay_markdown(overlays),
+		null, null, records, errors)
 	var comparisons: Array = overlays.comparisons.duplicate(true)
 	comparisons.sort_custom(func(a: Dictionary, b: Dictionary): return a.comparison_id < b.comparison_id)
 	for comparison: Dictionary in comparisons: _write(root, comparison.artifact_path, "telemetry-overlay", _overlay_image(comparison), null, comparison.comparison_id, records, errors)
+
+static func _overlay_markdown(overlays: Dictionary) -> String:
+	var lines := PackedStringArray(["# Semantic telemetry overlays", "",
+		"Manifest: `%s`" % overlays.manifest_sha256, "",
+		"| comparison | source | generated | artifact |",
+		"| --- | --- | --- | --- |"])
+	var comparisons: Array = overlays.comparisons.duplicate(true)
+	comparisons.sort_custom(func(a: Dictionary, b: Dictionary): return a.comparison_id < b.comparison_id)
+	for comparison: Dictionary in comparisons:
+		lines.append(_markdown_row([comparison.comparison_id,
+			"%s (%s)" % [comparison.source.status, comparison.source.clock],
+			"%s (%s)" % [comparison.generated.status, comparison.generated.clock],
+			comparison.artifact_path]))
+	lines.append_array(["", "## Gaps", ""])
+	var gaps: Array = overlays.gaps.duplicate(true)
+	gaps.sort_custom(func(a: Dictionary, b: Dictionary):
+		return "%s/%s" % [a.get("comparison_id", ""), a.get("role", "")] \
+			< "%s/%s" % [b.get("comparison_id", ""), b.get("role", "")])
+	if gaps.is_empty(): lines.append("None.")
+	for gap: Dictionary in gaps:
+		lines.append("- %s / %s: %s" % [gap.get("comparison_id", ""),
+			gap.get("role", ""), gap.get("reason", "")])
+	return "\n".join(lines) + "\n"
 
 static func _overlay_image(comparison: Dictionary) -> Image:
 	var image := Image.create(_OVERLAY_SIZE.x, _OVERLAY_SIZE.y, false, Image.FORMAT_RGB8); image.fill(Color(0.09, 0.10, 0.12))

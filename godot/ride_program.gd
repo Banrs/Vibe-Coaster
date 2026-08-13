@@ -812,8 +812,9 @@ static func _finite_difference_jacobian(
 		row.fill(0.0)
 		jacobian.append(row)
 	for column in size:
-		var delta := absf(float(deltas[column]))
-		if base_vector[column] + delta > bounds[column][1]:
+		var delta := float(deltas[column])
+		if base_vector[column] + delta < bounds[column][0] \
+				or base_vector[column] + delta > bounds[column][1]:
 			delta = -delta
 		if base_vector[column] + delta < bounds[column][0] \
 				or base_vector[column] + delta > bounds[column][1]:
@@ -920,7 +921,7 @@ static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
 		if not base.ok:
 			return base
 		var finite_difference := _finite_difference_jacobian(parameters, base.scaled,
-			BRAKE_PARAMETER_BOUNDS, [0.01, 0.005], evaluate)
+			BRAKE_PARAMETER_BOUNDS, [-0.01, -0.005], evaluate)
 		if not finite_difference.ok:
 			return finite_difference
 		conditioning = _matrix_conditioning(finite_difference.jacobian)

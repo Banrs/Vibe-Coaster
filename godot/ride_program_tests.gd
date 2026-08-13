@@ -42,9 +42,9 @@ var _errors := PackedStringArray()
 
 func _initialize() -> void:
 	_test_capture_accepts_varied_station_frames()
+	_test_return_solver_adapts_to_feasible_handoffs()
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
-	_test_return_solver_adapts_to_feasible_handoffs()
 	_test_station_local_program_compiles()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()

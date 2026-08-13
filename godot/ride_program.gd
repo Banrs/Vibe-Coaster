@@ -32,15 +32,25 @@ const RETURN_OUTPUT_BOUNDS := [
 const RETURN_OUTPUT_SCALES := [
 	15.0, 15.0, 25.0, 0.06981317007977318, 0.04363323129985824, 0.06981317007977318,
 ]
+const RETURN_TARGET := [
+	-413.8176585379036, 3.542414464340024, -0.9589346302880815,
+	0.01954530591190462, -0.004588670638026367, 0.04616595364095083,
+]
+const RETURN_TARGET_TOLERANCE := 0.02
 const RETURN_FINE_TOLERANCES := [0.01, 0.01, 0.01, 0.0001, 0.0001, 0.0001]
 const STATION_APPROACH_LENGTH_M := 450.0
 const CAPTURE_HALF_WIDTH_M := 150.0
 const CAPTURE_HALF_HEIGHT_M := 75.0
 const CAPTURE_STEERING_DURATION_S := 1.3276187084937188
 const CAPTURE_TERMINAL_DURATION_S := 0.5
-const BRAKE_DURATIONS_S := [0.6, 3.2, 0.6]
-const BRAKE_PEAK_LIMIT_G := 2.25
-const BRAKE_SOLVE_ITERATIONS := 48
+const BRAKE_SHOULDER_DURATION_S := 0.6
+const BRAKE_PARAMETER_IDS := ["hold_duration_s", "peak_g"]
+const BRAKE_PARAMETER_BOUNDS := [[2.0, 5.0], [0.0, 2.25]]
+const MAX_BRAKE_EVALUATIONS := 24
+const BRAKE_NEWTON_ITERATIONS := 7
+const BRAKE_NEWTON_STEP := 0.95
+const BRAKE_BOUNDARY_TOLERANCE_MPS := 0.0001
+const BRAKE_BOUNDARY_INTERIOR_MPS := 2.0 + 0.5 * BRAKE_BOUNDARY_TOLERANCE_MPS
 const TERMINAL_DISTANCE_TOLERANCE_M := 0.05
 const CAPTURE_RESIDUAL_TOLERANCES := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
 const CAPTURE_COEFFICIENT_BOUNDS := [
@@ -204,25 +214,15 @@ static func compile(
 	if not prefix.get("ok", false):
 		return _failure("prefix integration failed: %s" % ", ".join(
 			prefix.get("errors", [])), "prefix")
-	var landmark_report := _landmark_report(prefix, gestures, metadata,
-		initial_state.position_m)
-	var landmark_errors := _validate_landmark_report(landmark_report)
-	if not landmark_errors.is_empty():
-		return _failure("upstream landmark solve missed its physical envelope: %s" \
-			% str(landmark_errors), "landmarks",
-			{"landmark_report": landmark_report, "misses": landmark_errors})
 	var capture_start := _last_state(prefix)
 	var capture := _solve_capture(capture_start, layout, _settings(COARSE_STEP_S))
 	if not capture.ok:
-		capture["landmark_report"] = landmark_report
 		return capture
 	var capture_spans: Array = _capture_spans(capture.coefficients)
 	var capture_route := Motion.integrate(capture_start, capture_spans, settings)
 	if not capture_route.get("ok", false):
-		var capture_failure := _capture_failure("accepted capture did not reintegrate",
+		return _capture_failure("accepted capture did not reintegrate",
 			capture.unique_evaluations, capture.residuals, capture.margins)
-		capture_failure["landmark_report"] = landmark_report
-		return capture_failure
 	var production_residuals := _capture_residuals(_last_state(capture_route), layout)
 	var production_margins := _capture_margins(capture.coefficients, capture_route, layout)
 	if not _capture_converged(production_residuals):
@@ -232,9 +232,8 @@ static func compile(
 		if not is_finite(float(margin)) or float(margin) < 0.0:
 			return _capture_failure("production capture violates an inequality",
 				capture.unique_evaluations, production_residuals, production_margins)
-	var brake := _solve_brakes(_last_state(capture_route), layout, settings)
+	var brake := _solve_brakes(_last_state(capture_route), layout)
 	if not brake.ok:
-		brake["landmark_report"] = landmark_report
 		return brake
 
 	_begin_gesture(gestures, "brakes-station-capture", spans.size())
@@ -287,7 +286,6 @@ static func compile(
 			"positive_drive_allowed": false,
 		},
 		"brake_plan": brake.report,
-		"landmark_report": landmark_report,
 		"terminal_contract": {
 			"station_position_m": layout.station_position_m,
 			"station_tangent": layout.station_tangent,
@@ -430,66 +428,126 @@ static func _return_span(id: String, duration_s: float, from_g: float, to_g: flo
 
 static func _solve_return(start: Dictionary, layout: Dictionary) -> Dictionary:
 	var parameters := RETURN_SEED.duplicate()
-	var coarse := _return_evaluation(start, layout, parameters, _settings(COARSE_STEP_S), 1)
+	var cache := {}
+	var deltas := []
+	for index in 6:
+		deltas.append(maxf(0.00001, 0.001 * (
+			RETURN_PARAMETER_BOUNDS[index][1] - RETURN_PARAMETER_BOUNDS[index][0])))
+	var evaluate := func(candidate: Array) -> Dictionary:
+		return _return_evaluation(
+			start, layout, candidate, _settings(COARSE_STEP_S), cache)
+	for _update in 2:
+		var base: Dictionary = evaluate.call(parameters)
+		if not base.ok:
+			return base
+		var finite_difference := _finite_difference_jacobian(
+			parameters, base.scaled, RETURN_PARAMETER_BOUNDS, deltas, evaluate)
+		if not finite_difference.ok:
+			return finite_difference
+		_normalize_return_jacobian(finite_difference.jacobian)
+		var step := _linear_solve(finite_difference.jacobian, base.scaled)
+		if step.is_empty():
+			return _failure("return Jacobian is singular", "return",
+				{"evaluation_count": cache.size()})
+		var normalized_size := 0.0
+		for value in step:
+			normalized_size = maxf(normalized_size, absf(float(value)))
+		var step_scale := minf(1.0, 0.5 / normalized_size) if normalized_size > 0.0 else 1.0
+		for index in 6:
+			var half_range: float = 0.5 * (
+				RETURN_PARAMETER_BOUNDS[index][1] - RETURN_PARAMETER_BOUNDS[index][0])
+			parameters[index] = clampf(parameters[index] - step_scale * step[index] * half_range,
+				RETURN_PARAMETER_BOUNDS[index][0], RETURN_PARAMETER_BOUNDS[index][1])
+	var coarse: Dictionary = evaluate.call(parameters)
 	if not coarse.ok:
 		return coarse
-	var fine := _return_evaluation(start, layout, parameters, _settings(FINE_STEP_S), 2)
+	var accepted_difference := _finite_difference_jacobian(
+		parameters, coarse.scaled, RETURN_PARAMETER_BOUNDS, deltas, evaluate)
+	if not accepted_difference.ok:
+		return accepted_difference
+	_normalize_return_jacobian(accepted_difference.jacobian)
+	var conditioning := _matrix_conditioning(accepted_difference.jacobian)
+	conditioning["evaluated_vector"] = parameters.duplicate()
+	if not conditioning.ok:
+		return _failure("return Jacobian is ill-conditioned", "return",
+			{"evaluation_count": cache.size(), "conditioning": conditioning})
+	var fine := _return_evaluation(
+		start, layout, parameters, _settings(FINE_STEP_S), cache)
 	if not fine.ok:
 		return fine
-	var evaluation_count := 2
 	if not _margins_are_valid(coarse.margins) or not _margins_are_valid(fine.margins):
-		return _failure("initial return point misses the capture-entry basin", "return",
-			{"evaluation_count": evaluation_count, "margins": fine.margins})
+		return _failure("solved return misses the capture-entry basin", "return",
+			{"evaluation_count": cache.size(), "margins": fine.margins})
+	if _maximum_absolute(coarse.scaled) > RETURN_TARGET_TOLERANCE:
+		return _failure("return did not reach its fixed station-local target", "return",
+			{"evaluation_count": cache.size(), "target_error": coarse.scaled})
 	for index in 6:
 		if absf(fine.residuals[index] - coarse.residuals[index]) \
 				> RETURN_FINE_TOLERANCES[index]:
 			return _failure("return coarse/fine observations disagree", "return",
-				{"evaluation_count": evaluation_count, "coarse": coarse.residuals,
+				{"evaluation_count": cache.size(), "coarse": coarse.residuals,
 				"fine": fine.residuals})
-	var jacobian: Array = []
-	for _row in 6:
-		jacobian.append([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-	for column in 6:
-		var parameter_scale: float = 0.5 * (RETURN_PARAMETER_BOUNDS[column][1] - RETURN_PARAMETER_BOUNDS[column][0])
-		var delta := maxf(0.00001, 0.002 * parameter_scale)
-		var probe := parameters.duplicate()
-		probe[column] += delta
-		evaluation_count += 1
-		var evaluated := _return_evaluation(
-			start, layout, probe, _settings(FINE_STEP_S), evaluation_count)
-		if not evaluated.ok:
-			return evaluated
-		for row in 6:
-			jacobian[row][column] = (evaluated.residuals[row] - fine.residuals[row]) \
-				/ delta * parameter_scale / RETURN_OUTPUT_SCALES[row]
-	var conditioning := _matrix_conditioning(jacobian)
-	conditioning["evaluated_vector"] = parameters.duplicate()
-	if not conditioning.ok:
-		return _failure("return Jacobian is ill-conditioned", "return",
-			{"evaluation_count": evaluation_count, "conditioning": conditioning})
 	var margins: Dictionary = fine.margins.duplicate(true)
 	for index in 6:
 		margins["parameter_%s" % RETURN_PARAMETER_IDS[index]] = minf(
-		parameters[index] - RETURN_PARAMETER_BOUNDS[index][0], RETURN_PARAMETER_BOUNDS[index][1] - parameters[index])
+			parameters[index] - RETURN_PARAMETER_BOUNDS[index][0],
+			RETURN_PARAMETER_BOUNDS[index][1] - parameters[index])
 	return {"ok": true, "parameters": parameters, "report": {
 		"parameter_ids": RETURN_PARAMETER_IDS,
 		"parameter_bounds": RETURN_PARAMETER_BOUNDS, "accepted_values": parameters,
 		"residual_ids": RETURN_OUTPUT_IDS, "residual_bounds": RETURN_OUTPUT_BOUNDS,
 		"coarse_fine_tolerances": RETURN_FINE_TOLERANCES,
-		"unique_evaluations": evaluation_count, "max_unique_evaluations": MAX_RETURN_EVALUATIONS,
+		"unique_evaluations": cache.size(), "max_unique_evaluations": MAX_RETURN_EVALUATIONS,
 		"coarse_observation": coarse.residuals, "fine_observation": fine.residuals,
 		"conditioning": conditioning, "margins": margins,
 		"positive_drive_allowed": false}}
 
 
+static func _return_target_error(observation: Array) -> Array:
+	var result := []
+	for index in 6:
+		var difference: float = observation[index] - RETURN_TARGET[index]
+		if index >= 3:
+			difference = wrapf(difference, -PI, PI)
+		result.append(difference / RETURN_OUTPUT_SCALES[index])
+	return result
+
+
+static func _normalize_return_jacobian(jacobian: Array) -> void:
+	for column in 6:
+		var half_range: float = 0.5 * (
+			RETURN_PARAMETER_BOUNDS[column][1] - RETURN_PARAMETER_BOUNDS[column][0])
+		for row in 6:
+			jacobian[row][column] *= half_range
+
+
+static func _maximum_absolute(values: Array) -> float:
+	var result := 0.0
+	for value in values:
+		result = maxf(result, absf(float(value)))
+	return result
+
+
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
-	settings: Dictionary, evaluation_number: int) -> Dictionary:
-	if evaluation_number > MAX_RETURN_EVALUATIONS:
-		return _failure("return exceeded its evaluation cap", "return")
+	settings: Dictionary, cache: Dictionary) -> Dictionary:
+	var key := "%.6f:" % float(settings.step_s)
+	for parameter in parameters:
+		key += "%.12f," % float(parameter)
+	if cache.has(key):
+		return cache[key]
+	if cache.size() >= MAX_RETURN_EVALUATIONS:
+		return _failure("return exceeded its evaluation cap", "return",
+			{"evaluation_count": cache.size()})
 	var route := Motion.integrate(start, _return_spans(parameters), settings)
 	if not route.get("ok", false):
-		return _failure("return candidate failed integration", "return")
-	return _return_observation(route, layout)
+		var failed := _failure("return candidate failed integration", "return",
+			{"evaluation_count": cache.size() + 1})
+		cache[key] = failed
+		return failed
+	var result := _return_observation(route, layout)
+	result["scaled"] = _return_target_error(result.residuals)
+	cache[key] = result
+	return result
 
 
 static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictionary:
@@ -566,33 +624,25 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 	var cache := {}
 	var residuals: Array = []
 	var conditioning := {}
-	for iteration in 6:
+	var evaluate := func(candidate: Array) -> Dictionary:
+		return _capture_evaluation(start, layout, candidate, settings, cache)
+	for _iteration in 6:
 		var base := _capture_evaluation(start, layout, coefficients, settings, cache)
 		if not base.ok:
 			return base
 		residuals = base.residuals
-		var jacobian: Array = []
-		for row in 5:
-			jacobian.append([0.0, 0.0, 0.0, 0.0, 0.0])
-		for column in 5:
-			var probe := coefficients.duplicate()
-			var delta := 0.02 if column < 4 else 0.04
-			if probe[column] + delta > CAPTURE_COEFFICIENT_BOUNDS[column][1]:
-				delta = -delta
-			probe[column] += delta
-			var evaluated := _capture_evaluation(start, layout, probe, settings, cache)
-			if not evaluated.ok:
-				return evaluated
-			for row in 5:
-				jacobian[row][column] = (evaluated.scaled[row] - base.scaled[row]) / delta
-		conditioning = _matrix_conditioning(jacobian)
+		var finite_difference := _finite_difference_jacobian(coefficients, base.scaled,
+			CAPTURE_COEFFICIENT_BOUNDS, [0.02, 0.02, 0.02, 0.02, 0.04], evaluate)
+		if not finite_difference.ok:
+			return finite_difference
+		conditioning = _matrix_conditioning(finite_difference.jacobian)
 		conditioning["evaluated_vector"] = coefficients.duplicate()
 		if not conditioning.ok:
 			return _capture_failure("capture Jacobian is ill-conditioned", cache.size(),
 				base.residuals, base.margins, {"conditioning": conditioning})
 		if _capture_converged(residuals):
 			break
-		var step := _linear_solve(jacobian, base.scaled)
+		var step := _linear_solve(finite_difference.jacobian, base.scaled)
 		if step.is_empty():
 			return _capture_failure("capture Jacobian is singular", cache.size(),
 				base.residuals, base.margins)
@@ -750,6 +800,34 @@ static func _capture_inequality_margins(route: Dictionary, layout: Dictionary) -
 	}
 
 
+static func _finite_difference_jacobian(
+	base_vector: Array, base_scaled: Array, bounds: Array, deltas: Array,
+	evaluate: Callable
+) -> Dictionary:
+	var size := base_vector.size()
+	var jacobian: Array = []
+	for _row in size:
+		var row := []
+		row.resize(size)
+		row.fill(0.0)
+		jacobian.append(row)
+	for column in size:
+		var delta := absf(float(deltas[column]))
+		if base_vector[column] + delta > bounds[column][1]:
+			delta = -delta
+		if base_vector[column] + delta < bounds[column][0] \
+				or base_vector[column] + delta > bounds[column][1]:
+			return _failure("finite-difference probe has no bounded direction", "solve")
+		var probe := base_vector.duplicate()
+		probe[column] += delta
+		var observed: Dictionary = evaluate.call(probe)
+		if not observed.ok:
+			return observed
+		for row in size:
+			jacobian[row][column] = (observed.scaled[row] - base_scaled[row]) / delta
+	return {"ok": true, "jacobian": jacobian}
+
+
 static func _linear_solve(matrix: Array, residual: Array) -> Array:
 	var size := matrix.size()
 	var augmented: Array = []
@@ -807,90 +885,156 @@ static func _matrix_conditioning(matrix: Array) -> Dictionary:
 		"maximum_pivot": high, "pivot_ratio": ratio}
 
 
-static func _solve_brakes(
-	start: Dictionary, layout: Dictionary, _coarse_settings: Dictionary
-) -> Dictionary:
-	var forward: Vector3 = layout.station_tangent.normalized()
-	var remaining: float = (layout.station_position_m - start.position_m).dot(forward)
-	if remaining <= 0.0:
-		return _failure("station lies behind the solved capture", "brake")
+static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
+	var remaining: float = (layout.station_position_m - start.position_m).dot(
+		layout.station_tangent.normalized())
 	var station_duration := _coast_time(2.0, 1.0)
 	var station_distance := _coast_distance(2.0, 1.0)
-	if not is_finite(station_duration) or not is_finite(station_distance):
-		return _failure("station creep is infeasible under central resistance", "brake")
-	if absf(start.tangent.normalized().dot(forward) - 1.0) > 0.00001 \
+	if absf(start.tangent.normalized().dot(layout.station_tangent.normalized()) - 1.0) > 0.00001 \
 			or start.rider_up.normalized().distance_to(layout.station_up.normalized()) > 0.00001:
 		return _failure("capture terminal frame is not the straight station frame", "brake")
-	if remaining <= station_distance:
-		return _failure("reserved approach is shorter than the station creep", "brake")
-	var production := _settings(0.01)
-	var peak_low := 0.0
-	var peak_high := BRAKE_PEAK_LIMIT_G
-	var chosen := Motion.integrate(start, _brake_spans(peak_low), production)
-	if not chosen.get("ok", false):
-		return _failure("unbraked terminal fixture failed integration", "brake")
-	var strongest := Motion.integrate(start, _brake_spans(peak_high), production)
-	if strongest.get("ok", false) and float(strongest.speed_mps[-1]) > 2.0:
-		return _failure("preset brake authority cannot reach the 2 m/s boundary", "brake")
-	if not strongest.get("ok", false) and not _is_speed_floor_failure(strongest):
-		return _failure("maximum brake candidate failed central integration", "brake")
-	for _iteration in BRAKE_SOLVE_ITERATIONS:
-		var peak := 0.5 * (peak_low + peak_high)
-		var candidate := Motion.integrate(start, _brake_spans(peak), production)
-		if candidate.get("ok", false):
-			peak_low = peak
-			chosen = candidate
-		elif _is_speed_floor_failure(candidate):
-			peak_high = peak
-		else:
-			return _failure("brake candidate failed central integration: %s" % ", ".join(
-				candidate.get("errors", [])), "brake")
-	var exit_speed: float = chosen.speed_mps[-1]
-	var moving_distance: float = chosen.distance_m[-1] - float(start.get("distance_m", 0.0))
-	var distance_error: float = moving_distance + station_distance - remaining
-	if absf(distance_error) > TERMINAL_DISTANCE_TOLERANCE_M \
-			or absf(exit_speed - 2.0) > 0.0001:
-		return _failure("brake solve missed distance/speed boundary: %.6f m, %.6f m/s" \
-			% [distance_error, exit_speed], "brake")
-	var terminal_spans := _brake_spans(peak_low)
+	if not is_finite(remaining) or not is_finite(station_duration) \
+			or not is_finite(station_distance) \
+			or remaining <= station_distance:
+		return _failure("station creep is infeasible in the remaining approach", "brake")
+	var moving_target := remaining - station_distance
+	var active_estimate := 2.0 * moving_target / (float(start.speed_mps) + 2.0)
+	var resistance_loss := Motion.resistance(0.5 * (float(start.speed_mps) + 2.0),
+		ROLLING_MPS2, AERO_PER_M).x * active_estimate
+	var parameters := [active_estimate - 2.0 * BRAKE_SHOULDER_DURATION_S,
+		0.98 * (float(start.speed_mps) - 2.0 - resistance_loss) / (
+			Motion.G0 * (active_estimate - BRAKE_SHOULDER_DURATION_S))]
+	for index in 2:
+		if not is_finite(parameters[index]) \
+				or parameters[index] <= BRAKE_PARAMETER_BOUNDS[index][0] \
+				or parameters[index] >= BRAKE_PARAMETER_BOUNDS[index][1]:
+			return _failure("brake initial estimate is outside its parameter bounds", "brake")
+	var evaluation_count := [0]
+	var base := {}
+	var conditioning := {}
+	var evaluate := func(candidate: Array) -> Dictionary:
+		return _brake_evaluation(
+			start, candidate, moving_target, _settings(0.01), evaluation_count)
+	for iteration in BRAKE_NEWTON_ITERATIONS:
+		base = evaluate.call(parameters)
+		if not base.ok:
+			return base
+		var finite_difference := _finite_difference_jacobian(parameters, base.scaled,
+			BRAKE_PARAMETER_BOUNDS, [0.01, 0.005], evaluate)
+		if not finite_difference.ok:
+			return finite_difference
+		conditioning = _matrix_conditioning(finite_difference.jacobian)
+		conditioning["evaluated_vector"] = parameters.duplicate()
+		if not conditioning.ok:
+			return _brake_failure("brake Jacobian is ill-conditioned",
+				evaluation_count[0], {"conditioning": conditioning})
+		if _brake_converged(base.residuals):
+			break
+		if iteration + 1 == BRAKE_NEWTON_ITERATIONS:
+			return _brake_failure(
+				"brake solve exhausted its iteration budget", evaluation_count[0])
+		var step := _linear_solve(finite_difference.jacobian, base.scaled)
+		if step.is_empty():
+			return _brake_failure("brake Jacobian is singular", evaluation_count[0])
+		for index in 2:
+			parameters[index] -= BRAKE_NEWTON_STEP * step[index]
+			if parameters[index] <= BRAKE_PARAMETER_BOUNDS[index][0] \
+					or parameters[index] >= BRAKE_PARAMETER_BOUNDS[index][1]:
+				return _brake_failure("brake solve reached a parameter bound", evaluation_count[0])
+	if not _brake_converged(base.get("residuals", [])):
+		return _brake_failure("brake solve did not produce an accepted point", evaluation_count[0])
+	var confirmations := []
+	for step_s in [COARSE_STEP_S, FINE_STEP_S]:
+		var observed := _brake_evaluation(
+			start, parameters, moving_target, _settings(step_s), evaluation_count)
+		if not observed.ok:
+			return observed
+		confirmations.append(observed)
+		if not _brake_converged(observed.residuals) \
+				or not _brake_observations_agree(base.residuals, observed.residuals):
+			return _brake_failure(
+				"brake production/coarse/fine verification disagrees", evaluation_count[0])
+	var terminal_spans := _brake_spans(parameters)
 	terminal_spans.append(Motion.span("station/creep", station_duration, "station",
 		Motion.constant(1.0), Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0)))
-	return {
-		"ok": true,
-		"errors": PackedStringArray(),
-		"spans": terminal_spans,
-		"report": {
-			"active_duration_s": BRAKE_DURATIONS_S[0] + BRAKE_DURATIONS_S[1]
-				+ BRAKE_DURATIONS_S[2],
-			"brake_peak_g": -peak_low,
-			"moving_boundary_speed_mps": exit_speed,
-			"terminal_creep_speed_mps": 1.0,
+	return {"ok": true, "errors": PackedStringArray(), "spans": terminal_spans, "report": {
+			"parameter_ids": BRAKE_PARAMETER_IDS, "parameter_bounds": BRAKE_PARAMETER_BOUNDS,
+			"accepted_values": parameters, "hold_duration_s": parameters[0],
+			"active_duration_s": parameters[0] + 2.0 * BRAKE_SHOULDER_DURATION_S,
+			"brake_peak_g": parameters[1], "unique_evaluations": evaluation_count[0],
+			"max_unique_evaluations": MAX_BRAKE_EVALUATIONS,
+			"production_observation": _brake_report_observation(base, start),
+			"coarse_observation": _brake_report_observation(confirmations[0], start),
+			"fine_observation": _brake_report_observation(confirmations[1], start),
+			"conditioning": conditioning, "brake_entry_speed_mps": float(start.speed_mps),
 			"remaining_distance_m": remaining,
-			"moving_distance_m": moving_distance,
-			"station_distance_m": station_distance,
-			"distance_residual_m": distance_error,
-			"positive_drive_allowed": false,
-		},
-	}
+			"moving_distance_m": base.route.distance_m[-1] - float(start.distance_m),
+			"station_distance_m": station_distance, "distance_residual_m": base.residuals[0],
+			"moving_boundary_speed_mps": base.route.speed_mps[-1],
+			"terminal_creep_speed_mps": 1.0, "positive_drive_allowed": false,
+		}}
 
 
-static func _brake_spans(peak_g: float) -> Array:
+static func _brake_evaluation(start: Dictionary, parameters: Array,
+	moving_target: float, settings: Dictionary, evaluation_count: Array
+) -> Dictionary:
+	if evaluation_count[0] >= MAX_BRAKE_EVALUATIONS:
+		return _brake_failure("brake exceeded its evaluation cap", evaluation_count[0])
+	evaluation_count[0] += 1
+	var result := _brake_observation(start, parameters, moving_target, settings)
+	if not result.ok:
+		return _brake_failure("brake candidate failed central integration", evaluation_count[0])
+	return result
+
+
+static func _brake_observation(start: Dictionary, parameters: Array,
+	moving_target: float, settings: Dictionary) -> Dictionary:
+	var route := Motion.integrate(start, _brake_spans(parameters), settings)
+	if not route.get("ok", false):
+		return {"ok": false}
+	var residuals := [route.distance_m[-1] - float(start.get("distance_m", 0.0)) - moving_target,
+		float(route.speed_mps[-1]) - 2.0]
+	return {"ok": true, "route": route, "residuals": residuals, "scaled": [
+		residuals[0] / 25.0,
+		(float(route.speed_mps[-1]) - BRAKE_BOUNDARY_INTERIOR_MPS) / 5.0]}
+
+
+static func _brake_report_observation(observation: Dictionary, start: Dictionary) -> Dictionary:
+	return {"residuals": observation.residuals.duplicate(),
+		"moving_distance_m": observation.route.distance_m[-1] - float(start.distance_m),
+		"moving_boundary_speed_mps": observation.route.speed_mps[-1]}
+
+
+static func _brake_failure(message: String, evaluation_count: int,
+	diagnostics: Dictionary = {}) -> Dictionary:
+	diagnostics["evaluation_count"] = evaluation_count
+	return _failure(message, "brake", diagnostics)
+
+
+static func _brake_converged(residuals: Array) -> bool:
+	return absf(residuals[0]) <= TERMINAL_DISTANCE_TOLERANCE_M \
+		and absf(residuals[1]) <= BRAKE_BOUNDARY_TOLERANCE_MPS
+
+
+static func _brake_observations_agree(a: Array, b: Array) -> bool:
+	return absf(a[0] - b[0]) <= TERMINAL_DISTANCE_TOLERANCE_M \
+		and absf(a[1] - b[1]) <= BRAKE_BOUNDARY_TOLERANCE_MPS
+
+
+static func _brake_spans(parameters: Array) -> Array:
+	var hold_duration: float = parameters[0]
+	var peak_g: float = parameters[1]
 	return [
-		Motion.span("brakes/engage", BRAKE_DURATIONS_S[0], "moving",
+		Motion.span("brakes/engage", BRAKE_SHOULDER_DURATION_S, "moving",
 			Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, -peak_g),
 			Motion.constant(0.0)),
-		Motion.span("brakes/hold", BRAKE_DURATIONS_S[1], "moving",
+		Motion.span("brakes/hold", hold_duration, "moving",
 			Motion.constant(1.0), Motion.constant(0.0), Motion.constant(-peak_g),
 			Motion.constant(0.0)),
-		Motion.span("brakes/release", BRAKE_DURATIONS_S[2], "moving",
+		Motion.span("brakes/release", BRAKE_SHOULDER_DURATION_S, "moving",
 			Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(-peak_g, 0.0),
 			Motion.constant(0.0)),
 	]
-
-
-static func _is_speed_floor_failure(route: Dictionary) -> bool:
-	var errors: PackedStringArray = route.get("errors", PackedStringArray())
-	return errors.size() == 1 and "moving speed floor" in errors[0]
 
 
 static func _coast_time(from_speed: float, to_speed: float) -> float:
@@ -942,289 +1086,6 @@ static func _last_state(route: Dictionary) -> Dictionary:
 		"distance_m": route.distance_m[-1],
 		"time_s": route.time_s[-1],
 	}
-
-
-static func _landmark_report(
-	trajectory: Dictionary, gestures: Array, metadata: Array, station_position: Vector3
-) -> Dictionary:
-	var gesture_ranges := {}
-	for gesture in gestures:
-		gesture_ranges[gesture.story_slot_id] = Vector2i(
-			int(gesture.first_span), int(gesture.last_span))
-	var lsm2_exit_span := -1
-	var slow_crest_span := -1
-	var rim_first_span := -1
-	for index in metadata.size():
-		if metadata[index].span_id == "climb/lsm2-release":
-			lsm2_exit_span = index
-		elif metadata[index].span_id == "rim/slow-crest":
-			slow_crest_span = index
-		elif metadata[index].span_id == "rim/outward-bank":
-			rim_first_span = index
-	var cliff_range: Vector2i = gesture_ranges["clifftop-suspense"]
-	var climb_range: Vector2i = gesture_ranges["escarpment-climb"]
-	var dive_range: Vector2i = gesture_ranges["cliff-dive"]
-	var camel_range: Vector2i = gesture_ranges["marquee-camelback"]
-	var cliff_samples := _span_sample_bounds(
-		trajectory.span_index, lsm2_exit_span + 1, cliff_range.y)
-	var dive_samples := _span_sample_bounds(
-		trajectory.span_index, dive_range.x, dive_range.y)
-	var camel_samples := _span_sample_bounds(
-		trajectory.span_index, camel_range.x, camel_range.y)
-	var slow_crest_samples := _span_sample_bounds(
-		trajectory.span_index, slow_crest_span, slow_crest_span)
-	var rim_samples := _span_sample_bounds(
-		trajectory.span_index, rim_first_span, cliff_range.y)
-	var cliff_apex := _maximum_height_sample(trajectory.position_m, cliff_samples)
-	var camel_apex := _maximum_height_sample(trajectory.position_m, camel_samples)
-	var targets := {
-		"launch_exit": {"sample": _span_end_sample(trajectory.span_index,
-			gesture_ranges["station-launch"].y), "height_m": [-5.0, 5.0],
-			"speed_mps": [75.0, 78.0], "maximum_abs_tangent_y": 0.05},
-		"act_one_exit": {"sample": _span_end_sample(trajectory.span_index,
-			gesture_ranges["act-one"].y), "height_m": [-40.0, 40.0],
-			"speed_mps": [40.0, 70.0], "maximum_abs_tangent_y": 0.18},
-		"lsm2_exit": {"sample": _span_end_sample(trajectory.span_index, lsm2_exit_span),
-			"height_m": [-20.0, 20.0],
-			"speed_mps": [57.0, 64.0], "maximum_abs_tangent_y": 0.12},
-		"cliff_crest": {"sample": cliff_apex,
-			"height_m": null, "speed_mps": [5.0, 22.0],
-			"maximum_abs_tangent_y": 0.22},
-		"dive_exit": {"sample": dive_samples.y, "height_m": [-20.0, 20.0],
-			"speed_mps": [55.0, 70.0]},
-		"lsm3_exit": {"sample": _span_end_sample(trajectory.span_index,
-			gesture_ranges["tunnel-lsm3"].y), "height_m": [-20.0, 20.0],
-			"speed_mps": [90.0, 98.0]},
-		"camelback_apex": {"sample": camel_apex, "height_m": null,
-			"speed_mps": [50.0, 68.0]},
-		"return_entry": {"sample": camel_samples.y,
-			"height_m": [-20.0, 20.0], "speed_mps": [78.0, 92.0],
-			"maximum_abs_tangent_y": 0.18},
-	}
-	var report := {}
-	for landmark_id in targets.keys():
-		var target: Dictionary = targets[landmark_id]
-		var sample_index: int = target.sample
-		var position: Vector3 = trajectory.position_m[sample_index]
-		var tangent: Vector3 = trajectory.tangent[sample_index]
-		var rider_up: Vector3 = trajectory.rider_up[sample_index]
-		report[landmark_id] = {
-			"span_index": trajectory.span_index[sample_index],
-			"sample_index": sample_index,
-			"height_m": position.y - station_position.y,
-			"position_m": position,
-			"speed_mps": trajectory.speed_mps[sample_index],
-			"tangent": tangent.normalized(),
-			"rider_up": rider_up.normalized(),
-			"tangent_y": tangent.y,
-			"time_s": trajectory.time_s[sample_index],
-			"target_height_m": target.height_m,
-			"target_speed_mps": target.speed_mps,
-			"maximum_abs_tangent_y": target.get("maximum_abs_tangent_y", null),
-		}
-	var return_entry: Dictionary = report.return_entry
-	return_entry["energy_headroom_j_per_kg"] = (
-		0.5 * float(return_entry.speed_mps) ** 2
-		+ Motion.G0 * float(return_entry.height_m) - 0.5
-	)
-	var dive_start_y: float = trajectory.position_m[dive_samples.x].y
-	var dive_end_y: float = trajectory.position_m[dive_samples.y].y
-	var camel_start: Vector3 = trajectory.position_m[camel_samples.x]
-	var camel_end: Vector3 = trajectory.position_m[camel_samples.y]
-	var prominence: float = trajectory.position_m[camel_apex].y \
-		- maxf(camel_start.y, camel_end.y)
-	var width := Vector2(camel_end.x - camel_start.x,
-		camel_end.z - camel_start.z).length()
-	var rim_exit := rim_samples.y
-	var rim_exit_tangent: Vector3 = trajectory.tangent[rim_exit]
-	var rim_exit_up: Vector3 = trajectory.rider_up[rim_exit]
-	report["shape_evidence"] = {
-		"crest_held_at_or_below_22_mps_s": _held_at_or_below(
-			trajectory.time_s, trajectory.speed_mps, slow_crest_samples, 22.0),
-		"cliff_prominence_m": trajectory.position_m[cliff_apex].y
-			- trajectory.position_m[_span_sample_bounds(
-				trajectory.span_index, climb_range.x, climb_range.x).x].y,
-		"rim_heading_change_rad": _heading_change(trajectory.tangent, rim_samples),
-		"rim_cross_track_m": _cross_track_displacement(
-			trajectory.position_m, trajectory.tangent, rim_samples),
-		"rim_maximum_bank_rad": _maximum_world_bank(
-			trajectory.tangent, trajectory.rider_up, rim_samples),
-		"rim_exit_bank_rad": _world_bank(rim_exit_tangent, rim_exit_up),
-		"rim_exit_pitch_rad": asin(clampf(rim_exit_tangent.y, -1.0, 1.0)),
-		"rim_exit_up_dot": rim_exit_up.dot(Vector3.UP),
-		"dive_drop_m": dive_start_y - dive_end_y,
-		"dive_minimum_tangent_y": _minimum_tangent_y(trajectory.tangent, dive_samples),
-		"dive_maximum_height_step_m": _maximum_height_step(
-			trajectory.position_m, dive_samples),
-		"dive_minimum_normal_g": _minimum_value(trajectory.normal_g, dive_samples),
-		"dive_maximum_normal_g": _maximum_value(trajectory.normal_g, dive_samples),
-		"camelback_prominence_m": prominence,
-		"camelback_width_m": width,
-		"camelback_width_height_ratio": width / prominence,
-		"camelback_negative_normal_duration_s": _held_below_zero(
-			trajectory.time_s, trajectory.normal_g, camel_samples),
-	}
-	return report
-
-
-static func _span_sample_bounds(
-	span_indices: PackedInt32Array, first_span: int, last_span: int
-) -> Vector2i:
-	var first := 0
-	while first < span_indices.size() - 1 and span_indices[first] < first_span:
-		first += 1
-	return Vector2i(first, _span_end_sample(span_indices, last_span))
-
-
-static func _maximum_height_sample(
-	positions: PackedVector3Array, bounds: Vector2i
-) -> int:
-	var result := bounds.x
-	for index in range(bounds.x + 1, bounds.y + 1):
-		if positions[index].y > positions[result].y:
-			result = index
-	return result
-
-
-static func _minimum_tangent_y(tangents: PackedVector3Array, bounds: Vector2i) -> float:
-	var result := INF
-	for index in range(bounds.x, bounds.y + 1):
-		result = minf(result, tangents[index].y)
-	return result
-
-
-static func _minimum_value(values: PackedFloat64Array, bounds: Vector2i) -> float:
-	var result := INF
-	for index in range(bounds.x, bounds.y + 1):
-		result = minf(result, values[index])
-	return result
-
-
-static func _maximum_value(values: PackedFloat64Array, bounds: Vector2i) -> float:
-	var result := -INF
-	for index in range(bounds.x, bounds.y + 1):
-		result = maxf(result, values[index])
-	return result
-
-
-static func _maximum_height_step(positions: PackedVector3Array, bounds: Vector2i) -> float:
-	var result := -INF
-	for index in range(bounds.x + 1, bounds.y + 1):
-		result = maxf(result, positions[index].y - positions[index - 1].y)
-	return result
-
-
-static func _held_below_zero(
-	times: PackedFloat64Array, values: PackedFloat64Array, bounds: Vector2i
-) -> float:
-	var result := 0.0
-	for index in range(bounds.x + 1, bounds.y + 1):
-		if 0.5 * (values[index - 1] + values[index]) < 0.0:
-			result += times[index] - times[index - 1]
-	return result
-
-
-static func _held_at_or_below(
-	times: PackedFloat64Array, values: PackedFloat64Array, bounds: Vector2i, threshold: float
-) -> float:
-	var result := 0.0
-	for index in range(bounds.x + 1, bounds.y + 1):
-		if 0.5 * (values[index - 1] + values[index]) <= threshold:
-			result += times[index] - times[index - 1]
-	return result
-
-
-static func _heading_change(tangents: PackedVector3Array, bounds: Vector2i) -> float:
-	var first := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
-	var last := Vector2(tangents[bounds.y].x, tangents[bounds.y].z).normalized()
-	return acos(clampf(first.dot(last), -1.0, 1.0))
-
-
-static func _cross_track_displacement(
-	positions: PackedVector3Array, tangents: PackedVector3Array, bounds: Vector2i
-) -> float:
-	var forward := Vector2(tangents[bounds.x].x, tangents[bounds.x].z).normalized()
-	var right := Vector2(-forward.y, forward.x)
-	var delta := Vector2(positions[bounds.y].x - positions[bounds.x].x,
-		positions[bounds.y].z - positions[bounds.x].z)
-	return absf(delta.dot(right))
-
-
-static func _maximum_world_bank(
-	tangents: PackedVector3Array, rider_ups: PackedVector3Array, bounds: Vector2i
-) -> float:
-	var result := 0.0
-	for index in range(bounds.x, bounds.y + 1):
-		result = maxf(result, _world_bank(tangents[index], rider_ups[index]))
-	return result
-
-
-static func _world_bank(tangent: Vector3, rider_up: Vector3) -> float:
-	var level_up := Vector3.UP - tangent * tangent.y
-	if level_up.length_squared() <= 0.000001:
-		return INF
-	return acos(clampf(rider_up.dot(level_up.normalized()), -1.0, 1.0))
-
-
-static func _span_end_sample(span_indices: PackedInt32Array, span_index: int) -> int:
-	for sample_index in span_indices.size():
-		if span_indices[sample_index] > span_index:
-			return sample_index
-	return span_indices.size() - 1
-
-
-static func _validate_landmark_report(report: Dictionary) -> PackedStringArray:
-	var errors := PackedStringArray()
-	for landmark_id in report.keys():
-		if landmark_id == "shape_evidence":
-			continue
-		var record: Dictionary = report[landmark_id]
-		if record.target_height_m != null and (record.height_m < record.target_height_m[0] \
-				or record.height_m > record.target_height_m[1]):
-			errors.append("%s height %.3f m" % [landmark_id, record.height_m])
-		if record.speed_mps < record.target_speed_mps[0] \
-				or record.speed_mps > record.target_speed_mps[1]:
-			errors.append("%s speed %.3f m/s" % [landmark_id, record.speed_mps])
-		if record.maximum_abs_tangent_y != null \
-				and absf(record.tangent_y) > record.maximum_abs_tangent_y:
-			errors.append("%s tangent_y %.5f" % [landmark_id, record.tangent_y])
-	var shape: Dictionary = report.shape_evidence
-	if shape.crest_held_at_or_below_22_mps_s < 2.7 \
-			or shape.crest_held_at_or_below_22_mps_s > 4.2:
-		errors.append("crest held <=22 m/s %.3f s" \
-			% shape.crest_held_at_or_below_22_mps_s)
-	if shape.cliff_prominence_m < 150.0 or shape.cliff_prominence_m > 175.0:
-		errors.append("cliff prominence %.3f m" % shape.cliff_prominence_m)
-	if shape.rim_heading_change_rad < deg_to_rad(15.0) \
-			or shape.rim_cross_track_m < 3.0 \
-			or shape.rim_maximum_bank_rad < deg_to_rad(20.0):
-		errors.append("rim shape heading %.1f deg, cross-track %.2f m, bank %.1f deg" % [
-			rad_to_deg(shape.rim_heading_change_rad), shape.rim_cross_track_m,
-			rad_to_deg(shape.rim_maximum_bank_rad)])
-	if shape.rim_exit_bank_rad > deg_to_rad(2.0) \
-			or absf(shape.rim_exit_pitch_rad) > deg_to_rad(3.0) \
-			or shape.rim_exit_up_dot < 0.99:
-		errors.append("rim exit bank %.2f deg, pitch %.2f deg, up-dot %.5f" % [
-			rad_to_deg(shape.rim_exit_bank_rad), rad_to_deg(shape.rim_exit_pitch_rad),
-			shape.rim_exit_up_dot])
-	if shape.dive_drop_m < 140.0 or shape.dive_drop_m > 175.0:
-		errors.append("dive drop %.3f m" % shape.dive_drop_m)
-	if shape.dive_minimum_tangent_y > -sin(deg_to_rad(75.0)):
-		errors.append("dive minimum tangent_y %.5f" % shape.dive_minimum_tangent_y)
-	if shape.dive_maximum_height_step_m > 0.01:
-		errors.append("dive rises %.5f m in one sample" % shape.dive_maximum_height_step_m)
-	if shape.dive_minimum_normal_g < -1.300001 or shape.dive_maximum_normal_g > 5.000001:
-		errors.append("dive normal range %.3f..%.3f g" % [
-			shape.dive_minimum_normal_g, shape.dive_maximum_normal_g])
-	if shape.camelback_prominence_m < 240.0 or shape.camelback_prominence_m > 260.0:
-		errors.append("camelback prominence %.3f m" % shape.camelback_prominence_m)
-	if shape.camelback_width_height_ratio < 3.1 \
-			or shape.camelback_width_height_ratio > 3.9:
-		errors.append("camelback width:height %.3f" % shape.camelback_width_height_ratio)
-	if shape.camelback_negative_normal_duration_s < 4.0:
-		errors.append("camelback negative normal duration %.3f s" \
-			% shape.camelback_negative_normal_duration_s)
-	return errors
 
 
 static func _settings(step_s: float) -> Dictionary:

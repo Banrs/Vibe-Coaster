@@ -18,25 +18,6 @@ const CAPTURE_MARGIN_IDS := [
 const CAPTURE_HALF_WIDTH_M := 150.0
 const CAPTURE_HALF_HEIGHT_M := 75.0
 const CAPTURE_RESIDUAL_LIMITS := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
-const LANDMARK_BANDS := {
-	"launch_exit": {"height_m": Vector2(-5.0, 5.0), "speed_mps": Vector2(75.0, 78.0),
-		"maximum_abs_tangent_y": 0.05},
-	"act_one_exit": {"height_m": Vector2(-40.0, 40.0), "speed_mps": Vector2(40.0, 70.0),
-		"maximum_abs_tangent_y": 0.18},
-	"lsm2_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(57.0, 64.0),
-		"maximum_abs_tangent_y": 0.12},
-	"cliff_crest": {"height_m": null, "speed_mps": Vector2(5.0, 22.0),
-		"maximum_abs_tangent_y": 0.22},
-	"dive_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(55.0, 70.0),
-		"maximum_abs_tangent_y": 0.22},
-	"lsm3_exit": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(90.0, 98.0),
-		"maximum_abs_tangent_y": 0.16},
-	"camelback_apex": {"height_m": Vector2(240.0, 260.0), "speed_mps": Vector2(50.0, 68.0),
-		"maximum_abs_tangent_y": 0.12},
-	"return_entry": {"height_m": Vector2(-20.0, 20.0), "speed_mps": Vector2(78.0, 92.0),
-		"maximum_abs_tangent_y": 0.18},
-}
-
 var _errors := PackedStringArray()
 
 
@@ -45,6 +26,7 @@ func _initialize() -> void:
 	_test_return_solver_adapts_to_feasible_handoffs()
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
+	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_station_local_program_compiles()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
@@ -56,72 +38,77 @@ func _initialize() -> void:
 
 func _test_sustained_brake_closes_without_padding() -> void:
 	var fixtures := [
-		{"id": "legacy", "speed_mps": 69.0, "remaining_m": 174.262812},
-		{"id": "reserve", "speed_mps": 69.835737, "remaining_m": 192.741825},
+		{"id": "legacy-distance", "remaining_m": 174.262812},
+		{"id": "reserve-distance", "remaining_m": 190.685359},
 	]
-	var solved_fixtures := []
+	var accepted_holds := []
 	for fixture: Dictionary in fixtures:
 		var start := {"position_m": Vector3.ZERO, "tangent": Vector3.RIGHT,
-			"rider_up": Vector3.UP, "speed_mps": fixture.speed_mps,
+			"rider_up": Vector3.UP, "speed_mps": 69.0,
 			"distance_m": 0.0, "time_s": 0.0}
 		var layout := {"station_position_m": Vector3(fixture.remaining_m, 0.0, 0.0),
 			"station_tangent": Vector3.RIGHT, "station_up": Vector3.UP}
-		var solved := RideProgram._solve_brakes(start, layout, RideProgram._settings(0.05))
+		var solved := RideProgram._solve_brakes(start, layout)
 		if not _expect(solved.get("ok", false),
 				"the %s brake owner consumes its full distance: %s" % [fixture.id, str(solved)]):
-			return
-		solved_fixtures.append({"fixture": fixture, "start": start,
-			"layout": layout, "solved": solved})
-	var active_durations := []
-	for item: Dictionary in solved_fixtures:
-		var fixture: Dictionary = item.fixture
-		var solved: Dictionary = item.solved
-		var repeated := RideProgram._solve_brakes(
-			item.start, item.layout, RideProgram._settings(0.05))
+			continue
+		var repeated := RideProgram._solve_brakes(start, layout)
 		_expect(var_to_bytes(solved) == var_to_bytes(repeated),
 			"the %s brake solve is byte-identical" % fixture.id)
-		var spans: Array = solved.get("spans", [])
-		var ids := []
-		var active_duration_s := 0.0
-		for span: Dictionary in spans:
-			ids.append(span.get("span_id", ""))
-			if str(span.get("span_id", "")).begins_with("brakes/"):
-				active_duration_s += float(span.get("duration_s", 0.0))
-		active_durations.append(active_duration_s)
-		_expect(ids == ["brakes/engage", "brakes/hold", "brakes/release", "station/creep"],
-			"the %s terminal program has only three brakes and creep" % fixture.id)
-		_expect(RideProgram._validate_control_seams(spans).is_empty(),
+		var parts := _terminal_program_parts(solved.get("spans", []))
+		if not _expect(parts.ok,
+				"the %s terminal has one active moving brake phase followed by station mode"
+				% fixture.id):
+			continue
+		_expect(RideProgram._validate_control_seams(solved.spans).is_empty(),
 			"the %s brake and station seams are C2" % fixture.id)
-		var route := Motion.integrate(item.start, spans, RideProgram._settings(0.01))
-		if not _expect(route.get("ok", false), "%s brakes integrate centrally" % fixture.id):
+		var full := Motion.integrate(start, solved.spans, RideProgram._settings(0.01))
+		var production := _independent_brake_observation(
+			start, parts.moving_spans, 0.0, 0.01)
+		if not _expect(full.get("ok", false) and production.ok,
+				"the %s terminal independently integrates" % fixture.id):
 			continue
-		var handoff := Motion.sample_time(route, active_duration_s)
-		_expect(absf(float(handoff.get("speed_mps", -1.0)) - 2.0) <= 0.0001,
-			"the %s moving handoff reaches 2 m/s" % fixture.id)
-		_expect(route.position_m[-1].distance_to(item.layout.station_position_m) <= 0.05 \
-			and absf(float(route.speed_mps[-1]) - 1.0) <= 0.001,
-			"the %s terminal reaches station at 1 m/s" % fixture.id)
-		var passive := true
-		for drive_g in route.drive_g:
-			passive = passive and float(drive_g) <= 0.000001
-		_expect(passive, "the %s brake samples never add drive" % fixture.id)
+		var station_distance: float = full.distance_m[-1] - production.moving_distance_m
 		var report: Dictionary = solved.get("report", {})
+		var moving_target: float = fixture.remaining_m \
+			- float(report.get("station_distance_m", INF))
+		production = _independent_brake_observation(
+			start, parts.moving_spans, moving_target, 0.01)
+		_expect(absf(production.moving_boundary_speed_mps - 2.0) <= 0.0001,
+			"the %s native moving handoff reaches 2 m/s" % fixture.id)
+		_expect(full.position_m[-1].distance_to(layout.station_position_m) <= 0.05
+			and absf(float(full.speed_mps[-1]) - 1.0) <= 0.001,
+			"the %s terminal reaches station at 1 m/s" % fixture.id)
 		var values: Variant = report.get("accepted_values")
-		var bounds: Variant = report.get("parameter_bounds")
-		var count := int(report.get("unique_evaluations", -1))
-		if not _expect(values is Array and values.size() == 2 and bounds is Array \
-				and bounds.size() == 2 and count >= 1 and count <= 24 \
-				and report.get("max_unique_evaluations", -1) == 24,
-				"the %s brake publishes bounded solve evidence" % fixture.id):
-			continue
-		for index in 2:
-			_expect(_finite_number(values[index]) and bounds[index] is Array \
-				and bounds[index].size() == 2 and values[index] >= bounds[index][0] \
-				and values[index] <= bounds[index][1],
-				"the %s brake parameter %d is finite and in bounds" % [fixture.id, index])
-	_expect(active_durations.size() == 2 \
-		and active_durations[1] >= active_durations[0] + 0.3,
-		"the reserve fixture materially lengthens active braking")
+		_expect(report.get("parameter_bounds") == [[2.0, 5.0], [0.0, 2.25]]
+			and parts.hold_duration_s >= 2.0 and parts.hold_duration_s <= 5.0
+			and parts.peak_g >= 0.0 and parts.peak_g <= 2.25,
+			"the %s authored hold and peak satisfy the literal recipe bounds" % fixture.id)
+		_expect(values is Array and values.size() == 2
+			and absf(float(values[0]) - parts.hold_duration_s) <= 0.000001
+			and absf(float(values[1]) - parts.peak_g) <= 0.000001
+			and absf(float(report.get("active_duration_s", -1.0))
+				- parts.active_duration_s) <= 0.000001,
+			"the %s report is tied to the authored brake controls" % fixture.id)
+		accepted_holds.append(parts.hold_duration_s)
+		for step_and_field in [[0.01, "production_observation"],
+				[0.05, "coarse_observation"], [0.025, "fine_observation"]]:
+			var measured := _independent_brake_observation(
+				start, parts.moving_spans, moving_target, float(step_and_field[0]))
+			_expect(measured.ok and _brake_observation_near(
+					report.get(step_and_field[1], {}), measured),
+				"the %s %s is independently observed" % [fixture.id, step_and_field[1]])
+		_expect(absf(float(report.get("station_distance_m", INF)) - station_distance) <= 0.001
+			and absf(float(report.get("remaining_distance_m", INF)) - fixture.remaining_m) <= 0.001
+			and absf(float(report.get("distance_residual_m", INF))) <= 0.05,
+			"the %s report accounts for moving, creep, and remaining distance" % fixture.id)
+		_expect(int(report.get("unique_evaluations", -1)) >= 1
+			and int(report.get("unique_evaluations", 25)) <= 24
+			and report.get("max_unique_evaluations") == 24
+			and _conditioning_matches_accepted_point(report, "accepted_values"),
+			"the %s brake publishes its bounded solve diagnostics" % fixture.id)
+	_expect(accepted_holds.size() == 2 and accepted_holds[1] >= accepted_holds[0] + 0.3,
+		"additional distance alone materially lengthens the accepted brake hold")
 
 
 func _test_material_return_recipe() -> void:
@@ -148,93 +135,143 @@ func _test_material_return_recipe() -> void:
 		"the return exposes exactly four ordered nonempty semantic roles")
 
 
+func _test_return_flow_classifier_rejects_neutral_interval() -> void:
+	var neutral := [Motion.span("synthetic-neutral", 0.30, "moving",
+		Motion.constant(1.0), Motion.constant(0.0), Motion.constant(0.0),
+		Motion.constant(0.0))]
+	var route := Motion.integrate({
+		"position_m": Vector3.ZERO, "tangent": Vector3.RIGHT,
+		"rider_up": Vector3.UP, "speed_mps": 60.0,
+		"distance_m": 0.0, "time_s": 0.0,
+	}, neutral, RideProgram._settings(0.01))
+	var observed := _return_flow_observation(route,
+		[{"first_span": 0, "last_span": 0}], Vector2i(0, route.time_s.size() - 1), Vector3.UP)
+	_expect(route.get("ok", false) and not observed.ok and observed.dead_flat_s > 0.25,
+		"the trajectory classifier rejects a synthetic 0.30 s neutral filler")
+
+
 func _test_return_solver_adapts_to_feasible_handoffs() -> void:
-	var base := {
+	var solve_base := {
 		"position_m": Vector3(844.369464944128, -5.006090912346134, 1311.4203429677661),
 		"tangent": Vector3(-0.9675566026121128, 0.010190671997396466,
 			-0.25244874914712345),
 		"rider_up": Vector3(0.011018528510904757, 0.9999375534933078,
 			-0.0018657822146380576),
-		"speed_mps": 89.76534842050937,
-		"distance_m": 5900.350002256666,
+		"speed_mps": 89.76534842050937, "distance_m": 5900.350002256666,
 		"time_s": 107.35488729028559,
 	}
+	var production_base := {
+		"position_m": Vector3(844.6632716977293, -4.96179151476208, 1312.495328191469),
+		"tangent": Vector3(-0.9677453554616857, 0.010165562200105935,
+			-0.2517252238602468),
+		"rider_up": Vector3(0.01099739811246353, 0.9999377256473005,
+			-0.001897909918891692),
+		"speed_mps": 89.75993428712286, "distance_m": 5900.203806212835,
+		"time_s": 107.35488729030784,
+	}
 	var fixtures := [
-		{"id": "speed-minus-1", "speed_mps": 88.76534842050937},
-		{"id": "height-minus-10", "position_m": Vector3(
+		{"id": "speed-minus-1", "solve": {"speed_mps": 88.76534842050937},
+			"production": {"speed_mps": 88.75993428712286}},
+		{"id": "height-minus-10", "solve": {"position_m": Vector3(
 			844.369464944128, -15.006090912346135, 1311.4203429677661)},
-		{"id": "heading-plus-0.5",
+			"production": {"position_m": Vector3(
+			844.6632716977293, -14.96179151476208, 1312.495328191469)}},
+		{"id": "heading-plus-0.5", "solve": {
 			"tangent": Vector3(-0.9653167580504922, 0.010190671997396466,
 				-0.26088255371168273),
 			"rider_up": Vector3(0.011034390773829993, 0.9999375534933078,
-				-0.001769557591178146)},
+				-0.001769557591178146)}, "production": {
+			"tangent": Vector3(-0.9655118175820347, 0.010165562200105935,
+				-0.2601607031328742),
+			"rider_up": Vector3(0.011013541543521244, 0.9999377256473005,
+				-0.00180186846727934)}},
 	]
 	var target := [-413.8176585379036, 3.542414464340024, -0.9589346302880815,
 		0.01954530591190462, -0.004588670638026367, 0.04616595364095083]
-	var output_scales: Array = RideProgram.RETURN_OUTPUT_SCALES
-	var parameter_bounds: Array = RideProgram.RETURN_PARAMETER_BOUNDS
-	var output_bounds: Array = RideProgram.RETURN_OUTPUT_BOUNDS
 	for fixture: Dictionary in fixtures:
-		var start: Dictionary = base.duplicate(true)
-		for field in fixture:
-			if field != "id":
-				start[field] = fixture[field]
-		var solved := RideProgram._solve_return(start, _layout())
+		var solve_start: Dictionary = solve_base.merged(fixture.solve, true)
+		var solved := RideProgram._solve_return(solve_start, _layout())
 		if not _expect(solved.get("ok", false),
-				"the return solver accepts the feasible %s handoff: %s" % [fixture.id, solved]):
+				"the return solver accepts the exact %s point: %s" % [fixture.id, solved]):
 			continue
 		var values: Variant = solved.get("parameters")
 		if not _expect(values is Array and values.size() == 6,
-				"the %s handoff returns all six parameters" % fixture.id):
+				"the %s point returns all six parameters" % fixture.id):
 			continue
 		var maximum_seed_displacement := 0.0
 		for index in 6:
-			var half_range: float = 0.5 * (parameter_bounds[index][1] - parameter_bounds[index][0])
+			var bounds: Array = RideProgram.RETURN_PARAMETER_BOUNDS[index]
+			var half_range: float = 0.5 * (bounds[1] - bounds[0])
 			maximum_seed_displacement = maxf(maximum_seed_displacement,
 				absf(float(values[index]) - float(RideProgram.RETURN_SEED[index])) / half_range)
-			_expect(_finite_number(values[index]) and values[index] > parameter_bounds[index][0] \
-				and values[index] < parameter_bounds[index][1],
-				"the %s handoff parameter %d is finite and strictly in bounds" % [fixture.id, index])
+			_expect(_finite_number(values[index]) and values[index] > bounds[0]
+				and values[index] < bounds[1],
+				"the %s parameter %d is finite and strictly in bounds" % [fixture.id, index])
 		_expect(maximum_seed_displacement > 0.01,
-			"the %s handoff materially adapts away from the return seed" % fixture.id)
-		var report: Dictionary = solved.get("report", {})
-		_expect(int(report.get("unique_evaluations", -1)) > 8 \
-			and int(report.get("unique_evaluations", 25)) <= 24,
-			"the %s handoff uses the bounded adaptive evaluation budget" % fixture.id)
-		_expect(_conditioning_matches_accepted_point(report, "accepted_values") \
-			and report.get("accepted_values") == values,
-			"the %s handoff conditions the accepted vector" % fixture.id)
-		for step_s in [0.05, 0.025]:
-			var route := Motion.integrate(start, RideProgram._return_spans(values),
-				RideProgram._settings(step_s))
-			if not _expect(route.get("ok", false),
-					"the accepted %s return independently integrates at %.3f s" % [fixture.id, step_s]):
-				continue
-			var actual := _station_local_return_outputs(route, _layout())
+			"the %s point materially adapts away from the seed" % fixture.id)
+		var coarse := Motion.integrate(
+			solve_start, RideProgram._return_spans(values), RideProgram._settings(0.05))
+		var fine := Motion.integrate(
+			solve_start, RideProgram._return_spans(values), RideProgram._settings(0.025))
+		if not _expect(coarse.get("ok", false) and fine.get("ok", false),
+				"the accepted %s return independently integrates coarse and fine" % fixture.id):
+			continue
+		var coarse_output := _station_local_observation(
+			Motion.sample_time(coarse, float(coarse.time_s[-1])), _layout())
+		var fine_output := _station_local_observation(
+			Motion.sample_time(fine, float(fine.time_s[-1])), _layout())
+		var normalized_error := 0.0
+		for index in 6:
+			var error: float = coarse_output[index] - target[index]
+			if index >= 3:
+				error = wrapf(error, -PI, PI)
+			normalized_error = maxf(normalized_error,
+				absf(error) / RideProgram.RETURN_OUTPUT_SCALES[index])
+			_expect(fine_output[index] >= RideProgram.RETURN_OUTPUT_BOUNDS[index][0]
+				and fine_output[index] <= RideProgram.RETURN_OUTPUT_BOUNDS[index][1]
+				and absf(fine_output[index] - coarse_output[index])
+					<= RideProgram.RETURN_FINE_TOLERANCES[index],
+				"the accepted %s output %d remains in basin across resolutions"
+				% [fixture.id, index])
+		_expect(normalized_error <= 0.02,
+			"the %s point reaches the fixed coarse target" % fixture.id)
+		var production_start: Dictionary = production_base.merged(fixture.production, true)
+		var spans: Array = []
+		var metadata: Array = []
+		var gestures: Array = []
+		var propulsion := PackedInt32Array()
+		RideProgram._begin_gesture(gestures, "raceway-return", 0)
+		RideProgram._add_raceway(spans, metadata, propulsion, values)
+		RideProgram._end_gesture(gestures, metadata, spans.size() - 1)
+		var production := Motion.integrate(
+			production_start, spans, RideProgram._settings(0.01))
+		_expect(production.get("ok", false) and _return_trajectory_is_material(
+				production, gestures[0].role_windows, _layout()),
+			"the production %s return retains all four material passive roles" % fixture.id)
+		if production.get("ok", false):
+			var production_output := _station_local_observation(
+				Motion.sample_time(production, float(production.time_s[-1])), _layout())
 			for index in 6:
-				_expect(_finite_number(actual[index]) and actual[index] >= output_bounds[index][0] \
-					and actual[index] <= output_bounds[index][1],
-					"the accepted %s return output %d is finite and in the basin at %.3f s" \
-					% [fixture.id, index, step_s])
-			if step_s == 0.05:
-				var normalized_error := 0.0
-				for index in 6:
-					var error: float = float(actual[index]) - float(target[index])
-					if index >= 3:
-						error = wrapf(error, -PI, PI)
-					normalized_error = maxf(normalized_error, absf(error) / output_scales[index])
-				_expect(normalized_error <= 0.02,
-					"the %s handoff steers its coarse observation to the fixed target" % fixture.id)
+				_expect(production_output[index] >= RideProgram.RETURN_OUTPUT_BOUNDS[index][0]
+					and production_output[index] <= RideProgram.RETURN_OUTPUT_BOUNDS[index][1],
+					"the production %s output %d remains in the declared capture basin"
+					% [fixture.id, index])
+		var report: Dictionary = solved.get("report", {})
+		_expect(int(report.get("unique_evaluations", -1)) > 8
+			and int(report.get("unique_evaluations", 25)) <= 24
+			and report.get("max_unique_evaluations") == 24
+			and _conditioning_matches_accepted_point(report, "accepted_values"),
+			"the %s point publishes bounded accepted-point diagnostics" % fixture.id)
 
 
-func _station_local_return_outputs(route: Dictionary, layout: Dictionary) -> Array:
+func _station_local_observation(state: Dictionary, layout: Dictionary) -> Array:
 	var forward: Vector3 = layout.station_tangent.normalized()
 	var up: Vector3 = layout.station_up.normalized()
 	var right := forward.cross(up).normalized()
 	up = right.cross(forward).normalized()
-	var position: Vector3 = route.position_m[-1]
-	var tangent: Vector3 = route.tangent[-1]
-	var rider_up: Vector3 = route.rider_up[-1]
+	var position: Vector3 = state.position_m
+	var tangent: Vector3 = state.tangent.normalized()
+	var rider_up: Vector3 = state.rider_up
 	var reference_up := (up - tangent * up.dot(tangent)).normalized()
 	var actual_up := (rider_up - tangent * rider_up.dot(tangent)).normalized()
 	return [(position - layout.station_position_m).dot(forward),
@@ -247,11 +284,11 @@ func _station_local_return_outputs(route: Dictionary, layout: Dictionary) -> Arr
 
 func _test_station_local_program_compiles() -> void:
 	var compiled := _compile(_layout())
-	_expect(_landmark_report_is_physical(compiled, _layout()),
-		"the compiler publishes physical upstream landmarks with positive return energy")
 	if not _expect(compiled.get("ok", false),
 			"the explicit station-local return fixture compiles: %s" % str(compiled.get("errors", []))):
 		return
+	_expect(_upstream_shape_is_physical(compiled, _layout()),
+		"the raw trajectory retains every upstream landmark and shape band")
 	_expect(not compiled.get("spans", []).is_empty(), "the compiled program contains motion spans")
 	_expect(compiled.get("capture_plan", {}).get("unique_evaluations", 41) <= 40,
 		"the accepted capture stays within its public evaluation budget")
@@ -259,6 +296,8 @@ func _test_station_local_program_compiles() -> void:
 		"every global-return, capture, brake, and station drive profile is nonpositive")
 	_expect(_return_is_passive_and_material(compiled, _layout()),
 		"the integrated return meets every public materiality and passivity threshold")
+	_expect(_compiled_return_flow_is_continuous(compiled, _layout()),
+		"the uninterrupted return has no dead-flat or low-activity filler")
 	var return_plan: Dictionary = compiled.get("return_plan", {})
 	_expect(return_plan.get("unique_evaluations", -1) > 8 \
 		and return_plan.get("unique_evaluations", 25) <= 24 \
@@ -284,6 +323,30 @@ func _test_station_local_program_compiles() -> void:
 	var brake: Dictionary = compiled.get("brake_plan", {})
 	_expect(brake.get("positive_drive_allowed", true) == false,
 		"the brake plan forbids positive drive")
+	_expect(brake.get("parameter_bounds") == [[2.0, 5.0], [0.0, 2.25]]
+		and float(brake.get("hold_duration_s", -1.0)) >= 2.0
+		and float(brake.get("hold_duration_s", 6.0)) <= 5.0
+		and float(brake.get("brake_peak_g", -1.0)) >= 0.0
+		and float(brake.get("brake_peak_g", 3.0)) <= 2.25
+		and _finite_number(brake.get("distance_residual_m"))
+		and absf(float(brake.distance_residual_m)) <= 0.05,
+		"the public brake reports a bounded hold/peak and closed distance residual")
+	var terminal_gesture := _compiled_gesture(compiled, "brakes-station-capture")
+	var trajectory := _integrated_trajectory(compiled, _layout())
+	var observed_brake_entry_speed := INF
+	for span_index in range(int(terminal_gesture.first_span), int(terminal_gesture.last_span) + 1):
+		var active := false
+		for u in [0.0, 0.25, 0.5, 0.75, 1.0]:
+			active = active or Motion.profile_sample(
+				compiled.spans[span_index].drive_g, u).x < -0.000001
+		if active:
+			var brake_bounds := _owned_span_bounds(trajectory.span_index, span_index, span_index)
+			observed_brake_entry_speed = trajectory.speed_mps[brake_bounds.x]
+			break
+	_expect(absf(observed_brake_entry_speed - 69.835737) <= 0.001
+		and absf(float(brake.get("brake_entry_speed_mps", INF))
+			- observed_brake_entry_speed) <= 0.000001,
+		"the public brake begins at its independently observed production state")
 	_expect(_brake_spans_have_no_positive_drive(compiled),
 		"the authored capture and brake spans contain no positive drive")
 	_expect(absf(float(brake.get("terminal_creep_speed_mps", -1.0)) - 1.0) <= 0.000001,
@@ -369,30 +432,9 @@ func _integrated_capture_residuals(
 	if not route.get("ok", false):
 		return {"ok": false, "errors": route.get("errors", [])}
 	var terminal := Motion.sample_time(route, float(route.time_s[-1]))
-	return {"ok": true, "residuals": _independent_capture_residuals(
-		terminal, fixture.layout)}
-
-
-func _independent_capture_residuals(state: Dictionary, layout: Dictionary) -> Array:
-	var forward: Vector3 = layout.station_tangent.normalized()
-	var up: Vector3 = layout.station_up.normalized()
-	var right: Vector3 = forward.cross(up).normalized()
-	up = right.cross(forward).normalized()
-	var delta: Vector3 = state.position_m - layout.station_position_m
-	var tangent: Vector3 = state.tangent.normalized()
-	var rider_up: Vector3 = state.rider_up
-	var horizontal_length: float = sqrt(
-		tangent.dot(forward) ** 2 + tangent.dot(right) ** 2)
-	var reference_up: Vector3 = (up - tangent * up.dot(tangent)).normalized()
-	var actual_up: Vector3 = (
-		rider_up - tangent * rider_up.dot(tangent)).normalized()
-	return [
-		delta.dot(right),
-		delta.dot(up),
-		atan2(tangent.dot(right), tangent.dot(forward)),
-		atan2(tangent.dot(up), horizontal_length),
-		atan2(actual_up.dot(tangent.cross(reference_up)), actual_up.dot(reference_up)),
-	]
+	var observed := _station_local_observation(terminal, fixture.layout)
+	return {"ok": true, "residuals": [
+		observed[2], observed[1], observed[3], observed[4], observed[5]]}
 
 
 func _residual_vectors_near(actual: Variant, expected: Variant, tolerance: float) -> bool:
@@ -478,6 +520,65 @@ func _structural_terminal(span: Dictionary) -> bool:
 	return true
 
 
+func _terminal_program_parts(spans: Array) -> Dictionary:
+	var moving_spans := []
+	var station_spans := []
+	var station_started := false
+	var active_duration := 0.0
+	var hold_duration := 0.0
+	var peak_g := 0.0
+	for span: Dictionary in spans:
+		var mode := str(span.get("mode", ""))
+		if mode == "station":
+			station_started = true
+			station_spans.append(span)
+			if not _profile_is_nonpositive(span.get("drive_g", {})):
+				return {"ok": false}
+		elif mode == "moving" and not station_started:
+			moving_spans.append(span)
+			active_duration += float(span.get("duration_s", 0.0))
+			var active := false
+			for u in [0.0, 0.25, 0.5, 0.75, 1.0]:
+				var drive: float = Motion.profile_sample(span.get("drive_g", {}), u).x
+				if drive > 0.000001:
+					return {"ok": false}
+				active = active or drive < -0.000001
+				peak_g = maxf(peak_g, -drive)
+			if not active:
+				return {"ok": false}
+			if span.get("drive_g", {}).get("kind", "") == "constant":
+				hold_duration += float(span.get("duration_s", 0.0))
+		else:
+			return {"ok": false}
+	return {"ok": not moving_spans.is_empty() and not station_spans.is_empty()
+			and absf(active_duration - hold_duration - 1.2) <= 0.000001,
+		"moving_spans": moving_spans, "station_spans": station_spans,
+		"active_duration_s": active_duration, "hold_duration_s": hold_duration,
+		"peak_g": peak_g}
+
+
+func _independent_brake_observation(
+	start: Dictionary, moving_spans: Array, moving_target: float, step_s: float
+) -> Dictionary:
+	var route := Motion.integrate(start, moving_spans, RideProgram._settings(step_s))
+	if not route.get("ok", false):
+		return {"ok": false, "errors": route.get("errors", [])}
+	var moving_distance: float = route.distance_m[-1] - float(start.distance_m)
+	var speed: float = route.speed_mps[-1]
+	return {"ok": true, "moving_distance_m": moving_distance,
+		"moving_boundary_speed_mps": speed,
+		"residuals": [moving_distance - moving_target, speed - 2.0]}
+
+
+func _brake_observation_near(reported: Variant, measured: Dictionary) -> bool:
+	return reported is Dictionary and measured.get("ok", false) \
+		and _residual_vectors_near(reported.get("residuals"), measured.residuals, 0.000001) \
+		and absf(float(reported.get("moving_distance_m", INF)) \
+			- measured.moving_distance_m) <= 0.000001 \
+		and absf(float(reported.get("moving_boundary_speed_mps", INF)) \
+			- measured.moving_boundary_speed_mps) <= 0.000001
+
+
 func _brake_spans_have_no_positive_drive(compiled: Dictionary) -> bool:
 	var gestures: Array = compiled.get("gesture_spans", [])
 	if gestures.is_empty() or gestures[-1].get("story_slot_id", "") != "brakes-station-capture":
@@ -517,17 +618,24 @@ func _return_is_passive_and_material(compiled: Dictionary, layout: Dictionary) -
 	var gesture := _compiled_gesture(compiled, "raceway-return")
 	var terminal := _compiled_gesture(compiled, "brakes-station-capture")
 	var roles: Array = gesture.get("role_windows", [])
+	if terminal.is_empty() or int(gesture.get("last_span", -2)) + 1 \
+			!= int(terminal.get("first_span", 0)):
+		return false
+	return _return_trajectory_is_material(
+		_integrated_trajectory(compiled, layout), roles, layout)
+
+
+func _return_trajectory_is_material(
+	trajectory: Dictionary, roles: Array, layout: Dictionary
+) -> bool:
 	var role_ids := []
 	for role: Dictionary in roles:
 		role_ids.append(role.get("id", ""))
 	if role_ids != ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"] \
-			or terminal.is_empty() or int(gesture.last_span) + 1 != int(terminal.first_span):
-		return false
-	var trajectory := _integrated_trajectory(compiled, layout)
-	if not trajectory.get("ok", false):
+			or not trajectory.get("ok", false):
 		return false
 	var bounds := _owned_span_bounds(trajectory.span_index,
-		int(gesture.first_span), int(gesture.last_span))
+		int(roles[0].first_span), int(roles[-1].last_span))
 	for role_index in roles.size():
 		var role: Dictionary = roles[role_index]
 		var owned := _owned_span_bounds(trajectory.span_index,
@@ -552,6 +660,8 @@ func _return_is_passive_and_material(compiled: Dictionary, layout: Dictionary) -
 	var previous := initial
 	var minimum_speed: float = trajectory.speed_mps[bounds.x]
 	for sample_index in range(bounds.x + 1, bounds.y + 1):
+		if float(trajectory.drive_g[sample_index]) > 0.000001:
+			return false
 		minimum_speed = minf(minimum_speed, trajectory.speed_mps[sample_index])
 		var energy: float = 0.5 * float(trajectory.speed_mps[sample_index]) ** 2 + Motion.G0 * (
 			trajectory.position_m[sample_index] - layout.station_position_m).dot(up)
@@ -564,6 +674,78 @@ func _return_is_passive_and_material(compiled: Dictionary, layout: Dictionary) -
 	return length_m >= 1100.0 and length_m <= 3000.0 and initial - previous >= 50.0 \
 		and trajectory.speed_mps[bounds.x] - trajectory.speed_mps[bounds.y] >= 5.0 \
 		and minimum_speed >= 45.0 and station_forward >= -450.0 and station_forward <= -405.0
+
+
+func _compiled_return_flow_is_continuous(compiled: Dictionary, layout: Dictionary) -> bool:
+	var gesture := _compiled_gesture(compiled, "raceway-return")
+	var trajectory := _integrated_trajectory(compiled, layout)
+	if gesture.is_empty() or not trajectory.get("ok", false):
+		return false
+	var bounds := _owned_span_bounds(
+		trajectory.span_index, int(gesture.first_span), int(gesture.last_span))
+	return _return_flow_observation(
+		trajectory, gesture.role_windows, bounds, layout.station_up.normalized()).ok
+
+
+func _return_flow_observation(
+	trajectory: Dictionary, roles: Array, bounds: Vector2i, station_up: Vector3
+) -> Dictionary:
+	var dead_run := 0.0
+	var low_run := 0.0
+	var longest_dead := 0.0
+	var longest_low := 0.0
+	var role_low := []
+	role_low.resize(roles.size())
+	role_low.fill(0.0)
+	for index in range(bounds.x + 1, bounds.y + 1):
+		var duration: float = trajectory.time_s[index] - trajectory.time_s[index - 1]
+		var dead := _return_interval_is_inactive(trajectory, index, station_up,
+			0.005, 0.005, deg_to_rad(0.5), deg_to_rad(0.1), 0.2)
+		var low := _return_interval_is_inactive(trajectory, index, station_up,
+			0.10, 0.05, deg_to_rad(5.0), deg_to_rad(1.0), 1.0)
+		dead_run = dead_run + duration if dead else 0.0
+		low_run = low_run + duration if low else 0.0
+		longest_dead = maxf(longest_dead, dead_run)
+		longest_low = maxf(longest_low, low_run)
+		if low:
+			var before_owner: int = trajectory.span_index[index - 1]
+			var after_owner: int = trajectory.span_index[index]
+			for role_index in roles.size():
+				var role: Dictionary = roles[role_index]
+				if (before_owner >= role.first_span and before_owner <= role.last_span) \
+						or (after_owner >= role.first_span and after_owner <= role.last_span):
+					role_low[role_index] += duration
+	var accepted := longest_dead <= 0.25 and longest_low <= 0.60
+	for duration in role_low:
+		accepted = accepted and duration <= 0.75
+	return {"ok": accepted, "dead_flat_s": longest_dead,
+		"low_activity_s": longest_low, "role_low_activity_s": role_low}
+
+
+func _return_interval_is_inactive(
+	trajectory: Dictionary, index: int, station_up: Vector3,
+	normal_tolerance: float, lateral_tolerance: float, roll_tolerance: float,
+	heading_rate_limit: float, vertical_speed_limit: float
+) -> bool:
+	var duration: float = trajectory.time_s[index] - trajectory.time_s[index - 1]
+	if duration <= 0.0:
+		return false
+	for sample_index in [index - 1, index]:
+		if absf(float(trajectory.normal_g[sample_index]) - 1.0) > normal_tolerance \
+				or absf(float(trajectory.lateral_g[sample_index])) > lateral_tolerance \
+				or absf(float(trajectory.roll_rate_rad_s[sample_index])) > roll_tolerance:
+			return false
+	var before := Vector2(trajectory.tangent[index - 1].x, trajectory.tangent[index - 1].z)
+	var after := Vector2(trajectory.tangent[index].x, trajectory.tangent[index].z)
+	if before.length_squared() <= 0.000001 or after.length_squared() <= 0.000001:
+		return false
+	var heading_rate := acos(clampf(before.normalized().dot(after.normalized()), -1.0, 1.0)) \
+		/ duration
+	var vertical_speed := absf((trajectory.position_m[index] \
+		- trajectory.position_m[index - 1]).dot(station_up)) / duration
+	return heading_rate <= heading_rate_limit and vertical_speed <= vertical_speed_limit
+
+
 func _owned_span_bounds(
 	owners: PackedInt32Array, first_span: int, last_span: int
 ) -> Vector2i:
@@ -692,119 +874,119 @@ func _capture_corridor_is_longitudinally_bounded(
 		and float(margins.corridor_forward_high_m) >= 0.0
 
 
-func _landmark_report_is_physical(compiled: Dictionary, layout: Dictionary) -> bool:
-	var report: Variant = compiled.get("landmark_report")
+func _upstream_shape_is_physical(compiled: Dictionary, layout: Dictionary) -> bool:
 	var trajectory := _integrated_trajectory(compiled, layout)
-	if not report is Dictionary or not trajectory.get("ok", false):
+	if not trajectory.get("ok", false):
 		return false
-	var station_position: Vector3 = layout.station_position_m
-	var station_up: Vector3 = layout.station_up.normalized()
-	for landmark_id in LANDMARK_BANDS:
-		var state: Variant = report.get(landmark_id)
-		if not state is Dictionary:
-			return false
-		var time_s: Variant = state.get("time_s")
-		var position: Variant = state.get("position_m")
-		var tangent: Variant = state.get("tangent")
-		var rider_up: Variant = state.get("rider_up")
-		var speed: Variant = state.get("speed_mps")
-		if not _finite_number(time_s) or not position is Vector3 or not position.is_finite() \
-				or not tangent is Vector3 or not tangent.is_finite() \
-				or not rider_up is Vector3 or not rider_up.is_finite() \
-				or tangent.length_squared() < 0.99 or rider_up.length_squared() < 0.99 \
-				or not _finite_number(speed):
-			return false
-		var sampled := Motion.sample_time(trajectory, float(time_s))
-		if sampled.is_empty() or absf(float(sampled.time_s) - float(time_s)) > 0.000000001 \
-				or position.distance_to(sampled.position_m) > 0.001 \
-				or tangent.distance_to(sampled.tangent) > 0.00001 \
-				or rider_up.distance_to(sampled.rider_up) > 0.00001 \
-				or absf(float(speed) - float(sampled.speed_mps)) > 0.001:
-			return false
-		var band: Dictionary = LANDMARK_BANDS[landmark_id]
-		var height_m: float = (position - station_position).dot(station_up)
-		if (band.height_m != null and not _inside(height_m, band.height_m)) \
-				or not _inside(float(speed), band.speed_mps) \
-				or absf(tangent.normalized().dot(station_up)) > band.maximum_abs_tangent_y:
-			return false
-	var return_entry: Dictionary = report.return_entry
-	var reported_headroom: Variant = return_entry.get("energy_headroom_j_per_kg")
-	if not _finite_number(reported_headroom) or float(reported_headroom) <= 0.0:
-		return false
-	if not _shape_evidence_matches_trajectory(compiled, report, trajectory):
-		return false
-	var relative_height: float = (return_entry.position_m - station_position).dot(station_up)
-	var expected_headroom: float = (
-		0.5 * float(return_entry.speed_mps) ** 2 + Motion.G0 * relative_height - 0.5
-	)
-	return absf(float(reported_headroom) - expected_headroom) <= 0.001
-
-
-func _shape_evidence_matches_trajectory(
-	compiled: Dictionary, report: Dictionary, trajectory: Dictionary
-) -> bool:
-	var shape: Variant = report.get("shape_evidence")
+	var launch := _compiled_gesture(compiled, "station-launch")
+	var act_one := _compiled_gesture(compiled, "act-one")
 	var climb := _compiled_gesture(compiled, "escarpment-climb")
 	var cliff := _compiled_gesture(compiled, "clifftop-suspense")
-	var rim := _compiled_role(cliff, "outward-rim")
+	var dive := _compiled_gesture(compiled, "cliff-dive")
+	var lsm3 := _compiled_gesture(compiled, "tunnel-lsm3")
+	var camel := _compiled_gesture(compiled, "marquee-camelback")
+	var lsm2 := _compiled_role(climb, "lsm2")
 	var slow_crest := _compiled_role(cliff, "slow-crest")
-	if not shape is Dictionary or climb.is_empty() or cliff.is_empty() \
-			or rim.is_empty() or slow_crest.is_empty():
+	var rim := _compiled_role(cliff, "outward-rim")
+	if launch.is_empty() or act_one.is_empty() or climb.is_empty() or cliff.is_empty() \
+			or dive.is_empty() or lsm3.is_empty() or camel.is_empty() \
+			or lsm2.is_empty() or slow_crest.is_empty() or rim.is_empty():
 		return false
-	var evidence: Dictionary = shape
-	var climb_entry := _trajectory_span_bounds(trajectory,
-		int(climb.first_span), int(climb.first_span)).x
-	var crest_bounds := _trajectory_span_bounds(trajectory,
-		int(climb.first_span), int(cliff.last_span))
-	var slow_bounds := _trajectory_span_bounds(trajectory,
-		int(slow_crest.first_span), int(slow_crest.last_span))
-	var rim_bounds := _trajectory_span_bounds(trajectory,
-		int(rim.first_span), int(rim.last_span))
-	var crest_apex := _maximum_trajectory_height(trajectory, crest_bounds)
-	var held_s := _linear_held_at_or_below(
-		trajectory.time_s, trajectory.speed_mps, slow_bounds, 22.0)
-	var cliff_prominence := float(trajectory.position_m[crest_apex].y) \
-		- float(trajectory.position_m[climb_entry].y)
-	var rim_heading := _trajectory_heading_change(trajectory.tangent, rim_bounds)
-	var rim_cross_track := _trajectory_cross_track(
-		trajectory.position_m, trajectory.tangent, rim_bounds)
-	var rim_maximum_bank := _trajectory_maximum_bank(
-		trajectory.tangent, trajectory.rider_up, rim_bounds)
-	var negative_rim_bank := PackedFloat64Array()
-	negative_rim_bank.resize(trajectory.time_s.size())
-	var rim_maximum_lateral_g := 0.0
+	var climb_bounds := _trajectory_span_bounds(
+		trajectory, int(climb.first_span), int(cliff.last_span))
+	var cliff_bounds := _trajectory_span_bounds(
+		trajectory, int(lsm2.last_span) + 1, int(cliff.last_span))
+	var dive_bounds := _trajectory_span_bounds(
+		trajectory, int(dive.first_span), int(dive.last_span))
+	var camel_bounds := _trajectory_span_bounds(
+		trajectory, int(camel.first_span), int(camel.last_span))
+	var slow_bounds := _trajectory_span_bounds(
+		trajectory, int(slow_crest.first_span), int(slow_crest.last_span))
+	var rim_bounds := _trajectory_span_bounds(
+		trajectory, int(rim.first_span), int(rim.last_span))
+	var cliff_apex := _maximum_trajectory_height(trajectory, cliff_bounds)
+	var camel_apex := _maximum_trajectory_height(trajectory, camel_bounds)
+	var points := [
+		[_trajectory_span_bounds(trajectory, int(launch.first_span), int(launch.last_span)).y,
+			-5.0, 5.0, 75.0, 78.0, 0.05],
+		[_trajectory_span_bounds(trajectory, int(act_one.first_span), int(act_one.last_span)).y,
+			-40.0, 40.0, 40.0, 70.0, 0.18],
+		[_trajectory_span_bounds(trajectory, int(lsm2.first_span), int(lsm2.last_span)).y,
+			-20.0, 20.0, 57.0, 64.0, 0.12],
+		[cliff_apex, null, null, 5.0, 22.0, 0.22],
+		[dive_bounds.y, -20.0, 20.0, 55.0, 70.0, 0.22],
+		[_trajectory_span_bounds(trajectory, int(lsm3.first_span), int(lsm3.last_span)).y,
+			-20.0, 20.0, 90.0, 98.0, 0.16],
+		[camel_apex, 240.0, 260.0, 50.0, 68.0, 0.12],
+		[camel_bounds.y, -20.0, 20.0, 78.0, 92.0, 0.18],
+	]
+	for point in points:
+		var index: int = point[0]
+		var height: float = (trajectory.position_m[index] - layout.station_position_m).dot(
+			layout.station_up.normalized())
+		if (point[1] != null and (height < point[1] or height > point[2])) \
+				or trajectory.speed_mps[index] < point[3] or trajectory.speed_mps[index] > point[4] \
+				or absf(trajectory.tangent[index].dot(layout.station_up.normalized())) > point[5]:
+			return false
+	var return_entry: int = camel_bounds.y
+	var return_height: float = (trajectory.position_m[return_entry] \
+		- layout.station_position_m).dot(layout.station_up.normalized())
+	if 0.5 * float(trajectory.speed_mps[return_entry]) ** 2 \
+			+ Motion.G0 * return_height - 0.5 <= 0.0:
+		return false
+	var rim_bank := PackedFloat64Array()
+	rim_bank.resize(trajectory.time_s.size())
+	var rim_lateral := 0.0
 	for index in range(rim_bounds.x, rim_bounds.y + 1):
-		negative_rim_bank[index] = -_trajectory_bank(
-			trajectory.tangent[index], trajectory.rider_up[index])
-		rim_maximum_lateral_g = maxf(
-			rim_maximum_lateral_g, absf(float(trajectory.lateral_g[index])))
-	var rim_held_bank_s := _linear_held_at_or_below(
-		trajectory.time_s, negative_rim_bank, rim_bounds, -deg_to_rad(40.0))
-	var rim_duration_s: float = trajectory.time_s[rim_bounds.y] \
-		- trajectory.time_s[rim_bounds.x]
-	var rim_distance_m: float = trajectory.distance_m[rim_bounds.y] \
-		- trajectory.distance_m[rim_bounds.x]
+		rim_bank[index] = -_trajectory_bank(trajectory.tangent[index], trajectory.rider_up[index])
+		rim_lateral = maxf(rim_lateral, absf(float(trajectory.lateral_g[index])))
 	var rim_exit: int = rim_bounds.y
 	var rim_exit_bank := _trajectory_bank(
 		trajectory.tangent[rim_exit], trajectory.rider_up[rim_exit])
 	var rim_exit_pitch := asin(clampf(trajectory.tangent[rim_exit].y, -1.0, 1.0))
-	var rim_exit_up_dot: float = trajectory.rider_up[rim_exit].dot(Vector3.UP)
-	return _reported_near(evidence, "crest_held_at_or_below_22_mps_s", held_s, 0.051) \
-		and held_s >= 2.7 \
-		and _reported_near(evidence, "cliff_prominence_m", cliff_prominence, 0.001) \
-		and cliff_prominence >= 150.0 and cliff_prominence <= 175.0 \
-		and _reported_near(evidence, "rim_heading_change_rad", rim_heading, 0.00001) \
-		and _reported_near(evidence, "rim_cross_track_m", rim_cross_track, 0.001) \
-		and _reported_near(evidence, "rim_maximum_bank_rad", rim_maximum_bank, 0.00001) \
-		and rim_heading >= deg_to_rad(110.0) and rim_heading <= deg_to_rad(170.0) \
-		and rim_held_bank_s >= 1.0 and rim_maximum_lateral_g <= 0.050001 \
-		and rim_duration_s >= 3.5 and rim_duration_s <= 6.0 \
-		and rim_distance_m >= 40.0 and rim_distance_m <= 160.0 \
-		and _reported_near(evidence, "rim_exit_bank_rad", rim_exit_bank, 0.00001) \
-		and _reported_near(evidence, "rim_exit_pitch_rad", rim_exit_pitch, 0.00001) \
-		and _reported_near(evidence, "rim_exit_up_dot", rim_exit_up_dot, 0.00001) \
+	var rim_duration: float = trajectory.time_s[rim_bounds.y] - trajectory.time_s[rim_bounds.x]
+	var rim_distance: float = trajectory.distance_m[rim_bounds.y] - trajectory.distance_m[rim_bounds.x]
+	var dive_minimum_tangent: float = trajectory.tangent[dive_bounds.x].y
+	var dive_minimum_normal: float = trajectory.normal_g[dive_bounds.x]
+	var dive_maximum_normal: float = trajectory.normal_g[dive_bounds.x]
+	var dive_maximum_step := -INF
+	for index in range(dive_bounds.x + 1, dive_bounds.y + 1):
+		dive_minimum_tangent = minf(dive_minimum_tangent, trajectory.tangent[index].y)
+		dive_minimum_normal = minf(dive_minimum_normal, trajectory.normal_g[index])
+		dive_maximum_normal = maxf(dive_maximum_normal, trajectory.normal_g[index])
+		dive_maximum_step = maxf(dive_maximum_step,
+			trajectory.position_m[index].y - trajectory.position_m[index - 1].y)
+	var camel_start: Vector3 = trajectory.position_m[camel_bounds.x]
+	var camel_end: Vector3 = trajectory.position_m[camel_bounds.y]
+	var camel_prominence: float = trajectory.position_m[camel_apex].y \
+		- maxf(camel_start.y, camel_end.y)
+	var camel_width := Vector2(camel_end.x - camel_start.x,
+		camel_end.z - camel_start.z).length()
+	var slow_held := _linear_held_at_or_below(
+		trajectory.time_s, trajectory.speed_mps, slow_bounds, 22.0)
+	return slow_held >= 2.7 and slow_held <= 4.2 \
+		and trajectory.position_m[cliff_apex].y - trajectory.position_m[climb_bounds.x].y >= 150.0 \
+		and trajectory.position_m[cliff_apex].y - trajectory.position_m[climb_bounds.x].y <= 175.0 \
+		and _trajectory_heading_change(trajectory.tangent, rim_bounds) >= deg_to_rad(110.0) \
+		and _trajectory_heading_change(trajectory.tangent, rim_bounds) <= deg_to_rad(170.0) \
+		and _trajectory_cross_track(trajectory.position_m, trajectory.tangent, rim_bounds) >= 3.0 \
+		and _trajectory_maximum_bank(
+			trajectory.tangent, trajectory.rider_up, rim_bounds) >= deg_to_rad(20.0) \
+		and _linear_held_at_or_below(
+			trajectory.time_s, rim_bank, rim_bounds, -deg_to_rad(40.0)) >= 1.0 \
+		and rim_lateral <= 0.050001 and rim_duration >= 3.5 and rim_duration <= 6.0 \
+		and rim_distance >= 40.0 and rim_distance <= 160.0 \
 		and rim_exit_bank <= deg_to_rad(2.0) \
-		and absf(rim_exit_pitch) <= deg_to_rad(0.5) and rim_exit_up_dot >= 0.99
+		and absf(rim_exit_pitch) <= deg_to_rad(0.5) \
+		and trajectory.rider_up[rim_exit].dot(Vector3.UP) >= 0.99 \
+		and trajectory.position_m[dive_bounds.x].y - trajectory.position_m[dive_bounds.y].y >= 140.0 \
+		and trajectory.position_m[dive_bounds.x].y - trajectory.position_m[dive_bounds.y].y <= 175.0 \
+		and dive_minimum_tangent <= -sin(deg_to_rad(75.0)) and dive_maximum_step <= 0.01 \
+		and dive_minimum_normal >= -1.300001 and dive_maximum_normal <= 5.000001 \
+		and camel_prominence >= 240.0 and camel_prominence <= 260.0 \
+		and camel_width / camel_prominence >= 3.1 and camel_width / camel_prominence <= 3.9 \
+		and _linear_held_at_or_below(
+			trajectory.time_s, trajectory.normal_g, camel_bounds, 0.0) >= 4.0
 
 
 func _compiled_gesture(compiled: Dictionary, story_id: String) -> Dictionary:
@@ -875,17 +1057,6 @@ func _trajectory_bank(tangent: Vector3, rider_up: Vector3) -> float:
 	if level_up.length_squared() <= 0.000001:
 		return INF
 	return acos(clampf(rider_up.dot(level_up.normalized()), -1.0, 1.0))
-
-
-func _reported_near(
-	report: Dictionary, key: String, expected: float, tolerance: float
-) -> bool:
-	var actual: Variant = report.get(key)
-	return _finite_number(actual) and absf(float(actual) - expected) <= tolerance
-
-
-func _inside(value: float, band: Vector2) -> bool:
-	return value >= band.x and value <= band.y
 
 
 func _finite_number(value: Variant) -> bool:

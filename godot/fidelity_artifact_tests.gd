@@ -285,6 +285,7 @@ static func _test_overlay_writer_rejects_malformed_explicit_projection(
 		func(v): v.comparisons[0].lanes[1].samples[0].normal_g = NAN,
 		func(v): v.comparisons[0].lanes[1].samples[0].eligible = 1,
 		func(v): v.comparisons[0].markers[0].uncertainty_s = 0.0,
+		func(v): v.gaps = ["bad"],
 	]
 	for index in cases.size():
 		var overlays := _overlay_fixture(1); cases[index].call(overlays)

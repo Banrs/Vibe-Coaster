@@ -89,3 +89,19 @@ Each command used the repository's console binary, `--headless`, isolated appdat
 - `git diff --check -- godot/_inspect.gd godot/fidelity_artifacts.gd godot/fidelity_artifact_tests.gd` — exit 0.
 
 Concern: the final artifact run printed compile diagnostics from concurrently edited, out-of-scope `ride_program.gd`/generator dependencies (`RETURN_*` identifiers), while this focused script still exited 0 with no artifact-suite assertion failures. The unchanged overlay-core suite was clean. No out-of-scope file was edited for this task.
+
+## Review round 2 fix
+
+Status: GREEN for the single Important malformed-gap finding.
+
+- Added the exact `gaps: ["bad"]` malformed explicit-projection regression.
+- Preflight now validates every gap entry as a Dictionary and validates each Markdown-consumed field (`comparison_id`, `role`, and `reason`) as a String before any overlay sort, render, or write.
+- Round line delta from `d2bda61`: `fidelity_artifact_tests.gd` +1/-0; `fidelity_artifacts.gd` +9/-0.
+
+Commands/results (console-only Godot, headless, isolated appdata, one process, 180 s timeout):
+
+- RED: `...Godot_v4.7.1-stable_win64_console.exe --headless --path godot --script res://fidelity_artifact_tests.gd` — exit 1 in 13.7 s; `gaps: ["bad"]` reached the expected typed Dictionary assignment in `_overlay_markdown`, and the two malformed-case assertions failed.
+- GREEN: `...Godot_v4.7.1-stable_win64_console.exe --headless --path godot --script res://fidelity_artifact_tests.gd` — exit 0 in 12.6 s; only the suite's intentional negative PNG-save diagnostic was printed.
+- `git diff --check -- godot/fidelity_artifacts.gd godot/fidelity_artifact_tests.gd` — exit 0, no output.
+
+Concern: none for this focused fix.

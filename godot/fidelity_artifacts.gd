@@ -1085,6 +1085,15 @@ static func _validate_overlays_for_write(overlays: Dictionary) -> PackedStringAr
 			var value: Variant = overlays.comparisons[index]
 			if value is Dictionary: _validate_overlay_comparison(value, index, ids, errors)
 			else: errors.append("artifact_write: overlay comparison %d must be a Dictionary" % index)
+	if overlays.get("gaps") is Array:
+		for index in overlays.gaps.size():
+			var value: Variant = overlays.gaps[index]
+			if not value is Dictionary:
+				errors.append("artifact_write: overlay gap %d must be a Dictionary" % index)
+				continue
+			for key in ["comparison_id", "role", "reason"]:
+				if not value.get(key) is String:
+					errors.append("artifact_write: overlay gap %d %s must be a String" % [index, key])
 	if canonical_json(overlays).is_empty(): errors.append("artifact_write: overlay projection is not canonical JSON data")
 	errors.sort(); return errors
 static func _validate_overlay_comparison(comparison: Dictionary, index: int,

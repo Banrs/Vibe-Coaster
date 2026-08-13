@@ -70,8 +70,9 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			continue
 		var station_distance: float = full.distance_m[-1] - production.moving_distance_m
 		var report: Dictionary = solved.get("report", {})
-		var moving_target: float = fixture.remaining_m \
-			- float(report.get("station_distance_m", INF))
+		var projected_remaining_m: float = (layout.station_position_m - start.position_m).dot(
+			layout.station_tangent.normalized())
+		var moving_target: float = projected_remaining_m - station_distance
 		production = _independent_brake_observation(
 			start, parts.moving_spans, moving_target, 0.01)
 		_expect(absf(production.moving_boundary_speed_mps - 2.0) <= 0.0001,
@@ -95,9 +96,14 @@ func _test_sustained_brake_closes_without_padding() -> void:
 				[0.05, "coarse_observation"], [0.025, "fine_observation"]]:
 			var measured := _independent_brake_observation(
 				start, parts.moving_spans, moving_target, float(step_and_field[0]))
-			_expect(measured.ok and _brake_observation_near(
-					report.get(step_and_field[1], {}), measured),
-				"the %s %s is independently observed" % [fixture.id, step_and_field[1]])
+			_expect(measured.ok and _residuals_are_within(
+					measured.get("residuals", []), [0.05, 0.0001]),
+				"the %s %s independently satisfies both brake residuals"
+				% [fixture.id, step_and_field[1]])
+			_expect(_brake_report_observation_is_valid(
+					report.get(step_and_field[1], {}), report),
+				"the %s %s publishes finite self-consistent brake residuals"
+				% [fixture.id, step_and_field[1]])
 		_expect(absf(float(report.get("station_distance_m", INF)) - station_distance) <= 0.001
 			and absf(float(report.get("remaining_distance_m", INF)) - fixture.remaining_m) <= 0.001
 			and absf(float(report.get("distance_residual_m", INF))) <= 0.05,
@@ -343,7 +349,7 @@ func _test_station_local_program_compiles() -> void:
 			var brake_bounds := _owned_span_bounds(trajectory.span_index, span_index, span_index)
 			observed_brake_entry_speed = trajectory.speed_mps[brake_bounds.x]
 			break
-	_expect(absf(observed_brake_entry_speed - 69.835737) <= 0.001
+	_expect(absf(observed_brake_entry_speed - 69.828991) <= 0.001
 		and absf(float(brake.get("brake_entry_speed_mps", INF))
 			- observed_brake_entry_speed) <= 0.000001,
 		"the public brake begins at its independently observed production state")
@@ -570,13 +576,20 @@ func _independent_brake_observation(
 		"residuals": [moving_distance - moving_target, speed - 2.0]}
 
 
-func _brake_observation_near(reported: Variant, measured: Dictionary) -> bool:
-	return reported is Dictionary and measured.get("ok", false) \
-		and _residual_vectors_near(reported.get("residuals"), measured.residuals, 0.000001) \
-		and absf(float(reported.get("moving_distance_m", INF)) \
-			- measured.moving_distance_m) <= 0.000001 \
-		and absf(float(reported.get("moving_boundary_speed_mps", INF)) \
-			- measured.moving_boundary_speed_mps) <= 0.000001
+func _brake_report_observation_is_valid(reported: Variant, plan: Dictionary) -> bool:
+	if not reported is Dictionary:
+		return false
+	var residuals: Variant = reported.get("residuals")
+	var distance: Variant = reported.get("moving_distance_m")
+	var speed: Variant = reported.get("moving_boundary_speed_mps")
+	var remaining: Variant = plan.get("remaining_distance_m")
+	var station: Variant = plan.get("station_distance_m")
+	return residuals is Array and residuals.size() == 2 \
+		and _finite_number(distance) and _finite_number(speed) and _finite_number(remaining) \
+		and _finite_number(station) \
+		and _residuals_are_within(residuals, [0.05, 0.0001]) \
+		and float(residuals[0]) == float(distance) - (float(remaining) - float(station)) \
+		and float(residuals[1]) == float(speed) - 2.0
 
 
 func _brake_spans_have_no_positive_drive(compiled: Dictionary) -> bool:

@@ -40,11 +40,269 @@ static func run() -> PackedStringArray:
 	_test_center_row_alignment_selectors(artifacts, errors)
 	_test_route_sampling(errors)
 	_test_pov_camera(artifacts, errors)
-	_test_native_inspector_windows(errors)
 	_test_checked_writes(artifacts, errors)
+	_test_default_off_preserves_report_and_pack(artifacts, errors)
+	_test_opt_in_generated_midpoint_pov_requests(artifacts, errors)
+	_test_write_pack_overlay_additions_and_valid_gaps(artifacts, errors)
+	_test_overlay_independent_plot_domains(artifacts, errors)
+	_test_overlay_pack_redaction_and_determinism(artifacts, errors)
+	_test_overlay_writer_rejects_malformed_explicit_projection(artifacts, errors)
+	_test_inspector_overlay_boundary(errors)
+	_test_inspector_diagnostics_are_read_only(artifacts, errors)
 	_test_write_pack(artifacts, errors)
 	_test_audit_fleet(errors)
 	return errors
+
+
+## Characterization gate for the compatibility ABI: an unaligned retained element must not
+## silently acquire a POV when callers use the original five-/three-argument path.
+static func _test_default_off_preserves_report_and_pack(
+	artifacts: Script, errors: PackedStringArray
+) -> void:
+	var fixture := _pack_fixture()
+	fixture.seed_measurements[1].beats.append_array([{
+		"beat_id": "act-one/01/hill", "story_slot_id": "act1.hill",
+		"window_role": "core", "kind": "hill", "window_s": [4.0, 6.0],
+		"start_distance": 50.0, "end_distance": 100.0,
+		"rows": [{"row_id": "row-02", "position": "intermediate", "offset": 0.0,
+			"window_start_s": 4.0, "window_end_s": 6.0}],
+	}])
+	var report: Dictionary = _build(artifacts, fixture)
+	var element_paths := PackedStringArray()
+	var pov_paths := PackedStringArray()
+	for request: Dictionary in report.get("render_requests", []):
+		if request.artifact_kind == "element": element_paths.append(request.path)
+		if request.artifact_kind == "pov": pov_paths.append(request.path)
+	_expect(errors, element_paths == PackedStringArray([
+		"review/seed-42/elements/act-one__00__loop.png",
+		"review/seed-42/elements/act-one__01__hill.png",
+	]), "default report retains both element requests")
+	_expect(errors, pov_paths == PackedStringArray([
+		"review/seed-42/pov/act-one__00__loop.png",
+	]), "default report adds no midpoint POV for an unaligned retained element")
+	var first := "user://artifact-off-first"
+	var second := "user://artifact-off-second"
+	_reset_directory(first)
+	_reset_directory(second)
+	_expect(errors, artifacts.write_pack(first, report, _pack_routes()).is_empty(),
+		"default pack writes the frozen compatibility fixture")
+	_expect(errors, artifacts.write_pack(second, report, _pack_routes()).is_empty(),
+		"default pack repeats the frozen compatibility fixture")
+	var expected_files := PackedStringArray(EXPECTED_PACK_FILES)
+	expected_files.append("review/seed-42/elements/act-one__01__hill.png")
+	expected_files.sort()
+	_expect(errors, _relative_files(first) == expected_files,
+		"default pack preserves the complete legacy set plus its requested element")
+	_expect(errors, _relative_files(second) == expected_files,
+		"repeated default pack preserves the complete file list")
+	for path in expected_files:
+		_expect(errors, FileAccess.get_file_as_bytes("%s/%s" % [first, path])
+			== FileAccess.get_file_as_bytes("%s/%s" % [second, path]),
+			"default artifact '%s' repeats byte-identically" % path)
+
+
+static func _test_opt_in_generated_midpoint_pov_requests(
+	artifacts: Script, errors: PackedStringArray
+) -> void:
+	var fixture := _pack_fixture()
+	fixture.seed_measurements[1].beats.append_array([{
+		"beat_id": "act-one/01/hill", "story_slot_id": "act1.hill", "window_role": "core",
+		"kind": "hill", "window_s": [4.0, 6.0], "start_distance": 50.0, "end_distance": 100.0,
+		"rows": [{"row_id": "center", "position": "middle", "offset": 0.0,
+			"window_start_s": 4.0, "window_end_s": 6.0}],
+	}, {
+		"beat_id": "act-one/02/brakes", "story_slot_id": "act1.brakes", "window_role": "core",
+		"kind": "brake_run", "window_s": [6.0, 8.0], "rows": [{"offset": 0.0,
+			"window_start_s": 6.0, "window_end_s": 8.0}],
+	}])
+	var report: Dictionary = artifacts.build_report(fixture.seed_measurements, fixture.comparison,
+		fixture.catalog, fixture.legacy_base_commit, fixture.generation_counts, true)
+	var hill_povs: Array = report.get("render_requests", []).filter(func(request: Dictionary):
+		return request.get("path") == "review/seed-42/pov/act-one__01__hill.png")
+	_expect(errors, hill_povs.size() == 1 and hill_povs[0].generated_time_s == 5.0,
+		"opt-in adds exactly one center-row midpoint POV for an unaligned retained element")
+	_expect(errors, report.render_requests.filter(func(request: Dictionary):
+		return str(request.get("path", "")).contains("brakes")).is_empty(),
+		"opt-in adds no request for a non-side-view beat")
+	_expect(errors, report.render_requests.filter(func(request: Dictionary):
+		return request.get("path") == "review/seed-42/pov/act-one__00__loop.png").size() == 1,
+		"an aligned midpoint request deduplicates byte-for-byte")
+	_append_copy(fixture.seed_measurements[1].beats, 0, {
+		"beat_id": "act-one__00__loop", "story_slot_id": "act1.conflict"})
+	var conflict: Dictionary = artifacts.build_report(fixture.seed_measurements, fixture.comparison,
+		fixture.catalog, fixture.legacy_base_commit, fixture.generation_counts, true)
+	_expect_contains(errors, conflict.get("errors", []), "conflicting payload",
+		"an aligned POV that conflicts with the midpoint invalidates the report")
+
+
+static func _test_write_pack_overlay_additions_and_valid_gaps(
+	artifacts: Script, errors: PackedStringArray
+) -> void:
+	for gap_kind in ["complete", "source", "generated"]:
+		var overlays := _overlay_fixture(4)
+		if gap_kind == "source": _make_source_gap(overlays.comparisons[0])
+		if gap_kind == "generated": _make_generated_gap(overlays.comparisons[0])
+		var first := "user://overlay-pack-%s-a" % gap_kind
+		var second := "user://overlay-pack-%s-b" % gap_kind
+		_reset_directory(first); _reset_directory(second)
+		var report := _build(artifacts, _pack_fixture())
+		var failures: Array = Array(artifacts.write_pack(first, report, _pack_routes(), overlays))
+		_expect(errors, failures.is_empty(), "%s overlay gap writes successfully: %s" % [gap_kind, failures])
+		_expect(errors, artifacts.write_pack(second, report, _pack_routes(), overlays).is_empty(),
+			"%s overlay gap repeats successfully" % gap_kind)
+		var additions := PackedStringArray(["review/overlays/index.json", "review/overlays/index.md"])
+		for index in 4: additions.append("review/overlays/test-%d.png" % index)
+		var expected := PackedStringArray(EXPECTED_PACK_FILES)
+		expected.append_array(additions); expected.sort()
+		_expect(errors, _relative_files(first) == expected, "%s adds only the six overlay artifacts" % gap_kind)
+		for path in expected:
+			_expect(errors, FileAccess.get_file_as_bytes("%s/%s" % [first, path])
+				== FileAccess.get_file_as_bytes("%s/%s" % [second, path]),
+				"%s artifact '%s' repeats byte-identically" % [gap_kind, path])
+		var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("%s/manifest.json" % first))
+		var paths: Array = manifest.files.map(func(file: Dictionary): return file.path)
+		var sorted := paths.duplicate(); sorted.sort()
+		_expect(errors, paths == sorted, "overlay manifest paths are sorted")
+		for file: Dictionary in manifest.files:
+			if str(file.path).begins_with("review/overlays/") and file.path.ends_with(".png"):
+				_expect(errors, file.artifact_kind == "telemetry-overlay" and file.width > 0 and file.height > 0,
+					"overlay PNGs reopen and carry telemetry-overlay records")
+		if gap_kind == "generated":
+			var emitted: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(
+				"%s/review/overlays/index.json" % first))
+			_expect(errors, emitted.comparisons[0].generated.window_s == null
+				and emitted.comparisons[0].generated.duration_s == null,
+				"generated gaps serialize no invented window or duration")
+
+
+static func _test_overlay_independent_plot_domains(artifacts: Script, errors: PackedStringArray) -> void:
+	var comparison: Dictionary = _overlay_fixture(1).comparisons[0]
+	comparison.source.window_s = [20.0, 30.0]; comparison.source.duration_s = 10.0
+	comparison.generated.window_s = [200.0, 260.0]; comparison.generated.duration_s = 60.0
+	for lane: Dictionary in comparison.lanes:
+		if lane.role in ["source_observed_smoothed", "approved_scaled_target"]:
+			lane.samples[0].time_s = 20.0; lane.samples[1].time_s = 30.0
+		elif lane.role == "generated_raw":
+			lane.samples[0].time_s = 200.0; lane.samples[1].time_s = 260.0
+	comparison.markers = [{"id": "entry", "time_s": 20.0, "uncertainty_s": 0.1},
+		{"id": "apex", "time_s": 25.0, "uncertainty_s": 0.1},
+		{"id": "exit", "time_s": 30.0, "uncertainty_s": 0.1}]
+	var image: Image = artifacts._overlay_image(comparison)
+	_expect(errors, image.get_size() == Vector2i(1200, 900), "overlay renderer has the fixed contracted frame")
+	# Cyan source and magenta generated endpoints must independently reach x=50 and x=1149.
+	_expect(errors, _column_has_color(image, 51, Color(0.55, 0.95, 1.0), 0, 900)
+		and _column_has_color(image, 1148, Color(0.55, 0.95, 1.0), 0, 900),
+		"source traces reach their source-native panel bounds")
+	_expect(errors, _column_has_color(image, 50, Color(0.95, 0.55, 0.95), 0, 900)
+		and _column_has_color(image, 1149, Color(0.95, 0.55, 0.95), 0, 900),
+		"generated traces reach their generated-native panel bounds")
+	var marker_only_source := _column_has_color(image, 600, Color(0.75, 0.62, 0.25), 20, 130)
+	for lower in [160, 460, 760]:
+		marker_only_source = marker_only_source and not _column_has_color(
+			image, 600, Color(0.75, 0.62, 0.25), lower, lower + 110)
+	_expect(errors, marker_only_source,
+		"source semantic markers are never projected into generated panels")
+
+
+static func _test_overlay_pack_redaction_and_determinism(
+	artifacts: Script, errors: PackedStringArray
+) -> void:
+	var local_path := "C:/Users/fixture/secret-rfdb.csv"
+	var overlays := _overlay_fixture(4)
+	var reversed: Dictionary = _reverse_dictionaries(overlays)
+	var first := "user://overlay-redaction-a"; var second := "user://overlay-redaction-b"
+	_reset_directory(first); _reset_directory(second)
+	var report := _build(artifacts, _pack_fixture())
+	artifacts.write_pack(first, report, _pack_routes(), overlays)
+	artifacts.write_pack(second, report, _pack_routes(), reversed)
+	_expect(errors, _relative_files(first) == _relative_files(second), "dictionary order does not change files")
+	for path in _relative_files(first):
+		var left := FileAccess.get_file_as_bytes("%s/%s" % [first, path])
+		var right := FileAccess.get_file_as_bytes("%s/%s" % [second, path])
+		_expect(errors, left == right, "dictionary order does not change '%s'" % path)
+		if path.ends_with(".json") or path.ends_with(".md"):
+			var text := left.get_string_from_utf8()
+			_expect(errors, not text.contains(local_path) and not text.contains("timestamp")
+				and not text.contains("created_at"), "artifacts contain no local path or timestamp fields")
+
+
+static func _test_overlay_writer_rejects_malformed_explicit_projection(
+	artifacts: Script, errors: PackedStringArray
+) -> void:
+	var cases := [
+		func(v): v.schema_version = "wrong", func(v): v.status = "invalid-input",
+		func(v): v.comparisons[0].comparison_id = "../bad", func(v): v.comparisons.append(v.comparisons[0].duplicate(true)),
+		func(v): v.comparisons[0].artifact_path = "review/overlays/wrong.png",
+		func(v): v.comparisons[0].source.window_s = [1.0], func(v): v.comparisons[0].generated.duration_s = 99.0,
+		func(v): v.comparisons[0].lanes.pop_back(), func(v): v.comparisons[0].lanes[1].role = "generated_raw",
+		func(v): v.comparisons[0].lanes[1].clock = "generated", func(v): v.comparisons[0].lanes[1].samples = {},
+		func(v): v.comparisons[0].lanes[1].samples[0] = [], func(v): v.comparisons[0].lanes[1].samples[0].time_s = INF,
+		func(v): v.comparisons[0].lanes[1].samples[0].time_s = 99.0,
+		func(v): v.comparisons[0].lanes[1].samples[0].normal_g = NAN,
+		func(v): v.comparisons[0].lanes[1].samples[0].eligible = 1,
+		func(v): v.comparisons[0].markers[0].uncertainty_s = 0.0,
+	]
+	for index in cases.size():
+		var overlays := _overlay_fixture(1); cases[index].call(overlays)
+		var directory := "user://overlay-invalid-%d" % index; _reset_directory(directory)
+		var failures: Array = Array(artifacts.write_pack(directory,
+			_build(artifacts, _pack_fixture()), _pack_routes(), overlays))
+		var sorted := failures.duplicate(); sorted.sort()
+		_expect(errors, not failures.is_empty() and failures == sorted
+			and failures.all(func(value): return str(value).begins_with("artifact_write: overlay")),
+			"malformed overlay case %d returns sorted artifact_write errors" % index)
+		_expect(errors, not FileAccess.file_exists("%s/manifest.json" % directory)
+			and not DirAccess.dir_exists_absolute("%s/review/overlays" % directory),
+			"malformed overlay case %d writes no overlay or manifest" % index)
+
+
+static func _test_inspector_overlay_boundary(errors: PackedStringArray) -> void:
+	var inspect: Script = load(INSPECT_PATH)
+	var seam := Callable(inspect, "_build_overlays")
+	_expect(errors, seam.is_valid(), "the inspector exposes a static overlay boundary")
+	if not seam.is_valid(): return
+	var captured := {}
+	var builder := func(manifest, bytes, local_files, measurement, route, transforms):
+		captured.merge({"manifest": manifest, "bytes": bytes, "local_files": local_files,
+			"measurement": measurement, "route": route, "transforms": transforms})
+		return _overlay_fixture(1)
+	var env := {"RFDB_4804_CSV": "a.csv", "RFDB_6383_CSV": "", "IGNORED": "secret.csv"}
+	var bytes := '{"schema_version":"fixture"}'.to_utf8_buffer()
+	var measurement := {"identity": "retained-measurement"}; var route := {"identity": "retained-route"}
+	var result: Dictionary = seam.call(bytes, func(name): return env.get(name, ""), measurement,
+		route, {"t": 1}, builder)
+	_expect(errors, result.status == "ok" and captured.local_files == {"rfdb-4804": "a.csv"},
+		"only the two named nonempty RFDB variables enter the transient local map")
+	_expect(errors, is_same(captured.measurement, measurement) and is_same(captured.route, route),
+		"the overlay seam receives retained seed-42 values")
+	var malformed: Dictionary = seam.call("{".to_utf8_buffer(), func(_name): return "", measurement,
+		route, {}, builder)
+	_expect(errors, malformed.status == "invalid-input", "malformed committed manifest is operational")
+	var diagnostic := func(_m, _b, _l, _me, _r, _t):
+		var value := _overlay_fixture(1); _make_source_gap(value.comparisons[0]); return value
+	var missing: Dictionary = seam.call(bytes, func(_name): return "missing.csv", measurement,
+		route, {}, diagnostic)
+	_expect(errors, missing.status == "ok" and missing.comparisons[0].source.status == "source_trace_unavailable",
+		"missing or hash-invalid optional CSV remains diagnostic")
+
+
+static func _test_inspector_diagnostics_are_read_only(
+	artifacts: Script, errors: PackedStringArray
+) -> void:
+	var directory := "user://diagnostic-read-only"; _reset_directory(directory)
+	var report := _build(artifacts, _pack_fixture())
+	artifacts.write_pack(directory, report, _pack_routes())
+	var before := _file_bytes(directory)
+	var inspect: Script = load(INSPECT_PATH)
+	var project := Callable(inspect, "_diagnostic_lines")
+	_expect(errors, project.is_valid(), "the inspector exposes a read-only diagnostic projection")
+	if not project.is_valid(): return
+	var lines: Variant = project.call(report, directory)
+	_expect(errors, lines is PackedStringArray and not lines.is_empty(), "checked report and legends project diagnostics")
+	_expect(errors, before == _file_bytes(directory), "diagnostic projection does not change artifact bytes")
+	for path in _relative_files(directory):
+		_expect(errors, not (not path.contains("/") and path.ends_with(".png")),
+			"diagnostics create no root-level PNG")
 
 
 ## The audit orchestration seam, exercised with spies only: no generator, no catalog, no files.
@@ -61,26 +319,6 @@ static func _test_audit_fleet(errors: PackedStringArray) -> void:
 	_test_one_build_per_seed(Callable(inspect, "_run_audit"), errors)
 
 
-## The native route owns semantic gesture/role windows; the inspector must not recover legacy
-## element groups or let non-shaping roles leak into the retained side-view diagnostics.
-static func _test_native_inspector_windows(errors: PackedStringArray) -> void:
-	var inspect: Script = load(INSPECT_PATH)
-	var project := Callable(inspect, "_diagnostic_windows")
-	_expect(errors, project.is_valid(), "the inspector exposes native diagnostic-window projection")
-	if not project.is_valid():
-		return
-	var windows: Array = project.call(_pack_route(42))
-	_expect(errors, windows.map(func(window: Dictionary): return window.window_id) == [
-		"act-one/giant-inversion/00-loop", "brakes-station-capture/whole/00-dive",
-	], "the inspector retains shaping windows in native order")
-	if windows.size() != 2:
-		return
-	_expect(errors, windows[0].first == 0 and windows[0].last == 9,
-		"the inspector preserves native shaping sample bounds")
-	_expect(errors, windows[1].first == 20 and windows[1].last == 40,
-		"the inspector retains a whole-gesture shaping fallback when roles are connective")
-
-
 static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray) -> void:
 	if not runner.is_valid():
 		errors.append("the inspector exposes no static _run_audit orchestration seam")
@@ -89,7 +327,10 @@ static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray
 	var build := func(seed_value: int) -> Dictionary:
 		calls[seed_value] = int(calls.get(seed_value, 0)) + 1
 		return {"seed": seed_value}
-	var measure := func(route: Dictionary) -> Dictionary: return {"seed": route.seed}
+	var measure_calls := {"count": 0}
+	var measure := func(route: Dictionary) -> Dictionary:
+		measure_calls.count += 1
+		return {"seed": route.seed}
 	var compare := func(measurements: Array) -> Dictionary: return {"fleet": measurements.map(func(item): return item.seed)}
 	var report: Dictionary = runner.call(AUDIT_SEEDS, build, measure, compare)
 	_expect(errors, report.get("fleet") == AUDIT_SEEDS, "report preserves canonical fleet")
@@ -119,6 +360,20 @@ static func _test_one_build_per_seed(runner: Callable, errors: PackedStringArray
 		_expect(errors, typeof(key) == TYPE_STRING, "generation-count key '%s' is a String" % str(key))
 		_expect(errors, typeof(counted[key]) == TYPE_INT,
 			"generation-count value for '%s' is an integer" % str(key))
+	var inspect: Script = load(INSPECT_PATH); var captured := {}
+	var retained_measurement: Dictionary = report.measurements[1]
+	var retained_route: Dictionary = report.routes_by_seed[42]
+	Callable(inspect, "_build_overlays").call('{"fixture":true}'.to_utf8_buffer(),
+		func(_name): return "", retained_measurement, retained_route, {},
+		func(_m, _b, _l, measurement, route, _t):
+			captured.measurement = measurement; captured.route = route
+			return {"status": "ok"})
+	_expect(errors, is_same(captured.get("measurement"), retained_measurement)
+		and is_same(captured.get("route"), retained_route),
+		"the overlay seam receives the exact retained seed-42 measurement and route identities")
+	_expect(errors, measure_calls.count == AUDIT_SEEDS.size()
+		and calls.values().all(func(count): return count == 1),
+		"the overlay seam invokes neither generation nor measurement callbacks")
 
 
 ## One deterministic pack: the contracted output set, its reopened manifest, and the checked
@@ -1344,6 +1599,84 @@ static func _pack_route(seed_value: int) -> Dictionary:
 		route.times.append(index * 0.5)
 		route.span_indices.append(0 if index < 20 else 1)
 	return route
+
+
+static func _overlay_fixture(count: int) -> Dictionary:
+	var comparisons := []
+	for index in count:
+		var id := "test-%d" % index
+		var source_samples := [
+			{"time_s": 0.0, "normal_g": -1.0, "lateral_g": 0.5,
+				"longitudinal_g": -0.25, "eligible": true},
+			{"time_s": 0.9, "normal_g": 2.0, "lateral_g": -0.5,
+				"longitudinal_g": 0.25, "eligible": true},
+		]
+		var target_samples: Array = source_samples.duplicate(true)
+		target_samples[1].longitudinal_g = null
+		var generated_samples := [
+			{"time_s": 10.0, "normal_g": -0.5, "lateral_g": 0.25,
+				"longitudinal_g": -0.1, "eligible": true},
+			{"time_s": 10.9, "normal_g": 1.5, "lateral_g": -0.25,
+				"longitudinal_g": 0.1, "eligible": true},
+		]
+		comparisons.append({
+			"comparison_id": id, "alignment_status": "semantic_only",
+			"evidence_class": "local-diagnostic", "source_id": "rfdb-4804",
+			"source": {"status": "available", "clock": "source-local-seconds",
+				"window_s": [0.0, 1.0], "duration_s": 1.0, "sample_count": 2},
+			"generated": {"status": "available", "clock": "generated-route-seconds",
+				"seed": 42, "beat_id": "act-one/00/loop", "story_slot_id": "act1.loop",
+				"window_role": "core", "window_s": [10.0, 11.0],
+				"duration_s": 1.0, "sample_count": 2},
+			"lanes": [
+				{"role": "source_observed_raw", "status": "evidence_gap", "samples": []},
+				{"role": "source_observed_smoothed", "status": "available", "clock": "source",
+					"samples": source_samples},
+				{"role": "approved_scaled_target", "status": "available", "clock": "source",
+					"samples": target_samples},
+				{"role": "generated_raw", "status": "available", "clock": "generated",
+					"samples": generated_samples},
+			],
+			"markers": [{"id": "entry", "time_s": 0.0, "uncertainty_s": 0.1},
+				{"id": "apex", "time_s": 0.5, "uncertainty_s": 0.1},
+				{"id": "exit", "time_s": 1.0, "uncertainty_s": 0.1}],
+			"caveats": ["semantic markers only"],
+			"artifact_path": "review/overlays/%s.png" % id,
+		})
+	return {"schema_version": "fidelity-semantic-overlays@1", "manifest_sha256": "a".repeat(64),
+		"recordings": [], "comparisons": comparisons, "gaps": [], "errors": [], "status": "ok"}
+
+
+static func _make_source_gap(comparison: Dictionary) -> void:
+	comparison.source.status = "source_trace_unavailable"; comparison.source.sample_count = 0
+	for lane: Dictionary in comparison.lanes:
+		if lane.role in ["source_observed_smoothed", "approved_scaled_target"]:
+			lane.status = "source_trace_unavailable"; lane.samples = []
+
+
+static func _make_generated_gap(comparison: Dictionary) -> void:
+	comparison.generated.status = "generated_window_unavailable"
+	comparison.generated.window_s = null; comparison.generated.duration_s = null
+	comparison.generated.sample_count = 0
+	for lane: Dictionary in comparison.lanes:
+		if lane.role == "generated_raw": lane.status = "generated_window_unavailable"; lane.samples = []
+
+
+static func _column_has_color(
+	image: Image, x: int, color: Color, first_y: int, last_y: int
+) -> bool:
+	for y in range(first_y, last_y):
+		var pixel := image.get_pixel(x, y)
+		if absf(pixel.r - color.r) < 0.01 and absf(pixel.g - color.g) < 0.01 \
+			and absf(pixel.b - color.b) < 0.01: return true
+	return false
+
+
+static func _file_bytes(directory: String) -> Dictionary:
+	var output := {}
+	for path in _relative_files(directory):
+		output[path] = FileAccess.get_file_as_bytes("%s/%s" % [directory, path])
+	return output
 
 
 static func _relative_files(directory: String, prefix: String = "") -> PackedStringArray:

@@ -13,18 +13,16 @@ extends SceneTree
 const Generator := preload("res://generator.gd")
 const Artifacts := preload("res://fidelity_artifacts.gd")
 const Fidelity := preload("res://fidelity.gd")
+const Overlay := preload("res://fidelity_overlay.gd")
 const References := preload("res://fidelity_references.gd")
 const RouteContract := preload("res://route_contract.gd")
 const Verify := preload("res://verify.gd")
 
 const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 const DEEP_REVIEW_SEEDS := [11, 42, 20260809]
-const SIDE_VIEW_KINDS := [
-	"hill", "immelmann", "loop", "cutback", "twisted_drop",
-	"dive", "wave_turn", "overbank", "turn",
-]
 ## The pinned pre-foundation legacy commit this baseline measures (plan Task 1, Step 0).
 const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
+const OVERLAY_MANIFEST_PATH := "res://../docs/evidence/fidelity/rfdb-local-overlay-manifest.json"
 
 var OUT: String = OS.get_environment("INSPECT_OUT") if OS.get_environment("INSPECT_OUT") != "" else OS.get_user_data_dir() + "/inspect"
 
@@ -49,26 +47,50 @@ func _audit() -> int:
 	if not _operational.is_empty():
 		return _fail()
 
-	_print_diagnostics(audit.routes_by_seed)
-	if not _operational.is_empty():
+	var seed_42_measurement: Dictionary = {}
+	for measurement: Dictionary in audit.measurements:
+		if measurement.get("seed") == 42: seed_42_measurement = measurement
+	var manifest_bytes := FileAccess.get_file_as_bytes(OVERLAY_MANIFEST_PATH)
+	var overlays := _build_overlays(manifest_bytes, func(name: String): return OS.get_environment(name),
+		seed_42_measurement, audit.routes_by_seed.get(42, {}), References.CATALOG.transforms,
+		Callable(Overlay, "build"))
+	if overlays.get("status") == "invalid-input":
+		for error in overlays.get("errors", ["overlay manifest is invalid"]):
+			_operational.append(str(error))
 		return _fail()
 	var report: Dictionary = Artifacts.build_report(
 		audit.measurements, audit.comparison, References.CATALOG,
-		LEGACY_BASE_COMMIT, audit.generation_counts
+		LEGACY_BASE_COMMIT, audit.generation_counts, true
 	)
 	if report.get("schema_version") != "ride-fidelity-audit@1":
 		for error in report.get("errors", ["artifact_report: the audit report was not built"]):
 			_operational.append(str(error))
 		return _fail()
-	for error in Artifacts.write_pack(OUT, report, audit.routes_by_seed):
+	for error in Artifacts.write_pack(OUT, report, audit.routes_by_seed, overlays):
 		_operational.append(str(error))
 	if not _operational.is_empty():
 		return _fail()
 
+	for line in _diagnostic_lines(report, OUT): print(line)
 	_print_findings(report)
 	print("AUDIT %d seeds, %d render requests, pack written to %s" % [
 		AUDIT_SEEDS.size(), report.render_requests.size(), OUT])
 	return 0
+
+
+static func _build_overlays(
+	manifest_bytes: PackedByteArray, environment_lookup: Callable,
+	measurement: Dictionary, route: Dictionary, transforms: Dictionary, overlay_build: Callable
+) -> Dictionary:
+	var parser := JSON.new()
+	if parser.parse(manifest_bytes.get_string_from_utf8()) != OK or not parser.data is Dictionary:
+		return {"status": "invalid-input", "errors": ["overlay manifest bytes are not JSON"]}
+	var parsed: Dictionary = parser.data
+	var local_files := {}
+	for pair in [["RFDB_4804_CSV", "rfdb-4804"], ["RFDB_6383_CSV", "rfdb-6383"]]:
+		var path: Variant = environment_lookup.call(pair[0])
+		if path is String and not path.is_empty(): local_files[pair[1]] = path
+	return overlay_build.call(parsed, manifest_bytes, local_files, measurement, route, transforms)
 
 
 ## The orchestration seam: every dependency is injected so the one-build-per-seed contract is
@@ -165,95 +187,18 @@ func _print_findings(report: Dictionary) -> void:
 	])
 
 
-func _print_diagnostics(routes_by_seed: Dictionary) -> void:
+static func _diagnostic_lines(report: Dictionary, output_dir: String) -> PackedStringArray:
+	var lines := PackedStringArray()
+	for summary: Dictionary in report.get("measurement_summaries", []):
+		if summary.get("seed") != 42: continue
+		for beat: Dictionary in summary.get("beats", []):
+			lines.append("BEAT %s %s %s" % [beat.get("beat_id", ""), beat.get("kind", ""),
+				str(beat.get("window_s", []))])
 	for seed_value in DEEP_REVIEW_SEEDS:
-		var deep: Dictionary = routes_by_seed[seed_value]
-		_render_channels(deep, "%s/channels_%d.png" % [OUT, seed_value])
-	var route: Dictionary = routes_by_seed[42]
-	_print_phases(route)
-	for g in _diagnostic_windows(route):
-		var kind: String = g.diagnostic_kind
-		var a: int = g.first
-		var b: int = g.last
-		var stats := _stats(route, a, b)
-		print("ELEM %-14s len %6.0f m  v %5.1f->%5.1f  pitch [%6.1f, %6.1f]  bank max %5.1f  nG [%5.2f, %5.2f]  W %5.0f H %5.0f  Rapex %5.0f Rvalley %5.0f" % [
-			kind, route.distances[b] - route.distances[a], route.speeds[a], route.speeds[b],
-			stats.min_pitch, stats.max_pitch, stats.max_bank, stats.min_n, stats.max_n,
-			stats.width, stats.height, stats.r_apex, stats.r_valley,
-		])
-		_save(Artifacts.side_image(route, a, b), "%s/%s_%d.png" % [OUT, kind, a])
-	_save(Artifacts.top_image(route), "%s/top.png" % OUT)
-	_save(Artifacts.elevation_image(route), "%s/elevation.png" % OUT)
-
-
-func _save(image: Image, path: String) -> void:
-	for error in Artifacts.save_png_checked(image, path):
-		_operational.append(str(error))
-
-
-static func _diagnostic_windows(route: Dictionary) -> Array:
-	var windows := []
-	for gesture in route.get("gesture_windows", []):
-		var has_shaping_role := false
-		for window in gesture.get("role_windows", []):
-			if window.get("diagnostic_kind", "") in SIDE_VIEW_KINDS:
-				windows.append(window)
-				has_shaping_role = true
-		if not has_shaping_role and gesture.get("diagnostic_kind", "") in SIDE_VIEW_KINDS:
-			windows.append(gesture)
-	return windows
-
-
-func _stats(route: Dictionary, a: int, b: int) -> Dictionary:
-	var min_pitch := INF
-	var max_pitch := -INF
-	var max_bank := 0.0
-	var min_n := INF
-	var max_n := -INF
-	var top := -INF
-	var bottom := INF
-	var apex := a
-	var valley := a
-	for i in range(a, b + 1):
-		var pitch := rad_to_deg(asin(clampf(route.tangents[i].y, -1.0, 1.0)))
-		min_pitch = minf(min_pitch, pitch)
-		max_pitch = maxf(max_pitch, pitch)
-		max_bank = maxf(max_bank, absf(route.banks[i]))
-		min_n = minf(min_n, route.normal_g[i])
-		max_n = maxf(max_n, route.normal_g[i])
-		if route.positions[i].y > top:
-			top = route.positions[i].y
-			apex = i
-		if route.positions[i].y < bottom:
-			bottom = route.positions[i].y
-			valley = i
-	var width: float = Vector2(route.positions[b].x - route.positions[a].x, route.positions[b].z - route.positions[a].z).length()
-	return {
-		"min_pitch": min_pitch, "max_pitch": max_pitch, "max_bank": max_bank,
-		"min_n": min_n, "max_n": max_n, "width": width, "height": top - bottom,
-		"r_apex": 1.0 / maxf(route.curvatures[apex].length(), 0.0001),
-		"r_valley": 1.0 / maxf(route.curvatures[valley].length(), 0.0001),
-	}
-
-
-## Stacked strips against ride time — the "ride it yourself" trace, now eleven channels deep.
-func _render_channels(route: Dictionary, path: String) -> void:
-	var rendered: Dictionary = Artifacts.channels(route)
-	_save(rendered.image, path)
-	for strip in rendered.strips:
-		print("CHANNEL %-30s [%10.3f, %10.3f] %4d bounded %4d unbounded" % [
-			strip.channel_id, strip.plot_min, strip.plot_max,
-			strip.bounded_count, strip.unbounded_count,
-		])
-
-
-func _print_phases(route: Dictionary) -> void:
-	for window in route.get("gesture_windows", []):
-		var first: int = window.first
-		var last: int = window.last
-		print("PHASE %-24s %-13s %6.0f m %6.1f s  v %5.1f -> %5.1f m/s" % [
-			window.display_name, window.story_slot_id,
-			route.distances[last] - route.distances[first],
-			route.times[last] - route.times[first],
-			route.speeds[first], route.speeds[last],
-		])
+		var path := "%s/review/seed-%d/channels.json" % [output_dir.rstrip("/"), seed_value]
+		var legend: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+		if not legend is Dictionary: continue
+		for strip: Dictionary in legend.get("strips", []):
+			lines.append("CHANNEL %d %s %s %s" % [seed_value, strip.get("channel_id", ""),
+				str(strip.get("plot_min", "")), str(strip.get("plot_max", ""))])
+	return lines

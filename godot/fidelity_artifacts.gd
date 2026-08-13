@@ -31,6 +31,13 @@ const _POV_FOV_DEG := 72.0
 const _POV_NEAR_M := 0.08
 const _POV_FAR_M := 5000.0
 const _POV_EYE_UP_M := 0.35
+const _OVERLAY_SIZE := Vector2i(1200, 900)
+const _OVERLAY_LEFT := 50
+const _OVERLAY_RIGHT := 1149
+const _OVERLAY_SOURCE_COLOR := Color(0.55, 0.95, 1.0)
+const _OVERLAY_TARGET_COLOR := Color(0.95, 0.75, 0.35)
+const _OVERLAY_GENERATED_COLOR := Color(0.95, 0.55, 0.95)
+const _OVERLAY_MARKER_COLOR := Color(0.75, 0.62, 0.25)
 
 const _DEEP_SEEDS := [11, 42, 20260809]
 const _COMPARISON_KEYS := ["fleet", "findings", "observed_only", "evidence_gaps", "recommendation"]
@@ -63,7 +70,8 @@ static func build_report(
 	comparison: Variant,
 	catalog: Variant,
 	legacy_base_commit: Variant,
-	generation_counts: Variant
+	generation_counts: Variant,
+	include_generated_povs: bool = false
 ) -> Dictionary:
 	var errors: Array[String] = []
 	_validate_base_commit(legacy_base_commit, errors)
@@ -86,7 +94,7 @@ static func build_report(
 		"schema_version": "fidelity-pov-map@1", "source_landmarks": catalog_context.source_landmarks,
 		"records": catalog_context.pov_records, "gaps": catalog_context.pov_gaps,
 	}
-	var render_requests := _render_requests(by_seed, pov_map, errors)
+	var render_requests := _render_requests(by_seed, pov_map, errors, include_generated_povs)
 	var catalog_text := _CANONICAL_DATA.canonical_json(catalog)
 	if catalog_text.is_empty():
 		errors.append("artifact_report: catalog canonical data is invalid")
@@ -539,7 +547,7 @@ static func _finite_number(value: Variant) -> bool:
 	return typeof(value) == TYPE_INT or (typeof(value) == TYPE_FLOAT and is_finite(float(value)))
 
 static func _render_requests(
-	by_seed: Dictionary, pov_map: Dictionary, errors: Array[String]
+	by_seed: Dictionary, pov_map: Dictionary, errors: Array[String], include_generated_povs: bool
 ) -> Array:
 	var candidates: Array[Dictionary] = []
 	for seed in _DEEP_SEEDS:
@@ -551,10 +559,21 @@ static func _render_requests(
 		for beat in seed_42.beats:
 			if beat.kind not in _SIDE_VIEW_KINDS:
 				continue
-			var path := "review/seed-42/elements/%s.png" % beat.beat_id.replace("/", "__")
+			var escaped: String = beat.beat_id.replace("/", "__")
+			var path := "review/seed-42/elements/%s.png" % escaped
 			candidates.append({
 				"path": path, "seed": 42, "artifact_kind": "element", "beat_id": beat.beat_id,
 			})
+			if include_generated_povs:
+				var centers: Array = beat.get("rows", []).filter(func(row: Dictionary):
+					return _finite_number(row.get("offset")) and is_zero_approx(float(row.offset)) \
+						and _finite_number(row.get("window_start_s")) \
+						and _finite_number(row.get("window_end_s")))
+				if centers.size() == 1:
+					candidates.append({"path": "review/seed-42/pov/%s.png" % escaped,
+						"seed": 42, "artifact_kind": "pov", "beat_id": beat.beat_id,
+						"generated_time_s": (float(centers[0].window_start_s)
+							+ float(centers[0].window_end_s)) * 0.5})
 	for record in pov_map.records:
 		var path: String = record.generated_pov_path
 		candidates.append({
@@ -995,12 +1014,16 @@ static func _draw_line(
 
 ## The whole checked pack: text, renders, sidecars, then the manifest from the reopened bytes.
 static func write_pack(
-	output_dir: String, report: Dictionary, routes_by_seed: Dictionary
+	output_dir: String, report: Dictionary, routes_by_seed: Dictionary, overlays: Dictionary = {}
 ) -> PackedStringArray:
 	var errors := PackedStringArray()
 	if report.get("schema_version") != "ride-fidelity-audit@1":
 		errors.append("artifact_write: input is not a completed ride-fidelity-audit@1 report")
 		return errors
+	if not overlays.is_empty():
+		errors = _validate_overlays_for_write(overlays)
+		if not errors.is_empty():
+			return errors
 	var root := output_dir.rstrip("/")
 	var records: Array = []
 	for case in [
@@ -1023,6 +1046,8 @@ static func write_pack(
 		beats[summary.seed] = by_id
 	for request in report.render_requests:
 		_write_render(root, request, routes_by_seed, beats, records, errors)
+	if not overlays.is_empty():
+		_write_overlays(root, overlays, records, errors)
 	var files := _manifest_files(root, records, errors)
 	if not errors.is_empty():
 		return errors
@@ -1032,6 +1057,182 @@ static func write_pack(
 	})))
 	return errors
 
+
+static func _validate_overlays_for_write(overlays: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	if overlays.get("schema_version") != "fidelity-semantic-overlays@1": errors.append("artifact_write: overlay schema_version is invalid")
+	if overlays.get("status") != "ok": errors.append("artifact_write: overlay status is invalid")
+	if not _lower_hex(overlays.get("manifest_sha256"), 64): errors.append("artifact_write: overlay manifest_sha256 is invalid")
+	for key in ["recordings", "comparisons", "gaps", "errors"]:
+		if not overlays.get(key) is Array: errors.append("artifact_write: overlay %s must be an Array" % key)
+	if overlays.get("comparisons") is Array:
+		var ids := {}
+		for index in overlays.comparisons.size():
+			var value: Variant = overlays.comparisons[index]
+			if value is Dictionary: _validate_overlay_comparison(value, index, ids, errors)
+			else: errors.append("artifact_write: overlay comparison %d must be a Dictionary" % index)
+	if canonical_json(overlays).is_empty(): errors.append("artifact_write: overlay projection is not canonical JSON data")
+	errors.sort(); return errors
+static func _validate_overlay_comparison(comparison: Dictionary, index: int,
+	ids: Dictionary, errors: PackedStringArray) -> void:
+	var label := "comparison %d" % index; var id: Variant = comparison.get("comparison_id")
+	if not _lower_slug(id): errors.append("artifact_write: overlay %s comparison_id is invalid" % label)
+	elif ids.has(id): errors.append("artifact_write: overlay comparison_id '%s' is duplicated" % id)
+	else: ids[id] = true
+	if comparison.get("artifact_path") != "review/overlays/%s.png" % str(id): errors.append("artifact_write: overlay %s artifact_path is invalid" % label)
+	for key in ["source", "generated"]:
+		if not comparison.get(key) is Dictionary: errors.append("artifact_write: overlay %s %s must be a Dictionary" % [label, key])
+	for key in ["lanes", "markers", "caveats"]:
+		if not comparison.get(key) is Array: errors.append("artifact_write: overlay %s %s must be an Array" % [label, key])
+	if not comparison.get("source") is Dictionary or not comparison.get("generated") is Dictionary: return
+	var source: Dictionary = comparison.source; var generated: Dictionary = comparison.generated
+	_validate_overlay_side(source, true, label, errors); _validate_overlay_side(generated, false, label, errors)
+	if comparison.get("lanes") is Array: _validate_overlay_lanes(comparison.lanes, source, generated, label, errors)
+	if comparison.get("markers") is Array: _validate_overlay_markers(comparison.markers, source.get("window_s"), label, errors)
+	if comparison.get("caveats") is Array:
+		for caveat in comparison.caveats:
+			if not caveat is String: errors.append("artifact_write: overlay %s caveat must be a String" % label)
+static func _validate_overlay_side(side: Dictionary, source_side: bool,
+	label: String, errors: PackedStringArray) -> void:
+	var name := "source" if source_side else "generated"
+	var unavailable := "source_trace_unavailable" if source_side else "generated_window_unavailable"
+	var status: Variant = side.get("status")
+	if status not in ["available", unavailable]: errors.append("artifact_write: overlay %s %s status is invalid" % [label, name])
+	if side.get("clock") != ("source-local-seconds" if source_side else "generated-route-seconds"): errors.append("artifact_write: overlay %s %s clock is invalid" % [label, name])
+	var count: Variant = side.get("sample_count")
+	if typeof(count) != TYPE_INT or int(count) < 0: errors.append("artifact_write: overlay %s %s sample_count is invalid" % [label, name])
+	if not source_side and status == unavailable:
+		if side.get("window_s") != null or side.get("duration_s") != null or count != 0: errors.append("artifact_write: overlay %s unavailable generated side has a window" % label)
+		return
+	var window: Variant = side.get("window_s")
+	if not _native_window(window):
+		errors.append("artifact_write: overlay %s %s window_s is invalid" % [label, name]); return
+	if not _finite_number(side.get("duration_s")) or not is_equal_approx(float(side.duration_s), float(window[1]) - float(window[0])): errors.append("artifact_write: overlay %s %s duration_s is invalid" % [label, name])
+static func _validate_overlay_lanes(lanes: Array, source: Dictionary, generated: Dictionary,
+	label: String, errors: PackedStringArray) -> void:
+	var by_role := {}
+	for index in lanes.size():
+		var value: Variant = lanes[index]
+		if not value is Dictionary:
+			errors.append("artifact_write: overlay %s lane %d must be a Dictionary" % [label, index]); continue
+		var lane: Dictionary = value; var role: Variant = lane.get("role")
+		if role not in ["source_observed_raw", "source_observed_smoothed", "approved_scaled_target", "generated_raw"] or by_role.has(role):
+			errors.append("artifact_write: overlay %s lane role is missing, duplicated, or invalid" % label); continue
+		by_role[role] = lane
+		if not lane.get("status") is String: errors.append("artifact_write: overlay %s lane '%s' status must be a String" % [label, role])
+		if not lane.get("samples") is Array: errors.append("artifact_write: overlay %s lane '%s' samples must be an Array" % [label, role])
+	for role in ["source_observed_raw", "source_observed_smoothed", "approved_scaled_target", "generated_raw"]:
+		if not by_role.has(role): errors.append("artifact_write: overlay %s lane '%s' is missing" % [label, role])
+	if by_role.size() != 4: return
+	if by_role.source_observed_raw.get("status") != "evidence_gap" or by_role.source_observed_raw.get("samples") != []: errors.append("artifact_write: overlay %s source_observed_raw must be an empty evidence gap" % label)
+	for role in ["source_observed_smoothed", "approved_scaled_target"]:
+		var lane: Dictionary = by_role[role]
+		if lane.get("clock") != "source" or lane.get("status") != source.get("status"): errors.append("artifact_write: overlay %s lane '%s' disagrees with source" % [label, role])
+		if source.get("status") != "available" and lane.get("samples") is Array and not lane.samples.is_empty(): errors.append("artifact_write: overlay %s unavailable source lane is not empty" % label)
+	var observed: Dictionary = by_role.source_observed_smoothed; var generated_lane: Dictionary = by_role.generated_raw
+	if generated_lane.get("clock") != "generated" or generated_lane.get("status") != generated.get("status"): errors.append("artifact_write: overlay %s generated lane disagrees with generated side" % label)
+	if generated.get("status") != "available" and generated_lane.get("samples") is Array and not generated_lane.samples.is_empty(): errors.append("artifact_write: overlay %s unavailable generated lane is not empty" % label)
+	if observed.get("samples") is Array and typeof(source.get("sample_count")) == TYPE_INT and observed.samples.size() != source.sample_count: errors.append("artifact_write: overlay %s source sample_count disagrees with lane" % label)
+	if generated_lane.get("samples") is Array and typeof(generated.get("sample_count")) == TYPE_INT and generated_lane.samples.size() != generated.sample_count: errors.append("artifact_write: overlay %s generated sample_count disagrees with lane" % label)
+	_validate_overlay_samples(observed, source.get("window_s"), false, label, errors)
+	_validate_overlay_samples(by_role.approved_scaled_target, source.get("window_s"), true, label, errors)
+	_validate_overlay_samples(generated_lane, generated.get("window_s"), false, label, errors)
+static func _validate_overlay_samples(lane: Dictionary, window: Variant, allow_null_axes: bool,
+	label: String, errors: PackedStringArray) -> void:
+	if not lane.get("samples") is Array: return
+	var previous := -INF
+	for index in lane.samples.size():
+		var value: Variant = lane.samples[index]
+		if not value is Dictionary:
+			errors.append("artifact_write: overlay %s lane sample %d must be a Dictionary" % [label, index]); continue
+		var sample: Dictionary = value; var time: Variant = sample.get("time_s")
+		if not _finite_number(time) or float(time) <= previous: errors.append("artifact_write: overlay %s lane sample time is invalid" % label)
+		else:
+			previous = float(time)
+			if _native_window(window) and (float(time) < float(window[0]) or float(time) > float(window[1])): errors.append("artifact_write: overlay %s lane sample time is outside its native window" % label)
+		if typeof(sample.get("eligible")) != TYPE_BOOL: errors.append("artifact_write: overlay %s lane sample eligible must be Boolean" % label)
+		for axis in ["normal_g", "lateral_g", "longitudinal_g"]:
+			var axis_value: Variant = sample.get(axis)
+			if not _finite_number(axis_value) and not (allow_null_axes and axis_value == null): errors.append("artifact_write: overlay %s lane sample %s is invalid" % [label, axis])
+static func _validate_overlay_markers(markers: Array, window: Variant,
+	label: String, errors: PackedStringArray) -> void:
+	for index in markers.size():
+		var value: Variant = markers[index]
+		if not value is Dictionary:
+			errors.append("artifact_write: overlay %s marker %d must be a Dictionary" % [label, index]); continue
+		var marker: Dictionary = value; var time: Variant = marker.get("time_s")
+		if not _lower_slug(marker.get("id")) or not _finite_number(time) or not _finite_number(marker.get("uncertainty_s")) or float(marker.get("uncertainty_s", 0.0)) <= 0.0: errors.append("artifact_write: overlay %s marker %d is invalid" % [label, index])
+		elif _native_window(window) and (float(time) < float(window[0]) or float(time) > float(window[1]) or (float(time) == float(window[1]) and marker.get("id") != "exit")): errors.append("artifact_write: overlay %s marker %d is outside source window" % [label, index])
+
+static func _native_window(value: Variant) -> bool:
+	return value is Array and value.size() == 2 and _finite_number(value[0]) and _finite_number(value[1]) and float(value[0]) < float(value[1])
+static func _lower_slug(value: Variant) -> bool:
+	if not value is String or value.is_empty(): return false
+	for character in value:
+		if character not in "abcdefghijklmnopqrstuvwxyz0123456789-": return false
+	return true
+static func _lower_hex(value: Variant, length: int) -> bool:
+	if not value is String or value.length() != length: return false
+	for character in value:
+		if character not in "0123456789abcdef": return false
+	return true
+
+static func _write_overlays(root: String, overlays: Dictionary,
+	records: Array, errors: PackedStringArray) -> void:
+	var json := canonical_json(overlays)
+	_write(root, "review/overlays/index.json", "telemetry-overlay", json, null, null, records, errors)
+	_write(root, "review/overlays/index.md", "telemetry-overlay", "# Semantic telemetry overlays\n\n%s" % json, null, null, records, errors)
+	var comparisons: Array = overlays.comparisons.duplicate(true)
+	comparisons.sort_custom(func(a: Dictionary, b: Dictionary): return a.comparison_id < b.comparison_id)
+	for comparison: Dictionary in comparisons: _write(root, comparison.artifact_path, "telemetry-overlay", _overlay_image(comparison), null, comparison.comparison_id, records, errors)
+
+static func _overlay_image(comparison: Dictionary) -> Image:
+	var image := Image.create(_OVERLAY_SIZE.x, _OVERLAY_SIZE.y, false, Image.FORMAT_RGB8); image.fill(Color(0.09, 0.10, 0.12))
+	var by_role := {}
+	for lane: Dictionary in comparison.lanes: by_role[lane.role] = lane
+	for axis_index in 3:
+		var axis: String = ["normal_g", "lateral_g", "longitudinal_g"][axis_index]
+		var source_rect := Rect2i(_OVERLAY_LEFT, axis_index * 300 + 20, _OVERLAY_RIGHT - _OVERLAY_LEFT + 1, 110)
+		var generated_rect := Rect2i(_OVERLAY_LEFT, axis_index * 300 + 160, _OVERLAY_RIGHT - _OVERLAY_LEFT + 1, 110)
+		_overlay_frame(image, source_rect); _overlay_frame(image, generated_rect)
+		var extent := _overlay_extent(axis, [by_role.source_observed_smoothed, by_role.approved_scaled_target, by_role.generated_raw])
+		if comparison.source.status != "source_trace_unavailable":
+			_overlay_lane(image, by_role.source_observed_smoothed, axis, comparison.source.window_s, extent, source_rect, _OVERLAY_SOURCE_COLOR)
+			_overlay_lane(image, by_role.approved_scaled_target, axis, comparison.source.window_s, extent, source_rect, _OVERLAY_TARGET_COLOR)
+		for marker: Dictionary in comparison.markers:
+			var marker_x := _overlay_x(marker.time_s, comparison.source.window_s, source_rect)
+			_draw_line(image, Vector2(marker_x, source_rect.position.y), Vector2(marker_x, source_rect.end.y - 1), _OVERLAY_MARKER_COLOR, source_rect)
+		if comparison.generated.status == "available": _overlay_lane(image, by_role.generated_raw, axis, comparison.generated.window_s, extent, generated_rect, _OVERLAY_GENERATED_COLOR)
+	return image
+
+static func _overlay_frame(image: Image, rect: Rect2i) -> void:
+	var color := Color(0.25, 0.27, 0.30)
+	_draw_line(image, rect.position, Vector2(rect.end.x - 1, rect.position.y), color, rect)
+	_draw_line(image, Vector2(rect.position.x, rect.end.y - 1), Vector2(rect.end.x - 1, rect.end.y - 1), color, rect)
+	_draw_line(image, rect.position, Vector2(rect.position.x, rect.end.y - 1), color, rect)
+	_draw_line(image, Vector2(rect.end.x - 1, rect.position.y), Vector2(rect.end.x - 1, rect.end.y - 1), color, rect)
+
+static func _overlay_extent(axis: String, lanes: Array) -> Vector2:
+	var low := INF; var high := -INF
+	for lane: Dictionary in lanes:
+		for sample: Dictionary in lane.samples:
+			var value: Variant = sample.get(axis)
+			if _finite_number(value): low = minf(low, float(value)); high = maxf(high, float(value))
+	if low == INF: return Vector2(-1.0, 1.0)
+	if low == high: return Vector2(low - 1.0, high + 1.0)
+	return Vector2(low, high)
+
+static func _overlay_lane(image: Image, lane: Dictionary, axis: String, window: Array,
+	extent: Vector2, rect: Rect2i, color: Color) -> void:
+	for index in range(1, lane.samples.size()):
+		var first: Dictionary = lane.samples[index - 1]; var second: Dictionary = lane.samples[index]
+		if not first.eligible or not second.eligible or first.get(axis) == null or second.get(axis) == null: continue
+		_draw_line(image, _overlay_point(first.time_s, first[axis], window, extent, rect), _overlay_point(second.time_s, second[axis], window, extent, rect), color, rect)
+
+static func _overlay_point(time: float, value: float, window: Array, extent: Vector2, rect: Rect2i) -> Vector2:
+	return Vector2(_overlay_x(time, window, rect), rect.end.y - 1 - (value - extent.x) / (extent.y - extent.x) * (rect.size.y - 1))
+static func _overlay_x(time: float, window: Array, rect: Rect2i) -> float:
+	return rect.position.x + (time - float(window[0])) / (float(window[1]) - float(window[0])) * (rect.size.x - 1)
 
 static func _write_render(
 	root: String, request: Dictionary, routes_by_seed: Dictionary,

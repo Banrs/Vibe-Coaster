@@ -44,6 +44,7 @@ func _initialize() -> void:
 	_test_capture_accepts_varied_station_frames()
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
+	_test_return_solver_adapts_to_feasible_handoffs()
 	_test_station_local_program_compiles()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
@@ -147,6 +148,103 @@ func _test_material_return_recipe() -> void:
 		"the return exposes exactly four ordered nonempty semantic roles")
 
 
+func _test_return_solver_adapts_to_feasible_handoffs() -> void:
+	var base := {
+		"position_m": Vector3(844.369464944128, -5.006090912346134, 1311.4203429677661),
+		"tangent": Vector3(-0.9675566026121128, 0.010190671997396466,
+			-0.25244874914712345),
+		"rider_up": Vector3(0.011018528510904757, 0.9999375534933078,
+			-0.0018657822146380576),
+		"speed_mps": 89.76534842050937,
+		"distance_m": 5900.350002256666,
+		"time_s": 107.35488729028559,
+	}
+	var fixtures := [
+		{"id": "speed-minus-1", "speed_mps": 88.76534842050937},
+		{"id": "height-minus-10", "position_m": Vector3(
+			844.369464944128, -15.006090912346135, 1311.4203429677661)},
+		{"id": "heading-plus-0.5",
+			"tangent": Vector3(-0.9653167580504922, 0.010190671997396466,
+				-0.26088255371168273),
+			"rider_up": Vector3(0.011034390773829993, 0.9999375534933078,
+				-0.001769557591178146)},
+	]
+	var target := [-413.8176585379036, 3.542414464340024, -0.9589346302880815,
+		0.01954530591190462, -0.004588670638026367, 0.04616595364095083]
+	var output_scales: Array = RideProgram.RETURN_OUTPUT_SCALES
+	var parameter_bounds: Array = RideProgram.RETURN_PARAMETER_BOUNDS
+	var output_bounds: Array = RideProgram.RETURN_OUTPUT_BOUNDS
+	for fixture: Dictionary in fixtures:
+		var start: Dictionary = base.duplicate(true)
+		for field in fixture:
+			if field != "id":
+				start[field] = fixture[field]
+		var solved := RideProgram._solve_return(start, _layout())
+		if not _expect(solved.get("ok", false),
+				"the return solver accepts the feasible %s handoff: %s" % [fixture.id, solved]):
+			continue
+		var values: Variant = solved.get("parameters")
+		if not _expect(values is Array and values.size() == 6,
+				"the %s handoff returns all six parameters" % fixture.id):
+			continue
+		var maximum_seed_displacement := 0.0
+		for index in 6:
+			var half_range: float = 0.5 * (parameter_bounds[index][1] - parameter_bounds[index][0])
+			maximum_seed_displacement = maxf(maximum_seed_displacement,
+				absf(float(values[index]) - float(RideProgram.RETURN_SEED[index])) / half_range)
+			_expect(_finite_number(values[index]) and values[index] > parameter_bounds[index][0] \
+				and values[index] < parameter_bounds[index][1],
+				"the %s handoff parameter %d is finite and strictly in bounds" % [fixture.id, index])
+		_expect(maximum_seed_displacement > 0.01,
+			"the %s handoff materially adapts away from the return seed" % fixture.id)
+		var report: Dictionary = solved.get("report", {})
+		_expect(int(report.get("unique_evaluations", -1)) > 8 \
+			and int(report.get("unique_evaluations", 25)) <= 24,
+			"the %s handoff uses the bounded adaptive evaluation budget" % fixture.id)
+		_expect(_conditioning_matches_accepted_point(report, "accepted_values") \
+			and report.get("accepted_values") == values,
+			"the %s handoff conditions the accepted vector" % fixture.id)
+		for step_s in [0.05, 0.025]:
+			var route := Motion.integrate(start, RideProgram._return_spans(values),
+				RideProgram._settings(step_s))
+			if not _expect(route.get("ok", false),
+					"the accepted %s return independently integrates at %.3f s" % [fixture.id, step_s]):
+				continue
+			var actual := _station_local_return_outputs(route, _layout())
+			for index in 6:
+				_expect(_finite_number(actual[index]) and actual[index] >= output_bounds[index][0] \
+					and actual[index] <= output_bounds[index][1],
+					"the accepted %s return output %d is finite and in the basin at %.3f s" \
+					% [fixture.id, index, step_s])
+			if step_s == 0.05:
+				var normalized_error := 0.0
+				for index in 6:
+					var error: float = float(actual[index]) - float(target[index])
+					if index >= 3:
+						error = wrapf(error, -PI, PI)
+					normalized_error = maxf(normalized_error, absf(error) / output_scales[index])
+				_expect(normalized_error <= 0.02,
+					"the %s handoff steers its coarse observation to the fixed target" % fixture.id)
+
+
+func _station_local_return_outputs(route: Dictionary, layout: Dictionary) -> Array:
+	var forward: Vector3 = layout.station_tangent.normalized()
+	var up: Vector3 = layout.station_up.normalized()
+	var right := forward.cross(up).normalized()
+	up = right.cross(forward).normalized()
+	var position: Vector3 = route.position_m[-1]
+	var tangent: Vector3 = route.tangent[-1]
+	var rider_up: Vector3 = route.rider_up[-1]
+	var reference_up := (up - tangent * up.dot(tangent)).normalized()
+	var actual_up := (rider_up - tangent * rider_up.dot(tangent)).normalized()
+	return [(position - layout.station_position_m).dot(forward),
+		(position - layout.station_position_m).dot(up),
+		(position - layout.station_position_m).dot(right),
+		atan2(tangent.dot(right), tangent.dot(forward)),
+		asin(clampf(tangent.dot(up), -1.0, 1.0)),
+		atan2(tangent.dot(reference_up.cross(actual_up)), reference_up.dot(actual_up))]
+
+
 func _test_station_local_program_compiles() -> void:
 	var compiled := _compile(_layout())
 	_expect(_landmark_report_is_physical(compiled, _layout()),
@@ -162,7 +260,8 @@ func _test_station_local_program_compiles() -> void:
 	_expect(_return_is_passive_and_material(compiled, _layout()),
 		"the integrated return meets every public materiality and passivity threshold")
 	var return_plan: Dictionary = compiled.get("return_plan", {})
-	_expect(return_plan.get("unique_evaluations", -1) == 8 \
+	_expect(return_plan.get("unique_evaluations", -1) > 8 \
+		and return_plan.get("unique_evaluations", 25) <= 24 \
 		and return_plan.get("max_unique_evaluations", -1) == 24 \
 		and _conditioning_matches_accepted_point(return_plan, "accepted_values"),
 		"the return publishes bounded conditioning tied to its accepted vector")

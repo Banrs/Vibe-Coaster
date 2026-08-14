@@ -88,8 +88,9 @@ Seeds 11, 42 and 20260809 are the deep-review seeds whose routes are retained fo
 Output contract, all paths relative to `INSPECT_OUT`:
 
 - `audit.json` / `audit.md` — the canonical report: identity and pinned legacy base commit,
-  fleet, per-seed measurement summaries, findings, observed-only rows, evidence gaps,
-  recommendation, evidence snapshot, POV map, checklist, issue coverage.
+  fleet, per-seed measurement summaries, findings, observed-only rows, comparison evidence gaps,
+  the catalog's declared evidence gaps, recommendation, evidence snapshot, POV map, checklist,
+  issue coverage.
 - `manifest.json` — `fidelity-artifact-manifest@1`: `generation_counts` plus one record per
   written file with byte size, SHA-256, kind, seed, beat, and PNG dimensions.
 - `review/pov-map.{json,md}`, `review/checklist.md`, `review/issue-coverage.{json,md}` — the
@@ -125,7 +126,9 @@ never something that fails the command.
 source, and empty `selectors`, `observations` and `targets`, so the audit emits zero findings,
 zero observed-only rows, zero evidence gaps in the comparison, and the
 recommendation `no-eligible-finding`. That is the contracted output for an empty eligible set.
-It means *no evidence was eligible to compare against*, not *the ride passed*. The gate is real
+It means *no evidence was eligible to compare against*, not *the ride passed*. The separate
+`catalog_evidence_gaps` list is never empty for that reason: it publishes the five gaps the
+committed catalog declares, and it is the honest reading of an empty comparison. The gate is real
 and deterministic; the evidence band is empty until a source is promoted to `executable`
 through the review process in `docs/evidence/fidelity/catalog-review.md`.
 Local RFDB overlays and their scaled lanes cannot promote a source, create catalog selectors,

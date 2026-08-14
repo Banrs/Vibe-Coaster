@@ -115,6 +115,7 @@ static func build_report(
 		"fleet": comparison_projection.fleet, "generation_counts": counts_projection,
 		"measurement_summaries": summaries, "findings": comparison_projection.findings,
 		"observed_only": comparison_projection.observed_only, "evidence_gaps": comparison_projection.evidence_gaps,
+		"catalog_evidence_gaps": catalog_context.catalog_evidence_gaps,
 		"recommendation": comparison_projection.recommendation, "evidence_snapshot": catalog_context.evidence_snapshot,
 		"pov_map": pov_map, "checklist": catalog_context.checklist, "issue_coverage": catalog_context.issue_coverage,
 		"render_requests": render_requests,
@@ -323,7 +324,7 @@ static func _catalog_context(
 		},
 		"evidence_snapshot": [], "source_landmarks": [], "source_times": {},
 		"unaligned_candidates": {}, "pov_records": [], "pov_gaps": [],
-		"checklist": [], "issue_coverage": {},
+		"checklist": [], "issue_coverage": {}, "catalog_evidence_gaps": [],
 	}
 	var checklist_rows := {}
 	for spec in _CHECKLIST_SPECS:
@@ -422,12 +423,19 @@ static func _catalog_context(
 			record.linked_evidence_ids.append_array([prompt.id] + source_ids)
 			record.generated_artifact_paths.append("review/seed-42/channels.png")
 
+	## A declared gap is published whatever else covers its issues: a measured target or a review
+	## prompt narrows a gap, it does not retire the catalogued statement that no band exists.
 	for gap_value in catalog.evidence_gaps:
 		var gap: Dictionary = gap_value
+		context.catalog_evidence_gaps.append({
+			"id": gap.id, "description": gap.description,
+			"source_ids": gap.source_ids.duplicate(true), "issues": gap.issues.duplicate(true),
+		})
 		for issue_id in gap.issues:
 			var record: Dictionary = coverage_records[issue_id - 1]
-			if record.state == "evidence-gap":
-				record.linked_evidence_ids.append(gap.id)
+			record.linked_evidence_ids.append(gap.id)
+	context.catalog_evidence_gaps.sort_custom(
+		func(a: Dictionary, b: Dictionary) -> bool: return a.id < b.id)
 
 	for spec in _CHECKLIST_SPECS:
 		var rows: Array = checklist_rows[spec[0]]
@@ -664,6 +672,13 @@ static func markdown(report: Dictionary) -> String:
 	for gap in report.evidence_gaps:
 		lines.append(_markdown_row([
 			gap.get("target_id", ""), gap.get("seed", ""), gap.get("reason", ""),
+		]))
+	lines.append_array(["", "## Catalog evidence gaps", "| gap | issues | sources | description |",
+		"| --- | --- | --- | --- |"])
+	for gap in report.catalog_evidence_gaps:
+		lines.append(_markdown_row([
+			gap.id, ", ".join(PackedStringArray(gap.issues.map(func(issue): return str(issue)))),
+			", ".join(PackedStringArray(gap.source_ids)), gap.description,
 		]))
 	lines.append_array(["", "## Recommendation"])
 	var recommendation: Dictionary = report.recommendation

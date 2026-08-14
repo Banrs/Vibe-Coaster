@@ -36,6 +36,7 @@ static func run() -> PackedStringArray:
 	_test_successful_report(artifacts, errors)
 	_test_invalid_inputs(artifacts, errors)
 	_test_committed_catalog(artifacts, references, errors)
+	_test_catalog_evidence_gaps_are_published(artifacts, references, errors)
 	_test_element_render_request_filter(artifacts, errors)
 	_test_center_row_alignment_selectors(artifacts, errors)
 	_test_compiled_anchor_identity(artifacts, errors)
@@ -1021,6 +1022,41 @@ static func _test_committed_catalog(
 		"committed unaligned catalog produces no POV PNG requests")
 
 
+## A catalogued evidence gap is the audit's most load-bearing negative claim. The comparison gap
+## list is empty by contract while no source is executable, so a report that publishes only that
+## list reads to a reviewer as "no gap" while the catalog declares five.
+static func _test_catalog_evidence_gaps_are_published(
+	artifacts: Script, references: Script, errors: PackedStringArray
+) -> void:
+	var fixture := _valid_fixture()
+	fixture.catalog = references.CATALOG
+	fixture.comparison = {
+		"fleet": [11, 42, 20260809, 1], "findings": [], "observed_only": [],
+		"evidence_gaps": [], "recommendation": {"status": "no-eligible-finding"},
+	}
+	var report: Dictionary = _build(artifacts, fixture)
+	var declared: Array = fixture.catalog.evidence_gaps
+	_expect(errors, not declared.is_empty(), "the committed catalog declares evidence gaps")
+	var expected := []
+	for gap in declared:
+		expected.append({
+			"id": gap.id, "description": gap.description,
+			"source_ids": gap.source_ids.duplicate(), "issues": gap.issues.duplicate(),
+		})
+	expected.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return str(a.id) < str(b.id))
+	_expect(errors, report.get("catalog_evidence_gaps", []) == expected,
+		"the catalog's declared evidence gaps are published in the report, sorted by id")
+	var markdown: String = artifacts.markdown(report)
+	var records: Array = report.get("issue_coverage", {}).get("records", [])
+	for gap in declared:
+		_expect(errors, markdown.contains(str(gap.id)) and markdown.contains(str(gap.description)),
+			"declared gap %s reaches the Markdown projection" % gap.id)
+		for issue_id in gap.issues:
+			var record: Dictionary = records[int(issue_id) - 1]
+			_expect(errors, str(gap.id) in record.linked_evidence_ids,
+				"issue %d links its declaring gap %s" % [int(issue_id), gap.id])
+
+
 static func _test_element_render_request_filter(artifacts: Script, errors: PackedStringArray) -> void:
 	var fixture := _valid_fixture()
 	for kind in ["hill", "immelmann", "cutback", "twisted_drop", "dive", "wave_turn",
@@ -1284,6 +1320,10 @@ static func _expected_report() -> Dictionary:
 		"findings": [{"target_id": "target.load", "metric": "normal_peak_positive"}],
 		"observed_only": [{"observation_id": "obs.point", "seed": 42, "value": 1.5}],
 		"evidence_gaps": [{"target_id": "target.load", "seed": 1, "reason": "row-not-found"}],
+		"catalog_evidence_gaps": [{
+			"id": "gap.unmeasured", "description": "No executable evidence.",
+			"source_ids": ["youtube.unaligned"], "issues": [7, 8, 9, 10, 11, 12, 13, 15],
+		}],
 		"recommendation": {"status": "recommended", "target_id": "target.load"},
 		"evidence_snapshot": [
 			{
@@ -1398,6 +1438,10 @@ static func _expected_issue(issue_id: int) -> Dictionary:
 		state = "review-prompt"
 		evidence = [PROMPT_FOR_ISSUE[issue_id], "source.raw"]
 		artifacts = ["review/seed-42/channels.png"]
+	## The fixture gap declares these issues; the declaration survives whatever else covers them.
+	if state != "evidence-gap" and issue_id in [7, 8, 9, 10, 11, 12, 13, 15]:
+		evidence = (evidence + ["gap.unmeasured"])
+		evidence.sort()
 	return {
 		"issue_id": issue_id, "issue_text": ISSUE_TEXT.get(issue_id, "Issue %d" % issue_id),
 		"linked_measurement_ids": measurements, "linked_target_ids": targets,
@@ -1472,6 +1516,11 @@ Catalog: test (schema 2, valid)
 | --- | ---: | --- |
 | target.load | 1 | row-not-found |
 
+## Catalog evidence gaps
+| gap | issues | sources | description |
+| --- | --- | --- | --- |
+| gap.unmeasured | 7, 8, 9, 10, 11, 12, 13, 15 | youtube.unaligned | No executable evidence. |
+
 ## Recommendation
 recommended: target.load
 
@@ -1511,13 +1560,13 @@ Gap: youtube.unaligned — alignment-not-present (video.crest)
 | 6 | Issue 6 | review-prompt |  | prompt.support, source.raw | review/seed-42/channels.png |
 | 7 | Issue 7 | evidence-gap |  | gap.unmeasured |  |
 | 8 | Issue 8 | evidence-gap |  | gap.unmeasured |  |
-| 9 | Entry-launch speed | measured | target.load | obs.window, source.raw | review/seed-42/channels.png |
+| 9 | Entry-launch speed | measured | target.load | gap.unmeasured, obs.window, source.raw | review/seed-42/channels.png |
 | 10 | Issue 10 | evidence-gap |  | gap.unmeasured |  |
 | 11 | Issue 11 | evidence-gap |  | gap.unmeasured |  |
-| 12 | Flats | review-prompt |  | prompt.terrain, source.raw | review/seed-42/channels.png |
+| 12 | Flats | review-prompt |  | gap.unmeasured, prompt.terrain, source.raw | review/seed-42/channels.png |
 | 13 | Issue 13 | evidence-gap |  | gap.unmeasured |  |
 | 14 | Multidimensional scaling | review-prompt |  | prompt.shaping, source.raw | review/seed-42/channels.png |
-| 15 | Transition jerk | review-prompt |  | prompt.feel, source.raw | review/seed-42/channels.png |
+| 15 | Transition jerk | review-prompt |  | gap.unmeasured, prompt.feel, source.raw | review/seed-42/channels.png |
 | 16 | Issue 16 | review-prompt |  | prompt.support, source.raw | review/seed-42/channels.png |
 
 ## Render requests

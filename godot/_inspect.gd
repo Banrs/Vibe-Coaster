@@ -202,8 +202,8 @@ func _print_findings(report: Dictionary) -> void:
 		])
 	for status in by_status.keys():
 		print("FINDINGS %-14s %d" % [status, by_status[status]])
-	print("EVIDENCE gaps %d  observed-only samples %d  recommendation %s" % [
-		report.evidence_gaps.size(), report.observed_only.size(),
+	print("EVIDENCE comparison gaps %d  catalogued gaps %d  observed-only samples %d  recommendation %s" % [
+		report.evidence_gaps.size(), report.catalog_evidence_gaps.size(), report.observed_only.size(),
 		report.recommendation.get("status", "none"),
 	])
 

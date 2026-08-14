@@ -14,11 +14,12 @@ inspection layer (placeholder train, simple track and pillars).
 - Records chased honestly: ~340 km/h via a downhill tunnel launch, a ~250 m camelback
   (structure above its valley), a ~90° cliff dive down ~0.8× the escarpment relief, a
   80–100 m Immelmann (tallest-inversion class), a helical-leg vertical loop, a cutback,
-  9–10 km of track.
-- Falcon's Flight's skeleton in five cohesive gestures — twisted side-drop into one flowing
-  low act, a boosted-then-coasting decelerating cliff climb, one crest hold with an
+  7.8–8.2 km of track.
+- Falcon's Flight's skeleton expressed as twenty ordered material roles — twisted side-drop
+  into one flowing low act, a boosted-then-coasting decelerating cliff climb, one crest hold with an
   outward-banked rim turn, a monotonic 90° dive into the tunnel launch and camelback, and a
-  single sweeping return arc home — with Tormenta's inversion act grafted where its physics
+  force-authored return home with two overbanked turns and two height/airtime beats — with
+  Tormenta's inversion act grafted where its physics
   belongs (act one, at 42–50 m/s). No lifts: a ~4 g air-powered entry launch plus two 
   ~2 g LSM boosters (one of them the record launch).
 - Exactly three boost zones, no mid-course brake, one continuous energy arc after the tunnel
@@ -52,8 +53,8 @@ godot --headless --path godot --editor --quit
 godot --headless --path godot --script res://smoke.gd
 ```
 
-The smoke gate self-tests the verification toolkit against synthetic signals, probes every
-element template against its closure contract, runs both focused fidelity suites, and builds
+The smoke gate self-tests the verification toolkit against synthetic signals, runs both focused
+fidelity suites, and builds
 multiple seeds twice — identical output, all checks green, on CI's ubuntu baseline as the
 performance floor.
 
@@ -70,6 +71,10 @@ INSPECT_OUT=out/fidelity-baseline-a godot --headless --path godot --script res:/
 offline — no network client exists anywhere in `godot/`, and the only URLs in the tree are
 inert provenance strings in `fidelity_references.gd` and the committed evidence records under
 `docs/evidence/fidelity/`.
+
+Optional local RideForcesDB exports can be supplied with `RFDB_4804_CSV` and
+`RFDB_6383_CSV`. Either variable enables the diagnostic overlay pack; an omitted recording is
+reported as an evidence gap rather than fetched or inferred.
 
 The fleet is fixed and its order is part of the contract, never sorted:
 
@@ -95,14 +100,17 @@ Output contract, all paths relative to `INSPECT_OUT`:
   every strip with unit, plot range, and non-finite counts, and the pair is the artifact.
 - `review/seed-<n>/{top,elevation}.png` and `review/seed-42/elements/*.png` — the existing
   inspection views, now written through the same checked writer.
-- `review/seed-<n>/pov/<beat>.png` — generated POV frames, written only for a source landmark
-  with a committed alignment. No landmark has one today, so `pov-map.md` is all declared gaps
-  and no frame is written. An unresolved alignment is an evidence gap, never a fallback.
+- `review/seed-42/pov/<beat>.png` — generated POV frames. Catalog-derived source alignments request
+  their mapped frame; supplying either local RFDB export also requests diagnostic midpoint POVs
+  for supported seed-42 side-view beats. The catalog-derived POV map still contains only declared
+  alignment gaps.
+- `review/overlays/index.{json,md}` and `review/overlays/<comparison-id>.png` — semantic telemetry
+  diagnostics written only when at least one optional RFDB export is supplied.
 
-Evidence authoring is a separate, manual workflow and is never part of this command. Sources
-are researched, reviewed, and committed as metadata, timestamped landmarks, and hashes under
-`docs/evidence/fidelity/`; no copyrighted video, frame, audio, cookie, or token is committed.
-The audit, the focused suites, and CI only ever read those committed records.
+Committed evidence authoring is a separate, manual workflow. Sources are researched, reviewed,
+and committed as metadata, timestamped landmarks, and hashes under `docs/evidence/fidelity/`;
+no copyrighted video, frame, audio, cookie, or token is committed. Optional local RFDB exports
+are used only to build diagnostic artifacts and are not added to the catalog.
 
 Every text write is read back and byte-compared, every PNG is reopened and decoded, and every
 manifest hash is computed from the file on disk. Two consecutive runs produce byte-identical
@@ -120,6 +128,9 @@ recommendation `no-eligible-finding`. That is the contracted output for an empty
 It means *no evidence was eligible to compare against*, not *the ride passed*. The gate is real
 and deterministic; the evidence band is empty until a source is promoted to `executable`
 through the review process in `docs/evidence/fidelity/catalog-review.md`.
+Local RFDB overlays and their scaled lanes cannot promote a source, create catalog selectors,
+observations or targets, create fleet-comparison findings, or become a hard gate; fleet comparison
+is completed from the committed catalog before those overlays are built.
 
 Design history: `docs/PLAN.md` (the executed rewrite plan), `docs/RESEARCH.md` (fact-checks,
 POV analysis, envelope grounding), `docs/REFERENCE.md` (retired checkpoint rationale).

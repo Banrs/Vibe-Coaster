@@ -4,18 +4,15 @@ This repository is a seed-based one-shot coaster generator in pure GDScript: a n
 (~2041) hybrid of Falcon's Flight and Tormenta: Rampaging Run. Physics, generation, and
 validation are the product; visuals are a deliberately generic inspection layer.
 
-> **Active approved redesign:**
-> `docs/superpowers/specs/2026-08-09-fvd-first-configurable-generator-design.md` is authoritative
-> for the current FVD-first replacement. The architecture and generator sections below describe
-> the legacy runtime until cutover; they do not prohibit replacing its FVD/grade/closure split or
-> changing poor generated behavior. Required commands, safety verification, deterministic public
-> inputs, and the documented creative ride arc remain in force unless the approved design states
-> otherwise.
+> **Current generator checkpoint:**
+> The approved FVD-first redesign and material-generator vertical slice now back the public
+> `RideGenerator.build()` path. `docs/superpowers/specs/2026-08-09-fvd-first-configurable-generator-design.md`
+> and `docs/superpowers/specs/2026-08-12-material-generator-vertical-slice-design.md` remain the
+> design rationale; the architecture and generator contract below describe the landed runtime.
 > `docs/superpowers/specs/2026-08-12-material-generator-vertical-slice-design.md` is the approved
 > execution addendum and `docs/superpowers/plans/2026-08-12-material-generator-vertical-slice.md` is
-> the active plan. They supersede the adapter-first/dormant-candidate order in the older route,
-> kernel, recipe, and cutover plans; the next product checkpoint must materially replace the public
-> generated ride.
+> the executed plan. They supersede the adapter-first/dormant-candidate order in the older route,
+> kernel, recipe, and cutover plans.
 >
 > That design is a force-informed **hybrid**, not an FVD monoculture. FVD is preferred where
 > authoring in the rider's frame gives superior rider-dynamics control; it is not to be forced
@@ -36,15 +33,13 @@ local timings.
 
 - `godot/terrain.gd` — seeded analytic heightfield: plain + one escarpment (gentle apron ~20%
   of relief, near-vertical face ~80%). Pure function of its params dict.
-- `godot/elements.gd` — the integrator core (explicit rider frame: transported tangent/up +
-  authored roll rate — inversions and vertical track are representable) plus every element
-  template (`author_*`): each returns solved FVD sections via 1D secant closures
-  (`solve_scalar`), no hidden trims. Group boundary contract: normal 1.0, lateral 0.0,
-  roll rate 0.0 at group edges; equal values at internal seams (quintic keys ⇒ C4 position).
-- `godot/generator.gd` — seed → ride. ALL randomness is drawn up front in `_plan()` in a
-  fixed, unconditional order; assembly reads only the plan and the live integration state.
-  Layout works in the terrain's s/a edge frame. `REGISTRY` is the data-driven extension
-  point for the future configurable generator.
+- `godot/generator.gd` — the `material-v1` facade: seed → accepted terrain-relative plan →
+  compiled program → one accepted production integration → published route. The seeded RNG is
+  consumed by `Terrain.generate()` and then `_plan()`; the plan contains twenty ordered roles and
+  a 7.8–8.2 km route band.
+- `godot/ride_program.gd` — native force/time-domain recipes and bounded return, capture, and
+  brake solves. `godot/motion.gd` is the sole accepted rider-frame integrator;
+  `godot/route_contract.gd` validates and publishes its trajectory.
 - `godot/verify.gd` — the load-verification toolkit: 100 Hz resample → 4-pole 5 Hz
   Butterworth → duration-dependent envelope usage (held-curve), plus push-pull, the 0.2 s
   reversal rule, pairwise combined-axis ellipses, onset (least-squares over 100 ms), and the
@@ -54,7 +49,7 @@ local timings.
 - `godot/route_sampling.gd` — the one route time/distance/pose interpolation, shared by the
   viewer and the deterministic POV artifacts. `godot/canonical_data.gd` — the one canonical
   JSON + SHA-256 implementation, shared by catalog and report code.
-- `godot/smoke.gd` — headless gate: toolkit self-tests, template probes, both focused
+- `godot/smoke.gd` — headless gate: toolkit self-tests, both focused
   fidelity suites, and multi-seed generator validation (same seed twice bit-identical). Be
   precise about its coverage: structure, seams, terrain clearance and self-clearance are
   gated on all fifteen seeds, but the load envelope (`validate_loads`) is gated only on the
@@ -75,7 +70,10 @@ local timings.
   top/elevation, the stacked ride traces — and adds reconstructed longitudinal proper
   acceleration, curvature, radius, roll acceleration and jerk channels, evidence-linked
   review prompts and issue coverage, an explicit POV map that names its alignment gaps rather
-  than inventing a mapping, and checked writes with a hashed manifest. Operational failures
+  than inventing a mapping, optional local RideForcesDB diagnostic overlays via
+  `RFDB_4804_CSV` / `RFDB_6383_CSV`, and checked writes with a hashed manifest. When either local
+  export is supplied it also writes semantic overlay artifacts and diagnostic seed-42 midpoint
+  POVs; these do not change the committed catalog or resolve the POV map. Operational failures
   (catalog, generation, physical consistency, artifact writes) exit 1; fidelity misses are
   diagnostic and exit 0. See README for the command and the full output contract.
 
@@ -87,13 +85,12 @@ positions stay raw for physics, verification, and generated-channel measurement.
 
 ## Generator contract
 
-- Same seed → bit-identical ride. No RNG outside `_plan()`; no `Dictionary` iteration order
-  dependence; no post-hoc geometry patching (the one sanctioned correction is the climb-pitch
-  retune in the generator).
+- Same seed → bit-identical ride. The seeded RNG is used only by terrain generation and `_plan()`;
+  no `Dictionary` iteration-order dependence or post-hoc geometry patching.
 - Envelope (~2041, anti-G-suit credit; duration-stretched ASTM F2291 curves, never flat
   tables): +8.0/−3.0 Gz · ±4.7 Gy · +8.0/−6.0 Gx · 25 g/s onset · 120°/s roll. The limit at
   duration t is `stretch × F2291_limit(t)` per axis — see `verify.gd` constants.
-- Story skeleton, five cohesive gestures like the real ride (seeded variation inside slots):
+- Material story, twenty ordered roles with seeded terrain-relative placement:
   station → ~4 g air-launch + unpowered coast over the opener crest → twisted non-inverting
   side-drop into act one, ONE flowing arc at honest inversion speed (giant Immelmann
   ~75–95 m: the tallest-inversion chase; helical-leg loop; cutback at the Immelmann exit;
@@ -102,7 +99,7 @@ positions stay raw for physics, verification, and generated-channel measurement.
   deliberate slow beat) + compact clifftop suspense (reference-scale only, outward-banked
   rim turn) → 90° cliff dive (~0.8× relief, monotonic, no lip pause) → tunnel LSM boost to
   ~340 km/h (the record launch) → record camelback (~250 m structure above its
-  valley) → return run as one monotonic-bleed raceway arc home with embedded beats →
+  valley) → force-authored return with two overbanked turns and two height/airtime beats →
   brakes → explicit C4 station closure.
 - Propulsion = exactly three short boosters, no lifts, no powered climbs (user decision):
   a Do-Dodonpa-like non-LSM air/hydraulic entry launch at ~4 g out of the station, then two
@@ -111,12 +108,15 @@ positions stay raw for physics, verification, and generated-channel measurement.
   into a climb or run a varying gradient. No mid-course brake: one
   continuous energy arc after the tunnel booster. No standalone connector turns, no sub-30 m stub
   sections, no flat grades between elements; elapsed average speed is reported, never
-  targeted — pacing is organic. Length ~7.6–10.2 km (user-accepted 2026-08-09: the honest
-  cost of the five-gesture story at 340 km/h; the return reversal alone is ~1.1 km). Records live in the marquee elements; suspense/clifftop elements never scale toward
+  targeted — pacing is organic. Length 7.8–8.2 km. The unpowered return is authored in normal-g
+  and bank/roll functions; a bounded seven-control solve targets the derived capture-entry
+  corridor, the 7.8–8.2 km route band, and the 70–77 m/s passive entry-speed band with
+  coarse/fine agreement, then the capture solve closes the
+  station frame. Records live in the marquee elements; suspense/clifftop elements never scale toward
   records; no element class between ~110 m and the ~250 m marquee pair (the gap is the
   authentic pattern).
 - Physics limits discovered by measurement, respected by design: giant inversions need
-  42–50 m/s entries (hence act one); `author_cutback` requires entry pitch ≤ ~22°; a planar
+  42–50 m/s entries (hence act one); the cutback requires entry pitch ≤ ~22°; a planar
   loop self-intersects (hence the helical lateral with sign reversed at the top).
 
 Do not restore the removed Rust optimizer, native extension, HTML viewer, hardcoded

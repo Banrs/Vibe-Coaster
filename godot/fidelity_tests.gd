@@ -422,7 +422,17 @@ static func _test_catalog_v2_validation(fidelity: Script, errors: PackedStringAr
 		["legacy_anchor kind requires a non-empty String", "legacy_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].legacy_anchor.kind = []],
 		["compiled_anchor story_slot_id requires a non-empty String", "compiled_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].compiled_anchor.story_slot_id = NAN],
 		["compiled_anchor window_role requires a non-empty String", "compiled_anchor", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].compiled_anchor.window_role = true],
+		["compiled_anchor kind requires a non-empty String", "compiled kind", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].compiled_anchor.kind = ""],
+		["compiled_anchor occurrence is nonnegative", "compiled occurrence", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].compiled_anchor.occurrence = -1],
+		["compiled_anchor window_id requires a non-empty String", "compiled window_id", func(value: Dictionary): value.selectors["semantic.act1.loop.core"].compiled_anchor.window_id = 42],
 	])
+	var exact_compiled_selector := catalog.duplicate(true)
+	exact_compiled_selector.selectors["semantic.act1.loop.core"].compiled_anchor.merge({
+		"kind": "loop", "occurrence": 1,
+		"window_id": "act-one/giant-inversion/01-loop",
+	}, true)
+	_expect(errors, fidelity.validate_catalog(exact_compiled_selector).is_empty(),
+		"compiled selectors may use stable kind, occurrence, and window identity")
 	_expect_catalog_invalid_cases(fidelity, errors, catalog, [
 		["unsupported positive longitudinal transform is rejected", "Gx+", func(value: Dictionary): value.transforms["fictional.gz-positive@1"].axis = "longitudinal_g"],
 		["approved transform formula is immutable", "formula", func(value: Dictionary): value.transforms["fictional.gz-positive@1"].formula = "target_force_g = observed_force_g"],
@@ -935,6 +945,22 @@ static func _test_selector_and_row_resolution(fidelity: Script, errors: PackedSt
 		_expect(errors, compiled_miss.evidence_gaps[0].reason == "anchor-not-found", "compiled miss reports anchor-not-found")
 	var wrong_role: Dictionary = fidelity.compare_fleet(_compiled_wrong_role_fleet(CANONICAL_FLEET), _comparison_catalog())
 	_assert_all_gaps(errors, wrong_role, "anchor-not-found", "compiled wrong role")
+	var exact_catalog := _comparison_catalog()
+	exact_catalog.selectors["semantic.hill"].compiled_anchor.merge({
+		"kind": "loop", "occurrence": 1, "window_id": "compiled-b",
+	}, true)
+	var exact_fleet := _compiled_reducer_fleet(CANONICAL_FLEET)
+	for measurement: Dictionary in exact_fleet:
+		for index in measurement.beats.size():
+			measurement.beats[index].kind = "immelmann" if index == 0 else "loop"
+			measurement.beats[index].occurrence = index
+			measurement.beats[index].window_id = "compiled-%s" % ["a", "b", "c"][index]
+	var exact_finding := _first_finding(
+		fidelity.compare_fleet(exact_fleet, exact_catalog), errors,
+		"compiled stable identity selector emits one finding")
+	if not exact_finding.is_empty():
+		_expect_close(errors, exact_finding.seed_results[0].value, 3.0,
+			"kind, occurrence, and window identity select only the intended repeated role")
 
 	for selector_case in [
 		{"selector": {"row_id": "row-02"}, "expected": 2.0},

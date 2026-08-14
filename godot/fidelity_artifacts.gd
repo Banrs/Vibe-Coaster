@@ -31,6 +31,8 @@ const _POV_FOV_DEG := 72.0
 const _POV_NEAR_M := 0.08
 const _POV_FAR_M := 5000.0
 const _POV_EYE_UP_M := 0.35
+const _POV_ROW_ID := "row-04"
+const _POV_ROW_OFFSET_M := 6.45
 const _OVERLAY_SIZE := Vector2i(1200, 900)
 const _OVERLAY_LEFT := 50
 const _OVERLAY_RIGHT := 1149
@@ -62,7 +64,8 @@ const _ISSUE_TEXT := {
 }
 const _SIDE_VIEW_KINDS := [
 	"hill", "immelmann", "loop", "cutback", "twisted_drop",
-	"dive", "wave_turn", "overbank", "turn",
+	"dive", "wave_turn", "overbank", "turn", "slow-crest",
+	"rise", "crest", "fall", "commit", "vertical-entry", "pullout", "exit",
 ]
 
 static func build_report(
@@ -364,9 +367,7 @@ static func _catalog_context(
 		var landmark_key := "%s/%s" % [source_id, landmark_id]
 		if not compiled_anchors.has(selector_id):
 			var anchor: Dictionary = selectors[selector_id].compiled_anchor
-			compiled_anchors[selector_id] = {
-				"story_slot_id": anchor.story_slot_id, "window_role": anchor.window_role,
-			}
+			compiled_anchors[selector_id] = anchor.duplicate(true)
 		if not by_seed.has(42):
 			continue
 		var resolution := _center_row_resolution(by_seed[42], compiled_anchors[selector_id], errors)
@@ -382,6 +383,7 @@ static func _catalog_context(
 			"generated_seed": 42, "generated_anchor": {"semantic_selector_id": selector_id},
 			"generated_beat_id": resolution.beat_id, "generated_time_s": generated_time,
 			"generated_window_s": [resolution.window_start_s, resolution.window_end_s],
+			"row_id": resolution.row_id, "row_offset_m": resolution.row_offset_m,
 			"generated_pov_path": "review/seed-42/pov/%s.png" % resolution.beat_id.replace("/", "__"),
 		})
 		context.unaligned_candidates.erase(source_id)
@@ -496,9 +498,7 @@ static func _center_row_resolution(measurement: Dictionary, anchor: Dictionary, 
 	var duration: Variant = measurement.duration
 	var beats: Array = measurement.beats
 	for beat in beats:
-		if beat.get("story_slot_id") != anchor.get("story_slot_id"):
-			continue
-		if beat.get("window_role") != anchor.get("window_role"):
+		if not _matches_compiled_anchor(beat, anchor):
 			continue
 		var rows_value: Variant = beat.get("rows")
 		if not rows_value is Array:
@@ -513,7 +513,8 @@ static func _center_row_resolution(measurement: Dictionary, anchor: Dictionary, 
 			if not _finite_number(offset):
 				errors.append("artifact_report: measurement row offset must be finite numeric")
 				continue
-			if absf(float(offset)) > 0.000001:
+			if row.get("row_id") != _POV_ROW_ID \
+					or absf(float(offset) - _POV_ROW_OFFSET_M) > 0.000001:
 				continue
 			var window_start: Variant = row.get("window_start_s")
 			var window_end: Variant = row.get("window_end_s")
@@ -524,12 +525,23 @@ static func _center_row_resolution(measurement: Dictionary, anchor: Dictionary, 
 				errors.append("artifact_report: measurement row window must be ordered within duration")
 				continue
 			matches.append({
-				"beat_id": beat.get("beat_id"), "window_start_s": window_start, "window_end_s": window_end,
+				"beat_id": beat.get("beat_id"), "window_start_s": window_start,
+				"window_end_s": window_end, "row_id": row.row_id,
+				"row_offset_m": float(offset),
 			})
 	if matches.size() != 1:
-		errors.append("artifact_report: aligned observation must resolve exactly one center row")
+		errors.append("artifact_report: aligned observation must resolve exactly one row-04")
 		return {}
 	return matches[0]
+
+static func _matches_compiled_anchor(beat: Dictionary, anchor: Dictionary) -> bool:
+	if beat.get("story_slot_id") != anchor.get("story_slot_id") \
+			or beat.get("window_role") != anchor.get("window_role"):
+		return false
+	for field in ["kind", "occurrence", "window_id"]:
+		if anchor.has(field) and beat.get(field) != anchor[field]:
+			return false
+	return true
 
 static func _source_time(landmark: Dictionary) -> Dictionary:
 	if landmark.has("time_s") == landmark.has("window_s"):
@@ -572,8 +584,9 @@ static func _render_requests(
 						if not row_value is Dictionary:
 							continue
 						var row: Dictionary = row_value
-						if not _finite_number(row.get("offset")) \
-							or not is_zero_approx(float(row.offset)):
+						if row.get("row_id") != _POV_ROW_ID \
+								or not _finite_number(row.get("offset")) \
+								or absf(float(row.offset) - _POV_ROW_OFFSET_M) > 0.000001:
 							continue
 						if (_finite_number(row.get("window_start_s"))
 							and _finite_number(row.get("window_end_s"))
@@ -582,10 +595,11 @@ static func _render_requests(
 							and float(row.window_end_s) <= float(seed_42.duration)):
 							centers.append(row)
 				if centers.size() != 1:
-					errors.append("artifact_report: midpoint POV requires exactly one center row: %s" % beat.beat_id)
+					errors.append("artifact_report: midpoint POV requires exactly one row-04: %s" % beat.beat_id)
 					continue
 				candidates.append({"path": "review/seed-42/pov/%s.png" % escaped,
 					"seed": 42, "artifact_kind": "pov", "beat_id": beat.beat_id,
+					"row_id": centers[0].row_id, "row_offset_m": float(centers[0].offset),
 					"generated_time_s": (float(centers[0].window_start_s)
 						+ float(centers[0].window_end_s)) * 0.5})
 	for record in pov_map.records:
@@ -593,6 +607,7 @@ static func _render_requests(
 		candidates.append({
 			"path": path, "seed": 42, "artifact_kind": "pov",
 			"beat_id": record.generated_beat_id, "generated_time_s": record.generated_time_s,
+			"row_id": record.row_id, "row_offset_m": record.row_offset_m,
 		})
 	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.path < b.path)
 	var output: Array[Dictionary] = []
@@ -907,10 +922,10 @@ static func _plot_point(point: Vector2, low: Vector2, scale: float) -> Vector2:
 	return Vector2(placed.x, _PLOT_SIZE.y - 1 - placed.y)
 
 
-## A fixed neutral inspection camera on the centre-row frame: no speed-dependent widening, no
+## A fixed neutral inspection camera on the row-04 frame: no speed-dependent widening, no
 ## source imagery, just the generated track against the generated ground.
-static func pov_image(route: Dictionary, time_s: float) -> Image:
-	var at := _SAMPLING.distance_at_time(route, time_s)
+static func pov_image(route: Dictionary, time_s: float, row_offset_m: float) -> Image:
+	var at := _SAMPLING.distance_at_time(route, time_s) - row_offset_m
 	var pose := _SAMPLING.pose_at_distance(route, at)
 	var view := Transform3D(
 		pose.basis, pose.origin + pose.basis.y * _POV_EYE_UP_M
@@ -1323,7 +1338,13 @@ static func _write_render(
 			if not _finite_number(request.get("generated_time_s")):
 				errors.append("artifact_write: POV request '%s' has no generated time" % request.path)
 				return
-			_write(root, expected, kind, pov_image(route, float(request.generated_time_s)),
+			if request.get("row_id") != _POV_ROW_ID \
+					or not _finite_number(request.get("row_offset_m")) \
+					or absf(float(request.row_offset_m) - _POV_ROW_OFFSET_M) > 0.000001:
+				errors.append("artifact_write: POV request '%s' has no row-04 placement" % request.path)
+				return
+			_write(root, expected, kind, pov_image(route, float(request.generated_time_s),
+				float(request.row_offset_m)),
 				seed_value, beat_id, records, errors)
 		_:
 			errors.append("artifact_write: unknown render kind '%s'" % kind)

@@ -2,6 +2,7 @@ class_name RideProgram
 extends RefCounted
 
 const Motion := preload("res://motion.gd")
+const BoundedSolver := preload("res://bounded_solver.gd")
 
 const GENERATOR_VERSION := "time-domain-v1"
 const ROLLING_MPS2 := 0.08
@@ -9,59 +10,153 @@ const AERO_PER_M := 0.000075
 const COMPACT_PULSE_AREA := 100.0 / 231.0
 const COARSE_STEP_S := 0.05
 const FINE_STEP_S := 0.025
+const PRODUCTION_STEP_S := 0.01
 const MAX_CAPTURE_EVALUATIONS := 40
-const MAX_RETURN_EVALUATIONS := 24
-const RETURN_PARAMETER_IDS := [
-	"turn_a_bank_rad", "turn_a_core_s", "height_a_half_s",
-	"turn_b_bank_rad", "turn_b_core_s", "height_b_recovery_s",
+const MAX_RETURN_EVALUATIONS := 220
+const RETURN_SCALAR_IDS := [
+	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
+	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
+	"height_b_recovery_duration_s",
 ]
-const RETURN_PARAMETER_BOUNDS := [
-	[0.349065850398866, 0.8377580409572781], [2.5, 7.0], [6.0, 11.0],
-	[1.0471975511965976, 1.3599968197358412], [1.5, 5.0], [0.9, 3.5],
+const RETURN_SCALAR_BOUNDS := [
+	[30.0 * PI / 180.0, 52.0 * PI / 180.0], [1.0, 6.5],
+	[0.35, 4.0], [60.0 * PI / 180.0, 80.0 * PI / 180.0],
+	[2.0, 12.0], [0.1, 2.0], [0.35, 4.0],
 ]
-const RETURN_SEED := [0.4886921905584123, 4.5, 8.4, 1.3439035240356338, 2.9, 1.8]
-const RETURN_OUTPUT_IDS := [
-	"station_forward_m", "height_m", "cross_track_m", "yaw_rad", "pitch_rad", "roll_rad",
+const RETURN_SEED := [0.615368689919713, 2.63418618072096, 1.54224626178183,
+	1.13441408936318, 5.54735395961309, 0.913756415135937, 3.54214844259106]
+const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
+const RETURN_TRANSFER_BANK_BIAS_RAD := 7.5 * PI / 180.0
+const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
+const RETURN_RESIDUAL_IDS := [
+	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
+	"tangent_up", "route_length_band_m", "entry_speed_band_mps",
 ]
-const RETURN_OUTPUT_BOUNDS := [
-	[-450.0, -405.0], [-30.0, 30.0], [-50.0, 50.0],
-	[-0.13962634015954636, 0.13962634015954636],
-	[-0.08726646259971647, 0.08726646259971647],
-	[-0.13962634015954636, 0.13962634015954636],
-]
-const RETURN_OUTPUT_SCALES := [
-	15.0, 15.0, 25.0, 0.06981317007977318, 0.04363323129985824, 0.06981317007977318,
-]
-const RETURN_TARGET := [
-	-413.8176585379036, 3.542414464340024, -0.9589346302880815,
-	0.01954530591190462, -0.004588670638026367, 0.04616595364095083,
-]
-const RETURN_TARGET_TOLERANCE := 0.02
-const RETURN_FINE_TOLERANCES := [0.01, 0.01, 0.01, 0.0001, 0.0001, 0.0001]
-const STATION_APPROACH_LENGTH_M := 450.0
+const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1]
+const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01]
+const STATION_APPROACH_LENGTH_M := 230.0
+const STATION_CAPTURE_LENGTH_M := 80.0
+const STATION_BRAKE_LENGTH_M := 150.0
+const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 77.0)
+const RETURN_ENTRY_SPEED_PADDING_MPS := 0.01
+const RETURN_ENTRY_POSITION_PADDING_M := 0.25
 const CAPTURE_HALF_WIDTH_M := 150.0
 const CAPTURE_HALF_HEIGHT_M := 75.0
-const CAPTURE_STEERING_DURATION_S := 1.3276187084937188
-const CAPTURE_TERMINAL_DURATION_S := 0.5
+const CAPTURE_STEERING_DURATION_S := 0.45
+const CAPTURE_TERMINAL_DURATION_S := 0.15
+const CAPTURE_RESIDUAL_TOLERANCES := [0.05, 0.05, 0.000001, 0.000001, 0.0000025]
+const CAPTURE_COARSE_RESIDUAL_TOLERANCES := [0.075, 0.075, 0.0001, 0.0001, 0.0001]
 const BRAKE_SHOULDER_DURATION_S := 0.6
 const BRAKE_PARAMETER_IDS := ["hold_duration_s", "peak_g"]
-const BRAKE_PARAMETER_BOUNDS := [[2.0, 5.0], [0.0, 2.25]]
+const BRAKE_PARAMETER_BOUNDS := [[0.5, 5.0], [0.0, 3.0]]
 const MAX_BRAKE_EVALUATIONS := 24
 const BRAKE_NEWTON_ITERATIONS := 7
 const BRAKE_NEWTON_STEP := 0.95
 const BRAKE_BOUNDARY_TOLERANCE_MPS := 0.0001
 const BRAKE_BOUNDARY_INTERIOR_MPS := 2.0 + 0.5 * BRAKE_BOUNDARY_TOLERANCE_MPS
 const TERMINAL_DISTANCE_TOLERANCE_M := 0.05
-const CAPTURE_RESIDUAL_TOLERANCES := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
 const CAPTURE_COEFFICIENT_BOUNDS := [
-	[-0.9, 0.9], [-0.9, 0.9], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
+	[-1.5, 1.5], [-1.5, 1.5], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
+]
+const MATERIAL_ROLE_IDS := [
+	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
+	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
+	"act-one-wave", "climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
+	"outward-dive", "tunnel-lsm3", "camelback", "return-turn-a", "return-height-a",
+	"return-turn-b", "return-height-b", "terminal-capture-brakes",
+]
+const ROLE_NOMINAL_LENGTHS := [
+	180.0, 620.0, 650.0, 330.0, 430.0, 310.0, 360.0, 260.0, 240.0, 600.0,
+	50.0, 90.0, 420.0, 180.0, 1000.0, 480.0, 420.0, 500.0, 520.0, 230.0,
 ]
 
 
-static func compile(
-	seed: int, config: Dictionary, layout: Dictionary,
-	initial_state: Dictionary
-) -> Dictionary:
+static func terrain_story_capability(station_side: int) -> Dictionary:
+	if station_side != -1 and station_side != 1:
+		return _failure("station_side must be -1 or 1", "planning")
+	var spans: Array = []
+	var metadata: Array = []
+	var gestures: Array = []
+	var propulsion := PackedInt32Array()
+	_add_story_prefix(spans, metadata, gestures, propulsion, -float(station_side))
+	var dive_start_span := -1
+	var dive_end_span := -1
+	var tunnel_end_span := -1
+	for gesture in gestures:
+		if gesture.story_slot_id == "cliff-dive":
+			dive_start_span = int(gesture.first_span)
+			dive_end_span = int(gesture.last_span)
+		elif gesture.story_slot_id == "tunnel-lsm3":
+			tunnel_end_span = int(gesture.last_span)
+	if dive_start_span <= 0 or dive_end_span < dive_start_span \
+			or tunnel_end_span <= dive_end_span:
+		return _failure("terrain story capability omitted the cliff-dive handoff", "planning")
+	var initial := {"position_m": Vector3.ZERO, "tangent": Vector3.RIGHT,
+		"rider_up": Vector3.UP, "speed_mps": 6.0, "distance_m": 0.0, "time_s": 0.0}
+	var trajectory := Motion.integrate(
+		initial, spans.slice(0, tunnel_end_span + 1), _settings(PRODUCTION_STEP_S))
+	if not trajectory.get("ok", false):
+		return _failure("terrain story capability failed integration", "planning",
+			{"errors": trajectory.get("errors", [])})
+	var dive_start_sample: int = trajectory.span_index.find(dive_start_span)
+	var dive_end_sample: int = trajectory.span_index.rfind(dive_end_span)
+	if dive_start_sample < 0 or dive_end_sample < dive_start_sample \
+			or trajectory.position_m.size() < 2 \
+			or int(trajectory.span_index[-1]) != tunnel_end_span:
+		return _failure("terrain story capability omitted the native dive footprint", "planning")
+	var entry := {"position_m": trajectory.position_m[dive_start_sample],
+		"tangent": trajectory.tangent[dive_start_sample],
+		"rider_up": trajectory.rider_up[dive_start_sample],
+		"speed_mps": trajectory.speed_mps[dive_start_sample]}
+	var dive_exit_offset_m: Vector3 = trajectory.position_m[dive_end_sample]
+	var dive_positions_m: PackedVector3Array = trajectory.position_m.slice(
+		dive_start_sample, dive_end_sample + 1)
+	var dive_rider_up: PackedVector3Array = trajectory.rider_up.slice(
+		dive_start_sample, dive_end_sample + 1)
+	# The full route reassigns the exact tunnel/camelback seam to the camelback.
+	# Publish the preceding sample so planning and accepted role bounds use the same endpoint.
+	var tunnel_exit_offset_m: Vector3 = trajectory.position_m[-2]
+	var dive_outward_delta_m := float(station_side) \
+		* (float(dive_exit_offset_m.z) - float(entry.position_m.z))
+	if not dive_exit_offset_m.is_finite() or not tunnel_exit_offset_m.is_finite() \
+			or dive_positions_m.is_empty() or dive_positions_m.size() != dive_rider_up.size() \
+			or not is_finite(dive_outward_delta_m) or dive_outward_delta_m <= 0.0:
+		return _failure("terrain story capability produced a non-outward dive footprint", "planning")
+	var opener_end := -1
+	var station_end := -1
+	for gesture in gestures:
+		if gesture.story_slot_id == "opener":
+			opener_end = int(gesture.last_span)
+		elif gesture.story_slot_id == "station-launch":
+			station_end = int(gesture.last_span)
+	var opener_end_sample: int = trajectory.span_index.rfind(opener_end)
+	var station_end_sample: int = trajectory.span_index.rfind(station_end)
+	if opener_end_sample < 0 or station_end_sample < 0 \
+			or station_end_sample >= opener_end_sample:
+		return _failure("terrain story capability omitted the station/opener footprint", "planning")
+	return {"ok": true, "capability_id": "material-v1-prefix-r12@7",
+		"planning_integrations": 1,
+		"role_13_entry": {"offset_m": entry.position_m, "tangent": entry.tangent,
+			"rider_up": entry.rider_up, "speed_mps": entry.speed_mps},
+		"dive_footprint": {"outward_delta_m": dive_outward_delta_m,
+			"dive_exit_offset_m": dive_exit_offset_m,
+			"tunnel_exit_offset_m": tunnel_exit_offset_m,
+			"positions_m": dive_positions_m, "rider_up": dive_rider_up},
+		"station_opener": {
+			"positions_m": trajectory.position_m.slice(0, opener_end_sample + 1),
+			"rider_up": trajectory.rider_up.slice(0, opener_end_sample + 1),
+			"station_sample_count": station_end_sample + 1,
+		},
+		"scale": {"route_vertical_envelope_m": Vector2(290.0, 305.0),
+			"dive_drop_m": Vector2(240.0, 250.0),
+			"camel_prominence_m": Vector2(245.0, 255.0)}}
+
+
+static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
+	var plan_check := _validate_plan(plan)
+	if not plan_check.ok:
+		return plan_check
+	var layout := _layout_from_plan(plan)
 	var station_error := _validate_station_layout(layout, initial_state)
 	if not station_error.is_empty():
 		return _failure(station_error, "input")
@@ -72,142 +167,26 @@ static func compile(
 	var metadata: Array = []
 	var gestures: Array = []
 	var propulsion := PackedInt32Array()
-
-	_begin_gesture(gestures, "station-launch", spans.size(), "launch")
-	_add(spans, metadata, propulsion, "launch/ramp", 0.31, "station",
-		1.0, 0.0, Motion.quintic(0.0, 4.0), 0.0, "launch", 1, 0.0, "launch")
-	_add(spans, metadata, propulsion, "launch/core", 1.4928103277564437, "moving",
-		1.0, 0.0, 4.0, 0.0, "launch", 1, 2.0, "launch")
-	_add(spans, metadata, propulsion, "launch/release", 0.31, "moving",
-		1.0, 0.0, Motion.quintic(4.0, 0.0), 0.0, "launch", 1, 2.0, "launch")
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "opener", spans.size(), "twisted_drop")
-	_add(spans, metadata, propulsion, "crest/rise-shoulder", 1.2, "moving",
-		Motion.quintic(1.0, 3.7), 0.0, 0.0, 0.0,
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "crest/twist-in", 1.2, "moving",
-		Motion.quintic(3.7, 1.0), Motion.compact_pulse(0.2), 0.0,
-		Motion.compact_pulse(0.43676864531157017),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/commit", 4.79999999999999, "moving",
-		Motion.quintic(1.0, -0.9), Motion.compact_pulse(-0.2), 0.0,
-		Motion.compact_pulse(0.43676864531157017),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/core", 3.094817391662892, "moving",
-		Motion.quintic(-0.9, 1.0), Motion.compact_pulse(0.2), 0.0,
-		Motion.compact_pulse(-0.6784482475514162),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/pullout", 0.8000000000000002, "moving",
-		Motion.quintic(1.0, 3.7), Motion.compact_pulse(-0.2), 0.0,
-		Motion.compact_pulse(-0.6784482475514162),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/release", 1.9672258362758237, "moving",
-		Motion.quintic(3.7, 1.0), 0.0, 0.0, 0.0,
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "teardrop/bank-in", 1.5000000000043456, "moving",
-		Motion.quintic(1.0, 1.235677199441744), 0.0, 0.0,
-		Motion.compact_pulse(0.966940012289401), "teardrop", 0, 2.0, "overbank")
-	_add(spans, metadata, propulsion, "teardrop/overbanked-arc", 11.232051014082609,
-		"moving", 1.235677199441744, 0.0, 0.0, 0.0,
-		"teardrop", 0, 2.0, "overbank")
-	_add(spans, metadata, propulsion, "teardrop/bank-out", 1.5000000000043456, "moving",
-		Motion.quintic(1.235677199441744, 1.0), 0.0, 0.0,
-		Motion.compact_pulse(-0.966940012289401), "teardrop", 0, 2.0, "overbank")
-	_add(spans, metadata, propulsion, "release/rise-shoulder", 1.0, "moving",
-		Motion.quintic(1.0, 3.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "release/unload", 1.0, "moving",
-		Motion.quintic(3.0, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "release/crest", 2.434565445080618, "moving",
-		Motion.quintic(1.0, -0.55), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "release/fall", 2.4562596640024132, "moving",
-		Motion.quintic(-0.55, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "release/pullout", 1.0, "moving",
-		Motion.quintic(1.0, 3.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "release/settle", 1.0, "moving",
-		Motion.quintic(3.0, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "act-one", spans.size())
-	_add_act_one(spans, metadata, propulsion)
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "escarpment-climb", spans.size())
-	_add(spans, metadata, propulsion, "climb/lsm2-entry", 0.30, "moving",
-		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 1.3),
-		Motion.constant(0.0), "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/lsm2-core", 0.190736, "moving",
-		1.0, 0.0, 1.3, 0.0, "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/lsm2-release", 0.30, "moving",
-		1.0, 0.0, Motion.quintic(1.3, 0.0), 0.0, "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/pull-up", 2.219925, "moving",
-		Motion.quintic(1.0, 3.894889), 0.0, 0.0, 0.0, "unpowered-climb")
-	_add(spans, metadata, propulsion, "climb/unload", 2.186308, "moving",
-		Motion.quintic(3.894889, 0.0), 0.0, 0.0, 0.0, "unpowered-climb")
-	_add(spans, metadata, propulsion, "climb/ballistic", 3.34, "moving",
-		0.0, 0.0, 0.0, 0.0, "unpowered-climb")
-	_add(spans, metadata, propulsion, "climb/level", 0.307367, "moving",
-		Motion.quintic(0.0, 1.0), 0.0, 0.0, 0.0, "unpowered-climb")
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "clifftop-suspense", spans.size())
-	_add(spans, metadata, propulsion, "rim/slow-crest", 2.90, "moving",
-		1.0, 0.0, 0.0, 0.0, "slow-crest")
-	_add(spans, metadata, propulsion, "rim/outward-bank", 1.45, "moving",
-		Motion.quintic(1.0, 1.493674785), Motion.compact_pulse(0.05), 0.0,
-		Motion.compact_pulse(deg_to_rad(84.15)), "outward-rim")
-	_add(spans, metadata, propulsion, "rim/outward-arc", 1.0, "moving",
-		1.493674785, 0.0, 0.0, 0.0, "outward-rim")
-	_add(spans, metadata, propulsion, "rim/outward-release", 1.45, "moving",
-		Motion.quintic(1.493674785, 1.0), Motion.compact_pulse(-0.05), 0.0,
-		Motion.compact_pulse(deg_to_rad(-84.15)), "outward-rim")
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "cliff-dive", spans.size(), "dive")
-	_add(spans, metadata, propulsion, "dive/commit", 1.068877, "moving",
-		Motion.quintic(1.0, -1.3), 0.0, 0.0, 0.0, "commit")
-	_add(spans, metadata, propulsion, "dive/vertical-entry", 0.86, "moving",
-		Motion.quintic(-1.3, 0.0), 0.0, 0.0, 0.0, "vertical-entry")
-	_add(spans, metadata, propulsion, "dive/core", 1.76, "moving",
-		0.0, 0.0, 0.0, 0.0, "core")
-	_add(spans, metadata, propulsion, "dive/pullout", 1.330518, "moving",
-		Motion.quintic(0.0, 4.895984), 0.0, 0.0, 0.0, "pullout")
-	_add(spans, metadata, propulsion, "dive/pullout-release", 2.159790, "moving",
-		Motion.quintic(4.895984, 1.0), 0.0, 0.0, 0.0, "exit")
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "tunnel-lsm3", spans.size())
-	_add(spans, metadata, propulsion, "tunnel/lsm3-entry", 0.30, "moving",
-		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 2.0),
-		Motion.constant(0.0), "core", 3)
-	_add(spans, metadata, propulsion, "tunnel/lsm3-core", 1.633337, "moving",
-		1.0, 0.0, 2.0, 0.0, "core", 3)
-	_add(spans, metadata, propulsion, "tunnel/lsm3-release", 0.30, "moving",
-		1.0, 0.0, Motion.quintic(2.0, 0.0), 0.0, "core", 3)
-	_end_gesture(gestures, metadata, spans.size() - 1)
+	# Canonical +Z maps outward for station_side=+1 and inward for -1. Mirror the
+	# authored lateral forces so the shared story always approaches the escarpment.
+	var hand := -float(plan.decisions.station_side)
+	_add_story_prefix(spans, metadata, gestures, propulsion, hand)
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
-	_add(spans, metadata, propulsion, "camelback/pull-up", 1.997005, "moving",
-		Motion.quintic(1.0, 4.933250), 0.0, 0.0, 0.0, "rise")
-	_add(spans, metadata, propulsion, "camelback/unload", 3.2, "moving",
-		Motion.quintic(4.933250, -1.286153), 0.0, 0.0, 0.0, "rise")
-	_add(spans, metadata, propulsion, "camelback/crest", 3.852550, "moving",
-		-1.286153, 0.0, 0.0, 0.0, "crest")
-	_add(spans, metadata, propulsion, "camelback/fall", 4.566536, "moving",
-		Motion.quintic(-1.286153, 4.785225), 0.0, 0.0, 0.0, "fall")
-	_add(spans, metadata, propulsion, "camelback/pullout-release", 0.794140, "moving",
-		Motion.quintic(4.785225, 1.0), 0.0, 0.0, 0.0, "exit")
+	_add_camelback(spans, metadata, propulsion, hand)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
-	var return_prefix := Motion.integrate(initial_state, spans, _settings(COARSE_STEP_S))
+	var return_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
 	if not return_prefix.get("ok", false):
 		return _failure("upstream return handoff failed integration", "return")
-	var solved_return := _solve_return(_last_state(return_prefix), layout)
+	var return_hand := -hand
+	var solved_return := _solve_return(_last_state(return_prefix), layout, return_hand)
 	if not solved_return.ok:
 		return solved_return
-	var settings := _settings(0.01)
+	var settings := _settings(PRODUCTION_STEP_S)
 	_begin_gesture(gestures, "raceway-return", spans.size())
-	_add_raceway(spans, metadata, propulsion, solved_return.parameters)
+	_add_raceway(spans, metadata, propulsion, solved_return.parameters, return_hand,
+		solved_return.initial_bank_rad)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	var prefix := Motion.integrate(initial_state, spans, settings)
@@ -215,7 +194,7 @@ static func compile(
 		return _failure("prefix integration failed: %s" % ", ".join(
 			prefix.get("errors", [])), "prefix")
 	var capture_start := _last_state(prefix)
-	var capture := _solve_capture(capture_start, layout, _settings(COARSE_STEP_S))
+	var capture := _solve_capture(capture_start, layout, _settings(FINE_STEP_S))
 	if not capture.ok:
 		return capture
 	var capture_spans: Array = _capture_spans(capture.coefficients)
@@ -244,7 +223,7 @@ static func compile(
 	for record in metadata:
 		minimum_speeds.append(record.minimum_speed_mps)
 	for gesture in gestures:
-		gesture["peak_analytic_normal_onset_gps"] = _peak_analytic_normal_onset(
+		gesture["peak_profile_normal_onset_estimate_gps"] = _peak_profile_normal_onset_estimate(
 			spans, int(gesture.first_span), int(gesture.last_span))
 		for span_index in range(int(gesture.first_span), int(gesture.last_span) + 1):
 			metadata[span_index]["gesture_id"] = gesture.story_slot_id
@@ -259,15 +238,17 @@ static func compile(
 		"ok": true,
 		"errors": PackedStringArray(),
 		"generator_version": GENERATOR_VERSION,
-		"seed": seed,
-		"config": config,
+		"plan": plan.duplicate(true),
 		"spans": spans,
 		"span_metadata": metadata,
 		"gesture_spans": gestures,
+		"role_spans": _material_role_spans(spans),
 		"propulsion_by_span": propulsion,
 		"minimum_speed_by_span": minimum_speeds,
 		"tunnel_span_ranges": tunnels,
 		"return_plan": solved_return.report,
+		"return_entry_gate": solved_return.report.get("return_entry_gate", {}),
+		"role_allocations_m": plan_check.allocations,
 		"capture_plan": {
 			"status": "solved",
 			"coefficients": capture.coefficients,
@@ -275,9 +256,10 @@ static func compile(
 				"late_normal", "roll_area_rad"],
 			"coefficient_bounds": CAPTURE_COEFFICIENT_BOUNDS,
 			"unique_evaluations": capture.unique_evaluations,
-			"max_unique_coarse_evaluations": MAX_CAPTURE_EVALUATIONS,
+			"max_unique_evaluations": MAX_CAPTURE_EVALUATIONS,
 			"residual_ids": ["cross_track_m", "height_m", "yaw_rad", "pitch_rad", "roll_rad"],
 			"residual_tolerances": CAPTURE_RESIDUAL_TOLERANCES,
+			"coarse_residual_tolerances": CAPTURE_COARSE_RESIDUAL_TOLERANCES,
 			"residuals": capture.residuals,
 			"fine_residuals": capture.fine_residuals,
 			"production_residuals": production_residuals,
@@ -295,95 +277,325 @@ static func compile(
 			"angle_tolerance_rad": 0.00002,
 			"speed_tolerance_mps": 0.001,
 		},
-		"settings": _settings(0.01),
+		"settings": _settings(PRODUCTION_STEP_S),
 	}
 
 
-static func _add_act_one(spans: Array, metadata: Array, propulsion: PackedInt32Array) -> void:
+static func _add_story_prefix(
+	spans: Array, metadata: Array, gestures: Array, propulsion: PackedInt32Array, hand: float
+) -> void:
+	_begin_gesture(gestures, "station-launch", spans.size(), "launch")
+	_add(spans, metadata, propulsion, "launch/ramp", 0.3903354, "station",
+		1.0, 0.0, Motion.quintic(0.0, 3.2), 0.0, "launch", 1, 0.0, "launch")
+	_add(spans, metadata, propulsion, "launch/core", 1.0, "moving",
+		1.0, 0.0, 3.2, 0.0, "launch", 1, 2.0, "launch")
+	_add(spans, metadata, propulsion, "launch/release", 2.20657591, "moving",
+		1.0, 0.0, Motion.quintic(3.2, 0.0), 0.0, "launch", 1, 2.0, "launch")
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	_begin_gesture(gestures, "opener", spans.size(), "twisted_drop")
+	_add_opener(spans, metadata, propulsion, hand)
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	_begin_gesture(gestures, "act-one", spans.size())
+	_add_story_act_one(spans, metadata, propulsion, hand)
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	_begin_gesture(gestures, "escarpment-climb", spans.size())
+	var climb_drive_g := 0.29367873763844
+	_add(spans, metadata, propulsion, "climb/pull-up", 0.98392993, "moving",
+		Motion.quintic(1.0, 3.37796602), 0.0, Motion.quintic(0.0, climb_drive_g),
+		0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/powered-settle", 0.98392993, "moving",
+		Motion.quintic(3.37796602, 0.87362258024053), 0.0, climb_drive_g, 0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/powered-core", 8.78838861435674, "moving",
+		0.87362258024053, 0.0, climb_drive_g, 0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/drive-release", 0.98392993, "moving",
+		0.87362258024053, 0.0, Motion.quintic(climb_drive_g, 0.0), 0.0, "lsm2", 2)
+	_add(spans, metadata, propulsion, "climb/pull-over", 3.20659393, "moving",
+		Motion.quintic(0.87362258024053, 0.72152814), 0.0, 0.0, 0.0,
+		"unpowered-climb")
+	_add(spans, metadata, propulsion, "climb/level", 3.20659393, "moving",
+		Motion.quintic(0.72152814, 1.0), 0.0, 0.0, 0.0, "unpowered-climb")
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	_begin_gesture(gestures, "clifftop-suspense", spans.size())
+	var slow_bank := deg_to_rad(39.1243426617973)
+	var slow_shoulder_s := 0.60483895572582
+	var slow_normal := 1.2403722803347
+	var slow_roll := slow_bank / (slow_shoulder_s * Motion.PLATEAU_PULSE_AREA)
+	_add(spans, metadata, propulsion, "rim/slow-crest-in", slow_shoulder_s, "moving",
+		Motion.quintic(1.0, slow_normal), 0.0, 0.0,
+		Motion.plateau_pulse(slow_roll * hand), "slow-crest")
+	_add(spans, metadata, propulsion, "rim/slow-crest-core", 2.37191694497677, "moving",
+		slow_normal, 0.0, 0.0, 0.0, "slow-crest")
+	_add(spans, metadata, propulsion, "rim/slow-crest-out", slow_shoulder_s, "moving",
+		Motion.quintic(slow_normal, 1.0), 0.0, 0.0,
+		Motion.plateau_pulse(-slow_roll * hand), "slow-crest")
+	var rim_bank := deg_to_rad(49.9686662300867)
+	var rim_normal := 1.0 / cos(rim_bank)
+	var rim_roll := rim_bank / COMPACT_PULSE_AREA
+	_add(spans, metadata, propulsion, "rim/outward-bank", 1.0, "moving",
+		Motion.quintic(1.0, rim_normal), 0.0, 0.0,
+		Motion.compact_pulse(rim_roll * hand), "outward-rim", 0, 2.0, "turn")
+	_add(spans, metadata, propulsion, "rim/outward-arc", 2.01632319951879, "moving",
+		rim_normal, 0.0, 0.0, 0.0, "outward-rim", 0, 2.0, "turn")
+	_add(spans, metadata, propulsion, "rim/outward-release", 1.0, "moving",
+		Motion.quintic(rim_normal, 1.0), 0.0, 0.0,
+		Motion.compact_pulse(-rim_roll * hand), "outward-rim", 0, 2.0, "turn")
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	_begin_gesture(gestures, "cliff-dive", spans.size(), "dive")
+	# Keep the car above the shelf while it commits outward; the vertical fall begins
+	# only after the track has reached the escarpment face.
+	var dive_bank := deg_to_rad(25.0)
+	var dive_turn_normal := 1.0 / cos(dive_bank)
+	var dive_roll := dive_bank / (0.8 * COMPACT_PULSE_AREA)
+	_add(spans, metadata, propulsion, "dive/outward-bank", 0.8, "moving",
+		Motion.quintic(1.0, dive_turn_normal), 0.0, 0.0,
+		Motion.compact_pulse(dive_roll * hand), "commit")
+	_add(spans, metadata, propulsion, "dive/face-approach", 1.0, "moving",
+		dive_turn_normal, 0.0, 0.0, 0.0, "commit")
+	_add(spans, metadata, propulsion, "dive/outward-release", 0.8, "moving",
+		Motion.quintic(dive_turn_normal, 1.0), 0.0, 0.0,
+		Motion.compact_pulse(-dive_roll * hand), "commit")
+	_add(spans, metadata, propulsion, "dive/commit", 1.08383328, "moving",
+		Motion.quintic(1.0, -1.17822413), 0.0, 0.0, 0.0, "commit")
+	_add(spans, metadata, propulsion, "dive/vertical-entry", 2.28378690, "moving",
+		Motion.quintic(-1.17822413, 0.0), 0.0, 0.0, 0.0, "vertical-entry")
+	_add(spans, metadata, propulsion, "dive/core", 1.12, "moving",
+		0.0, 0.0, 0.0, 0.0, "core", 0, 2.0, "dive")
+	_add(spans, metadata, propulsion, "dive/pullout", 1.58495784, "moving",
+		Motion.quintic(0.0, 4.87237708), 0.0, 0.0, 0.0, "pullout")
+	_add(spans, metadata, propulsion, "dive/pullout-release", 3.05526825, "moving",
+		Motion.quintic(4.87237708, 1.0), 0.0, 0.0, 0.0, "exit")
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	_begin_gesture(gestures, "tunnel-lsm3", spans.size())
+	_add(spans, metadata, propulsion, "tunnel/lsm3-entry", 0.30, "moving",
+		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 1.15),
+		Motion.constant(0.0), "core", 3)
+	_add(spans, metadata, propulsion, "tunnel/lsm3-core", 1.633337, "moving",
+		1.0, 0.0, 1.15, 0.0, "core", 3)
+	_add(spans, metadata, propulsion, "tunnel/lsm3-release", 0.30, "moving",
+		1.0, 0.0, Motion.quintic(1.15, 0.0), 0.0, "core", 3)
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+
+
+static func _add_camelback(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+) -> void:
+	var turn := -0.25001368 * hand
+	var positive_g := 4.60068864065765
+	var negative_g := -1.55352865073772
+	var pullout_g := 5.2662035249371
+	var pullout_hold_s := 0.01
+	var pullup_s := 1.87949032 * 1.33555111055541
+	var unload_s := 3.01169597 * 1.15 - 0.4
+	var crest_s := 3.62587650 * 1.06
+	var fall_s := 3.25
+	var bank := -deg_to_rad(18.0) * hand
+	_add(spans, metadata, propulsion, "camelback/pull-up",
+		pullup_s, "moving",
+		Motion.quintic(1.0, positive_g), Motion.compact_pulse(turn), 0.0,
+		Motion.compact_pulse(bank / (pullup_s * COMPACT_PULSE_AREA)), "rise")
+	_add(spans, metadata, propulsion, "camelback/rise-hold", 0.4, "moving",
+		positive_g, Motion.compact_pulse(turn), 0.0, 0.0, "rise")
+	_add(spans, metadata, propulsion, "camelback/unload",
+		unload_s, "moving", Motion.quintic(positive_g, negative_g),
+		Motion.compact_pulse(turn), 0.0,
+		Motion.compact_pulse(-bank / (unload_s * COMPACT_PULSE_AREA)), "rise")
+	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
+		negative_g, Motion.compact_pulse(-turn), 0.0,
+		Motion.compact_pulse(-bank / (crest_s * COMPACT_PULSE_AREA)), "crest")
+	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
+		Motion.quintic(negative_g, pullout_g), Motion.compact_pulse(-turn), 0.0,
+		Motion.compact_pulse(bank / (fall_s * COMPACT_PULSE_AREA)), "fall")
+	_add(spans, metadata, propulsion, "camelback/pullout-hold", pullout_hold_s, "moving",
+		pullout_g, 0.0, 0.0, 0.0, "exit")
+	_add(spans, metadata, propulsion, "camelback/pullout-release",
+		1.58 - pullout_hold_s, "moving",
+		Motion.quintic(pullout_g, 1.0), 0.0, 0.0, 0.0, "exit")
+
+
+static func _add_opener(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+) -> void:
+	var area := COMPACT_PULSE_AREA
+	var unbank_ramp_s := 0.115
+	var unbank_hold_s := 0.22012288
+	var normal_recovery_s := 0.18512288
+	var normal_mid_g := 3.46722071542319
+	var unbank_peak_rad_s := 0.6981317 / (unbank_ramp_s + unbank_hold_s)
+	_add(spans, metadata, propulsion, "drop/rise", 0.74281671, "moving",
+		Motion.quintic(1.0, 4.99988044), 0.0, 0.0, 0.0,
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/bank-unload", 1.99998272, "moving",
+		Motion.quintic(4.99988044, -0.58313246),
+		Motion.quintic(0.0, 0.6998747 * hand), 0.0,
+		Motion.compact_pulse(0.976431 * hand / (area * 1.99998272)),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/core", 2.13984425, "moving",
+		-0.58313246, 0.6998747 * hand, 0.0, 0.0,
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/pullout", 3.67807081, "moving",
+		Motion.quintic(-0.58313246, 4.99988044),
+		Motion.quintic(0.6998747 * hand, 0.0), 0.0, 0.0,
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/unbank-in", unbank_ramp_s, "moving",
+		Motion.quintic(4.99988044, normal_mid_g), 0.0, 0.0,
+		Motion.quintic(0.0, -unbank_peak_rad_s * hand),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/unbank-recover", normal_recovery_s, "moving",
+		Motion.quintic(normal_mid_g, 1.0), 0.0, 0.0,
+		Motion.constant(-unbank_peak_rad_s * hand),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/unbank-hold",
+		unbank_hold_s - normal_recovery_s, "moving",
+		1.0, 0.0, 0.0, Motion.constant(-unbank_peak_rad_s * hand),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/unbank-out", unbank_ramp_s, "moving",
+		1.0, 0.0, 0.0, Motion.quintic(-unbank_peak_rad_s * hand, 0.0),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+
+	var teardrop_shoulder_s := 1.9827842973471
+	var teardrop_bank_in := 1.35023678543837
+	var teardrop_bank_out := 1.39946086214734
+	_add(spans, metadata, propulsion, "teardrop/bank-in", teardrop_shoulder_s, "moving",
+		Motion.quintic(1.0, 1.62427620902668),
+		Motion.quintic(0.0, -0.71527254431284 * hand),
+		0.0, Motion.compact_pulse(teardrop_bank_in * hand / (area * teardrop_shoulder_s)),
+		"teardrop", 0, 2.0, "overbank")
+	_add(spans, metadata, propulsion, "teardrop/overbanked-arc", 5.13321184, "moving",
+		1.62427620902668, -0.71527254431284 * hand, 0.0, 0.0,
+		"teardrop", 0, 2.0, "overbank")
+	_add(spans, metadata, propulsion, "teardrop/bank-out", teardrop_shoulder_s, "moving",
+		Motion.quintic(1.62427620902668, 1.0),
+		Motion.quintic(-0.71527254431284 * hand, 0.0),
+		0.0, Motion.compact_pulse(-teardrop_bank_out * hand / (area * teardrop_shoulder_s)),
+		"teardrop", 0, 2.0, "overbank")
+
+	_add(spans, metadata, propulsion, "release/rise", 0.75, "moving",
+		Motion.quintic(1.0, 3.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/unload", 1.25, "moving",
+		Motion.quintic(3.0, -0.4), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/crest", 1.69130027908317, "moving",
+		-0.4, 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/fall", 1.67317387630012, "moving",
+		Motion.quintic(-0.4, 3.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "release/settle", 0.4, "moving",
+		Motion.quintic(3.0, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
+
+
+static func _add_story_act_one(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+) -> void:
+	var area := COMPACT_PULSE_AREA
 	_add(spans, metadata, propulsion, "act-one/immelmann-entry", 0.33, "moving",
 		Motion.quintic(1.0, 5.2), 0.0, 0.0, 0.0, "giant-inversion", 0, 2.0, "immelmann")
-	_add(spans, metadata, propulsion, "act-one/immelmann-hold", 2.838395758344, "moving",
+	_add(spans, metadata, propulsion, "act-one/immelmann-hold", 2.93637456, "moving",
 		5.2, 0.0, 0.0, 0.0, "giant-inversion", 0, 2.0, "immelmann")
 	_add(spans, metadata, propulsion, "act-one/immelmann-unload", 0.49, "moving",
 		Motion.quintic(5.2, -1.0), 0.0, 0.0, 0.0,
 		"giant-inversion", 0, 2.0, "immelmann")
-	_add(spans, metadata, propulsion, "act-one/immelmann-roll", 1.75, "moving",
-		Motion.quintic(-1.0, 0.0), Motion.compact_pulse(1.5), 0.0,
-		Motion.compact_pulse(deg_to_rad(118.8)), "giant-inversion", 0, 2.0, "immelmann")
-	_add(spans, metadata, propulsion, "act-one/immelmann-recover", 1.75, "moving",
-		Motion.quintic(0.0, 1.0), Motion.compact_pulse(1.5), 0.0,
-		Motion.compact_pulse(deg_to_rad(118.8)), "giant-inversion", 0, 2.0, "immelmann")
+	_add(spans, metadata, propulsion, "act-one/immelmann-roll", 2.07647312, "moving",
+		Motion.quintic(-1.0, 0.0), Motion.compact_pulse(1.13212909 * hand), 0.0,
+		Motion.compact_pulse(PI * hand / (2.0 * area * 2.07647312)),
+		"giant-inversion", 0, 2.0, "immelmann")
+	_add(spans, metadata, propulsion, "act-one/immelmann-recover", 2.47289653, "moving",
+		Motion.quintic(0.0, 2.28038016), Motion.compact_pulse(1.13212909 * hand), 0.0,
+		Motion.compact_pulse(PI * hand / (2.0 * area * 2.47289653)),
+		"giant-inversion", 0, 2.0, "immelmann")
+	_add(spans, metadata, propulsion, "act-one/immelmann-settle", 0.53603802, "moving",
+		Motion.quintic(2.28038016, 1.0), 0.0, 0.0, 0.0,
+		"giant-inversion", 0, 2.0, "immelmann")
 
 	_add(spans, metadata, propulsion, "act-one/cutback-entry", 0.80036457, "moving",
 		Motion.quintic(1.0, 4.16194327), 0.0, 0.0,
-		Motion.compact_pulse(deg_to_rad(108.213109)), "cutback", 0, 2.0, "cutback")
+		Motion.compact_pulse(deg_to_rad(108.213109) * hand), "cutback", 0, 2.0, "cutback")
 	_add(spans, metadata, propulsion, "act-one/cutback-arc", 1.67497928, "moving",
 		Motion.quintic(4.16194327, 2.62954854), 0.0, 0.0,
-		Motion.compact_pulse(deg_to_rad(108.213109)), "cutback", 0, 2.0, "cutback")
+		Motion.compact_pulse(deg_to_rad(108.213109) * hand), "cutback", 0, 2.0, "cutback")
 	_add(spans, metadata, propulsion, "act-one/cutback-reverse", 2.52077154, "moving",
 		Motion.quintic(2.62954854, 3.82368727), 0.0, 0.0,
-		Motion.compact_pulse(deg_to_rad(-50.80747228)), "cutback", 0, 2.0, "cutback")
+		Motion.compact_pulse(deg_to_rad(-50.80747228) * hand), "cutback", 0, 2.0, "cutback")
 	_add(spans, metadata, propulsion, "act-one/cutback-release", 1.17767523, "moving",
 		Motion.quintic(3.82368727, 1.0), 0.0, 0.0,
-		Motion.compact_pulse(deg_to_rad(-50.80747228)), "cutback", 0, 2.0, "cutback")
+		Motion.compact_pulse(deg_to_rad(-50.80747228) * hand), "cutback", 0, 2.0, "cutback")
+	_add(spans, metadata, propulsion, "act-one/cutback-recover", 0.3, "moving",
+		Motion.quintic(1.0, 3.69449176), 0.0, 0.0, 0.0, "cutback", 0, 2.0, "cutback")
+	_add(spans, metadata, propulsion, "act-one/cutback-settle", 0.3, "moving",
+		Motion.quintic(3.69449176, 1.0), 0.0, 0.0, 0.0, "cutback", 0, 2.0, "cutback")
 
-	_add(spans, metadata, propulsion, "act-one/loop-entry", 0.3, "moving",
-		Motion.quintic(1.0, 4.40341684728708), Motion.compact_pulse(0.9), 0.0, 0.0,
+	var loop_positive_g := 4.6
+	var loop_rise_s := 3.6
+	var loop_fall_s := 1.925
+	_add(spans, metadata, propulsion, "act-one/loop-entry", 1.0, "moving",
+		Motion.quintic(1.0, loop_positive_g), Motion.compact_pulse(0.2 * hand), 0.0, 0.0,
 		"giant-inversion", 0, 2.0, "loop")
-	_add(spans, metadata, propulsion, "act-one/loop-lower-hold", 0.25, "moving",
-		4.40341684728708, Motion.compact_pulse(0.9), 0.0, 0.0,
+	_add(spans, metadata, propulsion, "act-one/loop-rise", loop_rise_s, "moving",
+		loop_positive_g, Motion.compact_pulse(0.2 * hand), 0.0, 0.0,
 		"giant-inversion", 0, 2.0, "loop")
-	_add(spans, metadata, propulsion, "act-one/loop-rise", 2.4780474553844765, "moving",
-		Motion.quintic(4.40341684728708, 5.2), Motion.compact_pulse(0.9), 0.0, 0.0,
-		"giant-inversion", 0, 2.0, "loop")
-	_add(spans, metadata, propulsion, "act-one/loop-fall", 2.4780474553844765, "moving",
-		Motion.quintic(5.2, 4.40341684728708), Motion.compact_pulse(-0.9), 0.0, 0.0,
-		"giant-inversion", 0, 2.0, "loop")
-	_add(spans, metadata, propulsion, "act-one/loop-upper-hold", 0.25, "moving",
-		4.40341684728708, Motion.compact_pulse(-0.9), 0.0,
-		Motion.compact_pulse(deg_to_rad(-84.344531055)), "giant-inversion", 0, 2.0, "loop")
-	_add(spans, metadata, propulsion, "act-one/loop-release", 0.3, "moving",
-		Motion.quintic(4.40341684728708, 1.0), Motion.compact_pulse(-0.9), 0.0,
-		Motion.compact_pulse(deg_to_rad(-84.344531055)), "giant-inversion", 0, 2.0, "loop")
+	_add(spans, metadata, propulsion, "act-one/loop-fall", loop_fall_s, "moving",
+		Motion.balanced_notch(loop_positive_g, 1.1),
+		Motion.compact_pulse(-0.2 * hand), 0.0,
+		Motion.compact_pulse(-0.34459064718862403 * hand), "giant-inversion", 0, 2.0, "loop")
+	_add(spans, metadata, propulsion, "act-one/loop-release", 1.0, "moving",
+		Motion.quintic(loop_positive_g, 1.0), Motion.compact_pulse(-0.2 * hand), 0.0,
+		Motion.compact_pulse(-0.34459064718862403 * hand), "giant-inversion", 0, 2.0, "loop")
 
-	_add(spans, metadata, propulsion, "act-one/airtime-pull-up", 0.48089366108653, "moving",
-		Motion.quintic(1.0, 5.19999979865927), 0.0, 0.0, 0.0,
-		"airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-unload", 0.48089366108653, "moving",
-		Motion.quintic(5.19999979865927, -0.45), 0.0, 0.0, 0.0,
-		"airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-crest", 2.40, "moving",
-		-0.45, 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-fall", 0.52, "moving",
-		Motion.quintic(-0.45, 5.199946698098), 0.0, 0.0, 0.0,
-		"airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-release", 0.52, "moving",
-		Motion.quintic(5.199946698098, 1.0), 0.0, 0.0, 0.0,
-		"airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-pull-up", 0.7246134969, "moving",
+		Motion.quintic(1.0, 3.60671666363852), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-unload", 0.7246134969, "moving",
+		Motion.quintic(3.60671666363852, -0.31), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-crest", 2.0893089979, "moving",
+		-0.31, 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-fall", 0.7222022717, "moving",
+		Motion.quintic(-0.31, 3.60671666363852), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-release", 0.7222022717, "moving",
+		Motion.quintic(3.60671666363852, 1.0), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
 
-	_add(spans, metadata, propulsion, "act-one/wave-rise", 0.500000000067, "moving",
-		Motion.quintic(1.0, 4.42), Motion.compact_pulse(0.50), 0.0,
-		Motion.compact_pulse(deg_to_rad(120.0)), "wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-unload", 0.500000000067, "moving",
-		Motion.quintic(4.42, -0.599999972), Motion.compact_pulse(0.50), 0.0,
-		Motion.compact_pulse(deg_to_rad(120.0)), "wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-crest", 2.52, "moving",
-		-0.599999972, Motion.compact_pulse(0.50), 0.0, 0.0,
+	var wave_bank := PI / 4.0
+	var wave_unload_s := 0.465
+	var wave_crest_s := 1.5585438924091
+	var wave_recover_s := 0.424869716970738
+	var wave_exit_total_s := 1.1
+	var wave_exit_angle := 0.48211374457049
+	var wave_bank_in := wave_bank / (area * 0.9)
+	var wave_cross := 2.0 * wave_bank \
+		/ (area * (wave_unload_s + wave_crest_s + wave_recover_s))
+	var wave_bank_out := wave_exit_angle / (area * wave_exit_total_s)
+	_add(spans, metadata, propulsion, "act-one/wave-bank-rise", 0.9, "moving",
+		Motion.quintic(1.0, 5.1999981231), 0.0, 0.0,
+		Motion.compact_pulse(-wave_bank_in * hand), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-first-peak", 0.35, "moving",
+		5.1999981231, 0.0, 0.0, 0.0, "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-unload", wave_unload_s, "moving",
+		Motion.quintic(5.1999981231, -0.9999995365), 0.0, 0.0,
+		Motion.compact_pulse(wave_cross * hand), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-crest", wave_crest_s, "moving",
+		-0.9999995365, 0.0, 0.0, Motion.compact_pulse(wave_cross * hand),
 		"wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-fall", 1.14, "moving",
-		Motion.quintic(-0.599999972, 5.2), Motion.compact_pulse(0.50), 0.0,
-		Motion.compact_pulse(deg_to_rad(-44.56)), "wave-turn", 0, 2.0, "wave_turn")
-	_add(spans, metadata, propulsion, "act-one/wave-release", 1.14, "moving",
-		Motion.quintic(5.2, 1.0), Motion.compact_pulse(0.50), 0.0,
-		Motion.compact_pulse(deg_to_rad(-44.56)), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-recover", wave_recover_s, "moving",
+		Motion.quintic(-0.9999995365, 2.7007134553), 0.0, 0.0,
+		Motion.compact_pulse(wave_cross * hand), "wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-second-peak", 0.45, "moving",
+		2.7007134553, 0.0, 0.0, Motion.compact_pulse(-wave_bank_out * hand),
+		"wave-turn", 0, 2.0, "wave_turn")
+	_add(spans, metadata, propulsion, "act-one/wave-release", 0.65, "moving",
+		Motion.quintic(2.7007134553, 1.0), 0.0, 0.0,
+		Motion.compact_pulse(-wave_bank_out * hand), "wave-turn", 0, 2.0, "wave_turn")
 
 
 static func _add_raceway(
-	s: Array, m: Array, p: PackedInt32Array, parameters: Array = []
+	s: Array, m: Array, p: PackedInt32Array, parameters: Array = [], hand: float = 1.0,
+	initial_bank_rad: float = 0.0
 ) -> void:
-	var authored := _return_spans(RETURN_SEED if parameters.is_empty() else parameters)
+	var authored := _return_spans(
+		RETURN_SEED if parameters.is_empty() else parameters, hand, initial_bank_rad)
 	var role_ids := ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"]
-	var role_ends := [3, 7, 10, 15]
+	var role_ends := [6, 11, 14, 19]
 	var first := 0
 	for role_index in 4:
 		for i in range(first, role_ends[role_index]):
@@ -392,28 +604,58 @@ static func _add_raceway(
 		first = role_ends[role_index]
 
 
-static func _return_spans(v: Array) -> Array:
-	var normal_a := 1.0 / cos(float(v[0]))
-	var normal_b := 1.0 / cos(float(v[3]))
-	var low_a := 0.5 - 0.25 / float(v[2])
-	var roll_a := float(v[0]) / (1.5 * COMPACT_PULSE_AREA)
-	var roll_b := float(v[3]) / (1.5 * COMPACT_PULSE_AREA)
+static func _return_spans(
+	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0
+) -> Array:
+	var turn_a_bank_rad := float(v[0])
+	var turn_b_bank_rad := float(v[3])
+	var height_b_peak_g := RETURN_HEIGHT_B_PEAK_G
+	var transfer_bank_bias_rad := RETURN_TRANSFER_BANK_BIAS_RAD
+	var transfer_bank_rad := deg_to_rad(37.5)
+	var first_transfer_bank_rad := hand * (transfer_bank_rad + transfer_bank_bias_rad)
+	var counter_transfer_bank_rad := -hand * (transfer_bank_rad - transfer_bank_bias_rad)
+	var transfer_mid_bank_rad := lerpf(
+		first_transfer_bank_rad, counter_transfer_bank_rad, 0.6 / 1.6)
+	var turn_a_normal := 1.0 / cos(turn_a_bank_rad)
+	var turn_b_normal := 1.0 / cos(turn_b_bank_rad)
+	var turn_a_entry_s := 1.1
+	var turn_a_roll := (hand * turn_a_bank_rad - initial_bank_rad) \
+		/ (turn_a_entry_s * COMPACT_PULSE_AREA)
+	var turn_b_bank_rad_signed := -hand * turn_b_bank_rad
+	var turn_b_entry_mid_rad := turn_b_bank_rad_signed * (0.75 / 1.55)
+	var turn_b_exit_mid_rad := turn_b_bank_rad_signed * 0.5
+	var turn_b_entry_mid_normal := 1.0 / cos(turn_b_entry_mid_rad)
+	var turn_b_exit_mid_normal := 1.0 / cos(turn_b_exit_mid_rad)
 	return [
-		_return_span("raceway/turn-a/entry", 1.5, 1.0, normal_a, roll_a),
-		_return_span("raceway/turn-a/core", v[1], normal_a, normal_a),
-		_return_span("raceway/turn-a/exit", 1.5, normal_a, 1.0, -roll_a),
-		_return_span("raceway/height-a/pullup", 0.5, 1.0, 1.5),
-		_return_span("raceway/height-a/unload", v[2], 1.5, low_a),
-		_return_span("raceway/height-a/recovery", v[2], low_a, 1.5),
-		_return_span("raceway/height-a/release", 0.5, 1.5, 1.0),
-		_return_span("raceway/turn-b/entry", 1.5, 1.0, normal_b, roll_b),
-		_return_span("raceway/turn-b/core", v[4], normal_b, normal_b),
-		_return_span("raceway/turn-b/exit", 1.5, normal_b, 1.0, -roll_b),
-		_return_span("raceway/height-b/pullup", 0.4, 1.0, 2.5),
-		_return_span("raceway/height-b/unload", 1.4, 2.5, -0.6),
-		_return_span("raceway/height-b/crest", 0.4, -0.6, -0.6),
-		_return_span("raceway/height-b/recovery", v[5], -0.6, 2.5),
-		_return_span("raceway/height-b/release", 0.4, 2.5, 1.0),
+		Motion.span("raceway/turn-a/entry", turn_a_entry_s, "moving",
+			Motion.quintic(1.0, turn_a_normal), Motion.constant(0.0),
+			Motion.constant(0.0), Motion.compact_pulse(turn_a_roll)),
+		_return_span("raceway/turn-a/core", float(v[1]), turn_a_normal, turn_a_normal),
+		_return_bank_span("raceway/turn-a/exit", 0.9,
+			hand * turn_a_bank_rad, first_transfer_bank_rad),
+		_return_bank_span("raceway/turn-a/transfer-bank", 0.6,
+			first_transfer_bank_rad, transfer_mid_bank_rad),
+		_return_bank_span("raceway/turn-a/transfer-cross", 1.0,
+			transfer_mid_bank_rad, counter_transfer_bank_rad),
+		_return_bank_span("raceway/turn-a/transfer-unbank", 0.6,
+			counter_transfer_bank_rad, 0.0),
+		_return_span("raceway/height-a/pullup", 0.75, 1.0, 3.8),
+		_return_span("raceway/height-a/unload", 1.05, 3.8, -0.45),
+		_return_span("raceway/height-a/airtime", 0.75, -0.45, -0.45),
+		_return_span("raceway/height-a/recovery", float(v[2]), -0.45, 3.8),
+		_return_span("raceway/height-a/release", 0.75, 3.8, turn_b_entry_mid_normal,
+			turn_b_entry_mid_rad / (0.75 * COMPACT_PULSE_AREA)),
+		_return_bank_span("raceway/turn-b/entry", 0.8,
+			turn_b_entry_mid_rad, turn_b_bank_rad_signed),
+		_return_span("raceway/turn-b/core", float(v[4]), turn_b_normal, turn_b_normal),
+		_return_bank_span("raceway/turn-b/exit", 0.8,
+			turn_b_bank_rad_signed, turn_b_exit_mid_rad),
+		_return_span("raceway/height-b/pullup", 0.8, turn_b_exit_mid_normal, height_b_peak_g,
+			-turn_b_exit_mid_rad / (0.8 * COMPACT_PULSE_AREA)),
+		_return_span("raceway/height-b/unload", 1.2, height_b_peak_g, -0.5),
+		_return_span("raceway/height-b/airtime", float(v[5]), -0.5, -0.5),
+		_return_span("raceway/height-b/recovery", float(v[6]), -0.5, height_b_peak_g),
+		_return_span("raceway/height-b/release", 0.8, height_b_peak_g, 1.0),
 	]
 
 
@@ -426,99 +668,83 @@ static func _return_span(id: String, duration_s: float, from_g: float, to_g: flo
 		Motion.constant(0.0), roll)
 
 
-static func _solve_return(start: Dictionary, layout: Dictionary) -> Dictionary:
-	var parameters := RETURN_SEED.duplicate()
+static func _return_bank_span(
+	id: String, duration_s: float, from_bank_rad: float, to_bank_rad: float
+) -> Dictionary:
+	var roll_amplitude := (to_bank_rad - from_bank_rad) \
+		/ (duration_s * COMPACT_PULSE_AREA)
+	return Motion.span(id, duration_s, "moving",
+		Motion.bank_balance(from_bank_rad, to_bank_rad), Motion.constant(0.0),
+		Motion.constant(0.0), Motion.compact_pulse(roll_amplitude))
+
+
+static func _solve_return(
+	start: Dictionary, layout: Dictionary, hand: float = 1.0, seed: Array = RETURN_SEED
+) -> Dictionary:
 	var cache := {}
-	var deltas := []
-	for index in 6:
-		deltas.append(maxf(0.00001, 0.001 * (
-			RETURN_PARAMETER_BOUNDS[index][1] - RETURN_PARAMETER_BOUNDS[index][0])))
-	var evaluate := func(candidate: Array) -> Dictionary:
-		return _return_evaluation(
-			start, layout, candidate, _settings(COARSE_STEP_S), cache)
-	for _update in 2:
-		var base: Dictionary = evaluate.call(parameters)
-		if not base.ok:
-			return base
-		var finite_difference := _finite_difference_jacobian(
-			parameters, base.scaled, RETURN_PARAMETER_BOUNDS, deltas, evaluate)
-		if not finite_difference.ok:
-			return finite_difference
-		_normalize_return_jacobian(finite_difference.jacobian)
-		var step := _linear_solve(finite_difference.jacobian, base.scaled)
-		if step.is_empty():
-			return _failure("return Jacobian is singular", "return",
-				{"evaluation_count": cache.size()})
-		var normalized_size := 0.0
-		for value in step:
-			normalized_size = maxf(normalized_size, absf(float(value)))
-		var step_scale := minf(1.0, 0.5 / normalized_size) if normalized_size > 0.0 else 1.0
-		for index in 6:
-			var half_range: float = 0.5 * (
-				RETURN_PARAMETER_BOUNDS[index][1] - RETURN_PARAMETER_BOUNDS[index][0])
-			parameters[index] = clampf(parameters[index] - step_scale * step[index] * half_range,
-				RETURN_PARAMETER_BOUNDS[index][0], RETURN_PARAMETER_BOUNDS[index][1])
-	var coarse: Dictionary = evaluate.call(parameters)
-	if not coarse.ok:
+	var initial_bank_rad: float = _capture_residuals(start, layout)[4]
+	var lower := []
+	var upper := []
+	for bound: Array in RETURN_SCALAR_BOUNDS:
+		lower.append(bound[0])
+		upper.append(bound[1])
+	var residual := func(candidate: Array) -> Array:
+		var observed := _return_evaluation(
+			start, layout, candidate, _settings(PRODUCTION_STEP_S), cache, hand,
+			initial_bank_rad)
+		return observed.scaled if observed.get("ok", false) else [INF]
+	var solved := BoundedSolver.solve(
+		residual, lower, upper, seed, MAX_RETURN_EVALUATIONS - 1)
+	if not solved.get("ok", false):
+		return _failure("return did not reach its physical target", "return",
+			{"evaluation_count": solved.get("evaluations", cache.size()),
+				"solver_status": solved.get("status", "invalid"),
+				"accepted_values": solved.get("x", []),
+				"target_error": solved.get("residuals", [])})
+	var parameters: Array = solved.x
+	var coarse := _return_evaluation(
+		start, layout, parameters, _settings(FINE_STEP_S), cache, hand, initial_bank_rad)
+	if not coarse.get("ok", false):
 		return coarse
-	var accepted_difference := _finite_difference_jacobian(
-		parameters, coarse.scaled, RETURN_PARAMETER_BOUNDS, deltas, evaluate)
-	if not accepted_difference.ok:
-		return accepted_difference
-	_normalize_return_jacobian(accepted_difference.jacobian)
-	var conditioning := _matrix_conditioning(accepted_difference.jacobian)
-	conditioning["evaluated_vector"] = parameters.duplicate()
-	if not conditioning.ok:
-		return _failure("return Jacobian is ill-conditioned", "return",
-			{"evaluation_count": cache.size(), "conditioning": conditioning})
 	var fine := _return_evaluation(
-		start, layout, parameters, _settings(FINE_STEP_S), cache)
+		start, layout, parameters, _settings(PRODUCTION_STEP_S), cache, hand, initial_bank_rad)
 	if not fine.ok:
 		return fine
+	if _maximum_absolute(fine.scaled) > 0.02:
+		return _failure("return fine solve misses its physical target", "return",
+			{"evaluation_count": cache.size(), "accepted_values": parameters,
+				"target_error": fine.scaled, "observed": fine.observation})
 	if not _margins_are_valid(coarse.margins) or not _margins_are_valid(fine.margins):
 		return _failure("solved return misses the capture-entry basin", "return",
-			{"evaluation_count": cache.size(), "margins": fine.margins})
-	if _maximum_absolute(coarse.scaled) > RETURN_TARGET_TOLERANCE:
-		return _failure("return did not reach its fixed station-local target", "return",
-			{"evaluation_count": cache.size(), "target_error": coarse.scaled})
-	for index in 6:
+			{"evaluation_count": cache.size(), "accepted_values": parameters,
+				"observed": fine.observation, "margins": fine.margins})
+	for index in RETURN_RESIDUAL_IDS.size():
 		if absf(fine.residuals[index] - coarse.residuals[index]) \
 				> RETURN_FINE_TOLERANCES[index]:
 			return _failure("return coarse/fine observations disagree", "return",
 				{"evaluation_count": cache.size(), "coarse": coarse.residuals,
-				"fine": fine.residuals})
+					"fine": fine.residuals})
 	var margins: Dictionary = fine.margins.duplicate(true)
-	for index in 6:
-		margins["parameter_%s" % RETURN_PARAMETER_IDS[index]] = minf(
-			parameters[index] - RETURN_PARAMETER_BOUNDS[index][0],
-			RETURN_PARAMETER_BOUNDS[index][1] - parameters[index])
-	return {"ok": true, "parameters": parameters, "report": {
-		"parameter_ids": RETURN_PARAMETER_IDS,
-		"parameter_bounds": RETURN_PARAMETER_BOUNDS, "accepted_values": parameters,
-		"residual_ids": RETURN_OUTPUT_IDS, "residual_bounds": RETURN_OUTPUT_BOUNDS,
+	for index in parameters.size():
+		margins["scalar_%s" % RETURN_SCALAR_IDS[index]] = minf(
+			parameters[index] - RETURN_SCALAR_BOUNDS[index][0],
+			RETURN_SCALAR_BOUNDS[index][1] - parameters[index])
+	return {"ok": true, "parameters": parameters, "initial_bank_rad": initial_bank_rad,
+		"report": {
+		"scalar_ids": RETURN_SCALAR_IDS,
+		"scalar_bounds": RETURN_SCALAR_BOUNDS, "accepted_values": parameters,
+		"residual_ids": RETURN_RESIDUAL_IDS,
 		"coarse_fine_tolerances": RETURN_FINE_TOLERANCES,
 		"unique_evaluations": cache.size(), "max_unique_evaluations": MAX_RETURN_EVALUATIONS,
-		"coarse_observation": coarse.residuals, "fine_observation": fine.residuals,
-		"conditioning": conditioning, "margins": margins,
+		"solver_status": solved.status, "solver_iterations": solved.iterations,
+		"solver_conditioning": solved.conditioning,
+		"coarse_observation": coarse.observation, "fine_observation": fine.observation,
+		"margins": margins,
+		"return_entry_gate": {"source": "derived-terminal-corridor",
+			"position_m": start.position_m, "tangent": start.tangent,
+			"up": start.rider_up, "speed_mps": start.speed_mps,
+			"corridor_approach_length_m": _approach_length(layout)},
 		"positive_drive_allowed": false}}
-
-
-static func _return_target_error(observation: Array) -> Array:
-	var result := []
-	for index in 6:
-		var difference: float = observation[index] - RETURN_TARGET[index]
-		if index >= 3:
-			difference = wrapf(difference, -PI, PI)
-		result.append(difference / RETURN_OUTPUT_SCALES[index])
-	return result
-
-
-static func _normalize_return_jacobian(jacobian: Array) -> void:
-	for column in 6:
-		var half_range: float = 0.5 * (
-			RETURN_PARAMETER_BOUNDS[column][1] - RETURN_PARAMETER_BOUNDS[column][0])
-		for row in 6:
-			jacobian[row][column] *= half_range
 
 
 static func _maximum_absolute(values: Array) -> float:
@@ -529,7 +755,8 @@ static func _maximum_absolute(values: Array) -> float:
 
 
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
-	settings: Dictionary, cache: Dictionary) -> Dictionary:
+	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
+	initial_bank_rad: float = 0.0) -> Dictionary:
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)
@@ -538,29 +765,69 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	if cache.size() >= MAX_RETURN_EVALUATIONS:
 		return _failure("return exceeded its evaluation cap", "return",
 			{"evaluation_count": cache.size()})
-	var route := Motion.integrate(start, _return_spans(parameters), settings)
+	var route := Motion.integrate(
+		start, _return_spans(parameters, hand, initial_bank_rad), settings)
 	if not route.get("ok", false):
 		var failed := _failure("return candidate failed integration", "return",
 			{"evaluation_count": cache.size() + 1})
 		cache[key] = failed
 		return failed
 	var result := _return_observation(route, layout)
-	result["scaled"] = _return_target_error(result.residuals)
+	result["scaled"] = []
+	for index in RETURN_RESIDUAL_IDS.size():
+		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
 	cache[key] = result
 	return result
 
 
 static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictionary:
 	var state := _last_state(route)
+	var station_forward: Vector3 = layout.station_tangent.normalized()
+	var station_up: Vector3 = layout.station_up.normalized()
+	var station_right := station_forward.cross(station_up).normalized()
+	station_up = station_right.cross(station_forward).normalized()
+	var forward: float = (state.position_m - layout.station_position_m).dot(station_forward)
+	var approach := _approach_length(layout)
 	var capture := _capture_residuals(state, layout)
-	var residuals := [(state.position_m - layout.station_position_m).dot(
-		layout.station_tangent.normalized()), capture[1], capture[0], capture[2], capture[3], capture[4]]
-	var margins := {}
-	for index in 6:
-		margins["basin_%s" % RETURN_OUTPUT_IDS[index]] = minf(
-			residuals[index] - RETURN_OUTPUT_BOUNDS[index][0],
-			RETURN_OUTPUT_BOUNDS[index][1] - residuals[index])
-	return {"ok": true, "residuals": residuals, "margins": margins}
+	var route_length_band: Vector2 = layout.get(
+		"route_length_m", RETURN_TOTAL_LENGTH_BAND_M)
+	var entry_speed_band: Vector2 = layout.get("reserved_corridor", {}).get(
+		"entry_speed_mps", CAPTURE_ENTRY_SPEED_MPS)
+	var total_length_m := float(route.distance_m[-1]) + approach
+	var half_width: float = layout.get("capture_half_width_m", 150.0)
+	var half_height: float = layout.get("capture_half_height_m", 75.0)
+	var residuals := [
+		forward + approach - RETURN_ENTRY_POSITION_PADDING_M, capture[0], capture[1],
+		state.tangent.normalized().dot(station_right),
+		state.tangent.normalized().dot(station_up),
+		_band_residual(total_length_m, route_length_band),
+		_band_residual(float(state.speed_mps), Vector2(
+			entry_speed_band.x + RETURN_ENTRY_SPEED_PADDING_MPS,
+			entry_speed_band.y - RETURN_ENTRY_SPEED_PADDING_MPS)),
+	]
+	var margins := {
+		"corridor_forward_low_m": forward + approach,
+		"corridor_forward_high_m": -0.90 * approach - forward,
+		"corridor_cross_m": half_width - absf(capture[0]),
+		"corridor_height_m": half_height - absf(capture[1]),
+		"corridor_yaw_rad": deg_to_rad(8.0) - absf(capture[2]),
+		"corridor_pitch_rad": deg_to_rad(5.0) - absf(capture[3]),
+		"corridor_roll_rad": deg_to_rad(30.0) - absf(capture[4]),
+		"entry_speed_low_mps": float(state.speed_mps) - entry_speed_band.x,
+		"entry_speed_high_mps": entry_speed_band.y - float(state.speed_mps),
+		"route_length_low_m": total_length_m - route_length_band.x,
+		"route_length_high_m": route_length_band.y - total_length_m,
+	}
+	return {"ok": true, "residuals": residuals, "margins": margins,
+		"observation": {"station_forward_m": forward, "height_m": capture[1],
+			"cross_track_m": capture[0], "yaw_rad": capture[2], "pitch_rad": capture[3],
+			"roll_rad": capture[4], "speed_mps": state.speed_mps,
+			"return_length_m": float(route.distance_m[-1]) - float(route.distance_m[0]),
+			"route_total_length_m": total_length_m}}
+
+
+static func _band_residual(value: float, band: Vector2) -> float:
+	return minf(0.0, value - band.x) + maxf(0.0, value - band.y)
 
 
 static func _margins_are_valid(margins: Dictionary) -> bool:
@@ -580,6 +847,9 @@ static func _approach_length(layout: Dictionary) -> float:
 static func station_approach_envelope() -> Dictionary:
 	return {
 		"minimum_length_m": STATION_APPROACH_LENGTH_M,
+		"capture_length_m": STATION_CAPTURE_LENGTH_M,
+		"brake_length_m": STATION_BRAKE_LENGTH_M,
+		"entry_speed_mps": CAPTURE_ENTRY_SPEED_MPS,
 		"half_width_m": CAPTURE_HALF_WIDTH_M,
 		"half_height_m": CAPTURE_HALF_HEIGHT_M,
 	}
@@ -618,6 +888,18 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 	var coefficients: Array = layout.get("capture_seed", [0.0, 0.0, 0.0, 0.0, 0.0]).duplicate()
 	if coefficients.size() != 5:
 		return _capture_failure("capture seed must contain five coefficients", 0)
+	var corridor: Variant = layout.get("reserved_corridor")
+	if not corridor is Dictionary or not corridor.get("entry_speed_mps") is Vector2:
+		return _capture_failure("capture corridor contract is incomplete", 0)
+	var brake_length_m: float = float(corridor.get("brake_length_m", NAN))
+	var entry_speed_mps: Vector2 = corridor.entry_speed_mps
+	var forward_offset_m: float = (start.position_m - layout.station_position_m).dot(
+		layout.station_tangent.normalized())
+	if not is_finite(forward_offset_m) or forward_offset_m < -_approach_length(layout) \
+			or forward_offset_m > -brake_length_m:
+		return _capture_failure("capture entry is outside its declared partition", 0)
+	if float(start.speed_mps) < entry_speed_mps.x or float(start.speed_mps) > entry_speed_mps.y:
+		return _capture_failure("capture entry speed is outside its declared band", 0)
 	for index in 5:
 		coefficients[index] = clampf(float(coefficients[index]),
 			CAPTURE_COEFFICIENT_BOUNDS[index][0], CAPTURE_COEFFICIENT_BOUNDS[index][1])
@@ -626,11 +908,13 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 	var conditioning := {}
 	var evaluate := func(candidate: Array) -> Dictionary:
 		return _capture_evaluation(start, layout, candidate, settings, cache)
-	for _iteration in 6:
+	for _iteration in 7:
 		var base := _capture_evaluation(start, layout, coefficients, settings, cache)
 		if not base.ok:
 			return base
 		residuals = base.residuals
+		if _capture_converged(residuals):
+			break
 		var finite_difference := _finite_difference_jacobian(coefficients, base.scaled,
 			CAPTURE_COEFFICIENT_BOUNDS, [0.02, 0.02, 0.02, 0.02, 0.04], evaluate)
 		if not finite_difference.ok:
@@ -640,8 +924,6 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 		if not conditioning.ok:
 			return _capture_failure("capture Jacobian is ill-conditioned", cache.size(),
 				base.residuals, base.margins, {"conditioning": conditioning})
-		if _capture_converged(residuals):
-			break
 		var step := _linear_solve(finite_difference.jacobian, base.scaled)
 		if step.is_empty():
 			return _capture_failure("capture Jacobian is singular", cache.size(),
@@ -649,24 +931,41 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 		for index in 5:
 			coefficients[index] = clampf(coefficients[index] - step[index],
 				CAPTURE_COEFFICIENT_BOUNDS[index][0], CAPTURE_COEFFICIENT_BOUNDS[index][1])
-	var coarse := _capture_evaluation(start, layout, coefficients, settings, cache)
-	if not coarse.ok:
-		return coarse
-	if not _capture_converged(coarse.residuals):
-		return _capture_failure("capture did not converge: %s" % str(coarse.residuals),
-			cache.size(), coarse.residuals, coarse.margins)
-	var fine_settings := settings.duplicate()
-	fine_settings.step_s = FINE_STEP_S
-	var fine := _capture_evaluation(start, layout, coefficients, fine_settings, cache)
+	var fine := _capture_evaluation(start, layout, coefficients, settings, cache)
 	if not fine.ok:
 		return fine
+	if not _capture_converged(fine.residuals):
+		return _capture_failure("capture did not converge: %s" % str(fine.residuals),
+			cache.size(), fine.residuals, fine.margins,
+			{"accepted_values": coefficients})
+	var coarse_settings := settings.duplicate()
+	coarse_settings.step_s = COARSE_STEP_S
+	var coarse := _capture_evaluation(start, layout, coefficients, coarse_settings, cache)
+	if not coarse.ok:
+		return coarse
 	if cache.size() > MAX_CAPTURE_EVALUATIONS:
 		return _capture_failure("capture exceeded %d unique evaluations" %
 			MAX_CAPTURE_EVALUATIONS, cache.size(), fine.residuals, fine.margins)
-	if not _capture_converged(fine.residuals) or _maximum_residual_delta(
-		coarse.residuals, fine.residuals) > 0.02:
+	if not _capture_coarse_converged(coarse.residuals) or _maximum_residual_delta(
+			coarse.residuals, fine.residuals) > 0.02:
 		return _capture_failure("capture coarse/fine residuals disagree", cache.size(),
 			fine.residuals, fine.margins, {"coarse_residuals": coarse.residuals.duplicate()})
+	if conditioning.get("evaluated_vector") != coefficients:
+		if cache.size() > MAX_CAPTURE_EVALUATIONS - coefficients.size():
+			return _capture_failure("capture lacks budget for accepted-point conditioning",
+				cache.size(), fine.residuals, fine.margins,
+				{"accepted_values": coefficients})
+		var accepted_difference := _finite_difference_jacobian(
+			coefficients, fine.scaled, CAPTURE_COEFFICIENT_BOUNDS,
+			[0.02, 0.02, 0.02, 0.02, 0.04], evaluate)
+		if not accepted_difference.ok:
+			return accepted_difference
+		conditioning = _matrix_conditioning(accepted_difference.jacobian)
+		conditioning["evaluated_vector"] = coefficients.duplicate()
+		if not conditioning.ok:
+			return _capture_failure("accepted capture Jacobian is ill-conditioned",
+				cache.size(), fine.residuals, fine.margins,
+				{"conditioning": conditioning, "accepted_values": coefficients})
 	var margins := _capture_margins(coefficients, fine.route, layout)
 	for margin in margins.values():
 		if not is_finite(float(margin)) or float(margin) < 0.0:
@@ -730,9 +1029,19 @@ static func _capture_residuals(state: Dictionary, layout: Dictionary) -> Array:
 
 
 static func _capture_converged(residuals: Array) -> bool:
-	return absf(residuals[0]) <= 0.05 and absf(residuals[1]) <= 0.05 \
-		and absf(residuals[2]) <= 0.00001 and absf(residuals[3]) <= 0.00001 \
-		and absf(residuals[4]) <= 0.00001
+	if residuals.size() != CAPTURE_RESIDUAL_TOLERANCES.size():
+		return false
+	for index in CAPTURE_RESIDUAL_TOLERANCES.size():
+		if absf(float(residuals[index])) > CAPTURE_RESIDUAL_TOLERANCES[index]:
+			return false
+	return true
+
+
+static func _capture_coarse_converged(residuals: Array) -> bool:
+	for index in CAPTURE_COARSE_RESIDUAL_TOLERANCES.size():
+		if absf(float(residuals[index])) > CAPTURE_COARSE_RESIDUAL_TOLERANCES[index]:
+			return false
+	return true
 
 
 static func _maximum_residual_delta(a: Array, b: Array) -> float:
@@ -753,11 +1062,20 @@ static func _capture_margins(
 			CAPTURE_COEFFICIENT_BOUNDS[index][1] - coefficients[index]))
 	var result := _capture_inequality_margins(route, layout)
 	var end := _last_state(route)
+	var corridor: Dictionary = layout.reserved_corridor
+	var entry_speed_mps: Vector2 = corridor.entry_speed_mps
+	var entry_forward_m: float = (route.position_m[0] - layout.station_position_m).dot(
+		layout.station_tangent.normalized())
+	var remaining_along_track_m: float = (layout.station_position_m - end.position_m).dot(
+		layout.station_tangent.normalized())
 	result.merge({
 		"coefficient_margin": coefficient_margin,
 		"speed_floor_margin_mps": end.speed_mps - 2.0,
-		"remaining_along_track_m": (layout.station_position_m - end.position_m).dot(
-			layout.station_tangent.normalized()),
+		"remaining_along_track_m": remaining_along_track_m,
+		"capture_partition_entry_m": -float(corridor.brake_length_m) - entry_forward_m,
+		"brake_reserve_m": float(corridor.brake_length_m) - remaining_along_track_m,
+		"entry_speed_low_mps": float(route.speed_mps[0]) - entry_speed_mps.x,
+		"entry_speed_high_mps": entry_speed_mps.y - float(route.speed_mps[0]),
 	}, true)
 	return result
 
@@ -889,10 +1207,18 @@ static func _matrix_conditioning(matrix: Array) -> Dictionary:
 static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
 	var remaining: float = (layout.station_position_m - start.position_m).dot(
 		layout.station_tangent.normalized())
+	var corridor: Variant = layout.get("reserved_corridor")
+	if not corridor is Dictionary or not is_finite(float(corridor.get("brake_length_m", NAN))):
+		return _failure("brake corridor contract is incomplete", "brake")
+	if remaining > float(corridor.brake_length_m) + TERMINAL_DISTANCE_TOLERANCE_M:
+		return _failure("brake entry exceeds its declared reserve", "brake",
+			{"remaining_distance_m": remaining, "brake_length_m": corridor.brake_length_m})
 	var station_duration := _coast_time(2.0, 1.0)
 	var station_distance := _coast_distance(2.0, 1.0)
-	if absf(start.tangent.normalized().dot(layout.station_tangent.normalized()) - 1.0) > 0.00001 \
-			or start.rider_up.normalized().distance_to(layout.station_up.normalized()) > 0.00001:
+	var frame_residuals := _capture_residuals(start, layout)
+	if absf(float(frame_residuals[2])) > CAPTURE_RESIDUAL_TOLERANCES[2] \
+			or absf(float(frame_residuals[3])) > CAPTURE_RESIDUAL_TOLERANCES[3] \
+			or absf(float(frame_residuals[4])) > CAPTURE_RESIDUAL_TOLERANCES[4]:
 		return _failure("capture terminal frame is not the straight station frame", "brake")
 	if not is_finite(remaining) or not is_finite(station_duration) \
 			or not is_finite(station_distance) \
@@ -903,13 +1229,15 @@ static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
 	var resistance_loss := Motion.resistance(0.5 * (float(start.speed_mps) + 2.0),
 		ROLLING_MPS2, AERO_PER_M).x * active_estimate
 	var parameters := [active_estimate - 2.0 * BRAKE_SHOULDER_DURATION_S,
-		0.98 * (float(start.speed_mps) - 2.0 - resistance_loss) / (
+		0.80 * (float(start.speed_mps) - 2.0 - resistance_loss) / (
 			Motion.G0 * (active_estimate - BRAKE_SHOULDER_DURATION_S))]
 	for index in 2:
 		if not is_finite(parameters[index]) \
 				or parameters[index] <= BRAKE_PARAMETER_BOUNDS[index][0] \
 				or parameters[index] >= BRAKE_PARAMETER_BOUNDS[index][1]:
-			return _failure("brake initial estimate is outside its parameter bounds", "brake")
+			return _failure("brake initial estimate is outside its parameter bounds", "brake",
+				{"remaining_distance_m": remaining, "entry_speed_mps": start.speed_mps,
+					"active_estimate_s": active_estimate, "initial_values": parameters})
 	var evaluation_count := [0]
 	var base := {}
 	var conditioning := {}
@@ -1057,6 +1385,126 @@ static func _coast_distance(from_speed: float, to_speed: float) -> float:
 		/ (ROLLING_MPS2 + AERO_PER_M * to_speed * to_speed)) / (2.0 * AERO_PER_M)
 
 
+static func _validate_plan(plan: Dictionary) -> Dictionary:
+	var expected := ["schema_version", "preset_id", "decisions", "terrain_frame", "station",
+		"corridor", "route_length_m", "roles"]
+	var keys: Array = plan.keys()
+	keys.sort()
+	var sorted_expected := expected.duplicate()
+	sorted_expected.sort()
+	if keys != sorted_expected or plan.get("schema_version") != 1 \
+			or plan.get("preset_id") != "material-v1":
+		return _failure("material-v1 plan must have exactly the reviewed eight fields", "plan")
+	var decisions: Variant = plan.get("decisions")
+	var terrain_frame: Variant = plan.get("terrain_frame")
+	if not decisions is Dictionary or int(decisions.get("station_side", 0)) not in [-1, 1] \
+			or not terrain_frame is Dictionary or not terrain_frame.get("inward") is Vector3 \
+			or not terrain_frame.get("along") is Vector3 or not terrain_frame.get("up") is Vector3 \
+			or not terrain_frame.get("right") is Vector3 \
+			or not terrain_frame.get("planning") is Dictionary:
+		return _failure("material-v1 decisions or terrain frame is incomplete", "plan")
+	var planning: Dictionary = terrain_frame.planning
+	if str(planning.get("capability_id", "")).is_empty() \
+			or int(planning.get("planning_integrations", 0)) != 1 \
+			or not planning.get("scale") is Dictionary:
+		return _failure("material-v1 planning capability is incomplete", "plan")
+	var corridor_value: Variant = plan.get("corridor")
+	if not corridor_value is Dictionary:
+		return _failure("material-v1 corridor must be a Dictionary", "plan")
+	var corridor: Dictionary = corridor_value
+	for field in ["approach_length_m", "capture_length_m", "brake_length_m",
+			"half_width_m", "half_height_m"]:
+		if not corridor.has(field) or not is_finite(float(corridor[field])) \
+				or float(corridor[field]) <= 0.0:
+			return _failure("material-v1 corridor field is not finite and positive", "plan",
+				{"field": field})
+	var entry_speed_value: Variant = corridor.get("entry_speed_mps")
+	if not entry_speed_value is Vector2 or not entry_speed_value.is_finite() \
+			or entry_speed_value.x <= 0.0 or entry_speed_value.y < entry_speed_value.x:
+		return _failure("material-v1 corridor entry speed band is invalid", "plan")
+	if absf(float(corridor.approach_length_m) - float(corridor.capture_length_m)
+			- float(corridor.brake_length_m)) > 0.000001:
+		return _failure("material-v1 corridor partitions do not sum to the approach", "plan")
+	var roles: Variant = plan.get("roles")
+	if not roles is Array or roles.size() != MATERIAL_ROLE_IDS.size():
+		return _failure("material-v1 plan must contain twenty roles", "plan")
+	var minimum_sum := 0.0
+	var maximum_sum := 0.0
+	var allocations := {}
+	for index in MATERIAL_ROLE_IDS.size():
+		var role: Variant = roles[index]
+		if not role is Dictionary or role.get("id") != MATERIAL_ROLE_IDS[index] \
+				or not role.get("length_m") is Vector2:
+			return _failure("material-v1 role order or length band is invalid", "plan",
+				{"role_id": MATERIAL_ROLE_IDS[index]})
+		var band: Vector2 = role.length_m
+		if not is_finite(band.x) or not is_finite(band.y) or band.x <= 0.0 or band.y < band.x:
+			return _failure("material-v1 role length band is not finite", "plan",
+				{"role_id": MATERIAL_ROLE_IDS[index]})
+		var nominal: float = ROLE_NOMINAL_LENGTHS[index]
+		if nominal < band.x or nominal > band.y:
+			return _failure("material-v1 nominal role length is outside its band", "plan",
+				{"role_id": MATERIAL_ROLE_IDS[index]})
+		minimum_sum += band.x
+		maximum_sum += band.y
+		allocations[MATERIAL_ROLE_IDS[index]] = nominal
+	var route_band: Variant = plan.get("route_length_m")
+	if not route_band is Vector2 or route_band != Vector2(7800.0, 8200.0) \
+			or minimum_sum > route_band.y or maximum_sum < route_band.x:
+		return _failure("aggregate role lengths cannot satisfy the route band", "plan",
+			{"bounds": {"role_sum_m": Vector2(minimum_sum, maximum_sum),
+				"route_length_m": route_band}})
+	var required_terrain := {
+		"clifftop-outward-rim": ["exit_tangent_outward_dot"],
+		"outward-dive": ["outward_delta_m", "maximum_cross_to_outward_ratio",
+			"minimum_centerline_agl_m",
+			"boundary_crossings", "monotonic"],
+		"tunnel-lsm3": ["boundary_crossings"],
+	}
+	for role_id in required_terrain:
+		var required_role: Dictionary = roles[MATERIAL_ROLE_IDS.find(role_id)]
+		var terrain: Variant = required_role.get("terrain")
+		if not terrain is Dictionary:
+			return _failure("missing_required_terrain_intent", "plan", {"role_id": role_id})
+		for field in required_terrain[role_id]:
+			if not terrain.has(field):
+				return _failure("missing_required_terrain_intent", "plan",
+					{"role_id": role_id, "observed": {"missing": field}})
+	var dive_terrain: Dictionary = roles[MATERIAL_ROLE_IDS.find("outward-dive")].terrain
+	var outward_band: Variant = dive_terrain.outward_delta_m
+	var cross_ratio: Variant = dive_terrain.maximum_cross_to_outward_ratio
+	if not outward_band is Vector2 or not outward_band.is_finite() \
+			or outward_band.x <= 0.0 or outward_band.y < outward_band.x \
+			or not cross_ratio is float or not is_finite(cross_ratio) \
+			or cross_ratio <= 0.0 or cross_ratio > 1.0:
+		return _failure("invalid_outward_dive_terrain_intent", "plan")
+	return {"ok": true, "allocations": allocations}
+
+
+static func _layout_from_plan(plan: Dictionary) -> Dictionary:
+	var station: Dictionary = plan.station
+	var corridor: Dictionary = plan.corridor
+	var approach_length: float = corridor.approach_length_m
+	return {
+		"station_position_m": station.position_m,
+		"station_tangent": station.tangent,
+		"station_up": station.up,
+		"station_side": int(plan.decisions.station_side),
+		"capture_half_width_m": corridor.half_width_m,
+		"capture_half_height_m": corridor.half_height_m,
+		"route_length_m": plan.route_length_m,
+		"reserved_corridor": {
+			"approach_start_m": station.position_m - station.tangent * approach_length,
+			"station_position_m": station.position_m,
+			"station_tangent": station.tangent,
+			"minimum_length_m": approach_length,
+			"capture_length_m": corridor.capture_length_m,
+			"brake_length_m": corridor.brake_length_m,
+			"entry_speed_mps": corridor.entry_speed_mps,
+		},
+	}
+
+
 static func _validate_station_layout(layout: Dictionary, initial_state: Dictionary) -> String:
 	for key in ["station_position_m", "station_tangent", "station_up"]:
 		if not layout.has(key) or not (layout[key] is Vector3) or not layout[key].is_finite():
@@ -1129,6 +1577,43 @@ static func _add_record(
 	propulsion.append(propulsion_id)
 
 
+static func _material_role_spans(spans: Array) -> Dictionary:
+	var prefixes := {
+		"station-launch": ["launch/"],
+		"opener-twisted-drop": ["crest/", "drop/"],
+		"opener-teardrop": ["teardrop/"],
+		"opener-release": ["release/"],
+		"act-one-immelmann": ["act-one/immelmann-"],
+		"act-one-cutback": ["act-one/cutback-"],
+		"act-one-loop": ["act-one/loop-"],
+		"act-one-airtime": ["act-one/airtime-"],
+		"act-one-wave": ["act-one/wave-"],
+		"climb-lsm2": ["climb/"],
+		"clifftop-slow-crest": ["rim/slow-crest"],
+		"clifftop-outward-rim": ["rim/outward-"],
+		"outward-dive": ["dive/"],
+		"tunnel-lsm3": ["tunnel/"],
+		"camelback": ["camelback/"],
+		"return-turn-a": ["raceway/turn-a/"],
+		"return-height-a": ["raceway/height-a/"],
+		"return-turn-b": ["raceway/turn-b/"],
+		"return-height-b": ["raceway/height-b/"],
+		"terminal-capture-brakes": ["capture/", "brakes/", "station/"],
+	}
+	var result := {}
+	for role_id in MATERIAL_ROLE_IDS:
+		var first := -1
+		var last := -1
+		for index in spans.size():
+			var span_id := str(spans[index].span_id)
+			for prefix in prefixes[role_id]:
+				if span_id.begins_with(prefix):
+					if first < 0: first = index
+					last = index
+		result[role_id] = Vector2i(first, last)
+	return result
+
+
 static func _validate_control_seams(spans: Array) -> PackedStringArray:
 	var errors := PackedStringArray()
 	var profile_keys := ["normal_g", "lateral_g", "drive_g", "roll_rate_rad_s"]
@@ -1194,11 +1679,12 @@ static func _end_gesture(gestures: Array, metadata: Array, last_span: int) -> vo
 	gesture.role_windows = roles
 
 
-static func _peak_analytic_normal_onset(spans: Array, first: int, last: int) -> float:
+static func _peak_profile_normal_onset_estimate(spans: Array, first: int, last: int) -> float:
 	var peak := 0.0
 	for index in range(first, last + 1):
 		var span: Dictionary = spans[index]
-		peak = maxf(peak, Motion.profile_peak_abs_derivative(span.normal_g) / span.duration_s)
+		peak = maxf(peak,
+			Motion.profile_peak_abs_derivative_estimate(span.normal_g) / span.duration_s)
 	return peak
 
 

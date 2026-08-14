@@ -30,7 +30,7 @@ func _test_smoke_has_no_legacy_authoring_dependency() -> void:
 
 func _test_fixed_terminal_contract_accepts_matching_trajectory() -> void:
 	var fixture := _fixture()
-	var route := RouteContract.build(42, fixture.terrain, fixture.initial,
+	var route := RouteContract.build(42, fixture.terrain, fixture.initial, fixture.plan,
 		fixture.compiled, fixture.trajectory)
 	_expect(route.get("ok", false),
 		"a matching fixed terminal contract is accepted: %s" % str(route.get("errors", [])))
@@ -40,10 +40,12 @@ func _test_fixed_terminal_contract_accepts_matching_trajectory() -> void:
 		and route.gesture_windows[0].get("first", -1) == 0 \
 		and route.gesture_windows[0].get("last", -1) == 3,
 		"the accepted synthetic contract preserves its complete gesture window")
-	_expect(route.gesture_windows[0].get("peak_analytic_normal_onset_gps") == 7.875,
+	_expect(route.gesture_windows[0].get("peak_profile_normal_onset_estimate_gps") == 7.875,
 		"the public gesture window preserves its compiled analytic normal onset")
 	_expect(route.get("span_indices") == fixture.trajectory.span_index,
 		"the public route preserves native motion-span ownership")
+	_expect(route.get("terrain_story_plan", {}).get("integration_frame") == "planned-world",
+		"the contract labels accepted positions as direct planned-world integration")
 	for legacy_field in ["sections", "section_indices", "lsm_ids", "tunnel_sections"]:
 		_expect(not route.has(legacy_field),
 			"the public route does not expose legacy field '%s'" % legacy_field)
@@ -57,7 +59,7 @@ func _test_fixed_terminal_contract_rejects_endpoint_misses() -> void:
 	_expect_rejected(position_fixture, "terminal position", "terminal position outside tolerance")
 
 	var frame_fixture := _fixture()
-	var angle := 0.01
+	var angle := 0.0002
 	var tangents: PackedVector3Array = frame_fixture.trajectory.tangent
 	tangents[-1] = Vector3(cos(angle), 0.0, sin(angle))
 	frame_fixture.trajectory.tangent = tangents
@@ -86,7 +88,7 @@ func _test_initial_state_uses_tight_finite_tolerances() -> void:
 	close.initial.speed_mps += 0.0000005
 	var angle := 0.0000005
 	close.initial.tangent = Vector3(cos(angle), 0.0, sin(angle))
-	var accepted := RouteContract.build(42, close.terrain, close.initial,
+	var accepted := RouteContract.build(42, close.terrain, close.initial, close.plan,
 		close.compiled, close.trajectory)
 	_expect(accepted.get("ok", false),
 		"finite initial-state roundoff inside the tight tolerance is accepted")
@@ -102,16 +104,16 @@ func _test_initial_state_uses_tight_finite_tolerances() -> void:
 
 func _test_gesture_analytic_onset_contract() -> void:
 	var missing := _fixture()
-	missing.compiled.gesture_spans[0].erase("peak_analytic_normal_onset_gps")
-	_expect_rejected(missing, "peak_analytic_normal_onset_gps",
+	missing.compiled.gesture_spans[0].erase("peak_profile_normal_onset_estimate_gps")
+	_expect_rejected(missing, "peak_profile_normal_onset_estimate_gps",
 		"a gesture missing analytic normal onset")
 	var nonfinite := _fixture()
-	nonfinite.compiled.gesture_spans[0].peak_analytic_normal_onset_gps = NAN
-	_expect_rejected(nonfinite, "peak_analytic_normal_onset_gps",
+	nonfinite.compiled.gesture_spans[0].peak_profile_normal_onset_estimate_gps = NAN
+	_expect_rejected(nonfinite, "peak_profile_normal_onset_estimate_gps",
 		"a gesture with non-finite analytic normal onset")
 	var negative := _fixture()
-	negative.compiled.gesture_spans[0].peak_analytic_normal_onset_gps = -0.001
-	_expect_rejected(negative, "peak_analytic_normal_onset_gps",
+	negative.compiled.gesture_spans[0].peak_profile_normal_onset_estimate_gps = -0.001
+	_expect_rejected(negative, "peak_profile_normal_onset_estimate_gps",
 		"a gesture with negative analytic normal onset")
 
 
@@ -126,7 +128,7 @@ func _fixture() -> Dictionary:
 		"window_id": "synthetic/whole/00",
 		"first_span": 0,
 		"last_span": 2,
-		"peak_analytic_normal_onset_gps": 7.875,
+		"peak_profile_normal_onset_estimate_gps": 7.875,
 		"role_windows": [{
 			"id": "core",
 			"display_name": "Core",
@@ -154,6 +156,12 @@ func _fixture() -> Dictionary:
 			"speed_tolerance_mps": 0.0001,
 		},
 	}
+	var plan := {"schema_version": 1, "preset_id": "material-v1", "decisions": {},
+		"terrain_frame": {}, "station": {}, "corridor": {},
+		"route_length_m": Vector2(7800.0, 8200.0), "roles": []}
+	compiled["plan"] = plan
+	compiled["role_allocations_m"] = {}
+	compiled["return_entry_gate"] = {}
 	var zeros := PackedFloat64Array([0.0, 0.0, 0.0, 0.0])
 	var trajectory := {
 		"ok": true,
@@ -186,13 +194,14 @@ func _fixture() -> Dictionary:
 			"rider_up": Vector3.UP,
 			"speed_mps": 6.0,
 		},
+		"plan": plan,
 		"compiled": compiled,
 		"trajectory": trajectory,
 	}
 
 
 func _expect_rejected(fixture: Dictionary, fragment: String, message: String) -> void:
-	var route := RouteContract.build(42, fixture.terrain, fixture.initial,
+	var route := RouteContract.build(42, fixture.terrain, fixture.initial, fixture.plan,
 		fixture.compiled, fixture.trajectory)
 	_expect(not route.get("ok", true), "%s is rejected" % message)
 	_expect(_contains(route.get("errors", []), fragment),

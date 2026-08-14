@@ -1,0 +1,157 @@
+{
+  "recordings": [
+    {
+      "cadence_s": 0.02,
+      "comparisons": [
+        {
+          "caveats": [
+            "Force-defined rise window; the wrist recording may rotate relative to the rider.",
+            "The retained 99.30-100.30 s samples are excluded from load summaries."
+          ],
+          "comparison_id": "falcon-4804-camelback-rise",
+          "evidence_class": "corroborative",
+          "generated_anchor": {
+            "kind": "rise",
+            "occurrence": 0,
+            "story_slot_id": "marquee-camelback",
+            "window_role": "rise"
+          },
+          "identity_confidence": "low",
+          "markers": [],
+          "source_window_s": [99.02, 102.32]
+        },
+        {
+          "caveats": [
+            "Force-defined unload band, not an exact geometric apex.",
+            "The wrist recording may rotate relative to the rider."
+          ],
+          "comparison_id": "falcon-4804-camelback-crest",
+          "evidence_class": "corroborative",
+          "generated_anchor": {
+            "kind": "crest",
+            "occurrence": 0,
+            "story_slot_id": "marquee-camelback",
+            "window_role": "crest"
+          },
+          "identity_confidence": "low",
+          "markers": [],
+          "source_window_s": [102.90, 109.66]
+        },
+        {
+          "caveats": [
+            "Pullout window is supported by TELEMETRY.md but remains a single unreliable wrist recording."
+          ],
+          "comparison_id": "falcon-4804-camelback-fall",
+          "evidence_class": "corroborative",
+          "generated_anchor": {
+            "kind": "fall",
+            "occurrence": 0,
+            "story_slot_id": "marquee-camelback",
+            "window_role": "fall"
+          },
+          "identity_confidence": "low",
+          "markers": [],
+          "source_window_s": [110.24, 112.54]
+        }
+      ],
+      "derivation": {
+        "tool": "RideFidelityOverlay",
+        "version": 1
+      },
+      "device": "Apple Watch wrist recording; orientation stability unknown",
+      "expected_byte_size": 265441,
+      "expected_sha256": "7f5aef1b7d4ca2aa8e9aebb7c7510ca15e330f6164f5fe4dd5299c40ddc77733",
+      "full_window_s": [-11.24, 158.02],
+      "generated_row_id": "row-07",
+      "header": ["Time", "Lateral", "Vertical", "Longitudinal"],
+      "masks": [
+        {
+          "reason": "shock-or-limb-artifact",
+          "window_s": [99.30, 100.30]
+        }
+      ],
+      "processing_label": "source_observed_smoothed",
+      "reliability": "low; RideForcesDB flags the recording unreliable and possibly rotating",
+      "ride_window_s": [0.00, 158.02],
+      "row_seat": "Row 7, left seat; train unknown",
+      "sample_count": 8464,
+      "smoothing": "RideForcesDB export reproduces the reviewed 11-sample (0.22 s) smoothing",
+      "source_id": "rfdb-4804",
+      "source_url": "https://rideforcesdb.com/?id=4804&axes=yzxac",
+      "transforms": {
+        "lateral_g": {
+          "negative": "fictional.gy-negative@1",
+          "positive": "fictional.gy-positive@1"
+        },
+        "longitudinal_g": {
+          "negative": "fictional.gx-negative@1",
+          "positive": null
+        },
+        "normal_g": {
+          "negative": "fictional.gz-negative@1",
+          "positive": "fictional.gz-positive@1"
+        }
+      }
+    },
+    {
+      "cadence_s": 0.02,
+      "comparisons": [
+        {
+          "caveats": [
+            "Element identity follows reviewed order and force-trace shape.",
+            "No gravity or attitude channel exists; marker labels do not measure inversion attitude."
+          ],
+          "comparison_id": "tormenta-6383-loop",
+          "evidence_class": "corroborative",
+          "generated_anchor": {
+            "kind": "loop",
+            "occurrence": 1,
+            "story_slot_id": "act-one",
+            "window_role": "giant-inversion"
+          },
+          "identity_confidence": "medium-low",
+          "markers": [
+            {"id": "entry", "time_s": 22.94, "uncertainty_s": 0.20},
+            {"id": "apex", "time_s": 25.00, "uncertainty_s": 0.50},
+            {"id": "exit", "time_s": 27.58, "uncertainty_s": 0.20}
+          ],
+          "source_window_s": [22.94, 27.58]
+        }
+      ],
+      "derivation": {
+        "tool": "RideFidelityOverlay",
+        "version": 1
+      },
+      "device": "iPhone; orientation and mount not independently verified",
+      "expected_byte_size": 306722,
+      "expected_sha256": "0f0c842614f596b53a5f00d76dc0ad80a602fecc5dfcb53b4f94ec0a769433bc",
+      "full_window_s": [-80.14, 116.06],
+      "generated_row_id": "row-02",
+      "header": ["Time", "Lateral", "Vertical", "Longitudinal"],
+      "masks": [],
+      "processing_label": "source_observed_smoothed",
+      "reliability": "medium-low; force trace lacks an attitude channel",
+      "ride_window_s": [0.00, 82.48],
+      "row_seat": "Row 2, seat 8, train 1",
+      "sample_count": 9811,
+      "smoothing": "RideForcesDB export reproduces the reviewed 11-sample (0.22 s) smoothing",
+      "source_id": "rfdb-6383",
+      "source_url": "https://rideforcesdb.com/?id=6383",
+      "transforms": {
+        "lateral_g": {
+          "negative": "fictional.gy-negative@1",
+          "positive": "fictional.gy-positive@1"
+        },
+        "longitudinal_g": {
+          "negative": "fictional.gx-negative@1",
+          "positive": null
+        },
+        "normal_g": {
+          "negative": "fictional.gz-negative@1",
+          "positive": "fictional.gz-positive@1"
+        }
+      }
+    }
+  ],
+  "schema_version": "rfdb-local-overlay-manifest@1"
+}

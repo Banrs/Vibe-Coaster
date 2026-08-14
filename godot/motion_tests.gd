@@ -8,7 +8,7 @@ var _errors := PackedStringArray()
 
 func _initialize() -> void:
 	_test_c2_profiles()
-	_test_profile_peak_abs_derivative()
+	_test_profile_peak_abs_derivative_estimate()
 	_test_resistance_law()
 	_test_constant_rolling_coast()
 	_test_quadratic_drag_coast()
@@ -49,22 +49,44 @@ func _test_c2_profiles() -> void:
 		"compact pulse has a zero C2 exit jet")
 	_expect_close(Motion.profile_sample(pulse, 0.5).x, 3.0,
 		"compact pulse reaches its authored amplitude")
+	var notch := Motion.balanced_notch(4.6, 1.1)
+	_expect_vector(Motion.profile_sample(notch, 0.0), Vector3(4.6, 0.0, 0.0),
+		"balanced notch has an exact C2 entry jet")
+	_expect_vector(Motion.profile_sample(notch, 1.0), Vector3(4.6, 0.0, 0.0),
+		"balanced notch has an exact C2 exit jet")
+	_expect_close(Motion.profile_sample(notch, 0.5).x, 3.5,
+		"balanced notch reaches its authored center load")
+	var plateau := Motion.plateau_pulse(2.0)
+	_expect_vector(Motion.profile_sample(plateau, 0.0), Vector3.ZERO,
+		"plateau pulse has a zero C2 entry jet")
+	_expect_vector(Motion.profile_sample(plateau, 1.0), Vector3.ZERO,
+		"plateau pulse has a zero C2 exit jet")
+	_expect_vector(Motion.profile_sample(plateau, 0.5), Vector3(2.0, 0.0, 0.0),
+		"plateau pulse holds its authored center rate")
+	var bank := Motion.bank_balance(0.0, deg_to_rad(60.0))
+	_expect_vector(Motion.profile_sample(bank, 0.0), Vector3(1.0, 0.0, 0.0),
+		"bank balance starts at the exact level-load jet")
+	_expect_vector(Motion.profile_sample(bank, 1.0), Vector3(2.0, 0.0, 0.0),
+		"bank balance ends at the exact banked level-load jet")
+	_expect_close(Motion.profile_sample(bank, 0.5).x, 1.0 / cos(deg_to_rad(30.0)),
+		"bank balance follows the integrated compact-roll angle")
 	var span_record := Motion.span("immutable", 1.0, "moving", held, held, held, held)
-	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only(),
+	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only()
+		and notch.is_read_only() and plateau.is_read_only() and bank.is_read_only(),
 		"profile records are immutable")
 	_expect(span_record.is_read_only(), "span records are immutable")
 
 
-func _test_profile_peak_abs_derivative() -> void:
-	_expect_close(Motion.profile_peak_abs_derivative(Motion.constant(-4.0)), 0.0,
+func _test_profile_peak_abs_derivative_estimate() -> void:
+	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.constant(-4.0)), 0.0,
 		"constant profile has zero peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative(Motion.quintic(1.0, 5.2)), 7.875,
+	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.quintic(1.0, 5.2)), 7.875,
 		"rising quintic reports its exact analytic peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative(Motion.quintic(5.2, 1.0)), 7.875,
+	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.quintic(5.2, 1.0)), 7.875,
 		"falling quintic has the same absolute peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative(Motion.compact_pulse(3.0)),
+	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(3.0)),
 		10.699182439179779, "positive compact pulse reports its exact analytic peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative(Motion.compact_pulse(-3.0)),
+	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(-3.0)),
 		10.699182439179779, "negative compact pulse has the same absolute peak derivative")
 
 
@@ -299,7 +321,7 @@ func _test_exact_span_boundary_splitting() -> void:
 
 
 func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
-	const DURATION_S := 0.500000000067
+	const DURATION_S := 0.5000077
 	var route := Motion.integrate(_initial(10.0), [
 		_span("first", DURATION_S, "moving", 0.0, 0.0, 0.0, 0.0),
 		_span("second", DURATION_S, "moving", 0.0, 0.0, 0.0, 0.0),
@@ -307,7 +329,7 @@ func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
 	if not _expect_route(route, "roundoff-adjacent span boundaries integrate"):
 		return
 	_expect(route.time_s.size() == 101,
-		"sub-nanosecond boundary roundoff is folded into the adjacent RK step")
+		"sub-public-resolution boundary roundoff is folded into the adjacent RK step")
 	_expect(route.span_index.find(1) == 50,
 		"the exact boundary node remains owned by the next span")
 	var public_times := PackedFloat32Array()

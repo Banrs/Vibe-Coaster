@@ -34,11 +34,9 @@ root `CLAUDE.md` holds the contract.
 
 17. Loading time.
 18. Camera/HUD issues.
-19. Generation/CI speed — a seed costs thousands of element integrations because every
-    solver iteration re-integrates at full 1.5 m resolution; smoke is ~2 min local / ~4 min
-    CI plus runner spin-up, too slow for a tight dev loop. Candidate levers: coarse-to-fine
-    solving (search coarse, integrate the accepted geometry fine), caching Godot + imports
-    on CI, splitting the gate into parallel jobs.
+19. Generation/CI speed — the time-domain return, capture, and brake solves have bounded
+    coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
+    GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.
 
 ## Audit coverage for issues 1–16
 
@@ -76,6 +74,11 @@ in writing and in code:
    positions stay raw integrator output; any filtering must be the labelled human-tolerance
    filter or a catalogued evidence comparison.
 
+Optional local `RFDB_4804_CSV` / `RFDB_6383_CSV` overlays are diagnostic-only. They do not
+modify the committed catalog, create catalog selectors, observations or targets, create
+fleet-comparison findings, promote a source to `executable`, or satisfy the evidence requirement
+above.
+
 ## Known limitations of the baseline itself
 
 - The radius strip in the channel sheets is degenerate. Near-straight track yields enormous
@@ -88,9 +91,10 @@ in writing and in code:
   "Issue N". The top, elevation, and element side views are written and hashed but never linked
   from the coverage record, so the support-overlap and element-shaping prompts point at a
   channel sheet rather than the views they ask for.
-- The POV map is entirely gaps: no source landmark has a committed alignment, so no POV frames
-  are rendered. This is correct behavior (an unresolved alignment is an evidence gap, never a
-  fallback), not a missing feature.
+- The POV map is entirely gaps because no source landmark has a committed alignment. Supplying
+  either optional RFDB export still renders diagnostic seed-42 midpoint POVs for supported
+  side-view beats;
+  those frames neither resolve nor promote an alignment.
 
 ## Recommended approach
 

@@ -1,7 +1,7 @@
 class_name RideTerrain
 extends RefCounted
 
-## Seeded analytic heightfield: a desert plain meeting one escarpment of ~300 m-class relief.
+## Seeded analytic heightfield: a desert plain meeting one escarpment of ~275 m-class relief.
 ## The rise is two-part, like the real Tuwaiq-class escarpments: a gentle lower apron carrying
 ## ~20% of the relief, then a near-vertical upper face carrying the rest — the cliff the dive
 ## uses is deliberately smaller than the total elevation change. Everything is a pure function
@@ -11,7 +11,7 @@ extends RefCounted
 
 static func generate(rng: RandomNumberGenerator) -> Dictionary:
 	var edge_angle := rng.randf_range(-0.35, 0.35)
-	var relief := rng.randf_range(285.0, 315.0)
+	var relief := rng.randf_range(270.0, 285.0)
 	var face_share := rng.randf_range(0.78, 0.85)
 	return {
 		"relief": relief,
@@ -19,7 +19,7 @@ static func generate(rng: RandomNumberGenerator) -> Dictionary:
 		"apron_height": relief * (1.0 - face_share),
 		"edge_normal": Vector2(sin(edge_angle), -cos(edge_angle)),
 		"edge_offset": rng.randf_range(-40.0, 40.0),
-		"apron_width": rng.randf_range(180.0, 280.0),
+		"apron_width": rng.randf_range(240.0, 280.0),
 		"face_width": rng.randf_range(38.0, 58.0),
 		"wobble_amplitude": rng.randf_range(14.0, 28.0),
 		"wobble_wavelength": rng.randf_range(420.0, 700.0),

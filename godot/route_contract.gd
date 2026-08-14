@@ -5,9 +5,20 @@ extends RefCounted
 
 const GENERATOR_VERSION := "time-domain-v1"
 const ROW_OFFSETS := [0.0, 2.15, 4.30, 6.45, 8.60, 10.75, 12.90]
+const Terrain := preload("res://terrain.gd")
 const INITIAL_POSITION_TOLERANCE_M := 0.000001
 const INITIAL_FRAME_TOLERANCE := 0.000001
 const INITIAL_SPEED_TOLERANCE_MPS := 0.000001
+const LOWER_SPINE_SURFACE_OFFSET_M := 1.79
+const TERRAIN_RELIEF_BAND_M := Vector2(270.0, 285.0)
+const SUMMIT_AGL_BAND_M := Vector2(15.0, 25.0)
+const DIVE_EXIT_APRON_BAND := Vector2(0.20, 0.55)
+const DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M := Vector2(12.0, 40.0)
+const TUNNEL_EXIT_PLAIN_OVERSHOOT_M := 8.0
+# The capability is integrated in a station-local frame, then re-integrated in its planned
+# world frame. Permit sub-0.5 m Float32 frame covariance while retaining the direct monotonic,
+# overshoot, drop, and terrain-clearance gates below.
+const TERRAIN_PLACEMENT_TOLERANCE_M := 0.35
 
 const _TRAJECTORY_FIELDS := {
 	"time_s": TYPE_PACKED_FLOAT64_ARRAY,
@@ -30,10 +41,11 @@ static func build(
 	seed_value: int,
 	terrain: Dictionary,
 	initial_state: Dictionary,
+	plan: Dictionary,
 	compiled: Dictionary,
 	trajectory: Dictionary
 ) -> Dictionary:
-	var errors := _validate(terrain, initial_state, compiled, trajectory)
+	var errors := _validate(terrain, initial_state, plan, compiled, trajectory)
 	if not errors.is_empty():
 		return {"ok": false, "errors": errors}
 
@@ -77,6 +89,12 @@ static func build(
 
 	var tunnels := _tunnel_ranges(compiled.tunnel_span_ranges, trajectory)
 	var positions: PackedVector3Array = trajectory.position_m
+	var terrain_proofs := _terrain_proofs(plan, compiled, trajectory, terrain)
+	if not terrain_proofs.ok:
+		return {"ok": false, "errors": PackedStringArray(["terrain_intent_miss"]),
+			"failure": terrain_proofs.failure}
+	var planning: Dictionary = plan.terrain_frame.get("planning", {}).duplicate(true)
+	planning.merge(terrain_proofs.planning, true)
 	return {
 		"ok": true,
 		"errors": PackedStringArray(),
@@ -109,18 +127,27 @@ static func build(
 		"terrain": terrain,
 		"dense_output": trajectory.dense_output,
 		"generation_stats": compiled.generation_stats.duplicate(true),
+		"terrain_story_plan": {"plan": plan.duplicate(true),
+			"integration_frame": "planned-world", "planning": planning,
+			"role_allocations_m": compiled.role_allocations_m.duplicate(true),
+			"return_entry_gate": compiled.return_entry_gate.duplicate(true),
+			"terrain_proofs": terrain_proofs.proofs},
 	}
 
 
 static func _validate(
 	terrain: Dictionary,
 	initial_state: Dictionary,
+	plan: Dictionary,
 	compiled: Dictionary,
 	trajectory: Dictionary
 ) -> PackedStringArray:
 	var errors := PackedStringArray()
 	if terrain.is_empty():
 		errors.append("terrain is empty")
+	if plan.get("preset_id") != "material-v1" \
+			or var_to_bytes(compiled.get("plan", {})) != var_to_bytes(plan):
+		errors.append("compiled program does not own the accepted material-v1 plan")
 	_validate_initial_state(initial_state, errors)
 	if not trajectory.get("ok", false):
 		errors.append("motion trajectory was not accepted")
@@ -229,11 +256,11 @@ static func _validate(
 	var window_ids := {}
 	for gesture in compiled.gesture_spans:
 		_validate_window_record(gesture, span_count, "gesture", "", window_ids, errors)
-		var peak_onset: Variant = gesture.get("peak_analytic_normal_onset_gps")
+		var peak_onset: Variant = gesture.get("peak_profile_normal_onset_estimate_gps")
 		if typeof(peak_onset) != TYPE_FLOAT and typeof(peak_onset) != TYPE_INT:
-			errors.append("gesture peak_analytic_normal_onset_gps must be a finite nonnegative scalar")
+			errors.append("gesture peak_profile_normal_onset_estimate_gps must be a finite nonnegative scalar")
 		elif not is_finite(float(peak_onset)) or float(peak_onset) < 0.0:
-			errors.append("gesture peak_analytic_normal_onset_gps must be a finite nonnegative scalar")
+			errors.append("gesture peak_profile_normal_onset_estimate_gps must be a finite nonnegative scalar")
 		if int(gesture.get("first_span", -1)) != next_gesture_span:
 			errors.append("gesture windows do not cover spans in order")
 		next_gesture_span = int(gesture.get("last_span", -1)) + 1
@@ -370,8 +397,252 @@ static func _finite_number(value: Variant) -> bool:
 	return (value is int or value is float) and is_finite(float(value))
 
 
+static func _terrain_proofs(
+	plan: Dictionary, compiled: Dictionary, trajectory: Dictionary, terrain: Dictionary
+) -> Dictionary:
+	if terrain.get("kind") == "synthetic":
+		return {"ok": true, "proofs": {}, "planning": {}}
+	var role_spans: Variant = compiled.get("role_spans")
+	if not role_spans is Dictionary:
+		return _terrain_failure("", "role_spans", {}, {"missing": true})
+	var frame: Variant = plan.get("terrain_frame")
+	var planned: Variant = frame.get("planning") if frame is Dictionary else null
+	var scale: Variant = planned.get("scale") if planned is Dictionary else null
+	if not frame is Dictionary or not planned is Dictionary or not scale is Dictionary:
+		return _terrain_failure("", "terrain_planning", {}, {"missing": true})
+	for key in ["route_vertical_envelope_m", "dive_drop_m", "camel_prominence_m"]:
+		if not scale.get(key) is Vector2:
+			return _terrain_failure("", "scale.%s" % key, {}, {"missing": true})
+	for key in ["native_dive_edge_span_m", "native_tunnel_edge_span_m",
+			"dive_exit_apron_fraction", "dive_entry_edge_m", "dive_exit_edge_m",
+			"tunnel_exit_edge_m"]:
+		if not _finite_number(planned.get(key)):
+			return _terrain_failure("", "terrain_planning.%s" % key, {}, {"missing": true})
+	var route_envelope_m := _vertical_envelope_m(trajectory.position_m)
+	var scale_margin := minf(
+		_band_margin(float(terrain.relief), TERRAIN_RELIEF_BAND_M),
+		_band_margin(route_envelope_m, scale.route_vertical_envelope_m))
+	if scale_margin < -0.0001:
+		return _terrain_failure("", "native_route_scale",
+			{"terrain_relief_m": TERRAIN_RELIEF_BAND_M,
+				"route_vertical_envelope_m": scale.route_vertical_envelope_m},
+			{"terrain_relief_m": terrain.relief,
+				"route_vertical_envelope_m": route_envelope_m})
+	var proofs := {}
+	var rim_bounds := _role_sample_bounds(role_spans, "clifftop-outward-rim", trajectory)
+	if rim_bounds.x < 0:
+		return _terrain_failure("clifftop-outward-rim", "role_spans", {}, {"missing": true})
+	var outward: Vector3 = -plan.terrain_frame.inward
+	var rim_dot: float = trajectory.tangent[rim_bounds.y].normalized().dot(outward)
+	var rim_margin := rim_dot - 0.25
+	if rim_margin < 0.0:
+		return _terrain_failure("clifftop-outward-rim", "exit_tangent_outward_dot",
+			{"band": Vector2(0.25, 1.0)}, {"value": rim_dot, "margin": rim_margin})
+	proofs["clifftop-outward-rim"] = {"ok": true, "exit_tangent_outward_dot": rim_dot,
+		"minimum_margin": rim_margin}
+
+	var dive_bounds := _role_sample_bounds(role_spans, "outward-dive", trajectory)
+	if dive_bounds.x < 0:
+		return _terrain_failure("outward-dive", "role_spans", {}, {"missing": true})
+	var dive := _terrain_path_observation(trajectory, terrain, frame,
+		dive_bounds.x, dive_bounds.y)
+	var shelf_edge_m := float(terrain.apron_width) + float(terrain.face_width)
+	var dive_entry_edge_m := float(dive.signed_edge_m[0])
+	var dive_exit_edge_m := float(dive.signed_edge_m[-1])
+	var dive_drop_m := _drop_m(trajectory.position_m, dive_bounds)
+	var summit_agl_m: float = trajectory.position_m[dive_bounds.x].y - Terrain.height(terrain,
+		trajectory.position_m[dive_bounds.x].x, trajectory.position_m[dive_bounds.x].z)
+	var dive_intent: Dictionary = plan.roles[12].terrain
+	var cross_to_outward_ratio: float = absf(dive.cross_delta_m) \
+		/ maxf(dive.outward_delta_m, 0.000001)
+	var dive_margin := minf(
+		_band_margin(dive.outward_delta_m, dive_intent.outward_delta_m),
+		float(dive_intent.maximum_cross_to_outward_ratio) - cross_to_outward_ratio)
+	dive_margin = minf(dive_margin, _band_margin(
+		float(planned.dive_exit_apron_fraction), DIVE_EXIT_APRON_BAND))
+	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
+		- absf(float(planned.dive_exit_edge_m) \
+			- float(planned.dive_exit_apron_fraction) * float(terrain.apron_width)))
+	dive_margin = minf(dive_margin, dive.minimum_agl_m \
+		- float(dive_intent.minimum_centerline_agl_m))
+	dive_margin = minf(dive_margin, minf(dive.minimum_outward_step_m,
+		dive.minimum_height_down_step_m) + 0.05)
+	dive_margin = minf(dive_margin, _band_margin(dive_entry_edge_m,
+		Vector2(shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x,
+			shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.y)))
+	dive_margin = minf(dive_margin, _band_margin(dive_exit_edge_m,
+		DIVE_EXIT_APRON_BAND * float(terrain.apron_width)))
+	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
+		- absf(dive_entry_edge_m - float(planned.dive_entry_edge_m)))
+	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
+		- absf(dive_exit_edge_m - float(planned.dive_exit_edge_m)))
+	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
+		- absf((dive_entry_edge_m - dive_exit_edge_m) \
+			- float(planned.native_dive_edge_span_m)))
+	dive_margin = minf(dive_margin, _band_margin(summit_agl_m, SUMMIT_AGL_BAND_M))
+	dive_margin = minf(dive_margin, _band_margin(dive_drop_m, scale.dive_drop_m))
+	var shelf_cross := _crossing_index(dive.signed_edge_m,
+		shelf_edge_m)
+	var face_cross := _crossing_index(dive.signed_edge_m, float(terrain.apron_width))
+	if shelf_cross < 0 or face_cross <= shelf_cross:
+		return _terrain_failure("outward-dive", "boundary_crossings",
+			{"order": PackedStringArray(["shelf_edge", "face"])},
+			{"shelf_index": shelf_cross, "face_index": face_cross})
+	if dive_margin < -0.0001:
+		return _terrain_failure("outward-dive", "native_monotonic_or_band", {},
+			{"observation": dive, "margin": dive_margin})
+	proofs["outward-dive"] = {"ok": true, "observation": dive,
+		"crossings": {"shelf_edge": shelf_cross, "face": face_cross},
+		"drop_m": dive_drop_m, "summit_agl_m": summit_agl_m,
+		"entry_edge_m": dive_entry_edge_m, "exit_edge_m": dive_exit_edge_m,
+		"minimum_margin": maxf(0.0, dive_margin)}
+
+	var camel_bounds := _role_sample_bounds(role_spans, "camelback", trajectory)
+	if camel_bounds.x < 0:
+		return _terrain_failure("camelback", "role_spans", {}, {"missing": true})
+	var camel_prominence_m := _prominence_m(trajectory.position_m, camel_bounds)
+	var camel_margin := _band_margin(camel_prominence_m, scale.camel_prominence_m)
+	if camel_margin < -0.0001:
+		return _terrain_failure("camelback", "native_prominence",
+			{"band_m": scale.camel_prominence_m}, {"value_m": camel_prominence_m})
+	proofs["camelback"] = {"ok": true, "prominence_m": camel_prominence_m,
+		"minimum_margin": maxf(0.0, camel_margin)}
+	proofs["native-scale"] = {"ok": true, "terrain_relief_m": terrain.relief,
+		"route_vertical_envelope_m": route_envelope_m,
+		"minimum_margin": maxf(0.0, scale_margin)}
+
+	var tunnel_bounds := _role_sample_bounds(role_spans, "tunnel-lsm3", trajectory)
+	if tunnel_bounds.x < 0:
+		return _terrain_failure("tunnel-lsm3", "role_spans", {}, {"missing": true})
+	var tunnel := _terrain_path_observation(trajectory, terrain, frame,
+		tunnel_bounds.x, tunnel_bounds.y)
+	var apron_cross := _crossing_index(tunnel.signed_edge_m, 0.0)
+	var tunnel_exit_edge_m := float(tunnel.signed_edge_m[-1])
+	var exit_overshoot_margin_m := -tunnel_exit_edge_m - TUNNEL_EXIT_PLAIN_OVERSHOOT_M
+	var planned_exit_margin_m := TERRAIN_PLACEMENT_TOLERANCE_M \
+		- absf(tunnel_exit_edge_m - float(planned.tunnel_exit_edge_m))
+	var planned_span_margin_m := TERRAIN_PLACEMENT_TOLERANCE_M \
+		- absf((dive_exit_edge_m - tunnel_exit_edge_m) \
+			- float(planned.native_tunnel_edge_span_m))
+	var tunnel_margin := exit_overshoot_margin_m
+	tunnel_margin = minf(tunnel_margin, tunnel.minimum_outward_step_m)
+	tunnel_margin = minf(tunnel_margin, tunnel.minimum_height_down_step_m)
+	tunnel_margin = minf(tunnel_margin, planned_exit_margin_m)
+	tunnel_margin = minf(tunnel_margin, planned_span_margin_m)
+	var tunnel_drop_m: float = trajectory.position_m[tunnel_bounds.x].y \
+		- trajectory.position_m[tunnel_bounds.y].y
+	tunnel_margin = minf(tunnel_margin, tunnel_drop_m)
+	if apron_cross < 0 or tunnel_margin < -0.0001:
+		return _terrain_failure("tunnel-lsm3", "apron_edge",
+			{"from_side": 1, "to_side": -1, "monotonic": ["outward", "height_down"]},
+			{"crossing_index": apron_cross, "exit_signed_edge_m": tunnel_exit_edge_m,
+				"drop_m": tunnel_drop_m, "margin": tunnel_margin,
+				"exit_overshoot_margin_m": exit_overshoot_margin_m,
+				"minimum_outward_step_m": tunnel.minimum_outward_step_m,
+				"minimum_height_down_step_m": tunnel.minimum_height_down_step_m,
+				"planned_exit_margin_m": planned_exit_margin_m,
+				"planned_span_margin_m": planned_span_margin_m})
+	proofs["tunnel-lsm3"] = {"ok": true, "crossing_index": apron_cross,
+		"exit_signed_edge_m": tunnel_exit_edge_m, "drop_m": tunnel_drop_m,
+		"minimum_margin": maxf(0.0, tunnel_margin)}
+	var station_spine: Vector3 = trajectory.position_m[0] \
+		- trajectory.rider_up[0] * LOWER_SPINE_SURFACE_OFFSET_M
+	var summit_spine: Vector3 = trajectory.position_m[dive_bounds.x] \
+		- trajectory.rider_up[dive_bounds.x] * LOWER_SPINE_SURFACE_OFFSET_M
+	return {"ok": true, "proofs": proofs, "planning": {
+		"dive_entry_edge_m": dive_entry_edge_m,
+		"dive_exit_edge_m": dive_exit_edge_m,
+		"tunnel_exit_edge_m": tunnel_exit_edge_m,
+		"station_lower_spine_agl_m": station_spine.y \
+			- Terrain.height(terrain, station_spine.x, station_spine.z),
+		"summit_lower_spine_agl_m": summit_spine.y \
+			- Terrain.height(terrain, summit_spine.x, summit_spine.z),
+	}}
+
+
+static func _terrain_path_observation(
+	trajectory: Dictionary, terrain: Dictionary, frame: Dictionary, first: int, last: int
+) -> Dictionary:
+	var signed_edge := PackedFloat64Array()
+	var minimum_agl := INF
+	var maximum_agl := -INF
+	var minimum_outward_step := INF
+	var minimum_height_down_step := INF
+	for index in range(first, last + 1):
+		var position: Vector3 = trajectory.position_m[index]
+		var edge := Terrain.edge_distance(terrain, position.x, position.z)
+		var agl := position.y - Terrain.height(terrain, position.x, position.z)
+		signed_edge.append(edge)
+		minimum_agl = minf(minimum_agl, agl)
+		maximum_agl = maxf(maximum_agl, agl)
+		if index > first:
+			minimum_outward_step = minf(minimum_outward_step,
+				float(signed_edge[-2]) - edge)
+			minimum_height_down_step = minf(minimum_height_down_step,
+				trajectory.position_m[index - 1].y - position.y)
+	var delta: Vector3 = trajectory.position_m[last] - trajectory.position_m[first]
+	return {"signed_edge_m": signed_edge, "outward_delta_m": -delta.dot(frame.inward),
+		"cross_delta_m": delta.dot(frame.along), "minimum_agl_m": minimum_agl,
+		"maximum_agl_m": maximum_agl, "minimum_outward_step_m": minimum_outward_step,
+		"minimum_height_down_step_m": minimum_height_down_step}
+
+
+static func _role_sample_bounds(
+	role_spans: Dictionary, role_id: String, trajectory: Dictionary
+) -> Vector2i:
+	var span_bounds: Variant = role_spans.get(role_id)
+	if not span_bounds is Vector2i:
+		return Vector2i(-1, -1)
+	return Vector2i(trajectory.span_index.find(span_bounds.x),
+		trajectory.span_index.rfind(span_bounds.y))
+
+
+static func _crossing_index(values: PackedFloat64Array, boundary: float) -> int:
+	for index in range(1, values.size()):
+		if values[index - 1] > boundary and values[index] <= boundary:
+			return index
+	return -1
+
+
+static func _vertical_envelope_m(positions: PackedVector3Array) -> float:
+	var minimum_y := INF
+	var maximum_y := -INF
+	for position in positions:
+		minimum_y = minf(minimum_y, position.y)
+		maximum_y = maxf(maximum_y, position.y)
+	return maximum_y - minimum_y
+
+
+static func _drop_m(positions: PackedVector3Array, bounds: Vector2i) -> float:
+	var minimum_y: float = positions[bounds.x].y
+	for index in range(bounds.x + 1, bounds.y + 1):
+		minimum_y = minf(minimum_y, positions[index].y)
+	return positions[bounds.x].y - minimum_y
+
+
+static func _prominence_m(positions: PackedVector3Array, bounds: Vector2i) -> float:
+	var maximum_y := -INF
+	for index in range(bounds.x, bounds.y + 1):
+		maximum_y = maxf(maximum_y, positions[index].y)
+	return maximum_y - maxf(positions[bounds.x].y, positions[bounds.y].y)
+
+
+static func _band_margin(value: float, band: Vector2) -> float:
+	return minf(value - band.x, band.y - value)
+
+
+static func _terrain_failure(
+	role_id: String, measurement: String, bounds: Dictionary, observed: Dictionary
+) -> Dictionary:
+	return {"ok": false, "failure": {"stage": &"contract", "role_id": role_id,
+		"reason": &"terrain_intent_miss", "bounds": bounds, "observed": observed,
+		"margins": {}, "evaluation_count": 0}}
+
+
 static func _angle_between(first: Vector3, second: Vector3) -> float:
-	return acos(clampf(first.normalized().dot(second.normalized()), -1.0, 1.0))
+	var a := first.normalized()
+	var b := second.normalized()
+	return atan2(a.cross(b).length(), clampf(a.dot(b), -1.0, 1.0))
 
 
 static func _valid_slug(value: String) -> bool:
@@ -406,7 +677,8 @@ static func _gesture_windows(gestures: Array, trajectory: Dictionary) -> Array:
 	var windows := []
 	for gesture in gestures:
 		var window := _sample_window(gesture, trajectory)
-		window["peak_analytic_normal_onset_gps"] = float(gesture.peak_analytic_normal_onset_gps)
+		window["peak_profile_normal_onset_estimate_gps"] = float(
+			gesture.peak_profile_normal_onset_estimate_gps)
 		var roles := []
 		for role in gesture.role_windows:
 			roles.append(_sample_window(role, trajectory))

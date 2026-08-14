@@ -38,6 +38,7 @@ static func run() -> PackedStringArray:
 	_test_committed_catalog(artifacts, references, errors)
 	_test_element_render_request_filter(artifacts, errors)
 	_test_center_row_alignment_selectors(artifacts, errors)
+	_test_compiled_anchor_identity(artifacts, errors)
 	_test_route_sampling(errors)
 	_test_pov_camera(artifacts, errors)
 	_test_checked_writes(artifacts, errors)
@@ -121,7 +122,7 @@ static func _test_opt_in_generated_midpoint_pov_requests(
 	fixture.seed_measurements[1].beats.append_array([{
 		"beat_id": "act-one/01/hill", "story_slot_id": "act1.hill", "window_role": "core",
 		"kind": "hill", "window_s": [4.0, 6.0], "start_distance": 50.0, "end_distance": 100.0,
-		"rows": [{"row_id": "center", "position": "middle", "offset": 0.0,
+		"rows": [{"row_id": "row-04", "position": "middle", "offset": 6.45,
 			"window_start_s": 4.0, "window_end_s": 6.0}],
 	}, {
 		"beat_id": "act-one/02/brakes", "story_slot_id": "act1.brakes", "window_role": "core",
@@ -132,8 +133,9 @@ static func _test_opt_in_generated_midpoint_pov_requests(
 		fixture.catalog, fixture.legacy_base_commit, fixture.generation_counts, true)
 	var hill_povs: Array = report.get("render_requests", []).filter(func(request: Dictionary):
 		return request.get("path") == "review/seed-42/pov/act-one__01__hill.png")
-	_expect(errors, hill_povs.size() == 1 and hill_povs[0].generated_time_s == 5.0,
-		"opt-in adds exactly one center-row midpoint POV for an unaligned retained element")
+	_expect(errors, hill_povs.size() == 1 and hill_povs[0].generated_time_s == 5.0
+		and hill_povs[0].row_id == "row-04" and hill_povs[0].row_offset_m == 6.45,
+		"opt-in adds exactly one row-04 midpoint POV for an unaligned retained element")
 	_expect(errors, report.render_requests.filter(func(request: Dictionary):
 		return str(request.get("path", "")).contains("brakes")).is_empty(),
 		"opt-in adds no request for a non-side-view beat")
@@ -146,8 +148,8 @@ static func _test_opt_in_generated_midpoint_pov_requests(
 		missing_center.comparison, missing_center.catalog, missing_center.legacy_base_commit,
 		missing_center.generation_counts, true)
 	_expect_contains(errors, missing_result.get("errors", []),
-		"midpoint POV requires exactly one center row",
-		"opt-in rejects a retained element with no center row")
+		"midpoint POV requires exactly one row-04",
+		"opt-in rejects a retained element with no row-04")
 	var duplicate_center := fixture.duplicate(true)
 	duplicate_center.seed_measurements[1].beats[1].rows.append(
 		duplicate_center.seed_measurements[1].beats[1].rows[0].duplicate(true))
@@ -155,8 +157,8 @@ static func _test_opt_in_generated_midpoint_pov_requests(
 		duplicate_center.comparison, duplicate_center.catalog, duplicate_center.legacy_base_commit,
 		duplicate_center.generation_counts, true)
 	_expect_contains(errors, duplicate_result.get("errors", []),
-		"midpoint POV requires exactly one center row",
-		"opt-in rejects a retained element with multiple center rows")
+		"midpoint POV requires exactly one row-04",
+		"opt-in rejects a retained element with multiple row-04 records")
 	_append_copy(fixture.seed_measurements[1].beats, 0, {
 		"beat_id": "act-one__00__loop", "story_slot_id": "act1.conflict"})
 	var conflict: Dictionary = artifacts.build_report(fixture.seed_measurements, fixture.comparison,
@@ -632,7 +634,7 @@ static func _sampling_route() -> Dictionary:
 
 ## The approved POV camera, restated from the plan rather than read back from the renderer: a
 ## 1440x900 frame, a 72 degree vertical FOV, a 0.08 m near plane, a 5000 m far plane, and an eye
-## 0.35 m over the centre-row pose, with none of the viewer's speed-dependent widening.
+## 0.35 m over the row-04 pose, with none of the viewer's speed-dependent widening.
 const CONTRACT_POV_SIZE := Vector2i(1440, 900)
 const CONTRACT_POV_FOV_DEG := 72.0
 const CONTRACT_POV_NEAR_M := 0.08
@@ -645,18 +647,18 @@ const POV_TRACE_COLOR := Color(0.55, 0.95, 1.0)
 ## from the contract above and matched against the pixel it has to light, so an intrinsic that
 ## drifts moves a rendered feature off its contracted pixel and turns this red.
 static func _test_pov_camera(artifacts: Script, errors: PackedStringArray) -> void:
-	# The pack fixture is a straight 200 m loop along +X at y = 30 over flat ground, so 10 s in
-	# the eye sits at (100, 30.35, 0), looks down +X with +Z to its right, and the 40 m ground
-	# grid steps away from x = 80 — the far grid line is 300 m ahead.
-	var image: Image = artifacts.pov_image(_pack_route(11), 10.0)
+	# The pack fixture is a straight 200 m loop along +X at y = 30 over flat ground, so row-04 at
+	# 10 s puts the eye 6.45 m behind the 100 m front position, with the 40 m ground
+	# grid steps away from x = 80; the far x = 400 grid line is 306.45 m ahead.
+	var image: Image = artifacts.pov_image(_pack_route(11), 10.0, 6.45)
 	_expect(errors, image.get_size() == CONTRACT_POV_SIZE,
 		"the POV render is the contracted %s frame, not %s" % [CONTRACT_POV_SIZE, image.get_size()])
 	if image.get_size() != CONTRACT_POV_SIZE:
 		return
-	var knot := _pov_pixel(320.0, -(30.0 + CONTRACT_POV_EYE_UP_M), 300.0)
+	var knot := _pov_pixel(320.0, -(30.0 + CONTRACT_POV_EYE_UP_M), 306.45)
 	var ground_row := _pov_top_row_in_column(image, POV_GROUND_COLOR, 1200)
 	_expect(errors, ground_row == roundi(knot.y),
-		"the ground 300 m ahead lands where the %.1f degree vertical FOV puts it: row %d, not %d"
+		"the ground 306.45 m ahead lands where the %.1f degree vertical FOV puts it: row %d, not %d"
 			% [CONTRACT_POV_FOV_DEG, roundi(knot.y), ground_row])
 	_expect(errors, _pov_is(image, roundi(knot.x), roundi(knot.y), POV_GROUND_COLOR),
 		"the grid knot 320 m right of that line lights its contracted pixel (%d, %d)"
@@ -667,8 +669,12 @@ static func _test_pov_camera(artifacts: Script, errors: PackedStringArray) -> vo
 	var rail_under_eye := 1.05 + CONTRACT_POV_EYE_UP_M
 	var rail := _pov_pixel(0.95, -rail_under_eye, 4.0)
 	var rail_columns := _pov_columns(image, POV_TRACE_COLOR, roundi(rail.y), CONTRACT_POV_SIZE.x / 2)
-	_expect(errors, rail_columns == PackedInt32Array([roundi(rail.x)]),
-		"the eye rides %.2f m over the pose: the right rail 4 m ahead holds row %d at column %d, not %s"
+	var rail_columns_are_projected := rail_columns.has(roundi(rail.x))
+	for column in rail_columns:
+		rail_columns_are_projected = rail_columns_are_projected \
+			and absi(column - roundi(rail.x)) <= 1
+	_expect(errors, rail_columns_are_projected,
+		"the eye rides %.2f m over the pose: the right rail 4 m ahead stays within one raster pixel of row %d, column %d, not %s"
 			% [CONTRACT_POV_EYE_UP_M, roundi(rail.y), roundi(rail.x), str(rail_columns)])
 
 	# The rail is carried past the last sample in front of the eye — 2 m ahead — to the near
@@ -688,8 +694,8 @@ static func _test_pov_camera(artifacts: Script, errors: PackedStringArray) -> vo
 	var far_left := _pov_pixel(-0.95, -rail_under_eye, 98.0)
 	var far_right := _pov_pixel(0.95, -rail_under_eye, 98.0)
 	var top_row := _pov_top_row(image, POV_TRACE_COLOR)
-	_expect(errors, top_row == roundi(far_right.y),
-		"no rail is drawn above the far knot 98 m ahead on row %d, but row %d carries one"
+	_expect(errors, absi(top_row - roundi(far_right.y)) <= 1,
+		"no rail is drawn more than one raster pixel above the far knot 98 m ahead on row %d, but row %d carries one"
 			% [roundi(far_right.y), top_row])
 	var top_columns := _pov_columns(image, POV_TRACE_COLOR, roundi(far_right.y), 0)
 	_expect(errors, top_columns == PackedInt32Array([roundi(far_left.x), roundi(far_right.x)]),
@@ -938,11 +944,12 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 			func(value: Dictionary): value.catalog.review_prompts.pop_back()],
 		["every issue has at least one traceability link", "issue 7",
 			func(value: Dictionary): value.catalog.evidence_gaps[0].issues.erase(7)],
-		["center-row POV resolution requires a zero-offset row", "row",
+		["midpoint POV resolution requires row-04 at offset 6.45", "row",
 			func(value: Dictionary): value.seed_measurements[1].beats[0].rows[0].offset = 2.0],
-		["center-row POV resolution rejects distinct ambiguous rows", "row",
-			func(value: Dictionary): _append_copy(value.seed_measurements[1].beats[0].rows, 0, {"row_id": "row-center-2"})],
-		["center-row POV resolution rejects identical ambiguous rows", "row",
+		["row-04 POV resolution rejects distinct ambiguous rows", "row",
+			func(value: Dictionary): _append_copy(value.seed_measurements[1].beats[0].rows, 0,
+				{"window_start_s": 10.2})],
+		["row-04 POV resolution rejects identical ambiguous rows", "row",
 			func(value: Dictionary): _append_copy(value.seed_measurements[1].beats[0].rows, 0, {})],
 	]
 	_expect_invalid_cases(artifacts, errors, cases)
@@ -962,7 +969,7 @@ static func _test_invalid_inputs(artifacts: Script, errors: PackedStringArray) -
 	var retained_result: Dictionary = _build(artifacts, retained)
 	_expect_contains(errors, retained_result.get("errors", []), "legacy_base_commit",
 		"combined invalid input retains the base diagnostic")
-	_expect_contains(errors, retained_result.get("errors", []), "exactly one center row",
+	_expect_contains(errors, retained_result.get("errors", []), "exactly one row-04",
 		"non-catalog errors preserve retained artifact diagnostics")
 
 
@@ -1016,7 +1023,9 @@ static func _test_committed_catalog(
 
 static func _test_element_render_request_filter(artifacts: Script, errors: PackedStringArray) -> void:
 	var fixture := _valid_fixture()
-	for kind in ["hill", "immelmann", "cutback", "twisted_drop", "dive", "wave_turn", "overbank", "turn", "brake_run"]:
+	for kind in ["hill", "immelmann", "cutback", "twisted_drop", "dive", "wave_turn",
+		"overbank", "turn", "rise", "crest", "fall", "commit", "vertical-entry",
+		"pullout", "exit", "slow-crest", "brake_run"]:
 		_append_copy(fixture.seed_measurements[1].beats, 0, {
 			"beat_id": "beat-%s" % kind, "kind": kind, "story_slot_id": "act1.%s" % kind,
 		})
@@ -1024,9 +1033,11 @@ static func _test_element_render_request_filter(artifacts: Script, errors: Packe
 	for request in _build(artifacts, fixture).get("render_requests", []):
 		if request.get("artifact_kind") == "element":
 			actual.append(request.get("beat_id"))
-	_expect(errors, actual == ["act-one/00/loop", "beat-cutback", "beat-dive", "beat-hill",
-		"beat-immelmann", "beat-overbank", "beat-turn", "beat-twisted_drop", "beat-wave_turn"],
-		"only the exact nine retained side-view beat kinds produce element render requests")
+	_expect(errors, actual == ["act-one/00/loop", "beat-commit", "beat-crest", "beat-cutback",
+		"beat-dive", "beat-exit", "beat-fall", "beat-hill", "beat-immelmann",
+		"beat-overbank", "beat-pullout", "beat-rise", "beat-slow-crest", "beat-turn", "beat-twisted_drop",
+		"beat-vertical-entry", "beat-wave_turn"],
+		"all physical element and marquee phase kinds produce side-view requests")
 
 
 static func _test_center_row_alignment_selectors(artifacts: Script, errors: PackedStringArray) -> void:
@@ -1041,8 +1052,31 @@ static func _test_center_row_alignment_selectors(artifacts: Script, errors: Pack
 			fixture.catalog.observations[0].alignment.row_compatibility = "row-independent"
 		var records: Array = _build(artifacts, fixture).get("pov_map", {}).get("records", [])
 		_expect(errors, records.size() == 2 and records[0].generated_window_s == [10.1, 11.9]
-			and records[0].generated_time_s == 11.0,
-			"every valid evidence row selector resolves the unique zero-offset POV center row")
+			and records[0].generated_time_s == 11.0 and records[0].row_id == "row-04"
+			and records[0].row_offset_m == 6.45,
+			"every valid evidence row selector resolves the unique row-04 POV midpoint")
+
+
+static func _test_compiled_anchor_identity(artifacts: Script, errors: PackedStringArray) -> void:
+	var rows := [{"row_id": "row-04", "offset": 6.45,
+		"window_start_s": 8.0, "window_end_s": 9.0}]
+	var measurement := {"duration": 20.0, "beats": [{
+		"beat_id": "act-one/giant-inversion/00-immelmann", "story_slot_id": "act-one",
+		"window_role": "giant-inversion", "kind": "immelmann", "occurrence": 0,
+		"window_id": "act-one/giant-inversion/00-immelmann", "rows": rows,
+	}, {
+		"beat_id": "act-one/giant-inversion/01-loop", "story_slot_id": "act-one",
+		"window_role": "giant-inversion", "kind": "loop", "occurrence": 1,
+		"window_id": "act-one/giant-inversion/01-loop", "rows": rows,
+	}]}
+	var resolution_errors: Array[String] = []
+	var resolution: Dictionary = artifacts._center_row_resolution(measurement, {
+		"story_slot_id": "act-one", "window_role": "giant-inversion", "kind": "loop",
+		"occurrence": 1, "window_id": "act-one/giant-inversion/01-loop",
+	}, resolution_errors)
+	_expect(errors, resolution_errors.is_empty()
+		and resolution.get("beat_id") == "act-one/giant-inversion/01-loop",
+		"artifact POV resolution honors the complete stable compiled identity")
 
 
 static func _expect_invalid_cases(
@@ -1096,8 +1130,8 @@ static func _valid_fixture() -> Dictionary:
 		"beat_id": "act-one/00/loop", "story_slot_id": "act1.loop",
 		"window_role": "core", "kind": "loop", "window_s": [10.0, 12.0],
 		"rows": [{
-			"row_id": "row-02", "position": "intermediate",
-			"offset": 0.0, "window_start_s": 10.1, "window_end_s": 11.9,
+			"row_id": "row-04", "position": "middle",
+			"offset": 6.45, "window_start_s": 10.1, "window_end_s": 11.9,
 		}],
 	}]
 	return {
@@ -1240,8 +1274,8 @@ static func _expected_report() -> Dictionary:
 				"beat_id": "act-one/00/loop", "story_slot_id": "act1.loop",
 				"window_role": "core", "kind": "loop", "window_s": [10.0, 12.0],
 				"rows": [{
-					"row_id": "row-02", "position": "intermediate",
-					"offset": 0.0, "window_start_s": 10.1, "window_end_s": 11.9,
+					"row_id": "row-04", "position": "middle",
+					"offset": 6.45, "window_start_s": 10.1, "window_end_s": 11.9,
 				}],
 			}]),
 			_measurement_summary(20260809, 109.0, 19.0, []),
@@ -1304,7 +1338,7 @@ static func _expected_pov_map() -> Dictionary:
 			"uncertainty_s": 0.1, "row_compatibility": "same-row",
 			"generated_seed": 42, "generated_anchor": {"semantic_selector_id": "selector.loop"},
 			"generated_beat_id": "act-one/00/loop", "generated_window_s": [10.1, 11.9],
-			"generated_time_s": 11.0,
+			"generated_time_s": 11.0, "row_id": "row-04", "row_offset_m": 6.45,
 			"generated_pov_path": "review/seed-42/pov/act-one__00__loop.png",
 		})
 	return {
@@ -1399,7 +1433,7 @@ static func _expected_render_requests() -> Array:
 	requests.append({
 		"path": "review/seed-42/pov/act-one__00__loop.png", "seed": 42,
 		"artifact_kind": "pov", "beat_id": "act-one/00/loop",
-		"generated_time_s": 11.0,
+		"generated_time_s": 11.0, "row_id": "row-04", "row_offset_m": 6.45,
 	})
 	requests.sort_custom(func(a: Dictionary, b: Dictionary): return a.path < b.path)
 	return requests

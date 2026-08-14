@@ -292,7 +292,7 @@ static func _resolve_comparison_samples(
 	else:
 		for beat_value in beats:
 			var beat: Dictionary = beat_value
-			if beat.story_slot_id == anchor.story_slot_id and beat.window_role == anchor.window_role:
+			if _matches_compiled_anchor(beat, anchor):
 				selected_beats.append(beat)
 		selected_beats.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
 			return str(first.beat_id) < str(second.beat_id)
@@ -366,6 +366,16 @@ static func _resolve_comparison_samples(
 	if first_metric_gap != "":
 		return {"reason": first_metric_gap, "branch": branch, "anchor": anchor}
 	return {"samples": samples, "branch": branch, "anchor": anchor}
+
+
+static func _matches_compiled_anchor(beat: Dictionary, anchor: Dictionary) -> bool:
+	if beat.get("story_slot_id") != anchor.get("story_slot_id") \
+			or beat.get("window_role") != anchor.get("window_role"):
+		return false
+	for field in ["kind", "occurrence", "window_id"]:
+		if anchor.has(field) and beat.get(field) != anchor[field]:
+			return false
+	return true
 
 
 static func _resolve_comparison_metric(row: Dictionary, observation: Dictionary) -> Dictionary:
@@ -946,38 +956,47 @@ static func _beat_definitions(route: Dictionary) -> Array:
 
 
 static func _row_series(route: Dictionary, row_offset: float) -> Dictionary:
-	var normal := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	var roll := PackedFloat32Array()
+	var native := native_row_series(route, row_offset)
+	return {
+		"normal": Verify.filter(Verify.resample(route.times, native.normal_g)),
+		"lateral": Verify.filter(Verify.resample(route.times, native.lateral_g)),
+		"longitudinal": Verify.filter(Verify.resample(route.times, native.longitudinal_g)),
+		"roll": Verify.filter(Verify.resample(route.times, native.roll_rate_dps)),
+	}
+
+
+## Native modeled forces for one train row, aligned one-for-one with route samples.
+static func native_row_series(route: Dictionary, row_offset: float) -> Dictionary:
+	var normal_g := PackedFloat32Array()
+	var lateral_g := PackedFloat32Array()
+	var longitudinal_g := PackedFloat32Array()
+	var roll_rate_dps := PackedFloat32Array()
 	if is_zero_approx(row_offset):
-		normal = route.normal_g
-		lateral = route.lateral_g
-		longitudinal = route.longitudinal_g
+		normal_g = route.normal_g
+		lateral_g = route.lateral_g
+		longitudinal_g = route.longitudinal_g
 		if route.has("roll_rates"):
-			roll = route.roll_rates
+			roll_rate_dps = route.roll_rates
 		else:
-			roll.resize(route.times.size())
-			roll.fill(0.0)
+			roll_rate_dps.resize(route.times.size())
+			roll_rate_dps.fill(0.0)
 	else:
 		var count: int = route.times.size()
-		normal.resize(count)
-		lateral.resize(count)
-		longitudinal.resize(count)
-		roll.resize(count)
+		normal_g.resize(count)
+		lateral_g.resize(count)
+		longitudinal_g.resize(count)
+		roll_rate_dps.resize(count)
 		for i in count:
 			var forces: Dictionary = Verify.row_forces_at(
 				route, route.distances[i], route.speeds[i], row_offset
 			)
-			normal[i] = forces.normal
-			lateral[i] = forces.lateral
-			longitudinal[i] = forces.longitudinal
-			roll[i] = forces.roll_rate
+			normal_g[i] = forces.normal
+			lateral_g[i] = forces.lateral
+			longitudinal_g[i] = forces.longitudinal
+			roll_rate_dps[i] = forces.roll_rate
 	return {
-		"normal": Verify.filter(Verify.resample(route.times, normal)),
-		"lateral": Verify.filter(Verify.resample(route.times, lateral)),
-		"longitudinal": Verify.filter(Verify.resample(route.times, longitudinal)),
-		"roll": Verify.filter(Verify.resample(route.times, roll)),
+		"normal_g": normal_g, "lateral_g": lateral_g,
+		"longitudinal_g": longitudinal_g, "roll_rate_dps": roll_rate_dps,
 	}
 
 
@@ -1503,12 +1522,23 @@ static func _validate_selectors(
 		if not compiled is Dictionary:
 			errors.append("selector '%s' requires compiled_anchor" % selector_id)
 		else:
-			_require_exact_keys(compiled, ["story_slot_id", "window_role"], "selector '%s' compiled_anchor" % selector_id, errors)
+			_reject_unknown_keys(compiled,
+				["story_slot_id", "window_role", "kind", "occurrence", "window_id"],
+				"selector '%s' compiled_anchor" % selector_id, errors)
+			for key in ["story_slot_id", "window_role"]:
+				if not compiled.has(key):
+					errors.append("selector '%s' compiled_anchor is missing %s" % [selector_id, key])
 			if (
 				not _nonempty_string(compiled.get("story_slot_id"))
 				or not _nonempty_string(compiled.get("window_role"))
 			):
 				errors.append("selector '%s' has an incomplete compiled_anchor" % selector_id)
+			for key in ["kind", "window_id"]:
+				if compiled.has(key) and not _nonempty_string(compiled[key]):
+					errors.append("selector '%s' has invalid compiled %s" % [selector_id, key])
+			if compiled.has("occurrence") and (typeof(compiled.occurrence) != TYPE_INT \
+					or int(compiled.occurrence) < 0):
+				errors.append("selector '%s' has invalid compiled occurrence" % selector_id)
 
 
 static func _validate_sources(

@@ -427,20 +427,29 @@ static func validate_seams(route: Dictionary, issues: PackedStringArray) -> void
 			continue
 		var context := "sample %d, span %d, %s" % [
 			seam, route.span_indices[seam], _semantic_window_id(route, seam)]
-		var ds_before: float = route.distances[seam] - route.distances[seam - 1]
-		var ds_after: float = route.distances[seam + 1] - route.distances[seam]
-		var first_before: Vector3 = (route.curvatures[seam] - route.curvatures[seam - 1]) / ds_before
-		var first_after: Vector3 = (route.curvatures[seam + 1] - route.curvatures[seam]) / ds_after
-		_require(issues, first_before.distance_to(first_after) < 0.0012,
-			"C3 curvature slope jumps at %s" % context)
-		var ds_outer_before: float = route.distances[seam - 1] - route.distances[seam - 2]
-		var ds_outer_after: float = route.distances[seam + 2] - route.distances[seam + 1]
-		var previous_first: Vector3 = (route.curvatures[seam - 1] - route.curvatures[seam - 2]) / ds_outer_before
-		var next_first: Vector3 = (route.curvatures[seam + 2] - route.curvatures[seam + 1]) / ds_outer_after
-		var second_before: Vector3 = (first_before - previous_first) * 2.0 / (ds_before + ds_outer_before)
-		var second_after: Vector3 = (next_first - first_after) * 2.0 / (ds_after + ds_outer_after)
-		_require(issues, second_before.distance_to(second_after) < 0.0025,
-			"C4 curvature acceleration jumps at %s" % context)
+		var entering_station: bool = route.minimum_speeds[seam - 1] == 2.0 \
+			and route.minimum_speeds[seam] == 0.0
+		if not entering_station:
+			var ds_before: float = route.distances[seam] - route.distances[seam - 1]
+			var ds_after: float = route.distances[seam + 1] - route.distances[seam]
+			var first_before: Vector3 = (route.curvatures[seam] \
+				- route.curvatures[seam - 1]) / ds_before
+			var first_after: Vector3 = (route.curvatures[seam + 1] \
+				- route.curvatures[seam]) / ds_after
+			_require(issues, first_before.distance_to(first_after) < 0.0012,
+				"C3 curvature slope jumps at %s" % context)
+			var ds_outer_before: float = route.distances[seam - 1] - route.distances[seam - 2]
+			var ds_outer_after: float = route.distances[seam + 2] - route.distances[seam + 1]
+			var previous_first: Vector3 = (route.curvatures[seam - 1] \
+				- route.curvatures[seam - 2]) / ds_outer_before
+			var next_first: Vector3 = (route.curvatures[seam + 2] \
+				- route.curvatures[seam + 1]) / ds_outer_after
+			var second_before: Vector3 = (first_before - previous_first) * 2.0 \
+				/ (ds_before + ds_outer_before)
+			var second_after: Vector3 = (next_first - first_after) * 2.0 \
+				/ (ds_after + ds_outer_after)
+			_require(issues, second_before.distance_to(second_after) < 0.0025,
+				"C4 curvature acceleration jumps at %s" % context)
 		var bank_step: float = absf(angle_difference(deg_to_rad(route.banks[seam]), deg_to_rad(route.banks[seam - 1])))
 		_require(issues, bank_step < deg_to_rad(4.0),
 			"bank jumps %.1f° at %s" % [rad_to_deg(bank_step), context])

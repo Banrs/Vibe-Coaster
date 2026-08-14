@@ -5,6 +5,8 @@ const G0 := 9.80665
 const MIN_MOVING_SPEED_MPS := 2.0
 const FRAME_EPS := 0.000001
 const STATION_TRANSVERSE_TOLERANCE_G := 0.00001
+const PLATEAU_PULSE_AREA := 2.0 / 3.0
+const STEP_FOLD_FRACTION := 0.005
 
 const DP := 0
 const DT := 1
@@ -31,6 +33,28 @@ static func compact_pulse(amplitude: float) -> Dictionary:
 	return profile
 
 
+## C2 load notch whose perturbation has zero area and zero first moment.
+static func balanced_notch(baseline: float, depth: float) -> Dictionary:
+	var profile := {"kind": "balanced_notch", "baseline": baseline,
+		"amplitude": depth * 3100.0 / 1099.0}
+	profile.make_read_only()
+	return profile
+
+
+## C2 wide pulse with one-third-duration quintic shoulders and a flat center.
+static func plateau_pulse(amplitude: float) -> Dictionary:
+	var profile := {"kind": "plateau_pulse", "amplitude": amplitude}
+	profile.make_read_only()
+	return profile
+
+
+## Proper normal load for a level bank transition driven by compact-pulse roll.
+static func bank_balance(from_bank_rad: float, to_bank_rad: float) -> Dictionary:
+	var profile := {"kind": "bank_balance", "from": from_bank_rad, "to": to_bank_rad}
+	profile.make_read_only()
+	return profile
+
+
 ## Returns value, first derivative with respect to normalized profile time, and second derivative.
 static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 	match profile.get("kind", ""):
@@ -52,11 +76,58 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 				scale * dh * (1.0 - 2.0 * h),
 				scale * (d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
 			)
+		"balanced_notch":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
+			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
+			var pulse := 4.0 * h * (1.0 - h)
+			var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
+			var pulse_second := 4.0 * (
+				d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
+			var balance := 4199.0 / 3100.0
+			var scale: float = profile.amplitude
+			return Vector3(
+				profile.baseline + scale * pulse * (1.0 - balance * pulse),
+				scale * pulse_derivative * (1.0 - 2.0 * balance * pulse),
+				scale * (pulse_second * (1.0 - 2.0 * balance * pulse)
+					- 2.0 * balance * pulse_derivative * pulse_derivative)
+			)
+		"plateau_pulse":
+			var edge_u := minf(u, 1.0 - u)
+			if edge_u >= 1.0 / 3.0:
+				return Vector3(profile.amplitude, 0.0, 0.0)
+			var shoulder_u := edge_u * 3.0
+			var h := 10.0 * shoulder_u ** 3 - 15.0 * shoulder_u ** 4 \
+				+ 6.0 * shoulder_u ** 5
+			var dh := 30.0 * shoulder_u ** 2 - 60.0 * shoulder_u ** 3 \
+				+ 30.0 * shoulder_u ** 4
+			var d2h := 60.0 * shoulder_u - 180.0 * shoulder_u ** 2 \
+				+ 120.0 * shoulder_u ** 3
+			var direction := 1.0 if u <= 0.5 else -1.0
+			return Vector3(profile.amplitude * h,
+				profile.amplitude * dh * 3.0 * direction,
+				profile.amplitude * d2h * 9.0)
+		"bank_balance":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
+			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
+			var pulse := 4.0 * h * (1.0 - h)
+			var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
+			var fraction := _compact_pulse_integral(u) / (100.0 / 231.0)
+			var bank_delta: float = profile.to - profile.from
+			var bank: float = profile.from + bank_delta * fraction
+			var bank_derivative := bank_delta * pulse / (100.0 / 231.0)
+			var bank_second := bank_delta * pulse_derivative / (100.0 / 231.0)
+			var secant := 1.0 / cos(bank)
+			var tangent := tan(bank)
+			return Vector3(secant, secant * tangent * bank_derivative,
+				secant * ((tangent * tangent + secant * secant)
+					* bank_derivative * bank_derivative + tangent * bank_second))
 	assert(false, "invalid motion profile")
 	return Vector3.ZERO
 
 
-static func profile_peak_abs_derivative(profile: Dictionary) -> float:
+static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 	match profile.get("kind", ""):
 		"constant":
 			return 0.0
@@ -64,6 +135,18 @@ static func profile_peak_abs_derivative(profile: Dictionary) -> float:
 			return 1.875 * absf(float(profile.to) - float(profile.from))
 		"compact_pulse":
 			return 3.5663941463932597 * absf(float(profile.amplitude))
+		"balanced_notch":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
+		"plateau_pulse":
+			return 5.625 * absf(float(profile.amplitude))
+		"bank_balance":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
 	assert(false, "invalid motion profile")
 	return 0.0
 
@@ -93,7 +176,17 @@ static func span(
 		match profile.kind:
 			"constant": assert(profile.has("value"), "invalid constant profile")
 			"quintic": assert(profile.has("from") and profile.has("to"), "invalid quintic profile")
-			"compact_pulse": assert(profile.has("amplitude"), "invalid compact pulse profile")
+			"compact_pulse":
+				assert(profile.has("amplitude") and is_finite(float(profile.amplitude)),
+					"invalid compact pulse profile")
+			"balanced_notch": assert(profile.has("baseline") and profile.has("amplitude")
+				and is_finite(float(profile.baseline)) and is_finite(float(profile.amplitude))
+				and float(profile.amplitude) >= 0.0, "invalid balanced notch profile")
+			"plateau_pulse": assert(profile.has("amplitude")
+				and is_finite(float(profile.amplitude)), "invalid plateau pulse profile")
+			"bank_balance": assert(profile.has("from") and profile.has("to")
+				and absf(float(profile.from)) < PI * 0.5
+				and absf(float(profile.to)) < PI * 0.5, "invalid bank balance profile")
 			_: assert(false, "invalid span profile kind")
 	var record := {
 		"span_id": span_id,
@@ -164,8 +257,10 @@ static func integrate(
 				0.0, tangent, up, speed, gravity, rolling, aero)
 		while span_elapsed < float(motion_span.duration_s) - 0.000000000001:
 			var remaining_s: float = float(motion_span.duration_s) - span_elapsed
+			# Fold a sub-public-resolution remainder into the adjacent RK step. Otherwise
+			# the native Float64 node can collapse when the route publishes Float32 time.
 			var h := remaining_s if remaining_s <= step_s + maxf(0.000000000001,
-				step_s * 0.00000001) else step_s
+				step_s * STEP_FOLD_FRACTION) else step_s
 			var error := _rk4_derivative(derivatives[0], position, tangent, up, speed,
 				motion_span, span_elapsed, gravity, rolling, aero, false)
 			if not error.is_empty():
@@ -242,6 +337,12 @@ static func integrate(
 	}
 	result.ok = true
 	return result
+
+
+static func _compact_pulse_integral(u: float) -> float:
+	return 10.0 * u ** 4 - 12.0 * u ** 5 + 4.0 * u ** 6 \
+		- (400.0 / 7.0) * u ** 7 + 150.0 * u ** 8 \
+		- (460.0 / 3.0) * u ** 9 + 72.0 * u ** 10 - (144.0 / 11.0) * u ** 11
 
 
 static func _empty_trajectory() -> Dictionary:

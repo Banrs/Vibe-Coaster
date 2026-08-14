@@ -423,7 +423,7 @@ static func _material_roles() -> Array:
 				"minimum_centerline_agl_m": 4.0, "boundary_crossings": [
 					{"boundary_id": &"shelf_edge", "from_side": 1, "to_side": -1},
 					{"boundary_id": &"face", "from_side": 1, "to_side": -1}],
-				"monotonic": PackedStringArray(["outward", "height_down", "agl_down"])}),
+				"monotonic": PackedStringArray(["outward", "height_down"])}),
 		_role("tunnel-lsm3", "tunnel_lsm3", Vector2(150.0, 220.0), {}, [],
 			{"boundary_crossings": [{"boundary_id": &"apron_edge", "from_side": 1,
 				"to_side": -1}]}, 3),

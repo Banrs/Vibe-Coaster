@@ -418,7 +418,11 @@ static func validate_structure(route: Dictionary, issues: PackedStringArray) -> 
 			return
 
 
-## Independent sampled C4 and bank continuity at every native motion-span seam.
+## Independent sampled C4 and bank continuity at every native motion-span seam. The one
+## exception is the brakes-to-station seam: station mode pins curvature to zero while moving
+## mode derives it from transverse/v^2, so finite differences across that seam compare two
+## definitions over centimetre steps. There the closure is proven directly instead: the
+## moving side must arrive at near-zero curvature.
 static func validate_seams(route: Dictionary, issues: PackedStringArray) -> void:
 	for seam in range(1, route.span_indices.size()):
 		if route.span_indices[seam] == route.span_indices[seam - 1]:
@@ -429,7 +433,10 @@ static func validate_seams(route: Dictionary, issues: PackedStringArray) -> void
 			seam, route.span_indices[seam], _semantic_window_id(route, seam)]
 		var entering_station: bool = route.minimum_speeds[seam - 1] == 2.0 \
 			and route.minimum_speeds[seam] == 0.0
-		if not entering_station:
+		if entering_station:
+			_require(issues, route.curvatures[seam - 1].length() < 0.001,
+				"station closure arrives curved at %s" % context)
+		else:
 			var ds_before: float = route.distances[seam] - route.distances[seam - 1]
 			var ds_after: float = route.distances[seam + 1] - route.distances[seam]
 			var first_before: Vector3 = (route.curvatures[seam] \

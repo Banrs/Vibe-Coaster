@@ -81,6 +81,13 @@ above.
 
 ## Known limitations of the baseline itself
 
+- Plan role `targets`, `phases`, and `recipe_id` (e.g. the Immelmann's declared
+  `vertical_excursion_m`) are published in the accepted route's `terrain_story_plan` but no
+  code measures or enforces them — only `length_m` and the three terrain intents are proven
+  against the built ride. Confirmed by the 2026-08-15 pre-push review; enforcing them the way
+  `_validate_role_lengths` enforces lengths is deliberate next-cycle scope (the planned
+  Immelmann re-scale exercises exactly those fields).
+
 - The radius strip in the channel sheets is degenerate. Near-straight track yields enormous
   finite radii, so the linear plot range runs to ~5.4e8 m (seed 42), ~7.7e8 m (seed 11) and
   ~8.0e8 m (seed 20260809), collapsing all small-radius detail onto the baseline. The sidecar

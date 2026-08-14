@@ -19,7 +19,12 @@ const RETURN_SCALAR_IDS := [
 	"height_b_recovery_duration_s",
 ]
 const RETURN_SCALAR_BOUNDS := [
-	[50.0 * PI / 180.0, 70.0 * PI / 180.0], [0.55, 6.00],
+	# Turn-a bank caps at 66 deg: the fixed 0.45 s exit rolls (bank - 45 deg) in one compact
+	# pulse, so peaks stay under the 120 deg/s envelope only for bank < ~68.4 deg, and the
+	# sweep seeds never run the load gate that would catch a breach.
+	[50.0 * PI / 180.0, 66.0 * PI / 180.0], [0.55, 6.00],
+	# The 60 deg turn-b floor is authoring intent, not a solve optimum: both return turns
+	# stay strongly banked even when the solve would trade bank away for closure.
 	[0.35, 4.0], [60.0 * PI / 180.0, 80.0 * PI / 180.0],
 	[2.0, 12.0], [0.1, 2.0], [0.35, 4.6],
 ]
@@ -34,9 +39,6 @@ const RETURN_RESIDUAL_IDS := [
 ]
 const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1]
 const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01]
-const STATION_APPROACH_LENGTH_M := 230.0
-const STATION_CAPTURE_LENGTH_M := 80.0
-const STATION_BRAKE_LENGTH_M := 150.0
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 77.0)
 const RETURN_ENTRY_SPEED_PADDING_MPS := 0.01
 const RETURN_ENTRY_POSITION_PADDING_M := 0.25
@@ -860,17 +862,6 @@ static func _approach_length(layout: Dictionary) -> float:
 	if corridor is Dictionary:
 		return float(corridor.get("minimum_length_m", 0.0))
 	return 0.0
-
-
-static func station_approach_envelope() -> Dictionary:
-	return {
-		"minimum_length_m": STATION_APPROACH_LENGTH_M,
-		"capture_length_m": STATION_CAPTURE_LENGTH_M,
-		"brake_length_m": STATION_BRAKE_LENGTH_M,
-		"entry_speed_mps": CAPTURE_ENTRY_SPEED_MPS,
-		"half_width_m": CAPTURE_HALF_WIDTH_M,
-		"half_height_m": CAPTURE_HALF_HEIGHT_M,
-	}
 
 
 static func _add_capture_and_brakes(

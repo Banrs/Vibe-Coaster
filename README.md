@@ -28,7 +28,9 @@ inspection layer (placeholder train, simple track and pillars).
   ±4.7 Gy · +8.0/−6.0 Gx · 25 g/s onset · 120°/s roll (anti-G-suit and restraint-tech
   credits — design fiction grounded in `docs/RESEARCH.md` §5).
 
-Every seed passes: frame orthonormality and C4 seam continuity, terrain and self clearance,
+Every seed passes: frame orthonormality and C4 seam continuity (at the brakes-to-station seam
+the check is a direct near-zero-curvature arrival test, because station mode pins curvature
+to zero by definition), terrain and self clearance,
 push-pull, the 0.2 s reversal rule, pairwise combined-axis ellipses, onset and roll-rate
 limits, element-shape expectations (camelback structure, inversion heights, dive steepness),
 and determinism. Per-row (7 rows) filtered envelope usage on the duration curves is gated on

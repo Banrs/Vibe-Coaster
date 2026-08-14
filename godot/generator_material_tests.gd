@@ -638,7 +638,7 @@ func _check_act_one_contract(route: Dictionary) -> void:
 	var immelmann_first := int(immelmann.first)
 	var immelmann_rise := _maximum_height(route, immelmann_first, int(immelmann.last)) \
 		- float(route.positions[immelmann_first].y)
-	_expect_range("Immelmann rise", immelmann_rise, 90.0, 110.0, "m")
+	_expect_range("Immelmann rise", immelmann_rise, 100.0, 110.0, "m")
 	_expect_min("Immelmann substantially inverted hold",
 		_held_at_most(route, immelmann, true, -0.5), 1.5, "s")
 	var cutback_turn := _turn_measure(route, cutback)

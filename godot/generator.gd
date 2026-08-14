@@ -398,7 +398,7 @@ static func _material_roles() -> Array:
 		_role("opener-release", "rising_release", Vector2(270.0, 390.0),
 			{"height_delta_m": Vector2(25.0, 55.0)}),
 		_role("act-one-immelmann", "immelmann", Vector2(370.0, 490.0),
-			{"vertical_excursion_m": Vector2(95.0, 110.0)},
+			{"vertical_excursion_m": Vector2(100.0, 110.0)},
 			[_phase(&"inverted_apex", {"rider_up_dot": Vector2(-1.0, 0.0),
 				"hold_s": Vector2(1.0, 2.2)})]),
 		_role("act-one-cutback", "cutback", Vector2(270.0, 360.0),

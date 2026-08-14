@@ -13,7 +13,7 @@ inspection layer (placeholder train, simple track and pillars).
 
 - Records chased honestly: ~340 km/h via a downhill tunnel launch, a ~250 m camelback
   (structure above its valley), a ~90° cliff dive down ~0.8× the escarpment relief, a
-  80–100 m Immelmann (tallest-inversion class), a helical-leg vertical loop, a cutback,
+  100–110 m Immelmann (tallest-inversion class), a helical-leg vertical loop, a cutback,
   7.8–8.2 km of track.
 - Falcon's Flight's skeleton expressed as twenty ordered material roles — twisted side-drop
   into one flowing low act, a boosted-then-coasting decelerating cliff climb, one crest hold with an

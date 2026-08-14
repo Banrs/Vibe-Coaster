@@ -93,7 +93,7 @@ positions stay raw for physics, verification, and generated-channel measurement.
 - Material story, twenty ordered roles with seeded terrain-relative placement:
   station → ~4 g air-launch + unpowered coast over the opener crest → twisted non-inverting
   side-drop into act one, ONE flowing arc at honest inversion speed (giant Immelmann
-  ~75–95 m: the tallest-inversion chase; helical-leg loop; cutback at the Immelmann exit;
+  100–110 m: the tallest-inversion chase; helical-leg loop; cutback at the Immelmann exit;
   hills + wave turn, all chained exit-to-entry) → LSM2 boost at the cliff base (~290 km/h)
   + unpowered decelerating coast up the escarpment → crest crawl/hold (the ride's one
   deliberate slow beat) + compact clifftop suspense (reference-scale only, outward-banked

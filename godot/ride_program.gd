@@ -19,12 +19,12 @@ const RETURN_SCALAR_IDS := [
 	"height_b_recovery_duration_s",
 ]
 const RETURN_SCALAR_BOUNDS := [
-	[30.0 * PI / 180.0, 52.0 * PI / 180.0], [1.0, 6.5],
+	[50.0 * PI / 180.0, 70.0 * PI / 180.0], [0.55, 6.00],
 	[0.35, 4.0], [60.0 * PI / 180.0, 80.0 * PI / 180.0],
-	[2.0, 12.0], [0.1, 2.0], [0.35, 4.0],
+	[2.0, 12.0], [0.1, 2.0], [0.35, 4.6],
 ]
-const RETURN_SEED := [0.615368689919713, 2.63418618072096, 1.54224626178183,
-	1.13441408936318, 5.54735395961309, 0.913756415135937, 3.54214844259106]
+const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
+	1.0471975511966, 6.48573781566998, 0.996333175598368, 3.98838120528104]
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RETURN_TRANSFER_BANK_BIAS_RAD := 7.5 * PI / 180.0
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
@@ -599,7 +599,7 @@ static func _add_raceway(
 	var authored := _return_spans(
 		RETURN_SEED if parameters.is_empty() else parameters, hand, initial_bank_rad)
 	var role_ids := ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"]
-	var role_ends := [6, 11, 14, 19]
+	var role_ends := [8, 13, 16, 21]
 	var first := 0
 	for role_index in 4:
 		for i in range(first, role_ends[role_index]):
@@ -620,10 +620,18 @@ static func _return_spans(
 	var counter_transfer_bank_rad := -hand * (transfer_bank_rad - transfer_bank_bias_rad)
 	var transfer_mid_bank_rad := lerpf(
 		first_transfer_bank_rad, counter_transfer_bank_rad, 0.6 / 1.6)
+	var counter_transfer_normal := 1.0 / cos(counter_transfer_bank_rad)
 	var turn_a_normal := 1.0 / cos(turn_a_bank_rad)
 	var turn_b_normal := 1.0 / cos(turn_b_bank_rad)
-	var turn_a_entry_s := 1.1
-	var turn_a_roll := (hand * turn_a_bank_rad - initial_bank_rad) \
+	var turn_a_entry_s := 0.75
+	var turn_a_load_s := 0.65
+	var turn_a_bank_rad_signed := hand * turn_a_bank_rad
+	# The strongly banked turn-a cannot be reached in one compact pulse inside the roll-rate
+	# envelope, so the roll-in is split at the duration ratio that equalises both stages.
+	var turn_a_entry_mid_rad := turn_a_bank_rad_signed \
+		* (turn_a_entry_s / (turn_a_entry_s + turn_a_load_s))
+	var turn_a_entry_mid_normal := 1.0 / cos(turn_a_entry_mid_rad)
+	var turn_a_roll := (turn_a_entry_mid_rad - initial_bank_rad) \
 		/ (turn_a_entry_s * COMPACT_PULSE_AREA)
 	var turn_b_bank_rad_signed := -hand * turn_b_bank_rad
 	var turn_b_entry_mid_rad := turn_b_bank_rad_signed * (0.75 / 1.55)
@@ -632,16 +640,22 @@ static func _return_spans(
 	var turn_b_exit_mid_normal := 1.0 / cos(turn_b_exit_mid_rad)
 	return [
 		Motion.span("raceway/turn-a/entry", turn_a_entry_s, "moving",
-			Motion.quintic(1.0, turn_a_normal), Motion.constant(0.0),
+			Motion.quintic(1.0, turn_a_entry_mid_normal), Motion.constant(0.0),
 			Motion.constant(0.0), Motion.compact_pulse(turn_a_roll)),
+		_return_bank_span("raceway/turn-a/load", turn_a_load_s,
+			turn_a_entry_mid_rad, turn_a_bank_rad_signed),
 		_return_span("raceway/turn-a/core", float(v[1]), turn_a_normal, turn_a_normal),
-		_return_bank_span("raceway/turn-a/exit", 0.9,
-			hand * turn_a_bank_rad, first_transfer_bank_rad),
+		_return_bank_span("raceway/turn-a/exit", 0.45,
+			turn_a_bank_rad_signed, first_transfer_bank_rad),
 		_return_bank_span("raceway/turn-a/transfer-bank", 0.6,
 			first_transfer_bank_rad, transfer_mid_bank_rad),
 		_return_bank_span("raceway/turn-a/transfer-cross", 1.0,
 			transfer_mid_bank_rad, counter_transfer_bank_rad),
-		_return_bank_span("raceway/turn-a/transfer-unbank", 0.6,
+		# The counter-banked sweep is what lets the loaded arc stay short: it spends the
+		# role's remaining distance while unwinding heading instead of adding to it.
+		_return_span("raceway/turn-a/counter-sweep", 1.0,
+			counter_transfer_normal, counter_transfer_normal),
+		_return_bank_span("raceway/turn-a/transfer-unbank", 0.7,
 			counter_transfer_bank_rad, 0.0),
 		_return_span("raceway/height-a/pullup", 0.75, 1.0, 3.8),
 		_return_span("raceway/height-a/unload", 1.05, 3.8, -0.45),

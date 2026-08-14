@@ -35,6 +35,7 @@ func _initialize() -> void:
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
 	_test_station_local_program_compiles()
+	_test_material_role_span_ownership_is_total()
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
 	_test_nonfinite_capture_margin_is_rejected()
@@ -1256,6 +1257,33 @@ func _angle_between(a: Vector3, b: Vector3) -> float:
 	var normalized_b := b.normalized()
 	return atan2(normalized_a.cross(normalized_b).length(),
 		clampf(normalized_a.dot(normalized_b), -1.0, 1.0))
+
+
+func _test_material_role_span_ownership_is_total() -> void:
+	var orphan := RideProgram.material_role_spans([
+		{"span_id": "launch/ramp"}, {"span_id": "mystery/thing"},
+	])
+	_expect(not orphan.get("ok", true),
+		"a span owned by no material role fails role-span ownership")
+	_expect(_reports(orphan, "mystery/thing"),
+		"the ownership failure names the unowned span: %s" % str(orphan.get("errors", [])))
+	var incomplete := RideProgram.material_role_spans([{"span_id": "launch/ramp"}])
+	_expect(not incomplete.get("ok", true),
+		"a program that authors only one role fails role-span ownership")
+	_expect(_reports(incomplete, "return-turn-a"),
+		"the ownership failure names an unauthored role: %s" % str(incomplete.get("errors", [])))
+	var split := RideProgram.material_role_spans([
+		{"span_id": "launch/ramp"}, {"span_id": "drop/core"}, {"span_id": "launch/core"},
+	])
+	_expect(not split.get("ok", true),
+		"a material role split into non-contiguous span blocks fails role-span ownership")
+
+
+func _reports(result: Dictionary, fragment: String) -> bool:
+	for error in result.get("errors", []):
+		if str(error).contains(fragment):
+			return true
+	return false
 
 
 func _positive_finite(value: Variant) -> bool:

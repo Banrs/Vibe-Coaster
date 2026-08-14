@@ -283,7 +283,48 @@ static func _validate(
 		errors.append("gesture windows do not cover every span")
 	for span_range in compiled.tunnel_span_ranges:
 		_validate_span_range(span_range, span_count, "tunnel", errors)
+	_validate_role_lengths(plan, compiled, trajectory, terrain, errors)
 	return errors
+
+
+## The declared per-role length bands are a claim about the built ride, so they are measured on
+## the accepted trajectory here: the one place that holds both the plan and its geometry.
+## Roles partition the route, so a role spans from its first sample to the next role's.
+static func _validate_role_lengths(
+	plan: Dictionary, compiled: Dictionary, trajectory: Dictionary, terrain: Dictionary,
+	errors: PackedStringArray
+) -> void:
+	if terrain.get("kind") == "synthetic":
+		return
+	var roles: Variant = plan.get("roles")
+	if not roles is Array or roles.is_empty():
+		errors.append("the accepted plan declares no role length bands")
+		return
+	var role_spans: Variant = compiled.get("role_spans")
+	if not role_spans is Dictionary:
+		errors.append("compiled program is missing role_spans")
+		return
+	var last_sample: int = trajectory.distance_m.size() - 1
+	for role in roles:
+		var role_id := str(role.get("id", "")) if role is Dictionary else ""
+		var band: Variant = role.get("length_m") if role is Dictionary else null
+		if role_id.is_empty() or not band is Vector2:
+			errors.append("a declared role has no id and length band")
+			continue
+		var bounds: Variant = role_spans.get(role_id)
+		if not bounds is Vector2i or bounds.x < 0 or bounds.y < bounds.x:
+			errors.append("role %s has no generated span ownership" % role_id)
+			continue
+		var first: int = trajectory.span_index.find(bounds.x)
+		var last: int = trajectory.span_index.rfind(bounds.y)
+		if first < 0 or last < first:
+			errors.append("role %s has no generated span ownership" % role_id)
+			continue
+		var length_m: float = float(trajectory.distance_m[mini(last + 1, last_sample)]) \
+			- float(trajectory.distance_m[first])
+		if length_m < band.x or length_m > band.y:
+			errors.append("role %s generated length %.1f m is outside its declared band %.1f-%.1f m"
+				% [role_id, length_m, band.x, band.y])
 
 
 static func _validate_window_record(

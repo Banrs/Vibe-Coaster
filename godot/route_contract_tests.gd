@@ -2,6 +2,16 @@ extends SceneTree
 
 const RouteContract := preload("res://route_contract.gd")
 
+const MATERIAL_ROLE_IDS := [
+	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
+	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
+	"act-one-wave", "climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
+	"outward-dive", "tunnel-lsm3", "camelback", "return-turn-a", "return-height-a",
+	"return-turn-b", "return-height-b", "terminal-capture-brakes",
+]
+const ROLE_FIXTURE_BAND_M := Vector2(10.0, 20.0)
+const ROLE_FIXTURE_STEP_M := 15.0
+
 var _errors := PackedStringArray()
 
 
@@ -12,6 +22,9 @@ func _initialize() -> void:
 	_test_fixed_terminal_contract_rejects_invalid_tolerances()
 	_test_initial_state_uses_tight_finite_tolerances()
 	_test_gesture_analytic_onset_contract()
+	_test_generated_role_lengths_inside_declared_bands_are_accepted()
+	_test_generated_role_length_outside_its_declared_band_is_rejected()
+	_test_missing_role_span_ownership_is_rejected()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -115,6 +128,156 @@ func _test_gesture_analytic_onset_contract() -> void:
 	negative.compiled.gesture_spans[0].peak_profile_normal_onset_estimate_gps = -0.001
 	_expect_rejected(negative, "peak_profile_normal_onset_estimate_gps",
 		"a gesture with negative analytic normal onset")
+
+
+func _test_generated_role_lengths_inside_declared_bands_are_accepted() -> void:
+	var route := _built_role_route(_role_fixture())
+	_expect(not _contains(route.get("errors", []), "generated length"),
+		"in-band generated role lengths report no band miss: %s" % str(route.get("errors", [])))
+	_expect(not _contains(route.get("errors", []), "span ownership"),
+		"complete role ownership reports no ownership miss: %s" % str(route.get("errors", [])))
+
+
+func _test_generated_role_length_outside_its_declared_band_is_rejected() -> void:
+	var fixture := _role_fixture({15: 100.0})
+	_expect_rejected(fixture, "generated length",
+		"a generated role longer than its declared band")
+	var route := _built_role_route(fixture)
+	_expect(_contains(route.get("errors", []), "return-turn-a"),
+		"the out-of-band diagnostic names the offending role: %s" % str(route.get("errors", [])))
+	_expect_rejected(_role_fixture({4: 1.0}), "generated length",
+		"a generated role shorter than its declared band")
+
+
+func _test_missing_role_span_ownership_is_rejected() -> void:
+	var erased := _role_fixture()
+	erased.compiled.role_spans.erase("return-turn-a")
+	_expect_rejected(erased, "span ownership", "a role with no compiled span ownership")
+	var sentinel := _role_fixture()
+	sentinel.compiled.role_spans["camelback"] = Vector2i(-1, -1)
+	_expect_rejected(sentinel, "span ownership", "a role left at the unmatched sentinel")
+	var absent := _role_fixture()
+	absent.compiled.erase("role_spans")
+	_expect_rejected(absent, "role_spans", "a compiled program without role spans")
+
+
+## One synthetic span per declared role, so a role's generated length is the distance the
+## trajectory covers between its span boundary and the next role's.
+func _role_fixture(step_overrides: Dictionary = {}) -> Dictionary:
+	var span_count := MATERIAL_ROLE_IDS.size()
+	var spans := []
+	var roles := []
+	var role_spans := {}
+	var propulsion := PackedInt32Array()
+	var minimum_speeds := PackedFloat64Array()
+	var distances := PackedFloat64Array([0.0])
+	var travelled := 0.0
+	for index in span_count:
+		spans.append({"span_id": "role-%02d" % index})
+		roles.append({"id": MATERIAL_ROLE_IDS[index], "length_m": ROLE_FIXTURE_BAND_M})
+		role_spans[MATERIAL_ROLE_IDS[index]] = Vector2i(index, index)
+		propulsion.append((index + 1) if index < 3 else 0)
+		minimum_speeds.append(0.0)
+		travelled += float(step_overrides.get(index, ROLE_FIXTURE_STEP_M))
+		distances.append(travelled)
+	var count := span_count + 1
+	var times := PackedFloat64Array()
+	var positions := PackedVector3Array()
+	var tangents := PackedVector3Array()
+	var ups := PackedVector3Array()
+	var speeds := PackedFloat64Array()
+	var zeros := PackedFloat64Array()
+	var curvatures := PackedVector3Array()
+	var span_index := PackedInt32Array()
+	for index in count:
+		times.append(float(index))
+		positions.append(Vector3(distances[index], 0.0, 0.0))
+		tangents.append(Vector3.RIGHT)
+		ups.append(Vector3.UP)
+		speeds.append(1.0)
+		zeros.append(0.0)
+		curvatures.append(Vector3.ZERO)
+		span_index.append(mini(index, span_count - 1))
+	var station_position := positions[count - 1]
+	var gesture := {
+		"story_slot_id": "synthetic",
+		"display_name": "Synthetic",
+		"diagnostic_kind": "",
+		"occurrence": 0,
+		"window_id": "synthetic/whole/00",
+		"first_span": 0,
+		"last_span": span_count - 1,
+		"peak_profile_normal_onset_estimate_gps": 7.875,
+		"role_windows": [{
+			"id": "core",
+			"display_name": "Core",
+			"diagnostic_kind": "",
+			"occurrence": 0,
+			"window_id": "synthetic/core/00",
+			"first_span": 0,
+			"last_span": span_count - 1,
+		}],
+	}
+	var plan := {"schema_version": 1, "preset_id": "material-v1", "decisions": {},
+		"terrain_frame": {}, "station": {}, "corridor": {},
+		"route_length_m": Vector2(7800.0, 8200.0), "roles": roles}
+	var compiled := {
+		"spans": spans,
+		"gesture_spans": [gesture],
+		"tunnel_span_ranges": [],
+		"role_spans": role_spans,
+		"propulsion_by_span": propulsion,
+		"minimum_speed_by_span": minimum_speeds,
+		"generation_stats": {"accepted_integrations": 1, "repair_count": 0},
+		"plan": plan,
+		"role_allocations_m": {},
+		"return_entry_gate": {},
+		"terminal_contract": {
+			"station_position_m": station_position,
+			"station_tangent": Vector3.RIGHT,
+			"station_up": Vector3.UP,
+			"terminal_speed_mps": 1.0,
+			"position_tolerance_m": 0.001,
+			"angle_tolerance_rad": 0.0001,
+			"speed_tolerance_mps": 0.0001,
+		},
+	}
+	var trajectory := {
+		"ok": true,
+		"errors": PackedStringArray(),
+		"time_s": times,
+		"distance_m": distances,
+		"position_m": positions,
+		"tangent": tangents,
+		"rider_up": ups,
+		"speed_mps": speeds,
+		"normal_g": zeros.duplicate(),
+		"lateral_g": zeros.duplicate(),
+		"drive_g": zeros.duplicate(),
+		"longitudinal_g": zeros.duplicate(),
+		"roll_rate_rad_s": zeros.duplicate(),
+		"curvature_vector_m_inv": curvatures,
+		"span_index": span_index,
+		"dense_output": {"max_kinematic_defect_mps": 0.0},
+	}
+	return {
+		# Not "synthetic": the declared-band gate is skipped only for the terrain-free fixture.
+		"terrain": {"kind": "role-fixture"},
+		"initial": {
+			"position_m": Vector3.ZERO,
+			"tangent": Vector3.RIGHT,
+			"rider_up": Vector3.UP,
+			"speed_mps": 1.0,
+		},
+		"plan": plan,
+		"compiled": compiled,
+		"trajectory": trajectory,
+	}
+
+
+func _built_role_route(fixture: Dictionary) -> Dictionary:
+	return RouteContract.build(42, fixture.terrain, fixture.initial, fixture.plan,
+		fixture.compiled, fixture.trajectory)
 
 
 func _fixture() -> Dictionary:

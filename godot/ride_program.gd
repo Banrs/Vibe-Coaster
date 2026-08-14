@@ -234,6 +234,10 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	var seam_errors := _validate_control_seams(spans)
 	if not seam_errors.is_empty():
 		return {"ok": false, "errors": seam_errors}
+	var role_spans := material_role_spans(spans)
+	if not role_spans.ok:
+		return _failure("material role span ownership is incomplete", "role_spans",
+			{"observed": {"ownership_errors": role_spans.errors}})
 	return {
 		"ok": true,
 		"errors": PackedStringArray(),
@@ -242,7 +246,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		"spans": spans,
 		"span_metadata": metadata,
 		"gesture_spans": gestures,
-		"role_spans": _material_role_spans(spans),
+		"role_spans": role_spans.role_spans,
 		"propulsion_by_span": propulsion,
 		"minimum_speed_by_span": minimum_speeds,
 		"tunnel_span_ranges": tunnels,
@@ -1577,7 +1581,10 @@ static func _add_record(
 	propulsion.append(propulsion_id)
 
 
-static func _material_role_spans(spans: Array) -> Dictionary:
+## Reconstruct which material role owns each authored span. Ownership must be total, ordered
+## and contiguous: an unowned span, a split role or an unauthored role is a hard failure, never
+## a silent Vector2i(-1, -1).
+static func material_role_spans(spans: Array) -> Dictionary:
 	var prefixes := {
 		"station-launch": ["launch/"],
 		"opener-twisted-drop": ["crest/", "drop/"],
@@ -1600,18 +1607,38 @@ static func _material_role_spans(spans: Array) -> Dictionary:
 		"return-height-b": ["raceway/height-b/"],
 		"terminal-capture-brakes": ["capture/", "brakes/", "station/"],
 	}
+	var errors := PackedStringArray()
 	var result := {}
-	for role_id in MATERIAL_ROLE_IDS:
-		var first := -1
-		var last := -1
-		for index in spans.size():
-			var span_id := str(spans[index].span_id)
-			for prefix in prefixes[role_id]:
-				if span_id.begins_with(prefix):
-					if first < 0: first = index
-					last = index
-		result[role_id] = Vector2i(first, last)
-	return result
+	var block_order := PackedInt32Array()
+	for index in spans.size():
+		var span_id := str(spans[index].span_id)
+		var owner := -1
+		for role_index in MATERIAL_ROLE_IDS.size():
+			for prefix in prefixes[MATERIAL_ROLE_IDS[role_index]]:
+				if not span_id.begins_with(prefix):
+					continue
+				if owner >= 0 and owner != role_index:
+					errors.append("span %s is claimed by both %s and %s" % [
+						span_id, MATERIAL_ROLE_IDS[owner], MATERIAL_ROLE_IDS[role_index]])
+				owner = role_index
+		if owner < 0:
+			errors.append("span %s is owned by no material role" % span_id)
+			continue
+		var role_id: String = MATERIAL_ROLE_IDS[owner]
+		if block_order.is_empty() or block_order[-1] != owner:
+			if result.has(role_id):
+				errors.append("material role %s owns a non-contiguous span block" % role_id)
+			block_order.append(owner)
+			result[role_id] = Vector2i(index, index)
+		else:
+			result[role_id] = Vector2i(result[role_id].x, index)
+	for role_index in MATERIAL_ROLE_IDS.size():
+		if not result.has(MATERIAL_ROLE_IDS[role_index]):
+			errors.append("material role %s owns no authored span" % MATERIAL_ROLE_IDS[role_index])
+		elif role_index >= block_order.size() or block_order[role_index] != role_index:
+			errors.append("material role %s is not authored in reviewed order"
+				% MATERIAL_ROLE_IDS[role_index])
+	return {"ok": errors.is_empty(), "role_spans": result, "errors": errors}
 
 
 static func _validate_control_seams(spans: Array) -> PackedStringArray:

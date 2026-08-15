@@ -48,7 +48,13 @@ host a dive at all. It is a preflight, not a candidate.
 no integration — and calls `RideProgram.terrain_story_capability(side, story, closure_target)`. With a
 target present, the capability runs one `BoundedSolver.solve` over four flex-span durations, then
 re-publishes the same footprint dictionary from the accepted solution; the published contract at
-`ride_program.gd:156-171` is unchanged, so no downstream consumer moves.
+`ride_program.gd:156-171` is unchanged in *shape*.
+**Correction (2026-08-15, Stage-2 review, measured):** "no downstream consumer moves" was wrong —
+`compile()` builds the production route from the authored span durations, so the accepted control
+vector MUST thread from the solved capability into `compile()` (via the plan), or the ride would be
+built from `PREFIX_SEED` while placement uses the solved footprint. Stage 3 carries that threading,
+plus the constant one-step offset between the residual's terminal tunnel sample and the published
+pre-seam `[-2]` sample that placement actually consumes.
 
 **F — placement (shrinks).** `_solve_dive_placement` keeps its clearance scans and loses its search
 (§3).
@@ -196,12 +202,17 @@ margins, all on the fifteen-seed fleet:
 ## 7. Code budget
 
 `CLAUDE.md`'s standing rule: write the minimum code that solves the problem; if two hundred lines could
-be fifty, rewrite them. Target: ≈ 90–110 new lines in `ride_program.gd` (target validation, residuals,
-solve, report) plus ≈ 25 in `generator.gd` for the target derivation. Deletions:
-the placement grid search and its constant (≈ 25 lines), and — since issue 24 is exactly the moment
-`docs/ISSUES.md` names for it — `ride_program.gd`'s private `_linear_solve`,
-`_finite_difference_jacobian` and `_matrix_conditioning` (`:1333-1418`, ≈ 90 lines) once the capture
-and brake solves move onto `BoundedSolver`. **Net production growth target: ≤ +40 lines.**
+be fifty, rewrite them. Original target: ≈ 90–110 new lines in `ride_program.gd` plus ≈ 25 in
+`generator.gd`, netted against deleting the placement grid search (≈ 25 lines) and the three private
+numeric helpers (≈ 90 lines) by moving capture/brake onto `BoundedSolver`.
+**Correction (2026-08-15, measured by Stages 1–2):** the helper deletion is partly void — Stage 1
+proved (and its reviewer confirmed) that the capture/brake solves cannot adopt `BoundedSolver.solve`
+without changing the iterate path and breaking bit-identity; only `_linear_solve` and
+`_matrix_conditioning` were deletable (−43 net in Stage 1). And the ≈ 90–110 estimate never priced
+the program/observation split that §4's head-once/tail-only re-integration requires; Stage 2 landed
+at +187 net with two deflation passes already done. Revised expectation: **Stage 3 deletes the grid
+search and recovers the ~15–25 lines the Stage-2 review named; the honest net for the whole solve is
+≈ +150–190 production lines**, justified by the structure §4 demands, not the original ≤ +40.
 
 ## 8. Risks and mitigations
 

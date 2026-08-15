@@ -2,6 +2,8 @@ extends SceneTree
 
 const Motion := preload("res://motion.gd")
 const RideProgram := preload("res://ride_program.gd")
+const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
+const RideReturnSolve := preload("res://ride_return_solve.gd")
 const RideGenerator := preload("res://generator.gd")
 const CAPTURE_MARGIN_IDS := [
 	"coefficient_margin",
@@ -89,11 +91,11 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			"reserved_corridor": {"minimum_length_m": 230.0,
 				"capture_length_m": 80.0, "brake_length_m": 150.0,
 				"entry_speed_mps": Vector2(70.0, 80.0)}}
-		var solved := RideProgram._solve_brakes(start, layout)
+		var solved := RideReturnSolve._solve_brakes(start, layout)
 		if not _expect(solved.get("ok", false),
 				"the %s brake owner consumes its full distance: %s" % [fixture.id, str(solved)]):
 			continue
-		var repeated := RideProgram._solve_brakes(start, layout)
+		var repeated := RideReturnSolve._solve_brakes(start, layout)
 		_expect(var_to_bytes(solved) == var_to_bytes(repeated),
 			"the %s brake solve is byte-identical" % fixture.id)
 		var parts := _terminal_program_parts(solved.get("spans", []))
@@ -409,7 +411,7 @@ func _test_capture_accepts_varied_station_frames() -> void:
 	]
 	var settings: Dictionary = RideProgram._settings(0.025)
 	for fixture: Dictionary in fixtures:
-		var solved: Dictionary = RideProgram._solve_capture(
+		var solved: Dictionary = RideReturnSolve._solve_capture(
 			fixture.state, fixture.layout, settings)
 		if not _expect(solved.get("ok", false),
 				"capture accepts the %s fixture: %s" % [fixture.id, str(solved)]):
@@ -476,7 +478,7 @@ func _integrated_capture_residuals(
 	fixture: Dictionary, coefficients: Array, step_s: float
 ) -> Dictionary:
 	var route: Dictionary = Motion.integrate(fixture.state,
-		RideProgram._capture_spans(coefficients), RideProgram._settings(step_s))
+		RideReturnSolve._capture_spans(coefficients), RideProgram._settings(step_s))
 	if not route.get("ok", false):
 		return {"ok": false, "errors": route.get("errors", [])}
 	var terminal := Motion.sample_time(route, float(route.time_s[-1]))
@@ -505,7 +507,7 @@ func _return_observations_are_equivalent(actual: Variant, expected: Variant) -> 
 		var field: String = fields[index]
 		if not _finite_number(actual.get(field)) or not _finite_number(expected.get(field)) \
 				or absf(float(actual[field]) - float(expected[field])) \
-				> 0.04 * float(RideProgram.RETURN_RESIDUAL_SCALES[index]):
+				> 0.04 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[index]):
 			return false
 	return true
 
@@ -515,7 +517,7 @@ func _test_malformed_capture_is_structured() -> void:
 		75.4847075745055, 209.0, -0.09809875488281, 0.00093841552734,
 		-0.012743739647, -0.0021031915, -28.5617102)
 	fixture.layout["capture_seed"] = [0.0, 0.0, 0.0, 0.0]
-	var solved := RideProgram._solve_capture(fixture.state, fixture.layout,
+	var solved := RideReturnSolve._solve_capture(fixture.state, fixture.layout,
 		RideProgram._settings(0.025))
 	_expect_capture_failure(solved, 0, 0, "a malformed capture seed fails before evaluation")
 
@@ -525,7 +527,7 @@ func _test_impossible_capture_is_bounded_without_fallback() -> void:
 		75.4847075745055, 209.0, -0.09809875488281, 0.00093841552734,
 		-0.012743739647, -0.0021031915, -28.5617102)
 	fixture.layout["capture_half_width_m"] = -1.0
-	var solved := RideProgram._solve_capture(fixture.state, fixture.layout,
+	var solved := RideReturnSolve._solve_capture(fixture.state, fixture.layout,
 		RideProgram._settings(0.025))
 	_expect_capture_failure(solved, 1, 40,
 		"an impossible negative-width capture corridor fails within the evaluation budget", true)
@@ -536,22 +538,22 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 		75.4847075745055, 209.0, -0.09809875488281, 0.00093841552734,
 		-0.012743739647, -0.0021031915, -28.5617102)
 	fixture.layout["capture_half_width_m"] = NAN
-	var solved := RideProgram._solve_capture(fixture.state, fixture.layout,
+	var solved := RideReturnSolve._solve_capture(fixture.state, fixture.layout,
 		RideProgram._settings(0.025))
 	_expect_capture_failure(solved, 1, 40,
 		"a nonfinite capture margin is rejected before a plan can be accepted", true)
 
 
 ## The fast half of the return budget claim; the cap's derivation lives at
-## `RideProgram.MAX_RETURN_EVALUATIONS`. Measured on the design's five-seed set (the three deep
+## `RideReturnSolve.MAX_RETURN_EVALUATIONS`. Measured on the design's five-seed set (the three deep
 ## seeds plus 1 and 123456) rather than all fifteen: each seed costs a full compile, and the
 ## sweep seeds add minutes here without adding a new solve regime. `smoke.gd` carries the
 ## fifteen-seed half inside the builds it already pays for.
 func _test_return_solve_stays_inside_its_derived_budget() -> void:
-	_expect(RideProgram.MAX_RETURN_EVALUATIONS == 80,
+	_expect(RideReturnSolve.MAX_RETURN_EVALUATIONS == 80,
 		"the return evaluation cap is the derived 80, not %d"
-		% RideProgram.MAX_RETURN_EVALUATIONS)
-	var allowance := int(0.6 * RideProgram.MAX_RETURN_EVALUATIONS)
+		% RideReturnSolve.MAX_RETURN_EVALUATIONS)
+	var allowance := int(0.6 * RideReturnSolve.MAX_RETURN_EVALUATIONS)
 	for seed_value in [11, 42, 20260809, 1, 123456]:
 		var decisions := RidePlanner.resolve(seed_value)
 		var plan := RideGenerator._plan(
@@ -568,7 +570,7 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 			evaluations, int(report.get("solver_iterations", -1)),
 			str(report.get("solver_status", "missing"))])
 		_expect(evaluations >= 1 and evaluations <= allowance
-			and report.get("max_unique_evaluations") == RideProgram.MAX_RETURN_EVALUATIONS,
+			and report.get("max_unique_evaluations") == RideReturnSolve.MAX_RETURN_EVALUATIONS,
 			"seed %d spends %d return evaluations, over the %d fleet allowance"
 			% [seed_value, evaluations, allowance])
 
@@ -594,7 +596,7 @@ func _test_prefix_closure_solve_targets_todays_geometry() -> void:
 	_expect_closure_report(solved.get("closure_plan", {}), "today's geometry")
 	_expect(absf(float(solved.dive_footprint.outward_delta_m)
 			- float(untargeted.dive_footprint.outward_delta_m))
-			<= float(RideProgram.PREFIX_FINE_TOLERANCES[0]),
+			<= float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[0]),
 		"closing on today's own bands leaves the published footprint where it was")
 
 
@@ -633,9 +635,9 @@ func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
 	var record_mps: float = float(fine[3]) if fine.size() == 4 else NAN
 	_expect(int(report.get("unique_evaluations", 0)) > 1
 		and record_mps >= PREFIX_DISPLACED_RECORD_BAND_MPS.x
-			- float(RideProgram.PREFIX_FINE_TOLERANCES[3])
+			- float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[3])
 		and record_mps <= PREFIX_DISPLACED_RECORD_BAND_MPS.y
-			+ float(RideProgram.PREFIX_FINE_TOLERANCES[3]),
+			+ float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[3]),
 		"the solve spends evaluations to move the record handoff to %.3f m/s" % record_mps)
 
 
@@ -655,7 +657,7 @@ func _test_infeasible_prefix_closure_is_structured() -> void:
 		and failure.has("margins") and failure.has("solver_status"),
 		"the refusal carries its accepted values, residuals and margins: %s" % str(failure))
 	_expect(int(failure.get("evaluation_count", -1)) >= 1
-		and int(failure.get("evaluation_count", -1)) <= RideProgram.MAX_PREFIX_EVALUATIONS,
+		and int(failure.get("evaluation_count", -1)) <= RidePrefixSolve.MAX_PREFIX_EVALUATIONS,
 		"the refusal spends no more than the derived evaluation cap")
 	_expect(not _contains_fallback_or_repair_field(refused),
 		"the refused prefix offers no fallback or repair field")
@@ -749,23 +751,23 @@ func _closure_target_on_axis(capability: Dictionary, raw_axis: Vector2, record_b
 
 
 func _expect_closure_report(report: Dictionary, label: String) -> void:
-	_expect(RideProgram.MAX_PREFIX_EVALUATIONS == 52,
+	_expect(RidePrefixSolve.MAX_PREFIX_EVALUATIONS == 52,
 		"the prefix evaluation cap is the derived 52, not %d"
-		% RideProgram.MAX_PREFIX_EVALUATIONS)
+		% RidePrefixSolve.MAX_PREFIX_EVALUATIONS)
 	var evaluations := int(report.get("unique_evaluations", -1))
-	var allowance := int(0.6 * RideProgram.MAX_PREFIX_EVALUATIONS)
+	var allowance := int(0.6 * RidePrefixSolve.MAX_PREFIX_EVALUATIONS)
 	print("prefix closure (%s): %d evaluations, status %s, controls %s, fine %s" % [label,
 		evaluations, str(report.get("solver_status", "missing")),
 		str(report.get("accepted_values", [])), str(report.get("fine_observation", []))])
 	_expect(report.get("solver_status", "") == "converged" and evaluations >= 1
 		and evaluations <= allowance
-		and report.get("max_unique_evaluations") == RideProgram.MAX_PREFIX_EVALUATIONS,
+		and report.get("max_unique_evaluations") == RidePrefixSolve.MAX_PREFIX_EVALUATIONS,
 		"the %s closure converges in %d evaluations, over the %d fleet allowance"
 		% [label, evaluations, allowance])
 	var values: Array = report.get("accepted_values", [])
-	var inside := values.size() == RideProgram.PREFIX_CONTROL_IDS.size()
+	var inside := values.size() == RidePrefixSolve.PREFIX_CONTROL_IDS.size()
 	for index in values.size():
-		var bound: Array = RideProgram.PREFIX_CONTROL_BOUNDS[index]
+		var bound: Array = RidePrefixSolve.PREFIX_CONTROL_BOUNDS[index]
 		inside = inside and float(values[index]) >= float(bound[0]) \
 			and float(values[index]) <= float(bound[1])
 	_expect(inside, "every %s control stays inside its declared bounds: %s" % [label, str(values)])
@@ -774,7 +776,7 @@ func _expect_closure_report(report: Dictionary, label: String) -> void:
 	var agrees := coarse.size() == 4 and fine.size() == 4
 	for index in mini(coarse.size(), fine.size()):
 		agrees = agrees and absf(float(coarse[index]) - float(fine[index])) \
-			<= float(RideProgram.PREFIX_FINE_TOLERANCES[index])
+			<= float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[index])
 	_expect(agrees, "the %s closure reproduces at the production step: %s against %s"
 		% [label, str(coarse), str(fine)])
 

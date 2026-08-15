@@ -13,6 +13,8 @@ var route: Dictionary
 var analysis: Dictionary
 var seed_picker := RandomNumberGenerator.new()
 var ride_time := 0.0
+var ride_top_speed := 0.0
+var ride_peak_g := 0.0
 var playback_rate := 1.0
 var selected_row := 0
 var camera_index := 0
@@ -42,6 +44,8 @@ func _rebuild(seed_value: int) -> void:
 	route = RideGenerator.build(seed_value)
 	analysis = RideVerify.analyze(route, ROW_OFFSETS)
 	ride_time = 0.0
+	ride_top_speed = 0.0
+	ride_peak_g = 0.0
 	var errors := validate_route(route, analysis)
 	if not errors.is_empty():
 		metrics.text = "ROUTE INVALID\n" + "\n".join(errors)
@@ -330,7 +334,11 @@ func _process(delta: float) -> void:
 	if route.is_empty() or train_rows == null:
 		return
 	if not paused:
-		ride_time = fposmod(ride_time + delta * playback_rate, route.duration)
+		var advanced := fposmod(ride_time + delta * playback_rate, route.duration)
+		if advanced < ride_time:
+			ride_top_speed = 0.0
+			ride_peak_g = 0.0
+		ride_time = advanced
 	_update_ride(delta)
 
 
@@ -349,8 +357,22 @@ func _update_ride(delta: float) -> void:
 	var force: Dictionary = RideVerify.row_forces_at(
 		route, front_distance, speed, ROW_OFFSETS[selected_row]
 	)
-	$PovCamera.global_transform = Transform3D(row_pose.basis, row_pose.origin + row_pose.basis.y * 0.35)
-	$PovCamera.fov = lerpf(72.0, 90.0, clampf(speed / analysis.top_speed, 0, 1))
+	var speed_t := clampf(speed / analysis.top_speed, 0.0, 1.0)
+	var eye_origin := row_pose.origin + row_pose.basis.y * 0.35
+	# Gentle look-ahead: ease the view toward the track ~0.6 s out so drops read before they hit.
+	var ahead := pose_at_distance(route, row_distance + clampf(speed * 0.6, 8.0, 45.0))
+	var look := ahead.origin - eye_origin
+	var pov_basis := row_pose.basis
+	if look.length_squared() > 1.0:
+		pov_basis = pov_basis.slerp(Basis.looking_at(look.normalized(), row_pose.basis.y), 0.22)
+	# Subtle deterministic speed shake — incommensurate sines, quadratic in speed, sub-4 cm.
+	var shake_amp := 0.035 * speed_t * speed_t
+	var shake := row_pose.basis.x * (sin(ride_time * 149.0) * 0.6 + sin(ride_time * 233.0) * 0.4) \
+		* shake_amp \
+		+ row_pose.basis.y * (sin(ride_time * 179.0) * 0.6 + sin(ride_time * 283.0) * 0.4) \
+		* shake_amp * 0.7
+	$PovCamera.global_transform = Transform3D(pov_basis, eye_origin + shake)
+	$PovCamera.fov = lerpf(74.0, 102.0, pow(speed_t, 1.5))
 	var chase_target := front_pose.origin + front_pose.basis.z * 24.0 + Vector3.UP * 10.0
 	$ChaseCamera.global_position = chase_target if delta <= 0.0 else $ChaseCamera.global_position.lerp(
 		chase_target, 1.0 - exp(-4.0 * delta)
@@ -365,21 +387,34 @@ func _update_ride(delta: float) -> void:
 	$OverviewCamera.look_at(overview_center, Vector3.UP)
 	var gesture: Dictionary = route.gesture_windows[route.gesture_indices[row_sample]]
 	var role_name := str(gesture.get("diagnostic_kind", ""))
+	var next_name := ""
 	for role: Dictionary in gesture.get("role_windows", []):
 		if row_sample >= int(role.first) and row_sample <= int(role.last):
 			role_name = str(role.get("display_name", role.get("id", role_name)))
-			break
+		elif int(role.first) > row_sample and next_name.is_empty():
+			next_name = str(role.get("display_name", role.get("id", "")))
+	if next_name.is_empty():
+		var following: Dictionary = route.gesture_windows[
+			(route.gesture_indices[row_sample] + 1) % route.gesture_windows.size()]
+		var next_roles: Array = following.get("role_windows", [])
+		next_name = str(next_roles[0].get("display_name", next_roles[0].get("id", ""))) \
+			if not next_roles.is_empty() \
+			else str(following.get("display_name", following.get("story_slot_id", "")))
 	var altitude := row_pose.origin.y - terrain_height(row_pose.origin.x, row_pose.origin.z)
-	var row_analysis: Dictionary = analysis.rows[selected_row]
+	ride_top_speed = maxf(ride_top_speed, speed)
+	ride_peak_g = maxf(ride_peak_g, force.normal)
 	metrics.text = (
-		"Seed %d  ·  %s  ·  %s\n" % [route.seed,
-			gesture.get("display_name", gesture.story_slot_id), role_name]
-		+ "%.0f km/h  ·  %.0f m AGL  ·  Row %d  ·  Bank %+.0f°  ·  Roll %+.0f°/s\n"
-		% [speed * 3.6, altitude, selected_row + 1, route.banks[row_sample], force.roll_rate]
-		+ "Gz %+.2f  ·  Gy %+.2f  ·  Gx %+.2f  ·  envelope +%.0f%% / −%.0f%%\n"
-		% [force.normal, force.lateral, force.longitudinal, row_analysis.positive_envelope.usage * 100.0, row_analysis.negative_envelope.usage * 100.0]
-		+ "%.2f km  ·  %.0f s  ·  avg %.0f km/h  ·  top %.0f km/h  ·  %s%s"
-		% [route.length / 1000.0, route.duration, analysis.average_speed * 3.6, analysis.top_speed * 3.6, CAMERA_NAMES[camera_index], "  ·  PAUSED" if paused else ""]
+		"Seed %d  ·  %s  ·  %s → %s\n" % [route.seed,
+			gesture.get("display_name", gesture.story_slot_id), role_name, next_name]
+		+ "%.0f km/h  ·  %.0f m AGL  ·  Row %d  ·  %s / %s  ·  %.1f / %.1f km\n"
+		% [speed * 3.6, altitude, selected_row + 1, _clock(ride_time), _clock(route.duration),
+			front_distance / 1000.0, route.length / 1000.0]
+		+ "Gz %+.2f  ·  lat %.2f %s  ·  %.2f %s\n"
+		% [force.normal, absf(force.lateral), "R" if force.lateral >= 0.0 else "L",
+			absf(force.longitudinal), "accel" if force.longitudinal >= 0.0 else "brake"]
+		+ "so far: peak Gz %+.2f  ·  top %.0f km/h  ·  %s%s"
+		% [ride_peak_g, ride_top_speed * 3.6, CAMERA_NAMES[camera_index],
+			"  ·  PAUSED" if paused else ""]
 	)
 
 
@@ -393,6 +428,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			paused = not paused
 		KEY_R:
 			ride_time = 0.0
+			ride_top_speed = 0.0
+			ride_peak_g = 0.0
 		KEY_N:
 			_rebuild(seed_picker.randi_range(1, 1_000_000_000))
 		KEY_BRACKETLEFT:
@@ -427,6 +464,10 @@ func _set_rate(rate: float) -> void:
 	playback_rate = rate
 	var rates := [0.5, 1.0, 2.0, 4.0]
 	rate_picker.select(rates.find(rate))
+
+
+static func _clock(seconds: float) -> String:
+	return "%d:%02d" % [int(seconds) / 60, int(seconds) % 60]
 
 
 func _new_multimesh(mesh: Mesh, count: int) -> MultiMesh:

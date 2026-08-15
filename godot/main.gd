@@ -20,6 +20,7 @@ var selected_row := 0
 var camera_index := 0
 var paused := false
 var train_rows: MultiMesh
+var build_thread: Thread
 var cameras: Array[Camera3D]
 var overview_center := Vector3.ZERO
 var overview_radius := 1200.0
@@ -38,11 +39,26 @@ func _ready() -> void:
 	_rebuild(DEFAULT_SEED)
 
 
-## One seed is one ride: everything the viewer shows is rebuilt from the generator, synchronously.
+## One seed is one ride: generation runs on a worker thread (build and analyze are pure
+## statics), and the world is rebuilt on the main thread when it lands.
 func _rebuild(seed_value: int) -> void:
+	if build_thread != null:
+		return
 	_clear_world()
-	route = RideGenerator.build(seed_value)
-	analysis = RideVerify.analyze(route, ROW_OFFSETS)
+	route = {}
+	train_rows = null
+	metrics.text = "Generating seed %d…" % seed_value
+	build_thread = Thread.new()
+	build_thread.start(func() -> void:
+		var built := RideGenerator.build(seed_value)
+		_finish_rebuild.call_deferred(built, RideVerify.analyze(built, ROW_OFFSETS)))
+
+
+func _finish_rebuild(built: Dictionary, built_analysis: Dictionary) -> void:
+	build_thread.wait_to_finish()
+	build_thread = null
+	route = built
+	analysis = built_analysis
 	ride_time = 0.0
 	ride_top_speed = 0.0
 	ride_peak_g = 0.0
@@ -54,6 +70,12 @@ func _rebuild(seed_value: int) -> void:
 		return
 	_build_world()
 	_update_ride(0.0)
+
+
+func _exit_tree() -> void:
+	if build_thread != null:
+		build_thread.wait_to_finish()
+		build_thread = null
 
 
 func terrain_height(x: float, z: float) -> float:

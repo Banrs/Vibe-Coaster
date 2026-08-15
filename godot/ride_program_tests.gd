@@ -574,7 +574,27 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 			and report.get("max_unique_evaluations") == RideReturnSolve.MAX_RETURN_EVALUATIONS,
 			"seed %d spends %d return evaluations, over the %d fleet allowance"
 			% [seed_value, evaluations, allowance])
+		_expect_return_closes_interior(seed_value, report)
 		_expect_compiled_prefix_matches_plan(seed_value, plan, compiled)
+
+
+## What `RETURN_LENGTH_AIM_MARGIN_M` buys, read off the accepted point: an accepted return sits
+## interior to its route-length band by construction rather than converging onto the 8200 m ceiling
+## and being refused there. Both halves are checked, because the aim margin shapes the *residual*
+## only - the published margins must still measure the outer band, or acceptance would have moved
+## with the aim and the ride would be gated against a band it was never built to.
+func _expect_return_closes_interior(seed_value: int, report: Dictionary) -> void:
+	var margins: Dictionary = report.get("margins", {})
+	var high := float(margins.get("route_length_high_m", NAN))
+	var low := float(margins.get("route_length_low_m", NAN))
+	var aim := RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M
+	_expect(low >= aim and high >= aim,
+		"seed %d closes %.4f m above and %.4f m below its route-length band; the aim is %.2f m"
+		% [seed_value, low, high, aim])
+	var total := float(report.get("fine_observation", {}).get("route_total_length_m", NAN))
+	_expect(absf(high + total - RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y) <= 0.000001,
+		"seed %d still measures its accepted %.4f m against the outer %.1f m ceiling"
+		% [seed_value, total, RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y])
 
 
 ## The threading the closure needs to mean anything: `compile` must build the production span

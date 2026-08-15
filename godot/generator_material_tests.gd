@@ -4,6 +4,7 @@ const RideGenerator := preload("res://generator.gd")
 const RidePlanner := preload("res://ride_planner.gd")
 const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
 const RideProgram := preload("res://ride_program.gd")
+const RideReturnSolve := preload("res://ride_return_solve.gd")
 const RideVerify := preload("res://verify.gd")
 const Terrain := preload("res://terrain.gd")
 const G0 := 9.80665
@@ -37,6 +38,9 @@ const PRESET_SEEDS := [
 ## The stage-4 refusal seeds: the three deep seeds smoke gates on loads, plus 4096, one of the two
 ## seeds whose canonical closure spends the most evaluations (6 of 31). Fixed, never sampled.
 const REFUSAL_SEEDS := [11, 42, 20260809, 4096]
+## The single seed whose swapped story is compiled, not just planned. Fixed, and argued for at
+## `_check_swap_return_closes_interior`; one compile is what the serial CI budget below affords.
+const SWAP_COMPILE_SEED := 4096
 ## The perturbation the refusal evidence in `ride_planner.gd` names, applied to the authored value.
 const REFUSAL_DELTA := 0.005
 ## How far above its authored seed the accepted `dive_approach_s` may sit. The closure may move the
@@ -133,9 +137,19 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 	var floor_m := RideGenerator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x \
 		+ RideGenerator.DIVE_ENTRY_EDGE_MARGIN_M
 	var window := RideGenerator.DIVE_ENTRY_RIM_AIM_M + Vector2.ONE * floor_m
+	# The apron term is named in the message because it is the likely first failure: the window's
+	# top is `minf(apron ceiling, rim + 5 m)` and the fleet clears it by 0.36 m, so a seed that
+	# lands above the window is usually one whose dive-exit apron fraction moved, not one whose
+	# plateau clearance did - and a rim distance alone cannot tell those two apart.
 	_expect(rim_m >= window.x and rim_m <= window.y,
-		"seed %d starts its dive %.3f m behind the rim; the fleet aims %.1f-%.1f m"
-		% [seed_value, rim_m, window.x, window.y])
+		"seed %d starts its dive %.3f m behind the rim at apron fraction %.4f; the fleet aims %.1f-%.1f m"
+		% [seed_value, rim_m, float(planning.get("dive_exit_apron_fraction", NAN)),
+			window.x, window.y])
+	# Indexed by position, so the identity of position 3 is asserted rather than assumed: a reorder
+	# of the control vector would otherwise silently gate a different span's duration.
+	_expect(str(RidePrefixSolve.PREFIX_CONTROL_IDS[3]) == "dive_approach_s",
+		"the fourth prefix control is still dive_approach_s, not %s"
+		% str(RidePrefixSolve.PREFIX_CONTROL_IDS[3]))
 	var approach_s := float(controls[3])
 	var authored_s := float(RidePrefixSolve.PREFIX_SEED[3])
 	_expect(approach_s <= authored_s + DIVE_APPROACH_LENGTHENING_TOLERANCE_S,
@@ -171,19 +185,37 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 ##     (72 builds), only the canonical order builds; the corrected swap was re-confirmed to fail
 ##     all three for the reasons below.
 ##
-## What still blocks the build for the stories that do place is downstream of everything this
-## design touched: the seven-control return solve does not re-converge from its fixed seed
-## (budget_exhausted at 79 of 80 evaluations, residuals down to 0.01-0.5 on seeds 42/20260809), and
-## on seed 11 the reordered ride closes its return but runs the dive role to 497.4 m and
-## return-turn-b to 574.5 m against their 350-490 and 430-570 m bands. Section 5.4's expectation
-## that residual 4 absorbs the handoff shift is half true as measured: the record exit speed is
-## pinned (+0.51 to +0.83 m/s inside its band on every placed story), the geometric handoff is not.
+## What still blocks the build for the stories that do place was re-measured end to end on
+## 2026-08-15 (return-seed derivation stage), and it is no longer the return solve alone:
+##
+##   The return half moved, and that design's section 4 needs one correction: under *production*
+##     bounds seed 4096's swap return was never rejected on `route_length_high_m` - the -5.9e-6 it
+##     quotes is that design's own section 2, a form-(b) warm start. Production is the same
+##     pathology on the accepting side of zero: 4096 closed 0.00075 m inside the 8200 m ceiling and
+##     seed 11 0.0215 m inside it, accepted by an accident of sign. `RETURN_LENGTH_AIM_MARGIN_M`
+##     replaces both with a metre of interior, on the same 42 and 34 evaluations. Seeds 42 and
+##     20260809 still exhaust the budget at 79 of 80, both pinned on the
+##     `height_a_recovery_duration_s` floor, with length residuals 2.1 m and 5.1 m past the ceiling.
+##   The prefix half is the wall, and it is out of this design's scope. Under the swap the whole
+##     prefix is seed-independent to three decimals and `outward-dive` runs 497.43-497.46 m against
+##     its declared 350-490 m band on *every* seed, against 475.6-476.5 m canonically. The closure
+##     accepts `PREFIX_SEED` unchanged on all four seeds, so those 21 m are not a control choice:
+##     the swapped act one hands the clifftop a faster state and the fixed-duration dive spans
+##     simply cover more ground. No return-side spend creates or destroys them, which is also the
+##     answer to that design's third spend: the swap's own arc is +3.1 to +5.4 m and its handoff is
+##     pulled back 32-66 m, so the story asks for more route than 8200 m has, and seed 42's return
+##     is 8.6 m short of closing inside it. `role-length overruns on a reordered act one` is a
+##     prefix-geometry cycle, not this one.
+##   Section 5.4's expectation that residual 4 absorbs the handoff shift stays half true as
+##     measured: the record exit speed is pinned (+0.51 to +0.83 m/s inside its band on every
+##     placed story), the geometric handoff is not.
 ##
 ## Cost, named by runner because the two runners disagree: the eight plans below add ~12.7 s local
-## (~25 s on ubuntu). `tools/gates.sh` runs the twelve suites concurrently with smoke.gd, so that
-## growth hides behind the longest job and the battery total barely moves; `.github/workflows/ci.yml`
-## runs the same manifest serially before smoke.gd, so real CI pays every second of it. Widen this
-## gate only against that serial number.
+## (~25 s on ubuntu) and the one compiled swap adds ~9 s local (~18 s on ubuntu).
+## `tools/gates.sh` runs the twelve suites concurrently with smoke.gd, so that growth hides behind
+## the longest job and the battery total barely moves; `.github/workflows/ci.yml` runs the same
+## manifest serially before smoke.gd, so real CI pays every second of it. Widen this gate only
+## against that serial number - which is why exactly one seed is compiled rather than four.
 func _check_closure_places_the_refused_stories() -> void:
 	var permuted := _act_one_optional_swap()
 	for seed_value in REFUSAL_SEEDS:
@@ -191,6 +223,38 @@ func _check_closure_places_the_refused_stories() -> void:
 		_check_refused_story_places(seed_value, "act-one-loop/positive_g -0.005", [],
 			{"act-one-loop": {"positive_g":
 				RideProgram.ACT_ONE_LOOP_POSITIVE_G - REFUSAL_DELTA}})
+	_check_swap_return_closes_interior(SWAP_COMPILE_SEED, permuted)
+
+
+## The one compiled swap, and why it is seed 4096: it is the seed that shows the boundary-drift
+## `RETURN_LENGTH_AIM_MARGIN_M` exists to remove, in production, at its sharpest. Before that
+## margin, 4096's swapped return converged 0.00075 m inside the 8200 m ceiling and seed 11's
+## 0.0215 m inside it - both accepted, both by an accident of sign, because `_band_residual` is
+## flat inside the band and gives the solve no reason to stop anywhere but the edge. A
+## sub-millimetre margin is not a closure. This is the planning gate's compiled twin: it stops at
+## the return, because everything past the return on a swapped story is the prefix-side role
+## overrun recorded above, which this stage does not own.
+func _check_swap_return_closes_interior(seed_value: int, sequence: Array) -> void:
+	var decisions := RidePlanner.resolve(seed_value)
+	decisions["sequence"] = sequence
+	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
+	var plan: Dictionary = RideGenerator._plan(terrain, decisions)
+	if plan.has("ok") and not plan.ok:
+		_expect(false, "seed %d act-one optional swap plans: %s"
+			% [seed_value, str(plan.get("errors", []))])
+		return
+	var compiled := RideProgram.compile(plan, RideGenerator._initial_state(plan.station))
+	if not compiled.get("ok", false):
+		_expect(false, "seed %d act-one optional swap closes its return: %s"
+			% [seed_value, str(compiled.get("failure", {}))])
+		return
+	var margins: Dictionary = compiled.get("return_plan", {}).get("margins", {})
+	var high := float(margins.get("route_length_high_m", NAN))
+	var low := float(margins.get("route_length_low_m", NAN))
+	_expect(high >= RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M
+		and low >= RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M,
+		"seed %d act-one optional swap closes %.6f m below and %.6f m above its route-length band; the aim is %.2f m"
+		% [seed_value, low, high, RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M])
 
 
 ## The act-one order this gate uses, assembled from the grammar's own cells: the pool with its two

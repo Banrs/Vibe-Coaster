@@ -25,6 +25,14 @@ const RETURN_SCALAR_BOUNDS := [
 	# pulse, so peaks stay under the 120 deg/s envelope only for bank < ~68.4 deg, and the
 	# sweep seeds never run the load gate that would catch a breach.
 	[50.0 * PI / 180.0, 66.0 * PI / 180.0], [0.55, 6.00],
+	# The 0.35 s height-a recovery floor stays where it is. Trimming it to ~0.30 was this stage's
+	# proposed second spend and measurement refused it (2026-08-15): at a 0.30 floor the act-one
+	# optional swap on seed 20260809 does converge its return - and the accepted point runs the
+	# `return-height-a` role to 277.6 m against its declared 290-480 m band, so the shorter recovery
+	# buys closure with a beat the route contract then rejects. What binds below the floor is that
+	# role band, not the bound: a solve pinning at 0.35 is asking for a height beat shorter than the
+	# story allows, and the certifiable floor is therefore above today's value, never below it.
+	#
 	# The 60 deg turn-b floor is authoring intent, not a solve optimum: both return turns
 	# stay strongly banked even when the solve would trade bank away for closure.
 	[0.35, 4.0], [60.0 * PI / 180.0, 80.0 * PI / 180.0],
@@ -36,6 +44,28 @@ const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RETURN_TRANSFER_BANK_BIAS_RAD := 7.5 * PI / 180.0
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
+## How far inside its route-length band the solve is driven to close. `_band_residual` is flat
+## everywhere inside a band, so the length residual gives the solve no reason to stay interior: it
+## drifts onto the 8200 m ceiling and converges there, where a strictly positive
+## `route_length_high_m` margin is all that separates an accepted ride from a refused one.
+## Measured 2026-08-15 on the act-one optional swap, under production bounds: seed 4096 closes
+## 0.00075 m inside the ceiling and seed 11 0.0215 m inside it - accepted, but by the sign of a
+## sub-millimetre number rather than by anything the solve was asked to achieve; at a 0.30 s
+## recovery floor the same point lands 0.00078 m the other side and is refused outright. Aiming one
+## metre inside replaces that coin flip with an interior closure on the same 42 and 34 evaluations.
+##
+## The metre is the fleet's own headroom, not a proposal. Every route-length observation made by
+## every return solve on all fifteen preset seeds - seed, Jacobian probe, rejected trial and
+## accepted point, at all three step sizes - was measured: the closest any of them comes to the
+## 8200 m ceiling is 1.3463 m (seed 20250101; 1.3676 m on 1234, >= 3.57 m on the other thirteen),
+## and none is within 341 m of the 7800 m floor. One metre therefore leaves every canonical
+## observation strictly inside the aimed band, where this residual is exactly 0.0 as it is today,
+## so the fifteen production rides stay bit-identical rather than approximately unchanged.
+##
+## The entry-speed band deliberately gets no aim margin. The same sweep measures canonical
+## candidates 0.39 m/s *past* the 80 m/s ceiling (seed 42), so any speed margin at all would move
+## canonical residuals, and no measured refusal has ever been on the speed margin.
+const RETURN_LENGTH_AIM_MARGIN_M := 1.0
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
 	"tangent_up", "route_length_band_m", "entry_speed_band_mps",
@@ -367,7 +397,9 @@ static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictio
 		forward + approach - RETURN_ENTRY_POSITION_PADDING_M, capture[0], capture[1],
 		state.tangent.normalized().dot(station_right),
 		state.tangent.normalized().dot(station_up),
-		RideProgram._band_residual(total_length_m, route_length_band),
+		RideProgram._band_residual(total_length_m, Vector2(
+			route_length_band.x + RETURN_LENGTH_AIM_MARGIN_M,
+			route_length_band.y - RETURN_LENGTH_AIM_MARGIN_M)),
 		RideProgram._band_residual(float(state.speed_mps), Vector2(
 			entry_speed_band.x + RETURN_ENTRY_SPEED_PADDING_MPS,
 			entry_speed_band.y - RETURN_ENTRY_SPEED_PADDING_MPS)),

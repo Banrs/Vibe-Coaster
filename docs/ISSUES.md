@@ -245,6 +245,16 @@ below); these seven are **not** covered by the audit's traceability record.
     **Open, with new evidence (2026-08-15):** dive placement is sitting on a feasibility edge —
     a ±0.005 change in one upstream force value moves the dive chord ~115 m — so the approach
     length cannot be shortened by retuning the prefix. It needs the prefix closure solve (24).
+    **Half fixed, 2026-08-15 (stage 5a, measured):** with the closure solve landed, the dive
+    entry now commits at 16.3–19.6 m behind the rim fleet-wide (was 27.1–33.9 m), aimed at
+    the rim end of the clearance band with all margin floors intact (low side now binds at
+    +4.30 m) and per-seed variety preserved. The other half — shortening the 64.1 m / 3.68 s
+    banked pre-commit approach — was refused by measurement: seeding the approach control at
+    its floor breaks the seven-control return solve on 15/15 seeds, with a non-monotone basin
+    (0.85 s happens to pass while 0.80 and 0.90 refuse single seeds — a coincidence, not a
+    fix). Blocked on the return-length work in
+    `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`; meanwhile a gate
+    holds the closure from ever lengthening the approach (fleet 0.996–1.000 s).
 23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
     it should not have. The elements hit their force targets while their shapes are visibly
     wrong. Extends 7 beyond inversions and supports to the marquee elements.

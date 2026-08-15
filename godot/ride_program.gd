@@ -13,7 +13,10 @@ const COARSE_STEP_S := 0.05
 const FINE_STEP_S := 0.025
 const PRODUCTION_STEP_S := 0.01
 const MAX_CAPTURE_EVALUATIONS := 40
-const MAX_RETURN_EVALUATIONS := 220
+# Derived, not guessed: `BoundedSolver.solve` costs `1 + K*(n+1) + R` unique evaluations, so
+# n = 7 with K <= 8 accepted iterations and R <= 8 rejections gives 1 + 8*8 + 8 = 73. The fleet
+# measures 18-35, and `ride_program_tests.gd` gates every seed at 60% of this cap.
+const MAX_RETURN_EVALUATIONS := 80
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
@@ -1131,15 +1134,12 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 			CAPTURE_COEFFICIENT_BOUNDS, [0.02, 0.02, 0.02, 0.02, 0.04], evaluate)
 		if not finite_difference.ok:
 			return finite_difference
-		conditioning = _matrix_conditioning(finite_difference.jacobian)
-		conditioning["evaluated_vector"] = coefficients.duplicate()
+		var solved := BoundedSolver.linear_solve(finite_difference.jacobian, base.scaled)
+		conditioning = _conditioning(solved, coefficients)
 		if not conditioning.ok:
 			return _capture_failure("capture Jacobian is ill-conditioned", cache.size(),
 				base.residuals, base.margins, {"conditioning": conditioning})
-		var step := _linear_solve(finite_difference.jacobian, base.scaled)
-		if step.is_empty():
-			return _capture_failure("capture Jacobian is singular", cache.size(),
-				base.residuals, base.margins)
+		var step: Array = solved.x
 		for index in 5:
 			coefficients[index] = clampf(coefficients[index] - step[index],
 				CAPTURE_COEFFICIENT_BOUNDS[index][0], CAPTURE_COEFFICIENT_BOUNDS[index][1])
@@ -1172,8 +1172,8 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 			[0.02, 0.02, 0.02, 0.02, 0.04], evaluate)
 		if not accepted_difference.ok:
 			return accepted_difference
-		conditioning = _matrix_conditioning(accepted_difference.jacobian)
-		conditioning["evaluated_vector"] = coefficients.duplicate()
+		conditioning = _conditioning(
+			BoundedSolver.linear_solve(accepted_difference.jacobian, fine.scaled), coefficients)
 		if not conditioning.ok:
 			return _capture_failure("accepted capture Jacobian is ill-conditioned",
 				cache.size(), fine.residuals, fine.margins,
@@ -1359,61 +1359,16 @@ static func _finite_difference_jacobian(
 	return {"ok": true, "jacobian": jacobian}
 
 
-static func _linear_solve(matrix: Array, residual: Array) -> Array:
-	var size := matrix.size()
-	var augmented: Array = []
-	for row in size:
-		augmented.append(matrix[row].duplicate())
-		augmented[row].append(residual[row])
-	for column in size:
-		var pivot := column
-		for row in range(column + 1, size):
-			if absf(augmented[row][column]) > absf(augmented[pivot][column]):
-				pivot = row
-		if absf(augmented[pivot][column]) < 0.000000001:
-			return []
-		var temporary = augmented[column]
-		augmented[column] = augmented[pivot]
-		augmented[pivot] = temporary
-		var divisor: float = augmented[column][column]
-		for index in range(column, size + 1):
-			augmented[column][index] /= divisor
-		for row in size:
-			if row == column:
-				continue
-			var factor: float = augmented[row][column]
-			for index in range(column, size + 1):
-				augmented[row][index] -= factor * augmented[column][index]
-	var solution := []
-	for row in size:
-		solution.append(augmented[row][size])
-	return solution
-
-
-static func _matrix_conditioning(matrix: Array) -> Dictionary:
-	var work := matrix.duplicate(true)
-	var low := INF
-	var high := 0.0
-	for column in work.size():
-		var pivot := column
-		for row in range(column + 1, work.size()):
-			if absf(work[row][column]) > absf(work[pivot][column]):
-				pivot = row
-		var magnitude := absf(work[pivot][column])
-		low = minf(low, magnitude)
-		high = maxf(high, magnitude)
-		if magnitude < 0.000001:
-			return {"ok": false, "minimum_pivot": magnitude, "pivot_ratio": 0.0}
-		var temporary = work[column]
-		work[column] = work[pivot]
-		work[pivot] = temporary
-		for row in range(column + 1, work.size()):
-			var factor: float = work[row][column] / work[column][column]
-			for index in range(column, work.size()):
-				work[row][index] -= factor * work[column][index]
-	var ratio := low / high
-	return {"ok": ratio >= 0.0001, "minimum_pivot": low,
-		"maximum_pivot": high, "pivot_ratio": ratio}
+## The pivot record `BoundedSolver.linear_solve` returns, read as the conditioning of the Newton
+## step it just produced. An ill-conditioned Jacobian is a structural failure of the solve, so
+## the verdict is published beside the vector it was measured at.
+static func _conditioning(solved: Dictionary, vector: Array) -> Dictionary:
+	var low := float(solved.get("minimum_pivot", 0.0))
+	var high := float(solved.get("maximum_pivot", 0.0))
+	var ratio := low / high if high > 0.0 else 0.0
+	return {"ok": bool(solved.get("ok", false)) and low >= 0.000001 and ratio >= 0.0001,
+		"minimum_pivot": low, "maximum_pivot": high, "pivot_ratio": ratio,
+		"evaluated_vector": vector.duplicate()}
 
 
 static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
@@ -1464,8 +1419,8 @@ static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
 			BRAKE_PARAMETER_BOUNDS, [-0.01, -0.005], evaluate)
 		if not finite_difference.ok:
 			return finite_difference
-		conditioning = _matrix_conditioning(finite_difference.jacobian)
-		conditioning["evaluated_vector"] = parameters.duplicate()
+		var solved := BoundedSolver.linear_solve(finite_difference.jacobian, base.scaled)
+		conditioning = _conditioning(solved, parameters)
 		if not conditioning.ok:
 			return _brake_failure("brake Jacobian is ill-conditioned",
 				evaluation_count[0], {"conditioning": conditioning})
@@ -1474,9 +1429,7 @@ static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
 		if iteration + 1 == BRAKE_NEWTON_ITERATIONS:
 			return _brake_failure(
 				"brake solve exhausted its iteration budget", evaluation_count[0])
-		var step := _linear_solve(finite_difference.jacobian, base.scaled)
-		if step.is_empty():
-			return _brake_failure("brake Jacobian is singular", evaluation_count[0])
+		var step: Array = solved.x
 		for index in 2:
 			parameters[index] -= BRAKE_NEWTON_STEP * step[index]
 			if parameters[index] <= BRAKE_PARAMETER_BOUNDS[index][0] \

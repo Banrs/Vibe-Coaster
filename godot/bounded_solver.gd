@@ -66,7 +66,7 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 			for k in range(values.size()):
 				component -= jacobian[k][i] * values[k]
 			gradient.append(component)
-		var solved := _linear_solve(normal, gradient)
+		var solved := linear_solve(normal, gradient)
 		if not solved.ok:
 			return _result(false, "numerical_failure", _to_x(z, lower, widths), values, evaluation_count[0], iterations, INF)
 		conditioning = solved.conditioning
@@ -120,7 +120,10 @@ static func _evaluate(residual: Callable, z: Array, lower: Array, widths: Array,
 		values.append(float(item))
 	cache[key] = values.duplicate()
 	return {"ok": true, "values": values}
-static func _linear_solve(matrix: Array, rhs: Array) -> Dictionary:
+## The one partial-pivot linear solve, shared with `ride_program.gd`'s capture and brake Newton
+## steps. Returns the solution together with the pivot record those solves report as
+## conditioning, so an ill-conditioned system is measured once, in one place.
+static func linear_solve(matrix: Array, rhs: Array) -> Dictionary:
 	var n := rhs.size()
 	var a := matrix.duplicate(true)
 	var b := rhs.duplicate()
@@ -132,8 +135,10 @@ static func _linear_solve(matrix: Array, rhs: Array) -> Dictionary:
 			if abs(a[row][column]) > abs(a[pivot][column]):
 				pivot = row
 		var magnitude: float = abs(a[pivot][column])
+		smallest = min(smallest, magnitude)
+		largest = max(largest, magnitude)
 		if not is_finite(magnitude) or magnitude <= 1e-14:
-			return {"ok": false}
+			return {"ok": false, "minimum_pivot": smallest, "maximum_pivot": largest}
 		if pivot != column:
 			var row_swap: Variant = a[column]
 			a[column] = a[pivot]
@@ -141,8 +146,6 @@ static func _linear_solve(matrix: Array, rhs: Array) -> Dictionary:
 			var value_swap: Variant = b[column]
 			b[column] = b[pivot]
 			b[pivot] = value_swap
-		smallest = min(smallest, magnitude)
-		largest = max(largest, magnitude)
 		for row in range(column + 1, n):
 			var factor: float = a[row][column] / a[column][column]
 			for j in range(column + 1, n):
@@ -157,7 +160,8 @@ static func _linear_solve(matrix: Array, rhs: Array) -> Dictionary:
 		x[i] = value / a[i][i]
 		if not is_finite(x[i]):
 			return {"ok": false}
-	return {"ok": true, "x": x, "conditioning": largest / smallest}
+	return {"ok": true, "x": x, "conditioning": largest / smallest,
+		"minimum_pivot": smallest, "maximum_pivot": largest}
 static func _finite_number(value: Variant) -> bool:
 	return typeof(value) in [TYPE_INT, TYPE_FLOAT] and is_finite(float(value))
 static func _to_x(z: Array, lower: Array, widths: Array) -> Array:

@@ -39,6 +39,7 @@ func _initialize() -> void:
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
 	_test_nonfinite_capture_margin_is_rejected()
+	_test_return_solve_stays_inside_its_derived_budget()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -514,6 +515,38 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 		RideProgram._settings(0.025))
 	_expect_capture_failure(solved, 1, 40,
 		"a nonfinite capture margin is rejected before a plan can be accepted", true)
+
+
+## The return budget is derived, not guessed: `BoundedSolver.solve` costs `1 + K*(n+1) + R`
+## unique evaluations, so n = 7 with K <= 8 accepted iterations and R <= 8 rejected trials gives
+## 1 + 8*8 + 8 = 73 -> a cap of 80. The fleet must sit well inside it, so no seed may spend more
+## than 60% (48). Measured on the design's five-seed set (the three deep seeds plus 1 and
+## 123456) rather than all fifteen: each seed costs a full compile, and the sweep seeds add
+## minutes to this focused suite without adding a new solve regime.
+func _test_return_solve_stays_inside_its_derived_budget() -> void:
+	_expect(RideProgram.MAX_RETURN_EVALUATIONS == 80,
+		"the return evaluation cap is the derived 80, not %d"
+		% RideProgram.MAX_RETURN_EVALUATIONS)
+	var allowance := int(0.6 * RideProgram.MAX_RETURN_EVALUATIONS)
+	for seed_value in [11, 42, 20260809, 1, 123456]:
+		var decisions := RidePlanner.resolve(seed_value)
+		var plan := RideGenerator._plan(
+			RideTerrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN]), decisions)
+		if not _expect(not plan.has("ok") or plan.ok, "seed %d plans" % seed_value):
+			continue
+		var compiled := RideProgram.compile(plan, RideGenerator._initial_state(plan.station))
+		if not _expect(compiled.get("ok", false),
+				"seed %d compiles: %s" % [seed_value, str(compiled.get("failure", {}))]):
+			continue
+		var report: Dictionary = compiled.get("return_plan", {})
+		var evaluations := int(report.get("unique_evaluations", -1))
+		print("return solve seed %d: %d evaluations, %d iterations, status %s" % [seed_value,
+			evaluations, int(report.get("solver_iterations", -1)),
+			str(report.get("solver_status", "missing"))])
+		_expect(evaluations >= 1 and evaluations <= allowance
+			and report.get("max_unique_evaluations") == RideProgram.MAX_RETURN_EVALUATIONS,
+			"seed %d spends %d return evaluations, over the %d fleet allowance"
+			% [seed_value, evaluations, allowance])
 
 
 func _compile(layout: Dictionary) -> Dictionary:

@@ -306,7 +306,9 @@ static func _solve_return(
 			# budget on all fifteen seeds inside the compiles it already pays for. It repeats the
 			# report's own `unique_evaluations` under a second name on purpose - the report stays
 			# in the compiled program for `ride_program_tests.gd`, only the gate is published,
-			# and dropping either name would change what one of those two consumers reads.
+			# and dropping either name would change what one of those two consumers reads. The
+			# gate is deep-copied into the published route (route_contract.gd) and therefore into
+			# the route's SHA-256 - deleting this key breaks bit-identity, not just a reader.
 			"solve_evaluations": cache.size(),
 			"solve_evaluation_cap": MAX_RETURN_EVALUATIONS},
 		"positive_drive_allowed": false}}

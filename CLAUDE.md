@@ -61,8 +61,10 @@ local timings.
   The registry is deliberately narrow — `preset`, `seed`, and `slot.intensity` on the two return
   heights — and every key that did not clear that bar sits in `UNREGISTERED` with the measurement
   that refused it.
-- `godot/ride_program.gd` — native force/time-domain recipes and bounded return, capture, and
-  brake solves. `godot/motion.gd` is the sole accepted rider-frame integrator;
+- `godot/ride_program.gd` — native force/time-domain recipes, plan validation, and the public
+  `RideProgram` API; its two solve seams live in `godot/ride_prefix_solve.gd` (prefix
+  capability + closure solve) and `godot/ride_return_solve.gd` (bounded return, capture, and
+  brake solves). `godot/motion.gd` is the sole accepted rider-frame integrator;
   `godot/route_contract.gd` validates and publishes its trajectory.
 - `godot/verify.gd` — the load-verification toolkit: 100 Hz resample → 4-pole 5 Hz
   Butterworth → duration-dependent envelope usage (held-curve), plus push-pull, the 0.2 s

@@ -82,9 +82,9 @@ items above):
 - **No document is beyond skepticism** — authority: user decisions → physical derivation +
   verified evidence → vision docs → code. Doc cleanup is banner-plus-falsehood-fixes;
   history stays intact.
-- **Return-solve budget flag:** the landed return solve uses 7 controls / 7 residuals with
-  `MAX_RETURN_EVALUATIONS := 220`, 5.5× the design's ≤40 bound, and no document re-derived
-  the larger budget. Tighten or justify it when issue 24 forces changes in `ride_program.gd`.
+- **Return-solve budget flag — discharged 2026-08-15:** the budget was re-derived from the
+  measured evaluation formula and tightened 220 → `MAX_RETURN_EVALUATIONS := 80` (now in
+  `godot/ride_return_solve.gd`), gated at ≤60% usage on all fifteen seeds in smoke.
 - **Capture-entry band widened 70–77 → 70–80 m/s** — accepted as the measured cost of closing
   the ~340 km/h record inside the 8.2 km route band with no mid-course brake. The brake bound
   moved 3.0 → 3.6 g for the same reason. Both are recorded in `CLAUDE.md`'s contract, with the
@@ -308,16 +308,17 @@ and none of issues 20–26 is caused by its file layout. The return solve is als
 functional gain. Two bounded targets are worth doing, ideally as part of the issue 24 work
 rather than before it:
 
-- **Duplicated numerics.** `ride_program.gd` preloads `BoundedSolver` and uses it once, at the
-  return solve, while carrying its own private `_linear_solve`, `_finite_difference_jacobian`
-  and `_matrix_conditioning` for the capture and brake solves. Two Gauss-elimination paths that
-  should be one. `godot/bounded_solver.gd` already exists and is tested.
-- **`ride_program.gd` holds five concerns** in 1,746 lines / 55 functions: story-recipe assembly,
-  the return solve, the capture solve, the brake solve, and the numerics above. The solve
-  triple is the natural seam. Decomposition remains a standing user deferral — do it when
-  issue 24 forces changes there, not speculatively.
+- **Duplicated numerics — resolved 2026-08-15.** The capture and brake Newton steps now take
+  their linear solve and conditioning from `BoundedSolver.linear_solve` (one Gauss path);
+  `_finite_difference_jacobian` deliberately stays private in `godot/ride_return_solve.gd` —
+  measured and review-confirmed: adopting `BoundedSolver.solve` wholesale would change the
+  iterate path and break bit-identity.
+- **The five-concern decomposition — done 2026-08-15** (commit `2d3b9b9`): `ride_program.gd`
+  split at the solve seams into `ride_prefix_solve.gd` and `ride_return_solve.gd`,
+  byte-identical routes SHA-verified. The former deferral said do it when issue 24 forces
+  changes there, not speculatively — issue 24's stages fired that trigger.
 
-Not adjusted, deliberately: the flat `godot/` layout (17 production files, prefix-grouped by
+Not adjusted, deliberately: the flat `godot/` layout (19 production files, prefix-grouped by
 name — a directory move would rewrite ~40 preload paths, the `.uid` files, `main.tscn`, the CI
 manifest and every doc reference for modest gain), and the name `_inspect.gd`, whose leading
 underscore reads as private though it is a documented user-facing command (54 references, most

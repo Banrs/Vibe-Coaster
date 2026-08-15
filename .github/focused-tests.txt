@@ -8,3 +8,4 @@ res://fidelity_overlay_tests.gd
 res://generator_material_tests.gd
 res://terrain_story_material_tests.gd
 res://geometry_metrics_tests.gd
+res://ride_planner_tests.gd

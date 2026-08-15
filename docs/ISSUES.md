@@ -239,9 +239,20 @@ below); these seven are **not** covered by the audit's traceability record.
     where it is farthest from anything that could convey speed; AGL, not velocity, is the
     missing ingredient. The fix is 21's fix.
 26. The clifftop section is just a slow bank, not the twisty, windy suspense the real coaster
-    has there. The declared roles `clifftop-slow-crest` (35–70 m) and `clifftop-outward-rim`
+    has there. The declared roles `clifftop-slow-crest` (35–80 m) and `clifftop-outward-rim`
     (65–120 m) may simply be too short to contain that character at all — check whether this is
     a shaping bug or an under-declared story beat before treating it as either.
+    **Answered by measurement, 2026-08-15: under-declared story beat.** Falcon's Flight's
+    clifftop is two beats, not one — 21.0 s of upper-cliff turns (four distinct banked
+    gestures, bank maxima 79°/52°/52°/67°, three unbank troughs, four corroborating Gz
+    valleys at 1.6–2.1 g) and then the 12.3 s crest crawl; ours is 7–11 s with one bank
+    build. Heading is not the gap (integrated 206–412° vs our declared 160–195°); rhythm
+    and length are. Design: one new role `clifftop-rim-weave` (190–280 m, three alternating
+    sweeps, counterpart bands unstretched) inserted ahead of the crawl so the rim→dive
+    handoff (22) is untouched; no fifth solve control needed — the weave sits inside the
+    solve tail and its energy cost is bounded by the existing residuals. Spec:
+    `docs/superpowers/specs/2026-08-15-clifftop-character-design.md`. Lands after issue
+    24's stages (stage-5 territory).
 
 ## App
 

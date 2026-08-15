@@ -37,7 +37,8 @@ const PREFIX_DISPLACED_SUMMIT_AIM_TOLERANCE_M := 8.0
 ## What these pin: `terrain_story_capability` called without a closure target must stay
 ## byte-identical to the pre-closure-solve generator, so the production build path (which does
 ## not pass a target until stage 3) publishes exactly the ride it published before. Measured on
-## the unmodified code path at commit 7f58571; a change here is a re-baseline, never a nudge.
+## the unmodified code path at commit b5b2968 (the closure solve's parent commit, unchanged in
+## `ride_program.gd` since 7f58571); a change here is a re-baseline, never a nudge.
 const PREFIX_CAPABILITY_DIGEST := {
 	-1: "361e77eb506c1bc25d9187f65f8a8dd7c717241dee1657a12c68976117dbafaf",
 	1: "c4e6558cff329da33deffcdfb3a3e58fd4d4f6cd590ab4e441291a43efee668f",
@@ -62,6 +63,8 @@ func _initialize() -> void:
 	_test_prefix_closure_solve_targets_todays_geometry()
 	_test_prefix_closure_solve_moves_the_record_handoff()
 	_test_infeasible_prefix_closure_is_structured()
+	_test_prefix_closure_solve_accepts_non_axis_aligned_outward_local()
+	_test_prefix_closure_solve_converges_on_a_drawn_story()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -658,8 +661,49 @@ func _test_infeasible_prefix_closure_is_structured() -> void:
 		"the refused prefix offers no fallback or repair field")
 
 
+## Every other closure test's target carries the default `outward_local` (the station's own
+## outward, already a unit axis), so `_solve_prefix_closure`'s `axis = axis.normalized()` line
+## never runs on anything but a no-op. This one supplies a rotated, non-unit axis instead -
+## 30 degrees off outward in the horizontal plane, length 1.7 - and still expects convergence,
+## so the normalization path is actually exercised.
+func _test_prefix_closure_solve_accepts_non_axis_aligned_outward_local() -> void:
+	var untargeted := RideProgram.terrain_story_capability(1)
+	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+		return
+	var raw_axis := Vector2(sin(deg_to_rad(30.0)), cos(deg_to_rad(30.0))) * 1.7
+	var target := _closure_target_on_axis(untargeted, raw_axis, PREFIX_RECORD_AIM_BAND_MPS)
+	var solved := RideProgram.terrain_story_capability(1, {}, target)
+	if not _expect(solved.get("ok", false),
+			"the prefix closes on a rotated, non-unit outward_local axis: %s"
+			% str(solved.get("failure", {}))):
+		return
+	_expect_closure_report(solved.get("closure_plan", {}), "rotated outward_local")
+
+
+## Every other closure test targets `story = {}` (the canonical undrawn recipe). This one builds
+## the story the way `generator.gd`'s `_plan` does in production - `sequence`/`targets` straight
+## from `RidePlanner.resolve` - and asserts the closure solve still converges within the same
+## fleet budget on a real drawn story, not just the canonical one.
+func _test_prefix_closure_solve_converges_on_a_drawn_story() -> void:
+	var decisions := RidePlanner.resolve(42)
+	var story := {"sequence": decisions.sequence, "targets": decisions.targets}
+	var untargeted := RideProgram.terrain_story_capability(1, story)
+	if not _expect(untargeted.get("ok", false), "the seed 42 drawn-story prefix capability builds"):
+		return
+	var target := _closure_target(untargeted, 1, PREFIX_RECORD_AIM_BAND_MPS)
+	var solved := RideProgram.terrain_story_capability(1, story, target)
+	if not _expect(solved.get("ok", false),
+			"the seed 42 drawn story closes within the same budget: %s"
+			% str(solved.get("failure", {}))):
+		return
+	_expect_closure_report(solved.get("closure_plan", {}), "seed 42 drawn story")
+
+
 ## One target serves both hands: every control is a duration and the aim axis is the station's
-## own outward, so the mirrored prefix measures the same four quantities.
+## own outward, so the mirrored prefix measures the same four quantities. Deliberately omits
+## `outward_local` so each hand falls back to its own mirrored default axis inside
+## `_solve_prefix_closure` - do not add it here, that is what lets one target serve both `side`
+## values in `_test_prefix_closure_solve_moves_the_record_handoff`.
 func _closure_target(capability: Dictionary, side: int, record_band: Vector2,
 	span_tolerance_m: float = PREFIX_SPAN_AIM_TOLERANCE_M,
 	summit_tolerance_m: float = PREFIX_SUMMIT_AIM_TOLERANCE_M
@@ -672,6 +716,30 @@ func _closure_target(capability: Dictionary, side: int, record_band: Vector2,
 	var dive_span := Vector2(dive_exit.x - entry.x, dive_exit.z - entry.z).dot(axis)
 	var tunnel_span := Vector2(tunnel_exit.x - dive_exit.x, tunnel_exit.z - dive_exit.z).dot(axis)
 	return {
+		"dive_edge_span_m": Vector2(dive_span - span_tolerance_m, dive_span + span_tolerance_m),
+		"tunnel_edge_span_m": Vector2(tunnel_span - span_tolerance_m,
+			tunnel_span + span_tolerance_m),
+		"summit_rise_m": Vector2(entry.y - summit_tolerance_m, entry.y + summit_tolerance_m),
+		"record_exit_speed_mps": record_band,
+	}
+
+
+## Single-sided only (unlike `_closure_target`): builds a target around an explicit, possibly
+## non-unit, non-axis-aligned outward axis, normalized the same way `_solve_prefix_closure`
+## normalizes it, so the aim bands are built around the axis the solve will actually project onto.
+func _closure_target_on_axis(capability: Dictionary, raw_axis: Vector2, record_band: Vector2,
+	span_tolerance_m: float = PREFIX_SPAN_AIM_TOLERANCE_M,
+	summit_tolerance_m: float = PREFIX_SUMMIT_AIM_TOLERANCE_M
+) -> Dictionary:
+	var footprint: Dictionary = capability.dive_footprint
+	var entry: Vector3 = capability.role_13_entry.offset_m
+	var dive_exit: Vector3 = footprint.dive_exit_offset_m
+	var tunnel_exit: Vector3 = footprint.tunnel_exit_offset_m
+	var axis := raw_axis.normalized()
+	var dive_span := Vector2(dive_exit.x - entry.x, dive_exit.z - entry.z).dot(axis)
+	var tunnel_span := Vector2(tunnel_exit.x - dive_exit.x, tunnel_exit.z - dive_exit.z).dot(axis)
+	return {
+		"outward_local": raw_axis,
 		"dive_edge_span_m": Vector2(dive_span - span_tolerance_m, dive_span + span_tolerance_m),
 		"tunnel_edge_span_m": Vector2(tunnel_span - span_tolerance_m,
 			tunnel_span + span_tolerance_m),

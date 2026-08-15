@@ -132,6 +132,9 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {},
 		controls = closure.report.accepted_values
 	var program := _prefix_program(station_side, story, controls)
 	if not program.ok:
+		if program.station_end < 0 or program.opener_end <= program.station_end:
+			return _failure(
+				"terrain story capability omitted the station/opener footprint", "planning")
 		return _failure("terrain story capability omitted the cliff-dive handoff", "planning")
 	var tunnel_end_span: int = program.tunnel_end
 	var trajectory := Motion.integrate(
@@ -164,11 +167,11 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {},
 			or dive_positions_m.is_empty() or dive_positions_m.size() != dive_rider_up.size() \
 			or not is_finite(dive_outward_delta_m) or dive_outward_delta_m <= 0.0:
 		return _failure("terrain story capability produced a non-outward dive footprint", "planning")
+	# `program.ok` above already guarantees station_end < opener_end within the fully-integrated
+	# span range, so both samples are present and ordered here; the station/opener failure is
+	# reported at the `program.ok` check instead of here.
 	var opener_end_sample: int = trajectory.span_index.rfind(program.opener_end)
 	var station_end_sample: int = trajectory.span_index.rfind(program.station_end)
-	if opener_end_sample < 0 or station_end_sample < 0 \
-			or station_end_sample >= opener_end_sample:
-		return _failure("terrain story capability omitted the station/opener footprint", "planning")
 	if not closure.is_empty():
 		var accepted := _accept_prefix_closure(closure, trajectory, program)
 		if not accepted.get("ok", false):
@@ -227,10 +230,14 @@ static func _prefix_initial_state() -> Dictionary:
 
 ## The four station-local quantities the closure targets, in `PREFIX_RESIDUAL_IDS` order. Both
 ## spans are the outward run projected on the target's own axis; `summit_rise_m` is the dive
-## entry's own height, which is the whole of what a terrain summit band sees once the station
-## height is derived from the head's ground clearance, and no control touches the head. The tunnel
-## exit is the trajectory's last sample, not the published pre-seam one, so the quantity does not
-## move with the integration step.
+## entry's own height. The station height placement (`generator.gd`) derives it as the max of
+## several terrain-clearance terms, including the head's own ground-clearance offset (a constant
+## above `entry_surface_m`) and a dive-corridor clearance term (`generator.gd`'s
+## `summit_agl_m`/`required_station_y`) that is sampled along the dive footprint and so moves with
+## the solved entry position. The offset is constant only when the head term binds; measuring
+## which term binds across the fleet is Stage 3's job, not this comment's claim. The tunnel exit
+## is the trajectory's last sample, not the published pre-seam one, so the quantity does not move
+## with the integration step.
 static func _prefix_observation(trajectory: Dictionary, dive_start: int, dive_end: int,
 	axis: Vector2
 ) -> Array:
@@ -260,18 +267,26 @@ static func _prefix_tail_observation(station_side: int, story: Dictionary, contr
 	return _prefix_observation(tail, program.dive_start - offset, program.dive_end - offset, axis)
 
 
-## One pass over the aim bands: the scaled residual vector the solver drives to zero, and the
-## per-band margins every accepted or refused closure reports.
-static func _prefix_evaluation(observation: Array, bands: Array) -> Dictionary:
+## The scaled residual vector the solver drives to zero. Called on every solver evaluation, so it
+## builds nothing beyond the numbers themselves - no keyed dictionary, no format strings.
+static func _prefix_residuals(observation: Array, bands: Array) -> Array:
 	var scaled := []
+	for index in PREFIX_RESIDUAL_IDS.size():
+		scaled.append(_band_residual(float(observation[index]), bands[index])
+			/ float(PREFIX_RESIDUAL_SCALES[index]))
+	return scaled
+
+
+## The per-band margins every accepted or refused closure reports. Never called from the solver's
+## hot loop - only once, on refusal or on the final accepted/fine observation.
+static func _prefix_margins(observation: Array, bands: Array) -> Dictionary:
 	var margins := {}
 	for index in PREFIX_RESIDUAL_IDS.size():
 		var band: Vector2 = bands[index]
 		var value := float(observation[index])
-		scaled.append(_band_residual(value, band) / float(PREFIX_RESIDUAL_SCALES[index]))
 		margins["%s_low" % PREFIX_RESIDUAL_IDS[index]] = value - band.x
 		margins["%s_high" % PREFIX_RESIDUAL_IDS[index]] = band.y - value
-	return {"scaled": scaled, "margins": margins}
+	return margins
 
 
 ## Every prefix refusal carries the same evidence: the values it stopped on, the residual vector,
@@ -317,15 +332,19 @@ static func _solve_prefix_closure(station_side: int, story: Dictionary,
 		upper.append(bound[1])
 	var residual := func(candidate: Array) -> Array:
 		var observed := _prefix_tail_observation(station_side, story, candidate, head_state, axis)
-		return _prefix_evaluation(observed, bands).scaled if not observed.is_empty() else [INF]
+		return _prefix_residuals(observed, bands) if not observed.is_empty() else [INF]
+	# Mirrors `_solve_return`: `BoundedSolver.solve`'s cap counts only its own unique
+	# evaluations, but the post-solve coarse re-observation below is one more real tail
+	# integration, so the cap passed here is `MAX_PREFIX_EVALUATIONS - 1` to keep the true
+	# per-solve cost (solver evaluations + the one coarse re-observation) honest at the constant.
 	var solved := BoundedSolver.solve(
-		residual, lower, upper, PREFIX_SEED, MAX_PREFIX_EVALUATIONS)
+		residual, lower, upper, PREFIX_SEED, MAX_PREFIX_EVALUATIONS - 1)
 	var accepted: Array = solved.get("x", PREFIX_SEED)
 	var coarse := _prefix_tail_observation(station_side, story, accepted, head_state, axis)
 	if not solved.get("ok", false) or coarse.is_empty():
 		return _prefix_refusal("prefix closure did not reach its terrain target",
 			str(solved.get("status", "invalid")), accepted, solved.get("residuals", []),
-			_prefix_evaluation(coarse, bands).margins if not coarse.is_empty() else {},
+			_prefix_margins(coarse, bands) if not coarse.is_empty() else {},
 			int(solved.get("evaluations", 0)))
 	return {"ok": true, "bands": bands, "axis": axis, "report": {
 		"control_ids": PREFIX_CONTROL_IDS, "control_bounds": PREFIX_CONTROL_BOUNDS,
@@ -336,7 +355,7 @@ static func _solve_prefix_closure(station_side: int, story: Dictionary,
 		"solver_status": str(solved.status), "solver_iterations": int(solved.iterations),
 		"solver_conditioning": float(solved.conditioning),
 		"coarse_observation": coarse, "target_error": solved.residuals,
-		"margins": _prefix_evaluation(coarse, bands).margins}}
+		"margins": _prefix_margins(coarse, bands)}}
 
 
 ## The fine half: the accepted coarse solution must reproduce in the caller's own production
@@ -356,7 +375,7 @@ static func _accept_prefix_closure(closure: Dictionary, trajectory: Dictionary,
 			str(report.solver_status), report.accepted_values, report.target_error,
 			report.margins, int(report.unique_evaluations))
 	report["fine_observation"] = fine
-	report["margins"] = _prefix_evaluation(fine, closure.bands).margins
+	report["margins"] = _prefix_margins(fine, closure.bands)
 	return {"ok": true}
 
 

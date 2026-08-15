@@ -81,8 +81,14 @@ handoff (budget-exhausted at 79/80 with residuals nearly closed; the record-exit
 pins the speed, the geometric handoff still moves). The two named follow-ons: a
 deterministic per-story derivation of the return seed (a seed derivation, never a retry
 loop), and a measured decision on head accommodation for opener draws. The planning-half
-victories are gated in `generator_material_tests.gd` (four seeds × {swap, loop −0.005},
-+12.7 s off the battery's critical path). Spec correction recorded in the design's §5.
+victories are gated in `generator_material_tests.gd` (four seeds × {swap, loop −0.005};
+~12.7 s locally where the parallel runner hides it, ~25 s on ubuntu's serial CI). Spec
+correction recorded in the design's §5. A review then caught the gated swap helper as a
+no-op; the corrected helper was re-measured across the full grammar — the counts all
+survived, now actually proven, and the complete table exists: of the **36** grammar-legal
+act-one orders (not 24 as earlier prose said), exactly three place at all — canonical,
+the optional-member swap `cutback loop wave airtime` (15/15), and the airtime-dropped
+order (9/15, seeds named in the test comment); the other 33 refuse at the same preflight.
 
 ### Decisions — 2026-08-15 review session
 

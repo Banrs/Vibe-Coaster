@@ -61,10 +61,12 @@ Issue 24 remains the strongest candidate for the single root cause behind 20, 23
 **Progress, 2026-08-15 (stages 1–3 landed):** the prefix closure solve is in production.
 `_plan` runs preflight → terrain-derived closure target → one bounded four-control solve →
 closed-form placement; the grid search is deleted; the accepted controls thread into
-`compile()` and are verified off the built spans. Fleet-wide gated margins (worst seed):
-dive-entry edge +6.13 m, apron fraction +0.062, summit AGL +2.90 m, record exit +0.79 m/s,
+`compile()` and are verified off the built spans. Fleet-wide gated margins at the stage-3
+baseline (worst seed): dive-entry edge +6.13 m, apron fraction +0.062, summit AGL +2.90 m,
+record exit +0.79 m/s — stage 5a later moved the entry aim to the rim end for issue 22, so
+the current margins live in that entry (dive-entry +4.30 m with the low side binding) —
 with the solve converging in 1–6 of 31 allowed evaluations on all fifteen seeds. One honest
-narrowing recorded: the entry aim band is the 40% interior of a band already inset 3 m, so
+narrowing recorded: the entry aim band sits inside a band already inset 3 m, so
 terrain the old grid search would have placed can now refuse with a structured error — the
 refusal paths are unreached on the fleet, not unreachable in principle; stage 4's
 refusal-derived tests exercise them.

@@ -44,6 +44,29 @@ const RETURN_RESIDUAL_IDS := [
 ]
 const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1]
 const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01]
+## The prefix closure controls: the four flex-span durations of the story tail, every one of them
+## a duration, so one solve serves both hands and no authored force value becomes a control.
+const PREFIX_CONTROL_IDS := ["climb_core_s", "climb_pull_over_s", "crest_hold_s",
+	"dive_approach_s"]
+# Stage-2 bounds: wide enough that the solve can move real geometry, narrow enough that each span
+# stays the beat it was authored as. They are not yet certified at both extremes on the fleet -
+# that is the placement stage's gate.
+const PREFIX_CONTROL_BOUNDS := [[6.0, 12.0], [1.6, 6.4], [0.5, 4.0], [0.4, 3.0]]
+const PREFIX_SLOW_CREST_BEAT_S := 3.58159485642841
+const PREFIX_SLOW_SHOULDER_S := 0.80
+## Today's authored flex-span durations, verbatim: the committed seed every closure solve starts
+## from, so the prefix carries no randomness of its own and an unsolved prefix is this one.
+const PREFIX_SEED := [8.78838861435674, 3.20659393,
+	PREFIX_SLOW_CREST_BEAT_S - 2.0 * PREFIX_SLOW_SHOULDER_S, 1.00]
+const PREFIX_RESIDUAL_IDS := ["dive_edge_span_m", "tunnel_edge_span_m", "summit_rise_m",
+	"record_exit_speed_mps"]
+const PREFIX_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.2]
+const PREFIX_FINE_TOLERANCES := [0.25, 0.25, 0.25, 0.05]
+# Derived, not guessed, exactly as MAX_RETURN_EVALUATIONS is: `BoundedSolver.solve` costs
+# `1 + K*(n+1) + R` unique evaluations, so n = 4 with K <= 8 accepted iterations and R <= 8
+# rejections gives 1 + 8*5 + 8 = 49; 52 carries that derivation with a three-evaluation margin,
+# and `ride_program_tests.gd` gates every solve at 60% of it.
+const MAX_PREFIX_EVALUATIONS := 52
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
 const RETURN_ENTRY_SPEED_PADDING_MPS := 0.01
 const RETURN_ENTRY_POSITION_PADDING_M := 0.25
@@ -92,36 +115,33 @@ const ROLE_NOMINAL_LENGTH_M := {
 
 ## The fixed story prefix, integrated once in its station-local frame so the generator can place
 ## the ride on terrain. `story` carries the planner's drawn sequence and resolved targets; an
-## empty story reproduces the canonical undrawn recipe exactly.
-static func terrain_story_capability(station_side: int, story: Dictionary = {}) -> Dictionary:
+## empty story reproduces the canonical undrawn recipe exactly. `closure_target`, when present,
+## first solves the four flex-span durations against its four station-local aim bands; with no
+## target the prefix is the authored one, unchanged.
+static func terrain_story_capability(station_side: int, story: Dictionary = {},
+	closure_target: Dictionary = {}
+) -> Dictionary:
 	if station_side != -1 and station_side != 1:
 		return _failure("station_side must be -1 or 1", "planning")
-	var spans: Array = []
-	var metadata: Array = []
-	var gestures: Array = []
-	var propulsion := PackedInt32Array()
-	_add_story_prefix(spans, metadata, gestures, propulsion, -float(station_side), story)
-	var dive_start_span := -1
-	var dive_end_span := -1
-	var tunnel_end_span := -1
-	for gesture in gestures:
-		if gesture.story_slot_id == "cliff-dive":
-			dive_start_span = int(gesture.first_span)
-			dive_end_span = int(gesture.last_span)
-		elif gesture.story_slot_id == "tunnel-lsm3":
-			tunnel_end_span = int(gesture.last_span)
-	if dive_start_span <= 0 or dive_end_span < dive_start_span \
-			or tunnel_end_span <= dive_end_span:
+	var closure := {}
+	var controls: Array = PREFIX_SEED
+	if not closure_target.is_empty():
+		closure = _solve_prefix_closure(station_side, story, closure_target)
+		if not closure.get("ok", false):
+			return closure
+		controls = closure.report.accepted_values
+	var program := _prefix_program(station_side, story, controls)
+	if not program.ok:
 		return _failure("terrain story capability omitted the cliff-dive handoff", "planning")
-	var initial := {"position_m": Vector3.ZERO, "tangent": Vector3.RIGHT,
-		"rider_up": Vector3.UP, "speed_mps": 6.0, "distance_m": 0.0, "time_s": 0.0}
+	var tunnel_end_span: int = program.tunnel_end
 	var trajectory := Motion.integrate(
-		initial, spans.slice(0, tunnel_end_span + 1), _settings(PRODUCTION_STEP_S))
+		_prefix_initial_state(), program.spans.slice(0, tunnel_end_span + 1),
+		_settings(PRODUCTION_STEP_S))
 	if not trajectory.get("ok", false):
 		return _failure("terrain story capability failed integration", "planning",
 			{"errors": trajectory.get("errors", [])})
-	var dive_start_sample: int = trajectory.span_index.find(dive_start_span)
-	var dive_end_sample: int = trajectory.span_index.rfind(dive_end_span)
+	var dive_start_sample: int = trajectory.span_index.find(program.dive_start)
+	var dive_end_sample: int = trajectory.span_index.rfind(program.dive_end)
 	if dive_start_sample < 0 or dive_end_sample < dive_start_sample \
 			or trajectory.position_m.size() < 2 \
 			or int(trajectory.span_index[-1]) != tunnel_end_span:
@@ -144,19 +164,16 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {}) 
 			or dive_positions_m.is_empty() or dive_positions_m.size() != dive_rider_up.size() \
 			or not is_finite(dive_outward_delta_m) or dive_outward_delta_m <= 0.0:
 		return _failure("terrain story capability produced a non-outward dive footprint", "planning")
-	var opener_end := -1
-	var station_end := -1
-	for gesture in gestures:
-		if gesture.story_slot_id == "opener":
-			opener_end = int(gesture.last_span)
-		elif gesture.story_slot_id == "station-launch":
-			station_end = int(gesture.last_span)
-	var opener_end_sample: int = trajectory.span_index.rfind(opener_end)
-	var station_end_sample: int = trajectory.span_index.rfind(station_end)
+	var opener_end_sample: int = trajectory.span_index.rfind(program.opener_end)
+	var station_end_sample: int = trajectory.span_index.rfind(program.station_end)
 	if opener_end_sample < 0 or station_end_sample < 0 \
 			or station_end_sample >= opener_end_sample:
 		return _failure("terrain story capability omitted the station/opener footprint", "planning")
-	return {"ok": true, "capability_id": "material-v1-prefix-r12@9",
+	if not closure.is_empty():
+		var accepted := _accept_prefix_closure(closure, trajectory, program)
+		if not accepted.get("ok", false):
+			return accepted
+	var published := {"ok": true, "capability_id": "material-v1-prefix-r12@9",
 		"planning_integrations": 1,
 		"role_13_entry": {"offset_m": entry.position_m, "tangent": entry.tangent,
 			"rider_up": entry.rider_up, "speed_mps": entry.speed_mps},
@@ -172,6 +189,175 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {}) 
 		"scale": {"route_vertical_envelope_m": Vector2(290.0, 305.0),
 			"dive_drop_m": Vector2(240.0, 250.0),
 			"camel_prominence_m": Vector2(245.0, 255.0)}}
+	if not closure.is_empty():
+		published["closure_plan"] = closure.report
+	return published
+
+
+## The story prefix as a program: its spans plus the span indices both the published footprint and
+## the closure solve address. The act-one end is the head/tail split - every closure control lies
+## downstream of it, so the head integrates once per solve and every evaluation reuses it.
+static func _prefix_program(station_side: int, story: Dictionary, controls: Array) -> Dictionary:
+	var spans: Array = []
+	var metadata: Array = []
+	var gestures: Array = []
+	var propulsion := PackedInt32Array()
+	_add_story_prefix(spans, metadata, gestures, propulsion, -float(station_side), story, controls)
+	var program := {"spans": spans, "head_end": -1, "dive_start": -1, "dive_end": -1,
+		"tunnel_end": -1, "opener_end": -1, "station_end": -1}
+	for gesture in gestures:
+		match str(gesture.story_slot_id):
+			"station-launch": program.station_end = int(gesture.last_span)
+			"opener": program.opener_end = int(gesture.last_span)
+			"act-one": program.head_end = int(gesture.last_span)
+			"cliff-dive":
+				program.dive_start = int(gesture.first_span)
+				program.dive_end = int(gesture.last_span)
+			"tunnel-lsm3": program.tunnel_end = int(gesture.last_span)
+	program["ok"] = program.station_end >= 0 and program.opener_end > program.station_end \
+		and program.head_end > program.opener_end and program.dive_start > program.head_end \
+		and program.dive_end >= program.dive_start and program.tunnel_end > program.dive_end
+	return program
+
+
+static func _prefix_initial_state() -> Dictionary:
+	return {"position_m": Vector3.ZERO, "tangent": Vector3.RIGHT, "rider_up": Vector3.UP,
+		"speed_mps": 6.0, "distance_m": 0.0, "time_s": 0.0}
+
+
+## The four station-local quantities the closure targets, in `PREFIX_RESIDUAL_IDS` order. Both
+## spans are the outward run projected on the target's own axis; `summit_rise_m` is the dive
+## entry's own height, which is the whole of what a terrain summit band sees once the station
+## height is derived from the head's ground clearance, and no control touches the head. The tunnel
+## exit is the trajectory's last sample, not the published pre-seam one, so the quantity does not
+## move with the integration step.
+static func _prefix_observation(trajectory: Dictionary, dive_start: int, dive_end: int,
+	axis: Vector2
+) -> Array:
+	var first: int = trajectory.span_index.find(dive_start)
+	var last: int = trajectory.span_index.rfind(dive_end)
+	if first < 0 or last < first or trajectory.position_m.size() < 2:
+		return []
+	var entry: Vector3 = trajectory.position_m[first]
+	var dive_exit: Vector3 = trajectory.position_m[last]
+	var tunnel_exit: Vector3 = trajectory.position_m[-1]
+	return [Vector2(dive_exit.x - entry.x, dive_exit.z - entry.z).dot(axis),
+		Vector2(tunnel_exit.x - dive_exit.x, tunnel_exit.z - dive_exit.z).dot(axis),
+		entry.y, float(trajectory.speed_mps[-1])]
+
+
+static func _prefix_tail_observation(station_side: int, story: Dictionary, controls: Array,
+	head_state: Dictionary, axis: Vector2
+) -> Array:
+	var program := _prefix_program(station_side, story, controls)
+	if not program.ok:
+		return []
+	var offset: int = program.head_end + 1
+	var tail := Motion.integrate(head_state,
+		program.spans.slice(offset, program.tunnel_end + 1), _settings(COARSE_STEP_S))
+	if not tail.get("ok", false):
+		return []
+	return _prefix_observation(tail, program.dive_start - offset, program.dive_end - offset, axis)
+
+
+## One pass over the aim bands: the scaled residual vector the solver drives to zero, and the
+## per-band margins every accepted or refused closure reports.
+static func _prefix_evaluation(observation: Array, bands: Array) -> Dictionary:
+	var scaled := []
+	var margins := {}
+	for index in PREFIX_RESIDUAL_IDS.size():
+		var band: Vector2 = bands[index]
+		var value := float(observation[index])
+		scaled.append(_band_residual(value, band) / float(PREFIX_RESIDUAL_SCALES[index]))
+		margins["%s_low" % PREFIX_RESIDUAL_IDS[index]] = value - band.x
+		margins["%s_high" % PREFIX_RESIDUAL_IDS[index]] = band.y - value
+	return {"scaled": scaled, "margins": margins}
+
+
+## Every prefix refusal carries the same evidence: the values it stopped on, the residual vector,
+## the per-band margins and what the solver was doing. No retry, no relaxed band.
+static func _prefix_refusal(reason: String, status: String, values: Array, residuals: Array,
+	margins: Dictionary, evaluations: int = 0
+) -> Dictionary:
+	return _failure(reason, "prefix-closure", {"accepted_values": values, "margins": margins,
+		"solver_status": status, "target_error": residuals, "evaluation_count": evaluations})
+
+
+## One bounded solve over the four flex-span durations against the target's four aim bands. Only
+## the tail carries a control, so the head is integrated once at the production step and every
+## evaluation re-integrates the tail alone at `COARSE_STEP_S`; the caller's own production
+## integration is the fine half of the coarse/fine acceptance.
+static func _solve_prefix_closure(station_side: int, story: Dictionary,
+	target: Dictionary
+) -> Dictionary:
+	var bands := []
+	for id: String in PREFIX_RESIDUAL_IDS:
+		var band: Variant = target.get(id, Vector2(NAN, NAN))
+		bands.append(band if band is Vector2 else Vector2(NAN, NAN))
+	var supplied: Variant = target.get("outward_local", Vector2(0.0, float(station_side)))
+	var axis: Vector2 = supplied if supplied is Vector2 else Vector2.ZERO
+	var program := _prefix_program(station_side, story, PREFIX_SEED)
+	var usable: bool = program.ok and axis.is_finite() and axis.length_squared() > 0.000001
+	for band: Vector2 in bands:
+		usable = usable and band.is_finite() and band.x <= band.y
+	if not usable:
+		return _prefix_refusal("closure target is not a usable set of station-local aim bands",
+			"invalid_target", PREFIX_SEED, [], {})
+	axis = axis.normalized()
+	var head := Motion.integrate(_prefix_initial_state(),
+		program.spans.slice(0, program.head_end + 1), _settings(PRODUCTION_STEP_S))
+	if not head.get("ok", false):
+		return _prefix_refusal("prefix closure could not integrate its shared head",
+			"head_integration", PREFIX_SEED, [], {})
+	var head_state := _last_state(head)
+	var lower := []
+	var upper := []
+	for bound: Array in PREFIX_CONTROL_BOUNDS:
+		lower.append(bound[0])
+		upper.append(bound[1])
+	var residual := func(candidate: Array) -> Array:
+		var observed := _prefix_tail_observation(station_side, story, candidate, head_state, axis)
+		return _prefix_evaluation(observed, bands).scaled if not observed.is_empty() else [INF]
+	var solved := BoundedSolver.solve(
+		residual, lower, upper, PREFIX_SEED, MAX_PREFIX_EVALUATIONS)
+	var accepted: Array = solved.get("x", PREFIX_SEED)
+	var coarse := _prefix_tail_observation(station_side, story, accepted, head_state, axis)
+	if not solved.get("ok", false) or coarse.is_empty():
+		return _prefix_refusal("prefix closure did not reach its terrain target",
+			str(solved.get("status", "invalid")), accepted, solved.get("residuals", []),
+			_prefix_evaluation(coarse, bands).margins if not coarse.is_empty() else {},
+			int(solved.get("evaluations", 0)))
+	return {"ok": true, "bands": bands, "axis": axis, "report": {
+		"control_ids": PREFIX_CONTROL_IDS, "control_bounds": PREFIX_CONTROL_BOUNDS,
+		"accepted_values": accepted, "residual_ids": PREFIX_RESIDUAL_IDS,
+		"coarse_fine_tolerances": PREFIX_FINE_TOLERANCES,
+		"unique_evaluations": int(solved.evaluations),
+		"max_unique_evaluations": MAX_PREFIX_EVALUATIONS,
+		"solver_status": str(solved.status), "solver_iterations": int(solved.iterations),
+		"solver_conditioning": float(solved.conditioning),
+		"coarse_observation": coarse, "target_error": solved.residuals,
+		"margins": _prefix_evaluation(coarse, bands).margins}}
+
+
+## The fine half: the accepted coarse solution must reproduce in the caller's own production
+## integration, per residual, or the prefix is refused. Never a retry, never a widened band.
+static func _accept_prefix_closure(closure: Dictionary, trajectory: Dictionary,
+	program: Dictionary
+) -> Dictionary:
+	var report: Dictionary = closure.report
+	var coarse: Array = report.coarse_observation
+	var fine := _prefix_observation(trajectory, program.dive_start, program.dive_end, closure.axis)
+	var agrees := fine.size() == coarse.size()
+	for index in PREFIX_RESIDUAL_IDS.size():
+		agrees = agrees and absf(float(fine[index]) - float(coarse[index])) \
+			<= float(PREFIX_FINE_TOLERANCES[index])
+	if not agrees:
+		return _prefix_refusal("prefix closure coarse and fine observations disagree",
+			str(report.solver_status), report.accepted_values, report.target_error,
+			report.margins, int(report.unique_evaluations))
+	report["fine_observation"] = fine
+	report["margins"] = _prefix_evaluation(fine, closure.bands).margins
+	return {"ok": true}
 
 
 static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
@@ -312,7 +498,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 
 static func _add_story_prefix(
 	spans: Array, metadata: Array, gestures: Array, propulsion: PackedInt32Array, hand: float,
-	story: Dictionary = {}
+	story: Dictionary = {}, controls: Array = PREFIX_SEED
 ) -> void:
 	var targets: Dictionary = story.get("targets", {})
 	var act_one_order: Array = RidePlanner.act_one_order(
@@ -349,11 +535,11 @@ static func _add_story_prefix(
 		0.0, "lsm2", 2)
 	_add(spans, metadata, propulsion, "climb/powered-settle", 0.98392993, "moving",
 		Motion.quintic(3.37796602, 0.87362258024053), 0.0, climb_drive_g, 0.0, "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/powered-core", 8.78838861435674, "moving",
+	_add(spans, metadata, propulsion, "climb/powered-core", float(controls[0]), "moving",
 		0.87362258024053, 0.0, climb_drive_g, 0.0, "lsm2", 2)
 	_add(spans, metadata, propulsion, "climb/drive-release", 0.98392993, "moving",
 		0.87362258024053, 0.0, Motion.quintic(climb_drive_g, 0.0), 0.0, "lsm2", 2)
-	_add(spans, metadata, propulsion, "climb/pull-over", 3.20659393, "moving",
+	_add(spans, metadata, propulsion, "climb/pull-over", float(controls[1]), "moving",
 		Motion.quintic(0.87362258024053, 0.72152814), 0.0, 0.0, 0.0,
 		"unpowered-climb")
 	_add(spans, metadata, propulsion, "climb/level", 3.20659393, "moving",
@@ -364,13 +550,14 @@ static func _add_story_prefix(
 	var slow_bank := deg_to_rad(39.1243426617973)
 	# The crawl lays over across a shoulder half again as long as it used to and holds for
 	# correspondingly less: issue 20's stepping showed up here as a 97 deg/s burst either side of a
-	# 2.4 s flat hold. The crest's total time is unchanged, so the beat keeps its length and the
-	# downstream handoff, which the return solve will not re-converge from its fixed seed without.
-	# The shoulder cannot grow further: the clifftop's unwrapped heading work has a 160 deg floor
-	# and its centreline vertical variation a 3 m one, and rolling for longer at a lower average
-	# bank spends both.
-	var slow_shoulder_s := 0.80
-	var slow_core_s := 3.58159485642841 - 2.0 * slow_shoulder_s
+	# 2.4 s flat hold. Unsolved, the crest's total time is the authored beat, so it keeps its length
+	# and the downstream handoff, which the return solve will not re-converge from its fixed seed
+	# without; the closure solve moves the hold and re-closes that handoff through its own record
+	# residual. The shoulder cannot grow further: the clifftop's unwrapped heading work has a
+	# 160 deg floor and its centreline vertical variation a 3 m one, and rolling for longer at a
+	# lower average bank spends both.
+	var slow_shoulder_s := PREFIX_SLOW_SHOULDER_S
+	var slow_core_s := float(controls[2])
 	# Drawn per seed: how firmly the crawl is held over the crest, and how far the rim turn lays
 	# out over the edge. The suspense beat is reference-scale by contract, so both stay inside
 	# the clifftop's declared force and heading bands rather than scaling toward the records.
@@ -418,7 +605,7 @@ static func _add_story_prefix(
 	_add(spans, metadata, propulsion, "dive/outward-bank", 0.8, "moving",
 		Motion.quintic(1.0, dive_turn_normal), 0.0, 0.0,
 		Motion.compact_pulse(dive_roll * hand), "commit")
-	_add(spans, metadata, propulsion, "dive/face-approach", 1.0, "moving",
+	_add(spans, metadata, propulsion, "dive/face-approach", float(controls[3]), "moving",
 		dive_turn_normal, 0.0, 0.0, 0.0, "commit")
 	_add(spans, metadata, propulsion, "dive/outward-release", 0.8, "moving",
 		Motion.quintic(dive_turn_normal, 1.0), 0.0, 0.0,

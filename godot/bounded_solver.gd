@@ -159,7 +159,7 @@ static func linear_solve(matrix: Array, rhs: Array) -> Dictionary:
 			value -= a[i][j] * x[j]
 		x[i] = value / a[i][i]
 		if not is_finite(x[i]):
-			return {"ok": false}
+			return {"ok": false, "minimum_pivot": smallest, "maximum_pivot": largest}
 	return {"ok": true, "x": x, "conditioning": largest / smallest,
 		"minimum_pivot": smallest, "maximum_pivot": largest}
 static func _finite_number(value: Variant) -> bool:

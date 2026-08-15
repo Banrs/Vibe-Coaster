@@ -517,12 +517,11 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 		"a nonfinite capture margin is rejected before a plan can be accepted", true)
 
 
-## The return budget is derived, not guessed: `BoundedSolver.solve` costs `1 + K*(n+1) + R`
-## unique evaluations, so n = 7 with K <= 8 accepted iterations and R <= 8 rejected trials gives
-## 1 + 8*8 + 8 = 73 -> a cap of 80. The fleet must sit well inside it, so no seed may spend more
-## than 60% (48). Measured on the design's five-seed set (the three deep seeds plus 1 and
-## 123456) rather than all fifteen: each seed costs a full compile, and the sweep seeds add
-## minutes to this focused suite without adding a new solve regime.
+## The fast half of the return budget claim; the cap's derivation lives at
+## `RideProgram.MAX_RETURN_EVALUATIONS`. Measured on the design's five-seed set (the three deep
+## seeds plus 1 and 123456) rather than all fifteen: each seed costs a full compile, and the
+## sweep seeds add minutes here without adding a new solve regime. `smoke.gd` carries the
+## fifteen-seed half inside the builds it already pays for.
 func _test_return_solve_stays_inside_its_derived_budget() -> void:
 	_expect(RideProgram.MAX_RETURN_EVALUATIONS == 80,
 		"the return evaluation cap is the derived 80, not %d"

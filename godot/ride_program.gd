@@ -969,7 +969,11 @@ static func _solve_return(
 		"return_entry_gate": {"source": "derived-terminal-corridor",
 			"position_m": start.position_m, "tangent": start.tangent,
 			"up": start.rider_up, "speed_mps": start.speed_mps,
-			"corridor_approach_length_m": _approach_length(layout)},
+			"corridor_approach_length_m": _approach_length(layout),
+			# The one solve field that reaches the published route: it lets smoke measure this
+			# budget on all fifteen seeds inside the compiles it already pays for.
+			"solve_evaluations": cache.size(),
+			"solve_evaluation_cap": MAX_RETURN_EVALUATIONS},
 		"positive_drive_allowed": false}}
 
 
@@ -1172,6 +1176,7 @@ static func _solve_capture(start: Dictionary, layout: Dictionary, settings: Dict
 			[0.02, 0.02, 0.02, 0.02, 0.04], evaluate)
 		if not accepted_difference.ok:
 			return accepted_difference
+		# The accepted point needs the pivot record, not another step: the solution is discarded.
 		conditioning = _conditioning(
 			BoundedSolver.linear_solve(accepted_difference.jacobian, fine.scaled), coefficients)
 		if not conditioning.ok:

@@ -17,6 +17,10 @@ const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 2
 ## these floors sit at roughly a quarter of what the planner actually produces.
 const FLEET_LENGTH_SPREAD_FLOOR_M := 5.0
 const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
+## The fleet half of the return budget claim. `ride_program.gd` derives the cap and
+## `ride_program_tests.gd` gates five seeds fast; every seed of the fifteen must stay inside
+## this fraction of it, measured here because the compile is already paid.
+const RETURN_EVALUATION_ALLOWANCE := 0.6
 
 var _fleet_lengths := PackedFloat64Array()
 var _fleet_durations := PackedFloat64Array()
@@ -192,6 +196,12 @@ func _validate_structure_and_placement(route: Dictionary, issues: PackedStringAr
 	Verify.validate_seams(route, issues)
 	Verify.validate_clearance(route, route.terrain, issues)
 	Verify.validate_self_clearance(route, issues)
+	var gate: Dictionary = route.get("terrain_story_plan", {}).get("return_entry_gate", {})
+	var evaluations := int(gate.get("solve_evaluations", -1))
+	var allowance := int(RETURN_EVALUATION_ALLOWANCE * int(gate.get("solve_evaluation_cap", 0)))
+	if evaluations < 1 or evaluations > allowance:
+		issues.append("the return solve spent %d evaluations against a %d fleet allowance"
+			% [evaluations, allowance])
 
 
 func _terrain_errors() -> PackedStringArray:

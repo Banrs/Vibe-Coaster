@@ -6,6 +6,7 @@ extends RefCounted
 ## RouteContract validates and publishes the accepted native route.
 
 const Motion := preload("res://motion.gd")
+const RideConfig := preload("res://ride_config.gd")
 const RidePlanner := preload("res://ride_planner.gd")
 const RideProgram := preload("res://ride_program.gd")
 const RouteContract := preload("res://route_contract.gd")
@@ -30,6 +31,52 @@ const APPROACH_SAMPLE_STEP_M := 5.0
 
 static func build(seed_value: int) -> Dictionary:
 	return build_with_decisions(seed_value, RidePlanner.resolve(seed_value))
+
+
+## The version-1 configuration surface: normalize preset ← file ← CLI, map the resolved document
+## onto the planner's certified draw ranges, and build. Returns
+## `{ok, route, resolved_config, plan, errors, report}`.
+##
+## `build()` above stays the preset fast path and is untouched by this: an empty configuration
+## resolves to the preset base, pins nothing, and therefore takes exactly the draw sequence and
+## publishes exactly the route it always did. A configured build pins its draws through the
+## planner's override seam — which consumes the same number of values from the same streams — so
+## the same (config, seed) is bit-identical every time.
+static func build_config(file_config: Dictionary, cli_overrides: Array = []) -> Dictionary:
+	var normalized: Dictionary = RideConfig.normalize(file_config, cli_overrides)
+	var resolved: Dictionary = normalized.resolved
+	var report: Dictionary = normalized.report
+	if not normalized.ok:
+		return {"ok": false, "route": {}, "resolved_config": resolved, "plan": {},
+			"errors": normalized.errors, "report": report}
+	var seed_value := int(resolved.seed)
+	var pins: Array = RideConfig.planner_pins(resolved)
+	var decisions: Dictionary = RidePlanner.resolve(seed_value,
+		RideConfig.planner_overrides(pins))
+	if not pins.is_empty():
+		# Provenance rides with the plan only when the configuration actually pinned something,
+		# so the unconfigured route stays byte-for-byte what `build()` has always published.
+		decisions["draws"] = RideConfig.annotate_draws(decisions.draws, pins)
+	report = RideConfig.record_achievements(report, decisions.draws, pins)
+	var route := build_with_decisions(seed_value, decisions)
+	if not route.get("ok", false):
+		# Design §12: a failure names the preset and config version, the seed, the pins it was
+		# carrying, and the invariant that failed. No silent skip, relaxation or partial route.
+		var failure := {"code": "generation_failed",
+			"message": "the resolved configuration did not build: %s" % str(
+				route.get("errors", [])),
+			"preset": str(resolved.preset),
+			"ride_config_version": int(resolved.ride_config_version),
+			"config_hash": str(resolved.config_hash),
+			"seed": seed_value,
+			"pins": pins,
+			"errors": route.get("errors", PackedStringArray()),
+			"failure": route.get("failure", {})}
+		return {"ok": false, "route": route, "resolved_config": resolved, "plan": {},
+			"errors": [failure], "report": report}
+	return {"ok": true, "route": route, "resolved_config": resolved,
+		"plan": route.get("terrain_story_plan", {}).get("plan", {}), "errors": [],
+		"report": report}
 
 
 ## The certification seam: build a seed from an explicitly supplied planner decision set.

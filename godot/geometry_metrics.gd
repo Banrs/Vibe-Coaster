@@ -126,34 +126,23 @@ static func seam_roll_continuity(route: Dictionary) -> Dictionary:
 		var across: Variant = null
 		if dt > 0.0:
 			across = (rate_after - rate_before) / dt
-		var seam := {
-			"seam_index": index - 1,
-			"boundary_sample": boundary,
+		seams.append({
+			"seam_index": index - 1, "boundary_sample": boundary,
 			"boundary_time_s": float(times[boundary]),
 			"boundary_distance_m": float(route.distances[boundary]),
-			"before_window_id": str(before.window_id),
-			"after_window_id": str(after.window_id),
-			"before_role": str(before.role_id),
-			"after_role": str(after.role_id),
+			"before_window_id": str(before.window_id), "after_window_id": str(after.window_id),
+			"before_role": str(before.role_id), "after_role": str(after.role_id),
 			"gesture_boundary": int(before.gesture_index) != int(after.gesture_index),
-			"sample_interval_s": dt,
-			"roll_rate_before_dps": rate_before,
-			"roll_rate_after_dps": rate_after,
-			"roll_rate_jump_dps": rate_after - rate_before,
-			"roll_acceleration_across_dps2": across,
-			"roll_acceleration_before_dps2": slope_before,
+			"sample_interval_s": dt, "roll_rate_before_dps": rate_before,
+			"roll_rate_after_dps": rate_after, "roll_rate_jump_dps": rate_after - rate_before,
+			"roll_acceleration_across_dps2": across, "roll_acceleration_before_dps2": slope_before,
 			"roll_acceleration_after_dps2": slope_after,
 			"roll_acceleration_break_dps2": _break(slope_before, slope_after),
-		}
-		seams.append(seam)
+		})
 	return {
-		"schema_version": SCHEMA,
-		"metric": "seam_roll_continuity",
-		"judgement": "report-only",
-		"seam_count": seams.size(),
-		"window_samples": SEAM_WINDOW_SAMPLES,
-		"flat_roll_dps": FLAT_ROLL_DPS,
-		"seams": seams,
+		"schema_version": SCHEMA, "metric": "seam_roll_continuity", "judgement": "report-only",
+		"seam_count": seams.size(), "window_samples": SEAM_WINDOW_SAMPLES,
+		"flat_roll_dps": FLAT_ROLL_DPS, "seams": seams,
 		"worst_roll_rate_jumps": _worst(seams, "roll_rate_jump_dps"),
 		"worst_roll_acceleration_breaks": _worst(seams, "roll_acceleration_break_dps2"),
 		"role_roll_profiles": _roll_profiles(route, windows),
@@ -203,13 +192,9 @@ static func _roll_profiles(route: Dictionary, windows: Array) -> Array:
 							banked_flat += dt
 		var divisor := total if total > 0.0 else 1.0
 		profiles.append({
-			"window_id": str(window.window_id),
-			"role_id": str(window.role_id),
-			"occurrence": int(window.occurrence),
-			"seconds": total,
-			"roll_rate_peak_dps": peak,
-			"roll_segment_count": segments,
-			"roll_reversal_count": reversals,
+			"window_id": str(window.window_id), "role_id": str(window.role_id),
+			"occurrence": int(window.occurrence), "seconds": total, "roll_rate_peak_dps": peak,
+			"roll_segment_count": segments, "roll_reversal_count": reversals,
 			"flat_roll_share": flat / divisor if total > 0.0 else 0.0,
 			"banked_flat_roll_share": banked_flat / divisor if total > 0.0 else 0.0,
 		})
@@ -231,23 +216,11 @@ static func element_planarity(route: Dictionary) -> Dictionary:
 	var unavailable := _unavailable(route)
 	if not unavailable.is_empty():
 		return unavailable
-	var elements := []
-	for window: Dictionary in role_windows(route):
-		var record := {
-			"window_id": str(window.window_id),
-			"role_id": str(window.role_id),
-			"occurrence": int(window.occurrence),
-			"kind": str(window.kind),
-		}
-		record.merge(planarity_of(route, int(window.first), int(window.last)))
-		elements.append(record)
+	var elements := _per_window(route, planarity_of)
 	return {
-		"schema_version": SCHEMA,
-		"metric": "element_planarity",
-		"judgement": "report-only",
+		"schema_version": SCHEMA, "metric": "element_planarity", "judgement": "report-only",
 		"note": "Helical and inverting elements are expected to be three-dimensional; the class is reported, never scored.",
-		"planar_ratio": PLANAR_RATIO,
-		"quasi_planar_ratio": QUASI_PLANAR_RATIO,
+		"planar_ratio": PLANAR_RATIO, "quasi_planar_ratio": QUASI_PLANAR_RATIO,
 		"elements": elements,
 		"worst_vertical_tilts": _worst(
 			elements.filter(func(record: Dictionary) -> bool: return record.tilt_is_meaningful),
@@ -300,21 +273,16 @@ static func planarity_of(route: Dictionary, first: int, last: int) -> Dictionary
 		elif ratio <= QUASI_PLANAR_RATIO:
 			classification = "quasi-planar"
 		return {
-			"sample_count": count,
-			"status": "measured",
-			"rms_out_of_plane_m": rms,
-			"max_out_of_plane_m": maximum,
-			"out_of_plane_ratio": ratio,
-			"bounding_diagonal_m": diagonal,
-			"plane_normal": [normal.x, normal.y, normal.z],
+			"sample_count": count, "status": "measured", "rms_out_of_plane_m": rms,
+			"max_out_of_plane_m": maximum, "out_of_plane_ratio": ratio,
+			"bounding_diagonal_m": diagonal, "plane_normal": [normal.x, normal.y, normal.z],
 			"vertical_plane_tilt_deg": rad_to_deg(asin(clampf(absf(normal.y), 0.0, 1.0))),
 			"principal_axis_pitch_deg": rad_to_deg(asin(clampf(principal.normalized().y, -1.0, 1.0))),
 			"planarity_class": classification,
 			"tilt_is_meaningful": classification != "three-dimensional",
 		}
 	return {
-		"sample_count": count,
-		"status": "too-few-samples", "rms_out_of_plane_m": null,
+		"sample_count": count, "status": "too-few-samples", "rms_out_of_plane_m": null,
 		"max_out_of_plane_m": null, "out_of_plane_ratio": null,
 		"plane_normal": null, "vertical_plane_tilt_deg": null,
 		"principal_axis_pitch_deg": null, "planarity_class": "unavailable",
@@ -332,22 +300,25 @@ static func shape_ratios(route: Dictionary) -> Dictionary:
 	var unavailable := _unavailable(route)
 	if not unavailable.is_empty():
 		return unavailable
-	var elements := []
-	for window: Dictionary in role_windows(route):
-		var record := {
-			"window_id": str(window.window_id),
-			"role_id": str(window.role_id),
-			"occurrence": int(window.occurrence),
-			"kind": str(window.kind),
-		}
-		record.merge(shape_of(route, int(window.first), int(window.last)))
-		elements.append(record)
 	return {
 		"schema_version": SCHEMA,
 		"metric": "shape_ratios",
 		"judgement": "report-only",
-		"elements": elements,
+		"elements": _per_window(route, shape_of),
 	}
+
+
+## Every role window's identity fields merged with one per-span measurement, in route order.
+static func _per_window(route: Dictionary, measure_span: Callable) -> Array:
+	var elements := []
+	for window: Dictionary in role_windows(route):
+		var record := {
+			"window_id": str(window.window_id), "role_id": str(window.role_id),
+			"occurrence": int(window.occurrence), "kind": str(window.kind),
+		}
+		record.merge(measure_span.call(route, int(window.first), int(window.last)))
+		elements.append(record)
+	return elements
 
 
 ## The silhouette of one inclusive sample span, without any identity fields.
@@ -394,31 +365,21 @@ static func shape_of(route: Dictionary, first: int, last: int) -> Dictionary:
 			deg_to_rad(_plan_heading_deg(tangents[index + 1]))
 		))
 	return {
-		"status": "measured",
-		"first_sample": first,
-		"last_sample": last,
+		"status": "measured", "first_sample": first, "last_sample": last,
 		"seconds": float(route.times[last]) - float(route.times[first]),
-		"height_extent_m": height,
-		"horizontal_extent_m": horizontal,
-		"plan_along_m": along,
-		"plan_across_m": sideways,
-		"track_length_m": track_length,
+		"height_extent_m": height, "horizontal_extent_m": horizontal,
+		"plan_along_m": along, "plan_across_m": sideways, "track_length_m": track_length,
 		"height_to_length_ratio": height / track_length if track_length > 1e-6 else null,
 		"height_to_horizontal_ratio": height / horizontal if horizontal > 1e-6 else null,
-		"entry_heading_deg": entry_heading,
-		"exit_heading_deg": exit_heading,
+		"entry_heading_deg": entry_heading, "exit_heading_deg": exit_heading,
 		"net_heading_change_deg": rad_to_deg(
 			angle_difference(deg_to_rad(entry_heading), deg_to_rad(exit_heading))
 		),
 		"total_heading_change_deg": accumulated,
-		"entry_pitch_deg": _pitch_deg(tangents[first]),
-		"exit_pitch_deg": _pitch_deg(tangents[last]),
-		"entry_bank_deg": float(route.banks[first]),
-		"exit_bank_deg": float(route.banks[last]),
-		"entry_speed_mps": float(route.speeds[first]),
-		"exit_speed_mps": float(route.speeds[last]),
-		"apex_height_m": height_high,
-		"base_height_m": height_low,
+		"entry_pitch_deg": _pitch_deg(tangents[first]), "exit_pitch_deg": _pitch_deg(tangents[last]),
+		"entry_bank_deg": float(route.banks[first]), "exit_bank_deg": float(route.banks[last]),
+		"entry_speed_mps": float(route.speeds[first]), "exit_speed_mps": float(route.speeds[last]),
+		"apex_height_m": height_high, "base_height_m": height_low,
 	}
 
 
@@ -500,8 +461,8 @@ static func counterpart_comparison(route: Dictionary, row_offset: float = COUNTE
 			})
 			continue
 		var band: Dictionary = mapping.bands[role]
-		for axis_value in entry.get("axes", []):
-			var row := _counterpart_row(role, band, axis_value, entry)
+		for axis: Dictionary in entry.get("axes", []):
+			var row := _counterpart_row(role, band, axis, entry)
 			totals[row.status] = int(totals.get(row.status, 0)) + 1
 			rows.append(row)
 	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -510,12 +471,9 @@ static func counterpart_comparison(route: Dictionary, row_offset: float = COUNTE
 		return left < right)
 	gaps.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.role_id < b.role_id)
 	return {
-		"schema_version": COUNTERPART_SCHEMA,
-		"metric": "counterpart_comparison",
-		"judgement": "report-only",
-		"seed": int(route.get("seed", 0)),
-		"row_id": COUNTERPART_ROW_ID,
-		"row_offset_m": row_offset,
+		"schema_version": COUNTERPART_SCHEMA, "metric": "counterpart_comparison",
+		"judgement": "report-only", "seed": int(route.get("seed", 0)),
+		"row_id": COUNTERPART_ROW_ID, "row_offset_m": row_offset,
 		"channel_label": "verify-filtered (100 Hz resample, 4-pole 5 Hz Butterworth), row-shifted material-role window",
 		"derived_on": Counterparts.DERIVED_ON,
 		"scalar_band_fraction": SCALAR_BAND_FRACTION,
@@ -525,9 +483,7 @@ static func counterpart_comparison(route: Dictionary, row_offset: float = COUNTE
 			"unmapped_windows": mapping.unmapped_windows,
 			"material_roles_without_window": mapping.roles_without_window,
 		},
-		"totals": totals,
-		"rows": rows,
-		"evidence_gaps": gaps,
+		"totals": totals, "rows": rows, "evidence_gaps": gaps,
 	}
 
 
@@ -574,12 +530,9 @@ static func material_role_bands(route: Dictionary, row_offset: float) -> Diction
 		if last - first + 1 < 5:
 			continue
 		bands[role] = {
-			"role_id": role,
-			"window_ids": span.windows,
-			"first_sample": int(span.first),
-			"last_sample": int(span.last),
-			"window_start_s": start_time,
-			"window_end_s": end_time,
+			"role_id": role, "window_ids": span.windows,
+			"first_sample": int(span.first), "last_sample": int(span.last),
+			"window_start_s": start_time, "window_end_s": end_time,
 			"seconds": end_time - start_time,
 			"normal": series.normal.slice(first, last + 1),
 			"lateral": series.lateral.slice(first, last + 1),
@@ -610,20 +563,13 @@ static func _time_at_distance(route: Dictionary, distance_m: float) -> float:
 	return lerpf(float(times[index]), float(times[index + 1]), (clamped - low) / (high - low))
 
 
-static func _counterpart_row(
-	role: String, band: Dictionary, axis_value: Variant, entry: Dictionary
-) -> Dictionary:
-	var axis: Dictionary = axis_value
+static func _counterpart_row(role: String, band: Dictionary, axis: Dictionary, entry: Dictionary) -> Dictionary:
 	var name := str(axis.get("axis", ""))
 	var series: Dictionary = _axis_series(band, name)
 	var row := {
-		"role_id": role,
-		"window_ids": band.window_ids,
-		"window_seconds": float(band.seconds),
-		"axis": name,
-		"label": str(axis.get("label", "")),
-		"measured_counterpart": axis.get("measured"),
-		"stretch": axis.get("stretch"),
+		"role_id": role, "window_ids": band.window_ids,
+		"window_seconds": float(band.seconds), "axis": name, "label": str(axis.get("label", "")),
+		"measured_counterpart": axis.get("measured"), "stretch": axis.get("stretch"),
 		"target": axis.get("target"),
 		"counterpart": str(entry.get("counterpart", {}).get("element", "")),
 		"telemetry_anchor": str(entry.get("counterpart", {}).get("telemetry_anchor", "")),
@@ -755,82 +701,65 @@ static func measure(route: Dictionary) -> Dictionary:
 static func markdown(pack: Dictionary, reference: Dictionary) -> String:
 	var lines := PackedStringArray()
 	if pack.get("status") == "route-unavailable":
-		lines.append("# Geometry metrics — route unavailable")
-		lines.append("")
-		lines.append("Missing route fields: %s" % ", ".join(PackedStringArray(
-			pack.get("missing_fields", []).map(func(value: Variant) -> String: return str(value)))))
+		lines.append_array(["# Geometry metrics — route unavailable", "",
+			"Missing route fields: %s" % ", ".join(PackedStringArray(
+				pack.get("missing_fields", []).map(func(value: Variant) -> String: return str(value))))])
 		return "\n".join(lines) + "\n"
-	lines.append("# Geometry metrics — seed %d" % int(pack.seed))
-	lines.append("")
-	lines.append("Schema `%s`. Diagnostic evidence to read, never a gate: no row here closes a" \
-		% SCHEMA)
-	lines.append("ride-quality issue. Issue 24 is the parent — the forces can be right while the")
-	lines.append("swept shape is wrong, so every number below is derived from geometry alone.")
-	lines.append("")
+	lines.append_array(["# Geometry metrics — seed %d" % int(pack.seed), "",
+		"Schema `%s`. Diagnostic evidence to read, never a gate: no row here closes a" % SCHEMA,
+		"ride-quality issue. Issue 24 is the parent — the forces can be right while the",
+		"swept shape is wrong, so every number below is derived from geometry alone.", ""])
 	lines.append_array(_reference_lines(reference))
 
 	var seams: Dictionary = pack.seam_roll_continuity
-	lines.append("## Roll continuity across role seams (issue 20)")
-	lines.append("")
-	lines.append("%d seams. A coherent roll crosses a seam with a small rate jump; a step shows up" \
-		% int(seams.seam_count))
-	lines.append("as a large jump or a large change of roll acceleration.")
-	lines.append("")
-	lines.append(_row(["rank", "seam", "roll rate jump deg/s", "roll accel break deg/s^2",
-		"before", "after", "gesture seam"]))
-	lines.append(_row(["---:", "---", "---:", "---:", "---", "---", "---"]))
+	lines.append_array(["## Roll continuity across role seams (issue 20)", "",
+		"%d seams. A coherent roll crosses a seam with a small rate jump; a step shows up" \
+			% int(seams.seam_count),
+		"as a large jump or a large change of roll acceleration.", "",
+		_row(["rank", "seam", "roll rate jump deg/s", "roll accel break deg/s^2",
+			"before", "after", "gesture seam"]),
+		_row(["---:", "---", "---:", "---:", "---", "---", "---"])])
 	for entry: Dictionary in seams.worst_roll_rate_jumps:
 		var seam := _seam_by_window(seams.seams, str(entry.window_id))
 		lines.append(_row([int(entry.rank), str(entry.window_id), _num(entry.value, 3),
 			_num(seam.get("roll_acceleration_break_dps2"), 3),
 			str(seam.get("before_role", "")), str(seam.get("after_role", "")),
 			str(seam.get("gesture_boundary", ""))]))
-	lines.append("")
-	lines.append("### Roll delivery per role")
-	lines.append("")
-	lines.append("`roll segments` counts the separate runs of actual rolling inside the window;")
-	lines.append("two or more with a high `banked flat share` is the roll -> flat -> roll pattern.")
-	lines.append("")
-	lines.append(_row(["role window", "seconds", "peak deg/s", "roll segments", "reversals",
-		"flat share", "banked flat share"]))
-	lines.append(_row(["---", "---:", "---:", "---:", "---:", "---:", "---:"]))
+	lines.append_array(["", "### Roll delivery per role", "",
+		"`roll segments` counts the separate runs of actual rolling inside the window;",
+		"two or more with a high `banked flat share` is the roll -> flat -> roll pattern.", "",
+		_row(["role window", "seconds", "peak deg/s", "roll segments", "reversals",
+			"flat share", "banked flat share"]),
+		_row(["---", "---:", "---:", "---:", "---:", "---:", "---:"])])
 	for profile: Dictionary in seams.role_roll_profiles:
 		lines.append(_row([str(profile.window_id), _num(profile.seconds, 2),
 			_num(profile.roll_rate_peak_dps, 2), int(profile.roll_segment_count),
 			int(profile.roll_reversal_count), _num(profile.flat_roll_share, 3),
 			_num(profile.banked_flat_roll_share, 3)]))
-	lines.append("")
-
 	var planarity: Dictionary = pack.element_planarity
-	lines.append("## Element planarity (issue 23)")
-	lines.append("")
-	lines.append("Least-squares best-fit plane per role window. `tilt off vertical` is how far the")
-	lines.append("fitted plane leans out of the vertical — the sideways tilt issue 23 describes.")
-	lines.append("It is only meaningful for a planar element; a loop or a helix is genuinely")
-	lines.append("three-dimensional and is reported, not judged.")
-	lines.append("")
-	lines.append("Read the column with the element's intent in hand. A turn's plane is legitimately")
-	lines.append("near-horizontal, so a tilt near 90 degrees on a turn is the metric working, not a")
-	lines.append("fault. The reading bites on elements whose plane should contain the vertical —")
-	lines.append("hills, drops, the camelback — where anything above a few degrees is a lean the")
-	lines.append("shape should not have.")
-	lines.append("")
-	lines.append(_row(["role window", "class", "rms off-plane m", "max off-plane m",
-		"off-plane ratio", "tilt off vertical deg", "tilt meaningful"]))
-	lines.append(_row(["---", "---", "---:", "---:", "---:", "---:", "---"]))
+	lines.append_array(["", "## Element planarity (issue 23)", "",
+		"Least-squares best-fit plane per role window. `tilt off vertical` is how far the",
+		"fitted plane leans out of the vertical — the sideways tilt issue 23 describes.",
+		"It is only meaningful for a planar element; a loop or a helix is genuinely",
+		"three-dimensional and is reported, not judged.", "",
+		"Read the column with the element's intent in hand. A turn's plane is legitimately",
+		"near-horizontal, so a tilt near 90 degrees on a turn is the metric working, not a",
+		"fault. The reading bites on elements whose plane should contain the vertical —",
+		"hills, drops, the camelback — where anything above a few degrees is a lean the",
+		"shape should not have.", "",
+		_row(["role window", "class", "rms off-plane m", "max off-plane m",
+			"off-plane ratio", "tilt off vertical deg", "tilt meaningful"]),
+		_row(["---", "---", "---:", "---:", "---:", "---:", "---"])])
 	for element: Dictionary in planarity.elements:
 		lines.append(_row([str(element.window_id), str(element.planarity_class),
 			_num(element.get("rms_out_of_plane_m"), 3), _num(element.get("max_out_of_plane_m"), 3),
 			_num(element.get("out_of_plane_ratio"), 4),
 			_num(element.get("vertical_plane_tilt_deg"), 2), str(element.tilt_is_meaningful)]))
-	lines.append("")
-
 	var shapes: Dictionary = pack.shape_ratios
-	lines.append("## Shape ratios — the numeric silhouette")
-	lines.append("")
-	lines.append(_row(["role window", "height m", "horizontal m", "length m", "h:l",
-		"heading change deg", "entry pitch", "exit pitch", "entry bank", "exit bank"]))
-	lines.append(_row(["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:"]))
+	lines.append_array(["", "## Shape ratios — the numeric silhouette", "",
+		_row(["role window", "height m", "horizontal m", "length m", "h:l",
+			"heading change deg", "entry pitch", "exit pitch", "entry bank", "exit bank"]),
+		_row(["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:"])])
 	for element: Dictionary in shapes.elements:
 		lines.append(_row([str(element.window_id), _num(element.get("height_extent_m"), 1),
 			_num(element.get("horizontal_extent_m"), 1), _num(element.get("track_length_m"), 1),
@@ -844,36 +773,32 @@ static func markdown(pack: Dictionary, reference: Dictionary) -> String:
 static func _reference_lines(reference: Dictionary) -> PackedStringArray:
 	var lines := PackedStringArray(["## Photographic reference overlays", ""])
 	if reference.is_empty():
-		lines.append("**Declared gap: no reference media.** `REF_MEDIA_MANIFEST` was not set, so no")
-		lines.append("real-life photographic reference was compared against these shapes. The")
-		lines.append("numbers above describe the generated geometry only; they do not confirm it")
-		lines.append("resembles anything. Acquire local media with `tools/fetch-reference-media.sh`")
-		lines.append("and point `REF_MEDIA_MANIFEST` at the resulting manifest.")
-		lines.append("")
+		lines.append_array([
+			"**Declared gap: no reference media.** `REF_MEDIA_MANIFEST` was not set, so no",
+			"real-life photographic reference was compared against these shapes. The",
+			"numbers above describe the generated geometry only; they do not confirm it",
+			"resembles anything. Acquire local media with `tools/fetch-reference-media.sh`",
+			"and point `REF_MEDIA_MANIFEST` at the resulting manifest.", ""])
 		return lines
 	if reference.get("status") == "manifest-missing":
-		lines.append("**Declared gap: the reference manifest was not found.**")
-		lines.append("`REF_MEDIA_MANIFEST` pointed at `%s`, which does not exist. No photographic" \
-			% str(reference.get("path", "")))
-		lines.append("reference was compared against these shapes.")
-		lines.append("")
+		lines.append_array(["**Declared gap: the reference manifest was not found.**",
+			"`REF_MEDIA_MANIFEST` pointed at `%s`, which does not exist. No photographic" \
+				% str(reference.get("path", "")),
+			"reference was compared against these shapes.", ""])
 		return lines
 	if reference.get("status") != "ok":
-		lines.append("**Declared gap: the reference manifest was rejected.**")
-		lines.append("")
+		lines.append_array(["**Declared gap: the reference manifest was rejected.**", ""])
 		for error in reference.get("errors", []):
 			lines.append("- %s" % str(error))
 		lines.append("")
 		return lines
-	lines.append("Manifest `%s` (sha256 `%s`): %d entries, %d available." % [
-		str(reference.get("manifest_schema", "")), str(reference.get("manifest_sha256", "")),
-		int(reference.entry_count), int(reference.available_count)])
-	lines.append("")
-	lines.append("Reference media is local, personal-use and never committed; only these")
-	lines.append("landmarks, provenance strings and digests are.")
-	lines.append("")
-	lines.append(_row(["element", "status", "source", "acquisition", "timestamp s", "sha256"]))
-	lines.append(_row(["---", "---", "---", "---", "---:", "---"]))
+	lines.append_array(["Manifest `%s` (sha256 `%s`): %d entries, %d available." % [
+			str(reference.get("manifest_schema", "")), str(reference.get("manifest_sha256", "")),
+			int(reference.entry_count), int(reference.available_count)], "",
+		"Reference media is local, personal-use and never committed; only these",
+		"landmarks, provenance strings and digests are.", "",
+		_row(["element", "status", "source", "acquisition", "timestamp s", "sha256"]),
+		_row(["---", "---", "---", "---", "---:", "---"])])
 	for entry: Dictionary in reference.entries:
 		lines.append(_row([str(entry.element_id), str(entry.status), str(entry.source_id),
 			str(entry.acquisition), _num(entry.get("timestamp_s"), 2),
@@ -904,11 +829,9 @@ static func counterpart_markdown(seeds: Array) -> String:
 	])
 	for entry_value in seeds:
 		var entry: Dictionary = entry_value
-		lines.append("## Seed %d" % int(entry.get("seed", 0)))
-		lines.append("")
+		lines.append_array(["## Seed %d" % int(entry.get("seed", 0)), ""])
 		if entry.get("schema_version") != COUNTERPART_SCHEMA:
-			lines.append("Route unavailable: %s" % str(entry.get("status", "unknown")))
-			lines.append("")
+			lines.append_array(["Route unavailable: %s" % str(entry.get("status", "unknown")), ""])
 			continue
 		var totals: Dictionary = entry.totals
 		var counts := PackedStringArray()
@@ -916,16 +839,14 @@ static func counterpart_markdown(seeds: Array) -> String:
 		keys.sort()
 		for key in keys:
 			counts.append("%s %d" % [str(key), int(totals[key])])
-		lines.append("Totals: %s." % ", ".join(counts))
 		var mapping: Dictionary = entry.mapping
-		lines.append("")
-		lines.append("Mapping: %d compiled windows bridged, %d unmapped, %d material roles without a window." % [
-			int(mapping.mapped_window_count), mapping.unmapped_windows.size(),
-			mapping.material_roles_without_window.size()])
-		lines.append("")
-		lines.append(_row(["role", "axis", "label", "measured g", "target", "band",
-			"status", "normalized miss", "held"]))
-		lines.append(_row(["---", "---", "---", "---:", "---", "---", "---", "---:", "---"]))
+		lines.append_array(["Totals: %s." % ", ".join(counts), "",
+			"Mapping: %d compiled windows bridged, %d unmapped, %d material roles without a window." % [
+				int(mapping.mapped_window_count), mapping.unmapped_windows.size(),
+				mapping.material_roles_without_window.size()], "",
+			_row(["role", "axis", "label", "measured g", "target", "band",
+				"status", "normalized miss", "held"]),
+			_row(["---", "---", "---", "---:", "---", "---", "---", "---:", "---"])])
 		for row: Dictionary in entry.rows:
 			var hold: Variant = row.get("measured_hold")
 			var hold_text := "—"
@@ -936,8 +857,7 @@ static func counterpart_markdown(seeds: Array) -> String:
 				str(row.status), _num(row.get("normalized_miss"), 3), hold_text]))
 		lines.append("")
 		if not entry.evidence_gaps.is_empty():
-			lines.append("### Evidence gaps")
-			lines.append("")
+			lines.append_array(["### Evidence gaps", ""])
 			for gap: Dictionary in entry.evidence_gaps:
 				lines.append("- **%s** — %s" % [str(gap.role_id), str(gap.reason)])
 			lines.append("")
@@ -986,14 +906,11 @@ static func role_windows(route: Dictionary) -> Array:
 		for role_value in gesture.get("role_windows", []):
 			var role: Dictionary = role_value
 			windows.append({
-				"window_id": str(role.get("window_id", "")),
-				"role_id": str(role.get("id", "")),
+				"window_id": str(role.get("window_id", "")), "role_id": str(role.get("id", "")),
 				"story_slot_id": str(gesture.get("story_slot_id", "")),
 				"kind": str(role.get("diagnostic_kind", "")),
-				"occurrence": int(role.get("occurrence", 0)),
-				"first": int(role.get("first", 0)),
-				"last": int(role.get("last", 0)),
-				"gesture_index": gesture_index,
+				"occurrence": int(role.get("occurrence", 0)), "first": int(role.get("first", 0)),
+				"last": int(role.get("last", 0)), "gesture_index": gesture_index,
 			})
 		gesture_index += 1
 	return windows
@@ -1015,9 +932,7 @@ static func _unavailable(route: Dictionary) -> Dictionary:
 
 
 ## Least-squares slope of values against times over an inclusive index range.
-static func _slope(
-	times: PackedFloat32Array, values: PackedFloat32Array, first: int, last: int
-) -> Variant:
+static func _slope(times: PackedFloat32Array, values: PackedFloat32Array, first: int, last: int) -> Variant:
 	var count := last - first + 1
 	if count < 2:
 		return null
@@ -1061,9 +976,7 @@ static func _worst(records: Array, key: String) -> Array:
 	for index in mini(WORST_COUNT, ranked.size()):
 		var record: Dictionary = ranked[index]
 		output.append({
-			"rank": index + 1,
-			"metric": key,
-			"value": float(record[key]),
+			"rank": index + 1, "metric": key, "value": float(record[key]),
 			"window_id": str(record.get("window_id", record.get("after_window_id", ""))),
 			"role_id": str(record.get("role_id", record.get("after_role", ""))),
 		})
@@ -1096,21 +1009,13 @@ static func _symmetric_eigen(matrix: Array) -> Dictionary:
 			var t: float = sign / (absf(theta) + sqrt(theta * theta + 1.0))
 			var c := 1.0 / sqrt(t * t + 1.0)
 			var s := t * c
-			for k in 3:
-				var akp: float = a[k][p]
-				var akq: float = a[k][q]
-				a[k][p] = c * akp - s * akq
-				a[k][q] = s * akp + c * akq
+			_rotate_columns(a, p, q, c, s)
 			for k in 3:
 				var apk: float = a[p][k]
 				var aqk: float = a[q][k]
 				a[p][k] = c * apk - s * aqk
 				a[q][k] = s * apk + c * aqk
-			for k in 3:
-				var vkp: float = v[k][p]
-				var vkq: float = v[k][q]
-				v[k][p] = c * vkp - s * vkq
-				v[k][q] = s * vkp + c * vkq
+			_rotate_columns(v, p, q, c, s)
 	var order := [0, 1, 2]
 	order.sort_custom(func(left: int, right: int) -> bool:
 		if a[left][left] != a[right][right]:
@@ -1134,6 +1039,15 @@ static func _symmetric_eigen(matrix: Array) -> Dictionary:
 			vector = -vector
 		vectors.append(vector)
 	return {"values": values, "vectors": vectors}
+
+
+## One Jacobi rotation applied to columns p and q, in the fixed order the sweep depends on.
+static func _rotate_columns(matrix: Array, p: int, q: int, c: float, s: float) -> void:
+	for k in 3:
+		var kp: float = matrix[k][p]
+		var kq: float = matrix[k][q]
+		matrix[k][p] = c * kp - s * kq
+		matrix[k][q] = s * kp + c * kq
 
 
 static func _plan_heading_deg(tangent: Vector3) -> float:

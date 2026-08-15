@@ -40,9 +40,7 @@ const DOCUMENT_VERSION_FIELD := "ride_config_version"
 const INTENSITY_CHOICES := ["low", "medium", "high"]
 ## low/medium/high name the bottom, middle and top third of a certified range; the pinned value is
 ## the centre of the named third, so no choice ever sits on a range boundary.
-const INTENSITY_FRACTION_LOW := 1.0 / 6.0
-const INTENSITY_FRACTION_MEDIUM := 0.5
-const INTENSITY_FRACTION_HIGH := 5.0 / 6.0
+const INTENSITY_FRACTIONS := {"low": 1.0 / 6.0, "medium": 0.5, "high": 5.0 / 6.0}
 
 ## Which certified draws each legal `slot.intensity` scope pins. `return-height-b` has no `peak_g`
 ## draw of its own on purpose: its peak follows height-a's proportionally, because the
@@ -58,44 +56,26 @@ const INTENSITY_PINNED_KEYS := {
 ## domain, owner, and feasibility phase, exactly as design §3 requires.
 const REGISTRY := [
 	{
-		"key": KEY_PRESET,
-		"type": "string",
-		"unit": "preset-id",
-		"scope": "ride",
-		"scopes": ["ride"],
-		"form": "scalar",
-		"operator": "required equality",
-		"domain": [PRESET_ID],
-		"owner": "RideGenerator",
-		"feasibility_phase": "planning",
+		"key": KEY_PRESET, "type": "string", "unit": "preset-id",
+		"scope": "ride", "scopes": ["ride"], "form": "scalar",
+		"operator": "required equality", "domain": [PRESET_ID],
+		"owner": "RideGenerator", "feasibility_phase": "planning",
 		"notes": "The one shipped preset. A second preset ID enters the domain when a second "
 			+ "preset exists and is gated.",
 	},
 	{
-		"key": KEY_SEED,
-		"type": "int",
-		"unit": "none",
-		"scope": "ride",
-		"scopes": ["ride"],
-		"form": "scalar",
-		"operator": "required equality",
-		"domain": "signed 64-bit integer",
-		"owner": "RidePlanner.streams",
-		"feasibility_phase": "planning",
+		"key": KEY_SEED, "type": "int", "unit": "none",
+		"scope": "ride", "scopes": ["ride"], "form": "scalar",
+		"operator": "required equality", "domain": "signed 64-bit integer",
+		"owner": "RidePlanner.streams", "feasibility_phase": "planning",
 		"notes": "Selects every named decision stream. Certified by the fifteen-seed fleet gate "
 			+ "in smoke.gd, not by a per-value check.",
 	},
 	{
-		"key": KEY_SLOT_INTENSITY,
-		"type": "catalogued enum",
-		"unit": "none",
-		"scope": "story slot",
-		"scopes": INTENSITY_SCOPES,
-		"form": "constraint",
-		"operator": "preferred choice",
-		"domain": INTENSITY_CHOICES,
-		"owner": "RidePlanner.TARGET_DRAWS",
-		"feasibility_phase": "planning",
+		"key": KEY_SLOT_INTENSITY, "type": "catalogued enum", "unit": "none",
+		"scope": "story slot", "scopes": INTENSITY_SCOPES, "form": "constraint",
+		"operator": "preferred choice", "domain": INTENSITY_CHOICES,
+		"owner": "RidePlanner.TARGET_DRAWS", "feasibility_phase": "planning",
 		"notes": "A planning-phase preferred choice: it pins the slot's certified draws at the "
 			+ "centre of the named third of their ranges instead of drawing them. Legal only on "
 			+ "the two return-height slots, the only slots whose ranges are certified at both "
@@ -107,8 +87,7 @@ const REGISTRY := [
 ## This list is data, not prose: it is what a later session reads before proposing a key again.
 const UNREGISTERED := [
 	{
-		"key": "slot.recipe",
-		"design_phase": "planning",
+		"key": "slot.recipe", "design_phase": "planning",
 		"reason": "No slot has a second certified recipe, and the one grammar cell that could "
 			+ "vary was measured shut. All 24 act-one pool permutations were built on "
 			+ "2026-08-15: twelve cannot complete the capability preflight at all, and the two "
@@ -120,8 +99,7 @@ const UNREGISTERED := [
 		"evidence": "commit abaae42",
 	},
 	{
-		"key": "slot.enabled",
-		"design_phase": "planning",
+		"key": "slot.enabled", "design_phase": "planning",
 		"reason": "The grammar declares exactly two optional slots (act-one-airtime, "
 			+ "act-one-wave) and both single-drop variants were built in the same 2026-08-15 "
 			+ "sweep. The airtime-drop variant fails the fleet in the same way as the "
@@ -130,8 +108,7 @@ const UNREGISTERED := [
 		"evidence": "commit abaae42",
 	},
 	{
-		"key": "ride.duration_s",
-		"design_phase": "compilation",
+		"key": "ride.duration_s", "design_phase": "compilation",
 		"reason": "No control authority exists to spend. Across the fifteen-seed fleet the "
 			+ "measured duration spans 157.54-157.84 s — 0.31 s total — because every element is "
 			+ "an authored fixed-duration force profile and the only bounded solve in the ride "
@@ -142,8 +119,7 @@ const UNREGISTERED := [
 		"evidence": "commit 5e0fec4 fleet measurement",
 	},
 	{
-		"key": "ride.peak_speed_mps",
-		"design_phase": "compilation",
+		"key": "ride.peak_speed_mps", "design_phase": "compilation",
 		"reason": "Peak speed is the ride's fixed identity, not a preference. The record launch "
 			+ "is derived, the records are deliberately undrawn, and the fleet holds top speed at "
 			+ "94.554-94.555 m/s. Accepting a target here would either be a no-op or move the "
@@ -152,8 +128,7 @@ const UNREGISTERED := [
 		"evidence": "docs/superpowers/specs/2026-08-15-record-launch-derivation.md",
 	},
 	{
-		"key": "slot.structure_height_m",
-		"design_phase": "compilation",
+		"key": "slot.structure_height_m", "design_phase": "compilation",
 		"reason": "No slot exposes a certifiable height range. The story prefix is one rigid "
 			+ "energy chain: on seed 42 a 0.02 g change in the helical loop moves the native "
 			+ "summit rise 17.2 m, the dive chord 120.5 m and the dive entry 8.84 m/s, against a "
@@ -163,8 +138,7 @@ const UNREGISTERED := [
 		"evidence": "commit 5e0fec4 sensitivity table, quoted in ride_planner.gd",
 	},
 	{
-		"key": "slot.airtime_character",
-		"design_phase": "planning",
+		"key": "slot.airtime_character", "design_phase": "planning",
 		"reason": "The only certified float control is `unload_scale` on the two return-height "
 			+ "slots, and `slot.intensity` already owns it. A separate airtime-character "
 			+ "catalogue would need its own measured choices on its own certified range; none "
@@ -173,8 +147,7 @@ const UNREGISTERED := [
 		"evidence": "RidePlanner.TARGET_DRAWS",
 	},
 	{
-		"key": "sequence.order",
-		"design_phase": "planning",
+		"key": "sequence.order", "design_phase": "planning",
 		"reason": "Reserved by design §3 for a future version and rejected by the version-1 "
 			+ "validator. The act-one permutation sweep independently shows there is nothing "
 			+ "legal to order yet.",
@@ -182,8 +155,7 @@ const UNREGISTERED := [
 		"evidence": "design §3, commit abaae42",
 	},
 	{
-		"key": "sequence.pinned",
-		"design_phase": "planning",
+		"key": "sequence.pinned", "design_phase": "planning",
 		"reason": "A recipe pin map is the document form of `slot.recipe`; it is refused for the "
 			+ "same measured reason.",
 		"blocked_by": "the prefix closure solve tracked as docs/ISSUES.md issue 24",
@@ -209,9 +181,7 @@ static func unregistered() -> Array:
 ## The base layer of the overlay: the preset's own complete document.
 static func preset_base() -> Dictionary:
 	return {
-		DOCUMENT_VERSION_FIELD: VERSION,
-		KEY_PRESET: PRESET_ID,
-		KEY_SEED: PRESET_SEED,
+		DOCUMENT_VERSION_FIELD: VERSION, KEY_PRESET: PRESET_ID, KEY_SEED: PRESET_SEED,
 		"constraints": {BUCKET_REQUIRED: [], BUCKET_PREFERRED: []},
 	}
 
@@ -240,12 +210,11 @@ static func normalize(file_config: Dictionary, cli_overrides: Array = []) -> Dic
 			continue
 		var claim := "%s\t%s" % [record.scope, record.key]
 		if claimed.has(claim):
-			errors.append(_error("ambiguous_constraint",
-				("constraints '%s' and '%s' are both effective for scope '%s' key '%s'; "
-					+ "version 1 rejects two effective IDs for one (scope, key) rather than "
-					+ "guessing which one wins") % [claimed[claim], id, record.scope,
-					record.key],
-				{"scope": record.scope, "key": record.key}))
+			_error(errors, "ambiguous_constraint",
+				("constraints '%s' and '%s' are both effective for scope '%s' key '%s'; " +
+				"version 1 rejects two effective IDs for one (scope, key) rather than " +
+				"guessing which one wins") % [claimed[claim], id, record.scope, record.key],
+				{"scope": record.scope, "key": record.key})
 			continue
 		claimed[claim] = id
 		effective.append(record)
@@ -266,12 +235,8 @@ static func normalize(file_config: Dictionary, cli_overrides: Array = []) -> Dic
 		"sources": sources,
 	}
 	resolved["config_hash"] = config_hash(resolved)
-	return {
-		"ok": errors.is_empty(),
-		"resolved": resolved,
-		"errors": errors,
-		"report": _initial_report(resolved),
-	}
+	return {"ok": errors.is_empty(), "resolved": resolved, "errors": errors,
+		"report": _initial_report(resolved)}
 
 
 ## The canonical hash of a resolved document: SHA-256 over the canonical JSON of its *effective*
@@ -280,20 +245,16 @@ static func normalize(file_config: Dictionary, cli_overrides: Array = []) -> Dic
 static func config_hash(resolved: Dictionary) -> String:
 	var payload := {
 		DOCUMENT_VERSION_FIELD: int(resolved.get(DOCUMENT_VERSION_FIELD, VERSION)),
-		KEY_PRESET: str(resolved.get(KEY_PRESET, "")),
-		KEY_SEED: int(resolved.get(KEY_SEED, 0)),
+		KEY_PRESET: str(resolved.get(KEY_PRESET, "")), KEY_SEED: int(resolved.get(KEY_SEED, 0)),
 		"constraints": {BUCKET_REQUIRED: [], BUCKET_PREFERRED: []},
 	}
 	var constraints: Dictionary = resolved.get("constraints", {})
 	for bucket in [BUCKET_REQUIRED, BUCKET_PREFERRED]:
 		var canonical: Array = []
 		for record: Dictionary in constraints.get(bucket, []):
-			var entry := {"id": str(record.id), "scope": str(record.scope),
-				"key": str(record.key)}
-			for field in _VALUE_FIELDS:
-				if record.has(field):
-					entry[field] = record[field]
-			canonical.append(entry)
+			canonical.append(_with_values(
+				{"id": str(record.id), "scope": str(record.scope), "key": str(record.key)},
+				record))
 		payload.constraints[bucket] = canonical
 	var text := CanonicalDataScript.canonical_json(payload)
 	if text.is_empty():
@@ -319,14 +280,9 @@ static func planner_pins(resolved: Dictionary) -> Array:
 			if band == Vector2.ZERO:
 				continue
 			pins.append({
-				"id": str(record.id),
-				"scope": scope,
-				"role_id": scope,
-				"key": key,
-				"choice": choice,
-				"stream": RidePlannerScript.TARGET_STREAM_PREFIX + scope,
-				"value": lerpf(band.x, band.y, fraction),
-				"range": [band.x, band.y],
+				"id": str(record.id), "scope": scope, "role_id": scope, "key": key,
+				"choice": choice, "stream": RidePlannerScript.TARGET_STREAM_PREFIX + scope,
+				"value": lerpf(band.x, band.y, fraction), "range": [band.x, band.y],
 			})
 	return pins
 
@@ -383,23 +339,17 @@ static func record_achievements(report: Dictionary, draws: Array, pins: Array) -
 			delta = maxf(delta, absf(float(resolved_values[target_key]) - float(pin.value)))
 		entry["achieved_targets"] = achieved
 		if count == 0:
-			entry["status"] = "unresolved"
-			entry["achieved"] = null
-			entry["delta"] = null
-			entry["reason"] = "the preference mapped onto no certified draw"
+			entry.merge({"status": "unresolved", "achieved": null, "delta": null,
+				"reason": "the preference mapped onto no certified draw"}, true)
 			continue
 		if not missing.is_empty() or delta > 1e-9:
-			entry["status"] = "unresolved"
-			entry["achieved"] = null
-			entry["delta"] = delta
-			entry["reason"] = ("planning did not resolve the pinned draws to the requested "
-				+ "values (missing %s, worst delta %.9f)") % [str(missing), delta]
+			entry.merge({"status": "unresolved", "achieved": null, "delta": delta,
+				"reason": ("planning did not resolve the pinned draws to the requested "
+					+ "values (missing %s, worst delta %.9f)") % [str(missing), delta]}, true)
 			continue
-		entry["status"] = "achieved"
-		entry["achieved"] = str(entry.request)
-		entry["delta"] = 0.0
-		entry["reason"] = ("pinned %d certified draw(s) at the centre of the %s third of their "
-			+ "certified ranges") % [count, str(entry.request)]
+		entry.merge({"status": "achieved", "achieved": str(entry.request), "delta": 0.0,
+			"reason": ("pinned %d certified draw(s) at the centre of the %s third of their "
+				+ "certified ranges") % [count, str(entry.request)]}, true)
 	return filled
 
 
@@ -413,14 +363,7 @@ static func certified_range(role_id: String, key: String) -> Vector2:
 
 
 static func intensity_fraction(choice: String) -> float:
-	match choice:
-		"low":
-			return INTENSITY_FRACTION_LOW
-		"medium":
-			return INTENSITY_FRACTION_MEDIUM
-		"high":
-			return INTENSITY_FRACTION_HIGH
-	return NAN
+	return float(INTENSITY_FRACTIONS.get(choice, NAN))
 
 
 ## The flat messages of a structured error array, for logs and test assertions.
@@ -458,11 +401,10 @@ static func _layers(file_config: Dictionary, cli_overrides: Array, errors: Array
 			if document.is_empty():
 				continue
 		else:
-			errors.append(_error("cli_override_type",
-				("CLI override %d is not usable; version 1 accepts a '<key>=<value>' or "
-					+ "'[<id>@]<scope>/<key>=<value>' string, or a partial config dictionary")
-					% index,
-				{"layer": label}))
+			_error(errors, "cli_override_type",
+				("CLI override %d is not usable; version 1 accepts a '<key>=<value>' or " +
+				"'[<id>@]<scope>/<key>=<value>' string, or a partial config dictionary") % index,
+				{"layer": label})
 			continue
 		layers.append({"layer": LAYER_CLI, "label": label, "order": 2 + index,
 			"argument": index, "document": document})
@@ -472,10 +414,9 @@ static func _layers(file_config: Dictionary, cli_overrides: Array, errors: Array
 static func _parse_cli(text: String, label: String, errors: Array) -> Dictionary:
 	var equals := text.find("=")
 	if equals <= 0:
-		errors.append(_error("cli_override_syntax",
-			("CLI override %s ('%s') is not an assignment; version 1 accepts "
-				+ "'<key>=<value>' or '[<id>@]<scope>/<key>=<value>'") % [label, text],
-			{"layer": label}))
+		_error(errors, "cli_override_syntax",
+			("CLI override %s ('%s') is not an assignment; version 1 accepts " +
+			"'<key>=<value>' or '[<id>@]<scope>/<key>=<value>'") % [label, text], {"layer": label})
 		return {}
 	var left := text.substr(0, equals).strip_edges()
 	var right := text.substr(equals + 1).strip_edges()
@@ -485,18 +426,18 @@ static func _parse_cli(text: String, label: String, errors: Array) -> Dictionary
 		id = left.substr(0, at).strip_edges()
 		left = left.substr(at + 1).strip_edges()
 		if id.is_empty():
-			errors.append(_error("cli_override_syntax",
+			_error(errors, "cli_override_syntax",
 				"CLI override %s ('%s') declares an empty constraint ID" % [label, text],
-				{"layer": label}))
+				{"layer": label})
 			return {}
 	var slash := left.rfind("/")
 	if slash < 0:
 		var value: Variant = right
 		if left == KEY_SEED or left == DOCUMENT_VERSION_FIELD:
 			if not right.is_valid_int():
-				errors.append(_error("cli_override_value",
+				_error(errors, "cli_override_value",
 					"CLI override %s ('%s') must assign an integer to '%s'" % [label, text, left],
-					{"layer": label, "key": left}))
+					{"layer": label, "key": left})
 				return {}
 			value = int(right)
 		return {left: value}
@@ -517,15 +458,10 @@ static func _auto_id(scope: String, key: String) -> String:
 	return "auto:%s/%s" % [scope, key]
 
 
+## Required equality reads 'value'; every other operator, and an unregistered key, reads 'choice'.
 static func _value_field(entry: Dictionary) -> String:
-	if entry.is_empty():
-		return "choice"
-	match str(entry.operator):
-		"required equality":
-			return "value"
-		"preferred choice":
-			return "choice"
-	return "choice"
+	return "value" if not entry.is_empty() and str(entry.operator) == "required equality" \
+		else "choice"
 
 
 static func _read_layer(layer: Dictionary, scalars: Dictionary, sources: Dictionary,
@@ -538,24 +474,24 @@ static func _read_layer(layer: Dictionary, scalars: Dictionary, sources: Diction
 		var field := str(field_name)
 		var value: Variant = document[field_name]
 		if value == null:
-			errors.append(_error("null_value",
-				("'%s' is explicitly null in layer %s; version 1 has no reset operator, so an "
-					+ "omitted field inherits the layer below instead") % [field, label],
-				{"layer": label, "key": field}))
+			_error(errors, "null_value",
+				("'%s' is explicitly null in layer %s; version 1 has no reset operator, so an " +
+				"omitted field inherits the layer below instead") % [field, label],
+				{"layer": label, "key": field})
 			continue
 		if field == "sequence":
-			errors.append(_error("reserved_key",
-				("layer %s sets 'sequence'; whole-ride ordering and recipe pins are reserved "
-					+ "for a future version and rejected by the version-1 validator (%s)")
-					% [label, _unregistered_reason("sequence.order")],
-				{"layer": label, "key": "sequence"}))
+			_error(errors, "reserved_key",
+				("layer %s sets 'sequence'; whole-ride ordering and recipe pins are reserved " +
+				"for a future version and rejected by the version-1 validator (%s)") %
+				[label, _unregistered_reason("sequence.order")],
+				{"layer": label, "key": "sequence"})
 			continue
 		if not _DOCUMENT_FIELDS.has(field):
-			errors.append(_error("unknown_key",
-				("layer %s sets unknown key '%s'; version 1 accepts %s and there is no generic "
-					+ "catalog-key escape hatch%s") % [label, field, str(_DOCUMENT_FIELDS),
-					_unregistered_suffix(field)],
-				{"layer": label, "key": field}))
+			_error(errors, "unknown_key",
+				("layer %s sets unknown key '%s'; version 1 accepts %s and there is no generic " +
+				"catalog-key escape hatch%s") %
+				[label, field, str(_DOCUMENT_FIELDS), _unregistered_suffix(field)],
+				{"layer": label, "key": field})
 			continue
 		if field == "constraints":
 			_read_constraints(layer, value, by_id, first_seen, errors)
@@ -569,10 +505,9 @@ static func _read_constraints(layer: Dictionary, value: Variant, by_id: Dictiona
 		first_seen: Array, errors: Array) -> void:
 	var label := str(layer.label)
 	if not value is Dictionary:
-		errors.append(_error("constraints_shape",
-			("layer %s declares 'constraints' as a %s; it must be a dictionary of 'required' "
-				+ "and 'preferred' lists") % [label, type_string(typeof(value))],
-			{"layer": label}))
+		_error(errors, "constraints_shape",
+			("layer %s declares 'constraints' as a %s; it must be a dictionary of 'required' " +
+			"and 'preferred' lists") % [label, type_string(typeof(value))], {"layer": label})
 		return
 	var buckets: Array = (value as Dictionary).keys()
 	buckets.sort()
@@ -580,47 +515,42 @@ static func _read_constraints(layer: Dictionary, value: Variant, by_id: Dictiona
 	for bucket_name: Variant in buckets:
 		var bucket := str(bucket_name)
 		if bucket != BUCKET_REQUIRED and bucket != BUCKET_PREFERRED:
-			errors.append(_error("unknown_key",
-				("layer %s declares constraint bucket '%s'; version 1 has only 'required' and "
-					+ "'preferred'") % [label, bucket],
-				{"layer": label}))
+			_error(errors, "unknown_key",
+				("layer %s declares constraint bucket '%s'; version 1 has only 'required' and " +
+				"'preferred'") % [label, bucket], {"layer": label})
 			continue
 		var entries: Variant = (value as Dictionary)[bucket_name]
 		if not entries is Array:
-			errors.append(_error("constraints_shape",
-				"layer %s declares constraints.%s as a %s; it must be a list"
-					% [label, bucket, type_string(typeof(entries))],
-				{"layer": label}))
+			_error(errors, "constraints_shape",
+				"layer %s declares constraints.%s as a %s; it must be a list" %
+				[label, bucket, type_string(typeof(entries))], {"layer": label})
 			continue
 		for position in (entries as Array).size():
 			var raw: Variant = (entries as Array)[position]
 			if not raw is Dictionary:
-				errors.append(_error("constraints_shape",
-					"layer %s declares constraints.%s[%d] as a %s; it must be a record"
-						% [label, bucket, position, type_string(typeof(raw))],
-					{"layer": label}))
+				_error(errors, "constraints_shape",
+					"layer %s declares constraints.%s[%d] as a %s; it must be a record" %
+					[label, bucket, position, type_string(typeof(raw))], {"layer": label})
 				continue
 			var record := _read_constraint(layer, bucket, position, raw, errors)
 			if record.is_empty():
 				continue
 			var id := str(record.id)
 			if seen_in_layer.has(id):
-				errors.append(_error("duplicate_constraint_id",
-					("layer %s declares constraint ID '%s' twice; duplicate IDs inside one "
-						+ "layer are errors, not merges") % [label, id],
-					{"layer": label, "id": id}))
+				_error(errors, "duplicate_constraint_id",
+					("layer %s declares constraint ID '%s' twice; duplicate IDs inside one " +
+					"layer are errors, not merges") % [label, id], {"layer": label, "id": id})
 				continue
 			seen_in_layer[id] = true
 			if by_id.has(id):
 				var prior: Dictionary = by_id[id]
 				if str(prior.scope) != str(record.scope) or str(prior.key) != str(record.key):
-					errors.append(_error("constraint_id_rebound",
-						("layer %s reuses constraint ID '%s' for (scope '%s', key '%s') after "
-							+ "layer %s used it for (scope '%s', key '%s'); a later layer "
-							+ "replaces an earlier record only when scope and key are unchanged")
-							% [label, id, record.scope, record.key, prior.source_label,
-							prior.scope, prior.key],
-						{"layer": label, "id": id}))
+					_error(errors, "constraint_id_rebound",
+						("layer %s reuses constraint ID '%s' for (scope '%s', key '%s') after " +
+						"layer %s used it for (scope '%s', key '%s'); a later layer " +
+						"replaces an earlier record only when scope and key are unchanged") %
+						[label, id, record.scope, record.key, prior.source_label, prior.scope, prior.key],
+						{"layer": label, "id": id})
 					continue
 			else:
 				first_seen.append(id)
@@ -636,48 +566,37 @@ static func _read_constraint(layer: Dictionary, bucket: String, position: int,
 	for field_name: Variant in fields:
 		var field := str(field_name)
 		if not _CONSTRAINT_FIELDS.has(field):
-			errors.append(_error("unknown_key",
-				"%s declares unknown field '%s'; a version-1 constraint carries %s"
-					% [where, field, str(_CONSTRAINT_FIELDS)],
-				{"layer": label}))
+			_error(errors, "unknown_key",
+				"%s declares unknown field '%s'; a version-1 constraint carries %s" %
+				[where, field, str(_CONSTRAINT_FIELDS)], {"layer": label})
 			return {}
 		if raw[field_name] == null:
-			errors.append(_error("null_value",
+			_error(errors, "null_value",
 				"%s sets '%s' to null; explicit null is invalid in version 1" % [where, field],
-				{"layer": label}))
+				{"layer": label})
 			return {}
 	if not raw.has("scope") or not raw.scope is String or str(raw.scope).is_empty():
-		errors.append(_error("constraints_shape",
-			"%s declares no scope; every constraint names the story slot or 'ride' it binds to"
-				% where, {"layer": label}))
+		_error(errors, "constraints_shape",
+			"%s declares no scope; every constraint names the story slot or 'ride' it binds to" %
+			where, {"layer": label})
 		return {}
 	if not raw.has("key") or not raw.key is String or str(raw.key).is_empty():
-		errors.append(_error("constraints_shape",
-			"%s declares no key" % where, {"layer": label}))
+		_error(errors, "constraints_shape", "%s declares no key" % where, {"layer": label})
 		return {}
 	var scope := str(raw.scope)
 	var key := str(raw.key)
 	var id := str(raw.get("id", _auto_id(scope, key)))
 	if id.is_empty():
-		errors.append(_error("constraints_shape",
-			"%s declares an empty constraint ID" % where, {"layer": label}))
+		_error(errors, "constraints_shape", "%s declares an empty constraint ID" % where,
+			{"layer": label})
 		return {}
 	var record := {
-		"id": id,
-		"scope": scope,
-		"key": key,
-		"bucket": bucket,
-		"source_layer": str(layer.layer),
-		"source_label": label,
-		"source_order": int(layer.order),
-		"source_argument": int(layer.argument),
-		"source_position": position,
-		"where": where,
+		"id": id, "scope": scope, "key": key, "bucket": bucket,
+		"source_layer": str(layer.layer), "source_label": label,
+		"source_order": int(layer.order), "source_argument": int(layer.argument),
+		"source_position": position, "where": where,
 	}
-	for field in _VALUE_FIELDS:
-		if raw.has(field):
-			record[field] = raw[field]
-	return record
+	return _with_values(record, raw)
 
 
 # -- validation -----------------------------------------------------------------------------
@@ -685,21 +604,21 @@ static func _read_constraint(layer: Dictionary, bucket: String, position: int,
 static func _validate_scalars(scalars: Dictionary, errors: Array) -> void:
 	var version: Variant = scalars.get(DOCUMENT_VERSION_FIELD, VERSION)
 	if not _is_integer(version) or int(version) != VERSION:
-		errors.append(_error("infeasible_value",
-			"ride_config_version is %s; this build speaks version %d only"
-				% [str(version), VERSION], {"key": DOCUMENT_VERSION_FIELD}))
+		_error(errors, "infeasible_value",
+			"ride_config_version is %s; this build speaks version %d only" %
+			[str(version), VERSION], {"key": DOCUMENT_VERSION_FIELD})
 	var preset: Variant = scalars.get(KEY_PRESET, PRESET_ID)
 	if not preset is String or str(preset) != PRESET_ID:
-		errors.append(_error("infeasible_value",
-			("preset '%s' is not available at scope 'ride'; the catalogued domain is %s "
-				+ "(conflict: only one preset is shipped and gated)")
-				% [str(preset), str([PRESET_ID])], {"key": KEY_PRESET, "scope": "ride"}))
+		_error(errors, "infeasible_value",
+			("preset '%s' is not available at scope 'ride'; the catalogued domain is %s " +
+			"(conflict: only one preset is shipped and gated)") % [str(preset), str([PRESET_ID])],
+			{"key": KEY_PRESET, "scope": "ride"})
 	var seed_value: Variant = scalars.get(KEY_SEED, PRESET_SEED)
 	if not _is_integer(seed_value):
-		errors.append(_error("infeasible_value",
-			("seed '%s' is not an integer at scope 'ride'; the domain is a signed 64-bit "
-				+ "integer (conflict: the seed selects every named decision stream and cannot "
-				+ "be fractional)") % str(seed_value), {"key": KEY_SEED, "scope": "ride"}))
+		_error(errors, "infeasible_value",
+			("seed '%s' is not an integer at scope 'ride'; the domain is a signed 64-bit " +
+			"integer (conflict: the seed selects every named decision stream and cannot " +
+			"be fractional)") % str(seed_value), {"key": KEY_SEED, "scope": "ride"})
 	else:
 		scalars[KEY_SEED] = int(seed_value)
 
@@ -710,55 +629,44 @@ static func _validate_constraint(record: Dictionary, errors: Array) -> bool:
 	var where := str(record.where)
 	var entry := registry_entry(key)
 	if entry.is_empty():
-		errors.append(_error("unknown_key",
-			"%s constrains unknown key '%s'; version 1 registers %s%s"
-				% [where, key, str(_registered_keys()), _unregistered_suffix(key)],
-			{"key": key, "scope": scope}))
-		return false
+		return _error(errors, "unknown_key",
+			"%s constrains unknown key '%s'; version 1 registers %s%s" %
+			[where, key, str(_registered_keys()), _unregistered_suffix(key)],
+			{"key": key, "scope": scope})
 	if str(entry.form) != "constraint":
-		errors.append(_error("unknown_key",
-			("%s constrains '%s', which is a scalar document field rather than a constraint "
-				+ "key; set it as '%s: <value>' instead") % [where, key, key],
-			{"key": key, "scope": scope}))
-		return false
+		return _error(errors, "unknown_key",
+			("%s constrains '%s', which is a scalar document field rather than a constraint " +
+			"key; set it as '%s: <value>' instead") % [where, key, key],
+			{"key": key, "scope": scope})
 	var operator := str(entry.operator)
 	var expected_bucket := BUCKET_REQUIRED if operator == "required equality" \
 		else BUCKET_PREFERRED
 	if str(record.bucket) != expected_bucket:
-		errors.append(_error("operator_mismatch",
-			("%s declares '%s' as a %s constraint; the registry declares operator '%s', so it "
-				+ "belongs in constraints.%s") % [where, key, record.bucket, operator,
-				expected_bucket],
-			{"key": key, "scope": scope}))
-		return false
+		return _error(errors, "operator_mismatch",
+			("%s declares '%s' as a %s constraint; the registry declares operator '%s', so it " +
+			"belongs in constraints.%s") % [where, key, record.bucket, operator, expected_bucket],
+			{"key": key, "scope": scope})
 	if not _slot_exists(scope):
-		errors.append(_error("unknown_slot",
-			("%s names slot '%s', which the %s grammar does not author; the legal scopes for "
-				+ "'%s' are %s") % [where, scope, PRESET_ID, key, str(entry.scopes)],
-			{"key": key, "scope": scope}))
-		return false
+		return _error(errors, "unknown_slot",
+			("%s names slot '%s', which the %s grammar does not author; the legal scopes for " +
+			"'%s' are %s") % [where, scope, PRESET_ID, key, str(entry.scopes)],
+			{"key": key, "scope": scope})
 	if not (entry.scopes as Array).has(scope):
-		errors.append(_error("scope_not_legal",
-			("%s binds '%s' to slot '%s', which is not a legal scope for that key; the legal "
-				+ "scopes are %s (conflict: no other slot has a draw range certified at both "
-				+ "extremes)") % [where, key, scope, str(entry.scopes)],
-			{"key": key, "scope": scope}))
-		return false
+		return _error(errors, "scope_not_legal",
+			("%s binds '%s' to slot '%s', which is not a legal scope for that key; the legal " +
+			"scopes are %s (conflict: no other slot has a draw range certified at both " +
+			"extremes)") % [where, key, scope, str(entry.scopes)], {"key": key, "scope": scope})
 	var field := _value_field(entry)
 	for other in _VALUE_FIELDS:
 		if other != field and record.has(other):
-			errors.append(_error("operator_mismatch",
-				("%s supplies '%s' for key '%s'; its registered operator is '%s', which reads "
-					+ "'%s' only (no version-1 key takes a target/tolerance pair)")
-					% [where, other, key, operator, field],
-				{"key": key, "scope": scope}))
-			return false
+			return _error(errors, "operator_mismatch",
+				("%s supplies '%s' for key '%s'; its registered operator is '%s', which reads " +
+				"'%s' only (no version-1 key takes a target/tolerance pair)") %
+				[where, other, key, operator, field], {"key": key, "scope": scope})
 	if not record.has(field):
-		errors.append(_error("operator_mismatch",
-			"%s supplies no '%s' for key '%s' (registered operator '%s')"
-				% [where, field, key, operator],
-			{"key": key, "scope": scope}))
-		return false
+		return _error(errors, "operator_mismatch",
+			"%s supplies no '%s' for key '%s' (registered operator '%s')" %
+			[where, field, key, operator], {"key": key, "scope": scope})
 	if key == KEY_SLOT_INTENSITY:
 		return _validate_intensity(record, entry, errors)
 	return true
@@ -769,14 +677,12 @@ static func _validate_intensity(record: Dictionary, entry: Dictionary, errors: A
 	var choice: Variant = record.choice
 	if choice is String and (entry.domain as Array).has(str(choice)):
 		return true
-	errors.append(_error("infeasible_value",
-		("%s requests intensity '%s' at scope '%s', which is not catalogued; the catalogued "
-			+ "choices are %s and that scope's conservative capability is %s "
-			+ "(conflict: an uncatalogued choice has no certified mapping onto those ranges)")
-			% [str(record.where), str(choice), scope, str(entry.domain),
-			_capability_text(scope)],
-		{"key": KEY_SLOT_INTENSITY, "scope": scope, "capability": _capability(scope)}))
-	return false
+	return _error(errors, "infeasible_value",
+		("%s requests intensity '%s' at scope '%s', which is not catalogued; the catalogued " +
+		"choices are %s and that scope's conservative capability is %s " +
+		"(conflict: an uncatalogued choice has no certified mapping onto those ranges)") %
+		[str(record.where), str(choice), scope, str(entry.domain), _capability_text(scope)],
+		{"key": KEY_SLOT_INTENSITY, "scope": scope, "capability": _capability(scope)})
 
 
 static func _capability(scope: String) -> Array:
@@ -837,15 +743,21 @@ static func _precedence_before(left: Dictionary, right: Dictionary) -> bool:
 
 
 static func _public_constraint(record: Dictionary) -> Dictionary:
-	var public := {"id": str(record.id), "scope": str(record.scope), "key": str(record.key)}
-	for field in _VALUE_FIELDS:
-		if record.has(field):
-			public[field] = record[field]
-	public["source_layer"] = str(record.source_layer)
-	public["source_label"] = str(record.source_label)
-	public["source_argument"] = int(record.source_argument)
-	public["source_position"] = int(record.source_position)
+	var public := _with_values(
+		{"id": str(record.id), "scope": str(record.scope), "key": str(record.key)}, record)
+	public.merge({"source_layer": str(record.source_layer),
+		"source_label": str(record.source_label),
+		"source_argument": int(record.source_argument),
+		"source_position": int(record.source_position)}, true)
 	return public
+
+
+## Copy whichever operator value fields the source carries, in declared order.
+static func _with_values(target: Dictionary, source: Dictionary) -> Dictionary:
+	for field in _VALUE_FIELDS:
+		if source.has(field):
+			target[field] = source[field]
+	return target
 
 
 static func _initial_report(resolved: Dictionary) -> Dictionary:
@@ -853,20 +765,14 @@ static func _initial_report(resolved: Dictionary) -> Dictionary:
 	var constraints: Dictionary = resolved.get("constraints", {})
 	for record: Dictionary in constraints.get(BUCKET_PREFERRED, []):
 		preferences.append({
-			"id": str(record.id),
-			"scope": str(record.scope),
-			"key": str(record.key),
+			"id": str(record.id), "scope": str(record.scope), "key": str(record.key),
 			"request": record.get("choice", record.get("target")),
-			"achieved": null,
-			"delta": null,
-			"status": "pending",
-			"reason": "achieved value is filled after planning",
-			"achieved_targets": {},
+			"achieved": null, "delta": null, "status": "pending",
+			"reason": "achieved value is filled after planning", "achieved_targets": {},
 		})
 	return {
 		"config_hash": str(resolved.get("config_hash", "")),
-		"preset": str(resolved.get(KEY_PRESET, "")),
-		"seed": int(resolved.get(KEY_SEED, 0)),
+		"preset": str(resolved.get(KEY_PRESET, "")), "seed": int(resolved.get(KEY_SEED, 0)),
 		"required": constraints.get(BUCKET_REQUIRED, []).duplicate(true),
 		"preferences": preferences,
 	}
@@ -882,7 +788,9 @@ static func _is_integer(value: Variant) -> bool:
 	return value is float and is_finite(float(value)) and float(value) == floor(float(value))
 
 
-static func _error(code: String, message: String, extra: Dictionary = {}) -> Dictionary:
+## Append one structured error and report the failure, so a validator reads `return _error(...)`.
+static func _error(errors: Array, code: String, message: String, extra: Dictionary = {}) -> bool:
 	var record := {"code": code, "message": message}
 	record.merge(extra, true)
-	return record
+	errors.append(record)
+	return false

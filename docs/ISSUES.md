@@ -58,6 +58,18 @@ that costs the most.
 Issue 24 remains the strongest candidate for the single root cause behind 20, 23 and much of
 15. If one thing is picked up next, pick the prefix closure solve.
 
+**Progress, 2026-08-15 (stages 1–3 landed):** the prefix closure solve is in production.
+`_plan` runs preflight → terrain-derived closure target → one bounded four-control solve →
+closed-form placement; the grid search is deleted; the accepted controls thread into
+`compile()` and are verified off the built spans. Fleet-wide gated margins (worst seed):
+dive-entry edge +6.13 m, apron fraction +0.062, summit AGL +2.90 m, record exit +0.79 m/s,
+with the solve converging in 1–6 of 31 allowed evaluations on all fifteen seeds. One honest
+narrowing recorded: the entry aim band is the 40% interior of a band already inset 3 m, so
+terrain the old grid search would have placed can now refuse with a structured error — the
+refusal paths are unreached on the fleet, not unreachable in principle; stage 4's
+refusal-derived tests exercise them. Stage 4 (the three refusals as passing tests) and
+stage 5 (spending the margin on 22, 20's opener tranche, and the act-one draws) remain.
+
 ### Decisions — 2026-08-15 review session
 
 Recorded user decisions from the full-codebase review (they resolve the "decide deliberately"

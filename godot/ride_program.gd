@@ -738,75 +738,141 @@ static func _return_spans(
 	# draw box the seven-control solve cannot close from its fixed seed (measured 2026-08-15:
 	# every such corner exhausts the 220-evaluation budget while every proportional pair lands).
 	var height_b_peak_g := RETURN_HEIGHT_B_PEAK_G * height_a_peak_g / RETURN_HEIGHT_A_PEAK_G
-	# Drawn per seed: how far the two overbanked transfers are biased apart, which is what sets
-	# how much heading the loaded arc spends before the counter-banked sweep unwinds it.
+	# Drawn per seed: how far the counter-banked transfer is biased against the loaded arc, which
+	# is what sets how much heading the sweep unwinds. The roll through the transfer is now one
+	# continuous motion (issue 20), so the bias lands on where that motion ends rather than on the
+	# intermediate bank angles it used to stop at.
 	var transfer_bank_bias_rad := RidePlanner.target(
 		targets, "return-turn-a", "transfer_bank_bias_rad", RETURN_TRANSFER_BANK_BIAS_RAD)
 	var transfer_bank_rad := deg_to_rad(37.5)
-	var first_transfer_bank_rad := hand * (transfer_bank_rad + transfer_bank_bias_rad)
 	var counter_transfer_bank_rad := -hand * (transfer_bank_rad - transfer_bank_bias_rad)
-	var transfer_mid_bank_rad := lerpf(
-		first_transfer_bank_rad, counter_transfer_bank_rad, 0.6 / 1.6)
 	var counter_transfer_normal := 1.0 / cos(counter_transfer_bank_rad)
 	var turn_a_normal := 1.0 / cos(turn_a_bank_rad)
 	var turn_b_normal := 1.0 / cos(turn_b_bank_rad)
-	var turn_a_entry_s := 0.75
-	var turn_a_load_s := 0.65
 	var turn_a_bank_rad_signed := hand * turn_a_bank_rad
-	# The strongly banked turn-a cannot be reached in one compact pulse inside the roll-rate
-	# envelope, so the roll-in is split at the duration ratio that equalises both stages.
-	var turn_a_entry_mid_rad := turn_a_bank_rad_signed \
-		* (turn_a_entry_s / (turn_a_entry_s + turn_a_load_s))
-	var turn_a_entry_mid_normal := 1.0 / cos(turn_a_entry_mid_rad)
-	var turn_a_roll := (turn_a_entry_mid_rad - initial_bank_rad) \
-		/ (turn_a_entry_s * COMPACT_PULSE_AREA)
 	var turn_b_bank_rad_signed := -hand * turn_b_bank_rad
-	var turn_b_entry_mid_rad := turn_b_bank_rad_signed * (0.75 / 1.55)
-	var turn_b_exit_mid_rad := turn_b_bank_rad_signed * 0.5
-	var turn_b_entry_mid_normal := 1.0 / cos(turn_b_entry_mid_rad)
-	var turn_b_exit_mid_normal := 1.0 / cos(turn_b_exit_mid_rad)
-	return [
-		Motion.span("raceway/turn-a/entry", turn_a_entry_s, "moving",
-			Motion.quintic(1.0, turn_a_entry_mid_normal), Motion.constant(0.0),
-			Motion.constant(0.0), Motion.compact_pulse(turn_a_roll)),
-		_return_bank_span("raceway/turn-a/load", turn_a_load_s,
-			turn_a_entry_mid_rad, turn_a_bank_rad_signed),
-		_return_span("raceway/turn-a/core", float(v[1]), turn_a_normal, turn_a_normal),
-		_return_bank_span("raceway/turn-a/exit", 0.45,
-			turn_a_bank_rad_signed, first_transfer_bank_rad),
-		_return_bank_span("raceway/turn-a/transfer-bank", 0.6,
-			first_transfer_bank_rad, transfer_mid_bank_rad),
-		_return_bank_span("raceway/turn-a/transfer-cross", 1.0,
-			transfer_mid_bank_rad, counter_transfer_bank_rad),
-		# The counter-banked sweep is what lets the loaded arc stay short: it spends the
-		# role's remaining distance while unwinding heading instead of adding to it.
-		_return_span("raceway/turn-a/counter-sweep", 1.0,
-			counter_transfer_normal, counter_transfer_normal),
-		_return_bank_span("raceway/turn-a/transfer-unbank", 0.7,
-			counter_transfer_bank_rad, 0.0),
+	# Every bank change on the return is one continuous roll, not one saturated pulse per span
+	# with flat either side (issue 20). Both return turns lay over through a ramped plateau that
+	# spans the whole transition, so the peak rate is roughly half what the burst authoring spent
+	# and the rider never feels the roll stop and restart inside a transition.
+	var turn_a_in_s := [0.85, 0.75]
+	var turn_a_in := _roll_ramp(turn_a_in_s, initial_bank_rad, turn_a_bank_rad_signed)
+	# The transfer rolls from the loaded arc all the way through level to the counter bank as one
+	# motion. The drawn bias still sets where that motion ends; the intermediate waypoints it used
+	# to stop at are now where the shared rate happens to stand.
+	var turn_a_out_s := [0.50, 0.60, 0.95]
+	var turn_a_out := _roll_ramp(
+		turn_a_out_s, turn_a_bank_rad_signed, counter_transfer_bank_rad)
+	var turn_a_unbank_s := [1.00]
+	var turn_a_unbank := _roll_ramp(turn_a_unbank_s, counter_transfer_bank_rad, 0.0)
+	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
+	# of it already carried half the bank change, so blending the two halves into one roll is what
+	# the real rides do through a transition.
+	var turn_b_in_s := [0.70, 0.85]
+	var turn_b_in := _roll_ramp(turn_b_in_s, 0.0, turn_b_bank_rad_signed)
+	var turn_b_out_s := [0.85, 0.75]
+	var turn_b_out := _roll_ramp(turn_b_out_s, turn_b_bank_rad_signed, 0.0)
+	var spans := _roll_bank_spans(
+		["raceway/turn-a/entry", "raceway/turn-a/load"], turn_a_in_s, turn_a_in, 1.0)
+	spans.append(_return_span("raceway/turn-a/core", float(v[1]), turn_a_normal, turn_a_normal))
+	spans.append_array(_roll_bank_spans(
+		["raceway/turn-a/exit", "raceway/turn-a/transfer-bank", "raceway/turn-a/transfer-cross"],
+		turn_a_out_s, turn_a_out))
+	# The counter-banked sweep is what lets the loaded arc stay short: it spends the
+	# role's remaining distance while unwinding heading instead of adding to it. It is held
+	# briefly now, because the transfer either side of it rolls for far longer than it used to.
+	spans.append(_return_span("raceway/turn-a/counter-sweep", 0.50,
+		counter_transfer_normal, counter_transfer_normal))
+	spans.append_array(_roll_bank_spans(
+		["raceway/turn-a/transfer-unbank"], turn_a_unbank_s, turn_a_unbank))
+	spans.append_array([
 		_return_span("raceway/height-a/pullup", 0.75, 1.0, height_a_peak_g),
 		_return_span("raceway/height-a/unload", 1.05, height_a_peak_g, height_a_airtime_g),
 		_return_span("raceway/height-a/airtime", 0.75, height_a_airtime_g,
 			height_a_airtime_g),
 		_return_span("raceway/height-a/recovery", float(v[2]), height_a_airtime_g,
 			height_a_peak_g),
-		_return_span("raceway/height-a/release", 0.75, height_a_peak_g,
-			turn_b_entry_mid_normal,
-			turn_b_entry_mid_rad / (0.75 * COMPACT_PULSE_AREA)),
-		_return_bank_span("raceway/turn-b/entry", 0.8,
-			turn_b_entry_mid_rad, turn_b_bank_rad_signed),
-		_return_span("raceway/turn-b/core", float(v[4]), turn_b_normal, turn_b_normal),
-		_return_bank_span("raceway/turn-b/exit", 0.8,
-			turn_b_bank_rad_signed, turn_b_exit_mid_rad),
-		_return_span("raceway/height-b/pullup", 0.8, turn_b_exit_mid_normal, height_b_peak_g,
-			-turn_b_exit_mid_rad / (0.8 * COMPACT_PULSE_AREA)),
+	])
+	spans.append_array(_roll_bank_spans(
+		["raceway/height-a/release", "raceway/turn-b/entry"], turn_b_in_s, turn_b_in,
+		height_a_peak_g))
+	spans.append(_return_span("raceway/turn-b/core", float(v[4]), turn_b_normal, turn_b_normal))
+	spans.append_array(_roll_bank_spans(
+		["raceway/turn-b/exit", "raceway/height-b/pullup"], turn_b_out_s, turn_b_out,
+		NAN, height_b_peak_g))
+	# The second height beat pays for the longer turn-b roll out of its own ramps, so the return's
+	# authored time is unchanged overall and the bounded solve still closes from its fixed seed.
+	spans.append_array([
 		_return_span("raceway/height-b/unload", 1.2, height_b_peak_g, height_b_airtime_g),
 		_return_span("raceway/height-b/airtime", float(v[5]), height_b_airtime_g,
 			height_b_airtime_g),
 		_return_span("raceway/height-b/recovery", float(v[6]), height_b_airtime_g,
 			height_b_peak_g),
 		_return_span("raceway/height-b/release", 0.8, height_b_peak_g, 1.0),
-	]
+	])
+	return spans
+
+
+## One continuous roll spread across consecutive spans: the rate ramps up, holds, and ramps back
+## down as a single motion, so the bank arrives without the roll ever returning to zero between
+## the spans that deliver it. Issue 20: authoring one self-contained pulse per span is what
+## produced the roll -> flat -> roll stepping, and a compact pulse pays a 1.5x peak rate for the
+## same bank that a ramped plateau delivers gently. The bank standing at every span boundary comes
+## back with the profiles so the caller can author the matching sec(bank) load.
+static func _roll_ramp(durations: Array, from_bank_rad: float, to_bank_rad: float) -> Dictionary:
+	var count := durations.size()
+	assert(count >= 1, "a roll ramp needs at least one span")
+	var weight := 0.0
+	for index in count:
+		var duration := float(durations[index])
+		weight += duration if index > 0 and index < count - 1 else 0.5 * duration
+	if count == 1:
+		# A single span cannot ramp and return, so the plateau pulse carries it: its flat centre
+		# is the same held roll rate, at two thirds of the compact pulse's peak.
+		weight = float(durations[0]) * Motion.PLATEAU_PULSE_AREA
+	var rate := (to_bank_rad - from_bank_rad) / weight
+	var profiles := []
+	var banks := [from_bank_rad]
+	for index in count:
+		var duration := float(durations[index])
+		var gained := rate * duration
+		if count == 1:
+			profiles.append(Motion.plateau_pulse(rate))
+			gained = to_bank_rad - from_bank_rad
+		elif index == 0:
+			profiles.append(Motion.quintic(0.0, rate))
+			gained = 0.5 * rate * duration
+		elif index == count - 1:
+			profiles.append(Motion.quintic(rate, 0.0))
+			gained = 0.5 * rate * duration
+		else:
+			profiles.append(Motion.constant(rate))
+		banks.append(float(banks[-1]) + gained)
+	banks[count] = to_bank_rad
+	return {"roll": profiles, "banks": banks, "rate_rad_s": rate}
+
+
+## The spans of one continuous roll: the shared roll motion, plus the sec(bank) normal ramp each
+## span needs to hold its own share of the bank change level. `entry_normal`/`exit_normal` override
+## the first and last loads where the chain has to meet a neighbour that is not a level bank.
+static func _roll_bank_spans(
+	ids: Array, durations: Array, ramp: Dictionary, entry_normal: float = NAN,
+	exit_normal: float = NAN
+) -> Array:
+	var banks: Array = ramp.banks
+	var spans := []
+	for index in ids.size():
+		var from_normal := 1.0 / cos(float(banks[index]))
+		var to_normal := 1.0 / cos(float(banks[index + 1]))
+		if index == 0 and is_finite(entry_normal):
+			from_normal = entry_normal
+		if index == ids.size() - 1 and is_finite(exit_normal):
+			to_normal = exit_normal
+		var normal := Motion.constant(from_normal) if is_equal_approx(from_normal, to_normal) \
+			else Motion.quintic(from_normal, to_normal)
+		spans.append(Motion.span(str(ids[index]), float(durations[index]), "moving", normal,
+			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index]))
+	return spans
 
 
 static func _return_span(id: String, duration_s: float, from_g: float, to_g: float,
@@ -816,16 +882,6 @@ static func _return_span(id: String, duration_s: float, from_g: float, to_g: flo
 	var roll := Motion.constant(0.0) if absf(roll_peak_rad_s) < 0.000001 else Motion.compact_pulse(roll_peak_rad_s)
 	return Motion.span(id, duration_s, "moving", normal, Motion.constant(0.0),
 		Motion.constant(0.0), roll)
-
-
-static func _return_bank_span(
-	id: String, duration_s: float, from_bank_rad: float, to_bank_rad: float
-) -> Dictionary:
-	var roll_amplitude := (to_bank_rad - from_bank_rad) \
-		/ (duration_s * COMPACT_PULSE_AREA)
-	return Motion.span(id, duration_s, "moving",
-		Motion.bank_balance(from_bank_rad, to_bank_rad), Motion.constant(0.0),
-		Motion.constant(0.0), Motion.compact_pulse(roll_amplitude))
 
 
 static func _solve_return(

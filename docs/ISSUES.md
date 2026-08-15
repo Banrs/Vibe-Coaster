@@ -246,25 +246,33 @@ below); these seven are **not** covered by the audit's traceability record.
 ## App
 
 17. Loading time.
-    **Addressed, 2026-08-15 (viewer):** generation and analysis now run on a worker thread
-    with a "Generating seed N…" message, so the window stays responsive through the ~11 s
-    build; the world rebuild lands on the main thread when the route arrives. Raw generation
-    time itself is unchanged (that budget lives with issue 19's measurement). Awaiting
-    Daniel's verdict.
+    **Addressed and review-approved, 2026-08-15 (viewer):** generation and analysis run on a
+    worker thread; the ride already on screen keeps playing under a "Generating seed N…"
+    HUD line until the new route validates, then the world swaps atomically — a rejected
+    route keeps the old ride and shows a persistent ROUTE INVALID banner. Closing the window
+    mid-build says "Finishing generation…" and quits when the build lands instead of
+    freezing silently. Raw generation time itself is unchanged (issue 19's measurement).
+    Awaiting Daniel's verdict.
 18. Camera/HUD issues.
     **Scoped by Daniel, first pass landed 2026-08-15, code review found real defects — fix
     in flight.** First pass: POV look-ahead (0.47–1.5 s depending on speed, 8–45 m clamp),
     speed shake, nonlinear FOV ramp; HUD dropped envelope-usage %, bank°, roll°/s and
     elapsed-average, humanized lateral/longitudinal as L/R and accel/brake, added progress
     (clock + km), current → next element, and peak-so-far stats. The opus review then
-    measured: the shake frequencies (23.7–45 Hz) sit at/above 60 fps Nyquist and alias into
-    up to 7.9 cm of per-frame jitter keyed to playback rate — a strobe, not a rumble — and
-    the threaded loading change (17) left the CI viewer step running 0 of 120 live frames,
-    so none of the new camera/HUD code is exercised by any gate. Fixes queued on an opus
-    implementer: re-tune shake to ~8–12 Hz on a wall-clock phase, atomic world swap (old
-    ride keeps playing under a "Generating…" line), peak/min-g so-far seeded from samples
-    and reset on row switch, FOV capped with keep_aspect pinned, and the camera/HUD blocks
-    extracted as statics gated in smoke plus a CI step that can actually fail.
+    measured two real defects — the shake frequencies (23.7–45 Hz) aliased at 60 fps Nyquist
+    into up to 7.9 cm of per-frame jitter, and the threaded loader (17) left the CI viewer
+    step running 0 of 120 live frames — and the fix round landed and was re-review-approved
+    the same day: shake re-tuned to 8.2–11.6 Hz on a wall-clock phase in the camera's own
+    basis, measuring 4.41 mm of eye travel per 60 fps frame at top speed; FOV expressed as
+    106.5–123.8° horizontal under KEEP_WIDTH (74–93° vertical at 16:9, ultrawide cannot
+    widen it); so-far stats track peak and minimum Gz, seed from the first live sample, and
+    reset on restart, wrap, new seed, and both row-change paths; the route's own top speed
+    shows alongside the so-far value. The camera/HUD logic is now two pure statics swept by
+    smoke every run (camera ≤6.3° off tangent vs a 40° bound, look 84.5° clear of the up
+    axis vs 30°, per-frame shake ≤8 mm bound at 1.8× measured, element names never empty
+    and in exact story order), and CI's viewer step counts live ride frames and exits 1 on
+    a rejected route — proven able to fail before the injection was removed. Awaiting
+    Daniel's ride-through verdict on the feel.
 19. Generation/CI speed — the time-domain return, capture, and brake solves have bounded
     coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
     GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.

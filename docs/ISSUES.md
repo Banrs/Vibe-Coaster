@@ -228,7 +228,19 @@ below); these seven are **not** covered by the audit's traceability record.
 ## App
 
 17. Loading time.
+    **Addressed, 2026-08-15 (viewer):** generation and analysis now run on a worker thread
+    with a "Generating seed N…" message, so the window stays responsive through the ~11 s
+    build; the world rebuild lands on the main thread when the route arrives. Raw generation
+    time itself is unchanged (that budget lives with issue 19's measurement). Awaiting
+    Daniel's verdict.
 18. Camera/HUD issues.
+    **Scoped by Daniel and addressed, 2026-08-15:** the issue is speed perception from the
+    camera plus ambiguous/missing HUD metrics. POV camera: gentle 0.6 s look-ahead, subtle
+    deterministic speed shake (quadratic in speed, sub-4 cm), nonlinear 74–102° FOV ramp — no
+    seat-position tricks, tuned away from nausea. HUD: dropped envelope-usage %, bank°,
+    roll°/s and elapsed-average speed; lateral/longitudinal g spelled as L/R and accel/brake;
+    added ride progress (clock + km), current → next element, and peak-so-far Gz / top speed
+    (reset on restart, loop, and new seed). Awaiting Daniel's ride-through verdict.
 19. Generation/CI speed — the time-domain return, capture, and brake solves have bounded
     coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
     GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.

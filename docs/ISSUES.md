@@ -33,6 +33,10 @@ at 328.3 km/h on every seed. Nothing gates top speed, so this is undetected by C
 in one direction — author the tunnel booster up to the declared figure, or correct both
 documents to the honest built value. Do not leave the contract and the ride disagreeing.
 
+Since then Daniel's second ride-through added issues 20–26, and issue 24 — *FVD++ gets the g's
+but not the geometry* — is the strongest candidate for the single root cause behind several of
+them. If one thing is picked up next, pick that.
+
 Carry-over from the same review: role `targets`, `phases` and `recipe_id` are published in the
 accepted route but still unenforced (see *Known limitations of the baseline itself* below).
 Only `length_m` and the three terrain intents are proven against the built ride, by
@@ -64,6 +68,42 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
 15. Jerky transitions.
 16. Many more hard-to-describe "feel" gaps beyond the itemizable ones.
 
+### Second review pass — 2026-08-15
+
+Daniel's findings after riding the merged material-generator build. Numbered from 20 to keep
+1–16 stable, because those IDs are wired into the catalog and the audit (see the coverage note
+below); these seven are **not** covered by the audit's traceability record.
+
+20. Roll sections cheat the g and jerk budget. The roll is delivered as abrupt
+    roll → flat → roll → flat steps rather than a coherent continuous roll, which keeps the
+    filtered channels inside the envelope while the actual motion is incoherent. Closely
+    related to 15 and 10, but the specific mechanism is the stepping, and it is a way of
+    passing `validate_loads` without earning it — treat any fix that keeps the stepping and
+    only reshapes the filtered trace as a cheat.
+21. Height above terrain is not watched and drifts upward. There is a terrain-clearance floor
+    but no ceiling and no control of slow upward drift, so the track wanders away from the
+    ground over long stretches. Sharpens 6 with a concrete mechanism: the drift is unwatched,
+    not merely mis-tuned.
+22. The cliff dive starts too far out from the cliff edge. The dive should commit at the rim;
+    it currently begins well back from it, which also costs the vertigo the beat exists for.
+    Interacts with 12's "hold extending too far from the cliff edge" and with the placement
+    bands in `generator.gd` (`DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M`, `DIVE_EXIT_APRON_BAND`).
+23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
+    it should not have. The elements hit their force targets while their shapes are visibly
+    wrong. Extends 7 beyond inversions and supports to the marquee elements.
+24. The FVD++ implementation gets the g's but not the geometry, especially in the connecting
+    transitions. This is the root cause behind 20, 23 and much of 15: authoring in the rider's
+    frame is reproducing the force trace without producing a coherent swept shape, and the
+    transitions between elements are where the discrepancy shows most. The deepest of the seven
+    — 20, 23 and 25 are plausibly symptoms of it.
+25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
+    with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
+    is missing.
+26. The clifftop section is just a slow bank, not the twisty, windy suspense the real coaster
+    has there. The declared roles `clifftop-slow-crest` (35–70 m) and `clifftop-outward-rim`
+    (65–120 m) may simply be too short to contain that character at all — check whether this is
+    a shaping bug or an under-declared story beat before treating it as either.
+
 ## App
 
 17. Loading time.
@@ -74,8 +114,16 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
 
 ## Audit coverage for issues 1–16
 
+**The range in this heading is a code contract, not prose.** `1..16` is hardcoded in
+`godot/fidelity.gd` (`_validate_issues` rejects any issue id outside it), in
+`godot/fidelity_artifacts.gd` (`range(1, 17)` builds the coverage records), and in two focused
+suites. Issues 17–19 and 20–26 therefore have no coverage record and cannot be referenced from
+a catalog target, review prompt, or evidence gap. Extending the audit to the 2026-08-15
+findings is a code change in those four places plus `_ISSUE_TEXT`, not a documentation edit —
+do it deliberately, or leave 20–26 tracked here only and say so.
+
 The offline fidelity baseline (see README) emits a deterministic traceability record for every
-issue in this list: `review/issue-coverage.json` and `review/issue-coverage.md` under
+issue in that range: `review/issue-coverage.json` and `review/issue-coverage.md` under
 `INSPECT_OUT`, with `review/checklist.md` holding the review prompts and `audit.md` holding the
 evidence snapshot, POV map, and gap list. Each record links the issue to the evidence IDs,
 review prompts, and generated artifacts that bear on it.
@@ -136,6 +184,32 @@ above.
   either optional RFDB export still renders diagnostic seed-42 midpoint POVs for supported
   side-view beats;
   those frames neither resolve nor promote an alignment.
+
+## Where the POV and force-diagram links already live
+
+They are committed — nothing needs re-researching. All twelve catalogued sources are in
+`docs/evidence/fidelity/source-manifest.json` (retrieved 2026-08-10), each with its URL,
+`current_state`, permitted axes, promotion prerequisites, and the SHA-256 of its metadata
+artifact. Per-source records sit alongside it in `docs/evidence/fidelity/rideforcesdb/` and
+`docs/evidence/fidelity/youtube/`, and `godot/fidelity_references.gd` carries the same URLs as
+inert provenance strings. There is no network client anywhere in `godot/` — these are records,
+not fetches.
+
+- **Force diagrams (RideForcesDB)** — Falcon's Flight `?id=4804`; Tormenta `?id=6369` and
+  `?id=6383`. All three are `corroborative`; 4804 is flagged unreliable and cannot promote
+  alone. `docs/evidence/fidelity/catalog-review.md` records that raw acquisition was blocked.
+  Local CSV exports for the diagnostic overlay are hash-pinned in
+  `rfdb-local-overlay-manifest.json` and supplied via `RFDB_4804_CSV` / `RFDB_6383_CSV`.
+- **POV video (YouTube)** — nine sources: Falcon's Flight forward `cUURkqyn4Zs`, backward
+  `J54WKu2nU6o`, `poco8rOnW18`, `sdXGD9kMR7s`, CGI `NFVNGgwZk3c`; Tormenta forward
+  `AHjk2R4da_I`; CoasterTalk continuous `0UaOSBGSx20` and edited `seNRpi4wP-s`; I305 overlay
+  `wX7uHKj-Ujc`. Four are `corroborative`, three `observation_only`, four `review_pending`.
+  No frames, audio, or copyrighted content are committed — metadata and timestamps only.
+
+**None is `executable`**, which is exactly why the audit emits `no-eligible-finding`. Grounding
+any issue above in measurement means promoting a source through
+`docs/evidence/fidelity/catalog-review.md` and the four-part bar in *Promoting a finding to a
+hard gate* — the links being present is not the same as the evidence being usable.
 
 ## Recommended approach
 

@@ -43,6 +43,11 @@ seams, and clearance only, to keep CI time down.
 godot --path godot
 ```
 
+On Windows, `Run-VibeCoaster.cmd` at the repository root launches the same viewer. It uses
+`D:\Games\Godot_v4.7.1-stable_win64.exe` unless the `GODOT` environment variable names another
+Godot 4.7 binary. There is no exported executable in the tree — Godot's export templates are
+not vendored, so the engine must be installed.
+
 - `N`: generate a new seed (the HUD shows the current one)
 - `C`: POV → chase → overview → fly camera; `1`–`7`: choose a row
 - `Space`: pause · `R`: restart · `[` / `]`: playback speed

@@ -5,6 +5,40 @@ point for the next round of work, not a spec: investigate openly, measure, and e
 discover problems beyond what is listed. `docs/TELEMETRY.md` holds measured ground truth;
 root `CLAUDE.md` holds the contract.
 
+## Next session — start here (2026-08-15)
+
+The `codex/material-generator` slice is merged. Verified on Godot 4.7.1 at merge time: the
+import gate, the nine focused suites in `.github/focused-tests.txt`, and `smoke.gd` (2m00s)
+are all green, and all fifteen seeds build and place clean. Two measured gaps found while
+reviewing that branch are the recommended entry points, ahead of the sixteen items below.
+
+**A. The seed does not vary the ride.** Measured across seeds 11, 42, 20260809, 1 and 99:
+`8132.1–8132.4 m`, `158.8 s`, `328.3 km/h` top — identical to within 0.3 m and 0.1 km/h, and
+the sweep reports `lengths 8.1-8.1 km` for all twelve. Determinism holds and is not the
+problem; diversity is absent by construction. `_material_roles()` in `godot/generator.gd` is a
+hardcoded twenty-entry list that takes no RNG, so every role's `length_m` band, `targets` and
+`recipe_id` are seed-invariant. `_plan()` spends the seeded RNG on exactly three values —
+`side`, `along_m`, `placement_u` — all of which move where the ride sits on the terrain, none
+of which change what the ride *is*. `role_allocations_m` is byte-identical across seeds.
+Decide deliberately whether that is the intended contract: `CLAUDE.md` promises "seeded
+terrain-relative placement", which this satisfies literally, while `README.md`'s framing
+invites the reading that seeds differ as rides. Either narrow the prose or give the plan real
+seeded variation (role ordering, band sampling within the story, per-seed target draws) — and
+if it is variation, `smoke.gd`'s cross-seed determinism check will need a companion check that
+seeds actually *differ*, which nothing currently asserts.
+
+**B. The record launch is ~12 km/h short of its declared number.** `CLAUDE.md` and `README.md`
+both declare the tunnel LSM boost as "~340 km/h (the record launch)"; the built ride tops out
+at 328.3 km/h on every seed. Nothing gates top speed, so this is undetected by CI. Resolve it
+in one direction — author the tunnel booster up to the declared figure, or correct both
+documents to the honest built value. Do not leave the contract and the ride disagreeing.
+
+Carry-over from the same review: role `targets`, `phases` and `recipe_id` are published in the
+accepted route but still unenforced (see *Known limitations of the baseline itself* below).
+Only `length_m` and the three terrain intents are proven against the built ride, by
+`_validate_role_lengths` in `godot/route_contract.gd` — that function is the working model for
+enforcing the rest. None of the sixteen ride-quality issues below is closed.
+
 ## Ride quality
 
 1. Missing micro elements — e.g. the slow-ish hilltop section Falcon's Flight has; small

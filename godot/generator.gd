@@ -52,10 +52,7 @@ static func build(seed_value: int) -> Dictionary:
 		"planning_integrations": int(plan.terrain_frame.planning.planning_integrations),
 		"repair_count": 0,
 	}
-	var route := RouteContract.build(seed_value, terrain, initial_state, plan, accepted, trajectory)
-	if not route.get("ok", false):
-		return route
-	return route
+	return RouteContract.build(seed_value, terrain, initial_state, plan, accepted, trajectory)
 
 
 static func _plan(terrain: Dictionary, rng: RandomNumberGenerator) -> Dictionary:
@@ -387,6 +384,8 @@ static func _dive_placement_observation(
 		"minimum_centerline_agl_m": minimum_centerline_agl_m,
 		"minimum_lower_spine_agl_m": minimum_lower_spine_agl_m,
 	}
+
+
 static func _material_roles() -> Array:
 	return [
 		_role("station-launch", "station_launch", Vector2(140.0, 220.0),
@@ -461,6 +460,8 @@ static func _initial_state(station: Dictionary) -> Dictionary:
 		"distance_m": 0.0,
 		"time_s": 0.0,
 	}
+
+
 static func _failure(context: String, details: Variant = []) -> Dictionary:
 	var errors := PackedStringArray([context])
 	if details is Array or details is PackedStringArray:

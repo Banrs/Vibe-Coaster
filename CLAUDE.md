@@ -30,9 +30,10 @@ godot --headless --path godot --script res://smoke.gd
 ```
 
 Smoke alone does not run most of the test suites: CI additionally executes every script in
-`.github/focused-tests.txt` (nine focused suites — motion, bounded-solver, route-contract,
-ride-program, generator-material, terrain-story, and three fidelity suites). When your change
-touches one of those areas, run the matching focused suite(s) locally too:
+`.github/focused-tests.txt` (twelve focused suites — motion, bounded-solver, route-contract,
+ride-program, generator-material, terrain-story, geometry-metrics, ride-planner, ride-config,
+and three fidelity suites). When your change touches one of those areas, run the matching
+focused suite(s) locally too:
 
 ```sh
 godot --headless --path godot --script res://<suite>.gd
@@ -50,6 +51,16 @@ local timings.
   compiled program → one accepted production integration → published route. The seeded RNG is
   consumed by `Terrain.generate()` and then `_plan()`; the plan contains twenty ordered roles and
   a 7.8–8.2 km route band.
+- `godot/ride_planner.gd` — the decision layer: named decision streams (FNV-1a over the stream
+  name plus the seed, so streams are independent), the story grammar as data, and the certified
+  per-seed target draws. Randomness lives only here and in terrain generation; every draw range
+  is a claim that the whole range builds, certified by `ride_planner_tests.gd` — there are no
+  candidate loops downstream.
+- `godot/ride_config.gd` — the version-1 configuration surface behind
+  `RideGenerator.build_config()`: overlay algebra (rules 1–7), canonical hash, resolution report.
+  The registry is deliberately narrow — `preset`, `seed`, and `slot.intensity` on the two return
+  heights — and every key that did not clear that bar sits in `UNREGISTERED` with the measurement
+  that refused it.
 - `godot/ride_program.gd` — native force/time-domain recipes and bounded return, capture, and
   brake solves. `godot/motion.gd` is the sole accepted rider-frame integrator;
   `godot/route_contract.gd` validates and publishes its trajectory.
@@ -65,7 +76,9 @@ local timings.
 - `godot/smoke.gd` — headless gate: toolkit self-tests, two of the three fidelity suites
   (`fidelity_tests.gd`, `fidelity_artifact_tests.gd`; `fidelity_overlay_tests.gd` runs only
   via the CI focused-test manifest), and multi-seed generator validation (same seed twice
-  bit-identical). Be
+  bit-identical). It also gates the record band (top speed 93.9–95.6 m/s), the entry-launch
+  peak band (3.7–4.1 g), and fleet diversity (floors on the length and duration spread across
+  the accepted fleet, so the fleet cannot become one ride fifteen times). Be
   precise about its coverage: structure, seams, terrain clearance and self-clearance are
   gated on all fifteen seeds, but the load envelope (`validate_loads`) is gated only on the
   three deep seeds 11/42/20260809 — the twelve sweep seeds are deliberately ungated on loads
@@ -76,6 +89,14 @@ local timings.
   6 review prompts, 5 evidence gaps — and empty `selectors`, `observations` and `targets`, so
   no comparison band exists yet. URLs live here (and in
   `docs/evidence/fidelity/`) as inert provenance strings only; no network client exists.
+- `godot/fidelity_counterparts.gd` — the per-role counterpart bands (measured real-ride value ×
+  the per-axis envelope stretch); the derivation that produced them is
+  `docs/evidence/fidelity/counterpart-bands.md`.
+- `godot/geometry_metrics.gd` — geometry measurement, not force measurement: seam roll
+  continuity, element planarity and tilt, shape ratios, and the counterpart comparison against
+  `fidelity_counterparts.gd`. `godot/geometry_reference.gd` renders overlays against local
+  reference imagery named by `REF_MEDIA_MANIFEST`. Both are diagnostic — never gates — and no
+  reference media is ever committed.
 - `godot/fidelity.gd` — read-only measurement and comparison: catalog validation, beat/row
   bands, exact held values, time-weighted pacing shares, transition windows, raw channel
   reconstruction, fleet comparison, deterministic recommendation. `godot/fidelity_artifacts.gd`
@@ -88,7 +109,10 @@ local timings.
   than inventing a mapping, optional local RideForcesDB diagnostic overlays via
   `RFDB_4804_CSV` / `RFDB_6383_CSV`, and checked writes with a hashed manifest. When either local
   export is supplied it also writes semantic overlay artifacts and diagnostic seed-42 midpoint
-  POVs; these do not change the committed catalog or resolve the POV map. Operational failures
+  POVs; these do not change the committed catalog or resolve the POV map. It also writes the
+  geometry pack — `review/seed-<n>/geometry-metrics.{json,md}` and
+  `review/counterpart-comparison.{json,md}` — plus reference overlays when
+  `REF_MEDIA_MANIFEST` names a local manifest. Operational failures
   (catalog, generation, physical consistency, artifact writes) exit 1; fidelity misses are
   diagnostic and exit 0. See README for the command and the full output contract.
 
@@ -100,13 +124,19 @@ positions stay raw for physics, verification, and generated-channel measurement.
 
 ## Generator contract
 
-- Same seed → bit-identical ride. The seeded RNG is used only by terrain generation and `_plan()`;
-  no `Dictionary` iteration-order dependence or post-hoc geometry patching.
+- Same seed → bit-identical ride. The seeded RNG is used only by terrain generation and `_plan()`
+  — and inside `_plan()` only through `ride_planner.gd`'s named streams; no `Dictionary`
+  iteration-order dependence or post-hoc geometry patching.
 - Envelope (~2041, anti-G-suit credit; duration-stretched ASTM F2291 curves, never flat
   tables): +8.0/−3.0 Gz · ±4.7 Gy · +8.0/−6.0 Gx · 25 g/s onset · 120°/s roll. The limit at
   duration t is `stretch × F2291_limit(t)` per axis — see `verify.gd` constants.
-- Material story, twenty ordered roles with seeded terrain-relative placement:
-  station → ~4 g air-launch + unpowered coast over the opener crest → three-role opener
+- Material story, twenty ordered roles with seeded terrain-relative placement, plus per-seed
+  target draws made through `ride_planner.gd`'s named decision streams. Today only the
+  return-side draw set is certified (turn-a transfer bank bias, height-a peak g, the unload
+  scales); act-one permutation and the opener/act-one geometry draws were refused by
+  measurement and stay blocked until the prefix closure solve lands — see `docs/ISSUES.md`
+  issue 24. The story itself:
+  station → 3.9 g-peak air-launch (band-gated) + unpowered coast over the opener crest → three-role opener
   (twisted non-inverting side-drop, overbanked teardrop, rising release) into act one, ONE
   flowing arc at honest inversion speed (giant Immelmann 100–110 m: the tallest-inversion
   chase; cutback at the Immelmann exit; helical-leg loop; hills + wave turn, all chained
@@ -115,11 +145,13 @@ positions stay raw for physics, verification, and generated-channel measurement.
   deliberate slow beat) + compact clifftop suspense (reference-scale only, outward-banked
   rim turn) → 90° cliff dive (~0.85–0.93× relief, monotonic once committed, no lip pause —
   the pre-commit approach length is open issue 22) → tunnel LSM boost to
-  ~340 km/h (the record launch) → record camelback (~250 m structure above its
+  ~340 km/h (the record launch; the built top speed is gated in smoke at 93.9–95.6 m/s) →
+  record camelback (~250 m structure above its
   valley) → force-authored return with two overbanked turns and two height/airtime beats →
   brakes → explicit C4 station closure.
 - Propulsion = exactly three short boosters, no lifts, no powered climbs (user decision):
-  a Do-Dodonpa-like non-LSM air/hydraulic entry launch at ~4 g out of the station, then two
+  a Do-Dodonpa-like non-LSM air/hydraulic entry launch peaking at 3.9 g out of the station
+  (gated 3.7–4.1), then two
   LSM boosters (fastest-current-LSM × near-future credit; each booster's authored drive
   follows from its speed target and length — currently ~0.3 g on the cliff-base climb assist
   and ~1.15 g in the tunnel, not a flat "~2 g class"), each shorter than
@@ -142,6 +174,11 @@ positions stay raw for physics, verification, and generated-channel measurement.
   42–50 m/s entries (hence act one); the cutback requires entry pitch ≤ ~22° (measured
   during design; not re-measured or enforced by any current validator); a planar
   loop self-intersects (hence the helical lateral with sign reversed at the top).
+
+Write the minimum code that solves the problem. Ship each piece of data once — in code or in a
+document, never both. The read-only diagnostic layer must not outgrow the generator it measures.
+If two hundred lines could be fifty, rewrite them; deflation with byte-identical behavior is
+always in scope.
 
 Do not restore the removed Rust optimizer, native extension, HTML viewer, hardcoded
 `ride_model.gd` route, runtime correction passes, or the old flat per-duration limit tables.

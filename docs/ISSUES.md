@@ -5,37 +5,58 @@ point for the next round of work, not a spec: investigate openly, measure, and e
 discover problems beyond what is listed. `docs/TELEMETRY.md` holds measured ground truth;
 root `CLAUDE.md` holds the contract.
 
-## Next session — start here (2026-08-15)
+## Next session — start here (2026-08-15, end of session)
 
-The `codex/material-generator` slice is merged. Verified on Godot 4.7.1 at merge time: the
-import gate, the nine focused suites in `.github/focused-tests.txt`, and `smoke.gd` (2m00s)
-are all green, and all fifteen seeds build and place clean. Two measured gaps found while
-reviewing that branch are the recommended entry points, ahead of the sixteen items below.
+Verified on Godot 4.7.1: the import gate, the twelve focused suites in
+`.github/focused-tests.txt`, and `smoke.gd` are all green, and all fifteen seeds build and
+place clean. Gaps **A** (stage 1) and **B**, which opened this section at the start of the
+session, are closed and gated:
 
-**A. The seed does not vary the ride.** Measured across seeds 11, 42, 20260809, 1 and 99:
-`8132.1–8132.4 m`, `158.8 s`, `328.3 km/h` top — identical to within 0.3 m and 0.1 km/h, and
-the sweep reports `lengths 8.1-8.1 km` for all twelve. Determinism holds and is not the
-problem; diversity is absent by construction. `_material_roles()` in `godot/generator.gd` is a
-hardcoded twenty-entry list that takes no RNG, so every role's `length_m` band, `targets` and
-`recipe_id` are seed-invariant. `_plan()` spends the seeded RNG on exactly three values —
-`side`, `along_m`, `placement_u` — all of which move where the ride sits on the terrain, none
-of which change what the ride *is*. `role_allocations_m` is byte-identical across seeds.
-Decide deliberately whether that is the intended contract: `CLAUDE.md` promises "seeded
-terrain-relative placement", which this satisfies literally, while `README.md`'s framing
-invites the reading that seeds differ as rides. Either narrow the prose or give the plan real
-seeded variation (role ordering, band sampling within the story, per-seed target draws) — and
-if it is variation, `smoke.gd`'s cross-seed determinism check will need a companion check that
-seeds actually *differ*, which nothing currently asserts.
+**B — the record launch is real.** The tunnel LSM3 booster runs at 1.33 g and the built ride
+tops out at 340.40 km/h (94.55 m/s) on all fifteen seeds, gated in smoke at 93.9–95.6 m/s. The
+entry launch peaks at 3.9 g (gated 3.7–4.1) with exit speed conserved. The measured cost of
+closing the record inside 8.2 km without a mid-course brake was the passive capture-entry band,
+widened 70–77 → 70–80 m/s, and the brake bound, raised 3.0 → 3.6 g (measured peak 3.05; the
+envelope allows 4.286 over that hold). Derivation:
+`docs/superpowers/specs/2026-08-15-record-launch-derivation.md`.
 
-**B. The record launch is ~12 km/h short of its declared number.** `CLAUDE.md` and `README.md`
-both declare the tunnel LSM boost as "~340 km/h (the record launch)"; the built ride tops out
-at 328.3 km/h on every seed. Nothing gates top speed, so this is undetected by CI. Resolve it
-in one direction — author the tunnel booster up to the declared figure, or correct both
-documents to the honest built value. Do not leave the contract and the ride disagreeing.
+**A stage 1 — the seed varies the ride.** `godot/ride_planner.gd` holds named decision streams
+(FNV-1a over stream name plus seed, so streams are independent), the story grammar as data, and
+the certified per-seed target draws: return turn-a `transfer_bank_bias` 6.5–8.5°, height-a
+`peak_g` 3.65–3.95, and unload scales 0.95–1.05. Measured fleet spread is 8138.7–8180.6 m
+(41.9 m) and 0.31 s of duration, with the records pinned on every seed; smoke now has diversity
+floors so the fleet cannot silently collapse back to one ride. A latent bug surfaced and was
+fixed on the way: the terminal-approach corridor was never clearance-sampled, so seed 123456's
+brakes sat 1.82 m under the 2.0 m floor; the approach is now held to station clearance.
 
-Since then Daniel's second ride-through added issues 20–26, and issue 24 — *FVD++ gets the g's
-but not the geometry* — is the strongest candidate for the single root cause behind several of
-them. If one thing is picked up next, pick that.
+### The recommended next work: the prefix closure solve (issue 24)
+
+Stage 2 of gap A — act-one permutation and per-seed draws in the opener and act one — was
+**refused by measurement**, three independent times, and all three refusals hit the same wall.
+The prefix (station through the cliff dive) has no closure solve of its own: its terminal
+geometry is chaotic in its own force parameters, so nothing upstream of the dive can be varied
+without knocking the dive off its placement feasibility edge.
+
+The evidence trail, all measured this session:
+
+1. **Act-one permutation refused.** A ±0.005 change in a single force value moves the dive
+   chord by ~115 m. 12 of 24 candidate permutations fail the capability preflight outright, and
+   the best survivors fail the return solve on 12 of 15 seeds.
+2. **Opener roll tranche refused** (issue 20 work). Any bank-timing change in the opener tips
+   dive placement off its feasibility edge on *every* seed, so the opener's roll stepping could
+   not be fixed with the return and clifftop tranches.
+3. **Opener/act-one target draws refused.** Same mechanism: the draws are legal in capability
+   terms and still leave the prefix unable to land the dive.
+
+So the recommendation is explicit: build a bounded closure solve for the prefix, the way the
+return already has one, so the dive's placement becomes a solved residual instead of a
+hand-calibrated coincidence. That unblocks issue 20's last tranche, stage 2 of gap A, and issue
+22's dive-commit placement, and it is issue 24's real fix — authoring in the rider's frame is
+reproducing the force trace without producing a coherent swept shape, and the prefix is where
+that costs the most.
+
+Issue 24 remains the strongest candidate for the single root cause behind 20, 23 and much of
+15. If one thing is picked up next, pick the prefix closure solve.
 
 ### Decisions — 2026-08-15 review session
 
@@ -64,6 +85,26 @@ items above):
 - **Return-solve budget flag:** the landed return solve uses 7 controls / 7 residuals with
   `MAX_RETURN_EVALUATIONS := 220`, 5.5× the design's ≤40 bound, and no document re-derived
   the larger budget. Tighten or justify it when issue 24 forces changes in `ride_program.gd`.
+- **Capture-entry band widened 70–77 → 70–80 m/s** — accepted as the measured cost of closing
+  the ~340 km/h record inside the 8.2 km route band with no mid-course brake. The brake bound
+  moved 3.0 → 3.6 g for the same reason. Both are recorded in `CLAUDE.md`'s contract, with the
+  derivation in `docs/superpowers/specs/2026-08-15-record-launch-derivation.md`. The derived
+  entry launch landed at a 3.9 g peak, which supersedes the 3.2 g baseline noted above.
+- **Reference imagery is local-only.** Photographic and video reference media is never
+  committed. `tools/fetch-reference-media.sh` builds a local manifest, `REF_MEDIA_MANIFEST`
+  points the inspection run at it, and an absent manifest is reported as a declared gap rather
+  than worked around. (Full POV downloads are bot-blocked from this environment; the thumbnail
+  fallback produced five real overlays, and full frames can be supplied locally.)
+- **Code budget.** Write the minimum code that solves the problem; ship each piece of data once,
+  in code or in a document but never both; the read-only diagnostic layer must not outgrow the
+  generator it measures; if two hundred lines could be fifty, rewrite them. This session's
+  deflation pass removed 664 lines with byte-identical behavior. Standing rule, in `CLAUDE.md`.
+- **Config v1 landed with an honest registry.** `godot/ride_config.gd` and
+  `RideGenerator.build_config()` implement the overlay algebra, canonical hash, and resolution
+  report, but only `preset`, `seed`, and `slot.intensity` on the two return heights are
+  registered — the keys whose full range is certified by `ride_planner_tests.gd`. Every other
+  candidate key carries its measured refusal reason in `RideConfig.UNREGISTERED`. Do not widen
+  the registry ahead of the measurement that certifies it.
 - Housekeeping: the `.superpowers/` working directory referenced by commit `b464a7b`'s
   message is not in the repository and does not survive a fresh clone. `godot/fidelity_overlay.gd`
   and its suite landed via commits `bff59ef`/`d2bda61`/`1999ca0` without a planning document;
@@ -112,6 +153,14 @@ below); these seven are **not** covered by the audit's traceability record.
     related to 15 and 10, but the specific mechanism is the stepping, and it is a way of
     passing `validate_loads` without earning it — treat any fix that keeps the stepping and
     only reshapes the filtered trace as a cheat.
+    **Partially fixed, 2026-08-15, measured.** Two tranches now roll continuously. Return
+    roles: turn-a peak roll rate 108 → 69°/s, its acceleration break 662 → 258°/s², banked-flat
+    share 0.47 → 0.38 (the height roles came out similar). Clifftop roles: slow-crest
+    acceleration 901 → 515°/s², rim peak roll 115 → 75°/s, seam breaks 134 → 47 and
+    176 → 62°/s². Top speed drifted 94.555 → 94.745 m/s (in band) and the route sits at
+    ~8181 m. **Remaining:** the opener tranche was refused by measurement — any bank-timing
+    change there tips dive placement off its feasibility edge on all seeds — so the worst seam
+    break, 899.7°/s² at drop/unbank-out, stands until the prefix closure solve (24) lands.
 21. Height above terrain is not watched and drifts upward. There is a terrain-clearance floor
     but no ceiling and no control of slow upward drift, so the track wanders away from the
     ground over long stretches. Sharpens 6 with a concrete mechanism: the drift is unwatched,
@@ -120,14 +169,26 @@ below); these seven are **not** covered by the audit's traceability record.
     it currently begins well back from it, which also costs the vertigo the beat exists for.
     Interacts with 12's "hold extending too far from the cliff edge" and with the placement
     bands in `generator.gd` (`DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M`, `DIVE_EXIT_APRON_BAND`).
+    **Open, with new evidence (2026-08-15):** dive placement is sitting on a feasibility edge —
+    a ±0.005 change in one upstream force value moves the dive chord ~115 m — so the approach
+    length cannot be shortened by retuning the prefix. It needs the prefix closure solve (24).
 23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
     it should not have. The elements hit their force targets while their shapes are visibly
     wrong. Extends 7 beyond inversions and supports to the marquee elements.
+    **Open, now quantified (2026-08-15)** by `godot/geometry_metrics.gd`: the camelback leans
+    24.46° off vertical on the rise, 16.28° at the exit, and 10.05° at the crest, against
+    ≤1.9° on the airtime hills. The likely mechanism is the 42.5° of heading turn taken during
+    the climb. 18 of the 20 roles are grounded against a measured counterpart band
+    (`godot/fidelity_counterparts.gd`, derived in
+    `docs/evidence/fidelity/counterpart-bands.md`); the wave turn and the outward rim turn are
+    declared evidence gaps.
 24. The FVD++ implementation gets the g's but not the geometry, especially in the connecting
     transitions. This is the root cause behind 20, 23 and much of 15: authoring in the rider's
     frame is reproducing the force trace without producing a coherent swept shape, and the
     transitions between elements are where the discrepancy shows most. The deepest of the seven
-    — 20, 23 and 25 are plausibly symptoms of it.
+    — 20, 23 and 25 are plausibly symptoms of it. **Now the recommended next work**, with a
+    named first step: the prefix closure solve. See *Next session — start here* for the three
+    measured refusals that converge on it.
 25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
     with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
     is missing.

@@ -3,9 +3,11 @@
 A seed-based, one-shot roller-coaster generator in pure GDScript (Godot 4.7). Every seed is a
 complete, rideable, physically validated ride: a near-future (~2041) hybrid of Intamin's
 Falcon's Flight and B&M's Tormenta: Rampaging Run, on a seeded desert escarpment of ~300 m
-relief. Same seed, same ride — bit for bit. (Today the seed draws the terrain and the ride's
-placement on it; the authored story and geometry are still identical across seeds — measured
-as gap A in `docs/ISSUES.md`, being addressed by the planner decision layer.)
+relief. Same seed, same ride — bit for bit. (The seed draws the terrain, the ride's placement on
+it, and a certified set of per-seed targets through the planner's named decision streams —
+measured fleet spread ~42 m of length and 0.31 s of duration. The records are pinned on every
+seed; widening the draws into the opener and act one waits on the prefix closure solve, issue 24
+in `docs/ISSUES.md`.)
 
 This is an engineering-sim concept, not a survey reconstruction or a certified design.
 Physics, generation, and validation are the product; the visuals are a deliberately generic
@@ -23,7 +25,7 @@ inspection layer (placeholder train, simple track and pillars).
   outward-banked rim turn, a monotonic 90° dive into the tunnel launch and camelback, and a
   force-authored return home with two overbanked turns and two height/airtime beats — with
   Tormenta's inversion act grafted where its physics
-  belongs (act one, at 42–50 m/s). No lifts: a ~4 g air-powered entry launch plus two
+  belongs (act one, at 42–50 m/s). No lifts: a 3.9 g-peak air-powered entry launch plus two
   LSM boosters whose authored drive follows from their speed targets (one of them the
   record launch).
 - Exactly three boost zones, no mid-course brake, one continuous energy arc after the tunnel
@@ -66,9 +68,15 @@ godot --headless --path godot --script res://smoke.gd
 
 The smoke gate self-tests the verification toolkit against synthetic signals, runs two of the
 three fidelity suites (`fidelity_tests.gd`, `fidelity_artifact_tests.gd` — the overlay suite
-and the other six focused suites run via `.github/focused-tests.txt` in CI), and builds
+and the other nine focused suites run via `.github/focused-tests.txt` in CI), and builds
 multiple seeds twice — identical output, all checks green, on CI's ubuntu baseline as the
-performance floor.
+performance floor. It also asserts the record band (top speed 93.9–95.6 m/s), the entry-launch
+peak (3.7–4.1 g), and fleet diversity: floors on how far the fleet's lengths and durations must
+spread, so fifteen seeds cannot collapse back into one ride.
+
+`RideGenerator.build_config()` builds from a configuration document instead of a bare seed. The
+registry is deliberately small today — `preset`, `seed`, and `slot.intensity` on the two return
+heights — and `RideConfig.UNREGISTERED` records why each other key is not yet offered.
 
 ## Offline fidelity baseline
 
@@ -119,6 +127,12 @@ Output contract, all paths relative to `INSPECT_OUT`:
   alignment gaps.
 - `review/overlays/index.{json,md}` and `review/overlays/<comparison-id>.png` — semantic telemetry
   diagnostics written only when at least one optional RFDB export is supplied.
+- `review/seed-<n>/geometry-metrics.{json,md}` and `review/counterpart-comparison.{json,md}` —
+  the geometry pack: seam roll continuity, element planarity and tilt, shape ratios, and each
+  role measured against its counterpart band (`docs/evidence/fidelity/counterpart-bands.md`).
+  Reference-image overlays are written only when `REF_MEDIA_MANIFEST` points at a local
+  manifest, e.g. one built by `tools/fetch-reference-media.sh`; reference media is never
+  committed, and an absent manifest is reported as a declared gap.
 
 Committed evidence authoring is a separate, manual workflow. Sources are researched, reviewed,
 and committed as metadata, timestamped landmarks, and hashes under `docs/evidence/fidelity/`;

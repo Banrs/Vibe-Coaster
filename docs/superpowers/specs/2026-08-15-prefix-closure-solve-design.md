@@ -161,6 +161,26 @@ band at runtime.
 5. **Issue 23**: partially — the climb gains a degree of freedom it lacks today, but the camelback's
    24.46° lean needs its own geometry residual. This design does **not** claim to close 23.
 
+**Correction (2026-08-15, Stage-4 full-matrix measurement).** Items 2–4 above were optimistic:
+- Item 4 is **half true as measured**: residual 4 pins the record exit *speed* on every placed
+  story (+0.51…+0.83 m/s inside band), but the *geometric* handoff (position/heading at the
+  camelback) still moves, and the seven-control return solve does not re-converge from its
+  hand-tuned fixed `RETURN_SEED` (budget_exhausted at 79/80 evaluations with residuals
+  0.01–0.5 on the deep seeds). Full builds of every perturbed/permuted story fail there or on
+  role-length overruns. The named unblock is a **deterministic per-story derivation of the
+  return seed** (a function of the drawn story and the solved handoff — a seed derivation,
+  never a candidate loop); that is its own design cycle.
+- Items 2–3 are **domain-split**: the four controls are all downstream of act one, so the solve
+  absorbs tail-domain changes (act-one loop −0.005 places 15/15; the optional-member swap
+  places 15/15) but head-domain changes (opener literals) refuse at the terrain preflight
+  before the solve is reached — a ±0.005 lateral-g change swings the native chord 245–408 m
+  against a ~270 m terrain span. Opener draws therefore certify only over a narrow measured
+  range, or need head accommodation (a head control means paying head re-integration per
+  evaluation — measure before choosing). Issue 20's opener roll tranche is a *timing* change,
+  smaller than ±0.005 g of force: measure it against the landed margins before assuming
+  either way.
+- Item 1 stands unchanged (tail-domain), and is the correct first spend of the margin.
+
 Deliberately out of scope: no geometry patching or post-hoc position edits; no smoothing; no
 position-space authoring (controls are span durations in the time/force domain); no force value, roll
 rate or drive level as a control; no runtime candidate loops; no change to the return's controls,

@@ -67,8 +67,22 @@ with the solve converging in 1–6 of 31 allowed evaluations on all fifteen seed
 narrowing recorded: the entry aim band is the 40% interior of a band already inset 3 m, so
 terrain the old grid search would have placed can now refuse with a structured error — the
 refusal paths are unreached on the fleet, not unreachable in principle; stage 4's
-refusal-derived tests exercise them. Stage 4 (the three refusals as passing tests) and
-stage 5 (spending the margin on 22, 20's opener tranche, and the act-one draws) remain.
+refusal-derived tests exercise them.
+
+**Stage 4 measured (2026-08-15): the solve did half its job, and the other half now has a
+name.** Tail-domain changes are absorbed — the act-one loop at −0.005 g places inside all
+four margins on 15/15 seeds, and the act-one optional-member swap places 15/15 (both were
+flat refusals before the solve). But no perturbed or permuted story builds end to end:
+opener (head-domain) changes refuse at the terrain preflight before the solve is reached
+(±0.005 g swings the native chord 245–408 m against a ~270 m terrain span — the four
+controls all live downstream of act one), and every story that does place then fails in the
+seven-control return solve, whose hand-tuned fixed seed does not re-converge for a moved
+handoff (budget-exhausted at 79/80 with residuals nearly closed; the record-exit residual
+pins the speed, the geometric handoff still moves). The two named follow-ons: a
+deterministic per-story derivation of the return seed (a seed derivation, never a retry
+loop), and a measured decision on head accommodation for opener draws. The planning-half
+victories are gated in `generator_material_tests.gd` (four seeds × {swap, loop −0.005},
++12.7 s off the battery's critical path). Spec correction recorded in the design's §5.
 
 ### Decisions — 2026-08-15 review session
 

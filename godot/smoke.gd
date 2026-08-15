@@ -21,6 +21,14 @@ const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## `ride_program_tests.gd` gates five seeds fast; every seed of the fifteen must stay inside
 ## this fraction of it, measured here because the compile is already paid.
 const RETURN_EVALUATION_ALLOWANCE := 0.6
+## The viewer's POV camera bounds. Measured on seed 42 (2026-08-15): the camera stays within
+## 6.3° of the tangent, the look direction stays 84.5° clear of the pose up axis, and the rumble
+## moves the eye 4.41 mm between 60 fps frames at top speed. The cone and clearance are the
+## limits the camera has to respect rather than the numbers it happens to hit; the shake bound
+## sits at 1.8× the measurement, tight enough to catch a return to above-Nyquist frequencies.
+const VIEWER_POV_TANGENT_CONE_DEG := 40.0
+const VIEWER_POV_UP_CLEARANCE_DEG := 30.0
+const VIEWER_POV_SHAKE_PER_FRAME_M := 0.008
 
 var _fleet_lengths := PackedFloat64Array()
 var _fleet_durations := PackedFloat64Array()
@@ -148,6 +156,81 @@ func _viewer_errors() -> PackedStringArray:
 		"seed 42 viewer route: %.1f m, %.1f s, %d samples, %.1f km/h top, %d ms"
 		% [route.length, route.duration, route.positions.size(),
 			analysis.top_speed * 3.6, elapsed]
+	)
+	errors.append_array(_hud_element_errors(route))
+	errors.append_array(_pov_camera_errors(route, analysis))
+	return errors
+
+
+## The HUD's current→next element lookup, swept over the whole lap. The viewer runs it once per
+## frame; nothing else would notice it going empty, naming the current element as the next one,
+## or drifting out of story order.
+func _hud_element_errors(route: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var story := PackedStringArray()
+	for gesture: Dictionary in route.gesture_windows:
+		for role: Dictionary in gesture.get("role_windows", []):
+			story.append(str(role.get("display_name", role.get("id", ""))))
+	var seen := PackedStringArray()
+	for sample in route.positions.size():
+		var names: PackedStringArray = Coaster.next_element_names(route, sample)
+		if names[1].is_empty():
+			errors.append("viewer HUD: sample %d has no next element" % sample)
+			break
+		if names[0] == names[1]:
+			errors.append(
+				"viewer HUD: sample %d names %s as both current and next" % [sample, names[0]])
+			break
+		if seen.is_empty() or seen[-1] != names[0]:
+			seen.append(names[0])
+	if errors.is_empty() and Array(seen) != Array(story):
+		errors.append("viewer HUD: element sequence %s is not the story order %s" % [
+			str(seen), str(story)])
+	if errors.is_empty():
+		print("seed 42 viewer HUD: %d elements named in story order" % seen.size())
+	return errors
+
+
+## The POV camera, swept over the whole lap. The camera must keep pointing down the track, must
+## never let the look direction fall onto the pose up axis (where `Basis.looking_at` is
+## undefined), and its rumble must stay rumble — a per-frame displacement at 60 fps and top
+## speed measured in millimetres, not the strobe an above-Nyquist shake produces.
+func _pov_camera_errors(route: Dictionary, analysis: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var top_speed: float = analysis.top_speed
+	var worst_tangent_deg := 0.0
+	var closest_up_deg := 180.0
+	var distance := 0.0
+	while distance < route.length:
+		var sample: int = Coaster._lower_index(route.distances, distance)
+		var pose := Coaster.pose_at_distance(route, distance)
+		var camera: Transform3D = Coaster.pov_transform(
+			route, distance, route.speeds[sample], top_speed, 0.0)
+		var forward := -camera.basis.z
+		var tangent_deg := rad_to_deg(
+			acos(clampf(forward.dot(route.tangents[sample]), -1.0, 1.0)))
+		var up_deg := rad_to_deg(acos(clampf(forward.dot(pose.basis.y), -1.0, 1.0)))
+		worst_tangent_deg = maxf(worst_tangent_deg, tangent_deg)
+		closest_up_deg = minf(closest_up_deg, minf(up_deg, 180.0 - up_deg))
+		distance += 5.0
+	var worst_jitter_m := 0.0
+	for step in 600:
+		var phase := step / 300.0
+		var held := Coaster.pov_transform(route, 1000.0, top_speed, top_speed, phase)
+		var next_frame := Coaster.pov_transform(
+			route, 1000.0, top_speed, top_speed, phase + 1.0 / 60.0)
+		worst_jitter_m = maxf(worst_jitter_m, held.origin.distance_to(next_frame.origin))
+	if worst_tangent_deg > VIEWER_POV_TANGENT_CONE_DEG:
+		errors.append("viewer POV: camera strays %.1f° from the tangent" % worst_tangent_deg)
+	if closest_up_deg < VIEWER_POV_UP_CLEARANCE_DEG:
+		errors.append("viewer POV: look direction comes %.1f° from the pose up axis"
+			% closest_up_deg)
+	if worst_jitter_m > VIEWER_POV_SHAKE_PER_FRAME_M:
+		errors.append("viewer POV: shake moves the eye %.1f mm per 60 fps frame"
+			% (worst_jitter_m * 1000.0))
+	print(
+		"seed 42 viewer POV: %.1f° off tangent, %.1f° clear of up, %.2f mm/frame shake"
+		% [worst_tangent_deg, closest_up_deg, worst_jitter_m * 1000.0]
 	)
 	return errors
 

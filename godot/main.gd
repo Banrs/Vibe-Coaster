@@ -8,6 +8,23 @@ const TUNNEL_SPACING := 12.0
 const DEFAULT_SEED := 42
 const ROW_OFFSETS := RouteContract.ROW_OFFSETS
 const CAMERA_NAMES := ["POV", "Chase", "Overview", "Fly"]
+const POV_EYE_LIFT := 0.35
+const POV_LOOK_AHEAD_S := 0.6
+const POV_LOOK_AHEAD_M := Vector2(8.0, 45.0)
+const POV_LOOK_WEIGHT := 0.22
+## PovCamera is KEEP_WIDTH (main.tscn), so `fov` is the horizontal angle and no aspect ratio can
+## widen it. These are 74° and 93° vertical at 16:9 — the cap replaces a 102° vertical ramp that
+## was really 131° horizontal at 16:9 and 141.7° at 21:9.
+const POV_FOV_DEG := Vector2(106.5, 123.8)
+## Rumble, not strobe: two incommensurate components per axis in the 8.2–11.6 Hz band, sampled
+## far enough below the 30 Hz Nyquist of 60 fps playback that the eye sees the waveform rather
+## than an alias of it. Peak amplitude at top speed is 4.0 mm lateral / 2.8 mm vertical, which
+## measures 4.41 mm of eye travel per 60 fps frame (`smoke.gd`).
+const POV_SHAKE_AMPLITUDE_M := 0.0040
+const POV_SHAKE_RATES_RAD_S := [Vector2(51.3, 72.7), Vector2(58.1, 66.9)]
+## Set VIEWER_SMOKE_FRAMES=N to run N live ride frames headless and exit — 0 on a valid route,
+## 1 on a route the viewer's own validation rejects.
+const SMOKE_FRAMES_ENV := "VIEWER_SMOKE_FRAMES"
 
 var route: Dictionary
 var analysis: Dictionary
@@ -15,12 +32,20 @@ var seed_picker := RandomNumberGenerator.new()
 var ride_time := 0.0
 var ride_top_speed := 0.0
 var ride_peak_g := 0.0
+var ride_min_g := 0.0
+var ride_stats_seeded := false
+var shake_phase := 0.0
 var playback_rate := 1.0
 var selected_row := 0
 var camera_index := 0
 var paused := false
 var train_rows: MultiMesh
 var build_thread: Thread
+var building_seed := 0
+var pending_quit := false
+var route_errors := PackedStringArray()
+var smoke_frames_target := 0
+var smoke_frames := 0
 var cameras: Array[Camera3D]
 var overview_center := Vector3.ZERO
 var overview_radius := 1200.0
@@ -36,46 +61,83 @@ func _ready() -> void:
 	_populate_controls()
 	cameras = [$PovCamera, $ChaseCamera, $OverviewCamera, $FlyCamera]
 	_set_camera(0)
+	smoke_frames_target = maxi(0, int(OS.get_environment(SMOKE_FRAMES_ENV)))
+	# A build in flight owns the worker thread for ~10 s; closing the window has to say so
+	# rather than freeze silently, so the close request is handled instead of accepted.
+	get_tree().auto_accept_quit = false
 	_rebuild(DEFAULT_SEED)
 
 
 ## One seed is one ride: generation runs on a worker thread (build and analyze are pure
-## statics), and the world is rebuilt on the main thread when it lands.
+## statics), and the world is rebuilt on the main thread when it lands. The ride already on
+## screen keeps playing meanwhile — nothing here touches `route` or the meshes.
 func _rebuild(seed_value: int) -> void:
 	if build_thread != null:
 		return
-	_clear_world()
-	route = {}
-	train_rows = null
-	metrics.text = "Generating seed %d…" % seed_value
+	building_seed = seed_value
+	route_errors = PackedStringArray()
+	if route.is_empty():
+		metrics.text = "Generating seed %d…" % seed_value
 	build_thread = Thread.new()
-	build_thread.start(func() -> void:
+	var started := build_thread.start(func() -> void:
 		var built := RideGenerator.build(seed_value)
 		_finish_rebuild.call_deferred(built, RideVerify.analyze(built, ROW_OFFSETS)))
+	if started != OK:
+		build_thread = null
+		building_seed = 0
+		route_errors = PackedStringArray(["generator thread would not start (error %d)" % started])
+		metrics.text = "GENERATOR UNAVAILABLE\n" + route_errors[0]
+		push_error(route_errors[0])
 
 
 func _finish_rebuild(built: Dictionary, built_analysis: Dictionary) -> void:
-	build_thread.wait_to_finish()
-	build_thread = null
-	route = built
-	analysis = built_analysis
-	ride_time = 0.0
-	ride_top_speed = 0.0
-	ride_peak_g = 0.0
-	var errors := validate_route(route, analysis)
-	if not errors.is_empty():
-		metrics.text = "ROUTE INVALID\n" + "\n".join(errors)
-		for error in errors:
+	if build_thread != null:
+		build_thread.wait_to_finish()
+		build_thread = null
+	building_seed = 0
+	route_errors = validate_route(built, built_analysis)
+	if route_errors.is_empty():
+		route = built
+		analysis = built_analysis
+		ride_time = 0.0
+		_reset_ride_stats()
+		_clear_world()
+		_build_world()
+		_update_ride(0.0)
+	else:
+		metrics.text = "ROUTE INVALID\n" + "\n".join(route_errors)
+		for error in route_errors:
 			push_error(error)
+	if smoke_frames_target > 0 and not route_errors.is_empty():
+		get_tree().quit(1)
+	elif pending_quit:
+		get_tree().quit(0)
+
+
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_WM_CLOSE_REQUEST:
 		return
-	_build_world()
-	_update_ride(0.0)
+	if build_thread == null:
+		get_tree().quit(0)
+		return
+	pending_quit = true
+	if route.is_empty():
+		metrics.text = "Finishing generation…"
 
 
 func _exit_tree() -> void:
 	if build_thread != null:
 		build_thread.wait_to_finish()
 		build_thread = null
+
+
+## Every "so far" reading belongs to one row of one lap: restart, wrap, a new seed and either
+## row-change path all start it over.
+func _reset_ride_stats() -> void:
+	ride_stats_seeded = false
+	ride_top_speed = 0.0
+	ride_peak_g = 0.0
+	ride_min_g = 0.0
 
 
 func terrain_height(x: float, z: float) -> float:
@@ -162,6 +224,65 @@ static func build_terrain_mesh(built: Dictionary) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
+
+
+## The HUD's element readout: the role the given sample sits in, and the one it is heading for.
+## The current name falls back to the gesture's diagnostic kind between roles; the next name
+## crosses into the following gesture when this one has no role left.
+static func next_element_names(built: Dictionary, row_sample: int) -> PackedStringArray:
+	var gesture: Dictionary = built.gesture_windows[built.gesture_indices[row_sample]]
+	var current := str(gesture.get("diagnostic_kind", ""))
+	var next_name := ""
+	for role: Dictionary in gesture.get("role_windows", []):
+		if row_sample >= int(role.first) and row_sample <= int(role.last):
+			current = str(role.get("display_name", role.get("id", current)))
+		elif int(role.first) > row_sample and next_name.is_empty():
+			next_name = str(role.get("display_name", role.get("id", "")))
+	if next_name.is_empty():
+		var following: Dictionary = built.gesture_windows[
+			(built.gesture_indices[row_sample] + 1) % built.gesture_windows.size()]
+		var next_roles: Array = following.get("role_windows", [])
+		next_name = str(next_roles[0].get("display_name", next_roles[0].get("id", ""))) \
+			if not next_roles.is_empty() \
+			else str(following.get("display_name", following.get("story_slot_id", "")))
+	return PackedStringArray([current, next_name])
+
+
+## The POV eye: seated on the row's pose, eased toward where the track will be in
+## POV_LOOK_AHEAD_S — clamped to 8–45 m, so the lead is 0.47 s at the ~95 m/s record and over
+## 1.5 s at the crest crawl — plus speed-scaled rumble. `shake_phase` is wall-clock seconds, so
+## playback rate retimes the ride and never the rumble.
+static func pov_transform(
+	built: Dictionary,
+	row_distance: float,
+	speed: float,
+	top_speed: float,
+	shake_phase: float
+) -> Transform3D:
+	var row_pose := pose_at_distance(built, row_distance)
+	var up := row_pose.basis.y
+	var eye_origin := row_pose.origin + up * POV_EYE_LIFT
+	var ahead := pose_at_distance(built, row_distance + clampf(
+		speed * POV_LOOK_AHEAD_S, POV_LOOK_AHEAD_M.x, POV_LOOK_AHEAD_M.y))
+	var look := (ahead.origin - eye_origin).normalized()
+	var pov_basis := row_pose.basis
+	# Basis.looking_at is undefined when the look direction lies on the up axis; the old length
+	# guard could never fire, because the look-ahead is floored at 8 m.
+	if absf(look.dot(up)) < 0.999:
+		pov_basis = pov_basis.slerp(Basis.looking_at(look, up), POV_LOOK_WEIGHT)
+	var speed_t := pov_speed_fraction(speed, top_speed)
+	var shake_amp := POV_SHAKE_AMPLITUDE_M * speed_t * speed_t
+	var shake := pov_basis.x * _shake_axis(shake_phase, POV_SHAKE_RATES_RAD_S[0]) * shake_amp \
+		+ pov_basis.y * _shake_axis(shake_phase, POV_SHAKE_RATES_RAD_S[1]) * shake_amp * 0.7
+	return Transform3D(pov_basis, eye_origin + shake)
+
+
+static func pov_speed_fraction(speed: float, top_speed: float) -> float:
+	return clampf(speed / maxf(top_speed, 0.001), 0.0, 1.0)
+
+
+static func _shake_axis(phase: float, rates: Vector2) -> float:
+	return sin(phase * rates.x) * 0.6 + sin(phase * rates.y) * 0.4
 
 
 static func pose_at_distance(built: Dictionary, distance: float) -> Transform3D:
@@ -353,13 +474,13 @@ func _build_tunnel() -> void:
 
 
 func _process(delta: float) -> void:
+	shake_phase += delta
 	if route.is_empty() or train_rows == null:
 		return
 	if not paused:
 		var advanced := fposmod(ride_time + delta * playback_rate, route.duration)
 		if advanced < ride_time:
-			ride_top_speed = 0.0
-			ride_peak_g = 0.0
+			_reset_ride_stats()
 		ride_time = advanced
 	_update_ride(delta)
 
@@ -379,22 +500,10 @@ func _update_ride(delta: float) -> void:
 	var force: Dictionary = RideVerify.row_forces_at(
 		route, front_distance, speed, ROW_OFFSETS[selected_row]
 	)
-	var speed_t := clampf(speed / analysis.top_speed, 0.0, 1.0)
-	var eye_origin := row_pose.origin + row_pose.basis.y * 0.35
-	# Gentle look-ahead: ease the view toward the track ~0.6 s out so drops read before they hit.
-	var ahead := pose_at_distance(route, row_distance + clampf(speed * 0.6, 8.0, 45.0))
-	var look := ahead.origin - eye_origin
-	var pov_basis := row_pose.basis
-	if look.length_squared() > 1.0:
-		pov_basis = pov_basis.slerp(Basis.looking_at(look.normalized(), row_pose.basis.y), 0.22)
-	# Subtle deterministic speed shake — incommensurate sines, quadratic in speed, sub-4 cm.
-	var shake_amp := 0.035 * speed_t * speed_t
-	var shake := row_pose.basis.x * (sin(ride_time * 149.0) * 0.6 + sin(ride_time * 233.0) * 0.4) \
-		* shake_amp \
-		+ row_pose.basis.y * (sin(ride_time * 179.0) * 0.6 + sin(ride_time * 283.0) * 0.4) \
-		* shake_amp * 0.7
-	$PovCamera.global_transform = Transform3D(pov_basis, eye_origin + shake)
-	$PovCamera.fov = lerpf(74.0, 102.0, pow(speed_t, 1.5))
+	var speed_t := pov_speed_fraction(speed, analysis.top_speed)
+	$PovCamera.global_transform = pov_transform(
+		route, row_distance, speed, analysis.top_speed, shake_phase)
+	$PovCamera.fov = lerpf(POV_FOV_DEG.x, POV_FOV_DEG.y, pow(speed_t, 1.5))
 	var chase_target := front_pose.origin + front_pose.basis.z * 24.0 + Vector3.UP * 10.0
 	$ChaseCamera.global_position = chase_target if delta <= 0.0 else $ChaseCamera.global_position.lerp(
 		chase_target, 1.0 - exp(-4.0 * delta)
@@ -408,36 +517,51 @@ func _update_ride(delta: float) -> void:
 	)
 	$OverviewCamera.look_at(overview_center, Vector3.UP)
 	var gesture: Dictionary = route.gesture_windows[route.gesture_indices[row_sample]]
-	var role_name := str(gesture.get("diagnostic_kind", ""))
-	var next_name := ""
-	for role: Dictionary in gesture.get("role_windows", []):
-		if row_sample >= int(role.first) and row_sample <= int(role.last):
-			role_name = str(role.get("display_name", role.get("id", role_name)))
-		elif int(role.first) > row_sample and next_name.is_empty():
-			next_name = str(role.get("display_name", role.get("id", "")))
-	if next_name.is_empty():
-		var following: Dictionary = route.gesture_windows[
-			(route.gesture_indices[row_sample] + 1) % route.gesture_windows.size()]
-		var next_roles: Array = following.get("role_windows", [])
-		next_name = str(next_roles[0].get("display_name", next_roles[0].get("id", ""))) \
-			if not next_roles.is_empty() \
-			else str(following.get("display_name", following.get("story_slot_id", "")))
+	var element_names := next_element_names(route, row_sample)
 	var altitude := row_pose.origin.y - terrain_height(row_pose.origin.x, row_pose.origin.z)
-	ride_top_speed = maxf(ride_top_speed, speed)
-	ride_peak_g = maxf(ride_peak_g, force.normal)
+	if ride_stats_seeded:
+		ride_top_speed = maxf(ride_top_speed, speed)
+		ride_peak_g = maxf(ride_peak_g, force.normal)
+		ride_min_g = minf(ride_min_g, force.normal)
+	else:
+		ride_stats_seeded = true
+		ride_top_speed = speed
+		ride_peak_g = force.normal
+		ride_min_g = force.normal
 	metrics.text = (
-		"Seed %d  ·  %s  ·  %s → %s\n" % [route.seed,
-			gesture.get("display_name", gesture.story_slot_id), role_name, next_name]
+		_hud_banner()
+		+ "Seed %d  ·  %s  ·  %s → %s\n" % [route.seed,
+			gesture.get("display_name", gesture.story_slot_id),
+			element_names[0], element_names[1]]
 		+ "%.0f km/h  ·  %.0f m AGL  ·  Row %d  ·  %s / %s  ·  %.1f / %.1f km\n"
 		% [speed * 3.6, altitude, selected_row + 1, _clock(ride_time), _clock(route.duration),
 			front_distance / 1000.0, route.length / 1000.0]
 		+ "Gz %+.2f  ·  lat %.2f %s  ·  %.2f %s\n"
 		% [force.normal, absf(force.lateral), "R" if force.lateral >= 0.0 else "L",
 			absf(force.longitudinal), "accel" if force.longitudinal >= 0.0 else "brake"]
-		+ "so far: peak Gz %+.2f  ·  top %.0f km/h  ·  %s%s"
-		% [ride_peak_g, ride_top_speed * 3.6, CAMERA_NAMES[camera_index],
-			"  ·  PAUSED" if paused else ""]
+		+ "so far: Gz %+.2f / %+.2f  ·  top %.0f (so far %.0f) km/h  ·  %s%s"
+		% [ride_peak_g, ride_min_g, analysis.top_speed * 3.6, ride_top_speed * 3.6,
+			CAMERA_NAMES[camera_index], "  ·  PAUSED" if paused else ""]
 	)
+	if smoke_frames_target > 0:
+		smoke_frames += 1
+		if smoke_frames >= smoke_frames_target:
+			print("viewer smoke: %d live ride frames on seed %d" % [smoke_frames, route.seed])
+			get_tree().quit(0)
+
+
+## What the ride itself cannot say: a build running behind it, a close waiting on that build, or
+## a rejected route the old ride outlived. metrics.text is rewritten every frame, so it goes on
+## the front of it.
+func _hud_banner() -> String:
+	var banner := ""
+	if building_seed != 0:
+		banner += "Generating seed %d…\n" % building_seed
+	if pending_quit:
+		banner += "Finishing generation…\n"
+	if not route_errors.is_empty():
+		banner += "ROUTE INVALID  ·  " + "  ·  ".join(route_errors) + "\n"
+	return banner
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -450,8 +574,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			paused = not paused
 		KEY_R:
 			ride_time = 0.0
-			ride_top_speed = 0.0
-			ride_peak_g = 0.0
+			_reset_ride_stats()
 		KEY_N:
 			_rebuild(seed_picker.randi_range(1, 1_000_000_000))
 		KEY_BRACKETLEFT:
@@ -462,6 +585,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			if event.keycode >= KEY_1 and event.keycode <= KEY_7:
 				selected_row = event.keycode - KEY_1
 				row_picker.select(selected_row)
+				_reset_ride_stats()
 
 
 func _set_camera(index: int) -> void:
@@ -476,6 +600,7 @@ func _set_camera(index: int) -> void:
 
 func _on_row_selected(index: int) -> void:
 	selected_row = index
+	_reset_ride_stats()
 
 
 func _on_rate_selected(index: int) -> void:

@@ -44,8 +44,11 @@ jobs:
           }
       - name: Validate ride and meshes
         run: timeout 20m godot --headless --path godot --script res://smoke.gd
+      # --quit-after counts engine frames, which all elapse while the generator thread is still
+      # working: it used to exit before the first ride frame ever ran. VIEWER_SMOKE_FRAMES counts
+      # live ride frames after the build lands, and exits 1 if the viewer rejects the route.
       - name: Exercise viewer runtime
-        run: timeout 3m godot --headless --path godot --quit-after 120
+        run: timeout 3m env VIEWER_SMOKE_FRAMES=120 godot --headless --path godot
       - name: Upload bounded CI diagnostics
         if: always()
         uses: actions/upload-artifact@v4

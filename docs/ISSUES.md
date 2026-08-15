@@ -122,6 +122,16 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
    connective beats are absent.
 2. Pacing cheated by near-zero-loss coasting — boring sections hold speed as if
    friction/drag-free, propping up the elapsed average.
+   **Mechanism derived, 2026-08-15.** The integrator's resistance is
+   `0.08 + 0.000075·v²` m/s² (`ride_program.gd` `ROLLING_MPS2`/`AERO_PER_M`). Rolling at
+   0.08 m/s² (c_rr ≈ 0.008) is defensible with near-future bogie credit, but the aero term is
+   3–5× under real physics: a ~12 t open train at Cd·A ≈ 4.5–7 m² in desert air
+   (ρ ≈ 1.1–1.225 kg/m³) gives 0.00021–0.00036 per metre, not 0.000075. At return speeds
+   (~75 m/s) the built ride sheds ~0.05 m of head per metre where honest drag sheds ~0.17.
+   Fixing it re-opens the whole energy chain — launch exit speeds, act-one entry bands, LSM
+   drives, camelback crest, and the record closure (where more honest drag actually *eases*
+   the measured ~21.8 m surplus-head problem) — so it must land as one re-derivation with the
+   prefix closure solve available (issue 24), not as a constant tweak.
 3. G-force envelope still not reached in many parts.
 4. Oversmoothing of elements.
 5. Poor FVD implementation — the force-authoring quality itself, not just targets.

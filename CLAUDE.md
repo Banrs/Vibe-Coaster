@@ -130,7 +130,10 @@ positions stay raw for physics, verification, and generated-channel measurement.
   enforced by any validator); elapsed average speed is reported, never
   targeted — pacing is organic. Length 7.8–8.2 km. The unpowered return is authored in normal-g
   and bank/roll functions; a bounded seven-control solve targets the derived capture-entry
-  corridor, the 7.8–8.2 km route band, and the 70–77 m/s passive entry-speed band with
+  corridor, the 7.8–8.2 km route band, and the 70–80 m/s passive entry-speed band (widened
+  from 70–77 on 2026-08-15 — the measured cost of closing the ~340 km/h record inside
+  8.2 km without a mid-course brake; see
+  `docs/superpowers/specs/2026-08-15-record-launch-derivation.md`) with
   coarse/fine agreement, then the capture solve closes the
   station frame. Records live in the marquee elements; suspense/clifftop elements never scale toward
   records; no element class between ~110 m and the ~250 m marquee pair (the gap is the

@@ -36,25 +36,46 @@ LSM run. Rail-guided speed itself is proven far beyond 340 km/h (TGV 574.8 km/h 
 ~19.6 MW; L0 maglev 603 km/h), so the binding constraints are launch power electronics and
 wheel/bogie rating — engineering, not physics.
 
-The ride's LSM3 does not start from rest: it boosts from cliff-dive exit speed
-(≈ 85–88 m/s after a ~245 m drop) to the record. Required: exit **93.9–95.6 m/s
-(338–344 km/h)**, Δv ≈ +4–9 m/s beyond today's built 91.2 m/s. At ~1.3–1.4 g drive and
-~94 m/s, per-train power peaks ≈ 13–16 MW (m ≈ 12 t) — a record-scale but credible 2041
-installation (TGV-record-class power, flywheel/supercap buffered like existing launch
-systems), run over a 150–220 m tunnel booster consistent with the role band. Verdict:
-**340 km/h holds up**; the built 328.3 km/h was a tuning shortfall, not a physical limit.
+The ride's LSM3 does not start from rest: it boosts from the dive pullout. **Measured
+correction (2026-08-15, first implementation attempt):** this section originally assumed a
+dive-exit speed of ≈85–88 m/s; the built ride's measured LSM3 entry is **69.95 m/s** (the
+pullout costs more head than the naive √(2gh) estimate), so the record needs Δv ≈ +25 m/s,
+not +4–9. At 1.33 g drive and ~94 m/s, per-train power peaks ≈ 15 MW (m ≈ 12 t) — a
+record-scale but credible 2041 installation (TGV-record-class power, flywheel/supercap
+buffered like existing launch systems), run over a 150–220 m tunnel booster consistent
+with the role band. Verdict: **340 km/h holds up as propulsion engineering.**
+
+**Closure finding (measured):** the record was *not* reachable inside the original closure
+contract. The built ride sits at its closure limit in three places at once — return entry
+76.991 m/s against the 77.0 cap, `turn_b_bank` pinned at its 60° authoring floor, and LSM3
+within ~0.005 g of the energy ceiling (the return's height residual grows ~1.13 m per
++0.01 g of LSM3 drive; the record band leaves ~21.8 m of surplus head, and passive drag
+sheds only ~0.055 m of head per metre at return speeds — ≈ +400 m of route to shed it).
+The three ways out were all contract constants: widen the passive capture-entry band,
+lengthen the 7.8–8.2 km route band to ~8.6 km, or a forbidden mid-course brake.
+
+**User decision (2026-08-15): widen the passive capture-entry band to 70–80 m/s.** With
+that band the return solve converges exactly at 1.33 g LSM3 drive (arrival ≈ 79.7 m/s,
+route ≈ 8200 m) — measured, not projected. The train comes home hotter and the terminal
+brakes work harder, inside the envelope, with the C4 station closure unchanged.
 
 Downstream consistency: camelback entry at ~94.5 m/s crests the ~250 m structure at
 ≈ 63 m/s (√(94.5² − 2·9.81·250)) — sustained-airtime crest speed, consistent with the
-marquee intent; the unpowered return then bleeds to the 70–77 m/s passive entry band via
-the seven-control solve.
+marquee intent. Raising LSM3 drive *lowers* camelback prominence at fixed fall duration
+(the fall descends less at higher speed), so the camelback `fall_s` re-tunes with it.
 
 ## 3. Gated outcomes
 
 - Tunnel exit / ride top speed: **93.9–95.6 m/s (338–344 km/h)**, asserted in `smoke.gd`
   on the deep seeds and in `generator_material_tests.gd` (tightened from the old 90–98
   acceptance).
+- Passive capture-entry band: **70–80 m/s** (was 70–77) — the user-approved contract
+  change that makes the record closable; updated in code and `CLAUDE.md` together.
 - Entry launch peak authored drive: **3.9 g, band 3.7–4.1**, replacing the 3.0–3.8 test
-  band; Δv conserved so opener/act-one entry speeds stay within their proven bands.
+  band; Δv conserved so opener/act-one entry speeds stay within their proven bands. The
+  shorter (~34 m) launch shifts the station handoff, so the return solve's hand-tuned
+  seed (`RETURN_SEED`) is re-derived rather than nudged; if the 60° `turn_b_bank`
+  authoring floor must relax to restore solve margin, the relaxation and its riding-
+  character rationale are recorded in the commit.
 - LSM2 cliff-base climb assist is untouched by this derivation: its ~0.29 g drive follows
   from its speed/length targets, and no record claim attaches to it.

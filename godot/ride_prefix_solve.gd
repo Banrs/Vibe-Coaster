@@ -68,11 +68,9 @@ static func _prefix_initial_state() -> Dictionary:
 
 ## The four station-local quantities the closure targets, in `PREFIX_RESIDUAL_IDS` order. Both
 ## spans are the outward run projected on the target's own axis; `summit_rise_m` is the dive
-## entry's own height. Measured on the fifteen-seed fleet (Stage 3): the station height placement
-## (`generator.gd._place_dive`) is the max of several terrain-clearance terms, and the
-## dive-corridor terms never bind — 5.7 to 17.8 m of slack sits under them on every seed. What
-## binds is the reserved terminal approach (5 seeds), the opener's lower spine (3), or the summit
-## aim itself (7), and all three are functions of the head, which no control here can move. So
+## entry's own height. The station height placement (`generator.gd._place_station`) is the max of
+## several terrain-clearance terms; which of them binds is measured there, and every one of them is
+## a function of the head and the terrain, which no control here can move. So
 ## `summit_agl - summit_rise_m` is a constant of the terrain and the head, and `generator.gd`
 ## translates the summit AGL band into this rise band through it. The tunnel exit is the
 ## trajectory's last sample, not the published pre-seam one, so the quantity does not move with

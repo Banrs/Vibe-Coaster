@@ -12,9 +12,9 @@ const DEEP_SEEDS := [11, 42, 20260809]
 const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 ## The fleet must not be one ride fifteen times. Measured spread on 2026-08-15 with the landed
-## draw set and the closed-form placement: 37.11 m of route length and 0.637 s of elapsed time
-## across the fifteen seeds, so these floors sit at roughly a seventh of the length spread and a
-## sixth of the duration spread the planner actually produces.
+## draw set, the closed-form placement and the rim-aimed dive: 53.47 m of route length and 0.408 s
+## of elapsed time across the fifteen seeds, so these floors sit at roughly a tenth of the length
+## spread and a quarter of the duration spread the planner actually produces.
 const FLEET_LENGTH_SPREAD_FLOOR_M := 5.0
 const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## The fleet half of the return budget claim. `ride_program.gd` derives the cap and
@@ -32,8 +32,10 @@ const RETURN_EVALUATION_ALLOWANCE := 0.6
 ## margin as one-sided: `generator.gd` floors the station at the inner band's 17.99 m (the 40%
 ## interior of the 15.01-24.95 band) and every other clearance term can only raise it, so the low
 ## side carries 2.98 m by construction and only the high side can ever approach this gate. The
-## fleet's tightest summit margin (+2.90 m, seed 77777) is therefore high-side evidence alone, not
-## a two-sided measurement of the 1.5 m floor.
+## fleet's tightest summit margin (+2.96 m, seed 77777) is therefore high-side evidence alone, not
+## a two-sided measurement of the 1.5 m floor. The dive-entry margin reads the other way round
+## since the rim aim landed: it is the *low* side that binds now (+4.30 m worst, seed 1234), which
+## is the measurement of issue 22 — the dive starts at the rim end of its band on every seed.
 ## The viewer's POV camera bounds. Measured on seed 42 (2026-08-15): the camera stays within
 ## 6.3° of the tangent, the look direction stays 84.5° clear of the pose up axis, and the rumble
 ## moves the eye 4.41 mm between 60 fps frames at top speed. The cone and clearance are the

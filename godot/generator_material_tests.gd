@@ -2,6 +2,7 @@ extends SceneTree
 
 const RideGenerator := preload("res://generator.gd")
 const RidePlanner := preload("res://ride_planner.gd")
+const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
 const RideProgram := preload("res://ride_program.gd")
 const RideVerify := preload("res://verify.gd")
 const Terrain := preload("res://terrain.gd")
@@ -38,6 +39,11 @@ const PRESET_SEEDS := [
 const REFUSAL_SEEDS := [11, 42, 20260809, 4096]
 ## The perturbation the refusal evidence in `ride_planner.gd` names, applied to the authored value.
 const REFUSAL_DELTA := 0.005
+## How far above its authored seed the accepted `dive_approach_s` may sit. The closure may move the
+## control — that is what it is for — but the shorter chord it now aims at is buyable by hovering
+## longer at the lip, and issue 22 says the lip is exactly where the ride must not linger. Measured
+## on the fleet: 0.9964-1.0003 s against a 1.00 s seed, so this holds the closure to what it does.
+const DIVE_APPROACH_LENGTHENING_TOLERANCE_S := 0.01
 
 var _errors := PackedStringArray()
 
@@ -93,6 +99,48 @@ func _check_preset_fleet_contract() -> void:
 			"preset seed %d public generation observed ok=%s integrations=%d repairs=%d length=%.3f m story=%s"
 			% [seed, str(route.get("ok", false)), int(stats.get("accepted_integrations", -1)),
 				int(stats.get("repair_count", -1)), length_m, str(story is Dictionary)])
+		if story is Dictionary:
+			_check_dive_commits_at_the_rim(seed, route)
+
+
+## Issue 22, gated on the fleet: the dive must commit at the rim, not well back from it. The
+## generator aims the entry at the rim end of its feasible band, so every seed has to land inside
+## that aimed window — a seed that lands above it is a seed whose apron floor, not the plateau
+## band, is choosing where the dive starts, and the vertigo the beat exists for is the thing being
+## spent. The window is `generator.gd`'s own arithmetic, read here rather than copied: the plateau
+## band's floor, plus the certified `DIVE_ENTRY_EDGE_MARGIN_M` the fleet may never graze, plus the
+## rim aim window `placement_u` draws inside.
+##
+## The second half of the same intent, "no lip pause", is measured rather than aimed. Shortening
+## the authored 1.00 s pre-commit run was tried and refused by measurement (2026-08-15): seeding
+## `dive_approach_s` at the short end of its own 0.4 s bound moves the camelback handoff ~10 m and
+## the seven-control return solve does not re-converge from its fixed seed on *any* of the fifteen
+## — budget_exhausted at 79 of 80 evaluations. The refusal is not monotone in the seed value (0.80
+## refuses seed 7, 0.90 refuses 123456, 0.85 happens to pass all fifteen), so any shortening that
+## does build is a coincidence of that fixed basin rather than a derivation, and the named
+## follow-on is the deterministic per-story return-seed derivation. What is gated here is what the
+## measurement does support: the closure never buys its shorter chord by hovering at the lip.
+func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
+	var terrain: Dictionary = route.get("terrain", {})
+	var planning: Dictionary = route.terrain_story_plan.get("planning", {})
+	var closure: Dictionary = planning.get("closure", {})
+	var controls: Array = closure.get("accepted_values", [])
+	if terrain.is_empty() or controls.size() != 4:
+		_expect(false, "seed %d publishes a measurable dive placement" % seed_value)
+		return
+	var rim_m := float(planning.get("dive_entry_edge_m", NAN)) \
+		- float(terrain.apron_width) - float(terrain.face_width)
+	var floor_m := RideGenerator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x \
+		+ RideGenerator.DIVE_ENTRY_EDGE_MARGIN_M
+	var window := RideGenerator.DIVE_ENTRY_RIM_AIM_M + Vector2.ONE * floor_m
+	_expect(rim_m >= window.x and rim_m <= window.y,
+		"seed %d starts its dive %.3f m behind the rim; the fleet aims %.1f-%.1f m"
+		% [seed_value, rim_m, window.x, window.y])
+	var approach_s := float(controls[3])
+	var authored_s := float(RidePrefixSolve.PREFIX_SEED[3])
+	_expect(approach_s <= authored_s + DIVE_APPROACH_LENGTHENING_TOLERANCE_S,
+		"seed %d holds %.4f s of banked pre-commit approach against its %.2f s authored beat"
+		% [seed_value, approach_s, authored_s])
 
 
 ## The prefix-closure design's section 10.4, re-run as a gate: the stories the generator used to

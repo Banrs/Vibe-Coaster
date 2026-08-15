@@ -41,15 +41,26 @@ const DIVE_EXIT_APRON_MARGIN := 0.05
 const PREFIX_MARGIN_SUMMIT_M := 1.5
 const PREFIX_MARGIN_RECORD_MPS := 0.4
 const PREFIX_EVALUATION_ALLOWANCE := 0.6
-## Every aim band is the middle 40% of its feasible band, so a converged closure and an accepted
-## placement both sit interior. Measured on the fleet: the 40% interior of the summit, apron and
-## record bands clears the certified margin by 2.98 m, 0.055 and 0.11 m/s respectively.
+## The summit and record aim bands are the middle 40% of their feasible bands, so a converged
+## closure sits interior. Measured on the fleet: that 40% interior clears the certified summit and
+## record margins by 2.98 m and 0.11 m/s. The dive-entry aim is deliberately not interior - issue
+## 22 wants the rim end of its band, and `DIVE_ENTRY_RIM_AIM_M` cushions the certified margin
+## instead; the apron fraction is then whatever those two leave, measured at +0.0565 worst.
 const AIM_BAND_INTERIOR_FRACTION := 0.4
-## The dive's outward edge run is aimed at the terrain's own chord spine rather than at the middle
+## The dive's outward edge run is aimed at a terrain-derived chord spine rather than at the middle
 ## of its feasible band: measured on the fleet, the 40% interior of the composed band would demand
-## a 2-12 m reshape of a chord the terrain does not object to. The half-width covers the measured
-## 4.3 m of edge wobble between the dive's own endpoints, so the authored chord starts inside.
+## a 2-12 m reshape of a chord the terrain does not object to. The half-width is also what holds
+## the whole chord aim under the entry's own floor (`_terrain_dive_span_m`), so widening it would
+## be paid for in how far back from the rim the dive may start. Re-measured against the rim aim
+## (2026-08-15): the edge wobble across the dive's own span runs -8.2 to +6.6 m over the fifteen
+## seeds, so the authored chord starts inside its aim band on twelve of them and the closure walks
+## the other three in - it is a head start for the solve, not a claim that the solve is unneeded.
 const DIVE_SPAN_AIM_HALF_WIDTH_M := 6.0
+## Issue 22 - the dive commits at the rim. The entry is aimed at the rim end of its feasible band
+## instead of the middle: this is the window above that band's own floor that `placement_u` draws
+## in. The 1 m cushion keeps the certified `DIVE_ENTRY_EDGE_MARGIN_M` a margin the fleet aims above
+## rather than grazes, and the 4 m width is what the draw keeps to vary placement per seed.
+const DIVE_ENTRY_RIM_AIM_M := Vector2(1.0, 5.0)
 ## The two analytic yaw solutions are separated by twice the chord's cross component - tens of
 ## degrees - so the post-solve agreement check only has to distinguish the branch, not pin an axis
 ## the dive-span aim band is free to rotate by a few degrees.
@@ -159,7 +170,7 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 		return preflight
 	var apron_width_m := float(terrain.apron_width)
 	var shelf_edge_m := apron_width_m + float(terrain.face_width)
-	var terrain_dive_span_m := float(terrain.face_width) + 0.75 * apron_width_m + 24.0
+	var terrain_dive_span_m := _terrain_dive_span_m(shelf_edge_m, apron_width_m)
 	var minimum_total_span_m := shelf_edge_m \
 		+ DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x + TUNNEL_EXIT_PLAIN_OVERSHOOT_M
 	var outward_local := _outward_local(
@@ -295,9 +306,11 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 ## wobble is a function of the along-edge coordinate alone), so sliding the station until the dive
 ## entry lands on `entry_edge_m` is arithmetic; the station height is then the highest of the
 ## clearance terms every part of the ride imposes, and the summit AGL that falls out is checked by
-## the caller. Which term binds is measured, not assumed: over the fifteen-seed fleet the dive
-## corridor never binds (5.7-17.8 m of slack under it), and the height is set by the reserved
-## terminal approach on 5 seeds, the opener's lower spine on 3, and the summit aim itself on 7.
+## the caller. Which term binds is measured, not assumed: re-measured on the fifteen-seed fleet
+## with the rim aim (2026-08-15), the dive corridor still never binds - 6.9 to 13.9 m of slack
+## sits under it - and the height is set by the summit aim itself on 7 seeds, the station/opener
+## lower spine on 7, and the reserved terminal approach on 1. All of them are functions of the
+## head and the terrain, which is why the closure can treat `summit_agl - rise` as a constant.
 static func _place_station(terrain: Dictionary, inward: Vector3, footprint: Dictionary,
 	parts: Dictionary, entry_edge_m: float
 ) -> Dictionary:
@@ -535,17 +548,35 @@ static func _exit_edge_limits(apron_width_m: float) -> Vector2:
 		DIVE_EXIT_APRON_BAND.y - DIVE_EXIT_APRON_MARGIN) * apron_width_m
 
 
+## The outward run the terrain wants from the dive: the chord that lands the exit on its apron
+## floor while the entry sits on the plateau band's own floor, less the aim half-width, so the
+## whole chord aim band stays under that floor and the entry's feasible floor is the plateau band
+## rather than the apron. That is issue 22 in one line - where this constant puts the chord is
+## where the dive starts relative to the rim. `_outward_local` rotates the frame until the native
+## chord projects exactly this far, so the ride's shape does not change when it moves; only the
+## angle it meets the escarpment at, and with it the ground the entry sits over, do.
+static func _terrain_dive_span_m(shelf_edge_m: float, apron_width_m: float) -> float:
+	return _entry_edge_limits(shelf_edge_m).x - _exit_edge_limits(apron_width_m).x \
+		- DIVE_SPAN_AIM_HALF_WIDTH_M
+
+
 ## The dive-entry edge distances the placement may draw from: both limit bands, offset by the run
 ## the dive itself covers, intersected with the run the tunnel needs to clear the plain boundary,
-## and narrowed to its inner aim band.
+## and narrowed to the rim end of what is left. Aiming at the rim rather than the middle is issue
+## 22's fix; the cushion means the certified entry margin is aimed above, never grazed. The one
+## honest narrowing: a feasible band narrower than the cushion now refuses where the inner band
+## would have placed. On the fleet that band runs 18-22 m wide, so the path is unreached, not
+## unreachable.
 static func _entry_edge_aim_band(shelf_edge_m: float, apron_width_m: float,
 	dive_edge_span_m: float, tunnel_edge_span_m: float
 ) -> Vector2:
 	var entry_limits := _entry_edge_limits(shelf_edge_m)
 	var exit_limits := _exit_edge_limits(apron_width_m)
-	return _inner_band(Vector2(maxf(entry_limits.x, exit_limits.x + dive_edge_span_m),
-		minf(entry_limits.y, minf(exit_limits.y + dive_edge_span_m,
-			dive_edge_span_m + tunnel_edge_span_m - TUNNEL_EXIT_PLAIN_OVERSHOOT_M))))
+	var rim_m := maxf(entry_limits.x, exit_limits.x + dive_edge_span_m)
+	var ceiling_m := minf(entry_limits.y, minf(exit_limits.y + dive_edge_span_m,
+		dive_edge_span_m + tunnel_edge_span_m - TUNNEL_EXIT_PLAIN_OVERSHOOT_M))
+	return Vector2(rim_m + DIVE_ENTRY_RIM_AIM_M.x,
+		minf(ceiling_m, rim_m + DIVE_ENTRY_RIM_AIM_M.y))
 
 
 ## The closure the prefix must hit, built only from terrain-and-frame quantities: the plateau and

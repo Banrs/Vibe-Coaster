@@ -1,5 +1,12 @@
 # Route and Configuration Foundation Implementation Plan
 
+> **Superseded — design history, not an executable plan.** Superseded by
+> `2026-08-12-material-generator-vertical-slice.md` and its execution addendum
+> `../specs/2026-08-12-material-generator-vertical-slice-design.md`, which landed on `main` on
+> 2026-08-15. Do not execute the steps below: the `LegacyRouteAdapter`, the temporary packed
+> sampler, and the legacy generator they migrate from no longer exist. Read this for rationale
+> and for the contracts the material slice kept.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Define the final immutable `MotionTrajectory`/`RideRoute` consumer contract, migrate the legacy generator through one explicitly temporary adapter without changing its geometry, and implement deterministic version-1 configuration normalization and planning.

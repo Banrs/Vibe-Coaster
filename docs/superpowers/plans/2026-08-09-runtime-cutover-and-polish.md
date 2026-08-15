@@ -1,5 +1,12 @@
 # Runtime Cutover and Polish Implementation Plan
 
+> **Superseded — design history, not an executable plan.** Superseded by
+> `2026-08-12-material-generator-vertical-slice.md` and its execution addendum
+> `../specs/2026-08-12-material-generator-vertical-slice-design.md`, which landed on `main` on
+> 2026-08-15. Do not execute the steps below: the cutover and the deletion of `elements.gd` are
+> already done, and its `RideVerify.ROW_OFFSETS_M` step landed as `RouteContract.ROW_OFFSETS`
+> instead. Read this for rationale.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the tested configuration/planner/compiler/time-domain-kernel pipeline the only runtime generator, remove the legacy geometry system, refine the default fleet from committed evidence, and preserve verified viewer, audit, and guided-authoring workflows.

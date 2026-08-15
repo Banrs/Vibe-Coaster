@@ -112,6 +112,35 @@ below); these seven are **not** covered by the audit's traceability record.
     coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
     GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.
 
+## Code health — 2026-08-15 hygiene review
+
+Production is 8,959 SLOC across 17 files; tests are 7,252 across 9. By subsystem: fidelity
+4,080 · generator 3,544 · viewer 483 · verify 448 · harness 404. The read-only diagnostic layer
+is the largest thing in the repository — larger than the generator it measures — which is worth
+knowing before anyone reads `CLAUDE.md`'s "physics, generation, and validation are the product"
+as a description of where the code is.
+
+A **full** generator refactor is not recommended: it is green, deterministic, freshly landed,
+and none of issues 20–26 is caused by its file layout. The return solve is also basin-sensitive
+(act-one force changes perturb it), so gratuitous motion risks a hand-calibrated result for no
+functional gain. Two bounded targets are worth doing, ideally as part of the issue 24 work
+rather than before it:
+
+- **Duplicated numerics.** `ride_program.gd` preloads `BoundedSolver` and uses it once, at the
+  return solve, while carrying its own private `_linear_solve`, `_finite_difference_jacobian`
+  and `_matrix_conditioning` for the capture and brake solves. Two Gauss-elimination paths that
+  should be one. `godot/bounded_solver.gd` already exists and is tested.
+- **`ride_program.gd` holds five concerns** in 1,746 lines / 55 functions: story-recipe assembly,
+  the return solve, the capture solve, the brake solve, and the numerics above. The solve
+  triple is the natural seam. Decomposition remains a standing user deferral — do it when
+  issue 24 forces changes there, not speculatively.
+
+Not adjusted, deliberately: the flat `godot/` layout (17 production files, prefix-grouped by
+name — a directory move would rewrite ~40 preload paths, the `.uid` files, `main.tscn`, the CI
+manifest and every doc reference for modest gain), and the name `_inspect.gd`, whose leading
+underscore reads as private though it is a documented user-facing command (54 references, most
+in historical plans).
+
 ## Audit coverage for issues 1–16
 
 **The range in this heading is a code contract, not prose.** `1..16` is hardcoded in

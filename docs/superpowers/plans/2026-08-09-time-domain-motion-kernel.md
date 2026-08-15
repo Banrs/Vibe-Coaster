@@ -1,5 +1,12 @@
 # Time-Domain Motion Kernel Implementation Plan
 
+> **Superseded — design history, not an executable plan.** Superseded by
+> `2026-08-12-material-generator-vertical-slice.md` and its execution addendum
+> `../specs/2026-08-12-material-generator-vertical-slice-design.md`, which landed on `main` on
+> 2026-08-15. Do not execute the steps below: they preserve `elements.gd` and the legacy
+> generator, both deleted. The kernel itself shipped as `godot/motion.gd`, the sole accepted
+> rider-frame integrator. Read this for rationale.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an independently tested, deterministic 100 Hz FVD kernel with immutable C2 profiles, one C2 resistance law, foundation-owned authoritative trajectories, analytic boundary jets, strict station-only low-speed motion, and a bounded five-variable station-capture prototype without changing generated rides.

@@ -1,5 +1,12 @@
 # Default Ride Recipes Implementation Plan
 
+> **Superseded — design history, not an executable plan.** Superseded by
+> `2026-08-12-material-generator-vertical-slice.md` and its execution addendum
+> `../specs/2026-08-12-material-generator-vertical-slice-design.md`, which landed on `main` on
+> 2026-08-15. Do not execute the steps below: they build the ten-class template scaffold and a
+> dormant candidate program alongside the legacy runtime, an order the material slice explicitly
+> replaced. Native recipes now live in `godot/ride_program.gd`. Read this for rationale.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Compile the complete `future-hybrid@1` story into one evidence-backed, physically integrated candidate `MotionProgram`/`RideRoute` behind focused tests, without cutting the public runtime over from the characterized legacy generator.

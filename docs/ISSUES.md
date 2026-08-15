@@ -133,6 +133,13 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
    the measured ~21.8 m surplus-head problem) — so it must land as one re-derivation with the
    prefix closure solve available (issue 24), not as a constant tweak.
 3. G-force envelope still not reached in many parts.
+   **Measured against the counterpart bands, 2026-08-15** (offline geometry pack, deep
+   seeds; diagnostic labels, not verdicts): the inversion act runs *under* its grounded
+   targets — cutback peak 4.12 g vs the 5.15–5.6 band, Immelmann peak 5.23 g vs 5.79–5.91
+   (misses of 0.05–0.18 normalized) — while the loop entry lobe sits slightly over. Roughly
+   30 of ~94 counterpart windows read `under` per deep seed. The under-shoots are in exactly
+   the roles whose targets are still hardcoded literals; they become drawable/re-targetable
+   when the prefix closure solve (24) unblocks act-one retuning.
 4. Oversmoothing of elements.
 5. Poor FVD implementation — the force-authoring quality itself, not just targets.
 6. Poor terrain awareness — e.g. ~80 m above the terrain at the ride's highest point, never
@@ -146,6 +153,13 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
 12. Too many flats — between the cliff-dive LSM and the camelback, on the return, and the
     hold extending too far from the cliff edge (so the clifftop is not terrain-hugging).
 13. Airtime hills etc. too tame.
+    **Quantified, 2026-08-15:** the act-one airtime chain measures −0.325 g against grounded
+    counterpart targets of −1.1 (Falcon deepest mid-course hill), −1.35/−1.73 (I305 ejector
+    hills) and −1.13 (longest float) — the built hills deliver a quarter to a fifth of the
+    counterpart ejector force, the largest normalized misses in the whole comparison. The
+    return heights author −0.45 g × the certified 0.95–1.05 unload draw, similarly tame.
+    Blocked on 24 for act one; the return-side deepening needs its draw range re-certified
+    wider (the envelope allows far more: −3.0 Gz stretched).
 14. Elements miss the original near-future scaling requirements — scaling/geometry feels
     wrong when compared multi-dimensionally (height vs speed vs g vs duration together).
 15. Jerky transitions.

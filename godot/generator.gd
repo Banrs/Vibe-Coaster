@@ -177,7 +177,7 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	# station-local rise band: the station height is a maximum of clearance terms none of the four
 	# controls can move, so the aim band is that band translated through the height this very
 	# terrain imposes. Both placements below are evaluations of one closed form, not a search.
-	var preflight_place := _place_dive(terrain, inward, footprint, preflight,
+	var preflight_place := _place_station(terrain, inward, footprint, preflight,
 		lerpf(entry_band.x, entry_band.y, placement_u))
 	var solved := RideProgram.terrain_story_capability(side, story, _closure_target(
 		footprint, outward_local, shelf_edge_m, apron_width_m, terrain_dive_span_m, entry_band,
@@ -257,7 +257,6 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 		"dive_entry_edge_m": placement.dive_entry_edge_m,
 		"dive_exit_edge_m": placement.dive_exit_edge_m,
 		"tunnel_exit_edge_m": placement.tunnel_exit_edge_m,
-		"dive_entry_edge_aim_band_m": entry_band,
 		"summit_track_agl_m": summit_track_agl_m,
 		"sampled_dive_points": accepted.dive_footprint.positions_m.size(),
 		"planned_minimum_centerline_agl_m": placement.minimum_centerline_agl_m,
@@ -291,7 +290,7 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 ## the caller. Which term binds is measured, not assumed: over the fifteen-seed fleet the dive
 ## corridor never binds (5.7-17.8 m of slack under it), and the height is set by the reserved
 ## terminal approach on 5 seeds, the opener's lower spine on 3, and the summit aim itself on 7.
-static func _place_dive(terrain: Dictionary, inward: Vector3, footprint: Dictionary,
+static func _place_station(terrain: Dictionary, inward: Vector3, footprint: Dictionary,
 	parts: Dictionary, entry_edge_m: float
 ) -> Dictionary:
 	var tangent: Vector3 = footprint.tangent
@@ -352,9 +351,23 @@ static func _place_dive(terrain: Dictionary, inward: Vector3, footprint: Diction
 			Terrain.height(terrain, approach.x, approach.z) \
 			+ STATION_LOWER_SPINE_CLEARANCE_M + LOWER_SPINE_SURFACE_OFFSET_M)
 	station_position.y = required_station_y
+	return {"station_position_m": station_position,
+		"summit_track_agl_m": required_station_y + world_entry_offset.y - entry_surface_m}
+
+
+## The same placement, plus the dive observations an accepted plan publishes. The preflight only
+## reads the summit AGL, so it calls `_place_station` directly and skips this second terrain scan.
+static func _place_dive(terrain: Dictionary, inward: Vector3, footprint: Dictionary,
+	parts: Dictionary, entry_edge_m: float
+) -> Dictionary:
+	var station := _place_station(terrain, inward, footprint, parts, entry_edge_m)
+	var station_position: Vector3 = station.station_position_m
+	var tangent: Vector3 = footprint.tangent
+	var right: Vector3 = footprint.right
+	var world_entry_offset: Vector3 = footprint.world_entry_offset
 	var placement := _dive_placement_observation(terrain, station_position, tangent, right,
-		world_entry_offset, dive_footprint)
-	placement["summit_track_agl_m"] = required_station_y + world_entry_offset.y - entry_surface_m
+		world_entry_offset, parts.dive_footprint)
+	placement["summit_track_agl_m"] = station.summit_track_agl_m
 	return placement
 
 

@@ -770,8 +770,10 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 			or not terrain_frame.get("planning") is Dictionary:
 		return _failure("material-v1 decisions or terrain frame is incomplete", "plan")
 	var planning: Dictionary = terrain_frame.planning
+	# The prefix integration count is a constant of the path that produced the plan, not a budget:
+	# one for a fixture built from a single capability, two for production (preflight + closure).
 	if str(planning.get("capability_id", "")).is_empty() \
-			or int(planning.get("planning_integrations", 0)) < 1 \
+			or int(planning.get("planning_integrations", 0)) not in [1, 2] \
 			or not planning.get("scale") is Dictionary \
 			or not _prefix_closure_is_valid(planning.get("closure", {})):
 		return _failure("material-v1 planning capability is incomplete", "plan")

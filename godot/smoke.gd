@@ -9,12 +9,12 @@ const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
 
 const DEEP_SEEDS := [11, 42, 20260809]
-const TOP_SPEED_BAND_MPS := Vector2(93.9, 95.6)
 const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 ## The fleet must not be one ride fifteen times. Measured spread on 2026-08-15 with the landed
-## draw set: 41.9 m of route length and 0.31 s of elapsed time across the fifteen seeds, so
-## these floors sit at roughly a quarter of what the planner actually produces.
+## draw set and the closed-form placement: 37.11 m of route length and 0.637 s of elapsed time
+## across the fifteen seeds, so these floors sit at roughly a seventh of the length spread and a
+## sixth of the duration spread the planner actually produces.
 const FLEET_LENGTH_SPREAD_FLOOR_M := 5.0
 const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## The fleet half of the return budget claim. `ride_program.gd` derives the cap and
@@ -28,7 +28,11 @@ const PREFIX_EVALUATION_ALLOWANCE := 0.6
 ## these and the closed-form placement lands inside them by construction; measuring them on all
 ## fifteen seeds is what turns the aim into a gate. Measured on the grid-search placement this
 ## replaced: four seeds missed the dive-entry margin, nine the apron margin, and seven sat exactly
-## on the summit band's floor.
+## on the summit band's floor. Read the summit margin as one-sided: `generator.gd` floors the
+## station at the inner band's 17.99 m (the 40% interior of the 15.01-24.95 band) and every other
+## clearance term can only raise it, so the low side carries 2.98 m by construction and only the
+## high side can ever approach this gate. The fleet's tightest summit margin (+2.90 m, seed 77777)
+## is therefore high-side evidence alone, not a two-sided measurement of the 1.5 m floor.
 const DIVE_ENTRY_EDGE_MARGIN_M := 3.0
 const DIVE_EXIT_APRON_MARGIN := 0.05
 const SUMMIT_TRACK_AGL_MARGIN_M := 1.5
@@ -267,9 +271,10 @@ func _validate_record_launch_numbers(
 	route: Dictionary, analysis: Dictionary, issues: PackedStringArray
 ) -> void:
 	var top_speed := float(analysis.top_speed)
-	if top_speed < TOP_SPEED_BAND_MPS.x or top_speed > TOP_SPEED_BAND_MPS.y:
+	var band: Vector2 = Generator.RECORD_EXIT_SPEED_BAND_MPS
+	if top_speed < band.x or top_speed > band.y:
 		issues.append("top speed %.2f m/s is outside the record band %.1f-%.1f m/s" % [
-			top_speed, TOP_SPEED_BAND_MPS.x, TOP_SPEED_BAND_MPS.y])
+			top_speed, band.x, band.y])
 	var launch := {}
 	for window in route.get("gesture_windows", []):
 		if window.get("story_slot_id", "") == "station-launch":

@@ -31,12 +31,23 @@ const STREAM_HASH_MASK := 0x7FFFFFFFFFFFFFFF
 const SPINE_OPENER := ["station-launch", "opener-twisted-drop", "opener-teardrop",
 	"opener-release"]
 const ACT_ONE_ANCHOR := "act-one-immelmann"
-## The permutable act-one pool. The two inversions are structural (the loop needs act one's
-## honest entry speed, the cutback needs the Immelmann exit); only a hill or the wave turn may
-## be dropped, and never both.
+## The act-one pool the grammar permits to permute. The two inversions are structural (the loop
+## needs act one's honest entry speed, the cutback needs the Immelmann exit); only a hill or the
+## wave turn may be dropped, and never both.
+##
+## Nothing draws an order yet, and that is a measured verdict rather than an unfinished step.
+## All 24 permutations and both single-drop variants were built on 2026-08-15 (seed 42 prefix,
+## then the two survivors across all fifteen seeds). Twelve permutations cannot even complete
+## the capability preflight; of the rest, only `cutback loop wave airtime` and the airtime-drop
+## `cutback loop wave` land within metres of the canonical prefix, and both then fail the whole
+## fleet: the reordered act one hands the dive over 2.5-4.4 m/s faster, which runs the dive role
+## to 499 m against its 350-490 m band and moves the camelback handoff enough that the
+## seven-control return solve no longer closes from its fixed seed (12 of 15 seeds), or leaves
+## the native dive footprint too long for the apron to host at all. Order variation here needs
+## the same prefix closure solve the target draws need; the grammar and its validator are in
+## place for the day that exists.
 const ACT_ONE_POOL := ["act-one-cutback", "act-one-loop", "act-one-airtime", "act-one-wave"]
 const ACT_ONE_OPTIONAL := ["act-one-airtime", "act-one-wave"]
-const ACT_ONE_KEEP_ALL_PROBABILITY := 0.6
 const SPINE_TAIL := ["climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
 	"outward-dive", "tunnel-lsm3", "camelback"]
 const RETURN_CELL := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
@@ -161,9 +172,9 @@ static func resolve(seed_value: int, overrides: Dictionary = {}) -> Dictionary:
 		"draws": draws}
 
 
-## The act-one grammar cell. This checkpoint draws no order: the cell is declared and validated
-## as a grammar cell, but `story.act1` is not yet consumed, so the pool keeps its canonical
-## order. Permuting it is the next staged step and disturbs no other stream when it lands.
+## The act-one grammar cell. This checkpoint draws no order (see `ACT_ONE_POOL` for the measured
+## reason), so `story.act1` stays unconsumed and the pool keeps its canonical order. Because
+## every decision owns its own generator, consuming that stream later moves no other draw.
 static func _draw_sequence(_rngs: Dictionary) -> Array:
 	var pool: Array = ACT_ONE_POOL.duplicate()
 	var sequence: Array = []

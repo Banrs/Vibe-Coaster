@@ -152,6 +152,10 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
 11. Overly leisurely in many sections.
 12. Too many flats — between the cliff-dive LSM and the camelback, on the return, and the
     hold extending too far from the cliff edge (so the clifftop is not terrain-hugging).
+    **Measured, 2026-08-15:** ~35.5 s of flat dwell per ~158 s ride on every deep seed;
+    12.5 s is the station itself (legitimately flat), leaving ~23 s (~15% of the ride)
+    of in-ride flats spread across the beats — the per-beat table is in the offline
+    audit's pacing metrics.
 13. Airtime hills etc. too tame.
     **Quantified, 2026-08-15:** the act-one airtime chain measures −0.325 g against grounded
     counterpart targets of −1.1 (Falcon deepest mid-course hill), −1.35/−1.73 (I305 ejector

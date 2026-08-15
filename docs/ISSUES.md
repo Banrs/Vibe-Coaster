@@ -222,6 +222,12 @@ below); these seven are **not** covered by the audit's traceability record.
 19. Generation/CI speed — the time-domain return, capture, and brake solves have bounded
     coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
     GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.
+    **Measured, 2026-08-15:** the latest green main run totals 6.1 min — setup + import 19 s,
+    focused manifest 2 m 51 s (nine suites at the time; twelve now, projected +30–60 s), smoke
+    2 m 48 s, viewer 9 s. At that size, evaluation-cap changes, import caching, or job splitting
+    are complexity the measurement does not justify; re-measure only if the manifest keeps
+    growing. Note CI triggers on push-to-main and pull requests only, so feature branches
+    without a PR run no CI — the local gate sequence is the branch's verification.
 
 ## Code health — 2026-08-15 hygiene review
 

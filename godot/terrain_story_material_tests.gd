@@ -85,9 +85,9 @@ func _check_public_terrain_story(route: Dictionary) -> void:
 			% maximum_tunnel_plateau_excess_m)
 	var stats: Dictionary = route.get("generation_stats", {})
 	_expect(stats.get("accepted_integrations", -1) == 1 \
-			and stats.get("planning_integrations", -1) == 1 \
+			and stats.get("planning_integrations", -1) == 2 \
 			and stats.get("repair_count", -1) == 0,
-		"terrain placement must report one planning integration, one accepted integration, and zero repairs")
+		"terrain placement must report two planning integrations, one accepted integration, and zero repairs")
 	_expect(float(terrain.relief) >= TERRAIN_RELIEF_MINIMUM_M \
 			and float(terrain.relief) <= TERRAIN_RELIEF_MAXIMUM_M,
 		"terrain relief stays in the 270..285 m support band")
@@ -223,8 +223,9 @@ func _check_terrain_story_plan_contract(route: Dictionary) -> void:
 		"the accepted trajectory must be integrated directly in its planned world frame")
 	var planning: Dictionary = story.get("planning", {})
 	_expect(planning.get("capability_id", "") != "" \
-			and planning.get("planning_integrations", -1) == 1,
-		"the plan publishes one deterministic fixed-prefix capability preflight")
+			and planning.get("planning_integrations", -1) == 2,
+		"the plan publishes its two deterministic prefix integrations: the frame preflight "
+		+ "and the accepted closure")
 	for key in ["station_edge_distance_m", "shelf_edge_distance_m",
 			"dive_entry_edge_m", "dive_exit_edge_m", "tunnel_exit_edge_m",
 			"station_lower_spine_agl_m", "summit_lower_spine_agl_m",
@@ -260,6 +261,9 @@ func _check_terrain_story_plan_contract(route: Dictionary) -> void:
 		"production must not fit an accepted trajectory to terrain after integration")
 	_expect(source.contains("RideProgram.terrain_story_capability"),
 		"generator resolves station pose from the route owner's fixed-prefix capability")
+	_expect(not source.contains("candidates") and not source.contains("sort_custom")
+			and not source.contains("TERRAIN_PLACEMENT_STEP_M"),
+		"placement is closed-form: no candidate list, no grid step, no scored search")
 
 
 func _window_drop_m(route: Dictionary, window: Dictionary) -> float:

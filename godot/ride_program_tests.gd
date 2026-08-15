@@ -37,13 +37,14 @@ const PREFIX_DISPLACED_RECORD_BAND_MPS := Vector2(95.05, 95.45)
 const PREFIX_DISPLACED_SPAN_AIM_TOLERANCE_M := 12.0
 const PREFIX_DISPLACED_SUMMIT_AIM_TOLERANCE_M := 8.0
 ## What these pin: `terrain_story_capability` called without a closure target must stay
-## byte-identical to the pre-closure-solve generator, so the production build path (which does
-## not pass a target until stage 3) publishes exactly the ride it published before. Measured on
-## the unmodified code path at commit b5b2968 (the closure solve's parent commit, unchanged in
-## `ride_program.gd` since 7f58571); a change here is a re-baseline, never a nudge.
+## byte-identical, so an unsolved prefix - every fixture, and the seed every closure starts from -
+## is exactly the authored one. Re-baselined once when production adopted the closure solve: the
+## published footprint gained `tunnel_exit_step_m`, the one production step between the residual's
+## terminal tunnel sample and the pre-seam sample placement consumes. A change here is a
+## re-baseline, never a nudge.
 const PREFIX_CAPABILITY_DIGEST := {
-	-1: "361e77eb506c1bc25d9187f65f8a8dd7c717241dee1657a12c68976117dbafaf",
-	1: "c4e6558cff329da33deffcdfb3a3e58fd4d4f6cd590ab4e441291a43efee668f",
+	-1: "7c7c20d8539f3924916218e7ccc5ea03344f766c910c4ba2d1fb2d18b48fe3b6",
+	1: "076e644f7863687173f17913d473e78828b481fca6b1cee1b12ca049faa5167a",
 }
 var _errors := PackedStringArray()
 
@@ -573,6 +574,29 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 			and report.get("max_unique_evaluations") == RideReturnSolve.MAX_RETURN_EVALUATIONS,
 			"seed %d spends %d return evaluations, over the %d fleet allowance"
 			% [seed_value, evaluations, allowance])
+		_expect_compiled_prefix_matches_plan(seed_value, plan, compiled)
+
+
+## The threading the closure needs to mean anything: `compile` must build the production span
+## program from the plan's own accepted controls, or the ride would be built from `PREFIX_SEED`
+## while the generator placed the solved footprint. Read off the built spans, not the call site.
+func _expect_compiled_prefix_matches_plan(
+	seed_value: int, plan: Dictionary, compiled: Dictionary
+) -> void:
+	var accepted: Array = plan.terrain_frame.planning.closure.accepted_values
+	var flex_span_ids := ["climb/powered-core", "climb/pull-over", "rim/slow-crest-core",
+		"dive/face-approach"]
+	var built := []
+	for span: Dictionary in compiled.spans:
+		var index := flex_span_ids.find(str(span.span_id))
+		if index >= 0:
+			built.resize(maxi(built.size(), index + 1))
+			built[index] = float(span.duration_s)
+	var matches := built.size() == accepted.size()
+	for index in mini(built.size(), accepted.size()):
+		matches = matches and absf(float(built[index]) - float(accepted[index])) <= 0.000000001
+	_expect(matches, "seed %d builds its prefix from the accepted closure %s, not %s"
+		% [seed_value, str(accepted), str(built)])
 
 
 func _test_untargeted_prefix_capability_is_unchanged() -> void:

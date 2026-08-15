@@ -21,6 +21,18 @@ const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## `ride_program_tests.gd` gates five seeds fast; every seed of the fifteen must stay inside
 ## this fraction of it, measured here because the compile is already paid.
 const RETURN_EVALUATION_ALLOWANCE := 0.6
+## The same fraction of the prefix closure's own derived cap, and the fifteen-seed half of the
+## prefix convergence claim `ride_program_tests.gd` makes on the canonical and seed-42 stories.
+const PREFIX_EVALUATION_ALLOWANCE := 0.6
+## The prefix-closure margins the whole fleet must carry. The closure aims inside every one of
+## these and the closed-form placement lands inside them by construction; measuring them on all
+## fifteen seeds is what turns the aim into a gate. Measured on the grid-search placement this
+## replaced: four seeds missed the dive-entry margin, nine the apron margin, and seven sat exactly
+## on the summit band's floor.
+const DIVE_ENTRY_EDGE_MARGIN_M := 3.0
+const DIVE_EXIT_APRON_MARGIN := 0.05
+const SUMMIT_TRACK_AGL_MARGIN_M := 1.5
+const RECORD_EXIT_SPEED_MARGIN_MPS := 0.4
 ## The viewer's POV camera bounds. Measured on seed 42 (2026-08-15): the camera stays within
 ## 6.3° of the tangent, the look direction stays 84.5° clear of the pose up axis, and the rumble
 ## moves the eye 4.41 mm between 60 fps frames at top speed. The cone and clearance are the
@@ -61,7 +73,7 @@ func _deep_seed_errors(seed_value: int) -> PackedStringArray:
 	if var_to_bytes(route) != var_to_bytes(repeat):
 		errors.append("seed %d: repeated builds are not bit-identical" % seed_value)
 	var issues := PackedStringArray()
-	_validate_structure_and_placement(route, issues)
+	_validate_structure_and_placement(route, seed_value, issues)
 	var analysis: Dictionary = Verify.analyze(route, RouteContract.ROW_OFFSETS)
 	Verify.validate_loads(analysis, issues)
 	_validate_record_launch_numbers(route, analysis, issues)
@@ -89,7 +101,7 @@ func _sweep_errors() -> PackedStringArray:
 			_fleet_lengths.append(route.length)
 			_fleet_durations.append(route.duration)
 			var issues := PackedStringArray()
-			_validate_structure_and_placement(route, issues)
+			_validate_structure_and_placement(route, seed_value, issues)
 			for issue in issues:
 				seed_errors.append("sweep seed %d: %s" % [seed_value, issue])
 		if seed_errors.is_empty():
@@ -274,7 +286,9 @@ func _validate_record_launch_numbers(
 			peak_drive, LAUNCH_DRIVE_BAND_G.x, LAUNCH_DRIVE_BAND_G.y])
 
 
-func _validate_structure_and_placement(route: Dictionary, issues: PackedStringArray) -> void:
+func _validate_structure_and_placement(
+	route: Dictionary, seed_value: int, issues: PackedStringArray
+) -> void:
 	Verify.validate_structure(route, issues)
 	Verify.validate_seams(route, issues)
 	Verify.validate_clearance(route, route.terrain, issues)
@@ -285,6 +299,51 @@ func _validate_structure_and_placement(route: Dictionary, issues: PackedStringAr
 	if evaluations < 1 or evaluations > allowance:
 		issues.append("the return solve spent %d evaluations against a %d fleet allowance"
 			% [evaluations, allowance])
+	_validate_prefix_closure(route, seed_value, issues)
+
+
+## The prefix closure, measured on the built ride: the four margins of design section 6 and the
+## solve's own evaluation count. Every quantity here is one the closure aimed at or the placement
+## derived, so a miss means the aim did not survive the ride it produced — never a reason to widen
+## a band. Printed per seed because the closure's cost is a budget claim, not a hope.
+func _validate_prefix_closure(
+	route: Dictionary, seed_value: int, issues: PackedStringArray
+) -> void:
+	var planning: Dictionary = route.get("terrain_story_plan", {}).get("planning", {})
+	var terrain: Dictionary = route.get("terrain", {})
+	var closure: Dictionary = planning.get("closure", {})
+	var fine: Array = closure.get("fine_observation", [])
+	if terrain.is_empty() or fine.size() != 4:
+		issues.append("the plan publishes no measurable prefix closure")
+		return
+	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
+	var measured := [
+		["dive-entry edge", float(planning.get("dive_entry_edge_m", NAN)) - shelf_m,
+			Generator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, DIVE_ENTRY_EDGE_MARGIN_M],
+		["dive-exit apron fraction", float(planning.get("dive_exit_apron_fraction", NAN)),
+			Generator.DIVE_EXIT_APRON_BAND, DIVE_EXIT_APRON_MARGIN],
+		["summit track AGL", float(planning.get("summit_track_agl_m", NAN)),
+			Generator.SUMMIT_TRACK_AGL_BAND_M, SUMMIT_TRACK_AGL_MARGIN_M],
+		["record exit speed", float(fine[3]), Generator.RECORD_EXIT_SPEED_BAND_MPS,
+			RECORD_EXIT_SPEED_MARGIN_MPS],
+	]
+	var report := PackedStringArray()
+	for entry: Array in measured:
+		var band: Vector2 = entry[2]
+		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
+		report.append("%s %+.4f" % [entry[0], margin])
+		if not is_finite(margin) or margin < float(entry[3]):
+			issues.append("%s sits only %.4f inside %s; the fleet requires %.4f"
+				% [entry[0], margin, str(band), float(entry[3])])
+	var evaluations := int(closure.get("unique_evaluations", -1))
+	var allowance := int(
+		PREFIX_EVALUATION_ALLOWANCE * int(closure.get("max_unique_evaluations", 0)))
+	if evaluations < 1 or evaluations > allowance \
+			or str(closure.get("solver_status", "")) != "converged":
+		issues.append("the prefix closure spent %d %s evaluations against a %d fleet allowance"
+			% [evaluations, str(closure.get("solver_status", "missing")), allowance])
+	print("seed %d prefix closure: %d of %d evaluations, margins %s"
+		% [seed_value, evaluations, allowance, ", ".join(report)])
 
 
 func _terrain_errors() -> PackedStringArray:

@@ -77,7 +77,7 @@ func _check_preset_fleet_contract() -> void:
 		var length_m := float(route.get("length", NAN))
 		var story: Variant = route.get("terrain_story_plan")
 		_expect(route.get("ok", false) and stats.get("accepted_integrations", -1) == 1
-			and stats.get("planning_integrations", -1) == 1 \
+			and stats.get("planning_integrations", -1) == 2 \
 			and stats.get("repair_count", -1) == 0 and length_m >= 7800.0 and length_m <= 8200.0
 			and story is Dictionary,
 			"preset seed %d public generation observed ok=%s integrations=%d repairs=%d length=%.3f m story=%s"
@@ -177,7 +177,7 @@ func _propulsion_and_work_are_honest(route: Dictionary) -> bool:
 	var stats: Dictionary = route.get("generation_stats", {})
 	return positive == PackedInt32Array([1, 2, 3]) \
 		and stats.get("accepted_integrations", -1) == 1 \
-		and stats.get("planning_integrations", -1) == 1 and stats.get("repair_count", -1) == 0
+		and stats.get("planning_integrations", -1) == 2 and stats.get("repair_count", -1) == 0
 func _check_route_scale_and_flow(route: Dictionary) -> void:
 	_expect_range("full route length", float(route.length), 7800.0, 8200.0, "m")
 	var lengths := {}

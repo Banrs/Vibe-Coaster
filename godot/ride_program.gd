@@ -82,7 +82,11 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {},
 		dive_start_sample, dive_end_sample + 1)
 	# The full route reassigns the exact tunnel/camelback seam to the camelback.
 	# Publish the preceding sample so planning and accepted role bounds use the same endpoint.
+	# The closure residual measures the terminal sample instead, so that it does not move with the
+	# integration step; the one production step between the two is published with the footprint,
+	# because the placement that consumes the pre-seam sample has to aim through it.
 	var tunnel_exit_offset_m: Vector3 = trajectory.position_m[-2]
+	var tunnel_exit_step_m: Vector3 = trajectory.position_m[-1] - tunnel_exit_offset_m
 	var dive_outward_delta_m := float(station_side) \
 		* (float(dive_exit_offset_m.z) - float(entry.position_m.z))
 	if not dive_exit_offset_m.is_finite() or not tunnel_exit_offset_m.is_finite() \
@@ -105,6 +109,7 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {},
 		"dive_footprint": {"outward_delta_m": dive_outward_delta_m,
 			"dive_exit_offset_m": dive_exit_offset_m,
 			"tunnel_exit_offset_m": tunnel_exit_offset_m,
+			"tunnel_exit_step_m": tunnel_exit_step_m,
 			"positions_m": dive_positions_m, "rider_up": dive_rider_up},
 		"station_opener": {
 			"positions_m": trajectory.position_m.slice(0, opener_end_sample + 1),
@@ -140,7 +145,10 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	var hand := -float(plan.decisions.station_side)
 	var story := _story_from_plan(plan)
 	var targets: Dictionary = story.targets
-	_add_story_prefix(spans, metadata, gestures, propulsion, hand, story)
+	# The production span program is built from the plan's own accepted closure controls, so the
+	# ride that gets built and the footprint the generator placed are the same prefix.
+	_add_story_prefix(spans, metadata, gestures, propulsion, hand, story,
+		_prefix_controls_from_plan(plan))
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
 	_add_camelback(spans, metadata, propulsion, hand)
@@ -709,6 +717,33 @@ static func plan_role_ids(plan: Dictionary) -> Array:
 
 
 ## The compiled story a plan asks for: its declared role sequence and its resolved target draws.
+## A plan may carry no closure (an unsolved fixture), but a closure it does carry must be one the
+## prefix can actually be built from: four accepted durations, finite and inside their bounds.
+static func _prefix_closure_is_valid(closure: Variant) -> bool:
+	if not closure is Dictionary:
+		return false
+	if closure.is_empty():
+		return true
+	var values: Variant = closure.get("accepted_values", [])
+	if not values is Array or values.size() != RidePrefixSolve.PREFIX_CONTROL_IDS.size():
+		return false
+	for index in values.size():
+		var bound: Array = RidePrefixSolve.PREFIX_CONTROL_BOUNDS[index]
+		var value := float(values[index])
+		if not is_finite(value) or value < float(bound[0]) or value > float(bound[1]):
+			return false
+	return true
+
+
+## The flex-span durations the plan's accepted closure carries. `_validate_plan` has already
+## refused a malformed one, so the only plan without a closure is an unsolved fixture, which gets
+## the authored seed - exactly the prefix `terrain_story_capability` publishes without a target.
+static func _prefix_controls_from_plan(plan: Dictionary) -> Array:
+	var closure: Variant = plan.terrain_frame.planning.get("closure", {})
+	var values: Variant = closure.get("accepted_values", []) if closure is Dictionary else []
+	return values if values is Array and not values.is_empty() else RidePrefixSolve.PREFIX_SEED
+
+
 static func _story_from_plan(plan: Dictionary) -> Dictionary:
 	var decisions: Dictionary = plan.get("decisions", {})
 	var targets: Variant = decisions.get("targets", {})
@@ -736,8 +771,9 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 		return _failure("material-v1 decisions or terrain frame is incomplete", "plan")
 	var planning: Dictionary = terrain_frame.planning
 	if str(planning.get("capability_id", "")).is_empty() \
-			or int(planning.get("planning_integrations", 0)) != 1 \
-			or not planning.get("scale") is Dictionary:
+			or int(planning.get("planning_integrations", 0)) < 1 \
+			or not planning.get("scale") is Dictionary \
+			or not _prefix_closure_is_valid(planning.get("closure", {})):
 		return _failure("material-v1 planning capability is incomplete", "plan")
 	var corridor_value: Variant = plan.get("corridor")
 	if not corridor_value is Dictionary:

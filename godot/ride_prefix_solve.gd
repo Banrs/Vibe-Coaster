@@ -68,14 +68,15 @@ static func _prefix_initial_state() -> Dictionary:
 
 ## The four station-local quantities the closure targets, in `PREFIX_RESIDUAL_IDS` order. Both
 ## spans are the outward run projected on the target's own axis; `summit_rise_m` is the dive
-## entry's own height. The station height placement (`generator.gd`) derives it as the max of
-## several terrain-clearance terms, including the head's own ground-clearance offset (a constant
-## above `entry_surface_m`) and a dive-corridor clearance term (`generator.gd`'s
-## `summit_agl_m`/`required_station_y`) that is sampled along the dive footprint and so moves with
-## the solved entry position. The offset is constant only when the head term binds; measuring
-## which term binds across the fleet is Stage 3's job, not this comment's claim. The tunnel exit
-## is the trajectory's last sample, not the published pre-seam one, so the quantity does not move
-## with the integration step.
+## entry's own height. Measured on the fifteen-seed fleet (Stage 3): the station height placement
+## (`generator.gd._place_dive`) is the max of several terrain-clearance terms, and the
+## dive-corridor terms never bind — 5.7 to 17.8 m of slack sits under them on every seed. What
+## binds is the reserved terminal approach (5 seeds), the opener's lower spine (3), or the summit
+## aim itself (7), and all three are functions of the head, which no control here can move. So
+## `summit_agl - summit_rise_m` is a constant of the terrain and the head, and `generator.gd`
+## translates the summit AGL band into this rise band through it. The tunnel exit is the
+## trajectory's last sample, not the published pre-seam one, so the quantity does not move with
+## the integration step; the generator aims through that one-step offset instead.
 static func _prefix_observation(trajectory: Dictionary, dive_start: int, dive_end: int,
 	axis: Vector2
 ) -> Array:

@@ -359,7 +359,15 @@ static func _add_story_prefix(
 
 	_begin_gesture(gestures, "clifftop-suspense", spans.size())
 	var slow_bank := deg_to_rad(39.1243426617973)
-	var slow_shoulder_s := 0.60483895572582
+	# The crawl lays over across a shoulder half again as long as it used to and holds for
+	# correspondingly less: issue 20's stepping showed up here as a 97 deg/s burst either side of a
+	# 2.4 s flat hold. The crest's total time is unchanged, so the beat keeps its length and the
+	# downstream handoff, which the return solve will not re-converge from its fixed seed without.
+	# The shoulder cannot grow further: the clifftop's unwrapped heading work has a 160 deg floor
+	# and its centreline vertical variation a 3 m one, and rolling for longer at a lower average
+	# bank spends both.
+	var slow_shoulder_s := 0.80
+	var slow_core_s := 3.58159485642841 - 2.0 * slow_shoulder_s
 	# Drawn per seed: how firmly the crawl is held over the crest, and how far the rim turn lays
 	# out over the edge. The suspense beat is reference-scale by contract, so both stay inside
 	# the clifftop's declared force and heading bands rather than scaling toward the records.
@@ -369,7 +377,7 @@ static func _add_story_prefix(
 	_add(spans, metadata, propulsion, "rim/slow-crest-in", slow_shoulder_s, "moving",
 		Motion.quintic(1.0, slow_normal), 0.0, 0.0,
 		Motion.plateau_pulse(slow_roll * hand), "slow-crest")
-	_add(spans, metadata, propulsion, "rim/slow-crest-core", 2.37191694497677, "moving",
+	_add(spans, metadata, propulsion, "rim/slow-crest-core", slow_core_s, "moving",
 		slow_normal, 0.0, 0.0, 0.0, "slow-crest")
 	_add(spans, metadata, propulsion, "rim/slow-crest-out", slow_shoulder_s, "moving",
 		Motion.quintic(slow_normal, 1.0), 0.0, 0.0,
@@ -378,18 +386,24 @@ static func _add_story_prefix(
 		targets, "clifftop-outward-rim", "bank_rad", deg_to_rad(49.9686662300867))
 	var rim_normal := 1.0 / cos(rim_bank)
 	# The roll shoulders scale with the drawn bank, so laying further over costs time instead of
-	# buying a faster roll: the authored 66 deg/s roll-in rate is what the envelope was cleared
-	# for, and it stays fixed at every drawn bank.
+	# buying a faster roll: the authored roll-in rate is what the envelope was cleared for, and it
+	# stays fixed at every drawn bank. The rim lays over through a plateau pulse rather than a
+	# compact one (issue 20): the same bank arrives at 75 deg/s instead of 115, held at a steady
+	# rate through the middle third of the shoulder instead of spiking and dying inside it. The
+	# arc is derived so the beat's total time is fixed whatever bank is drawn — the clifftop sits
+	# upstream of the camelback handoff, and the return solve does not re-converge from its fixed
+	# seed when that handoff moves.
 	var rim_shoulder_s := 1.0 * rim_bank / deg_to_rad(49.9686662300867)
-	var rim_roll := rim_bank / (COMPACT_PULSE_AREA * rim_shoulder_s)
+	var rim_roll := rim_bank / (Motion.PLATEAU_PULSE_AREA * rim_shoulder_s)
+	var rim_arc_s := 4.01632319951879 - 2.0 * rim_shoulder_s
 	_add(spans, metadata, propulsion, "rim/outward-bank", rim_shoulder_s, "moving",
 		Motion.quintic(1.0, rim_normal), 0.0, 0.0,
-		Motion.compact_pulse(rim_roll * hand), "outward-rim", 0, 2.0, "turn")
-	_add(spans, metadata, propulsion, "rim/outward-arc", 2.01632319951879, "moving",
+		Motion.plateau_pulse(rim_roll * hand), "outward-rim", 0, 2.0, "turn")
+	_add(spans, metadata, propulsion, "rim/outward-arc", rim_arc_s, "moving",
 		rim_normal, 0.0, 0.0, 0.0, "outward-rim", 0, 2.0, "turn")
 	_add(spans, metadata, propulsion, "rim/outward-release", rim_shoulder_s, "moving",
 		Motion.quintic(rim_normal, 1.0), 0.0, 0.0,
-		Motion.compact_pulse(-rim_roll * hand), "outward-rim", 0, 2.0, "turn")
+		Motion.plateau_pulse(-rim_roll * hand), "outward-rim", 0, 2.0, "turn")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "cliff-dive", spans.size(), "dive")

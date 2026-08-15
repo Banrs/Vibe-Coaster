@@ -62,9 +62,19 @@ const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
 ## observation strictly inside the aimed band, where this residual is exactly 0.0 as it is today,
 ## so the fifteen production rides stay bit-identical rather than approximately unchanged.
 ##
-## The entry-speed band deliberately gets no aim margin. The same sweep measures canonical
-## candidates 0.39 m/s *past* the 80 m/s ceiling (seed 42), so any speed margin at all would move
-## canonical residuals, and no measured refusal has ever been on the speed margin.
+## The interior-closure guarantee is measured, not structural: convergence tolerates
+## 0.02 x the 125.0 length scale = 2.5 m of scaled slack, more than this metre, so a
+## non-canonical story can still converge while grazing the aimed band. Sizing the margin above
+## 2.5 m would fix that structurally - and would put the closest canonical observation
+## (1.3463 m) inside the margin zone, changing canonical bytes. The metre is the largest
+## honest value; the swap gate asserts the interior closure it buys.
+##
+## The entry-speed band gets no *additional* aim margin: its existing
+## `RETURN_ENTRY_SPEED_PADDING_MPS` (0.01 m/s) already exceeds the speed side's 0.002 m/s
+## convergence slack (0.02 x the 0.1 scale), so an accepted speed margin is structurally
+## positive and the length pathology cannot occur there. Widening it further would move
+## canonical residuals - the same sweep measures canonical candidates 0.39 m/s past the
+## 80 m/s ceiling on seed 42.
 const RETURN_LENGTH_AIM_MARGIN_M := 1.0
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",

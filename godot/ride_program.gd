@@ -3,6 +3,7 @@ extends RefCounted
 
 const Motion := preload("res://motion.gd")
 const BoundedSolver := preload("res://bounded_solver.gd")
+const RidePlanner := preload("res://ride_planner.gd")
 
 const GENERATOR_VERSION := "time-domain-v1"
 const ROLLING_MPS2 := 0.08
@@ -30,6 +31,7 @@ const RETURN_SCALAR_BOUNDS := [
 ]
 const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
 	1.0471975511966, 6.48573781566998, 0.996333175598368, 3.98838120528104]
+const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RETURN_TRANSFER_BANK_BIAS_RAD := 7.5 * PI / 180.0
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
@@ -63,6 +65,8 @@ const TERMINAL_DISTANCE_TOLERANCE_M := 0.05
 const CAPTURE_COEFFICIENT_BOUNDS := [
 	[-1.5, 1.5], [-1.5, 1.5], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
 ]
+## The canonical (undrawn) role order. It is the default a caller gets when no plan sequence is
+## supplied; a built ride is always validated against the sequence its own plan declares.
 const MATERIAL_ROLE_IDS := [
 	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
 	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
@@ -70,20 +74,30 @@ const MATERIAL_ROLE_IDS := [
 	"outward-dive", "tunnel-lsm3", "camelback", "return-turn-a", "return-height-a",
 	"return-turn-b", "return-height-b", "terminal-capture-brakes",
 ]
-const ROLE_NOMINAL_LENGTHS := [
-	180.0, 620.0, 650.0, 330.0, 430.0, 310.0, 360.0, 260.0, 240.0, 600.0,
-	50.0, 90.0, 420.0, 180.0, 1000.0, 480.0, 420.0, 500.0, 520.0, 230.0,
-]
+## Nominal role lengths, keyed by role id: a plan authors the roles its drawn sequence declares,
+## so the nominal a role is checked against cannot be an index into one fixed twenty-list.
+const ROLE_NOMINAL_LENGTH_M := {
+	"station-launch": 180.0, "opener-twisted-drop": 620.0, "opener-teardrop": 650.0,
+	"opener-release": 330.0, "act-one-immelmann": 430.0, "act-one-cutback": 310.0,
+	"act-one-loop": 360.0, "act-one-airtime": 260.0, "act-one-wave": 240.0,
+	"climb-lsm2": 600.0, "clifftop-slow-crest": 50.0, "clifftop-outward-rim": 90.0,
+	"outward-dive": 420.0, "tunnel-lsm3": 180.0, "camelback": 1000.0,
+	"return-turn-a": 480.0, "return-height-a": 420.0, "return-turn-b": 500.0,
+	"return-height-b": 520.0, "terminal-capture-brakes": 230.0,
+}
 
 
-static func terrain_story_capability(station_side: int) -> Dictionary:
+## The fixed story prefix, integrated once in its station-local frame so the generator can place
+## the ride on terrain. `story` carries the planner's drawn sequence and resolved targets; an
+## empty story reproduces the canonical undrawn recipe exactly.
+static func terrain_story_capability(station_side: int, story: Dictionary = {}) -> Dictionary:
 	if station_side != -1 and station_side != 1:
 		return _failure("station_side must be -1 or 1", "planning")
 	var spans: Array = []
 	var metadata: Array = []
 	var gestures: Array = []
 	var propulsion := PackedInt32Array()
-	_add_story_prefix(spans, metadata, gestures, propulsion, -float(station_side))
+	_add_story_prefix(spans, metadata, gestures, propulsion, -float(station_side), story)
 	var dive_start_span := -1
 	var dive_end_span := -1
 	var tunnel_end_span := -1
@@ -139,7 +153,7 @@ static func terrain_story_capability(station_side: int) -> Dictionary:
 	if opener_end_sample < 0 or station_end_sample < 0 \
 			or station_end_sample >= opener_end_sample:
 		return _failure("terrain story capability omitted the station/opener footprint", "planning")
-	return {"ok": true, "capability_id": "material-v1-prefix-r12@8",
+	return {"ok": true, "capability_id": "material-v1-prefix-r12@9",
 		"planning_integrations": 1,
 		"role_13_entry": {"offset_m": entry.position_m, "tangent": entry.tangent,
 			"rider_up": entry.rider_up, "speed_mps": entry.speed_mps},
@@ -175,7 +189,9 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	# Canonical +Z maps outward for station_side=+1 and inward for -1. Mirror the
 	# authored lateral forces so the shared story always approaches the escarpment.
 	var hand := -float(plan.decisions.station_side)
-	_add_story_prefix(spans, metadata, gestures, propulsion, hand)
+	var story := _story_from_plan(plan)
+	var targets: Dictionary = story.targets
+	_add_story_prefix(spans, metadata, gestures, propulsion, hand, story)
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
 	_add_camelback(spans, metadata, propulsion, hand)
@@ -185,13 +201,14 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	if not return_prefix.get("ok", false):
 		return _failure("upstream return handoff failed integration", "return")
 	var return_hand := -hand
-	var solved_return := _solve_return(_last_state(return_prefix), layout, return_hand)
+	var solved_return := _solve_return(
+		_last_state(return_prefix), layout, return_hand, RETURN_SEED, targets)
 	if not solved_return.ok:
 		return solved_return
 	var settings := _settings(PRODUCTION_STEP_S)
 	_begin_gesture(gestures, "raceway-return", spans.size())
 	_add_raceway(spans, metadata, propulsion, solved_return.parameters, return_hand,
-		solved_return.initial_bank_rad)
+		solved_return.initial_bank_rad, targets)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	var prefix := Motion.integrate(initial_state, spans, settings)
@@ -239,7 +256,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	var seam_errors := _validate_control_seams(spans)
 	if not seam_errors.is_empty():
 		return {"ok": false, "errors": seam_errors}
-	var role_spans := material_role_spans(spans)
+	var role_spans := material_role_spans(spans, story.sequence)
 	if not role_spans.ok:
 		return _failure("material role span ownership is incomplete", "role_spans",
 			{"observed": {"ownership_errors": role_spans.errors}})
@@ -291,8 +308,12 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 
 
 static func _add_story_prefix(
-	spans: Array, metadata: Array, gestures: Array, propulsion: PackedInt32Array, hand: float
+	spans: Array, metadata: Array, gestures: Array, propulsion: PackedInt32Array, hand: float,
+	story: Dictionary = {}
 ) -> void:
+	var targets: Dictionary = story.get("targets", {})
+	var act_one_order: Array = RidePlanner.act_one_order(
+		story.get("sequence", RidePlanner.canonical_role_ids()))
 	_begin_gesture(gestures, "station-launch", spans.size(), "launch")
 	# Do-Dodonpa-class air/hydraulic entry launch. The 2041 credit is spent on peak drive,
 	# not on Delta-v: the plateau rises 3.2 -> 3.9 g and the pulse shortens to hold the same
@@ -311,11 +332,11 @@ static func _add_story_prefix(
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "opener", spans.size(), "twisted_drop")
-	_add_opener(spans, metadata, propulsion, hand)
+	_add_opener(spans, metadata, propulsion, hand, targets)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "act-one", spans.size())
-	_add_story_act_one(spans, metadata, propulsion, hand)
+	_add_story_act_one(spans, metadata, propulsion, hand, targets, act_one_order)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "escarpment-climb", spans.size())
@@ -339,7 +360,11 @@ static func _add_story_prefix(
 	_begin_gesture(gestures, "clifftop-suspense", spans.size())
 	var slow_bank := deg_to_rad(39.1243426617973)
 	var slow_shoulder_s := 0.60483895572582
-	var slow_normal := 1.2403722803347
+	# Drawn per seed: how firmly the crawl is held over the crest, and how far the rim turn lays
+	# out over the edge. The suspense beat is reference-scale by contract, so both stay inside
+	# the clifftop's declared force and heading bands rather than scaling toward the records.
+	var slow_normal := RidePlanner.target(
+		targets, "clifftop-slow-crest", "crest_normal_g", 1.2403722803347)
 	var slow_roll := slow_bank / (slow_shoulder_s * Motion.PLATEAU_PULSE_AREA)
 	_add(spans, metadata, propulsion, "rim/slow-crest-in", slow_shoulder_s, "moving",
 		Motion.quintic(1.0, slow_normal), 0.0, 0.0,
@@ -349,15 +374,20 @@ static func _add_story_prefix(
 	_add(spans, metadata, propulsion, "rim/slow-crest-out", slow_shoulder_s, "moving",
 		Motion.quintic(slow_normal, 1.0), 0.0, 0.0,
 		Motion.plateau_pulse(-slow_roll * hand), "slow-crest")
-	var rim_bank := deg_to_rad(49.9686662300867)
+	var rim_bank := RidePlanner.target(
+		targets, "clifftop-outward-rim", "bank_rad", deg_to_rad(49.9686662300867))
 	var rim_normal := 1.0 / cos(rim_bank)
-	var rim_roll := rim_bank / COMPACT_PULSE_AREA
-	_add(spans, metadata, propulsion, "rim/outward-bank", 1.0, "moving",
+	# The roll shoulders scale with the drawn bank, so laying further over costs time instead of
+	# buying a faster roll: the authored 66 deg/s roll-in rate is what the envelope was cleared
+	# for, and it stays fixed at every drawn bank.
+	var rim_shoulder_s := 1.0 * rim_bank / deg_to_rad(49.9686662300867)
+	var rim_roll := rim_bank / (COMPACT_PULSE_AREA * rim_shoulder_s)
+	_add(spans, metadata, propulsion, "rim/outward-bank", rim_shoulder_s, "moving",
 		Motion.quintic(1.0, rim_normal), 0.0, 0.0,
 		Motion.compact_pulse(rim_roll * hand), "outward-rim", 0, 2.0, "turn")
 	_add(spans, metadata, propulsion, "rim/outward-arc", 2.01632319951879, "moving",
 		rim_normal, 0.0, 0.0, 0.0, "outward-rim", 0, 2.0, "turn")
-	_add(spans, metadata, propulsion, "rim/outward-release", 1.0, "moving",
+	_add(spans, metadata, propulsion, "rim/outward-release", rim_shoulder_s, "moving",
 		Motion.quintic(rim_normal, 1.0), 0.0, 0.0,
 		Motion.compact_pulse(-rim_roll * hand), "outward-rim", 0, 2.0, "turn")
 	_end_gesture(gestures, metadata, spans.size() - 1)
@@ -444,7 +474,8 @@ static func _add_camelback(
 
 
 static func _add_opener(
-	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float,
+	targets: Dictionary = {}
 ) -> void:
 	var area := COMPACT_PULSE_AREA
 	var unbank_ramp_s := 0.115
@@ -452,20 +483,27 @@ static func _add_opener(
 	var normal_recovery_s := 0.18512288
 	var normal_mid_g := 3.46722071542319
 	var unbank_peak_rad_s := 0.6981317 / (unbank_ramp_s + unbank_hold_s)
+	# Drawn per seed: how hard the twisted drop carves through its core, and how strongly the
+	# teardrop is loaded over the top. Both are held constant across the spans that enter, hold
+	# and leave the shape, so the C2 control seams stay exact at any drawn value.
+	var drop_lateral_g := RidePlanner.target(
+		targets, "opener-twisted-drop", "core_lateral_g", 0.6998747)
+	var teardrop_normal_g := RidePlanner.target(
+		targets, "opener-teardrop", "overbank_normal_g", 1.62427620902668)
 	_add(spans, metadata, propulsion, "drop/rise", 0.74281671, "moving",
 		Motion.quintic(1.0, 4.99988044), 0.0, 0.0, 0.0,
 		"twisted-drop", 0, 2.0, "twisted_drop")
 	_add(spans, metadata, propulsion, "drop/bank-unload", 1.99998272, "moving",
 		Motion.quintic(4.99988044, -0.58313246),
-		Motion.quintic(0.0, 0.6998747 * hand), 0.0,
+		Motion.quintic(0.0, drop_lateral_g * hand), 0.0,
 		Motion.compact_pulse(0.976431 * hand / (area * 1.99998272)),
 		"twisted-drop", 0, 2.0, "twisted_drop")
 	_add(spans, metadata, propulsion, "drop/core", 2.13984425, "moving",
-		-0.58313246, 0.6998747 * hand, 0.0, 0.0,
+		-0.58313246, drop_lateral_g * hand, 0.0, 0.0,
 		"twisted-drop", 0, 2.0, "twisted_drop")
 	_add(spans, metadata, propulsion, "drop/pullout", 3.67807081, "moving",
 		Motion.quintic(-0.58313246, 4.99988044),
-		Motion.quintic(0.6998747 * hand, 0.0), 0.0, 0.0,
+		Motion.quintic(drop_lateral_g * hand, 0.0), 0.0, 0.0,
 		"twisted-drop", 0, 2.0, "twisted_drop")
 	_add(spans, metadata, propulsion, "drop/unbank-in", unbank_ramp_s, "moving",
 		Motion.quintic(4.99988044, normal_mid_g), 0.0, 0.0,
@@ -487,15 +525,15 @@ static func _add_opener(
 	var teardrop_bank_in := 1.35023678543837
 	var teardrop_bank_out := 1.39946086214734
 	_add(spans, metadata, propulsion, "teardrop/bank-in", teardrop_shoulder_s, "moving",
-		Motion.quintic(1.0, 1.62427620902668),
+		Motion.quintic(1.0, teardrop_normal_g),
 		Motion.quintic(0.0, -0.71527254431284 * hand),
 		0.0, Motion.compact_pulse(teardrop_bank_in * hand / (area * teardrop_shoulder_s)),
 		"teardrop", 0, 2.0, "overbank")
 	_add(spans, metadata, propulsion, "teardrop/overbanked-arc", 5.13321184, "moving",
-		1.62427620902668, -0.71527254431284 * hand, 0.0, 0.0,
+		teardrop_normal_g, -0.71527254431284 * hand, 0.0, 0.0,
 		"teardrop", 0, 2.0, "overbank")
 	_add(spans, metadata, propulsion, "teardrop/bank-out", teardrop_shoulder_s, "moving",
-		Motion.quintic(1.62427620902668, 1.0),
+		Motion.quintic(teardrop_normal_g, 1.0),
 		Motion.quintic(-0.71527254431284 * hand, 0.0),
 		0.0, Motion.compact_pulse(-teardrop_bank_out * hand / (area * teardrop_shoulder_s)),
 		"teardrop", 0, 2.0, "overbank")
@@ -512,7 +550,30 @@ static func _add_opener(
 		Motion.quintic(3.0, 1.0), 0.0, 0.0, 0.0, "release", 0, 2.0, "hill")
 
 
+## Act one, authored in the order the plan declares. The Immelmann is the fixed physics anchor
+## and always opens; the remaining cells are written in their drawn order, and every cell enters
+## and leaves at level 1.0 g so the order itself never breaks a control seam.
 static func _add_story_act_one(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float,
+	targets: Dictionary = {}, order: Array = []
+) -> void:
+	var authored: Array = order if not order.is_empty() \
+		else RidePlanner.act_one_order(RidePlanner.canonical_role_ids())
+	for role_id in authored:
+		match str(role_id):
+			"act-one-immelmann":
+				_add_act_one_immelmann(spans, metadata, propulsion, hand)
+			"act-one-cutback":
+				_add_act_one_cutback(spans, metadata, propulsion, hand)
+			"act-one-loop":
+				_add_act_one_loop(spans, metadata, propulsion, hand, targets)
+			"act-one-airtime":
+				_add_act_one_airtime(spans, metadata, propulsion, hand, targets)
+			"act-one-wave":
+				_add_act_one_wave(spans, metadata, propulsion, hand, targets)
+
+
+static func _add_act_one_immelmann(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
 ) -> void:
 	var area := COMPACT_PULSE_AREA
@@ -535,6 +596,10 @@ static func _add_story_act_one(
 		Motion.quintic(2.28038016, 1.0), 0.0, 0.0, 0.0,
 		"giant-inversion", 0, 2.0, "immelmann")
 
+
+static func _add_act_one_cutback(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+) -> void:
 	_add(spans, metadata, propulsion, "act-one/cutback-entry", 0.80036457, "moving",
 		Motion.quintic(1.0, 4.16194327), 0.0, 0.0,
 		Motion.compact_pulse(deg_to_rad(108.213109) * hand), "cutback", 0, 2.0, "cutback")
@@ -552,7 +617,14 @@ static func _add_story_act_one(
 	_add(spans, metadata, propulsion, "act-one/cutback-settle", 0.3, "moving",
 		Motion.quintic(3.69449176, 1.0), 0.0, 0.0, 0.0, "cutback", 0, 2.0, "cutback")
 
-	var loop_positive_g := 4.6
+
+static func _add_act_one_loop(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float,
+	targets: Dictionary = {}
+) -> void:
+	# Drawn per seed: how hard the helical loop is pulled. The lateral that keeps the leg helical
+	# and the fall-side roll stay fixed, so the drawn load only tightens or opens the arc.
+	var loop_positive_g := RidePlanner.target(targets, "act-one-loop", "positive_g", 4.6)
 	var loop_rise_s := 3.6
 	var loop_fall_s := 1.925
 	_add(spans, metadata, propulsion, "act-one/loop-entry", 1.0, "moving",
@@ -569,28 +641,47 @@ static func _add_story_act_one(
 		Motion.quintic(loop_positive_g, 1.0), Motion.compact_pulse(-0.2 * hand), 0.0,
 		Motion.compact_pulse(-0.34459064718862403 * hand), "giant-inversion", 0, 2.0, "loop")
 
+
+static func _add_act_one_airtime(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float,
+	targets: Dictionary = {}
+) -> void:
+	# Drawn per seed: how hard and how long the braid floats. The same crest load closes the
+	# unload ramp and opens the fall ramp, so the seams stay exact at any drawn pair.
+	var crest_g := RidePlanner.target(targets, "act-one-airtime", "crest_normal_g", -0.31)
+	var crest_s := RidePlanner.target(targets, "act-one-airtime", "crest_duration_s", 2.0893089979)
 	_add(spans, metadata, propulsion, "act-one/airtime-pull-up", 0.7246134969, "moving",
 		Motion.quintic(1.0, 3.60671666363852), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
 	_add(spans, metadata, propulsion, "act-one/airtime-unload", 0.7246134969, "moving",
-		Motion.quintic(3.60671666363852, -0.31), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
-	_add(spans, metadata, propulsion, "act-one/airtime-crest", 2.0893089979, "moving",
-		-0.31, 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+		Motion.quintic(3.60671666363852, crest_g), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+	_add(spans, metadata, propulsion, "act-one/airtime-crest", crest_s, "moving",
+		crest_g, 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
 	_add(spans, metadata, propulsion, "act-one/airtime-fall", 0.7222022717, "moving",
-		Motion.quintic(-0.31, 3.60671666363852), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
+		Motion.quintic(crest_g, 3.60671666363852), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
 	_add(spans, metadata, propulsion, "act-one/airtime-release", 0.7222022717, "moving",
 		Motion.quintic(3.60671666363852, 1.0), 0.0, 0.0, 0.0, "airtime-hills", 0, 2.0, "hill")
 
-	var wave_bank := PI / 4.0
+
+static func _add_act_one_wave(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float,
+	targets: Dictionary = {}
+) -> void:
+	var area := COMPACT_PULSE_AREA
+	# Drawn per seed: how far the wave turn lays over. The roll-in duration scales with the drawn
+	# bank so the roll-in rate stays at its authored 115.5 deg/s: banking further has to take
+	# longer, it is not allowed to buy itself a faster roll out of the envelope.
+	var wave_bank := RidePlanner.target(targets, "act-one-wave", "bank_rad", PI / 4.0)
+	var wave_bank_rise_s := 0.9 * wave_bank / (PI / 4.0)
 	var wave_unload_s := 0.465
 	var wave_crest_s := 1.5585438924091
 	var wave_recover_s := 0.424869716970738
 	var wave_exit_total_s := 1.1
 	var wave_exit_angle := 0.48211374457049
-	var wave_bank_in := wave_bank / (area * 0.9)
+	var wave_bank_in := wave_bank / (area * wave_bank_rise_s)
 	var wave_cross := 2.0 * wave_bank \
 		/ (area * (wave_unload_s + wave_crest_s + wave_recover_s))
 	var wave_bank_out := wave_exit_angle / (area * wave_exit_total_s)
-	_add(spans, metadata, propulsion, "act-one/wave-bank-rise", 0.9, "moving",
+	_add(spans, metadata, propulsion, "act-one/wave-bank-rise", wave_bank_rise_s, "moving",
 		Motion.quintic(1.0, 5.1999981231), 0.0, 0.0,
 		Motion.compact_pulse(-wave_bank_in * hand), "wave-turn", 0, 2.0, "wave_turn")
 	_add(spans, metadata, propulsion, "act-one/wave-first-peak", 0.35, "moving",
@@ -614,10 +705,10 @@ static func _add_story_act_one(
 
 static func _add_raceway(
 	s: Array, m: Array, p: PackedInt32Array, parameters: Array = [], hand: float = 1.0,
-	initial_bank_rad: float = 0.0
+	initial_bank_rad: float = 0.0, targets: Dictionary = {}
 ) -> void:
 	var authored := _return_spans(
-		RETURN_SEED if parameters.is_empty() else parameters, hand, initial_bank_rad)
+		RETURN_SEED if parameters.is_empty() else parameters, hand, initial_bank_rad, targets)
 	var role_ids := ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"]
 	var role_ends := [8, 13, 16, 21]
 	var first := 0
@@ -629,12 +720,28 @@ static func _add_raceway(
 
 
 static func _return_spans(
-	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0
+	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0, targets: Dictionary = {}
 ) -> Array:
+	# Drawn per seed: how hard each return height beat is pulled and how deeply it unloads. The
+	# solve still owns the durations, so a stronger beat is paid for in its own timing rather
+	# than in closure, and the drawn pair reshapes ~1 km of authored return geometry.
+	var height_a_airtime_g := -0.45 * RidePlanner.target(
+		targets, "return-height-a", "unload_scale", 1.0)
+	var height_b_airtime_g := -0.5 * RidePlanner.target(
+		targets, "return-height-b", "unload_scale", 1.0)
+	var height_a_peak_g := RidePlanner.target(
+		targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
 	var turn_a_bank_rad := float(v[0])
 	var turn_b_bank_rad := float(v[3])
-	var height_b_peak_g := RETURN_HEIGHT_B_PEAK_G
-	var transfer_bank_bias_rad := RETURN_TRANSFER_BANK_BIAS_RAD
+	# The second beat's peak follows the first proportionally rather than drawing on its own:
+	# a strongly pulled height-a paired with a weakly pulled height-b is the one corner of the
+	# draw box the seven-control solve cannot close from its fixed seed (measured 2026-08-15:
+	# every such corner exhausts the 220-evaluation budget while every proportional pair lands).
+	var height_b_peak_g := RETURN_HEIGHT_B_PEAK_G * height_a_peak_g / RETURN_HEIGHT_A_PEAK_G
+	# Drawn per seed: how far the two overbanked transfers are biased apart, which is what sets
+	# how much heading the loaded arc spends before the counter-banked sweep unwinds it.
+	var transfer_bank_bias_rad := RidePlanner.target(
+		targets, "return-turn-a", "transfer_bank_bias_rad", RETURN_TRANSFER_BANK_BIAS_RAD)
 	var transfer_bank_rad := deg_to_rad(37.5)
 	var first_transfer_bank_rad := hand * (transfer_bank_rad + transfer_bank_bias_rad)
 	var counter_transfer_bank_rad := -hand * (transfer_bank_rad - transfer_bank_bias_rad)
@@ -677,11 +784,14 @@ static func _return_spans(
 			counter_transfer_normal, counter_transfer_normal),
 		_return_bank_span("raceway/turn-a/transfer-unbank", 0.7,
 			counter_transfer_bank_rad, 0.0),
-		_return_span("raceway/height-a/pullup", 0.75, 1.0, 3.8),
-		_return_span("raceway/height-a/unload", 1.05, 3.8, -0.45),
-		_return_span("raceway/height-a/airtime", 0.75, -0.45, -0.45),
-		_return_span("raceway/height-a/recovery", float(v[2]), -0.45, 3.8),
-		_return_span("raceway/height-a/release", 0.75, 3.8, turn_b_entry_mid_normal,
+		_return_span("raceway/height-a/pullup", 0.75, 1.0, height_a_peak_g),
+		_return_span("raceway/height-a/unload", 1.05, height_a_peak_g, height_a_airtime_g),
+		_return_span("raceway/height-a/airtime", 0.75, height_a_airtime_g,
+			height_a_airtime_g),
+		_return_span("raceway/height-a/recovery", float(v[2]), height_a_airtime_g,
+			height_a_peak_g),
+		_return_span("raceway/height-a/release", 0.75, height_a_peak_g,
+			turn_b_entry_mid_normal,
 			turn_b_entry_mid_rad / (0.75 * COMPACT_PULSE_AREA)),
 		_return_bank_span("raceway/turn-b/entry", 0.8,
 			turn_b_entry_mid_rad, turn_b_bank_rad_signed),
@@ -690,9 +800,11 @@ static func _return_spans(
 			turn_b_bank_rad_signed, turn_b_exit_mid_rad),
 		_return_span("raceway/height-b/pullup", 0.8, turn_b_exit_mid_normal, height_b_peak_g,
 			-turn_b_exit_mid_rad / (0.8 * COMPACT_PULSE_AREA)),
-		_return_span("raceway/height-b/unload", 1.2, height_b_peak_g, -0.5),
-		_return_span("raceway/height-b/airtime", float(v[5]), -0.5, -0.5),
-		_return_span("raceway/height-b/recovery", float(v[6]), -0.5, height_b_peak_g),
+		_return_span("raceway/height-b/unload", 1.2, height_b_peak_g, height_b_airtime_g),
+		_return_span("raceway/height-b/airtime", float(v[5]), height_b_airtime_g,
+			height_b_airtime_g),
+		_return_span("raceway/height-b/recovery", float(v[6]), height_b_airtime_g,
+			height_b_peak_g),
 		_return_span("raceway/height-b/release", 0.8, height_b_peak_g, 1.0),
 	]
 
@@ -717,7 +829,8 @@ static func _return_bank_span(
 
 
 static func _solve_return(
-	start: Dictionary, layout: Dictionary, hand: float = 1.0, seed: Array = RETURN_SEED
+	start: Dictionary, layout: Dictionary, hand: float = 1.0, seed: Array = RETURN_SEED,
+	targets: Dictionary = {}
 ) -> Dictionary:
 	var cache := {}
 	var initial_bank_rad: float = _capture_residuals(start, layout)[4]
@@ -729,7 +842,7 @@ static func _solve_return(
 	var residual := func(candidate: Array) -> Array:
 		var observed := _return_evaluation(
 			start, layout, candidate, _settings(PRODUCTION_STEP_S), cache, hand,
-			initial_bank_rad)
+			initial_bank_rad, targets)
 		return observed.scaled if observed.get("ok", false) else [INF]
 	var solved := BoundedSolver.solve(
 		residual, lower, upper, seed, MAX_RETURN_EVALUATIONS - 1)
@@ -741,11 +854,13 @@ static func _solve_return(
 				"target_error": solved.get("residuals", [])})
 	var parameters: Array = solved.x
 	var coarse := _return_evaluation(
-		start, layout, parameters, _settings(FINE_STEP_S), cache, hand, initial_bank_rad)
+		start, layout, parameters, _settings(FINE_STEP_S), cache, hand, initial_bank_rad,
+		targets)
 	if not coarse.get("ok", false):
 		return coarse
 	var fine := _return_evaluation(
-		start, layout, parameters, _settings(PRODUCTION_STEP_S), cache, hand, initial_bank_rad)
+		start, layout, parameters, _settings(PRODUCTION_STEP_S), cache, hand, initial_bank_rad,
+		targets)
 	if not fine.ok:
 		return fine
 	if _maximum_absolute(fine.scaled) > 0.02:
@@ -794,7 +909,7 @@ static func _maximum_absolute(values: Array) -> float:
 
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
 	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
-	initial_bank_rad: float = 0.0) -> Dictionary:
+	initial_bank_rad: float = 0.0, targets: Dictionary = {}) -> Dictionary:
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)
@@ -804,7 +919,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 		return _failure("return exceeded its evaluation cap", "return",
 			{"evaluation_count": cache.size()})
 	var route := Motion.integrate(
-		start, _return_spans(parameters, hand, initial_bank_rad), settings)
+		start, _return_spans(parameters, hand, initial_bank_rad, targets), settings)
 	if not route.get("ok", false):
 		var failed := _failure("return candidate failed integration", "return",
 			{"evaluation_count": cache.size() + 1})
@@ -1412,6 +1527,24 @@ static func _coast_distance(from_speed: float, to_speed: float) -> float:
 		/ (ROLLING_MPS2 + AERO_PER_M * to_speed * to_speed)) / (2.0 * AERO_PER_M)
 
 
+## The role ids a plan declares, in its own authored order.
+static func plan_role_ids(plan: Dictionary) -> Array:
+	var ids: Array = []
+	for role in plan.get("roles", []):
+		if not role is Dictionary:
+			return []
+		ids.append(str(role.get("id", "")))
+	return ids
+
+
+## The compiled story a plan asks for: its declared role sequence and its resolved target draws.
+static func _story_from_plan(plan: Dictionary) -> Dictionary:
+	var decisions: Dictionary = plan.get("decisions", {})
+	var targets: Variant = decisions.get("targets", {})
+	return {"sequence": plan_role_ids(plan),
+		"targets": targets if targets is Dictionary else {}}
+
+
 static func _validate_plan(plan: Dictionary) -> Dictionary:
 	var expected := ["schema_version", "preset_id", "decisions", "terrain_frame", "station",
 		"corridor", "route_length_m", "roles"]
@@ -1453,28 +1586,32 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 			- float(corridor.brake_length_m)) > 0.000001:
 		return _failure("material-v1 corridor partitions do not sum to the approach", "plan")
 	var roles: Variant = plan.get("roles")
-	if not roles is Array or roles.size() != MATERIAL_ROLE_IDS.size():
-		return _failure("material-v1 plan must contain twenty roles", "plan")
+	if not roles is Array or roles.is_empty():
+		return _failure("material-v1 plan must declare its roles", "plan")
+	var sequence := plan_role_ids(plan)
+	if not RidePlanner.is_legal_sequence(sequence):
+		return _failure("material-v1 role sequence is not grammar-legal", "plan",
+			{"observed": {"sequence": sequence}})
 	var minimum_sum := 0.0
 	var maximum_sum := 0.0
 	var allocations := {}
-	for index in MATERIAL_ROLE_IDS.size():
-		var role: Variant = roles[index]
-		if not role is Dictionary or role.get("id") != MATERIAL_ROLE_IDS[index] \
-				or not role.get("length_m") is Vector2:
+	for index in roles.size():
+		var role: Dictionary = roles[index]
+		var role_id := str(sequence[index])
+		if not role.get("length_m") is Vector2:
 			return _failure("material-v1 role order or length band is invalid", "plan",
-				{"role_id": MATERIAL_ROLE_IDS[index]})
+				{"role_id": role_id})
 		var band: Vector2 = role.length_m
 		if not is_finite(band.x) or not is_finite(band.y) or band.x <= 0.0 or band.y < band.x:
 			return _failure("material-v1 role length band is not finite", "plan",
-				{"role_id": MATERIAL_ROLE_IDS[index]})
-		var nominal: float = ROLE_NOMINAL_LENGTHS[index]
-		if nominal < band.x or nominal > band.y:
+				{"role_id": role_id})
+		var nominal: float = float(ROLE_NOMINAL_LENGTH_M.get(role_id, NAN))
+		if not is_finite(nominal) or nominal < band.x or nominal > band.y:
 			return _failure("material-v1 nominal role length is outside its band", "plan",
-				{"role_id": MATERIAL_ROLE_IDS[index]})
+				{"role_id": role_id})
 		minimum_sum += band.x
 		maximum_sum += band.y
-		allocations[MATERIAL_ROLE_IDS[index]] = nominal
+		allocations[role_id] = nominal
 	var route_band: Variant = plan.get("route_length_m")
 	if not route_band is Vector2 or route_band != Vector2(7800.0, 8200.0) \
 			or minimum_sum > route_band.y or maximum_sum < route_band.x:
@@ -1489,7 +1626,7 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 		"tunnel-lsm3": ["boundary_crossings"],
 	}
 	for role_id in required_terrain:
-		var required_role: Dictionary = roles[MATERIAL_ROLE_IDS.find(role_id)]
+		var required_role: Dictionary = roles[sequence.find(role_id)]
 		var terrain: Variant = required_role.get("terrain")
 		if not terrain is Dictionary:
 			return _failure("missing_required_terrain_intent", "plan", {"role_id": role_id})
@@ -1497,7 +1634,7 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 			if not terrain.has(field):
 				return _failure("missing_required_terrain_intent", "plan",
 					{"role_id": role_id, "observed": {"missing": field}})
-	var dive_terrain: Dictionary = roles[MATERIAL_ROLE_IDS.find("outward-dive")].terrain
+	var dive_terrain: Dictionary = roles[sequence.find("outward-dive")].terrain
 	var outward_band: Variant = dive_terrain.outward_delta_m
 	var cross_ratio: Variant = dive_terrain.maximum_cross_to_outward_ratio
 	if not outward_band is Vector2 or not outward_band.is_finite() \
@@ -1607,7 +1744,8 @@ static func _add_record(
 ## Reconstruct which material role owns each authored span. Ownership must be total, ordered
 ## and contiguous: an unowned span, a split role or an unauthored role is a hard failure, never
 ## a silent Vector2i(-1, -1).
-static func material_role_spans(spans: Array) -> Dictionary:
+static func material_role_spans(spans: Array, sequence: Array = MATERIAL_ROLE_IDS) -> Dictionary:
+	var role_ids: Array = sequence if not sequence.is_empty() else MATERIAL_ROLE_IDS
 	var prefixes := {
 		"station-launch": ["launch/"],
 		"opener-twisted-drop": ["crest/", "drop/"],
@@ -1636,18 +1774,18 @@ static func material_role_spans(spans: Array) -> Dictionary:
 	for index in spans.size():
 		var span_id := str(spans[index].span_id)
 		var owner := -1
-		for role_index in MATERIAL_ROLE_IDS.size():
-			for prefix in prefixes[MATERIAL_ROLE_IDS[role_index]]:
+		for role_index in role_ids.size():
+			for prefix in prefixes[role_ids[role_index]]:
 				if not span_id.begins_with(prefix):
 					continue
 				if owner >= 0 and owner != role_index:
 					errors.append("span %s is claimed by both %s and %s" % [
-						span_id, MATERIAL_ROLE_IDS[owner], MATERIAL_ROLE_IDS[role_index]])
+						span_id, role_ids[owner], role_ids[role_index]])
 				owner = role_index
 		if owner < 0:
 			errors.append("span %s is owned by no material role" % span_id)
 			continue
-		var role_id: String = MATERIAL_ROLE_IDS[owner]
+		var role_id: String = role_ids[owner]
 		if block_order.is_empty() or block_order[-1] != owner:
 			if result.has(role_id):
 				errors.append("material role %s owns a non-contiguous span block" % role_id)
@@ -1655,12 +1793,12 @@ static func material_role_spans(spans: Array) -> Dictionary:
 			result[role_id] = Vector2i(index, index)
 		else:
 			result[role_id] = Vector2i(result[role_id].x, index)
-	for role_index in MATERIAL_ROLE_IDS.size():
-		if not result.has(MATERIAL_ROLE_IDS[role_index]):
-			errors.append("material role %s owns no authored span" % MATERIAL_ROLE_IDS[role_index])
+	for role_index in role_ids.size():
+		if not result.has(role_ids[role_index]):
+			errors.append("material role %s owns no authored span" % role_ids[role_index])
 		elif role_index >= block_order.size() or block_order[role_index] != role_index:
-			errors.append("material role %s is not authored in reviewed order"
-				% MATERIAL_ROLE_IDS[role_index])
+			errors.append("material role %s is not authored in its declared order"
+				% role_ids[role_index])
 	return {"ok": errors.is_empty(), "role_spans": result, "errors": errors}
 
 

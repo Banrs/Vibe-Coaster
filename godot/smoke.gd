@@ -12,6 +12,14 @@ const DEEP_SEEDS := [11, 42, 20260809]
 const TOP_SPEED_BAND_MPS := Vector2(93.9, 95.6)
 const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+## The fleet must not be one ride fifteen times. Measured spread on 2026-08-15 with the landed
+## draw set: 41.9 m of route length and 0.31 s of elapsed time across the fifteen seeds, so
+## these floors sit at roughly a quarter of what the planner actually produces.
+const FLEET_LENGTH_SPREAD_FLOOR_M := 5.0
+const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
+
+var _fleet_lengths := PackedFloat64Array()
+var _fleet_durations := PackedFloat64Array()
 
 
 func _initialize() -> void:
@@ -23,6 +31,7 @@ func _initialize() -> void:
 	for seed_value in DEEP_SEEDS:
 		errors.append_array(_deep_seed_errors(seed_value))
 	errors.append_array(_sweep_errors())
+	errors.append_array(_diversity_errors())
 	errors.append_array(_viewer_errors())
 	for error in errors:
 		printerr(error)
@@ -46,6 +55,8 @@ func _deep_seed_errors(seed_value: int) -> PackedStringArray:
 	_validate_record_launch_numbers(route, analysis, issues)
 	for issue in issues:
 		errors.append("seed %d: %s" % [seed_value, issue])
+	_fleet_lengths.append(route.length)
+	_fleet_durations.append(route.duration)
 	print(
 		"deep seed %d: %.0f m, %.1f s, %d samples, %.1f km/h top"
 		% [seed_value, route.length, route.duration, route.positions.size(),
@@ -63,6 +74,8 @@ func _sweep_errors() -> PackedStringArray:
 		var route: Dictionary = Generator.build(seed_value)
 		if _accepted_route(route, seed_value, seed_errors):
 			lengths.append(route.length)
+			_fleet_lengths.append(route.length)
+			_fleet_durations.append(route.duration)
 			var issues := PackedStringArray()
 			_validate_structure_and_placement(route, issues)
 			for issue in issues:
@@ -79,6 +92,32 @@ func _sweep_errors() -> PackedStringArray:
 			"seed sweep: %d of %d build and place clean, lengths %.1f-%.1f km"
 			% [clean, SWEEP_SEEDS.size(), lengths[0] / 1000.0, lengths[-1] / 1000.0]
 		)
+	return errors
+
+
+## Seeds must produce different rides, not one ride fifteen times. Determinism is checked
+## per seed above; this is the companion check that nothing else asserted before the planner
+## decision layer landed — a build that collapses back to a single ride fails here.
+func _diversity_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	if _fleet_lengths.size() < DEEP_SEEDS.size() + SWEEP_SEEDS.size():
+		errors.append("the diversity gate saw only %d of %d accepted fleet rides" % [
+			_fleet_lengths.size(), DEEP_SEEDS.size() + SWEEP_SEEDS.size()])
+		return errors
+	var lengths := _fleet_lengths.duplicate()
+	var durations := _fleet_durations.duplicate()
+	lengths.sort()
+	durations.sort()
+	var length_spread: float = lengths[-1] - lengths[0]
+	var duration_spread: float = durations[-1] - durations[0]
+	if length_spread < FLEET_LENGTH_SPREAD_FLOOR_M:
+		errors.append("fleet route lengths span only %.2f m; required more than %.2f m"
+			% [length_spread, FLEET_LENGTH_SPREAD_FLOOR_M])
+	if duration_spread < FLEET_DURATION_SPREAD_FLOOR_S:
+		errors.append("fleet ride durations span only %.3f s; required more than %.3f s"
+			% [duration_spread, FLEET_DURATION_SPREAD_FLOOR_S])
+	print("fleet diversity: %d rides, lengths span %.2f m, durations span %.3f s"
+		% [lengths.size(), length_spread, duration_spread])
 	return errors
 
 

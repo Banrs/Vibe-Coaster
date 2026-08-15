@@ -6,6 +6,7 @@ extends RefCounted
 ## RouteContract validates and publishes the accepted native route.
 
 const Motion := preload("res://motion.gd")
+const RidePlanner := preload("res://ride_planner.gd")
 const RideProgram := preload("res://ride_program.gd")
 const RouteContract := preload("res://route_contract.gd")
 const Terrain := preload("res://terrain.gd")
@@ -23,13 +24,20 @@ const DIVE_LOWER_SPINE_CLEARANCE_M := 2.05
 const STATION_LOWER_SPINE_CLEARANCE_M := 4.05
 const LOWER_SPINE_SURFACE_OFFSET_M := 1.79
 const TERRAIN_PLACEMENT_STEP_M := 0.25
+const APPROACH_LENGTH_M := 230.0
+const APPROACH_SAMPLE_STEP_M := 5.0
 
 
 static func build(seed_value: int) -> Dictionary:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = seed_value
-	var terrain: Dictionary = Terrain.generate(rng)
-	var plan := _plan(terrain, rng)
+	return build_with_decisions(seed_value, RidePlanner.resolve(seed_value))
+
+
+## The certification seam: build a seed from an explicitly supplied planner decision set.
+## Production always passes `RidePlanner.resolve(seed_value)`; tests use this to place a draw at
+## a range extreme and prove the whole range is feasible, without a runtime candidate loop.
+static func build_with_decisions(seed_value: int, decisions: Dictionary) -> Dictionary:
+	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
+	var plan := _plan(terrain, decisions)
 	if plan.has("ok") and not plan.ok:
 		return plan
 	var initial_state := _initial_state(plan.station)
@@ -55,17 +63,21 @@ static func build(seed_value: int) -> Dictionary:
 	return RouteContract.build(seed_value, terrain, initial_state, plan, accepted, trajectory)
 
 
-static func _plan(terrain: Dictionary, rng: RandomNumberGenerator) -> Dictionary:
+static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	var inward_2d: Vector2 = terrain.edge_normal.normalized()
 	var along_2d := Vector2(-inward_2d.y, inward_2d.x)
 	var inward := Vector3(inward_2d.x, 0.0, inward_2d.y)
 	var along := Vector3(along_2d.x, 0.0, along_2d.y)
-	var side := -1 if rng.randf() < 0.5 else 1
-	var along_m := rng.randf_range(60.0, 120.0)
-	var placement_u := rng.randf()
-	var roles := _material_roles()
-	var dive_intent: Dictionary = roles[12].terrain
-	var capability := RideProgram.terrain_story_capability(side)
+	var placement_rng: RandomNumberGenerator = decisions.streams[RidePlanner.STREAM_PLACEMENT]
+	var side := -1 if placement_rng.randf() < 0.5 else 1
+	var along_m := placement_rng.randf_range(60.0, 120.0)
+	var placement_u := placement_rng.randf()
+	var sequence: Array = decisions.sequence
+	var targets: Dictionary = decisions.targets
+	var story := {"sequence": sequence, "targets": targets}
+	var roles := _material_roles(sequence, targets)
+	var dive_intent: Dictionary = _role_by_id(roles, "outward-dive").terrain
+	var capability := RideProgram.terrain_story_capability(side, story)
 	if not capability.get("ok", false):
 		return _failure("terrain story capability failed", capability.get("errors", []))
 	var role_13: Variant = capability.get("role_13_entry")
@@ -255,12 +267,13 @@ static func _plan(terrain: Dictionary, rng: RandomNumberGenerator) -> Dictionary
 		"schema_version": PLAN_SCHEMA_VERSION,
 		"preset_id": PRESET_ID,
 		"decisions": {"station_side": side, "station_along_m": along_m,
-			"dive_exit_apron_fraction": exit_fraction},
+			"dive_exit_apron_fraction": exit_fraction,
+			"targets": targets.duplicate(true), "draws": decisions.draws.duplicate(true)},
 		"terrain_frame": {"apron_origin_m": apron_origin, "inward": inward,
 			"along": along, "up": up, "right": right,
 			"shelf_height_m": float(terrain.relief), "planning": planning},
 		"station": station,
-		"corridor": {"approach_length_m": 230.0, "capture_length_m": 80.0,
+		"corridor": {"approach_length_m": APPROACH_LENGTH_M, "capture_length_m": 80.0,
 			"brake_length_m": 150.0, "half_width_m": 150.0, "half_height_m": 75.0,
 			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"route_length_m": Vector2(7800.0, 8200.0),
@@ -328,6 +341,17 @@ static func _solve_dive_placement(
 			required_station_y = maxf(required_station_y,
 				Terrain.height(terrain, lower.x, lower.z) \
 				+ required_clearance - lower_offset.y)
+		# The reserved terminal approach is the one piece of the ride whose ground the placement
+		# never sampled: the brakes and capture arrive along it, level with the station frame,
+		# but they are solved long after placement. Sampling the reserved line here keeps that
+		# corridor above terrain by the station's own clearance instead of leaving it to luck.
+		var approach_samples := maxi(1, ceili(APPROACH_LENGTH_M / APPROACH_SAMPLE_STEP_M))
+		for sample_index in approach_samples + 1:
+			var back_m := APPROACH_LENGTH_M * float(sample_index) / approach_samples
+			var approach := station_position - tangent * back_m
+			required_station_y = maxf(required_station_y,
+				Terrain.height(terrain, approach.x, approach.z) \
+				+ STATION_LOWER_SPINE_CLEARANCE_M + LOWER_SPINE_SURFACE_OFFSET_M)
 		var summit_agl_m := required_station_y + world_entry_offset.y - entry_surface_m
 		lowest_required_agl_m = minf(lowest_required_agl_m, summit_agl_m)
 		if summit_agl_m > SUMMIT_TRACK_AGL_BAND_M.y:
@@ -386,59 +410,99 @@ static func _dive_placement_observation(
 	}
 
 
-static func _material_roles() -> Array:
-	return [
-		_role("station-launch", "station_launch", Vector2(140.0, 220.0),
-			{"exit_speed_mps": Vector2(75.0, 80.0)}, [], {}, 1),
-		_role("opener-twisted-drop", "twisted_drop", Vector2(540.0, 700.0),
-			{"exit_speed_mps": Vector2(70.0, 82.0), "vertical_excursion_m": Vector2(70.0, 115.0)}),
-		_role("opener-teardrop", "teardrop", Vector2(560.0, 720.0),
-			{"heading_abs_rad": Vector2(deg_to_rad(110.0), deg_to_rad(190.0))}),
-		_role("opener-release", "rising_release", Vector2(270.0, 390.0),
-			{"height_delta_m": Vector2(25.0, 55.0)}),
-		_role("act-one-immelmann", "immelmann", Vector2(370.0, 490.0),
-			{"vertical_excursion_m": Vector2(100.0, 110.0)},
-			[_phase(&"inverted_apex", {"rider_up_dot": Vector2(-1.0, 0.0),
-				"hold_s": Vector2(1.0, 2.2)})]),
-		_role("act-one-cutback", "cutback", Vector2(270.0, 360.0),
-			{"heading_abs_rad": Vector2(deg_to_rad(135.0), deg_to_rad(200.0))},
-			[_phase(&"inverted_apex", {"rider_up_dot": Vector2(-1.0, 0.0)})]),
-		_role("act-one-loop", "helical_loop", Vector2(310.0, 420.0),
-			{"vertical_excursion_m": Vector2(94.0, 100.0)},
-			[_phase(&"inverted_apex", {"rider_up_dot": Vector2(-1.0, 0.0),
-				"hold_s": Vector2(1.2, 2.6)})]),
-		_role("act-one-airtime", "airtime_braid", Vector2(220.0, 310.0)),
-		_role("act-one-wave", "wave_turn", Vector2(200.0, 290.0)),
-		_role("climb-lsm2", "lsm2_climb", Vector2(520.0, 680.0),
-			{"exit_speed_mps": Vector2(14.0, 24.0), "height_delta_m": Vector2(200.0, 225.0),
-				"drive_distance_fraction": Vector2(0.65, 0.80)}, [], {}, 2),
-		_role("clifftop-slow-crest", "slow_crest", Vector2(35.0, 80.0)),
-		_role("clifftop-outward-rim", "outward_rim", Vector2(65.0, 120.0), {}, [],
-			{"exit_tangent_outward_dot": Vector2(0.25, 1.0)}),
-		_role("outward-dive", "cliff_dive", Vector2(350.0, 490.0),
-			{"height_delta_m": Vector2(-250.0, -240.0)}, [],
-			{"outward_delta_m": Vector2(70.0, 300.0),
-				"maximum_cross_to_outward_ratio": 0.8,
-				"minimum_centerline_agl_m": 4.0, "boundary_crossings": [
-					{"boundary_id": &"shelf_edge", "from_side": 1, "to_side": -1},
-					{"boundary_id": &"face", "from_side": 1, "to_side": -1}],
-				"monotonic": PackedStringArray(["outward", "height_down"])}),
-		_role("tunnel-lsm3", "tunnel_lsm3", Vector2(150.0, 220.0), {}, [],
-			{"boundary_crossings": [{"boundary_id": &"apron_edge", "from_side": 1,
-				"to_side": -1}]}, 3),
-		# The record camelback is longer than the 328 km/h one: the same authored normal-g
-		# profile sweeps more track per second at the 340 km/h entry, and the fall lengthens
-		# to keep the marquee standing ~250 m above its valley.
-		_role("camelback", "camelback", Vector2(900.0, 1180.0)),
-		# Turn-a lengthens and height-a shortens against the old bands: the widened capture-entry
-		# corridor lets the passive return carry more speed, and the solve spends it in the
-		# loaded arc rather than the first airtime beat.
-		_role("return-turn-a", "return_turn", Vector2(420.0, 620.0)),
-		_role("return-height-a", "return_height", Vector2(290.0, 480.0)),
-		_role("return-turn-b", "return_turn", Vector2(430.0, 570.0)),
-		_role("return-height-b", "return_height", Vector2(450.0, 590.0)),
-		_role("terminal-capture-brakes", "terminal_capture_brakes", Vector2(200.0, 240.0)),
-	]
+## The declared roles of one plan, in the planner's drawn order. Role identity, length band and
+## terrain intents come from the one table below; the per-seed resolved targets stay in
+## `plan.decisions.targets` with their draw provenance, so the declared role bands remain a
+## claim about the built ride rather than a mixture of bands and drawn scalars.
+static func _material_roles(sequence: Array = [], _targets: Dictionary = {}) -> Array:
+	var roles: Array = []
+	for role_id in (sequence if not sequence.is_empty() else RidePlanner.canonical_role_ids()):
+		roles.append(_material_role(str(role_id)))
+	return roles
+
+
+static func _role_by_id(roles: Array, role_id: String) -> Dictionary:
+	for role: Dictionary in roles:
+		if str(role.id) == role_id:
+			return role
+	return {}
+
+
+static func _material_role(role_id: String) -> Dictionary:
+	match role_id:
+		"station-launch":
+			return _role("station-launch", "station_launch", Vector2(140.0, 220.0),
+				{"exit_speed_mps": Vector2(75.0, 80.0)}, [], {}, 1)
+		"opener-twisted-drop":
+			return _role("opener-twisted-drop", "twisted_drop", Vector2(540.0, 700.0),
+				{"exit_speed_mps": Vector2(70.0, 82.0),
+					"vertical_excursion_m": Vector2(70.0, 115.0)})
+		"opener-teardrop":
+			return _role("opener-teardrop", "teardrop", Vector2(560.0, 720.0),
+				{"heading_abs_rad": Vector2(deg_to_rad(110.0), deg_to_rad(190.0))})
+		"opener-release":
+			return _role("opener-release", "rising_release", Vector2(270.0, 390.0),
+				{"height_delta_m": Vector2(25.0, 55.0)})
+		"act-one-immelmann":
+			return _role("act-one-immelmann", "immelmann", Vector2(370.0, 490.0),
+				{"vertical_excursion_m": Vector2(100.0, 110.0)},
+				[_phase(&"inverted_apex", {"rider_up_dot": Vector2(-1.0, 0.0),
+					"hold_s": Vector2(1.0, 2.2)})])
+		"act-one-cutback":
+			return _role("act-one-cutback", "cutback", Vector2(270.0, 360.0),
+				{"heading_abs_rad": Vector2(deg_to_rad(135.0), deg_to_rad(200.0))},
+				[_phase(&"inverted_apex", {"rider_up_dot": Vector2(-1.0, 0.0)})])
+		"act-one-loop":
+			return _role("act-one-loop", "helical_loop", Vector2(310.0, 420.0),
+				{"vertical_excursion_m": Vector2(94.0, 100.0)},
+				[_phase(&"inverted_apex", {"rider_up_dot": Vector2(-1.0, 0.0),
+					"hold_s": Vector2(1.2, 2.6)})])
+		"act-one-airtime":
+			return _role("act-one-airtime", "airtime_braid", Vector2(220.0, 310.0))
+		"act-one-wave":
+			return _role("act-one-wave", "wave_turn", Vector2(200.0, 290.0))
+		"climb-lsm2":
+			return _role("climb-lsm2", "lsm2_climb", Vector2(520.0, 680.0),
+				{"exit_speed_mps": Vector2(14.0, 24.0), "height_delta_m": Vector2(200.0, 225.0),
+					"drive_distance_fraction": Vector2(0.65, 0.80)}, [], {}, 2)
+		"clifftop-slow-crest":
+			return _role("clifftop-slow-crest", "slow_crest", Vector2(35.0, 80.0))
+		"clifftop-outward-rim":
+			return _role("clifftop-outward-rim", "outward_rim", Vector2(65.0, 120.0), {}, [],
+				{"exit_tangent_outward_dot": Vector2(0.25, 1.0)})
+		"outward-dive":
+			return _role("outward-dive", "cliff_dive", Vector2(350.0, 490.0),
+				{"height_delta_m": Vector2(-250.0, -240.0)}, [],
+				{"outward_delta_m": Vector2(70.0, 300.0),
+					"maximum_cross_to_outward_ratio": 0.8,
+					"minimum_centerline_agl_m": 4.0, "boundary_crossings": [
+						{"boundary_id": &"shelf_edge", "from_side": 1, "to_side": -1},
+						{"boundary_id": &"face", "from_side": 1, "to_side": -1}],
+					"monotonic": PackedStringArray(["outward", "height_down"])})
+		"tunnel-lsm3":
+			return _role("tunnel-lsm3", "tunnel_lsm3", Vector2(150.0, 220.0), {}, [],
+				{"boundary_crossings": [{"boundary_id": &"apron_edge", "from_side": 1,
+					"to_side": -1}]}, 3)
+		"camelback":
+			# The record camelback is longer than the 328 km/h one: the same authored normal-g
+			# profile sweeps more track per second at the 340 km/h entry, and the fall lengthens
+			# to keep the marquee standing ~250 m above its valley.
+			return _role("camelback", "camelback", Vector2(900.0, 1180.0))
+		"return-turn-a":
+			# Turn-a lengthens and height-a shortens against the old bands: the widened
+			# capture-entry corridor lets the passive return carry more speed, and the solve
+			# spends it in the loaded arc rather than the first airtime beat.
+			return _role("return-turn-a", "return_turn", Vector2(420.0, 620.0))
+		"return-height-a":
+			return _role("return-height-a", "return_height", Vector2(290.0, 480.0))
+		"return-turn-b":
+			return _role("return-turn-b", "return_turn", Vector2(430.0, 570.0))
+		"return-height-b":
+			return _role("return-height-b", "return_height", Vector2(450.0, 590.0))
+		"terminal-capture-brakes":
+			return _role("terminal-capture-brakes", "terminal_capture_brakes",
+				Vector2(200.0, 240.0))
+	return {}
 
 
 static func _role(

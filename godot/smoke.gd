@@ -21,22 +21,19 @@ const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## `ride_program_tests.gd` gates five seeds fast; every seed of the fifteen must stay inside
 ## this fraction of it, measured here because the compile is already paid.
 const RETURN_EVALUATION_ALLOWANCE := 0.6
-## The same fraction of the prefix closure's own derived cap, and the fifteen-seed half of the
-## prefix convergence claim `ride_program_tests.gd` makes on the canonical and seed-42 stories.
-const PREFIX_EVALUATION_ALLOWANCE := 0.6
-## The prefix-closure margins the whole fleet must carry. The closure aims inside every one of
-## these and the closed-form placement lands inside them by construction; measuring them on all
-## fifteen seeds is what turns the aim into a gate. Measured on the grid-search placement this
-## replaced: four seeds missed the dive-entry margin, nine the apron margin, and seven sat exactly
-## on the summit band's floor. Read the summit margin as one-sided: `generator.gd` floors the
-## station at the inner band's 17.99 m (the 40% interior of the 15.01-24.95 band) and every other
-## clearance term can only raise it, so the low side carries 2.98 m by construction and only the
-## high side can ever approach this gate. The fleet's tightest summit margin (+2.90 m, seed 77777)
-## is therefore high-side evidence alone, not a two-sided measurement of the 1.5 m floor.
-const DIVE_ENTRY_EDGE_MARGIN_M := 3.0
-const DIVE_EXIT_APRON_MARGIN := 0.05
-const SUMMIT_TRACK_AGL_MARGIN_M := 1.5
-const RECORD_EXIT_SPEED_MARGIN_MPS := 0.4
+## The prefix-closure margins the whole fleet must carry, and the fraction of the closure's own
+## derived cap it must converge inside — all four margins and the allowance are `generator.gd`'s
+## constants, read here rather than copied, since the closure aims at the same numbers. This is the
+## fifteen-seed half of the prefix convergence claim `ride_program_tests.gd` makes on the canonical
+## and seed-42 stories. The closure aims inside every margin and the closed-form placement lands
+## inside them by construction; measuring them on all fifteen seeds is what turns the aim into a
+## gate. Measured on the grid-search placement this replaced: four seeds missed the dive-entry
+## margin, nine the apron margin, and seven sat exactly on the summit band's floor. Read the summit
+## margin as one-sided: `generator.gd` floors the station at the inner band's 17.99 m (the 40%
+## interior of the 15.01-24.95 band) and every other clearance term can only raise it, so the low
+## side carries 2.98 m by construction and only the high side can ever approach this gate. The
+## fleet's tightest summit margin (+2.90 m, seed 77777) is therefore high-side evidence alone, not
+## a two-sided measurement of the 1.5 m floor.
 ## The viewer's POV camera bounds. Measured on seed 42 (2026-08-15): the camera stays within
 ## 6.3° of the tangent, the look direction stays 84.5° clear of the pose up axis, and the rumble
 ## moves the eye 4.41 mm between 60 fps frames at top speed. The cone and clearance are the
@@ -324,13 +321,13 @@ func _validate_prefix_closure(
 	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
 	var measured := [
 		["dive-entry edge", float(planning.get("dive_entry_edge_m", NAN)) - shelf_m,
-			Generator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, DIVE_ENTRY_EDGE_MARGIN_M],
+			Generator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, Generator.DIVE_ENTRY_EDGE_MARGIN_M],
 		["dive-exit apron fraction", float(planning.get("dive_exit_apron_fraction", NAN)),
-			Generator.DIVE_EXIT_APRON_BAND, DIVE_EXIT_APRON_MARGIN],
+			Generator.DIVE_EXIT_APRON_BAND, Generator.DIVE_EXIT_APRON_MARGIN],
 		["summit track AGL", float(planning.get("summit_track_agl_m", NAN)),
-			Generator.SUMMIT_TRACK_AGL_BAND_M, SUMMIT_TRACK_AGL_MARGIN_M],
+			Generator.SUMMIT_TRACK_AGL_BAND_M, Generator.PREFIX_MARGIN_SUMMIT_M],
 		["record exit speed", float(fine[3]), Generator.RECORD_EXIT_SPEED_BAND_MPS,
-			RECORD_EXIT_SPEED_MARGIN_MPS],
+			Generator.PREFIX_MARGIN_RECORD_MPS],
 	]
 	var report := PackedStringArray()
 	for entry: Array in measured:
@@ -342,7 +339,7 @@ func _validate_prefix_closure(
 				% [entry[0], margin, str(band), float(entry[3])])
 	var evaluations := int(closure.get("unique_evaluations", -1))
 	var allowance := int(
-		PREFIX_EVALUATION_ALLOWANCE * int(closure.get("max_unique_evaluations", 0)))
+		Generator.PREFIX_EVALUATION_ALLOWANCE * int(closure.get("max_unique_evaluations", 0)))
 	if evaluations < 1 or evaluations > allowance \
 			or str(closure.get("solver_status", "")) != "converged":
 		issues.append("the prefix closure spent %d %s evaluations against a %d fleet allowance"

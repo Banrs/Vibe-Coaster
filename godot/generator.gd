@@ -33,6 +33,14 @@ const RECORD_EXIT_SPEED_BAND_MPS := Vector2(93.9, 95.6)
 ## measures what each seed actually achieved and fails on a miss.
 const DIVE_ENTRY_EDGE_MARGIN_M := 3.0
 const DIVE_EXIT_APRON_MARGIN := 0.05
+## The other two fleet margins and the closure's evaluation allowance. Unlike the two above,
+## placement does not build an aim band from these, so they had no home here until three readers
+## wanted them: `smoke.gd` measures them on the fifteen-seed fleet, `generator_material_tests.gd`
+## holds a refused story to the same bar, and both used to carry their own copy. The allowance is
+## the fraction of the closure's own derived unique-evaluation cap every accepted plan stays inside.
+const PREFIX_MARGIN_SUMMIT_M := 1.5
+const PREFIX_MARGIN_RECORD_MPS := 0.4
+const PREFIX_EVALUATION_ALLOWANCE := 0.6
 ## Every aim band is the middle 40% of its feasible band, so a converged closure and an accepted
 ## placement both sit interior. Measured on the fleet: the 40% interior of the summit, apron and
 ## record bands clears the certified margin by 2.98 m, 0.055 and 0.11 m/s respectively.

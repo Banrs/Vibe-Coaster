@@ -38,11 +38,6 @@ const PRESET_SEEDS := [
 const REFUSAL_SEEDS := [11, 42, 20260809, 4096]
 ## The perturbation the refusal evidence in `ride_planner.gd` names, applied to the authored value.
 const REFUSAL_DELTA := 0.005
-## The two section-6 fleet margins that have no home in `generator.gd` (placement builds its aim
-## bands from the other two, so those are read from the generator itself). `smoke.gd` gates these
-## same two numbers on the fifteen-seed canonical fleet; a refused story has to clear the same bar.
-const SUMMIT_TRACK_AGL_MARGIN_M := 1.5
-const RECORD_EXIT_SPEED_MARGIN_MPS := 0.4
 
 var _errors := PackedStringArray()
 
@@ -103,21 +98,30 @@ func _check_preset_fleet_contract() -> void:
 ## The prefix-closure design's section 10.4, re-run as a gate: the stories the generator used to
 ## refuse must now close and place. This is the *planning* half of that criterion — preflight ->
 ## closure target -> bounded solve -> closed-form placement, the production path, stopped before
-## compile — and it is deliberately not the whole of it. Measured 2026-08-15 on this dev box:
+## compile — and it is deliberately not the whole of it. Measured 2026-08-15 on this dev box, and
+## the permutation and perturbation matrices re-measured the same day once `_act_one_optional_swap`
+## below was found to be a no-op that had been feeding this gate the canonical order:
 ##
 ##   perturbations, full build, 15 seeds x 2 literals x 2 signs = 60 builds: 0 build end to end;
 ##   perturbations, planning only, same 60: `act-one-loop/positive_g` -0.005 closes and places on
-##     all fifteen inside every margin below (gated here), +0.005 on 7 of 15, and
-##     `opener-twisted-drop/core_lateral_g` +-0.005 on none. The twisted drop is refused before the
-##     solve runs: the preflight frames the yaw solution from the *unsolved* prefix, whose native
-##     dive chord runs 245.2 m at -0.005 and 408.0 m at +0.005 against the terrain's ~270 m desired
-##     span and the dive role's 70-300 m band. Four duration controls cannot help a solve that is
-##     never reached;
-##   permutations, all 24 grammar-legal act-one orders built on seeds 11/42/20260809 (72 builds):
-##     only the canonical order builds; the same 24 planned on the four seeds below (96 plans):
-##     only the canonical order and the optional-member swap gated here place, the other 22 are
-##     refused at the same preflight. The swap places clean on all fifteen seeds; the
-##     airtime-dropped variant places on 9 of 15, so it is measured, not gated.
+##     all fifteen inside every margin below (gated here); +0.005 places on 7 of 15 — seeds 42, 3,
+##     7, 256, 555, 31337 and 77777 — and refuses on 11, 20260809, 1, 99, 1234, 4096, 123456 and
+##     20250101. `opener-twisted-drop/core_lateral_g` +-0.005 places on none: the twisted drop is
+##     refused before the solve runs, because the preflight frames the yaw solution from the
+##     *unsolved* prefix, whose native dive chord runs 245.2 m at -0.005 and 408.0 m at +0.005
+##     against the terrain's ~270 m desired span and the dive role's 70-300 m band. Four duration
+##     controls cannot help a solve that is never reached;
+##   permutations, all 36 grammar-legal act-one orders — the 24 orderings of the full pool plus the
+##     12 that drop one optional member — planned on the four seeds below, 144 plans: exactly three
+##     orders place at all. The canonical `cutback,loop,airtime,wave` and the optional-member swap
+##     `cutback,loop,wave,airtime` gated here place on all four; the airtime-dropped
+##     `cutback,loop,wave` places on three, refusing seed 42. The other 33 are refused at the same
+##     preflight. On the whole fifteen-seed fleet the corrected swap places 15 of 15, and
+##     airtime-dropped places on 9 — 11, 20260809, 1, 99, 256, 1234, 4096, 77777 and 20250101,
+##     refusing 42, 3, 7, 555, 31337 and 123456 — so the swap is gated and airtime-dropped is
+##     measured, not gated. Of the 24 full-pool orders built end to end on seeds 11/42/20260809
+##     (72 builds), only the canonical order builds; the corrected swap was re-confirmed to fail
+##     all three for the reasons below.
 ##
 ## What still blocks the build for the stories that do place is downstream of everything this
 ## design touched: the seven-control return solve does not re-converge from its fixed seed
@@ -126,6 +130,12 @@ func _check_preset_fleet_contract() -> void:
 ## return-turn-b to 574.5 m against their 350-490 and 430-570 m bands. Section 5.4's expectation
 ## that residual 4 absorbs the handoff shift is half true as measured: the record exit speed is
 ## pinned (+0.51 to +0.83 m/s inside its band on every placed story), the geometric handoff is not.
+##
+## Cost, named by runner because the two runners disagree: the eight plans below add ~12.7 s local
+## (~25 s on ubuntu). `tools/gates.sh` runs the twelve suites concurrently with smoke.gd, so that
+## growth hides behind the longest job and the battery total barely moves; `.github/workflows/ci.yml`
+## runs the same manifest serially before smoke.gd, so real CI pays every second of it. Widen this
+## gate only against that serial number.
 func _check_closure_places_the_refused_stories() -> void:
 	var permuted := _act_one_optional_swap()
 	for seed_value in REFUSAL_SEEDS:
@@ -137,13 +147,18 @@ func _check_closure_places_the_refused_stories() -> void:
 
 ## The act-one order this gate uses, assembled from the grammar's own cells: the pool with its two
 ## optional members exchanged. Never a typed-out role list, so the order stays legal by
-## construction and follows the grammar if the pool ever changes.
+## construction and follows the grammar if the pool ever changes. Both indices are read before
+## either write: writing the first slot then searching for `second` would find the slot just
+## overwritten and put `first` straight back, which is how this helper silently returned the
+## canonical order for one commit.
 func _act_one_optional_swap() -> Array:
 	var pool: Array = RidePlanner.ACT_ONE_POOL.duplicate()
 	var first: String = str(RidePlanner.ACT_ONE_OPTIONAL[0])
 	var second: String = str(RidePlanner.ACT_ONE_OPTIONAL[1])
-	pool[pool.find(first)] = second
-	pool[pool.find(second)] = first
+	var first_index := pool.find(first)
+	var second_index := pool.find(second)
+	pool[first_index] = second
+	pool[second_index] = first
 	var sequence: Array = []
 	sequence.append_array(RidePlanner.SPINE_OPENER)
 	sequence.append(RidePlanner.ACT_ONE_ANCHOR)
@@ -166,7 +181,13 @@ func _check_refused_story_places(
 	if not sequence.is_empty():
 		decisions["sequence"] = sequence
 	for role_id in targets:
-		decisions.targets[role_id] = targets[role_id]
+		# Merged key by key, never assigned wholesale: `TARGET_DRAWS` names no act-one role today,
+		# but the day it does, a wholesale assignment would silently shadow that seed's drawn value
+		# instead of offsetting the one authored key this gate perturbs.
+		var role: Dictionary = decisions.targets.get(role_id, {}).duplicate()
+		for key in targets[role_id]:
+			role[key] = targets[role_id][key]
+		decisions.targets[role_id] = role
 	if not RidePlanner.is_legal_sequence(decisions.sequence):
 		_expect(false, "%s declares a grammar-legal sequence: %s" % [context, str(
 			decisions.sequence)])
@@ -191,9 +212,9 @@ func _check_refused_story_places(
 			["dive-exit apron fraction", float(planning.dive_exit_apron_fraction),
 				RideGenerator.DIVE_EXIT_APRON_BAND, RideGenerator.DIVE_EXIT_APRON_MARGIN],
 			["summit track AGL", float(planning.summit_track_agl_m),
-				RideGenerator.SUMMIT_TRACK_AGL_BAND_M, SUMMIT_TRACK_AGL_MARGIN_M],
+				RideGenerator.SUMMIT_TRACK_AGL_BAND_M, RideGenerator.PREFIX_MARGIN_SUMMIT_M],
 			["record exit speed", float(fine[3]), RideGenerator.RECORD_EXIT_SPEED_BAND_MPS,
-				RECORD_EXIT_SPEED_MARGIN_MPS]]:
+				RideGenerator.PREFIX_MARGIN_RECORD_MPS]]:
 		var band: Vector2 = entry[2]
 		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
 		_expect(is_finite(margin) and margin >= float(entry[3]),
@@ -201,7 +222,8 @@ func _check_refused_story_places(
 			% [context, entry[0], margin, str(band), float(entry[3])])
 	var evaluations := int(closure.get("unique_evaluations", -1))
 	_expect(str(closure.get("solver_status", "")) == "converged" and evaluations >= 1
-		and evaluations <= int(0.6 * int(closure.get("max_unique_evaluations", 0))),
+		and evaluations <= int(RideGenerator.PREFIX_EVALUATION_ALLOWANCE
+			* int(closure.get("max_unique_evaluations", 0))),
 		"%s converges in %d %s evaluations" % [context, evaluations,
 			str(closure.get("solver_status", "missing"))])
 

@@ -1,5 +1,17 @@
 # Material Generator Vertical Slice Implementation Plan
 
+> **Status: executed — landed on `main` 2026-08-15; deviations recorded here (banner added
+> 2026-08-15).** Tasks 1–3 shipped: `godot/motion.gd`, `godot/ride_program.gd`,
+> `godot/route_contract.gd`, the `generator.gd` rewrite, and deletion of the legacy
+> generator/element path. Deviations: the promised `godot/generator_tests.gd` landed as
+> `godot/generator_material_tests.gd` (plus `godot/terrain_story_material_tests.gd`);
+> Task 4 (the version-1 configuration surface, `build_config`) was NOT executed in that
+> cycle; Task 5's sub-2,500-line production budget was not met (~3,618 lines across
+> generator/program/motion/route-contract, though the <4,056 deletion criterion was);
+> the roadmap update promised in Task 2's file list was not made at the time. The return
+> solve landed as 7 controls / 7 residuals with a 220-evaluation budget, superseding the
+> design's 5-variable / ≤40-evaluation description.
+
 > **For agentic workers:** use `superpowers:subagent-driven-development`,
 > `superpowers:test-driven-development`, and `superpowers:systematic-debugging`. One bounded Sol
 > implementer owns one task at a time; independent read-only reviews may run in parallel. Do not use

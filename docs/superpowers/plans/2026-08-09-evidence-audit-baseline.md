@@ -1,5 +1,14 @@
 # Evidence Audit Baseline Implementation Plan
 
+> **Status: executed (2026-08-09/10) — complete; kept as history (banner added 2026-08-15).**
+> All produced files exist (`godot/fidelity.gd`, `godot/fidelity_references.gd`,
+> `godot/fidelity_artifacts.gd`, `godot/canonical_data.gd`, the records under
+> `docs/evidence/fidelity/`). It executed against the legacy route `Dictionary` of the
+> pre-material generator, which no longer exists; do not re-execute its steps against the
+> current runtime. Unticked boxes in Tasks 1–7 mean "completed earlier, not re-verified" per
+> the note inside this file. The governing `AGENTS.md` it references no longer exists in the
+> repository.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce a skeptical, fully offline, deterministic fidelity baseline over the approved fifteen legacy-generator seeds before any ride-behavior change, backed by re-adjudicated committed evidence and checked JSON, Markdown, POV, and PNG artifacts.

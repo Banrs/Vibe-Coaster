@@ -1,25 +1,31 @@
 # FVD-First Generator Program Roadmap
 
-> **Status:** approved design decomposition. Execute with
-> `superpowers:subagent-driven-development`, test-first, one implementation task at a time.
+> **Status: superseded as a program index (2026-08-15).** The material vertical slice this
+> roadmap pointed at has landed on `main`; live truth is root `CLAUDE.md` (architecture and
+> generator contract) and `docs/ISSUES.md` (measured gaps and open issues), not this file.
+> Kept as design history. Its original "Current state (verified 2026-08-12)" section
+> contained claims that were already or have since become false and was corrected below on
+> 2026-08-15 rather than left to mislead a future agent.
 
-## Current state (verified 2026-08-12)
+## Current state (corrected 2026-08-15; originally "verified 2026-08-12")
 
-The deterministic legacy audit is built and its last complete GitHub artifact is preserved beneath
-ignored `out/baselines/legacy-audit-2a891d2`. The user stopped further evidence-baseline remediation
-because it did not materially change the ride.
+The user stopped further evidence-baseline remediation because it did not materially change
+the ride. `2026-08-12-material-generator-vertical-slice.md` Tasks 1–3 have since been
+executed and landed on `main`; its Task 4 (the version-1 configuration surface) was not
+executed at that time, so `build_config` did not exist when this roadmap listed it as a
+shared contract below.
 
-**Next action: `2026-08-12-material-generator-vertical-slice.md`, Task 1.** Its accompanying execution
-addendum, `../specs/2026-08-12-material-generator-vertical-slice-design.md`, preserves the approved
-product and physics contracts but supersedes the adapter-first, dormant-candidate execution order.
+Corrections to the original section's claims:
 
-All gates verified green at `a2445a8` with `out/tools/godot-4.7.1/Godot_v4.7.1-stable_win64_console.exe`:
-editor import, `res://smoke.gd` (~248 s local; 12/12 seeds build and place clean, 7.6–10.2 km),
-`res://fidelity_tests.gd`, and `res://fidelity_artifact_tests.gd` all exit 0.
-
-Incidental, not acted on: `RideGenerator._approach_run` (`godot/generator.gd:2588`) has no callers
-anywhere in the repository — leftover from an earlier launch-corridor solve, while its sibling
-`_approach_heading` is still live.
+- The `out/baselines/legacy-audit-2a891d2` artifact lives under gitignored `out/` and does
+  not survive a fresh clone; treat it as unavailable unless locally rebuilt.
+- The "all gates green" list named only three suites; the CI manifest
+  (`.github/focused-tests.txt`) now runs nine focused suites plus `res://smoke.gd`.
+- The smoke measurement "12/12 seeds build and place clean, 7.6–10.2 km" does not describe
+  the landed generator: all fifteen seeds build at ~8.13 km (see `docs/ISSUES.md`, gap A).
+- The "incidental" note about `RideGenerator._approach_run` at `godot/generator.gd:2588` no
+  longer corresponds to anything: neither `_approach_run` nor `_approach_heading` exists,
+  and `generator.gd` is ~470 lines.
 
 ## Authority
 
@@ -43,7 +49,8 @@ complete public cutover to its second acceptance boundary.
 ## Shared contracts
 
 - `ride_program.gd` owns the sole configuration/story/recipe catalog and preset ID; no parallel
-  catalog exists.
+  catalog exists. (Landed preset ID: `material-v1`; the design's `future-hybrid@1` was the
+  pre-implementation name and never shipped.)
 - `CanonicalData` remains the sole canonical JSON/SHA-256 implementation.
 - `motion.gd` stores controls as typed Float64 coefficient data and produces one packed native
   trajectory plus dynamics-derived dense output. No per-step Dictionary/RefCounted allocation or
@@ -51,8 +58,9 @@ complete public cutover to its second acceptance boundary.
 - The validated packed route Dictionary is the stable public consumer boundary. It owns the
   trajectory data/handle and exact gesture-role sample/time/distance windows; internal typed structs
   may serve the hot loop but do not create a second public route type.
-- `RideGenerator.build(seed) -> Dictionary` and
-  `build_config(file_config, cli_overrides) -> {ok, route, resolved_config, plan, errors}`.
+- `RideGenerator.build(seed) -> Dictionary`. (`build_config(file_config, cli_overrides)`
+  was listed here as an existing contract before it was built — it is the material plan's
+  Task 4, unexecuted when this roadmap was current.)
 - Program compilation performs the accepted route's only full-resolution integration, then
   revalidates capture/handoff/endpoint invariants on that same trajectory without retry or
   reintegration.

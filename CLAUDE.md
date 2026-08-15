@@ -6,13 +6,16 @@ validation are the product; visuals are a deliberately generic inspection layer.
 
 > **Current generator checkpoint:**
 > The approved FVD-first redesign and material-generator vertical slice now back the public
-> `RideGenerator.build()` path. `docs/superpowers/specs/2026-08-09-fvd-first-configurable-generator-design.md`
-> and `docs/superpowers/specs/2026-08-12-material-generator-vertical-slice-design.md` remain the
-> design rationale; the architecture and generator contract below describe the landed runtime.
-> `docs/superpowers/specs/2026-08-12-material-generator-vertical-slice-design.md` is the approved
-> execution addendum and `docs/superpowers/plans/2026-08-12-material-generator-vertical-slice.md` is
-> the executed plan. They supersede the adapter-first/dormant-candidate order in the older route,
-> kernel, recipe, and cutover plans.
+> `RideGenerator.build()` path. Design rationale lives in
+> `docs/superpowers/specs/2026-08-09-fvd-first-configurable-generator-design.md`; its approved
+> execution addendum is `docs/superpowers/specs/2026-08-12-material-generator-vertical-slice-design.md`,
+> executed via `docs/superpowers/plans/2026-08-12-material-generator-vertical-slice.md`
+> (Tasks 1–3; Task 4's config surface landed later — see that plan's status banner). The
+> architecture and generator contract below describe the landed runtime and win over any spec
+> prose they contradict. They supersede the adapter-first/dormant-candidate order in the older
+> route, kernel, recipe, and cutover plans. No spec is beyond skepticism: where prose, spec,
+> and code disagree, reproducible physical derivation and verified evidence decide, and the
+> loser gets corrected.
 >
 > That design is a force-informed **hybrid**, not an FVD monoculture. FVD is preferred where
 > authoring in the rider's frame gives superior rider-dynamics control; it is not to be forced
@@ -26,13 +29,23 @@ godot --headless --path godot --editor --quit
 godot --headless --path godot --script res://smoke.gd
 ```
 
+Smoke alone does not run most of the test suites: CI additionally executes every script in
+`.github/focused-tests.txt` (nine focused suites — motion, bounded-solver, route-contract,
+ride-program, generator-material, terrain-story, and three fidelity suites). When your change
+touches one of those areas, run the matching focused suite(s) locally too:
+
+```sh
+godot --headless --path godot --script res://<suite>.gd
+```
+
 Performance verdicts come from GitHub Actions (ubuntu ≈ 2× slower than a dev Mac), not from
 local timings.
 
 ## Architecture (keep this split)
 
-- `godot/terrain.gd` — seeded analytic heightfield: plain + one escarpment (gentle apron ~20%
-  of relief, near-vertical face ~80%). Pure function of its params dict.
+- `godot/terrain.gd` — seeded analytic heightfield: plain + one escarpment (gentle apron
+  15–22% of relief, near-vertical face 78–85%, drawn per seed). Pure function of its params
+  dict.
 - `godot/generator.gd` — the `material-v1` facade: seed → accepted terrain-relative plan →
   compiled program → one accepted production integration → published route. The seeded RNG is
   consumed by `Terrain.generate()` and then `_plan()`; the plan contains twenty ordered roles and
@@ -49,8 +62,10 @@ local timings.
 - `godot/route_sampling.gd` — the one route time/distance/pose interpolation, shared by the
   viewer and the deterministic POV artifacts. `godot/canonical_data.gd` — the one canonical
   JSON + SHA-256 implementation, shared by catalog and report code.
-- `godot/smoke.gd` — headless gate: toolkit self-tests, both focused
-  fidelity suites, and multi-seed generator validation (same seed twice bit-identical). Be
+- `godot/smoke.gd` — headless gate: toolkit self-tests, two of the three fidelity suites
+  (`fidelity_tests.gd`, `fidelity_artifact_tests.gd`; `fidelity_overlay_tests.gd` runs only
+  via the CI focused-test manifest), and multi-seed generator validation (same seed twice
+  bit-identical). Be
   precise about its coverage: structure, seams, terrain clearance and self-clearance are
   gated on all fifteen seeds, but the load envelope (`validate_loads`) is gated only on the
   three deep seeds 11/42/20260809 — the twelve sweep seeds are deliberately ungated on loads
@@ -91,23 +106,28 @@ positions stay raw for physics, verification, and generated-channel measurement.
   tables): +8.0/−3.0 Gz · ±4.7 Gy · +8.0/−6.0 Gx · 25 g/s onset · 120°/s roll. The limit at
   duration t is `stretch × F2291_limit(t)` per axis — see `verify.gd` constants.
 - Material story, twenty ordered roles with seeded terrain-relative placement:
-  station → ~4 g air-launch + unpowered coast over the opener crest → twisted non-inverting
-  side-drop into act one, ONE flowing arc at honest inversion speed (giant Immelmann
-  100–110 m: the tallest-inversion chase; helical-leg loop; cutback at the Immelmann exit;
-  hills + wave turn, all chained exit-to-entry) → LSM2 boost at the cliff base (~290 km/h)
+  station → ~4 g air-launch + unpowered coast over the opener crest → three-role opener
+  (twisted non-inverting side-drop, overbanked teardrop, rising release) into act one, ONE
+  flowing arc at honest inversion speed (giant Immelmann 100–110 m: the tallest-inversion
+  chase; cutback at the Immelmann exit; helical-leg loop; hills + wave turn, all chained
+  exit-to-entry) → LSM2 boost at the cliff base (~290 km/h)
   + unpowered decelerating coast up the escarpment → crest crawl/hold (the ride's one
   deliberate slow beat) + compact clifftop suspense (reference-scale only, outward-banked
-  rim turn) → 90° cliff dive (~0.8× relief, monotonic, no lip pause) → tunnel LSM boost to
+  rim turn) → 90° cliff dive (~0.85–0.93× relief, monotonic once committed, no lip pause —
+  the pre-commit approach length is open issue 22) → tunnel LSM boost to
   ~340 km/h (the record launch) → record camelback (~250 m structure above its
   valley) → force-authored return with two overbanked turns and two height/airtime beats →
   brakes → explicit C4 station closure.
 - Propulsion = exactly three short boosters, no lifts, no powered climbs (user decision):
   a Do-Dodonpa-like non-LSM air/hydraulic entry launch at ~4 g out of the station, then two
-  LSM boosters at ~2 g class (fastest-current-LSM × near-future credit), each shorter than
+  LSM boosters (fastest-current-LSM × near-future credit; each booster's authored drive
+  follows from its speed target and length — currently ~0.3 g on the cliff-base climb assist
+  and ~1.15 g in the tunnel, not a flat "~2 g class"), each shorter than
   Falcon's booster sections. Boosters need not be flat — like Falcon's, a launch may extend
   into a climb or run a varying gradient. No mid-course brake: one
   continuous energy arc after the tunnel booster. No standalone connector turns, no sub-30 m stub
-  sections, no flat grades between elements; elapsed average speed is reported, never
+  sections, no flat grades between elements (design intent — reviewed, not yet mechanically
+  enforced by any validator); elapsed average speed is reported, never
   targeted — pacing is organic. Length 7.8–8.2 km. The unpowered return is authored in normal-g
   and bank/roll functions; a bounded seven-control solve targets the derived capture-entry
   corridor, the 7.8–8.2 km route band, and the 70–77 m/s passive entry-speed band with
@@ -116,12 +136,14 @@ positions stay raw for physics, verification, and generated-channel measurement.
   records; no element class between ~110 m and the ~250 m marquee pair (the gap is the
   authentic pattern).
 - Physics limits discovered by measurement, respected by design: giant inversions need
-  42–50 m/s entries (hence act one); the cutback requires entry pitch ≤ ~22°; a planar
+  42–50 m/s entries (hence act one); the cutback requires entry pitch ≤ ~22° (measured
+  during design; not re-measured or enforced by any current validator); a planar
   loop self-intersects (hence the helical lateral with sign reversed at the top).
 
 Do not restore the removed Rust optimizer, native extension, HTML viewer, hardcoded
 `ride_model.gd` route, runtime correction passes, or the old flat per-duration limit tables.
-Do not add restraint/seat/suspension/structural models until requested. History and rationale:
+Do not add restraint/seat/suspension/structural models until requested. Live measured gaps,
+open ride-quality issues, and next-session guidance: `docs/ISSUES.md`. History and rationale:
 `docs/PLAN.md` (executed), `docs/RESEARCH.md` (Step-0 findings), `docs/REFERENCE.md` (retired
 checkpoint rationale). Measured real-ride telemetry (the fidelity ground truth — per-element
 g/duration tables for Falcon's Flight, Tormenta, and class exemplars): `docs/TELEMETRY.md`

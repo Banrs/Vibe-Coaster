@@ -1,5 +1,12 @@
 # Evidence Baseline Remediation Implementation Plan
 
+> **Status: stopped (2026-08-12) — not executed; do not execute (banner added 2026-08-15).**
+> The user stopped further evidence-baseline remediation because it did not materially change
+> the ride. Nothing in this plan shipped: `RideFidelityArtifacts.invalidate_pack`,
+> `Verify.validate_physical_consistency`, and the other new interfaces it specifies do not
+> exist; its file:line anchors are stale; and its completion boundary points at the superseded
+> `2026-08-09-route-config-foundation.md`. Kept as history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` (recommended) or
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`)

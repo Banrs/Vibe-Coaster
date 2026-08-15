@@ -37,6 +37,38 @@ Since then Daniel's second ride-through added issues 20–26, and issue 24 — *
 but not the geometry* — is the strongest candidate for the single root cause behind several of
 them. If one thing is picked up next, pick that.
 
+### Decisions — 2026-08-15 review session
+
+Recorded user decisions from the full-codebase review (they resolve the "decide deliberately"
+items above):
+
+- **Gap A is a bug, not intent: seeds must genuinely vary the ride** — terrain placement,
+  track, element geometry, and element order. Variety is to be built as the approved
+  FVD-first planner vision (named decision streams, story grammar, per-slot recipe/target
+  resolution), not as a simplified RNG sprinkle that would be thrown away. Order variation is
+  limited to grammar cells (act-one pool permutes and may drop one optional member; return
+  composition varies; the spine stays ordered; `sequence.order` stays reserved).
+- **Records are fixed identity; everything else draws.** Camelback ~250 m, the record launch,
+  and the 100–110 m Immelmann stay in tight bands; non-record geometry draws per seed within
+  conservative certified capability ranges grounded in the FF/TRR telemetry counterparts.
+- **Gap B resolves toward the contract, derivation first.** The launch/record numbers are
+  re-derived from real engineering (Do-Dodonpa ≈3.3 g reference; near-future LSM credit)
+  before code is retuned; the derived numbers become both the code and the prose, gated in
+  smoke. Note the honest baseline: the built entry launch (3.2 g) matches the real
+  Do-Dodonpa reference; CLAUDE.md's "~4 g" was the unsupported side of that disagreement.
+- **The version-1 config surface (material plan Task 4) is in scope** and is to be built on
+  the planner decision layer (`build_config`, key registry, overlay algebra).
+- **No document is beyond skepticism** — authority: user decisions → physical derivation +
+  verified evidence → vision docs → code. Doc cleanup is banner-plus-falsehood-fixes;
+  history stays intact.
+- **Return-solve budget flag:** the landed return solve uses 7 controls / 7 residuals with
+  `MAX_RETURN_EVALUATIONS := 220`, 5.5× the design's ≤40 bound, and no document re-derived
+  the larger budget. Tighten or justify it when issue 24 forces changes in `ride_program.gd`.
+- Housekeeping: the `.superpowers/` working directory referenced by commit `b464a7b`'s
+  message is not in the repository and does not survive a fresh clone. `godot/fidelity_overlay.gd`
+  and its suite landed via commits `bff59ef`/`d2bda61`/`1999ca0` without a planning document;
+  their contract is described in README and the material design's diagnostics section.
+
 Carry-over from the same review: role `targets`, `phases` and `recipe_id` are published in the
 accepted route but still unenforced (see *Known limitations of the baseline itself* below).
 Only `length_m` and the three terrain intents are proven against the built ride, by
@@ -232,7 +264,9 @@ not fetches.
 - **POV video (YouTube)** — nine sources: Falcon's Flight forward `cUURkqyn4Zs`, backward
   `J54WKu2nU6o`, `poco8rOnW18`, `sdXGD9kMR7s`, CGI `NFVNGgwZk3c`; Tormenta forward
   `AHjk2R4da_I`; CoasterTalk continuous `0UaOSBGSx20` and edited `seNRpi4wP-s`; I305 overlay
-  `wX7uHKj-Ujc`. Four are `corroborative`, three `observation_only`, four `review_pending`.
+  `wX7uHKj-Ujc`. Two are `corroborative`, three `observation_only`, four `review_pending`
+  (the manifest's overall tally is 5 corroborative / 4 review_pending / 3 observation_only,
+  with the three RideForcesDB sources making up the other corroboratives).
   No frames, audio, or copyrighted content are committed — metadata and timestamps only.
 
 **None is `executable`**, which is exactly why the audit emits `no-eligible-finding`. Grounding

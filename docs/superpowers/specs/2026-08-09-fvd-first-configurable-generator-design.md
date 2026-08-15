@@ -86,6 +86,10 @@ constraints:
     - {id: ride_duration, scope: ride, key: ride.duration_s, target: 205.0, tolerance: 15.0}
 ```
 
+(**Landed note 2026-08-15:** the preset ID shipped as `material-v1`, not `future-hybrid@1`;
+the shipped story is ten beats over twenty ordered roles — see root `CLAUDE.md` for the
+landed contract. This example's ID and slot names are pre-implementation vocabulary.)
+
 The real schema is JSON-compatible plain data and carries explicit units. Public IDs are
 preset-versioned story slots such as `act1.giant_inversion`, not output-dependent beat IDs. The
 compiler separately emits immutable gesture-instance IDs for measurements and reports. Guided
@@ -316,7 +320,14 @@ the roll residual accounts for both the incoming frame and parallel-transport ho
 speed must fall inside the manifold band and is not tuned with hidden return propulsion.
 
 A deterministic box-constrained trust-region root solve receives at most 40 coarse trajectory
-evaluations, including one finer-step comparison. Coarse acceptance is only a screen: every
+evaluations, including one finer-step comparison.
+
+> **Landed note (2026-08-15):** the shipped return solve (`godot/ride_program.gd`) grew to
+> **seven** bounded controls and **seven** residuals — the five above plus the 7.8–8.2 km
+> route-length band and the 70–77 m/s passive entry-speed band — with an evaluation budget
+> of 220 (`MAX_RETURN_EVALUATIONS`), not 40. The five-residual shape survives in the
+> separate station-capture solve. No document re-derived the larger budget; it is flagged in
+> `docs/ISSUES.md` for tightening. Coarse acceptance is only a screen: every
 normalized residual plus its empirical coarse/fine difference must fit inside the final manifold
 tolerance. The preset capability envelope is a bounded tested subset of this parameter box, and
 upstream pins outside its finite compatibility graph are rejected during planning. The accepted

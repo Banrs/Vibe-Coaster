@@ -1,9 +1,12 @@
 # Ride Fidelity Audit Implementation Plan
 
-> **Superseded:** Tasks 1-2 were partially implemented before the approved scope expanded. Replace
-> this plan with the FVD-first configurable-generator implementation plan produced from
-> `../specs/2026-08-09-fvd-first-configurable-generator-design.md`; do not continue these tasks
-> independently.
+> **Superseded:** Tasks 1-2 were partially implemented before the approved scope expanded.
+> No single "FVD-first implementation plan" exists: the design at
+> `../specs/2026-08-09-fvd-first-configurable-generator-design.md` was decomposed into four
+> 2026-08-09 plans (route-config-foundation, time-domain-motion-kernel, default-ride-recipes,
+> runtime-cutover-and-polish) — themselves later superseded by
+> `2026-08-12-material-generator-vertical-slice.md`, which landed. Do not continue these
+> tasks independently; the shipped fidelity system far exceeds this plan's scope.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

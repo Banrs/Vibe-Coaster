@@ -165,6 +165,19 @@ below); these seven are **not** covered by the audit's traceability record.
     but no ceiling and no control of slow upward drift, so the track wanders away from the
     ground over long stretches. Sharpens 6 with a concrete mechanism: the drift is unwatched,
     not merely mis-tuned.
+    **Measured, 2026-08-15 (deep seeds 11/42/20260809).** Only 20–27% of samples sit within
+    20 m of the ground and 30–34% within 40 m; the longest contiguous stretch above 40 m AGL
+    is 2.8–3.2 km, running from the climb through the camelback into the return. Vertical AGL
+    beside the near-vertical cliff face legitimately inflates the climb/dive rows, but the
+    return is unambiguous drift on the plain: return-turn-b median AGL 101–127 m and
+    return-height-b median 146–175 m — the return's airtime structures ride 100+ m above the
+    ground they should skim. Act one never comes under ~38 m (per-role minima 51–66 m on
+    cutback/loop/airtime/wave), and the `tunnel-lsm3` role runs at 16–52 m AGL, so the
+    "tunnel" record launch is not in a tunnel. Fix split: the opener/act-one floor is prefix
+    territory, blocked on the closure solve (24); the return-side profile is emergent from
+    force authoring — the seven-control solve constrains route length, entry speed, and the
+    capture corridor, and nothing in it references the ground beneath the path — so terrain
+    awareness there means a residual or authored-height reference against local ground.
 22. The cliff dive starts too far out from the cliff edge. The dive should commit at the rim;
     it currently begins well back from it, which also costs the vertigo the beat exists for.
     Interacts with 12's "hold extending too far from the cliff edge" and with the placement
@@ -192,6 +205,11 @@ below); these seven are **not** covered by the audit's traceability record.
 25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
     with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
     is missing.
+    **Hypothesis confirmed by measurement, 2026-08-15.** In the fastest decile of samples
+    (≥80.6–80.9 m/s) the ride is never within 20 m of the ground — the ≤20 m share is 0.000 on
+    all three deep seeds, with minimum 37 m and median 49–58 m AGL. The ride is fastest exactly
+    where it is farthest from anything that could convey speed; AGL, not velocity, is the
+    missing ingredient. The fix is 21's fix.
 26. The clifftop section is just a slow bank, not the twisty, windy suspense the real coaster
     has there. The declared roles `clifftop-slow-crest` (35–70 m) and `clifftop-outward-rim`
     (65–120 m) may simply be too short to contain that character at all — check whether this is

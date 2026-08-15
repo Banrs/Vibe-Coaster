@@ -92,6 +92,26 @@ act-one orders (not 24 as earlier prose said), exactly three place at all — ca
 the optional-member swap `cutback loop wave airtime` (15/15), and the airtime-dropped
 order (9/15, seeds named in the test comment); the other 33 refuse at the same preflight.
 
+**Story-energy accommodation refused by measurement (2026-08-15).** The proposed prefix-side
+follow-on — re-target the closure's fourth residual from `record_exit_speed_mps` to
+`dive_entry_speed_mps` so the solve can see the pre-dive energy state — was measured before it
+was written, per its own design §9.1, and the measurement refuted it. The swapped story arrives
+at the rim **+2.43…+2.46 m/s** hotter carrying only **+7.7…+20.2 J/kg** (the design derived
+≈ +3 m/s and ≈ 63 J/kg from arc length), and the +21 m of dive arc is **not** an energy surplus:
+at *equal* dive-entry speed the swapped dive still runs +21.7 m longer, and its arc never reaches
+490 m anywhere in `climb_core_s`'s 6–12 s bound (minimum ≈ 494.5 m; ≈ 497.1 m anywhere the summit
+rise stays in its aim band, i.e. at the entry speed it already has — lowering the entry speed
+*lengthens* the arc). The re-target was then implemented and run rather than argued about:
+canonical stays bit-identical on all fifteen seeds, and the swap goes from planning 4/4 to
+**refusing 4/4 at the prefix closure**, because pulling the dive entry down pushes the record exit
+to 96.8–97.2 m/s — inside the summit-rise aim band the swapped record exit spans 94.31–97.94 m/s,
+so the design's "pinning `v_entry` at a pinned entry height *is* pinning the record" is false. The
+change was therefore **not landed**; the measurement lives in that design's new §10. The only
+control that shortens the dive without moving its entry state is `dive_approach_s` (497.1 → 487.6 m
+at 0.40 s, entry speed unchanged), which is issue 22's knob and already refused for moving the
+camelback handoff ~10 m. Honest order: **the deterministic per-story return-seed derivation first**,
+then a *dive-arc* residual absorbed by `dive_approach_s` — never a dive-entry-speed one.
+
 ### Decisions — 2026-08-15 review session
 
 Recorded user decisions from the full-codebase review (they resolve the "decide deliberately"

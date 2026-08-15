@@ -1,5 +1,12 @@
 # Story Energy Accommodation — Design
 
+> **REFUSED BY ITS OWN §9.1 MEASUREMENT (2026-08-15). Do not implement §3.** The deciding
+> measurement this design demanded before any code was run, and it refuted the mechanism rather
+> than sizing it. The re-target was then implemented and run anyway, to measure rather than argue,
+> and it makes the blocked stories *worse*: all four seeds now refuse at the prefix closure where
+> today all four plan. The measurement, the numbers it replaces, and what the swap actually needs
+> are in §10 below; §§2–5 are kept verbatim as the refuted reasoning, not as guidance.
+
 **Status:** proposed direction (2026-08-15). The prefix-side follow-on named by `2026-08-15-prefix-closure-solve-design.md` §5 and
 disclaimed by `2026-08-15-return-seed-derivation-design.md` §5 ("role-length overruns on a reordered act one is a prefix-geometry
 cycle, not this one"). **Authority:** user decisions → physical derivation + verified evidence → vision docs → code. Nothing here
@@ -128,3 +135,72 @@ and 20260809 — net ≈ +9 s local, ≈ +18 s serial CI.
    tests §5's symmetry claim. Not in this stage's acceptance — record it while the harness is open.
 4. **Head-domain stories stay out of scope.** Opener ±0.005 g refuses at the terrain preflight (chord 245–408 m against a ~270 m
    terrain span). No residual re-targeting reaches that; head accommodation is its own cycle.
+
+## 10. The §9.1 measurement, and what it refuses (2026-08-15, this dev box, Godot 4.7.1)
+
+### 10.1 The deciding measurement
+
+At the `cliff-dive` gesture's first sample, on the accepted closure's production integration, canonical vs `_act_one_optional_swap()`:
+
+| seed | variant | dive-entry speed | entry rise | `0.5v² + g·h` | record exit |
+| --- | --- | --- | --- | --- | --- |
+| 11 | canonical | 18.568518 | 285.2679 | 2969.918 | 94.661518 |
+| 42 | canonical | 18.572704 | 286.5425 | 2982.494 | 94.709589 |
+| 20260809 | canonical | 18.541916 | 286.3479 | 2980.015 | 94.730196 |
+| 4096 | canonical | 18.566672 | 285.3389 | 2970.579 | 94.666000 |
+| all four | swap | 21.003114 | 282.4188 | 2990.148 | 94.685675 |
+
+The swapped prefix is identical on all four seeds to six decimals, confirming §1. **Δ(dive-entry speed) = +2.430…+2.461 m/s**
+against §2's derived ≈ +3 m/s (over by ~1.23×), **ΔE = +7.7…+20.2 J/kg** against §2's derived ≈ 63 J/kg (over by 3.1–8.2×), and
+the swap arrives **2.85–4.12 m lower**, so most of what it gains it gains as speed, not head.
+
+**§6's aim band exists with room to spare, as predicted.** Every canonical observation on the fifteen preset seeds — seed, Jacobian
+probe, rejected trial and accepted point — runs **18.530671–18.605595 m/s** across the 65 coarse evaluations and 18.531436–18.587656
+across the 15 production ones; the worst coarse/fine gap is **0.000840 m/s**. A ±0.10 m/s band `[18.43, 18.71]` holds all of them
+strictly interior, where `_band_residual` is exactly `0.0`.
+
+### 10.2 What it refuses
+
+1. **§2's mechanism.** The +21 m of dive arc is not an energy surplus the climb can absorb. Measured at *equal* dive-entry speed
+   (18.93 m/s, `climb_core_s` = 6.0), the canonical dive runs 476.5 m and the swapped one 498.2 m — still +21.7 m. The arc against
+   `climb_core_s` is U-shaped with its minimum at the authored seed (canonical 476.2 m at 8.788 s, 487.7 m at 6.0 s, 502.6 m at
+   12.0 s; swap 497.1 m at 8.788 s, 498.2 m at 6.0 s, 539.9 m at 12.0 s). **The swap's dive arc never reaches 490 m anywhere in
+   `climb_core_s`'s 6–12 s bound** — its minimum is ≈ 494.5 m at 8.0 s — and over the whole (`climb_core_s`, `climb_pull_over_s`)
+   grid that keeps `summit_rise_m` inside its aim band the minimum is 497.1 m, at exactly the 21.00 m/s the story already has.
+   Lowering the entry speed *lengthens* the arc (505.0 m at 19.77 m/s). §4's absorber has the wrong sign for the job.
+2. **§3's record derivation.** "Pinning `v_entry` at a pinned entry height *is* pinning the record" is false as measured: inside the
+   summit-rise aim band the swapped story's record exit runs **94.31–97.94 m/s** while the dive-entry speed moves only
+   19.77–22.04 m/s. Speed and height at one sample do not determine the tunnel exit, so demoting the record to an inequality
+   removes a pin nothing else replaces.
+3. **§5's ruling survives, its arithmetic does not.** Both role bands still hold — but "absorbing the 63 J/kg returns the whole
+   +21 m to the route budget" is void, because there is no 63 J/kg and no setting of the four controls returns the metres.
+
+### 10.3 The re-target, implemented and run
+
+Residual 4 → `dive_entry_speed_mps` (aim band `[18.43, 18.71]`, scale 0.5, `PREFIX_OBSERVATION_IDS` five long, record exit demoted
+to a strict acceptance inequality against 94.30–95.20 m/s), 4×4 kept, `MAX_PREFIX_EVALUATIONS` untouched:
+
+- **Canonical is bit-identical**, exactly as §6 argued: every accepted control vector, every evaluation count (1–6 of 31) and every
+  built length unchanged (11: 8175.954 m, 42: 8142.633 m, 20260809: 8172.663 m, 4096: 8165.445 m).
+- **The swap refuses on all four seeds, at the prefix closure** — strictly worse than today, where all four plan:
+
+| seed | solver | residuals | why it refused |
+| --- | --- | --- | --- |
+| 11 | converged, 51 evals | −0.0152, 0.0, −0.0179, 0.0024 | record exit 97.18 m/s, +1.98 over the accepted band |
+| 42 | budget_exhausted 51/51 | −0.3151, 0.0, −0.0268, 0.7094 | dive entry +0.355 m/s over its ceiling, record +1.56 over |
+| 20260809 | budget_exhausted 51/51 | −0.0484, 0.0, −0.0237, 0.1944 | dive entry +0.097 m/s over its ceiling, record +1.87 over |
+| 4096 | converged, 33 evals | 0.0, 0.0, −0.0100, 0.0153 | record exit 97.03 m/s, +1.83 over the accepted band |
+
+For the record, the same four seeds' end-to-end blockers **without** the re-target: seeds 11 and 4096 reach the route contract and
+are refused on `outward-dive` 497.4 / 497.5 m (band 350–490) and `return-turn-b` 572.6 / 571.2 m (band 430–570); seeds 42 and
+20260809 never reach it, their seven-control return solve budget-exhausting at 79 of 80.
+
+### 10.4 What the swap actually needs
+
+The only control that moves the dive's arc without moving its entry state is `dive_approach_s`, the one control inside the dive
+itself: the swap's arc falls 497.1 → 490.8 → 487.6 m at 1.00 / 0.60 / 0.40 s, with the dive-entry speed unchanged to four decimals
+(`∂v_entry/∂dive_approach_s` is exactly zero — the approach is downstream of the entry sample). So the accommodation is a **dive-arc
+residual**, not a dive-entry-speed one — and it lands on issue 22's knob, whose shortening was already refused by measurement
+because it moves the camelback handoff ~10 m and the fixed-seed return solve does not re-converge. That makes the honest order:
+**the deterministic per-story return-seed derivation first**, then a dive-arc residual with `dive_approach_s` as its absorber. Until
+the return can re-converge for a moved handoff, no prefix-side residual can buy the swap a build.

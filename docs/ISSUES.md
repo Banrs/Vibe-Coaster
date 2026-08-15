@@ -252,13 +252,19 @@ below); these seven are **not** covered by the audit's traceability record.
     time itself is unchanged (that budget lives with issue 19's measurement). Awaiting
     Daniel's verdict.
 18. Camera/HUD issues.
-    **Scoped by Daniel and addressed, 2026-08-15:** the issue is speed perception from the
-    camera plus ambiguous/missing HUD metrics. POV camera: gentle 0.6 s look-ahead, subtle
-    deterministic speed shake (quadratic in speed, sub-4 cm), nonlinear 74–102° FOV ramp — no
-    seat-position tricks, tuned away from nausea. HUD: dropped envelope-usage %, bank°,
-    roll°/s and elapsed-average speed; lateral/longitudinal g spelled as L/R and accel/brake;
-    added ride progress (clock + km), current → next element, and peak-so-far Gz / top speed
-    (reset on restart, loop, and new seed). Awaiting Daniel's ride-through verdict.
+    **Scoped by Daniel, first pass landed 2026-08-15, code review found real defects — fix
+    in flight.** First pass: POV look-ahead (0.47–1.5 s depending on speed, 8–45 m clamp),
+    speed shake, nonlinear FOV ramp; HUD dropped envelope-usage %, bank°, roll°/s and
+    elapsed-average, humanized lateral/longitudinal as L/R and accel/brake, added progress
+    (clock + km), current → next element, and peak-so-far stats. The opus review then
+    measured: the shake frequencies (23.7–45 Hz) sit at/above 60 fps Nyquist and alias into
+    up to 7.9 cm of per-frame jitter keyed to playback rate — a strobe, not a rumble — and
+    the threaded loading change (17) left the CI viewer step running 0 of 120 live frames,
+    so none of the new camera/HUD code is exercised by any gate. Fixes queued on an opus
+    implementer: re-tune shake to ~8–12 Hz on a wall-clock phase, atomic world swap (old
+    ride keeps playing under a "Generating…" line), peak/min-g so-far seeded from samples
+    and reset on row switch, FOV capped with keep_aspect pinned, and the camera/HUD blocks
+    extracted as statics gated in smoke plus a CI step that can actually fail.
 19. Generation/CI speed — the time-domain return, capture, and brake solves have bounded
     coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
     GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.

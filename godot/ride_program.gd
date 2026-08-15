@@ -39,7 +39,7 @@ const RETURN_RESIDUAL_IDS := [
 ]
 const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1]
 const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01]
-const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 77.0)
+const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
 const RETURN_ENTRY_SPEED_PADDING_MPS := 0.01
 const RETURN_ENTRY_POSITION_PADDING_M := 0.25
 const CAPTURE_HALF_WIDTH_M := 150.0
@@ -50,7 +50,10 @@ const CAPTURE_RESIDUAL_TOLERANCES := [0.05, 0.05, 0.000001, 0.000001, 0.0000025]
 const CAPTURE_COARSE_RESIDUAL_TOLERANCES := [0.075, 0.075, 0.0001, 0.0001, 0.0001]
 const BRAKE_SHOULDER_DURATION_S := 0.6
 const BRAKE_PARAMETER_IDS := ["hold_duration_s", "peak_g"]
-const BRAKE_PARAMETER_BOUNDS := [[0.5, 5.0], [0.0, 3.0]]
+# Peak brake g caps at 3.6: the capture now enters near the widened 80 m/s corridor ceiling,
+# and the fixed 150 m brake reserve needs ~3.0 g of it. 3.6 keeps real solve margin while
+# staying inside the -Gx envelope, which allows 4.286 g over the ~3 s brake hold.
+const BRAKE_PARAMETER_BOUNDS := [[0.5, 5.0], [0.0, 3.6]]
 const MAX_BRAKE_EVALUATIONS := 24
 const BRAKE_NEWTON_ITERATIONS := 7
 const BRAKE_NEWTON_STEP := 0.95
@@ -136,7 +139,7 @@ static func terrain_story_capability(station_side: int) -> Dictionary:
 	if opener_end_sample < 0 or station_end_sample < 0 \
 			or station_end_sample >= opener_end_sample:
 		return _failure("terrain story capability omitted the station/opener footprint", "planning")
-	return {"ok": true, "capability_id": "material-v1-prefix-r12@7",
+	return {"ok": true, "capability_id": "material-v1-prefix-r12@8",
 		"planning_integrations": 1,
 		"role_13_entry": {"offset_m": entry.position_m, "tangent": entry.tangent,
 			"rider_up": entry.rider_up, "speed_mps": entry.speed_mps},
@@ -291,12 +294,20 @@ static func _add_story_prefix(
 	spans: Array, metadata: Array, gestures: Array, propulsion: PackedInt32Array, hand: float
 ) -> void:
 	_begin_gesture(gestures, "station-launch", spans.size(), "launch")
+	# Do-Dodonpa-class air/hydraulic entry launch. The 2041 credit is spent on peak drive,
+	# not on Delta-v: the plateau rises 3.2 -> 3.9 g and the pulse shortens to hold the same
+	# drive-time integral, so the opener and act one keep their proven entry speeds while the
+	# launch itself reads punchier. See
+	# docs/superpowers/specs/2026-08-15-record-launch-derivation.md section 1.
+	var launch_peak_g := 3.9
+	var launch_core_s := 0.8038
+	var launch_release_s := 1.762572
 	_add(spans, metadata, propulsion, "launch/ramp", 0.3903354, "station",
-		1.0, 0.0, Motion.quintic(0.0, 3.2), 0.0, "launch", 1, 0.0, "launch")
-	_add(spans, metadata, propulsion, "launch/core", 1.0, "moving",
-		1.0, 0.0, 3.2, 0.0, "launch", 1, 2.0, "launch")
-	_add(spans, metadata, propulsion, "launch/release", 2.20657591, "moving",
-		1.0, 0.0, Motion.quintic(3.2, 0.0), 0.0, "launch", 1, 2.0, "launch")
+		1.0, 0.0, Motion.quintic(0.0, launch_peak_g), 0.0, "launch", 1, 0.0, "launch")
+	_add(spans, metadata, propulsion, "launch/core", launch_core_s, "moving",
+		1.0, 0.0, launch_peak_g, 0.0, "launch", 1, 2.0, "launch")
+	_add(spans, metadata, propulsion, "launch/release", launch_release_s, "moving",
+		1.0, 0.0, Motion.quintic(launch_peak_g, 0.0), 0.0, "launch", 1, 2.0, "launch")
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "opener", spans.size(), "twisted_drop")
@@ -378,13 +389,17 @@ static func _add_story_prefix(
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "tunnel-lsm3", spans.size())
+	# The record launch. 1.33 g over the 150-220 m tunnel booster lifts the dive exit to the
+	# 338-344 km/h band; per-train power peaks near 15 MW at ~94 m/s, record-scale but credible
+	# for 2041. See docs/superpowers/specs/2026-08-15-record-launch-derivation.md section 2.
+	var lsm3_drive_g := 1.33
 	_add(spans, metadata, propulsion, "tunnel/lsm3-entry", 0.30, "moving",
-		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, 1.15),
+		Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(0.0, lsm3_drive_g),
 		Motion.constant(0.0), "core", 3)
 	_add(spans, metadata, propulsion, "tunnel/lsm3-core", 1.633337, "moving",
-		1.0, 0.0, 1.15, 0.0, "core", 3)
+		1.0, 0.0, lsm3_drive_g, 0.0, "core", 3)
 	_add(spans, metadata, propulsion, "tunnel/lsm3-release", 0.30, "moving",
-		1.0, 0.0, Motion.quintic(1.15, 0.0), 0.0, "core", 3)
+		1.0, 0.0, Motion.quintic(lsm3_drive_g, 0.0), 0.0, "core", 3)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 
@@ -400,7 +415,10 @@ static func _add_camelback(
 	var pullup_s := 1.87949032 * 1.33555111055541
 	var unload_s := 3.01169597 * 1.15 - 0.4
 	var crest_s := 3.62587650 * 1.06
-	var fall_s := 3.25
+	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
+	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
+	# camelback entry speed rather than the crest being scaled.
+	var fall_s := 3.40
 	var bank := -deg_to_rad(18.0) * hand
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",

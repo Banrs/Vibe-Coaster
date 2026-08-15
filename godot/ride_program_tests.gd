@@ -62,7 +62,7 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			"station_tangent": Vector3.RIGHT, "station_up": Vector3.UP,
 			"reserved_corridor": {"minimum_length_m": 230.0,
 				"capture_length_m": 80.0, "brake_length_m": 150.0,
-				"entry_speed_mps": Vector2(70.0, 77.0)}}
+				"entry_speed_mps": Vector2(70.0, 80.0)}}
 		var solved := RideProgram._solve_brakes(start, layout)
 		if not _expect(solved.get("ok", false),
 				"the %s brake owner consumes its full distance: %s" % [fixture.id, str(solved)]):
@@ -96,9 +96,9 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			and absf(float(full.speed_mps[-1]) - 1.0) <= 0.001,
 			"the %s terminal reaches station at 1 m/s" % fixture.id)
 		var values: Variant = report.get("accepted_values")
-		_expect(report.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.0]]
+		_expect(report.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
 			and parts.hold_duration_s >= 0.5 and parts.hold_duration_s <= 5.0
-			and parts.peak_g >= 0.0 and parts.peak_g <= 3.0,
+			and parts.peak_g >= 0.0 and parts.peak_g <= 3.6,
 			"the %s authored hold and peak satisfy the literal recipe bounds" % fixture.id)
 		_expect(values is Array and values.size() == 2
 			and absf(float(values[0]) - parts.hold_duration_s) <= 0.000001
@@ -336,11 +336,11 @@ func _test_station_local_program_compiles() -> void:
 	var brake: Dictionary = compiled.get("brake_plan", {})
 	_expect(brake.get("positive_drive_allowed", true) == false,
 		"the brake plan forbids positive drive")
-	_expect(brake.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.0]]
+	_expect(brake.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
 		and float(brake.get("hold_duration_s", -1.0)) >= 0.5
 		and float(brake.get("hold_duration_s", 6.0)) <= 5.0
 		and float(brake.get("brake_peak_g", -1.0)) >= 0.0
-		and float(brake.get("brake_peak_g", 4.0)) <= 3.0
+		and float(brake.get("brake_peak_g", 4.0)) <= 3.6
 		and _finite_number(brake.get("distance_residual_m"))
 		and absf(float(brake.distance_residual_m)) <= 0.05,
 		"the public brake reports a bounded hold/peak and closed distance residual")
@@ -426,7 +426,7 @@ func _capture_fixture(
 		"station_position_m": station, "station_tangent": forward, "station_up": up,
 		"reserved_corridor": {"minimum_length_m": 230.0,
 			"capture_length_m": 80.0, "brake_length_m": 150.0,
-			"entry_speed_mps": Vector2(70.0, 77.0)},
+			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"capture_half_width_m": CAPTURE_HALF_WIDTH_M,
 		"capture_half_height_m": CAPTURE_HALF_HEIGHT_M,
 	}, "state": {
@@ -540,7 +540,7 @@ func _plan(layout: Dictionary) -> Dictionary:
 		"terrain_frame": {"apron_origin_m": layout.station_position_m - along * 80.0,
 			"inward": inward, "along": along, "up": up, "right": right,
 			"shelf_height_m": 275.0, "planning": {
-		"capability_id": "material-v1-prefix-r12@7", "planning_integrations": 1,
+		"capability_id": "material-v1-prefix-r12@8", "planning_integrations": 1,
 				"station_edge_distance_m": -800.0,
 				"station_opener_maximum_edge_m": -100.0,
 				"sampled_station_opener_points": 100,
@@ -554,7 +554,7 @@ func _plan(layout: Dictionary) -> Dictionary:
 			"capture_length_m": 80.0, "brake_length_m": 150.0,
 			"half_width_m": float(layout.get("capture_half_width_m", CAPTURE_HALF_WIDTH_M)),
 			"half_height_m": float(layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)),
-			"entry_speed_mps": Vector2(70.0, 77.0)},
+			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"route_length_m": Vector2(7800.0, 8200.0),
 		"roles": RideGenerator._material_roles()}
 
@@ -566,7 +566,7 @@ func _layout() -> Dictionary:
 		"station_up": Vector3.UP,
 		"reserved_corridor": {"minimum_length_m": 230.0,
 			"capture_length_m": 80.0, "brake_length_m": 150.0,
-			"entry_speed_mps": Vector2(70.0, 77.0)},
+			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"capture_half_width_m": CAPTURE_HALF_WIDTH_M,
 		"capture_half_height_m": CAPTURE_HALF_HEIGHT_M,
 	}

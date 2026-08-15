@@ -9,6 +9,8 @@ const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
 
 const DEEP_SEEDS := [11, 42, 20260809]
+const TOP_SPEED_BAND_MPS := Vector2(93.9, 95.6)
+const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 
 
@@ -41,6 +43,7 @@ func _deep_seed_errors(seed_value: int) -> PackedStringArray:
 	_validate_structure_and_placement(route, issues)
 	var analysis: Dictionary = Verify.analyze(route, RouteContract.ROW_OFFSETS)
 	Verify.validate_loads(analysis, issues)
+	_validate_record_launch_numbers(route, analysis, issues)
 	for issue in issues:
 		errors.append("seed %d: %s" % [seed_value, issue])
 	print(
@@ -118,6 +121,31 @@ func _accepted_route(
 		seed_value, label, str(route.get("errors", [])), str(route.get("failure", {})),
 	])
 	return false
+
+
+## The record-launch numbers derived on 2026-08-15: the tunnel LSM3 must reach the
+## 338-344 km/h record band, and the entry launch must peak at its 3.9 g class.
+func _validate_record_launch_numbers(
+	route: Dictionary, analysis: Dictionary, issues: PackedStringArray
+) -> void:
+	var top_speed := float(analysis.top_speed)
+	if top_speed < TOP_SPEED_BAND_MPS.x or top_speed > TOP_SPEED_BAND_MPS.y:
+		issues.append("top speed %.2f m/s is outside the record band %.1f-%.1f m/s" % [
+			top_speed, TOP_SPEED_BAND_MPS.x, TOP_SPEED_BAND_MPS.y])
+	var launch := {}
+	for window in route.get("gesture_windows", []):
+		if window.get("story_slot_id", "") == "station-launch":
+			launch = window
+			break
+	if launch.is_empty():
+		issues.append("station-launch window is missing")
+		return
+	var peak_drive := 0.0
+	for index in range(int(launch.first), int(launch.last) + 1):
+		peak_drive = maxf(peak_drive, float(route.drive_g[index]))
+	if peak_drive < LAUNCH_DRIVE_BAND_G.x or peak_drive > LAUNCH_DRIVE_BAND_G.y:
+		issues.append("station-launch peak authored drive %.3f g is outside %.1f-%.1f g" % [
+			peak_drive, LAUNCH_DRIVE_BAND_G.x, LAUNCH_DRIVE_BAND_G.y])
 
 
 func _validate_structure_and_placement(route: Dictionary, issues: PackedStringArray) -> void:

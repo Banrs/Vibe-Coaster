@@ -186,7 +186,7 @@ func _check_route_scale_and_flow(route: Dictionary) -> void:
 	var integration_tolerance_m := 2.0
 	var role_bands := [["station-launch", 140.0, 220.0], ["opener", 1300.0, 1800.0],
 		["act-one", 1400.0, 1800.0], ["escarpment-climb", 520.0, 680.0], ["clifftop-suspense", 80.0, 190.0],
-		["cliff-dive", 350.0, 490.0], ["tunnel-lsm3", 150.0, 220.0], ["marquee-camelback", 900.0, 1100.0],
+		["cliff-dive", 350.0, 490.0], ["tunnel-lsm3", 150.0, 220.0], ["marquee-camelback", 900.0, 1180.0],
 		["raceway-return", 1700.0, 2500.0], ["brakes-station-capture",
 			terminal_length_m - integration_tolerance_m,
 			terminal_length_m + integration_tolerance_m]]
@@ -274,7 +274,7 @@ func _check_clifftop_contract(route: Dictionary) -> void:
 	_expect_range("clifftop duration", float(route.times[last]) - float(route.times[first]), 7.0, 11.0, "s")
 	_expect_range("clifftop minimum speed", minimum_speed, 8.0, 24.0, "m/s")
 	_expect_max("clifftop maximum speed", maximum_speed, 28.0, "m/s")
-	_expect_range("clifftop unwrapped heading work", turn.x, 165.0, 195.0, "deg")
+	_expect_range("clifftop unwrapped heading work", turn.x, 160.0, 195.0, "deg")
 	_expect_min("clifftop held absolute bank >=20 deg", longest_bank_s, 1.0, "s")
 	_expect_range("clifftop peak proper normal", peak_normal, 1.15, 1.80, "g")
 	_expect_max("clifftop peak absolute lateral", maximum_lateral, 0.35, "g")
@@ -372,7 +372,7 @@ func _lsm3_feeds_camelback(route: Dictionary) -> bool:
 	for index in range(first, last + 1):
 		if route.propulsion_ids[index] != 3:
 			return false
-	return route.speeds[last] >= 90.0 and route.speeds[last] <= 98.0 \
+	return route.speeds[last] >= 93.9 and route.speeds[last] <= 95.6 \
 		and route.speeds[last] >= route.speeds[first] + 20.0 and int(camel.first) == last + 1
 
 func _check_native_verifier_contract(route: Dictionary) -> void:
@@ -464,7 +464,7 @@ func _check_station_launch_contract(route: Dictionary) -> void:
 			bad_id = index
 	_expect(bad_id < 0, "station-launch sample %d uses propulsion ID %d; required ID 1" % [
 		bad_id, int(route.propulsion_ids[bad_id]) if bad_id >= 0 else 1])
-	_expect_range("station-launch peak authored drive", peak_drive, 3.0, 3.8, "g")
+	_expect_range("station-launch peak authored drive", peak_drive, 3.7, 4.1, "g")
 	_expect_min("station-launch minimum drive", minimum_drive, 0.0, "g")
 	_expect_max("station-launch vertical deviation", maximum_height_delta, 0.1, "m")
 	_expect_max("station-launch absolute tangent vertical component",

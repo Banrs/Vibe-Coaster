@@ -262,7 +262,7 @@ static func _plan(terrain: Dictionary, rng: RandomNumberGenerator) -> Dictionary
 		"station": station,
 		"corridor": {"approach_length_m": 230.0, "capture_length_m": 80.0,
 			"brake_length_m": 150.0, "half_width_m": 150.0, "half_height_m": 75.0,
-			"entry_speed_mps": Vector2(70.0, 77.0)},
+			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"route_length_m": Vector2(7800.0, 8200.0),
 		"roles": roles,
 	}
@@ -412,7 +412,7 @@ static func _material_roles() -> Array:
 		_role("climb-lsm2", "lsm2_climb", Vector2(520.0, 680.0),
 			{"exit_speed_mps": Vector2(14.0, 24.0), "height_delta_m": Vector2(200.0, 225.0),
 				"drive_distance_fraction": Vector2(0.65, 0.80)}, [], {}, 2),
-		_role("clifftop-slow-crest", "slow_crest", Vector2(35.0, 70.0)),
+		_role("clifftop-slow-crest", "slow_crest", Vector2(35.0, 80.0)),
 		_role("clifftop-outward-rim", "outward_rim", Vector2(65.0, 120.0), {}, [],
 			{"exit_tangent_outward_dot": Vector2(0.25, 1.0)}),
 		_role("outward-dive", "cliff_dive", Vector2(350.0, 490.0),
@@ -426,9 +426,15 @@ static func _material_roles() -> Array:
 		_role("tunnel-lsm3", "tunnel_lsm3", Vector2(150.0, 220.0), {}, [],
 			{"boundary_crossings": [{"boundary_id": &"apron_edge", "from_side": 1,
 				"to_side": -1}]}, 3),
-		_role("camelback", "camelback", Vector2(900.0, 1100.0)),
-		_role("return-turn-a", "return_turn", Vector2(420.0, 540.0)),
-		_role("return-height-a", "return_height", Vector2(360.0, 480.0)),
+		# The record camelback is longer than the 328 km/h one: the same authored normal-g
+		# profile sweeps more track per second at the 340 km/h entry, and the fall lengthens
+		# to keep the marquee standing ~250 m above its valley.
+		_role("camelback", "camelback", Vector2(900.0, 1180.0)),
+		# Turn-a lengthens and height-a shortens against the old bands: the widened capture-entry
+		# corridor lets the passive return carry more speed, and the solve spends it in the
+		# loaded arc rather than the first airtime beat.
+		_role("return-turn-a", "return_turn", Vector2(420.0, 620.0)),
+		_role("return-height-a", "return_height", Vector2(290.0, 480.0)),
 		_role("return-turn-b", "return_turn", Vector2(430.0, 570.0)),
 		_role("return-height-b", "return_height", Vector2(450.0, 590.0)),
 		_role("terminal-capture-brakes", "terminal_capture_brakes", Vector2(200.0, 240.0)),

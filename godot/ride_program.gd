@@ -13,6 +13,13 @@ const COMPACT_PULSE_AREA := 100.0 / 231.0
 const COARSE_STEP_S := 0.05
 const FINE_STEP_S := 0.025
 const PRODUCTION_STEP_S := 0.01
+## The two authored opener/act-one force literals the prefix-closure refusal evidence named
+## (`ride_planner.gd`, the measured 2026-08-15 table): before the closure solve, +-0.005 on either
+## moved the dive chord by over 100 m and the prefix could not be placed. They are recipe defaults
+## and nothing else — the drawn target overrides them — but they are named here so the perturbation
+## tests measure their offset from the authored value rather than carrying a second copy of it.
+const OPENER_DROP_CORE_LATERAL_G := 0.6998747
+const ACT_ONE_LOOP_POSITIVE_G := 4.6
 ## The canonical (undrawn) role order. It is the default a caller gets when no plan sequence is
 ## supplied; a built ride is always validated against the sequence its own plan declares.
 const MATERIAL_ROLE_IDS := [
@@ -461,7 +468,7 @@ static func _add_opener(
 	# teardrop is loaded over the top. Both are held constant across the spans that enter, hold
 	# and leave the shape, so the C2 control seams stay exact at any drawn value.
 	var drop_lateral_g := RidePlanner.target(
-		targets, "opener-twisted-drop", "core_lateral_g", 0.6998747)
+		targets, "opener-twisted-drop", "core_lateral_g", OPENER_DROP_CORE_LATERAL_G)
 	var teardrop_normal_g := RidePlanner.target(
 		targets, "opener-teardrop", "overbank_normal_g", 1.62427620902668)
 	_add(spans, metadata, propulsion, "drop/rise", 0.74281671, "moving",
@@ -598,7 +605,8 @@ static func _add_act_one_loop(
 ) -> void:
 	# Drawn per seed: how hard the helical loop is pulled. The lateral that keeps the leg helical
 	# and the fall-side roll stay fixed, so the drawn load only tightens or opens the arc.
-	var loop_positive_g := RidePlanner.target(targets, "act-one-loop", "positive_g", 4.6)
+	var loop_positive_g := RidePlanner.target(
+		targets, "act-one-loop", "positive_g", ACT_ONE_LOOP_POSITIVE_G)
 	var loop_rise_s := 3.6
 	var loop_fall_s := 1.925
 	_add(spans, metadata, propulsion, "act-one/loop-entry", 1.0, "moving",

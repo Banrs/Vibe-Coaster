@@ -1,7 +1,10 @@
 extends SceneTree
 
 const RideGenerator := preload("res://generator.gd")
+const RidePlanner := preload("res://ride_planner.gd")
+const RideProgram := preload("res://ride_program.gd")
 const RideVerify := preload("res://verify.gd")
+const Terrain := preload("res://terrain.gd")
 const G0 := 9.80665
 
 const STORY_IDS := [
@@ -29,6 +32,17 @@ const PRESET_SEEDS := [
 	11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456,
 	20250101,
 ]
+
+## The stage-4 refusal seeds: the three deep seeds smoke gates on loads, plus 4096, one of the two
+## seeds whose canonical closure spends the most evaluations (6 of 31). Fixed, never sampled.
+const REFUSAL_SEEDS := [11, 42, 20260809, 4096]
+## The perturbation the refusal evidence in `ride_planner.gd` names, applied to the authored value.
+const REFUSAL_DELTA := 0.005
+## The two section-6 fleet margins that have no home in `generator.gd` (placement builds its aim
+## bands from the other two, so those are read from the generator itself). `smoke.gd` gates these
+## same two numbers on the fifteen-seed canonical fleet; a refused story has to clear the same bar.
+const SUMMIT_TRACK_AGL_MARGIN_M := 1.5
+const RECORD_EXIT_SPEED_MARGIN_MPS := 0.4
 
 var _errors := PackedStringArray()
 
@@ -65,6 +79,7 @@ func _initialize() -> void:
 	_check_opener_contract(route)
 	_check_act_one_contract(route)
 	_check_preset_fleet_contract()
+	_check_closure_places_the_refused_stories()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -83,6 +98,112 @@ func _check_preset_fleet_contract() -> void:
 			"preset seed %d public generation observed ok=%s integrations=%d repairs=%d length=%.3f m story=%s"
 			% [seed, str(route.get("ok", false)), int(stats.get("accepted_integrations", -1)),
 				int(stats.get("repair_count", -1)), length_m, str(story is Dictionary)])
+
+
+## The prefix-closure design's section 10.4, re-run as a gate: the stories the generator used to
+## refuse must now close and place. This is the *planning* half of that criterion — preflight ->
+## closure target -> bounded solve -> closed-form placement, the production path, stopped before
+## compile — and it is deliberately not the whole of it. Measured 2026-08-15 on this dev box:
+##
+##   perturbations, full build, 15 seeds x 2 literals x 2 signs = 60 builds: 0 build end to end;
+##   perturbations, planning only, same 60: `act-one-loop/positive_g` -0.005 closes and places on
+##     all fifteen inside every margin below (gated here), +0.005 on 7 of 15, and
+##     `opener-twisted-drop/core_lateral_g` +-0.005 on none. The twisted drop is refused before the
+##     solve runs: the preflight frames the yaw solution from the *unsolved* prefix, whose native
+##     dive chord runs 245.2 m at -0.005 and 408.0 m at +0.005 against the terrain's ~270 m desired
+##     span and the dive role's 70-300 m band. Four duration controls cannot help a solve that is
+##     never reached;
+##   permutations, all 24 grammar-legal act-one orders built on seeds 11/42/20260809 (72 builds):
+##     only the canonical order builds; the same 24 planned on the four seeds below (96 plans):
+##     only the canonical order and the optional-member swap gated here place, the other 22 are
+##     refused at the same preflight. The swap places clean on all fifteen seeds; the
+##     airtime-dropped variant places on 9 of 15, so it is measured, not gated.
+##
+## What still blocks the build for the stories that do place is downstream of everything this
+## design touched: the seven-control return solve does not re-converge from its fixed seed
+## (budget_exhausted at 79 of 80 evaluations, residuals down to 0.01-0.5 on seeds 42/20260809), and
+## on seed 11 the reordered ride closes its return but runs the dive role to 497.4 m and
+## return-turn-b to 574.5 m against their 350-490 and 430-570 m bands. Section 5.4's expectation
+## that residual 4 absorbs the handoff shift is half true as measured: the record exit speed is
+## pinned (+0.51 to +0.83 m/s inside its band on every placed story), the geometric handoff is not.
+func _check_closure_places_the_refused_stories() -> void:
+	var permuted := _act_one_optional_swap()
+	for seed_value in REFUSAL_SEEDS:
+		_check_refused_story_places(seed_value, "act-one optional swap", permuted, {})
+		_check_refused_story_places(seed_value, "act-one-loop/positive_g -0.005", [],
+			{"act-one-loop": {"positive_g":
+				RideProgram.ACT_ONE_LOOP_POSITIVE_G - REFUSAL_DELTA}})
+
+
+## The act-one order this gate uses, assembled from the grammar's own cells: the pool with its two
+## optional members exchanged. Never a typed-out role list, so the order stays legal by
+## construction and follows the grammar if the pool ever changes.
+func _act_one_optional_swap() -> Array:
+	var pool: Array = RidePlanner.ACT_ONE_POOL.duplicate()
+	var first: String = str(RidePlanner.ACT_ONE_OPTIONAL[0])
+	var second: String = str(RidePlanner.ACT_ONE_OPTIONAL[1])
+	pool[pool.find(first)] = second
+	pool[pool.find(second)] = first
+	var sequence: Array = []
+	sequence.append_array(RidePlanner.SPINE_OPENER)
+	sequence.append(RidePlanner.ACT_ONE_ANCHOR)
+	sequence.append_array(pool)
+	sequence.append_array(RidePlanner.SPINE_TAIL)
+	sequence.append_array(RidePlanner.RETURN_CELL)
+	sequence.append_array(RidePlanner.SPINE_CLOSE)
+	return sequence
+
+
+## One refused story, planned exactly the way `build_with_decisions` plans it: the planner's own
+## decisions with a sequence or a target replaced, this seed's terrain, and the production `_plan`.
+## The story reaches the solve through the same story-targets seam production uses, so nothing here
+## is a test-only path; a refusal is a failure, never a retry with another value.
+func _check_refused_story_places(
+	seed_value: int, label: String, sequence: Array, targets: Dictionary
+) -> void:
+	var context := "seed %d %s" % [seed_value, label]
+	var decisions := RidePlanner.resolve(seed_value)
+	if not sequence.is_empty():
+		decisions["sequence"] = sequence
+	for role_id in targets:
+		decisions.targets[role_id] = targets[role_id]
+	if not RidePlanner.is_legal_sequence(decisions.sequence):
+		_expect(false, "%s declares a grammar-legal sequence: %s" % [context, str(
+			decisions.sequence)])
+		return
+	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
+	var plan: Dictionary = RideGenerator._plan(terrain, decisions)
+	if plan.has("ok") and not plan.ok:
+		_expect(false, "%s closes and places: errors=%s failure=%s" % [context,
+			str(plan.get("errors", [])), str(plan.get("failure", {}))])
+		return
+	var planning: Dictionary = plan.terrain_frame.planning
+	var closure: Dictionary = planning.closure
+	var fine: Array = closure.get("fine_observation", [])
+	if fine.size() != 4:
+		_expect(false, "%s publishes a measured closure: %s" % [context, str(closure)])
+		return
+	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
+	for entry: Array in [
+			["dive-entry edge", float(planning.dive_entry_edge_m) - shelf_m,
+				RideGenerator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M,
+				RideGenerator.DIVE_ENTRY_EDGE_MARGIN_M],
+			["dive-exit apron fraction", float(planning.dive_exit_apron_fraction),
+				RideGenerator.DIVE_EXIT_APRON_BAND, RideGenerator.DIVE_EXIT_APRON_MARGIN],
+			["summit track AGL", float(planning.summit_track_agl_m),
+				RideGenerator.SUMMIT_TRACK_AGL_BAND_M, SUMMIT_TRACK_AGL_MARGIN_M],
+			["record exit speed", float(fine[3]), RideGenerator.RECORD_EXIT_SPEED_BAND_MPS,
+				RECORD_EXIT_SPEED_MARGIN_MPS]]:
+		var band: Vector2 = entry[2]
+		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
+		_expect(is_finite(margin) and margin >= float(entry[3]),
+			"%s %s sits %.4f inside %s; the fleet requires %.4f"
+			% [context, entry[0], margin, str(band), float(entry[3])])
+	var evaluations := int(closure.get("unique_evaluations", -1))
+	_expect(str(closure.get("solver_status", "")) == "converged" and evaluations >= 1
+		and evaluations <= int(0.6 * int(closure.get("max_unique_evaluations", 0))),
+		"%s converges in %d %s evaluations" % [context, evaluations,
+			str(closure.get("solver_status", "missing"))])
 
 
 func _check_story_plan_contract(route: Dictionary) -> void:

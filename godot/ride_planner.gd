@@ -35,17 +35,16 @@ const ACT_ONE_ANCHOR := "act-one-immelmann"
 ## needs act one's honest entry speed, the cutback needs the Immelmann exit); only a hill or the
 ## wave turn may be dropped, and never both.
 ##
-## Nothing draws an order yet, and that is a measured verdict rather than an unfinished step.
-## All 24 permutations and both single-drop variants were built on 2026-08-15 (seed 42 prefix,
-## then the two survivors across all fifteen seeds). Twelve permutations cannot even complete
-## the capability preflight; of the rest, only `cutback loop wave airtime` and the airtime-drop
-## `cutback loop wave` land within metres of the canonical prefix, and both then fail the whole
-## fleet: the reordered act one hands the dive over 2.5-4.4 m/s faster, which runs the dive role
-## to 499 m against its 350-490 m band and moves the camelback handoff enough that the
-## seven-control return solve no longer closes from its fixed seed (12 of 15 seeds), or leaves
-## the native dive footprint too long for the apron to host at all. Order variation here needs
-## the same prefix closure solve the target draws need; the grammar and its validator are in
-## place for the day that exists.
+## Nothing draws an order yet, and that is a measured verdict rather than an unfinished step. The
+## prefix closure solve that was named as this draw's blocker has landed, and it moved the verdict
+## without lifting it: re-measured on 2026-08-15 across all 24 grammar-legal orders, exactly one
+## non-canonical order - the pool's two optional members exchanged - now closes its prefix and
+## places it inside every fleet margin, on all fifteen seeds, and that is gated in
+## `generator_material_tests.gd`. The other 22 are still refused before the solve runs, because the
+## preflight frames the yaw solution from the *unsolved* prefix. What no reordered story does yet
+## is build end to end: the seven-control return solve does not re-converge from its fixed seed on
+## the moved camelback handoff. The full matrix, including what each order costs, is recorded with
+## that gate. Drawing an order needs the return's seed or budget, not a wider range here.
 const ACT_ONE_POOL := ["act-one-cutback", "act-one-loop", "act-one-airtime", "act-one-wave"]
 const ACT_ONE_OPTIONAL := ["act-one-airtime", "act-one-wave"]
 const SPINE_TAIL := ["climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
@@ -69,11 +68,16 @@ const SPINE_CLOSE := ["terminal-capture-brakes"]
 ##   helical-loop positive g   4.60  -> 4.58  : rise -17.2 m, chord +120.5 m, entry +8.84 m/s
 ##   airtime crest g          -0.31  -> -0.32 : rise  -4.7 m, chord  +40.1 m, entry +2.95 m/s
 ##
-## The placement budget those have to fit in is a few metres of rise and roughly [-8, +40] m of
-## chord, so a certifiable act-one range would be ~0.3% wide — indistinguishable variety bought
-## at real risk. Drawing act one honestly needs a closure solve that re-lands the prefix on its
-## summit target; that is a separate piece of work (see `docs/ISSUES.md` issue 24), and this
-## layer is built so adding those draws later disturbs no other stream.
+## The placement budget those had to fit in was a few metres of rise and roughly [-8, +40] m of
+## chord, so a certifiable act-one range was ~0.3% wide — indistinguishable variety bought at real
+## risk. The closure solve those numbers called for has since landed, and re-measuring the same
+## perturbations on 2026-08-15 splits the verdict rather than lifting it: the helical loop's
+## positive g now closes and places on the whole fleet at -0.005 (7 of 15 seeds at +0.005), while
+## the twisted drop's core lateral still fails every seed in both directions, refused at the
+## preflight before the solve is ever reached. Nothing built end to end at either perturbation —
+## the return solve does not re-converge from its fixed seed. The measured matrix is recorded with
+## its gate in `generator_material_tests.gd`; see also `docs/ISSUES.md` issue 24. This layer is
+## built so adding these draws later disturbs no other stream.
 ## The clifftop suspense beat is undrawn for a second measured reason: at 46-54 deg of rim bank
 ## it barely moves the dive handoff (under 0.9 m of summit rise), but it does move where the
 ## camelback hands over to the return, and the return's bounded solve does not re-converge from

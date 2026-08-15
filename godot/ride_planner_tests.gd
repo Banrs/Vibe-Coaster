@@ -12,7 +12,6 @@ const RideVerify := preload("res://verify.gd")
 
 const FEASIBILITY_SEEDS := [11, 20260809]
 const ROUTE_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
-const TOP_SPEED_BAND_MPS := Vector2(93.9, 95.6)
 const CAMEL_PROMINENCE_BAND_M := Vector2(245.0, 255.0)
 
 var _errors := PackedStringArray()
@@ -214,7 +213,7 @@ func _check_extreme(seed_value: int, key: String, value: float) -> void:
 	_expect_range("%s route length" % label, float(route.length),
 		ROUTE_LENGTH_BAND_M, "m")
 	_expect_range("%s top speed" % label, float(analysis.top_speed),
-		TOP_SPEED_BAND_MPS, "m/s")
+		RideGenerator.RECORD_EXIT_SPEED_BAND_MPS, "m/s")
 	var prominence := float(route.terrain_story_plan.terrain_proofs.camelback.prominence_m)
 	_expect_range("%s camelback prominence" % label, prominence,
 		CAMEL_PROMINENCE_BAND_M, "m")

@@ -124,10 +124,17 @@ refusal pinning `height_a_recovery_duration_s` at its 0.35 s floor. The wall is 
 a basin. The linear warm start was built and run anyway: it changes no outcome and moves the worst
 scaled residual 0.269 → 0.183 on seed 42 but 0.041 → **0.200** on 20260809 — worse on one of the two
 cases it was for — so no code landed. The measured sensitivity matrix is recorded at §8.3 of the
-design so the work is not lost, and its arc column is *exactly zero*: a seed cannot create route
-length, which is what the length-saturated swap needs. Honest order now: **the certified
-`height_a_recovery_duration_s` floor relaxation and the swap's length accounting** (the design's §4
-spends 2 and 3), with the dive-arc residual free to proceed on its own prefix-side evidence.
+design so the work is not lost. Honest order now: **not** the certified
+`height_a_recovery_duration_s` floor relaxation — that trim (0.35 → ~0.30) was already measured and
+refused, recorded at the bound in `ride_return_solve.gd:28-34`: at a 0.30 floor seed 20260809's
+swapped return converges, and its accepted point runs `return-height-a` to 277.6 m against that
+role's declared 290–480 m band, so the role band binds below the floor and the certifiable floor is
+*above* today's value, never below it. The remaining wall the same measurement named is prefix-side
+role length: under the swap `outward-dive` runs 497.4–497.5 m against its 350–490 m band on **every**
+seed while the closure accepts `PREFIX_SEED` unchanged, so those 21 m are prefix geometry, "not a
+control choice or a return seed". Spend there — the dive-arc residual, `dive_approach_s` returning
+route metres — which is also where the swap's length accounting has to be paid, since neither a seed
+nor a return-side bound creates metres.
 
 ### Decisions — 2026-08-15 review session
 
@@ -293,15 +300,13 @@ below); these seven are **not** covered by the audit's traceability record.
     15/15 seeds, with a non-monotone basin where 0.85 passes and 0.80 and 0.90 refuse single
     seeds") does not reproduce on today's code: all fifteen preset seeds × `dive_approach_s`
     ∈ {0.80, 0.85, 0.90} — 45 return solves through the production compile seam — converge
-    from the unchanged fixed `RETURN_SEED`, 26 evaluations on 39 of the 45 and 68 in the worst
-    case (seed 7 at 0.80, the only one over the 60% = 48 gate). What closed that basin is what
-    landed after the record was taken (stage 5a's rim aim, and the record-launch derivation's
-    70–80 m/s capture corridor) — not `RETURN_LENGTH_AIM_MARGIN_M`, which was zeroed on a
-    probe and left all 45 converging. So the shortening is a prefix-side stage that can be
-    taken on its own evidence: what remains to prove is the dive's *geometry* at a shorter
-    approach, not the return's ability to follow it. A gate still holds the closure from ever
-    lengthening the approach (fleet 0.996–1.000 s). See §8.1 of
-    `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`.
+    from the unchanged fixed `RETURN_SEED`, worst 68 evaluations (seed 7 at 0.80, the only one
+    over the 60% = 48 gate); the per-case distribution and the probe that ruled out
+    `RETURN_LENGTH_AIM_MARGIN_M` as the mechanism are in §8.1 of
+    `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`. So the shortening is
+    a prefix-side stage that can be taken on its own evidence: what remains to prove is the
+    dive's *geometry* at a shorter approach, not the return's ability to follow it. A gate
+    still holds the closure from ever lengthening the approach (fleet 0.996–1.000 s).
 23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
     it should not have. The elements hit their force targets while their shapes are visibly
     wrong. Extends 7 beyond inversions and supports to the marquee elements.

@@ -1,5 +1,14 @@
 # Return Seed Derivation — Design
 
+> **REFUSED BY ITS OWN §8 MEASUREMENT (2026-08-16). Do not implement §3.** The two measurements
+> this design demanded before any code was run both refuted it: §8.1 finds the refusal it existed to
+> fix does not reproduce (45/45 converge from the unchanged fixed `RETURN_SEED`), and §8.2 finds
+> that on the class §4 named, an *oracle* seed still budget-exhausts because the wall is a box
+> constraint, not a basin. Form (a) was then built and run anyway, to measure rather than argue, and
+> it changes no outcome while making one of the two target seeds measurably worse (§8.3). No code
+> landed. §§1–7 are kept verbatim as the refuted reasoning, not as guidance; §8.3 records the
+> measured sensitivities so the work survives, §8.4 corrects §3, and §8.5 names what to spend on.
+
 **Status:** proposed direction (2026-08-15). The stage-4 unblock named in §5 of
 `2026-08-15-prefix-closure-solve-design.md` — "a deterministic per-story derivation of the return seed … a seed
 derivation, never a candidate loop". **Authority:** user decisions → physical derivation + verified evidence → vision
@@ -70,7 +79,10 @@ RNG, no iteration, no branch on a measured value — a pure function of (story, 
 vector. A non-canonical story integrates the canonical prefix once for its `Δh` reference (100 ms at `COARSE_STEP_S`)
 against a 5.7–8.2 s build.
 
-Bit identity is algebraic, not a special case: the argument is the story's *deviation* from canonical. Production
+Bit identity is algebraic, not a special case — **but as written the argument is wrong; corrected by §8.4**, which
+measures seven of the fifteen canonical builds accepting closure controls that move the handoff, so `Δh ≠ 0` against the
+authored prefix and the identity below fails outright on them. The argument as written: it is the story's *deviation*
+from canonical that is the seed derivation's argument, and production
 draws no sequence and no act-one target today, so for every seed and both hands the drawn story **is** canonical, the
 same seed integrates the same prefix, and `Δh ≡ 0` exactly — every component, not approximately. `RETURN_SEED + S·0 =
 RETURN_SEED` bit-identically in IEEE-754, so `_solve_return` starts from the same vector and accepts the same point.
@@ -151,8 +163,8 @@ session had `motion.gd` open; the numbers are identical either way.
 
 The conditional trigger for this design was issue 22's recorded refusal: shortening the pre-commit approach "breaks the
 seven-control return solve on 15/15 seeds, with a non-monotone basin (0.85 s passes while 0.80 and 0.90 refuse single
-seeds)". **Re-measured, that basin does not exist.** All fifteen preset seeds × `dive_approach_s` ∈ {0.80, 0.85, 0.90} —
-45 return solves — **converge from the unchanged fixed `RETURN_SEED`**:
+seeds — 0.80 refused seed 7, 0.90 refused seed 123456)". **Re-measured, that basin does not exist.** All fifteen preset
+seeds × `dive_approach_s` ∈ {0.80, 0.85, 0.90} — 45 return solves — **converge from the unchanged fixed `RETURN_SEED`**:
 
 | unique evaluations | cases |
 | --- | --- |
@@ -171,13 +183,16 @@ moved handoff.** Issue 22's second half is therefore unblocked on the return sid
 
 For the act-one optional swap the refusals are real: from `RETURN_SEED`, seeds 42 and 20260809 budget-exhaust at 79/80
 at every approach value tested (1.00 / 0.90 / 0.85 / 0.80), and 4096 converges only at 1.00. Those were re-run from an
-**oracle seed** — seed 11's *exact converged accepted vector at the same approach value*, which is the best any
-derivation of any form could ever emit, because the swap's handoff deviation is seed-independent to 0.1 m across the
-whole fleet. Result: **every one of those cases still budget-exhausts at 79/80**, and every single refusal pins
+**oracle seed** — seed 11's *exact converged accepted vector at the same approach value*. What that proves is bounded
+and worth stating exactly: the swap's handoff deviation `Δh` is seed-independent to 0.1 m across the whole fleet, so any
+derivation of `Δh` alone emits **one common vector fleet-wide** on this story, and seed 11's converged vector is one
+such vector — the one that is known to work somewhere. Result: **every one of those cases still budget-exhausts at
+79/80**, and every single refusal pins
 `height_a_recovery_duration_s` at its 0.35 s floor (accepted 0.35000–0.35174), with the height residual carrying the
-miss (0.033–0.644 scaled = 0.16–3.2 m). The wall is a **box constraint**, not a basin: no seed — linear, nonlinear, or
-oracular — reaches it. This confirms §2's headline and §4's ordering, and closes §7 on the other branch from the one it
-anticipated.
+miss (0.033–0.644 scaled = 0.16–3.2 m). The refusal is carried by that pinning and not by any one run: §2's 400-evaluation
+stalls and §8.2's oracle runs pin the same floor from opposite ends of the start space, which is the signature of a **box
+constraint**, not of a basin a better start would find. This confirms §2's headline and §4's ordering, and closes §7 on
+the other branch from the one it anticipated.
 
 ### 8.3 The sensitivities, measured and recorded
 
@@ -202,10 +217,14 @@ Derived anyway, so the number survives this refusal:
       [-0.00089474, +0.00144241, +0.00165583, +0.29727444, -0.02330009, 0.0]  height_b_airtime_duration_s
       [+0.00321132, +0.00940562, +0.02276168, +3.55505918, -0.15172072, 0.0]  height_b_recovery_duration_s
 
-- **Its arc column is exactly zero, and that is the point.** No geometric residual depends on how much route length the
-  handoff arrived with, so a seed cannot create metres — which is precisely what §4's length-saturated swap needs. The
-  matrix states the refusal in its own structure.
-- **Built and run, it changes nothing.** With `seed = clamp(RETURN_SEED + S·Δh)` and `Δh` measured against the canonical
+- **Its arc column is exactly zero — by construction, so it proves nothing on its own.** `B = ∂r₅/∂h` is differenced
+  over the five *geometric* residuals only; the length residual was excluded from the fit, so the arc column could not
+  have come out any other way. The claim it was written to carry is instead carried by §4's own measurement: with every
+  bound widened across the board, seed 42's swap still needs **8.6 m more than the 8200 m band allows**, so the required
+  point lies outside the feasible set, and a warm start moves only where the solve begins, never what it may accept.
+- **Built and run, it changes nothing.** The `S` built was bullet 2's well-posed min-norm form — the fleet-mean
+  `S = −W (A W)⁺ B` printed above, used verbatim, not a refit of accepted vectors. With
+  `seed = clamp(RETURN_SEED + S·Δh)` and `Δh` measured against the canonical
   story's handoff at the build's own closure controls, the swap outcome is unchanged case for case (42 and 20260809
   refuse at all four approach values, 4096 at three of four, 11 converges at all four), and on the two length-saturated
   seeds it moves the worst scaled residual **0.269 → 0.183 on seed 42 but 0.041 → 0.200 on 20260809** — it makes one of
@@ -229,7 +248,20 @@ Derived anyway, so the number survives this refusal:
 
 ### 8.5 What the evidence says to spend on instead
 
-Unchanged from §4, now with the seed eliminated by measurement rather than by argument: (1) the certified relaxation of
-the `height_a_recovery_duration_s` floor — every swap refusal pins it, and §2's stall analysis and §8.2's oracle run
-agree it is the single active bound; (2) length accounting for the swap's arc. `MAX_RETURN_EVALUATIONS := 80` stands
-untouched, as §2 already ruled.
+**Not** unchanged from §4 — two of its three spends are already settled, and the seed is now eliminated by measurement
+rather than by argument. §4 spend 1, the inner aim band, **landed** as `RETURN_LENGTH_AIM_MARGIN_M`
+(`ride_return_solve.gd:78`, derived in the comment above it); §8.1 probes it and finds it is not what closed that basin,
+but it is built and it stays. §4 spend 2, the `height_a_recovery_duration_s` floor trim 0.35 → ~0.30, is **struck: it was measured and refused**, and
+the refusal is recorded at the bound itself (`ride_return_solve.gd:28-34`). At a 0.30 floor seed 20260809's swapped
+return does converge — and its accepted point runs `return-height-a` to **277.6 m against that role's declared
+290–480 m band**, so the shorter recovery buys closure with a beat the route contract then rejects. What binds below the
+floor is the role band, not the bound: a solve pinning at 0.35 is asking for a height beat shorter than the story allows,
+so the certifiable floor is *above* today's value, never below it. That every swap refusal pins the floor (§2, §8.2) is
+therefore a symptom of the story's own geometry, not a bound waiting to be relaxed.
+
+What remains, and what the same measurement named as the swap's real wall, is **prefix-side role length**: under the
+swap, `outward-dive` runs **497.4–497.5 m against its 350–490 m role band on every seed**, while the closure accepts
+`PREFIX_SEED` unchanged — so those 21 m are prefix geometry, not a control choice and not a return seed. That is the
+dive-arc residual work (`dive_approach_s` returning route metres to the prefix), and it is where §4's spend 3, length
+accounting for the swap's +3.1…+5.4 m of arc and seed 42's 8.6 m shortfall, has to be paid: no seed creates metres, and
+neither does a return-side bound. `MAX_RETURN_EVALUATIONS := 80` stands untouched, as §2 already ruled.

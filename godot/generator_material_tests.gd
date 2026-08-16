@@ -115,21 +115,12 @@ func _check_preset_fleet_contract() -> void:
 ## band's floor, plus the certified `DIVE_ENTRY_EDGE_MARGIN_M` the fleet may never graze, plus the
 ## rim aim window `placement_u` draws inside.
 ##
-## The second half of the same intent, "no lip pause", is measured rather than aimed. The 2026-08-15
-## record — that shortening the authored 1.00 s pre-commit run "does not re-converge from its fixed
-## seed on *any* of the fifteen", with a non-monotone basin in which 0.80 refused seed 7 and 0.90
-## refused 123456 — was **re-measured on 2026-08-16 and does not reproduce**: all fifteen preset
-## seeds at `dive_approach_s` of 0.80, 0.85 and 0.90, driven through this same production seam (the
-## plan's accepted closure vector, which is what `compile()` builds the prefix from), converge their
-## return solve from the unchanged `RETURN_SEED` — 45 of 45, 26 evaluations on 39 of them, worst 68
-## (seed 7 at 0.80). Zeroing `RETURN_LENGTH_AIM_MARGIN_M` on a probe left all 45 converging, so the
-## aim margin is not the mechanism; stage 5a's rim aim and the record launch's 70–80 m/s capture
-## corridor are what moved between the two measurements. The return-seed derivation that record
-## named as its follow-on was refused on its own evidence — see §8 of
-## `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`. The sweep is deliberately
-## *not* gated here: 45 solves cost ~5.8 min serially, against a production path that never runs a
-## shortened approach. What is gated is what production does run: the closure never buys its shorter
-## chord by hovering at the lip.
+## The second half of the same intent, "no lip pause", is measured rather than gated. The shortened
+## `dive_approach_s` sweep across all fifteen seeds is deliberately *not* run here: it costs ~5.8 min
+## serially, against a production path that never builds a shortened approach. Its measurement and
+## the full evaluation distribution live in §8.1 of
+## `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`. What is gated is what
+## production does run: the closure never buys its shorter chord by hovering at the lip.
 func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 	var terrain: Dictionary = route.get("terrain", {})
 	var planning: Dictionary = route.terrain_story_plan.get("planning", {})

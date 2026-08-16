@@ -170,6 +170,9 @@ band at runtime.
   role-length overruns. The named unblock is a **deterministic per-story derivation of the
   return seed** (a function of the drawn story and the solved handoff — a seed derivation,
   never a candidate loop); that is its own design cycle.
+  *Forward pointer (2026-08-16): that cycle ran and **refused** the derivation on its own §8
+  measurement (`2026-08-15-return-seed-derivation-design.md`) — the wall is a box constraint no
+  seed reaches, and the unblock is the dive-arc / role-length work on the prefix side instead.*
 - Items 2–3 are **domain-split**: the four controls are all downstream of act one, so the solve
   absorbs tail-domain changes (act-one loop −0.005 places 15/15; the optional-member swap
   places 15/15) but head-domain changes (opener literals) refuse at the terrain preflight

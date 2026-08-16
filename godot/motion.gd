@@ -7,12 +7,19 @@ const FRAME_EPS := 0.000001
 const STATION_TRANSVERSE_TOLERANCE_G := 0.00001
 const PLATEAU_PULSE_AREA := 2.0 / 3.0
 const STEP_FOLD_FRACTION := 0.005
+const DENSE_DEFECT_U := [0.25, 0.5, 0.75]
 
-const DP := 0
-const DT := 1
-const DU := 2
-const DV := 3
-const DS := 4
+## One RK stage's derivative, handed back through five typed slots instead of a boxed Array.
+## The stage is evaluated four times per step and each slot is then read four more times, so the
+## boxed form spent twenty Variant writes and twenty Variant reads per step on values that never
+## leave one iteration. Integration is single-threaded and never reentrant — `_rk4_derivative`
+## writes the slots and its caller reads them before the next call — so the slots hold no state
+## across steps and are not part of any published result.
+static var _stage_position_rate: Vector3
+static var _stage_tangent_rate: Vector3
+static var _stage_rider_up_rate: Vector3
+static var _stage_speed_rate: float
+static var _stage_distance_rate: float
 
 
 static func constant(value: float) -> Dictionary:
@@ -125,6 +132,58 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 					* bank_derivative * bank_derivative + tangent * bank_second))
 	assert(false, "invalid motion profile")
 	return Vector3.ZERO
+
+
+## One span's four control profiles paired with the kind each dispatches on, resolved once for
+## the whole span. Both are constant across the span's thousands of samples, and reading them out
+## of the span dictionary per sample cost more than the profile arithmetic they select.
+static func _span_controls(motion_span: Dictionary) -> Array:
+	var normal: Dictionary = motion_span.normal_g
+	var lateral: Dictionary = motion_span.lateral_g
+	var drive: Dictionary = motion_span.drive_g
+	var roll: Dictionary = motion_span.roll_rate_rad_s
+	return [normal, normal.get("kind", ""), lateral, lateral.get("kind", ""),
+		drive, drive.get("kind", ""), roll, roll.get("kind", "")]
+
+
+## The value component of `profile_sample`, bit-identical to its `.x`. The derivative components
+## are the only part the integrator and the published channels never read, so the hot path takes
+## this door and skips computing them; every surviving term is the same expression in the same
+## order, including the Float32 narrowing the Vector3 return imposes.
+static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> float:
+	match kind:
+		"constant":
+			return Vector3(profile.value, 0.0, 0.0).x
+		"quintic":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var delta: float = profile.to - profile.from
+			return Vector3(profile.from + delta * h, 0.0, 0.0).x
+		"compact_pulse":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var scale: float = 4.0 * profile.amplitude
+			return Vector3(scale * h * (1.0 - h), 0.0, 0.0).x
+		"balanced_notch":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var pulse := 4.0 * h * (1.0 - h)
+			var balance := 4199.0 / 3100.0
+			var scale: float = profile.amplitude
+			return Vector3(
+				profile.baseline + scale * pulse * (1.0 - balance * pulse), 0.0, 0.0).x
+		"plateau_pulse":
+			var edge_u := minf(u, 1.0 - u)
+			if edge_u >= 1.0 / 3.0:
+				return Vector3(profile.amplitude, 0.0, 0.0).x
+			var shoulder_u := edge_u * 3.0
+			var h := 10.0 * shoulder_u ** 3 - 15.0 * shoulder_u ** 4 \
+				+ 6.0 * shoulder_u ** 5
+			return Vector3(profile.amplitude * h, 0.0, 0.0).x
+		"bank_balance":
+			var fraction := _compact_pulse_integral(u) / (100.0 / 231.0)
+			var bank_delta: float = profile.to - profile.from
+			var bank: float = profile.from + bank_delta * fraction
+			return Vector3(1.0 / cos(bank), 0.0, 0.0).x
+	assert(false, "invalid motion profile")
+	return Vector3.ZERO.x
 
 
 static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
@@ -241,65 +300,90 @@ static func integrate(
 	if spans[0].mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
 		return _reject(result, "moving speed floor is 2 m/s")
 
-	var derivatives := [[], [], [], []]
-	for derivative in derivatives:
-		derivative.resize(5)
-	_append_native(result, time, distance, position, tangent, up, speed, 0, spans[0], 0.0,
-		gravity, rolling, aero)
+	_append_native(result, time, distance, position, tangent, up, speed, 0,
+		_span_controls(spans[0]), spans[0].mode, 0.0, gravity, rolling, aero)
 
 	for span_index in spans.size():
 		var motion_span: Dictionary = spans[span_index]
+		# Span mode and duration are invariant across the span's steps; the loop below reads them
+		# thousands of times, so they are fetched once and passed down as typed locals.
+		var span_mode: String = motion_span.mode
+		var span_duration_s := float(motion_span.duration_s)
+		var controls := _span_controls(motion_span)
 		var span_elapsed := 0.0
 		if span_index > 0:
-			if motion_span.mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
+			if span_mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
 				return _reject(result, "moving speed floor is 2 m/s")
-			_set_native_controls(result, result.time_s.size() - 1, span_index, motion_span,
-				0.0, tangent, up, speed, gravity, rolling, aero)
-		while span_elapsed < float(motion_span.duration_s) - 0.000000000001:
-			var remaining_s: float = float(motion_span.duration_s) - span_elapsed
+			_set_native_controls(result, result.time_s.size() - 1, span_index, controls,
+				span_mode, 0.0, tangent, up, speed, gravity, rolling, aero)
+		while span_elapsed < span_duration_s - 0.000000000001:
+			var remaining_s := span_duration_s - span_elapsed
 			# Fold a sub-public-resolution remainder into the adjacent RK step. Otherwise
 			# the native Float64 node can collapse when the route publishes Float32 time.
 			var h := remaining_s if remaining_s <= step_s + maxf(0.000000000001,
 				step_s * STEP_FOLD_FRACTION) else step_s
-			var error := _rk4_derivative(derivatives[0], position, tangent, up, speed,
-				motion_span, span_elapsed, gravity, rolling, aero, false)
+			var error := _rk4_derivative(position, tangent, up, speed,
+				controls, span_mode, span_duration_s, span_elapsed, gravity, rolling, aero,
+				false)
 			if not error.is_empty():
 				return _reject(result, error)
-			error = _rk4_derivative(derivatives[1],
-				position + derivatives[0][DP] * (0.5 * h),
-				tangent + derivatives[0][DT] * (0.5 * h),
-				up + derivatives[0][DU] * (0.5 * h), speed + derivatives[0][DV] * (0.5 * h),
-				motion_span, span_elapsed + 0.5 * h, gravity, rolling, aero, true)
-			if not error.is_empty():
-				return _reject(result, error)
-			error = _rk4_derivative(derivatives[2],
-				position + derivatives[1][DP] * (0.5 * h),
-				tangent + derivatives[1][DT] * (0.5 * h),
-				up + derivatives[1][DU] * (0.5 * h), speed + derivatives[1][DV] * (0.5 * h),
-				motion_span, span_elapsed + 0.5 * h, gravity, rolling, aero, true)
-			if not error.is_empty():
-				return _reject(result, error)
-			error = _rk4_derivative(derivatives[3], position + derivatives[2][DP] * h,
-				tangent + derivatives[2][DT] * h, up + derivatives[2][DU] * h,
-				speed + derivatives[2][DV] * h, motion_span, span_elapsed + h,
+			var d0p := _stage_position_rate
+			var d0t := _stage_tangent_rate
+			var d0u := _stage_rider_up_rate
+			var d0v := _stage_speed_rate
+			var d0s := _stage_distance_rate
+			error = _rk4_derivative(
+				position + d0p * (0.5 * h),
+				tangent + d0t * (0.5 * h),
+				up + d0u * (0.5 * h), speed + d0v * (0.5 * h),
+				controls, span_mode, span_duration_s, span_elapsed + 0.5 * h,
 				gravity, rolling, aero, true)
 			if not error.is_empty():
 				return _reject(result, error)
+			var d1p := _stage_position_rate
+			var d1t := _stage_tangent_rate
+			var d1u := _stage_rider_up_rate
+			var d1v := _stage_speed_rate
+			var d1s := _stage_distance_rate
+			error = _rk4_derivative(
+				position + d1p * (0.5 * h),
+				tangent + d1t * (0.5 * h),
+				up + d1u * (0.5 * h), speed + d1v * (0.5 * h),
+				controls, span_mode, span_duration_s, span_elapsed + 0.5 * h,
+				gravity, rolling, aero, true)
+			if not error.is_empty():
+				return _reject(result, error)
+			var d2p := _stage_position_rate
+			var d2t := _stage_tangent_rate
+			var d2u := _stage_rider_up_rate
+			var d2v := _stage_speed_rate
+			var d2s := _stage_distance_rate
+			error = _rk4_derivative(position + d2p * h,
+				tangent + d2t * h, up + d2u * h,
+				speed + d2v * h, controls, span_mode, span_duration_s, span_elapsed + h,
+				gravity, rolling, aero, true)
+			if not error.is_empty():
+				return _reject(result, error)
+			var d3p := _stage_position_rate
+			var d3t := _stage_tangent_rate
+			var d3u := _stage_rider_up_rate
+			var d3v := _stage_speed_rate
+			var d3s := _stage_distance_rate
 
-			var next_position: Vector3 = position + h / 6.0 * (derivatives[0][DP]
-				+ 2.0 * derivatives[1][DP]
-				+ 2.0 * derivatives[2][DP] + derivatives[3][DP])
-			var next_tangent: Vector3 = tangent + h / 6.0 * (derivatives[0][DT]
-				+ 2.0 * derivatives[1][DT]
-				+ 2.0 * derivatives[2][DT] + derivatives[3][DT])
-			var next_up: Vector3 = up + h / 6.0 * (derivatives[0][DU]
-				+ 2.0 * derivatives[1][DU]
-				+ 2.0 * derivatives[2][DU] + derivatives[3][DU])
-			var next_speed: float = speed + h / 6.0 * (derivatives[0][DV]
-				+ 2.0 * derivatives[1][DV]
-				+ 2.0 * derivatives[2][DV] + derivatives[3][DV])
-			var distance_step: float = h / 6.0 * (derivatives[0][DS]
-				+ 2.0 * derivatives[1][DS] + 2.0 * derivatives[2][DS] + derivatives[3][DS])
+			var next_position: Vector3 = position + h / 6.0 * (d0p
+				+ 2.0 * d1p
+				+ 2.0 * d2p + d3p)
+			var next_tangent: Vector3 = tangent + h / 6.0 * (d0t
+				+ 2.0 * d1t
+				+ 2.0 * d2t + d3t)
+			var next_up: Vector3 = up + h / 6.0 * (d0u
+				+ 2.0 * d1u
+				+ 2.0 * d2u + d3u)
+			var next_speed: float = speed + h / 6.0 * (d0v
+				+ 2.0 * d1v
+				+ 2.0 * d2v + d3v)
+			var distance_step: float = h / 6.0 * (d0s
+				+ 2.0 * d1s + 2.0 * d2s + d3s)
 			var next_distance := distance + distance_step
 			var next_time := time + h
 			if not _finite_vector(next_position) or not _finite_vector(next_tangent) \
@@ -328,10 +412,10 @@ static func integrate(
 				return _reject(result, "station speed became negative")
 			if speed <= 0.0 and time > float(initial_state.get("time_s", 0.0)):
 				return _reject(result, "station reached nonpositive speed")
-			if motion_span.mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
+			if span_mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
 				return _reject(result, "moving speed floor crossed during RK stage")
 			_append_native(result, time, distance, position, tangent, up, speed, span_index,
-				motion_span, span_elapsed / float(motion_span.duration_s), gravity, rolling, aero)
+				controls, span_mode, span_elapsed / span_duration_s, gravity, rolling, aero)
 	result.dense_output = {
 		"max_kinematic_defect_mps": _measure_dense_defect(result),
 	}
@@ -377,9 +461,9 @@ static func _finite_vector(value: Vector3) -> bool:
 
 
 static func _rk4_derivative(
-	out: Array, position: Vector3, tangent: Vector3, up: Vector3, speed: float,
-	motion_span: Dictionary, elapsed: float, gravity: Vector3, rolling: float, aero: float,
-	is_stage: bool
+	position: Vector3, tangent: Vector3, up: Vector3, speed: float,
+	controls: Array, mode: String, duration_s: float, elapsed: float,
+	gravity: Vector3, rolling: float, aero: float, is_stage: bool
 ) -> String:
 	if not _finite_vector(position) or not _finite_vector(tangent) or not _finite_vector(up) \
 			or not is_finite(speed):
@@ -391,39 +475,40 @@ static func _rk4_derivative(
 	if up.length_squared() <= FRAME_EPS * FRAME_EPS:
 		return "RK stage frame lost orthogonal rider_up"
 	up = up.normalized()
-	if motion_span.mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
+	if mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
 		return "moving speed floor crossed during RK stage"
-	if motion_span.mode == "station" and speed < 0.0:
+	if mode == "station" and speed < 0.0:
 		return "station RK stage has negative speed"
-	if motion_span.mode == "station" and is_stage and speed <= 0.0:
+	if mode == "station" and is_stage and speed <= 0.0:
 		return "station RK stage has nonpositive speed"
-	var u: float = clampf(elapsed / float(motion_span.duration_s), 0.0, 1.0)
-	var normal: float = profile_sample(motion_span.normal_g, u).x
-	var lateral: float = profile_sample(motion_span.lateral_g, u).x
-	var drive: float = profile_sample(motion_span.drive_g, u).x
-	var roll: float = profile_sample(motion_span.roll_rate_rad_s, u).x
+	var u: float = clampf(elapsed / duration_s, 0.0, 1.0)
+	var normal := _profile_value(controls[0], controls[1], u)
+	var lateral := _profile_value(controls[2], controls[3], u)
+	var drive := _profile_value(controls[4], controls[5], u)
+	var roll := _profile_value(controls[6], controls[7], u)
 	var right := tangent.cross(up)
 	var transverse := gravity - tangent * gravity.dot(tangent) + G0 * (normal * up + lateral * right)
-	if motion_span.mode == "station":
+	if mode == "station":
 		if transverse.length() > G0 * STATION_TRANSVERSE_TOLERANCE_G:
 			return "station transverse acceleration must be zero"
 		if absf(roll) > FRAME_EPS:
 			return "station roll must be zero"
-		out[DT] = Vector3.ZERO
-		out[DU] = Vector3.ZERO
+		_stage_tangent_rate = Vector3.ZERO
+		_stage_rider_up_rate = Vector3.ZERO
 	else:
-		out[DT] = transverse / speed
-		var tangent_rate: Vector3 = out[DT]
-		out[DU] = -tangent * tangent_rate.dot(up) + roll * right
-	out[DP] = speed * tangent
-	out[DV] = gravity.dot(tangent) + G0 * drive - resistance(speed, rolling, aero).x
-	out[DS] = speed
+		_stage_tangent_rate = transverse / speed
+		var tangent_rate := _stage_tangent_rate
+		_stage_rider_up_rate = -tangent * tangent_rate.dot(up) + roll * right
+	_stage_position_rate = speed * tangent
+	_stage_speed_rate = gravity.dot(tangent) + G0 * drive \
+		- Vector3(rolling + aero * speed * speed, 0.0, 0.0).x
+	_stage_distance_rate = speed
 	return ""
 
 
 static func _append_native(
 	result: Dictionary, time: float, distance: float, position: Vector3, tangent: Vector3,
-	up: Vector3, speed: float, span_index: int, motion_span: Dictionary, u: float,
+	up: Vector3, speed: float, span_index: int, controls: Array, mode: String, u: float,
 	gravity: Vector3, rolling: float, aero: float
 ) -> void:
 	result.time_s.append(time)
@@ -440,25 +525,26 @@ static func _append_native(
 	result.curvature_vector_m_inv.append(Vector3.ZERO)
 	result.curvature_m_inv.append(0.0)
 	result.span_index.append(span_index)
-	_set_native_controls(result, result.time_s.size() - 1, span_index, motion_span, u,
+	_set_native_controls(result, result.time_s.size() - 1, span_index, controls, mode, u,
 		tangent, up, speed, gravity, rolling, aero)
 
 
 static func _set_native_controls(
-	result: Dictionary, index: int, span_index: int, motion_span: Dictionary, u: float,
+	result: Dictionary, index: int, span_index: int, controls: Array, mode: String, u: float,
 	tangent: Vector3, up: Vector3, speed: float, gravity: Vector3, rolling: float, aero: float
 ) -> void:
-	var normal: float = profile_sample(motion_span.normal_g, u).x
-	var lateral: float = profile_sample(motion_span.lateral_g, u).x
-	var drive: float = profile_sample(motion_span.drive_g, u).x
-	var roll: float = profile_sample(motion_span.roll_rate_rad_s, u).x
+	var normal := _profile_value(controls[0], controls[1], u)
+	var lateral := _profile_value(controls[2], controls[3], u)
+	var drive := _profile_value(controls[4], controls[5], u)
+	var roll := _profile_value(controls[6], controls[7], u)
 	var right := tangent.cross(up)
 	var transverse := gravity - tangent * gravity.dot(tangent) + G0 * (normal * up + lateral * right)
-	var curvature := Vector3.ZERO if motion_span.mode == "station" else transverse / (speed * speed)
+	var curvature := Vector3.ZERO if mode == "station" else transverse / (speed * speed)
 	result.normal_g[index] = normal
 	result.lateral_g[index] = lateral
 	result.drive_g[index] = drive
-	result.longitudinal_g[index] = drive - resistance(speed, rolling, aero).x / G0
+	result.longitudinal_g[index] = drive \
+		- Vector3(rolling + aero * speed * speed, 0.0, 0.0).x / G0
 	result.roll_rate_rad_s[index] = roll
 	result.curvature_vector_m_inv[index] = curvature
 	result.curvature_m_inv[index] = curvature.length()
@@ -579,13 +665,24 @@ static func _dense_sample(trajectory: Dictionary, index: int, u: float) -> Dicti
 
 
 static func _dense_velocity(trajectory: Dictionary, index: int, u: float) -> Vector3:
-	var h: float = trajectory.time_s[index + 1] - trajectory.time_s[index]
+	return _dense_velocity_on(
+		trajectory.time_s[index + 1] - trajectory.time_s[index],
+		trajectory.position_m[index],
+		trajectory.speed_mps[index] * trajectory.tangent[index],
+		trajectory.position_m[index + 1],
+		trajectory.speed_mps[index + 1] * trajectory.tangent[index + 1], u)
+
+
+## The Hermite velocity of one interval, taking the interval rather than looking it up. The defect
+## scan below walks every interval at three `u` and would otherwise re-read the same four packed
+## arrays out of the trajectory dictionary twenty-four times per sample.
+static func _dense_velocity_on(h: float, position_0: Vector3, velocity_0: Vector3,
+	position_1: Vector3, velocity_1: Vector3, u: float
+) -> Vector3:
 	var u2 := u * u
-	var velocity_0: Vector3 = trajectory.speed_mps[index] * trajectory.tangent[index]
-	var velocity_1: Vector3 = trajectory.speed_mps[index + 1] * trajectory.tangent[index + 1]
-	return (6.0 * u2 - 6.0 * u) / h * trajectory.position_m[index] \
+	return (6.0 * u2 - 6.0 * u) / h * position_0 \
 		+ (3.0 * u2 - 4.0 * u + 1.0) * velocity_0 \
-		+ (-6.0 * u2 + 6.0 * u) / h * trajectory.position_m[index + 1] \
+		+ (-6.0 * u2 + 6.0 * u) / h * position_1 \
 		+ (3.0 * u2 - 2.0 * u) * velocity_1
 
 
@@ -600,11 +697,24 @@ static func _dense_distance(trajectory: Dictionary, index: int, u: float) -> flo
 
 
 static func _measure_dense_defect(trajectory: Dictionary) -> float:
+	var times: PackedFloat64Array = trajectory.time_s
+	var speeds: PackedFloat64Array = trajectory.speed_mps
+	var tangents: PackedVector3Array = trajectory.tangent
+	var positions: PackedVector3Array = trajectory.position_m
 	var maximum := 0.0
-	for index in trajectory.time_s.size() - 1:
-		for u in [0.25, 0.5, 0.75]:
-			var sample := _dense_sample(trajectory, index, u)
-			var derivative := _dense_velocity(trajectory, index, u)
-			maximum = maxf(maximum, derivative.distance_to(
-				sample.tangent * sample.speed_mps))
+	for index in times.size() - 1:
+		var h: float = times[index + 1] - times[index]
+		var velocity_0: Vector3 = speeds[index] * tangents[index]
+		var velocity_1: Vector3 = speeds[index + 1] * tangents[index + 1]
+		var position_0 := positions[index]
+		var position_1 := positions[index + 1]
+		for u in DENSE_DEFECT_U:
+			# The defect only ever reads the dense sample's tangent and speed, which are the
+			# normalization and the length of this one velocity - the same value `_dense_sample`
+			# would have recomputed for its own `derivative`. Naming it once is the whole change:
+			# the sampled position, frame and interpolated channels were never read.
+			var velocity := _dense_velocity_on(
+				h, position_0, velocity_0, position_1, velocity_1, u)
+			maximum = maxf(maximum, velocity.distance_to(
+				velocity.normalized() * velocity.length()))
 	return maximum

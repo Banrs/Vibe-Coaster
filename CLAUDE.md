@@ -143,8 +143,7 @@ positions stay raw for physics, verification, and generated-channel measurement.
   flowing arc at honest inversion speed (giant Immelmann 100–110 m: the tallest-inversion
   chase; cutback at the Immelmann exit; helical-leg loop; hills + wave turn, all chained
   exit-to-entry) → LSM2 boost at the cliff base (the built assist enters at ~175 km/h and
-  peaks at ~177 km/h — measured 2026-08-16; the "~290 km/h" this line used to claim was never
-  what the code built)
+  peaks at ~177 km/h — measured 2026-08-16)
   + unpowered decelerating coast up the escarpment → crest crawl/hold (the ride's one
   deliberate slow beat) + compact clifftop suspense (reference-scale only, outward-banked
   rim turn) → 90° cliff dive (~0.85–0.93× relief, monotonic once committed, no lip pause —

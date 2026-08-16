@@ -56,7 +56,13 @@ reproducing the force trace without producing a coherent swept shape, and the pr
 that costs the most.
 
 Issue 24 remains the strongest candidate for the single root cause behind 20, 23 and much of
-15. If one thing is picked up next, pick the prefix closure solve.
+15. ~~If one thing is picked up next, pick the prefix closure solve.~~ **That solve landed on
+2026-08-15** (progress notes below), so it is no longer the next pick. **The current named spend,
+in flight as of 2026-08-16, is return height authority** — making the return's two height beats'
+peak g solved controls instead of authoring them at fixed peak g with duration-only controls,
+which is the one degree of freedom four consecutive refusals (return-seed derivation,
+story-energy re-target, dive-arc residual, honest drag) all measured the solve to be short of.
+Update this line when that stage lands or is refused.
 
 **Progress, 2026-08-15 (stages 1–3 landed):** the prefix closure solve is in production.
 `_plan` runs preflight → terrain-derived closure target → one bounded four-control solve →
@@ -313,11 +319,15 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
    **The seventh beat, the return, does not close from any control vector** — not in production
    bounds, not in deliberately over-wide diagnostic bounds, and not with the route band opened
    to 7000–9500 m. The residual that never yields is the capture-gate height, **−73 to −79 m in
-   every configuration**, because the return's beats are authored at fixed peak g so their rise
-   scales with `v²`, and all seven controls are durations and banks. The prefix's ground track
-   is chaotic in its own force constants, so honest drag moves the camelback→return handoff
-   **426 m forward, 86 m cross, −22 m and ~20° of yaw** (630 m already at the tunnel exit) —
-   an order of magnitude past the 32–66 m that defeated three attempts on issue 24's swap.
+   every configuration** — measured on **seed 11 only**, so that range spans configurations, not
+   seeds; the deep seeds' camelback-exit states are near-identical, which makes the wall very
+   likely fleet-wide but leaves it untested — because the return's beats are authored at fixed
+   peak g so their rise scales with `v²`, and all seven controls are durations and banks. The
+   prefix's ground track is chaotic in its own force constants, so honest drag moves the
+   camelback→return handoff **426 m forward, 86 m cross, 22.25 m lower (still 18.08 m above the
+   station, not below it) and 23.7° in yaw** — 630.53 m of forward shift and 20.4° of yaw
+   already at the tunnel exit — an order of magnitude past the 32–66 m that defeated three
+   attempts on issue 24's swap.
    Full derivation, the constant table, the four bounded searches and the two blocked reverts:
    `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7. The named next spend is
    height authority in the return (peak-g as a solved control) or a prefix handoff-pose
@@ -470,6 +480,15 @@ below); these seven are **not** covered by the audit's traceability record.
     so they cannot pin six DOF. The next attempt has to add degrees of freedom upstream of the
     handoff — head-domain accommodation or a handoff-pose residual with more than four controls
     — not re-aim an existing one.
+    **A second, independent chain hit the same wall (2026-08-16).** The honest-drag re-baseline
+    (issue 2) arrived here from the other direction — 630.53 m of forward displacement at the
+    tunnel exit against the swap's 32–66 m at the handoff — and its refusal names a candidate
+    this entry did not have: **return height authority** (`RETURN_HEIGHT_A_PEAK_G` /
+    `RETURN_HEIGHT_B_PEAK_G` becoming solved controls, so the beats hold their rise as `v`
+    falls). That is a candidate for the swap's **floor-pinning** failure mode — the seeds that
+    budget-exhaust with `height_a_recovery_duration_s` pinned at its floor — and **not** for its
+    cross-track/yaw mode, which still needs upstream DOF or a handoff-pose residual. Derivation:
+    `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7.2–§7.4.
 25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
     with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
     is missing.

@@ -72,12 +72,10 @@ marquee intent. Raising LSM3 drive *lowers* camelback prominence at fixed fall d
 - Passive capture-entry band: **70–80 m/s** (was 70–77) — the user-approved contract
   change that makes the record closable; updated in code and `CLAUDE.md` together.
   **Still load-bearing, measured 2026-08-16.** The honest-drag re-baseline was expected to
-  delete this widening's reason and was built to do so; it does not close (see
-  `2026-08-15-honest-drag-derivation.md` §7), and reverting the band to 70–77 on today's drag
-  budget-exhausts the return at 79/80 on seeds 11, 42 and 20260809 with the entry speed
-  +1.04 … +1.39 m/s past the 77 ceiling. The same run refuses the 3.6 → 3.0 g brake revert:
-  every deep seed reports `brake solve reached a parameter bound`, seed 11's solved peak being
-  3.0108 g. Both numbers stay until honest drag lands.
+  delete this widening's reason and was built to do so; it does not close, and on today's drag
+  both this band's revert to 70–77 and the companion 3.6 → 3.0 g brake revert were built and
+  **refused on all three deep seeds**. Both numbers stay until honest drag lands. The measured
+  refusals: `2026-08-15-honest-drag-derivation.md` §7.3.
 - Entry launch peak authored drive: **3.9 g, band 3.7–4.1**, replacing the 3.0–3.8 test
   band; Δv conserved so opener/act-one entry speeds stay within their proven bands. The
   shorter (~34 m) launch shifts the station handoff, so the return solve's hand-tuned

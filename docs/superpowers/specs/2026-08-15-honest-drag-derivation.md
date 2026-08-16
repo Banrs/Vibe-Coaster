@@ -4,8 +4,10 @@
 executed end to end against issue 24's landed prefix closure solve. Six of its seven beats close at honest drag — §7 records the
 exact constants that produced a 340.2–340.4 km/h record, an in-band camelback and a 310 km/h launch — and the seventh, the
 seven-control return, does not close from **any** control vector, including deliberately over-wide diagnostic bounds and an
-opened route band. §§3.1–3.5 below are corrected in place where the built measurement contradicted the analytic propagation; the
-uncorrected prose is the derivation as first written and §7 is what the code did. **Authority:** user decisions → physical
+opened route band. **§§3.1–3.6 are each corrected in place** where the built measurement contradicted the analytic
+propagation, and **§§4–6 carry a superseded-in-part banner** pointing at §7 — every remaining uncorrected paragraph is the
+derivation as first written, and §7 is what the code did. One scope caveat rides on all of §7 and is stated at §7.2: the return
+searches and the return failure were measured on **seed 11 only**. **Authority:** user decisions → physical
 derivation → vision docs → code; where this disagrees with issue 2's recorded band, the disagreement is derived and the loser
 corrected.
 
@@ -99,6 +101,15 @@ terminal brakes. Today's propulsive head ≈ 257 m (launch) + 152 m (LSM2, `9.81
   length** — `29.44/(9.81·1.9333) = 1.55 g`, peak power `12000·1.55·9.81·94.73 = 17.3 MW` against the record derivation's
   15 MW-class figure at 1.33 g (14.7 MW by the same arithmetic), whose cited ~19.6 MW TGV-record ceiling allows
   `19.6e6/(12000·94.73) = 17.24 m/s² = 1.76 g`. **~13% of power headroom remains either way.**
+  **Corrected by measurement (2026-08-16).** The measured dive exit is **70.145 m/s**, not 67.8 — the re-derived climb (§3.2)
+  hands the dive the same crest it always had, so the dive itself is unchanged to within 0.06 m/s. The tunnel therefore needs
+  slightly less than the table predicted, and the two figures have to be compared in the same units: the *core* plateau moves
+  **1.633337 → 1.933 s** at unchanged 1.33 g, i.e. an **effective** plateau (core plus the two half-ramps, +0.30 s) of
+  1.933 → **2.233 s** against this bullet's predicted **2.256 s** — a ~1% miss, not the ~14% the bare core figure suggests.
+  The booster grows **184.6 → 211 m** (band 150–220) against the predicted ≈ 207 m: **the analytic table predicted within
+  ~1–2%.** At that setting the prefix closure converges on seeds 11/42/20260809 in **16–28 of its 31 allowed evaluations**
+  and the built ride tops out at **94.509–94.547 m/s (340.22–340.37 km/h)** — inside the 93.9–95.6 gate, with the certified
+  0.4 m/s fleet margin intact. **The record survives honest drag at 1.33 g**, which was this bullet's preferred answer.
 - **3.4 Camelback crest.** Entry head `94.73²/19.62 = 457.4 m`; the ~500 m rise now costs 66 m (vs 28), so crest head =
   457.4 − 250 − 66 = 141 m → **crest ≈ 52.5 m/s**, down from ≈ 59 (the record derivation's drag-free 63). At the authored −1.55 g
   crest the radius `v²/(2.55g)` tightens 139 → **110 m**, so the ~250 m prominence claim moves; `fall_s` (3.40), `crest_s` and
@@ -114,12 +125,6 @@ terminal brakes. Today's propulsive head ≈ 257 m (launch) + 152 m (LSM2, `9.81
   through the 255 ceiling, pushes the exit below station height, and made the §7 return wall *worse* (best residual cost 2060 with
   a −129.5 m height miss, against 413 at the pinned height). **The camelback is not where the energy went and not what blocks the
   chain.**
-- **3.3 correction (2026-08-16).** The measured dive exit is **70.145 m/s**, not 67.8 — the re-derived climb (§3.2) hands the
-  dive the same crest it always had, so the dive itself is unchanged to within 0.06 m/s. The tunnel therefore needs less than the
-  table predicted: **core plateau 1.633337 → 1.933 s at unchanged 1.33 g**, growing the booster **184.6 → 211 m** (band 150–220),
-  not 2.256 s. At that setting the prefix closure converges on seeds 11/42/20260809 in **16–28 of its 31 allowed evaluations**
-  and the built ride tops out at **94.509–94.547 m/s (340.22–340.37 km/h)** — inside the 93.9–95.6 gate, with the certified
-  0.4 m/s fleet margin intact. **The record survives honest drag at 1.33 g**, which was §3.3's preferred answer.
 - **3.5 Return arrival: the largest shift, and it goes the helpful way.** The post-record beats shed ~227 m more head against a
   terminal brake budget of `79.7²/19.62 = 323.8 m`; iterating the return's own mean speed down, arrival converges to
   **≈ 45 m/s (162 km/h)**, not 70–80. Honest drag does not merely ease the record derivation's ~21.8 m surplus-head problem —
@@ -127,18 +132,44 @@ terminal brakes. Today's propulsive head ≈ 257 m (launch) + 152 m (LSM2, `9.81
   is itself an artifact of understated drag and must be re-derived; it is a `CLAUDE.md` contract constant, so that needs its own
   note and a user decision, exactly as the widening did. The 7800–8200 m route band needs no change: honest drag asks for a
   slower arrival, not a longer circuit.
+  **Corrected by measurement (2026-08-16) — see §7.2 and §7.3.** The arrival-speed expectation is **wrong**. Honest drag does
+  not pull the arrival to ≈ 45 m/s and does not delete the surplus-head problem; it moves the **handoff**, and the return then
+  fails on **height**, not on speed (§7.2). The instruction in this bullet — that `CAPTURE_ENTRY_SPEED_MPS` "must be
+  re-derived" — is therefore **withdrawn**: that is the exact spend §7.3 refuses, because on today's drag the 70–80 band is
+  still load-bearing (measured on all three deep seeds) and honest drag has not landed. Only the last sentence survives, and
+  for a different reason than it gives: the route band was opened far past 7800–8200 m as a diagnostic (to 7000–9500) and the
+  return still did not close (§7.2, row 4).
 - **3.6 Brake solve, and the load gates.** At ~45 m/s over the 150 m reserve (`generator.gd:324`) mean decel is
   `2025/300 = 6.75 m/s² = 0.69 g`, solved peak ~1.0–1.2 g; the 3.6 g cap (`:84`) was raised only because the widened 80 m/s
   corridor needed ~3.0 g of it, so it reverts with the band and 4.286 g is never neared. Elements are force-authored, so lower
   speed changes *radii*, not `normal_g`/`lateral_g`; only `longitudinal_g = drive − a_res/g` (`motion.gd:461`) moves, gaining
   a sustained −0.20 g at 94.7 m/s (vs −0.075) — inside −6.0 Gx, but it shifts push-pull and reversal baselines.
+  **Corrected by measurement (2026-08-16) — see §7.3.** "It reverts with the band" is right about the *reason* and wrong about
+  the *order*, and the revert is **blocked for as long as §7.2's wall stands**: built on today's drag,
+  `BRAKE_PARAMETER_BOUNDS[1]` 3.6 → 3.0 g refuses on every deep seed with `brake solve reached a parameter bound` (seed 11's
+  solved peak 3.0108 g). The ~45 m/s arrival this bullet's decel arithmetic rests on never materialised either (§3.5's
+  correction). Neither number was touched.
 
 ## 4. Territory split
+
+> **Superseded in part by §7 (2026-08-16).** §§4–6 are the plan as first written, before the chain was built; §7 is what the
+> code did, and it wins wherever they disagree. Concretely: the return territory does **not** close, so §6's step 1 (build a
+> launch-duration control) was not built and is not needed today (see the resolution note immediately below), and §6's step 2
+> (land a re-derived capture-entry band) is the spend §7.3 explicitly **refuses**. Read §§4–6 as history plus the still-valid
+> territory map, not as a live plan.
 
 - **Prefix (blocked on 24):** §3.1–3.3. `climb_core_s`, `climb_pull_over_s`, `crest_hold_s` and `dive_approach_s` absorb
   §3.2–3.3, and residual 4 (`record_exit_speed_mps`) pins the record and freezes the camelback handoff. §3.1 has no control
   today — the design's open question ("whether a fifth control is needed", §9) is **answered here: a launch-duration control**,
   because Δv must move while peak g and the act-one entry band stay fixed.
+  **Resolution, recorded honestly (2026-08-16): no fifth control was built, and that is not a measured refutation of this
+  bullet.** §7 lands the launch plateau as a **constant** (0.8038 → 1.094 s). The basis is a *code-path argument*, not a
+  measurement: `_add_story_prefix` takes its opener/act-one values from `story.targets`, and `RidePlanner.resolve()` supplies
+  no such keys today (issue 24 blocks those draws), so the head is the same program on every seed up to the `station_side`
+  mirror, and all four closure controls live downstream of the act-one exit — a fleet-*constant* deficit wants a constant, not
+  a control. One link in that argument is **unverified**: that `decisions.sequence` is canonical on all fifteen seeds is taken
+  from prose, not printed. **Conditional:** if issue 24's opener/act-one draws unblock, the head becomes seed-varying and the
+  plateau plausibly *does* have to become the fifth control, exactly as this bullet proposed.
 - **Return (seven-control solve):** §3.5–3.6, via a re-derived `CAPTURE_ENTRY_SPEED_MPS` and `RETURN_SEED` against the existing
   route-length and entry-speed band residuals. **Pure constants:** `AERO_PER_M`; the LSM3 tunnel length (or `lsm3_drive_g`);
   camelback `fall_s`, `crest_s`, `unload_s`; `BRAKE_PARAMETER_BOUNDS[1]`. `ROLLING_MPS2` does not move.
@@ -195,13 +226,25 @@ entry-launch peak unchanged at 3.9 g; act one's minimum speed **37.30 m/s** agai
 run at honest speed; prefix closure **converged** in 16–28 of 31 allowed evaluations; camelback prominence **246.86–247.07 m**
 with width/height 3.130–3.137; every prefix role length inside its declared band.
 
+**Method note (2026-08-16).** The 85-point plateau sweep behind §3.1 and the six-knob climb search behind §3.2 were run on a
+**synthetic canonical story** — `{sequence: canonical_role_ids(), targets: {}}` with `station_side = 1` — not on any seed's
+resolved decisions. That is legitimate for the head *today*, for the reason recorded in §4's fifth-control note (the head is
+the same program on every seed up to the mirror), but it is an argument, not a per-seed measurement, and it expires the moment
+issue 24's opener/act-one draws unblock.
+
 ### 7.2 The wall: the camelback → return handoff moves 630 m, and the return has no height authority
 
 Honest drag does not move the return's *arrival speed* (§3.5's expectation) — it moves the **handoff**, because the prefix's
-ground track is chaotic in its own force constants. Measured against the old-drag build on seed 11, at the tunnel exit the
-station sits **974 m** behind along its own forward axis instead of **343 m**, with ~20° more yaw; by the camelback exit the shift
-is **426 m forward, 86 m cross, −22 m height and −7.05 m/s**. Issue 24's act-one swap — which already defeated three separate
-attempts — moves that same handoff by 32–66 m and 3.5–5.1°. This is an order of magnitude more.
+ground track is chaotic in its own force constants. Measured against the old-drag build on seed 11 — at the **tunnel exit** the
+station sits **973.82 m** behind along its own forward axis instead of **343.29 m**, a forward shift of **630.53 m**, with
+**20.4°** of yaw between the two forward tangents ((−0.277, −0.960) against (+0.077, −0.996), dot 0.93655). At the **camelback
+exit**, the handoff itself, the shift is **426 m forward, 86 m cross, −7.05 m/s**, **23.7°** of yaw ((−0.897, −0.439) against
+(−0.646, −0.764) in the horizontal plane, dot 0.9157) and **3.2° nose-down** in pitch (tangent·up −0.053 against +0.003, i.e.
+−3.04° against +0.17°). In height the handoff sits **18.08 m above the station** at honest drag against **40.33 m** at today's:
+**22.25 m lower**, and still above station level. *(Correction, 2026-08-16: earlier prose here and in `docs/ISSUES.md` gave
+"~20°" at the handoff and read the height as "−22 m below station". The two locations have different yaw figures — 20.4° at the
+tunnel exit, 23.7° at the handoff — and the handoff is 22.25 m lower, not sub-station.)* Issue 24's act-one swap — which already
+defeated three separate attempts — moves that same handoff by 32–66 m and 3.5–5.1°. This is an order of magnitude more.
 
 No control vector closes the seven return residuals. Each row is 900 random starts inside the stated bounds plus a bounded-Newton
 refinement from each of the best 20, scored as the sum of squared scaled residuals:
@@ -219,6 +262,33 @@ a basin: the return's height beats are authored at fixed peak g, so the rise of 
 return 8–10 m/s slower and each beat climbs ~20–25% less, while the handoff also starts 22 m lower. **All seven controls are
 durations and bank angles. None of them is height authority.** Raising the camelback exit to hand the return more head was
 measured and is worse, not better (§3.4), and the ruling of 2026-08-16 forecloses it regardless.
+
+**Scope correction (2026-08-16): all four searches above, and the return failure itself, were measured on seed 11 only.** The
+−73 … −79 m range therefore spans **configurations, not configurations × seeds** — the wall is established at seed 11 and its
+fleet-wide status is **untested**. What *is* measured across the deep seeds is the head, probed only as far as the camelback:
+camelback-exit handoff speeds **79.831 / 79.841 / 79.794 m/s** on 11 / 42 / 20260809, camelback entry **94.410 / 94.448 /
+94.410**, crest **49.633 / 49.671 / 49.596**, and rise **7.754 s** / fall **6.843 s** identical to three decimals on all three.
+So the prefix hands all three seeds a near-constant state and the wall is very likely fleet-wide — but that is an inference,
+not a measurement. Two attempts to close the gap produced nothing usable and neither is quoted anywhere: a two-seed
+random-start run timed out at 10 minutes with no data, and an earlier three-seed run that shared one control vector across
+seeds was methodologically wrong and was **discarded** — its numbers must not be revived.
+
+**Configuration of the four searches.** All four rows ran with `CAPTURE_ENTRY_SPEED_MPS` exploratorily opened to
+**(40.0, 90.0)**, so arrival speed could not mask the geometry — **none** ran at the shipped 70–80 or at the proposed 70–77 —
+and all four at camelback `fall_s` = 3.20. The taller-camelback probe of §3.4 was a separate **fifth** run, at row 2's bounds
+with `unload_s` 3.60 / `fall_s` 3.00. Exact bounds, in `RETURN_SCALAR_BOUNDS` order — **row 2:** `turn_a_bank` [35°, 66°]
+(floor 50 → 35), `turn_a_core` [0.55, 8.00] (ceiling 6 → 8), `height_a_recovery` [0.35, 7.0] (ceiling 4.0 → 7.0),
+`turn_b_bank` [40°, 80°] (floor 60 → 40), `turn_b_core` [2.0, 16.0] (ceiling 12 → 16), `height_b_airtime` [0.1, 3.0]
+(ceiling 2 → 3), `height_b_recovery` [0.35, 7.0] (ceiling 4.6 → 7.0). **Row 3:** [15°, 70°], [0.20, 20.00], [0.20, 20.0],
+[15°, 80°], [1.0, 30.0], [0.05, 6.0], [0.20, 20.0] — the turn-a bank *cap* moved too. **Row 4** = row 3 plus the plan's
+`route_length_m` opened to (7000, 9500) at `generator.gd:300`. **Reproduction trap:** changing `RETURN_TOTAL_LENGTH_BAND_M`
+alone does nothing — the residual reads the *plan's* band and falls back to the constant only when the plan carries none.
+
+**What the cost column is.** The solve's own scaling: `cost = Σ (residual_i / RETURN_RESIDUAL_SCALES[i])²` with scales
+`[5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1]`. It is dimensionless and dominated by the two tangent terms (scale 0.02), so it is a
+search objective and nothing more — the per-residual breakdowns are the meaningful part of each row. Search evaluations ran at
+`COARSE_STEP_S` 0.05 and the quoted breakdowns were re-measured at `PRODUCTION_STEP_S` 0.01; the `BoundedSolver` refinements
+ran at a **120**-evaluation budget (production cap 80) and reported `budget_exhausted` in every case.
 
 ### 7.3 Both reverts are blocked behind this, and the block is measured
 

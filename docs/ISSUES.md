@@ -519,6 +519,18 @@ any issue above in measurement means promoting a source through
 `docs/evidence/fidelity/catalog-review.md` and the four-part bar in *Promoting a finding to a
 hard gate* — the links being present is not the same as the evidence being usable.
 
+27. Dense-output kinematic defect metric is tautological. Motion.gd's `max_kinematic_defect_mps`
+    compares `_dense_velocity(...)` against `sample.tangent * sample.speed_mps`, but `_dense_sample`
+    defines tangent and speed as `velocity.normalized()` and `velocity.length()` from the same
+    `_dense_velocity` call, so the metric measures `v.distance_to(v.normalized() * v.length())`
+    — Float32 round-trip noise, measured constant 5.7220459e-06 on all three deep seeds
+    (11/42/20260809) to every printed digit. Consequence: `motion_tests.gd`'s defect gate
+    ("dense output measures its actual dr/dt minus returned vT defect", threshold 1e-5, around
+    lines 436-438) cannot fail. The honest fix is comparing against the independently interpolated
+    speed/tangent channels — but that changes published bits (the metric feeds nothing else;
+    verify which before claiming), so it needs its own measured stage; **not fixed deliberately**,
+    to preserve the bit-identity contract. Evidence source: the 0b36657 task review (2026-08-16).
+
 ## Recommended approach
 
 Compare the ride element by element against real high-thrill coasters — not just the two

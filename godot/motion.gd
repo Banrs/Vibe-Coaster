@@ -10,9 +10,7 @@ const STEP_FOLD_FRACTION := 0.005
 const DENSE_DEFECT_U := [0.25, 0.5, 0.75]
 
 ## One RK stage's derivative, handed back through five typed slots instead of a boxed Array.
-## The stage is evaluated four times per step and each slot is then read four more times, so the
-## boxed form spent twenty Variant writes and twenty Variant reads per step on values that never
-## leave one iteration. Integration is single-threaded and never reentrant — `_rk4_derivative`
+## Integration is single-threaded and never reentrant — `_rk4_derivative`
 ## writes the slots and its caller reads them before the next call — so the slots hold no state
 ## across steps and are not part of any published result.
 static var _stage_position_rate: Vector3
@@ -135,8 +133,7 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 
 
 ## One span's four control profiles paired with the kind each dispatches on, resolved once for
-## the whole span. Both are constant across the span's thousands of samples, and reading them out
-## of the span dictionary per sample cost more than the profile arithmetic they select.
+## the whole span. Both are constant across the span's thousands of samples.
 static func _span_controls(motion_span: Dictionary) -> Array:
 	var normal: Dictionary = motion_span.normal_g
 	var lateral: Dictionary = motion_span.lateral_g
@@ -305,8 +302,7 @@ static func integrate(
 
 	for span_index in spans.size():
 		var motion_span: Dictionary = spans[span_index]
-		# Span mode and duration are invariant across the span's steps; the loop below reads them
-		# thousands of times, so they are fetched once and passed down as typed locals.
+		# Span mode and duration are invariant across the span's steps and are passed down as typed locals.
 		var span_mode: String = motion_span.mode
 		var span_duration_s := float(motion_span.duration_s)
 		var controls := _span_controls(motion_span)
@@ -673,9 +669,7 @@ static func _dense_velocity(trajectory: Dictionary, index: int, u: float) -> Vec
 		trajectory.speed_mps[index + 1] * trajectory.tangent[index + 1], u)
 
 
-## The Hermite velocity of one interval, taking the interval rather than looking it up. The defect
-## scan below walks every interval at three `u` and would otherwise re-read the same four packed
-## arrays out of the trajectory dictionary twenty-four times per sample.
+## The Hermite velocity of one interval, taking the interval rather than looking it up.
 static func _dense_velocity_on(h: float, position_0: Vector3, velocity_0: Vector3,
 	position_1: Vector3, velocity_1: Vector3, u: float
 ) -> Vector3:
@@ -711,8 +705,7 @@ static func _measure_dense_defect(trajectory: Dictionary) -> float:
 		for u in DENSE_DEFECT_U:
 			# The defect only ever reads the dense sample's tangent and speed, which are the
 			# normalization and the length of this one velocity - the same value `_dense_sample`
-			# would have recomputed for its own `derivative`. Naming it once is the whole change:
-			# the sampled position, frame and interpolated channels were never read.
+			# would have recomputed for its own `derivative`.
 			var velocity := _dense_velocity_on(
 				h, position_0, velocity_0, position_1, velocity_1, u)
 			maximum = maxf(maximum, velocity.distance_to(

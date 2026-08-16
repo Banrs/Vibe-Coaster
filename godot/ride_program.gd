@@ -874,6 +874,11 @@ static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 		"capture_half_width_m": corridor.half_width_m,
 		"capture_half_height_m": corridor.half_height_m,
 		"route_length_m": plan.route_length_m,
+		# The one role band the return solve observes directly: `return-turn-b` is the role its own
+		# geometry owns outright, so the solve is handed the plan's declared band rather than a copy
+		# of it. A plan that declares no such role hands back the unbounded band and the residual
+		# it feeds is inert.
+		"turn_b_length_m": _role_length_band(plan, "return-turn-b"),
 		"reserved_corridor": {
 			"approach_start_m": station.position_m - station.tangent * approach_length,
 			"station_position_m": station.position_m,
@@ -884,6 +889,14 @@ static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 			"entry_speed_mps": corridor.entry_speed_mps,
 		},
 	}
+
+
+static func _role_length_band(plan: Dictionary, role_id: String) -> Vector2:
+	for role in plan.get("roles", []):
+		if role is Dictionary and str(role.get("id", "")) == role_id \
+				and role.get("length_m") is Vector2:
+			return role.length_m
+	return RideReturnSolve.RETURN_UNBOUNDED_BAND_M
 
 
 static func _validate_station_layout(layout: Dictionary, initial_state: Dictionary) -> String:

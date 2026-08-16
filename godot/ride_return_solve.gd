@@ -107,12 +107,34 @@ const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
 ## canonical residuals - the same sweep measures canonical candidates 0.39 m/s past the
 ## 80 m/s ceiling on seed 42.
 const RETURN_LENGTH_AIM_MARGIN_M := 1.0
+## The same mechanism as `RETURN_LENGTH_AIM_MARGIN_M`, applied to the one role band the return's
+## own geometry owns outright. `return-turn-b` is the role whose length the solve moves most - the
+## loaded arc is where a moved handoff is paid for - and it is the role the route contract refuses
+## when it is paid for too heavily. Aiming this far inside the declared band is what turns "the
+## contract may refuse the built turn" into a residual the solve can see while it still has
+## controls to spend.
+##
+## Three metres, measured (2026-08-16): the canonical fleet builds the role 39-83 m inside its
+## 430-570 m band on every one of the fifteen seeds, so a 3 m inset leaves every canonical
+## observation strictly interior, this residual exactly 0.0, its Jacobian row identically zero,
+## and the fifteen published rides bit-identical. It is also above the solver's own convergence
+## slack on this channel (0.02 x the 125.0 scale = 2.5 m), so unlike the route-length margin the
+## interiority an accepted point carries here is structural rather than only measured.
+const RETURN_TURN_B_AIM_MARGIN_M := 3.0
+## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
+## exactly 0.0 against it, so the fixed-layout fixtures see the same seven-residual solve they
+## always did with an eighth row that is identically zero.
+const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
-	"tangent_up", "route_length_band_m", "entry_speed_band_mps",
+	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
 ]
-const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1]
-const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01]
+const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0]
+const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075]
+## The `return-turn-b` role, by the same span-id prefix `RideProgram.material_role_spans` owns it
+## with. Named here rather than re-derived so the residual and the route contract cannot drift
+## apart about which spans the role is.
+const RETURN_TURN_B_SPAN_PREFIX := "raceway/turn-b/"
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
 const RETURN_ENTRY_SPEED_PADDING_MPS := 0.01
 const RETURN_ENTRY_POSITION_PADDING_M := 0.25
@@ -415,14 +437,14 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	if cache.size() >= MAX_RETURN_EVALUATIONS:
 		return RideProgram._failure("return exceeded its evaluation cap", "return",
 			{"evaluation_count": cache.size()})
-	var route := Motion.integrate(
-		start, _return_spans(parameters, hand, initial_bank_rad, targets), settings)
+	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
+	var route := Motion.integrate(start, spans, settings)
 	if not route.get("ok", false):
 		var failed := RideProgram._failure("return candidate failed integration", "return",
 			{"evaluation_count": cache.size() + 1})
 		cache[key] = failed
 		return failed
-	var result := _return_observation(route, layout)
+	var result := _return_observation(route, layout, spans)
 	result["scaled"] = []
 	for index in RETURN_RESIDUAL_IDS.size():
 		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
@@ -430,7 +452,28 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	return result
 
 
-static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictionary:
+## One role's built arc, read over exactly the window `route_contract.gd:_validate_role_lengths`
+## measures: the role's first sample to the sample after its last span. The return integrates its
+## own spans from index zero, so the span indices the role owns are the ones this scan finds.
+static func _role_arc_m(route: Dictionary, spans: Array, prefix: String) -> float:
+	var first_span := -1
+	var last_span := -1
+	for index in spans.size():
+		if str(spans[index].span_id).begins_with(prefix):
+			if first_span < 0:
+				first_span = index
+			last_span = index
+	var first: int = route.span_index.find(first_span)
+	var last: int = route.span_index.rfind(last_span)
+	if first_span < 0 or first < 0 or last < first:
+		return NAN
+	return float(route.distance_m[mini(last + 1, route.distance_m.size() - 1)]) \
+		- float(route.distance_m[first])
+
+
+static func _return_observation(
+	route: Dictionary, layout: Dictionary, spans: Array
+) -> Dictionary:
 	var state := RideProgram._last_state(route)
 	var station_forward: Vector3 = layout.station_tangent.normalized()
 	var station_up: Vector3 = layout.station_up.normalized()
@@ -444,6 +487,8 @@ static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictio
 	var entry_speed_band: Vector2 = layout.get("reserved_corridor", {}).get(
 		"entry_speed_mps", CAPTURE_ENTRY_SPEED_MPS)
 	var total_length_m := float(route.distance_m[-1]) + approach
+	var turn_b_band: Vector2 = layout.get("turn_b_length_m", RETURN_UNBOUNDED_BAND_M)
+	var turn_b_length_m := _role_arc_m(route, spans, RETURN_TURN_B_SPAN_PREFIX)
 	var half_width: float = layout.get("capture_half_width_m", 150.0)
 	var half_height: float = layout.get("capture_half_height_m", 75.0)
 	var residuals := [
@@ -456,6 +501,9 @@ static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictio
 		RideProgram._band_residual(float(state.speed_mps), Vector2(
 			entry_speed_band.x + RETURN_ENTRY_SPEED_PADDING_MPS,
 			entry_speed_band.y - RETURN_ENTRY_SPEED_PADDING_MPS)),
+		RideProgram._band_residual(turn_b_length_m, Vector2(
+			turn_b_band.x + RETURN_TURN_B_AIM_MARGIN_M,
+			turn_b_band.y - RETURN_TURN_B_AIM_MARGIN_M)),
 	]
 	var margins := {
 		"corridor_forward_low_m": forward + approach,
@@ -475,6 +523,7 @@ static func _return_observation(route: Dictionary, layout: Dictionary) -> Dictio
 			"cross_track_m": capture[0], "yaw_rad": capture[2], "pitch_rad": capture[3],
 			"roll_rad": capture[4], "speed_mps": state.speed_mps,
 			"return_length_m": float(route.distance_m[-1]) - float(route.distance_m[0]),
+			"turn_b_length_m": turn_b_length_m,
 			"route_total_length_m": total_length_m}}
 
 

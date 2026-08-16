@@ -442,3 +442,13 @@ recorded at the band's ship-once home in `generator.gd`, next to the `outward-di
   four. Neither is a residual on the dive.
 - **Untouched and still true:** `MAX_PREFIX_EVALUATIONS := 52` (no change was needed or made), the four
   landed residuals, the fleet margins, and issue 22's rim aim.
+
+**Forward pointer (2026-08-16, later the same day).** Everything §11 measured stands. Its *reach*
+did not: the residual was tested alone, and alone it behaves exactly as measured here. Composed with
+an eighth return residual on `return-turn-b` interiority — the role §11.4 itself identified as where
+the returned metres were being re-spent — and at a 2 m inset instead of 3 m, both residuals land and
+the act-one optional swap builds end to end on all four gated seeds while the canonical fleet stays
+bit-identical. The record lives at §8 of
+`docs/superpowers/specs/2026-08-16-return-height-authority-design.md`. §11.6's "refused" verdict on
+the dive-arc residual is superseded there; §11.6's refusal of a *re-derived* 350–490 m band, and its
+statement that the swap's remaining wall is not a residual on the dive alone, both stand.

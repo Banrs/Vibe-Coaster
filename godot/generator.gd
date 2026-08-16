@@ -61,6 +61,26 @@ const DIVE_SPAN_AIM_HALF_WIDTH_M := 6.0
 ## in. The 1 m cushion keeps the certified `DIVE_ENTRY_EDGE_MARGIN_M` a margin the fleet aims above
 ## rather than grazes, and the 4 m width is what the draw keeps to vary placement per seed.
 const DIVE_ENTRY_RIM_AIM_M := Vector2(1.0, 5.0)
+## How far inside the `outward-dive` role's own declared length band the closure aims its fifth
+## residual. The band is judged by `route_contract.gd`, so the aim is the band inset - the same
+## mechanism `RETURN_LENGTH_AIM_MARGIN_M` uses on the route total, for the same reason:
+## `_band_residual` is flat inside a band and gives the solve no reason to stay interior.
+## The size is derived between two measured bounds. Below, the solver's own convergence slack on
+## this channel is 0.02 x the 5.0 residual scale = 0.1 m, so any inset above that leaves an
+## accepted closure structurally inside the declared band rather than only measurably inside it.
+## Above, the canonical fleet builds the role at 475.604-476.544 m against 350-490 (2026-08-16),
+## so 13.456 m of ceiling headroom sits over the worst seed and any inset under that leaves every
+## canonical observation strictly interior, this residual exactly 0.0, its Jacobian row identically
+## zero and the fifteen canonical rides bit-identical rather than approximately unchanged.
+##
+## Two metres is 20x the slack and a fifth of the headroom, and inside that window the value is
+## chosen by what builds. Measured on the act-one optional swap, whose dive is the only one this
+## residual ever moves: at a 3 m inset the closure delivers the role at 486.97-487.02 m and two of
+## the four gated seeds build, while 11 and 4096 refuse with their dive at 487.13-487.16 m - 2.8 m
+## inside the band they are being refused for, 0.06-0.16 m outside an aim ceiling that is itself
+## an inset. At 2 m all four build, the delivered role runs 487.96-488.02 m, and the 1.98 m of
+## true-band interiority still exceeds the slack by 20x. Nothing in the fleet moves either way.
+const DIVE_ARC_AIM_MARGIN_M := 2.0
 ## The two analytic yaw solutions are separated by twice the chord's cross component - tens of
 ## degrees - so the post-solve agreement check only has to distinguish the branch, not pin an axis
 ## the dive-span aim band is free to rotate by a few degrees.
@@ -161,7 +181,8 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	var targets: Dictionary = decisions.targets
 	var story := {"sequence": sequence, "targets": targets}
 	var roles := _material_roles(sequence, targets)
-	var dive_intent: Dictionary = _role_by_id(roles, "outward-dive").terrain
+	var dive_role: Dictionary = _role_by_id(roles, "outward-dive")
+	var dive_intent: Dictionary = dive_role.terrain
 	var tunnel_length_m: Vector2 = _role_by_id(roles, "tunnel-lsm3").length_m
 	# P - preflight. One integration of the authored prefix, used only to choose the yaw frame,
 	# to prove the terrain can host a dive at all, and to derive the closure target below.
@@ -201,7 +222,7 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	var solved := RideProgram.terrain_story_capability(side, story, _closure_target(
 		footprint, outward_local, shelf_edge_m, apron_width_m, terrain_dive_span_m, entry_band,
 		tunnel_length_m, float(preflight.role_13.offset_m.y),
-		float(preflight_place.summit_track_agl_m)))
+		float(preflight_place.summit_track_agl_m), dive_role.length_m))
 	var accepted := _capability_footprint(solved)
 	if not accepted.ok:
 		return accepted
@@ -590,7 +611,8 @@ static func _entry_edge_aim_band(shelf_edge_m: float, apron_width_m: float,
 ## constant that maps one to the other.
 static func _closure_target(footprint: Dictionary, outward_local: Vector2, shelf_edge_m: float,
 	apron_width_m: float, terrain_dive_span_m: float, entry_band: Vector2,
-	tunnel_length_m: Vector2, summit_rise_m: float, summit_agl_m: float
+	tunnel_length_m: Vector2, summit_rise_m: float, summit_agl_m: float,
+	dive_length_m: Vector2
 ) -> Dictionary:
 	var dive_wobble_m: float = float(footprint.dive_edge_span_m) \
 		- float(footprint.dive_projection_m)
@@ -613,6 +635,10 @@ static func _closure_target(footprint: Dictionary, outward_local: Vector2, shelf
 		"summit_rise_m": _inner_band(SUMMIT_TRACK_AGL_BAND_M)
 			+ Vector2.ONE * (summit_rise_m - summit_agl_m),
 		"record_exit_speed_mps": _inner_band(RECORD_EXIT_SPEED_BAND_MPS),
+		# The one aim that is a role band rather than a terrain measurement: the dive's built arc
+		# has to satisfy the same declared band the route contract judges, so the closure aims at
+		# that band inset rather than at a proxy of it.
+		"dive_arc_m": dive_length_m + Vector2(DIVE_ARC_AIM_MARGIN_M, -DIVE_ARC_AIM_MARGIN_M),
 	}
 
 

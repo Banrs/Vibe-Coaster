@@ -153,3 +153,139 @@ open**, its remaining wall now purely upstream of the camelback handoff.
 
 Nothing else moved: `motion.gd` untouched, randomness stays in the planner streams, no
 candidate loops, `AERO_PER_M` stays 0.000075.
+
+---
+
+## 8. The composition: two role-band residuals, and the act-one swap builds (2026-08-16)
+
+This section is the ship-once home of the composition stage that followed §7. It is the story of
+two pieces that each refused alone and close together, so it lives here — with §6, the piece that
+landed — rather than being split across two specs. §11 of
+`2026-08-15-prefix-closure-solve-design.md` carries a forward pointer to it and keeps its own
+measurements unretracted; nothing there is contradicted, only out-reached.
+
+### 8.1 What each half was, and why neither was enough
+
+- **The prefix half** (§11, built and refused on 2026-08-16): a fifth closure residual `dive_arc_m`,
+  the built arc of the `outward-dive` role read over exactly the window
+  `route_contract.gd:_validate_role_lengths` measures, aimed at the declared 350–490 m role band
+  inset by a margin. Refused there because at the 5 m and 3 m insets it tried, the swap went from
+  planning 4/4 to refusing 4/4 or building 2/4 — and the two seeds that did reach the route contract
+  were then refused on `return-turn-b`. §11's reading was that the metres it returned were re-spent
+  by the return.
+- **The return half** (new here): `turn_b_length_band_m`, the eighth return residual — the built arc
+  of `return-turn-b` against the plan's declared 430–570 m band, inset 3 m. §11's own diagnosis names
+  it exactly: the return spends the returned metres on a role nothing was watching. A residual is
+  how the solve watches it.
+
+Neither is a new control. Both are new *observations* of quantities the route contract already
+judged after the fact, moved to where a solve can still act on them.
+
+### 8.2 Both residuals are inert on canonical, and the fleet is unchanged
+
+Measured on the fifteen preset seeds, before and after, on the same tree:
+
+- `outward-dive` builds 475.604–476.544 m against 350–490 → ≥ 13.456 m of ceiling headroom, so a
+  2 m inset is never reached and `_band_residual` is exactly 0.0.
+- `return-turn-b` builds 39–83 m inside 430–570 on every seed, so a 3 m inset is never reached and
+  that residual is exactly 0.0 too.
+- A residual row that is identically zero contributes a zero Jacobian row, adding exactly 0.0 to
+  `JᵀJ` and `Jᵀr`, and adds nothing to the max-abs convergence test. **The fleet geometry is
+  bit-identical, 15/15**: every published channel — positions, tangents, ups, rights, banks, speeds,
+  distances, times, curvatures, normal/lateral/longitudinal g, roll rates, drive, span and gesture
+  indices, terrain, bounds, length, duration — hashes the same before and after. Prefix closure
+  evaluation counts are unchanged (1 or 6 per seed), and so are the accepted control vectors.
+- What does move is the *published record of the solve*: `terrain_story_plan.planning.closure` now
+  names five residuals instead of four and carries the fifth's margins and observation, so the whole
+  route dictionary's SHA-256 changes while the ride it describes does not. That is a record gaining
+  a row, not a ride moving; it is stated here rather than buried, and no canonical re-baseline is
+  declared.
+
+### 8.3 The deciding measurement: the act-one optional swap, end to end, four gated seeds
+
+Production path throughout (`RidePlanner.resolve` → `Terrain.generate` → `_plan` → `compile` →
+`Motion.integrate` → `RouteContract.build` → validators). Both residuals live, dive inset 2 m,
+turn-b inset 3 m, `MAX_PREFIX_EVALUATIONS` 105:
+
+| seed | closure | return | `outward-dive` (350–490) | `return-turn-b` (430–570) | route | verdict |
+|---|---|---|---|---|---|---|
+| 11 | converged, 40 evals, 11 iters | converged, 65/88 | **487.96** | **567.30** | 8161.45 m, 157.04 s | **builds** |
+| 42 | converged, 29 evals, 8 iters | converged, 60/88 | **488.00** | **567.71** | 8175.81 m, 157.43 s | **builds** |
+| 20260809 | converged, 46 evals, 13 iters | converged, 38/88 | **487.98** | **567.69** | 8178.46 m, 157.52 s | **builds** |
+| 4096 | converged, 99 evals, 30 iters | converged, 29/88 | **488.02** | **529.93** | 8134.68 m, 157.14 s | **builds** |
+
+Every other declared role band is interior on every seed as well — `tunnel-lsm3` 184.7–184.9 m
+(150–220), `camelback` 1111.9–1113.0 m (900–1180), `return-turn-a` 537.0–559.6 m (420–620),
+`return-height-a` 303.8–321.7 m (290–480), `return-height-b` 568.3–571.5 m (450–590),
+`terminal-capture-brakes` 229.75 m (200–240) — and the route contract and validators are clean.
+**The act-one optional swap builds end to end for the first time, 4/4.** `generator_material_tests.gd`
+now gates seed 4096's swap on the build rather than on the refusal, and keeps the refusal history in
+comments.
+
+### 8.4 The two constants the measurement chose, and how
+
+- **Dive inset 2.0 m.** Bounded below by the solver's own convergence slack on that channel
+  (0.02 × the 5.0 residual scale = 0.1 m) — above it, an accepted closure is *structurally* inside
+  the declared band, not merely measurably inside. Bounded above by the fleet's 13.456 m of headroom,
+  under which canonical stays inert. Inside that window the value is chosen by what builds: at 3 m
+  the closure delivers 486.97–487.02 m and seeds 42 and 20260809 build while 11 and 4096 refuse with
+  their dive at **487.13–487.16 m** — 2.8 m inside the band they are being refused for, and
+  0.06–0.16 m outside an aim ceiling that is itself an inset. At 2 m all four build at
+  487.96–488.02 m, still 20× the slack clear of 490.
+- **Turn-b inset 3.0 m**, scale 125.0 (the route-length residual's scale, the same units and the same
+  hundreds-of-metres magnitude). Here the inset *exceeds* the channel's convergence slack
+  (0.02 × 125.0 = 2.5 m), so unlike `RETURN_LENGTH_AIM_MARGIN_M` the interiority an accepted point
+  carries is structural rather than only measured — and it is still an order of magnitude inside the
+  39 m of canonical headroom. Coarse/fine tolerance 0.075 m, matching the length residual's.
+- **`MAX_PREFIX_EVALUATIONS` 52 → 105.** The cap bound: at 52 seeds 11 and 4096 budget-exhausted at
+  51. The four-residual solve was square; the five-residual one is over-determined and its accepted
+  point sits on a band corner where two residuals are active at once, so LM shrinks its trust region
+  approaching it. Measured: 8/11/13/30 accepted iterations, 29/40/46/99 unique evaluations. The
+  recorded formula `1 + K(n+1) + R` at K ≤ 16, R ≤ 16 gives 97; the measured worst is 99, because
+  near the corner most Jacobian probes are cache hits and the formula's probe term stops being tight.
+  105 carries the measured worst with the same ~6 % slack the 49 → 52 step carried. **The CI cost is
+  ≈ zero**: before the raise the four swap closures burned the full 51-evaluation budget and refused
+  (204 evaluations, no ride); after it they converge in 214 and four rides come out.
+  `MAX_RETURN_EVALUATIONS` was **not** re-derived — it does not bind; the swap returns converge in
+  29–65 of 88, comfortably inside.
+- One honest cost: `PREFIX_EVALUATION_ALLOWANCE` (0.6) sets an absolute canonical bar of 63 rather
+  than 31. That bar was never tight — the fifteen canonical closures spend 1 or 6 evaluations — so it
+  went from 5× loose to 10× loose. It bounds the solve; it has never pinned it. The refused-story
+  gate in `generator_material_tests.gd` now holds those stories to the cap itself rather than to 60 %
+  of it, because a non-canonical story is not obliged to be as cheap as a canonical one.
+
+### 8.5 What this does and does not close
+
+- **Does:** the swap's two route-contract refusals (`outward-dive`, `return-turn-b`), and §11's
+  conclusion that the dive-arc residual "does not land". §11's measurements all stand; its reach did
+  not. It tested the prefix residual alone, and alone it is exactly as it measured itself to be.
+- **Does not:** issue 24. The optional-member swap is one of thirty-six grammar-legal act-one orders;
+  the other thirty-three are still refused at the *preflight*, upstream of the closure, where the
+  head-domain problem §5's correction names still stands. Certifying an act-one permutation draw
+  needs the whole legal set to build, not one member of it.
+- **Does not:** issue 22. The dive still commits with the approach the closure chooses, and the
+  pre-commit approach length on the canonical path is untouched (the residual is inert there).
+- **Unchanged and still refused:** the handoff-pose residual framing. Neither probe lane supports it.
+  The prefix's terrain-neutral authority is 7–74× short of the displacement it would have to absorb,
+  and the swap has no station-frame miss to correct in the first place — its return reaches the
+  capture gate cleanly (endpoint |cross| ≤ 0.006 m, |height| ≤ 0.033 m, |yaw| ≤ 0.005°), which is why
+  its refusals were role-length refusals and not pose refusals. Honest drag's walls are a cross-track
+  *shape* miss of 226–355 m plus height, not a pose the prefix can hand over differently; the one
+  measured height lever found there is `cam_fall_s` (+22.45 m terrain-neutral height for −0.372 s),
+  recorded for a future honest-drag stage and spent by nothing here.
+
+### 8.6 What landed
+
+- `godot/ride_prefix_solve.gd`: fifth residual `dive_arc_m` (scale 5.0, coarse/fine tolerance
+  0.05 m), observed over the route contract's own role window; `MAX_PREFIX_EVALUATIONS` 52 → 105.
+- `godot/generator.gd`: `DIVE_ARC_AIM_MARGIN_M := 2.0`; `_closure_target` takes the `outward-dive`
+  role's declared band and publishes the inset aim.
+- `godot/ride_return_solve.gd`: eighth residual `turn_b_length_band_m`
+  (`RETURN_TURN_B_AIM_MARGIN_M := 3.0`, scale 125.0, tolerance 0.075 m), a `_role_arc_m` helper that
+  reads a role's arc over the contract's own window, and `turn_b_length_m` in the return observation.
+- `godot/ride_program.gd`: the layout carries the plan's declared `return-turn-b` band; a plan that
+  declares none leaves the residual inert.
+- `godot/generator_material_tests.gd`: the swap gate is now an end-to-end build gate; history kept.
+- `godot/ride_program_tests.gd`, `godot/smoke.gd`: residual-count assumptions read the constant.
+
+`motion.gd` untouched, no candidate loops, randomness still only in the planner streams and terrain.

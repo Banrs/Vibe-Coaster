@@ -470,6 +470,17 @@ below); these seven are **not** covered by the audit's traceability record.
     inside its aim band without the closure walking the entry back off the rim it was just
     aimed at (at 0.40 s on the swapped story the accepted closure flipped the yaw solution
     outright, which is the failure mode to watch for). Measure that before spending the margin.
+    **Unchanged by the composition stage (2026-08-16), and one thing is now easier.** The
+    dive-arc residual landed after all — at a 2 m inset, composed with a turn-b return residual
+    (issue 24 above; §8 of the height-authority design) — but it is **exactly 0.0 on every
+    canonical seed**, so the canonical approach length, the flat 3.684 s commit block and this
+    issue's whole complaint are untouched: nothing here has been spent or closed. What is easier
+    is that `dive_approach_s` is no longer a free parameter a future stage has to justify against
+    the role band by hand — the band is now a residual the closure sees, so a stage that shortens
+    the canonical approach gets told by the solve, not by the route contract afterwards. The
+    unproven half is unchanged: whether the commit still reaches the face at a shorter approach,
+    and whether `dive_edge_span_m` stays in band without the closure walking the entry off the
+    rim.
 23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
     it should not have. The elements hit their force targets while their shapes are visibly
     wrong. Extends 7 beyond inversions and supports to the marquee elements.
@@ -523,6 +534,27 @@ below); these seven are **not** covered by the audit's traceability record.
     remaining wall is now purely upstream of the camelback handoff — the handoff-pose residual
     — which the honest-drag fleet test (issue 2) independently confirmed the same day. Spec:
     `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §6.
+    **The other mode cleared too, and the swap now builds — 2026-08-16, later the same day.
+    This entry still does not close.** The two route-contract refusals were closed by composing
+    two role-band residuals: the dive-arc residual §11 of the prefix-closure design had built and
+    refused (re-aimed from a 3 m to a 2 m inset), plus a new *eighth return residual* on
+    `return-turn-b` interiority — the role §11.4 had itself identified as where the metres the
+    dive gave back were being re-spent. Neither works alone; together, on the four gated seeds,
+    the swapped story builds end to end for the first time: closure converged in 29/40/46/99
+    evaluations of a re-derived 105 cap, return converged in 29–65 of 88, `outward-dive`
+    487.96–488.02 m, `return-turn-b` 529.9–567.7 m, every declared role band interior, route
+    8134.7–8178.5 m, contract and validators clean. The canonical fleet is bit-identical, 15/15,
+    on every published channel — both residuals are exactly 0.0 there. **What still blocks this
+    entry is the permutation certification itself:** the optional-member swap is one of
+    thirty-six grammar-legal act-one orders, and the other thirty-three are still refused at the
+    *preflight*, upstream of the closure, by the head-domain problem §5's correction names. One
+    order building is not a certified draw. Also corrected here: the **handoff-pose residual**
+    this entry named as the next spend is **refused by two independent probe lanes** — the
+    prefix's terrain-neutral authority is 7–74× short of the displacement it would have to
+    absorb, and the swap has no station-frame miss at all (its return reaches the capture gate at
+    |cross| ≤ 0.006 m, |height| ≤ 0.033 m, |yaw| ≤ 0.005°), which is exactly why its refusals
+    were role-length refusals. Spec:
+    `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §8.
 25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
     with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
     is missing.

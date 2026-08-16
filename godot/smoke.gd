@@ -4,6 +4,7 @@ const Coaster := preload("res://main.gd")
 const FidelityTests := preload("res://fidelity_tests.gd")
 const FidelityArtifactTests := preload("res://fidelity_artifact_tests.gd")
 const Generator := preload("res://generator.gd")
+const PrefixSolve := preload("res://ride_prefix_solve.gd")
 const RouteContract := preload("res://route_contract.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
@@ -318,7 +319,7 @@ func _validate_prefix_closure(
 	var terrain: Dictionary = route.get("terrain", {})
 	var closure: Dictionary = planning.get("closure", {})
 	var fine: Array = closure.get("fine_observation", [])
-	if terrain.is_empty() or fine.size() != 4:
+	if terrain.is_empty() or fine.size() != PrefixSolve.PREFIX_RESIDUAL_IDS.size():
 		issues.append("the plan publishes no measurable prefix closure")
 		return
 	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)

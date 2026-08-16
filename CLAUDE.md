@@ -21,6 +21,24 @@ validation are the product; visuals are a deliberately generic inspection layer.
 > authoring in the rider's frame gives superior rider-dynamics control; it is not to be forced
 > onto layout, terrain fitting, closure, or exact-geometry work that another physically coherent
 > method solves better. Choosing the other method there is following the design, not deviating.
+>
+> **Measured state, 2026-08-16.** The prefix closure solves four controls against **five**
+> residuals (the fifth is the `outward-dive` arc against its declared role band) and the return
+> solves **eight** controls against **eight** residuals (the eighth control is the height-a peak;
+> the eighth residual is `return-turn-b` band interiority). Composing the two role-band residuals
+> is what first made the act-one optional swap build end to end on all four gated seeds, with the
+> canonical fleet bit-identical on every published channel — record at §8 of
+> `docs/superpowers/specs/2026-08-16-return-height-authority-design.md`. Issue 24 stays open: one
+> act-one order building is not a certified permutation draw, and thirty-three of the thirty-six
+> grammar-legal orders are still refused at the preflight. The **handoff-pose residual** earlier
+> work named as the next spend is **refused by measurement** on two independent probe lanes — the
+> prefix's terrain-neutral authority is 7–74× short of the displacement it would have to absorb,
+> and the swap has no station-frame miss to correct at all (its return reaches the capture gate at
+> |cross| ≤ 0.006 m, |height| ≤ 0.033 m, |yaw| ≤ 0.005°), which is why its refusals were
+> role-length refusals. Honest drag's walls are a cross-track *shape* miss of 226–355 m plus
+> height, not a pose the prefix can hand over differently; the one measured height lever there is
+> `cam_fall_s` (+22.45 m terrain-neutral height for −0.372 s), recorded for a future honest-drag
+> stage and spent by nothing yet.
 
 Run both checks before and after any change:
 
@@ -167,7 +185,7 @@ positions stay raw for physics, verification, and generated-channel measurement.
   sections, no flat grades between elements (design intent — reviewed, not yet mechanically
   enforced by any validator); elapsed average speed is reported, never
   targeted — pacing is organic. Length 7.8–8.2 km. The unpowered return is authored in normal-g
-  and bank/roll functions; a bounded seven-control solve targets the derived capture-entry
+  and bank/roll functions; a bounded eight-control solve targets the derived capture-entry
   corridor, the 7.8–8.2 km route band, and the 70–80 m/s passive entry-speed band (widened
   from 70–77 on 2026-08-15 — the measured cost of closing the ~340 km/h record inside
   8.2 km without a mid-course brake; see

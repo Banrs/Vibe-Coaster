@@ -38,8 +38,8 @@ const PRESET_SEEDS := [
 ## The stage-4 refusal seeds: the three deep seeds smoke gates on loads, plus 4096, one of the two
 ## seeds whose canonical closure spends the most evaluations (6 of 31). Fixed, never sampled.
 const REFUSAL_SEEDS := [11, 42, 20260809, 4096]
-## The single seed whose swapped story is compiled, not just planned. Fixed, and argued for at
-## `_check_swap_return_closes_interior`; one compile is what the serial CI budget below affords.
+## The single seed whose swapped story is built end to end, not just planned. Fixed, and argued
+## for at `_check_swap_builds_end_to_end`; one build is what the serial CI budget below affords.
 const SWAP_COMPILE_SEED := 4096
 ## The perturbation the refusal evidence in `ride_planner.gd` names, applied to the authored value.
 const REFUSAL_DELTA := 0.005
@@ -200,40 +200,45 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 ##     inside the true 8200 m ceiling, past the 8199 m aim edge within the solver's 2.5 m
 ##     convergence slack, so the gate below now asserts strict true-band interiority instead of
 ##     the aim margin. The build still refuses on `outward-dive` (497.4-497.5 m) on every seed
-##     and `return-turn-b` (570.5-573.2 m) on three of four, so the prefix half of the wall
-##     stands exactly as the paragraph below records it.
-##   The prefix half looked like the wall and is not - re-measured 2026-08-16, corrected here.
-##     Under the swap the whole prefix is seed-independent to three decimals and `outward-dive`
-##     runs 497.43-497.46 m against its declared 350-490 m band on *every* seed, against
-##     475.604-476.544 m canonically (canonical never overran it: 13.456 m of headroom, and
-##     475.640-476.721 m across every closure observation the fleet makes). The closure accepts
-##     `PREFIX_SEED` unchanged on all four seeds, so those 21 m are not a control choice - but they
-##     are not the blocker either. Measured per span, the role's length is a rim-speed budget: 63%
-##     of it is the 4.64 s pull-out at 49-70 m/s, both stories fall the same cliff to 5.4 cm, and
-##     the swap's +2.431 m/s of rim speed lengthens all eight spans, 21.467 m in total - a
-##     two-point secant of ~8.83 m per m/s between these two stories, not a per-span law. A fifth
-##     closure residual on that arc was built and run (2026-08-16): canonical stays bit-identical
-##     15/15 and the swap goes from planning 4/4 to refusing 4/4, so it did not land. Its only
-##     absorber returns ~15.8 m of arc per second of `dive_approach_s`, and pinning that shorter
-##     costs more than it buys - seed 11 at 0.80 s gains 3.164 m of dive and pays +46.810 m of
-##     `return-turn-b` and -22.595 m of `return-height-a`, through that role's 290 m floor. Route
-##     length is relieved and the wall remains, which is the stronger reading: the converged swap
-##     cases sit at 8198.76-8198.80 m, only 0.20-0.24 m inside the 8199.0 m aim ceiling, every
-##     short-approach refusal carries a length residual of exactly 0.0, and at a 3 m residual
-##     margin the ~10.4 m the dive gives back covers the 2.1 / 5.1 m overruns recorded above while
-##     42 and 20260809 budget-exhaust at 79/80 regardless.
-##     The wall is the geometric camelback handoff, and four duration controls downstream of act
-##     one cannot pin six DOF - see section 11 of the prefix-closure design.
+##     and `return-turn-b` (570.5-573.2 m) on three of four - both of which the two paragraphs
+##     below close.
+##   The prefix half was measured as the wall on 2026-08-16, and the reading is corrected here.
+##     Under the swap the whole prefix was seed-independent to three decimals and `outward-dive`
+##     ran 497.43-497.46 m against its declared 350-490 m band on *every* seed, against
+##     475.604-476.544 m canonically (canonical never overran it: 13.456 m of headroom). Read per
+##     span, the role's length is a rim-speed budget: 63% of it is the 4.64 s pull-out at
+##     49-70 m/s, both stories fall the same cliff to 5.4 cm, and the swap's +2.431 m/s of rim
+##     speed lengthened all eight spans, 21.467 m in total - a two-point secant of ~8.83 m per m/s
+##     between these two stories, not a per-span law. A fifth closure residual on that arc was
+##     built and run on 2026-08-16 and *refused* on its first measurement, because at the 5 m and
+##     3 m insets tried there it took the swap from planning 4/4 to refusing 4/4 or 2/4 while the
+##     returns that did converge budget-exhausted anyway.
+##   Composed 2026-08-16 with the return's own role-band residual, and the refusal above does not
+##     survive the composition. Two things had to be true at once, and neither alone was enough:
+##     the prefix has to deliver the dive inside its band (the residual above, at a 2 m inset -
+##     derived at 20x the solver's 0.1 m convergence slack on that channel and a fifth of the
+##     fleet's 13.456 m headroom), and the return has to be able to see `return-turn-b` leaving its
+##     own band while it still has controls to spend (the eighth return residual, 3 m inset). With
+##     both live, all four gated seeds build end to end for the first time: closure converged in
+##     29/40/46/99 evaluations of the re-derived 105 cap, return converged in 65/60/38/29 of 88,
+##     `outward-dive` at 487.96-488.02 m and `return-turn-b` at 529.93-567.71 m, every other
+##     declared role band interior, route 8134.7-8178.5 m, contract and validators clean. The
+##     earlier refusal was right about its own measurements and wrong about their reach: it tested
+##     the dive residual alone, and the metres it returned were re-spent on a turn-b nothing was
+##     watching.
 ##   Section 5.4's expectation that residual 4 absorbs the handoff shift stays half true as
 ##     measured: the record exit speed is pinned (+0.51 to +0.83 m/s inside its band on every
 ##     placed story), the geometric handoff is not.
 ##
 ## Cost, named by runner because the two runners disagree: the eight plans below add ~12.7 s local
-## (~25 s on ubuntu) and the one compiled swap adds ~9 s local (~18 s on ubuntu).
+## (~25 s on ubuntu) and the one swap built end to end adds ~17 s local (~34 s on ubuntu) - the
+## compile it used to stop at, plus the production integration and contract the build now runs. The
+## closures themselves cost no more than before the dive-arc residual: they used to burn the whole
+## budget refusing (4 x 51 evaluations) and now converge in 214.
 ## `tools/gates.sh` runs the twelve suites concurrently with smoke.gd, so that growth hides behind
 ## the longest job and the battery total barely moves; `.github/workflows/ci.yml` runs the same
 ## manifest serially before smoke.gd, so real CI pays every second of it. Widen this gate only
-## against that serial number - which is why exactly one seed is compiled rather than four.
+## against that serial number - which is why exactly one seed is built rather than four.
 func _check_closure_places_the_refused_stories() -> void:
 	var permuted := _act_one_optional_swap()
 	for seed_value in REFUSAL_SEEDS:
@@ -241,27 +246,34 @@ func _check_closure_places_the_refused_stories() -> void:
 		_check_refused_story_places(seed_value, "act-one-loop/positive_g -0.005", [],
 			{"act-one-loop": {"positive_g":
 				RideProgram.ACT_ONE_LOOP_POSITIVE_G - REFUSAL_DELTA}})
-	_check_swap_return_closes_interior(SWAP_COMPILE_SEED, permuted)
+	_check_swap_builds_end_to_end(SWAP_COMPILE_SEED, permuted)
 
 
-## The one compiled swap, and why it is seed 4096: it is the seed that shows the boundary-drift
-## `RETURN_LENGTH_AIM_MARGIN_M` exists to remove, in production, at its sharpest. Before that
-## margin, 4096's swapped return converged 0.00075 m inside the 8200 m ceiling and seed 11's
-## 0.0215 m inside it - both accepted, both by an accident of sign, because `_band_residual` is
-## flat inside the band and gives the solve no reason to stop anywhere but the edge. A
-## sub-millimetre margin is not a closure. This is the planning gate's compiled twin: it stops at
-## the return, because everything past it on a swapped story is the route contract refusing
-## `outward-dive` (497.4-497.5 m) and, on three of the four seeds, `return-turn-b`
-## (570.5-573.2 m against 430-570) - the dive overrun is a symptom of the moved camelback
-## handoff, not the named blocker (see above), and neither refusal is this stage's to own.
-## Re-founded 2026-08-16 with the eighth solved control: the swapped return now converges on all
-## four gated seeds with `height_a_recovery_duration_s` off its floor (0.384 s clear on this
-## seed) - the floor-pinned exhaustion this compile used to document - but it converges grazing,
-## 0.498 m inside the true ceiling on this seed, past the aim edge within the solver's 2.5 m
-## slack. So the gate asserts what the re-measure establishes: convergence, the cleared floor,
-## and strict true-band interiority; the aim margin is canonical-fleet property now (measured
-## >= 12.43 m at every accepted canonical point), not a swap property.
-func _check_swap_return_closes_interior(seed_value: int, sequence: Array) -> void:
+## The one swap built end to end, and why it is seed 4096: with the dive-arc residual live it is
+## the seed whose closure works hardest - 99 unique evaluations of the derived 105, against 29-46
+## on the other three - so the seed that gates the build is also the seed that gates the budget.
+##
+## History, kept because the refusals are the evidence this gate rests on. Before
+## `RETURN_LENGTH_AIM_MARGIN_M`, 4096's swapped return converged 0.00075 m inside the 8200 m
+## ceiling and seed 11's 0.0215 m inside it - both accepted by the sign of a sub-millimetre number,
+## because `_band_residual` is flat inside a band and gives the solve no reason to stop anywhere
+## but the edge. Before the eighth solved control (2026-08-16, height authority) seeds 42 and
+## 20260809 budget-exhausted their swapped return at 79 of 80, pinned on the
+## `height_a_recovery_duration_s` floor. And until this commit the gate stopped at the return,
+## because everything past it was the route contract refusing `outward-dive` (497.4-497.5 m against
+## 350-490) on every seed and `return-turn-b` (570.5-573.2 m against 430-570) on three of four.
+##
+## Re-founded 2026-08-16 on the composition that closes both: the dive arc is the prefix closure's
+## fifth residual and turn-b interiority is the return solve's eighth, so both role bands are
+## quantities a solve can see while it still has controls to spend. Measured on all four gated
+## seeds, the swapped story now builds end to end - closure converged, return converged, every
+## declared role band satisfied, route contract and validators clean. So the gate asserts the
+## build, not the refusal: closure and return convergence, the recovery off its floor, strict
+## true-band interiority on route length, `outward-dive` and `return-turn-b`, and the published
+## route itself. What it does not claim is that issue 24 is closed - the swap is one of thirty-six
+## grammar-legal act-one orders and the other thirty-three are still refused at the preflight, so
+## the permutation draw stays uncertified.
+func _check_swap_builds_end_to_end(seed_value: int, sequence: Array) -> void:
 	var decisions := RidePlanner.resolve(seed_value)
 	decisions["sequence"] = sequence
 	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
@@ -275,16 +287,42 @@ func _check_swap_return_closes_interior(seed_value: int, sequence: Array) -> voi
 		_expect(false, "seed %d act-one optional swap closes its return: %s"
 			% [seed_value, str(compiled.get("failure", {}))])
 		return
-	var margins: Dictionary = compiled.get("return_plan", {}).get("margins", {})
-	var high := float(margins.get("route_length_high_m", NAN))
-	var low := float(margins.get("route_length_low_m", NAN))
-	_expect(high > 0.0 and low >= RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M,
+	var return_plan: Dictionary = compiled.return_plan
+	var margins: Dictionary = return_plan.get("margins", {})
+	_expect(str(return_plan.get("solver_status", "")) == "converged",
+		"seed %d act-one optional swap converges its return: %s"
+		% [seed_value, str(return_plan.get("solver_status", "missing"))])
+	_expect(float(margins.get("route_length_low_m", NAN)) > 0.0
+		and float(margins.get("route_length_high_m", NAN)) > 0.0,
 		"seed %d act-one optional swap closes %.6f m below and %.6f m above its route-length band"
-		% [seed_value, low, high])
-	var recovery := float(margins.get("scalar_height_a_recovery_duration_s", NAN))
-	_expect(recovery > 0.0,
+		% [seed_value, float(margins.get("route_length_low_m", NAN)),
+			float(margins.get("route_length_high_m", NAN))])
+	_expect(float(margins.get("scalar_height_a_recovery_duration_s", NAN)) > 0.0,
 		"seed %d act-one optional swap holds the recovery off its floor by %.6f s"
-		% [seed_value, recovery])
+		% [seed_value, float(margins.get("scalar_height_a_recovery_duration_s", NAN))])
+	# The turn-b residual reports its own observation, so the interiority the eighth residual buys
+	# is asserted on the number the solve saw, against the plan's own declared band.
+	var turn_b_band: Vector2 = _role_band(plan, "return-turn-b")
+	var turn_b_m := float(return_plan.get("fine_observation", {}).get("turn_b_length_m", NAN))
+	_expect(turn_b_m > turn_b_band.x and turn_b_m < turn_b_band.y,
+		"seed %d act-one optional swap builds return-turn-b at %.3f m inside %s"
+		% [seed_value, turn_b_m, str(turn_b_band)])
+	# The whole point of the stage: the story that has never built, built. A fresh `resolve` -
+	# `Terrain.generate` consumes the seeded stream, so a second build off the same decisions
+	# dictionary would be a different ride.
+	var rebuilt := RidePlanner.resolve(seed_value)
+	rebuilt["sequence"] = sequence
+	var route := RideGenerator.build_with_decisions(seed_value, rebuilt)
+	_expect(route.get("ok", false) and route.get("errors", []).is_empty(),
+		"seed %d act-one optional swap builds end to end: errors=%s failure=%s"
+		% [seed_value, str(route.get("errors", [])), str(route.get("failure", {}))])
+
+
+static func _role_band(plan: Dictionary, role_id: String) -> Vector2:
+	for role in plan.roles:
+		if str(role.id) == role_id:
+			return role.length_m
+	return Vector2(NAN, NAN)
 
 
 ## The act-one order this gate uses, assembled from the grammar's own cells: the pool with its two
@@ -343,7 +381,7 @@ func _check_refused_story_places(
 	var planning: Dictionary = plan.terrain_frame.planning
 	var closure: Dictionary = planning.closure
 	var fine: Array = closure.get("fine_observation", [])
-	if fine.size() != 4:
+	if fine.size() != RidePrefixSolve.PREFIX_RESIDUAL_IDS.size():
 		_expect(false, "%s publishes a measured closure: %s" % [context, str(closure)])
 		return
 	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
@@ -362,10 +400,15 @@ func _check_refused_story_places(
 		_expect(is_finite(margin) and margin >= float(entry[3]),
 			"%s %s sits %.4f inside %s; the fleet requires %.4f"
 			% [context, entry[0], margin, str(band), float(entry[3])])
+	# The bar here is the derived cap itself, not `PREFIX_EVALUATION_ALLOWANCE`. That fraction is a
+	# canonical-fleet property - the preset seeds close in 1 or 6 evaluations because the authored
+	# `PREFIX_SEED` already lands inside their aim bands - and `smoke.gd` gates it on all fifteen.
+	# The stories here are the ones that actually make the solve work: measured 2026-08-16 with the
+	# dive-arc residual live, they converge in 29-99 of the 105, and holding them to 60% of the cap
+	# would be asking a non-canonical story to be as cheap as a canonical one.
 	var evaluations := int(closure.get("unique_evaluations", -1))
 	_expect(str(closure.get("solver_status", "")) == "converged" and evaluations >= 1
-		and evaluations <= int(RideGenerator.PREFIX_EVALUATION_ALLOWANCE
-			* int(closure.get("max_unique_evaluations", 0))),
+		and evaluations <= int(closure.get("max_unique_evaluations", 0)),
 		"%s converges in %d %s evaluations" % [context, evaluations,
 			str(closure.get("solver_status", "missing"))])
 

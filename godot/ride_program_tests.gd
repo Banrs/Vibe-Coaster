@@ -33,6 +33,12 @@ const CAPTURE_COARSE_RESIDUAL_LIMITS := [0.075, 0.075, 0.0001, 0.0001, 0.0001]
 const PREFIX_SPAN_AIM_TOLERANCE_M := 3.0
 const PREFIX_SUMMIT_AIM_TOLERANCE_M := 2.0
 const PREFIX_RECORD_AIM_BAND_MPS := Vector2(94.2, 95.3)
+## The fifth closure residual's aim band for these fixtures. Deliberately wide: these prefixes are
+## built on synthetic frames, not on the production placement, so their dive arc is not the
+## production role's and a tight band would test the fixture rather than the solve. The fleet
+## measurement of this residual is `generator_material_tests.gd` and `smoke.gd`, on the production
+## band; here it is declared, satisfied and inert, which is what keeps the other four honest.
+const PREFIX_ARC_AIM_BAND_M := Vector2(200.0, 900.0)
 const PREFIX_DISPLACED_RECORD_BAND_MPS := Vector2(95.05, 95.45)
 const PREFIX_DISPLACED_SPAN_AIM_TOLERANCE_M := 12.0
 const PREFIX_DISPLACED_SUMMIT_AIM_TOLERANCE_M := 8.0
@@ -662,7 +668,8 @@ func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
 	_expect_closure_report(report, "displaced record band")
 	var left: Array = solved[-1].get("closure_plan", {}).get("accepted_values", [])
 	var right: Array = report.get("accepted_values", [])
-	var identical := left.size() == 4 and right.size() == 4
+	var identical := left.size() == RidePrefixSolve.PREFIX_CONTROL_IDS.size() \
+		and right.size() == RidePrefixSolve.PREFIX_CONTROL_IDS.size()
 	for index in mini(left.size(), right.size()):
 		identical = identical and absf(float(left[index]) - float(right[index])) <= 0.000000001
 	_expect(identical, "both hands solve to one control vector to 1e-9: %s against %s"
@@ -676,7 +683,8 @@ func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
 			- float(solved[1].dive_footprint.outward_delta_m)) <= 0.05,
 		"the solved footprint keeps the 0.05 m hand mirror")
 	var fine: Array = report.get("fine_observation", [])
-	var record_mps: float = float(fine[3]) if fine.size() == 4 else NAN
+	var record_mps: float = float(fine[3]) \
+		if fine.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size() else NAN
 	_expect(int(report.get("unique_evaluations", 0)) > 1
 		and record_mps >= PREFIX_DISPLACED_RECORD_BAND_MPS.x
 			- float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[3])
@@ -767,6 +775,7 @@ func _closure_target(capability: Dictionary, side: int, record_band: Vector2,
 			tunnel_span + span_tolerance_m),
 		"summit_rise_m": Vector2(entry.y - summit_tolerance_m, entry.y + summit_tolerance_m),
 		"record_exit_speed_mps": record_band,
+		"dive_arc_m": PREFIX_ARC_AIM_BAND_M,
 	}
 
 
@@ -791,12 +800,13 @@ func _closure_target_on_axis(capability: Dictionary, raw_axis: Vector2, record_b
 			tunnel_span + span_tolerance_m),
 		"summit_rise_m": Vector2(entry.y - summit_tolerance_m, entry.y + summit_tolerance_m),
 		"record_exit_speed_mps": record_band,
+		"dive_arc_m": PREFIX_ARC_AIM_BAND_M,
 	}
 
 
 func _expect_closure_report(report: Dictionary, label: String) -> void:
-	_expect(RidePrefixSolve.MAX_PREFIX_EVALUATIONS == 52,
-		"the prefix evaluation cap is the derived 52, not %d"
+	_expect(RidePrefixSolve.MAX_PREFIX_EVALUATIONS == 105,
+		"the prefix evaluation cap is the derived 105, not %d"
 		% RidePrefixSolve.MAX_PREFIX_EVALUATIONS)
 	var evaluations := int(report.get("unique_evaluations", -1))
 	var allowance := int(0.6 * RidePrefixSolve.MAX_PREFIX_EVALUATIONS)
@@ -817,7 +827,8 @@ func _expect_closure_report(report: Dictionary, label: String) -> void:
 	_expect(inside, "every %s control stays inside its declared bounds: %s" % [label, str(values)])
 	var coarse: Array = report.get("coarse_observation", [])
 	var fine: Array = report.get("fine_observation", [])
-	var agrees := coarse.size() == 4 and fine.size() == 4
+	var agrees := coarse.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size() \
+		and fine.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size()
 	for index in mini(coarse.size(), fine.size()):
 		agrees = agrees and absf(float(coarse[index]) - float(fine[index])) \
 			<= float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[index])

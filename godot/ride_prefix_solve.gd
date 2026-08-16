@@ -24,14 +24,37 @@ const PREFIX_SLOW_SHOULDER_S := 0.80
 const PREFIX_SEED := [8.78838861435674, 3.20659393,
 	PREFIX_SLOW_CREST_BEAT_S - 2.0 * PREFIX_SLOW_SHOULDER_S, 1.00]
 const PREFIX_RESIDUAL_IDS := ["dive_edge_span_m", "tunnel_edge_span_m", "summit_rise_m",
-	"record_exit_speed_mps"]
-const PREFIX_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.2]
-const PREFIX_FINE_TOLERANCES := [0.25, 0.25, 0.25, 0.05]
+	"record_exit_speed_mps", "dive_arc_m"]
+const PREFIX_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.2, 5.0]
+# The dive-arc channel reproduces to 0.0014 m between the coarse solve step and the production
+# integration (measured 2026-08-16 on the fleet), so 0.05 m is the same generous multiple of the
+# observed disagreement that the other four tolerances carry.
+const PREFIX_FINE_TOLERANCES := [0.25, 0.25, 0.25, 0.05, 0.05]
 # Derived, not guessed, exactly as MAX_RETURN_EVALUATIONS is: `BoundedSolver.solve` costs
 # `1 + K*(n+1) + R` unique evaluations, so n = 4 with K <= 8 accepted iterations and R <= 8
-# rejections gives 1 + 8*5 + 8 = 49; 52 carries that derivation with a three-evaluation margin,
+# rejections gives 1 + 8*5 + 8 = 49; 52 carried that derivation with a three-evaluation margin,
 # and `ride_program_tests.gd` gates every solve at 60% of it.
-const MAX_PREFIX_EVALUATIONS := 52
+#
+# Re-derived 2026-08-16 with the fifth residual (`dive_arc_m`). The four-residual solve was
+# square; the five-residual one is over-determined and its accepted point sits on a band corner
+# where two residuals are active at once, so LM shrinks its trust region approaching it and
+# spends more accepted iterations. Measured on the act-one optional swap - the only story that
+# drives this residual off zero - the four gated closures converge in 8/11/13/30 accepted
+# iterations and 29/40/46/99 unique evaluations. The formula at K <= 16, R <= 16 (twice the
+# four-residual allowance, which is the factor the measured iteration counts themselves show)
+# gives 1 + 16*5 + 16 = 97; the measured worst is 99, because near the corner most Jacobian
+# probes are cache hits and the formula's probe term stops being tight. 105 therefore carries the
+# measured worst with the same ~6% slack the 49 -> 52 step carried.
+#
+# The CI cost of the raise is ~zero, measured: before it, all four swap closures burned the full
+# 51-evaluation budget and refused (204 evaluations, no build); after it they converge in 214 and
+# four rides come out. What does move is the absolute bar `PREFIX_EVALUATION_ALLOWANCE` sets on
+# the canonical fleet - 60% of 105 rather than 60% of 52. That bar was never tight: the fifteen
+# canonical closures spend 1 or 6 unique evaluations (0 or 1 accepted iterations - the authored
+# `PREFIX_SEED` already lands inside its aim bands on every preset seed), unchanged by this
+# commit. The allowance was 5x loose before and is 10x loose now; it bounds the solve, it has
+# never pinned it, and a stage that wants it to pin should say so with its own measurement.
+const MAX_PREFIX_EVALUATIONS := 105
 
 
 ## The story prefix as a program: its spans plus the span indices both the published footprint and
@@ -75,6 +98,11 @@ static func _prefix_initial_state() -> Dictionary:
 ## translates the summit AGL band into this rise band through it. The tunnel exit is the
 ## trajectory's last sample, not the published pre-seam one, so the quantity does not move with
 ## the integration step; the generator aims through that one-step offset instead.
+##
+## The fifth, `dive_arc_m`, is the only one that is not a station-local placement quantity: it is
+## the built arc length of the `outward-dive` role, read over exactly the window
+## `route_contract.gd:_validate_role_lengths` measures, so the closure observes the number the
+## route contract will later judge rather than a proxy for it.
 static func _prefix_observation(trajectory: Dictionary, dive_start: int, dive_end: int,
 	axis: Vector2
 ) -> Array:
@@ -87,7 +115,9 @@ static func _prefix_observation(trajectory: Dictionary, dive_start: int, dive_en
 	var tunnel_exit: Vector3 = trajectory.position_m[-1]
 	return [Vector2(dive_exit.x - entry.x, dive_exit.z - entry.z).dot(axis),
 		Vector2(tunnel_exit.x - dive_exit.x, tunnel_exit.z - dive_exit.z).dot(axis),
-		entry.y, float(trajectory.speed_mps[-1])]
+		entry.y, float(trajectory.speed_mps[-1]),
+		float(trajectory.distance_m[mini(last + 1, trajectory.distance_m.size() - 1)])
+			- float(trajectory.distance_m[first])]
 
 
 static func _prefix_tail_observation(station_side: int, story: Dictionary, controls: Array,

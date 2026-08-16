@@ -717,6 +717,24 @@ static func _material_role(role_id: String) -> Dictionary:
 			return _role("clifftop-outward-rim", "outward_rim", Vector2(65.0, 120.0), {}, [],
 				{"exit_tangent_outward_dot": Vector2(0.25, 1.0)})
 		"outward-dive":
+			# The 490 m ceiling stays, and measurement says what it is: a rim-speed budget, not a
+			# cliff-geometry one. Measured per span on the production integration (2026-08-16),
+			# 63% of the role is its 4.64 s pull-out run at 49-70 m/s, and canonical against the
+			# act-one optional swap moves every one of the eight spans proportionally - 8.83 m of
+			# role length per m/s of rim entry speed - while both stories fall the same cliff to
+			# 5.4 cm (-247.48 m against -247.42 m). Canonical builds 475.604-476.544 m fleet-wide,
+			# so the 13.456 m of headroom under this ceiling is +1.524 m/s of rim speed; the swap
+			# arrives +2.431 m/s hotter and is 0.91 m/s past what the band allows.
+			#
+			# Adding that arc as a fifth closure residual was this stage's proposal, and it was
+			# built and run rather than argued about (2026-08-16): canonical stays bit-identical
+			# 15/15 because every observation is strictly interior, and the swap goes from planning
+			# 4/4 to refusing 4/4 at the closure. Its only absorber, `dive_approach_s`, returns
+			# ~15.8 m of arc per second, so the swap needs 0.79 s of the control's 0.60 s of range;
+			# and every metre it does return is re-spent by the return, which answers the moved
+			# camelback handoff with +46.8 m of `return-turn-b` for 3.2 m of dive. Derivation, the
+			# pinned-approach matrix and the refusal:
+			# `docs/superpowers/specs/2026-08-15-prefix-closure-solve-design.md` section 11.
 			return _role("outward-dive", "cliff_dive", Vector2(350.0, 490.0),
 				{"height_delta_m": Vector2(-250.0, -240.0)}, [],
 				{"outward_delta_m": Vector2(70.0, 300.0),

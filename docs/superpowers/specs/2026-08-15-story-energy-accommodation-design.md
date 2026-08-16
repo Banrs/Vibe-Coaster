@@ -204,3 +204,13 @@ residual**, not a dive-entry-speed one — and it lands on issue 22's knob, whos
 because it moves the camelback handoff ~10 m and the fixed-seed return solve does not re-converge. That makes the honest order:
 **the deterministic per-story return-seed derivation first**, then a dive-arc residual with `dive_approach_s` as its absorber. Until
 the return can re-converge for a moved handoff, no prefix-side residual can buy the swap a build.
+
+> **Correction (2026-08-16): both halves of that order were taken and both were refused.** The return-seed derivation was refused by
+> its own §8 measurement (the wall is a box constraint, not a basin), and the dive-arc residual was then derived, built and run and
+> refused too — §11 of `2026-08-15-prefix-closure-solve-design.md`. §10.4's arithmetic survives: `dive_approach_s` is the only
+> control that moves the arc without moving the entry state, at ≈ 15.8 m of arc per second. Its conclusion does not: the swap needs
+> 0.79 s of that control's 0.60 s of range to clear an honest aim ceiling, and every metre it *does* return is re-spent by the return
+> answering a moved handoff (+46.810 m of `return-turn-b` for 3.164 m of dive on seed 11). Route length was never binding — the
+> length residual on every short-approach refusal is exactly 0.0. The role band is a rim-speed budget (8.83 m per m/s, measured;
+> canonical builds 475.604–476.544 m with 13.456 m of headroom = +1.524 m/s, the swap arrives +2.431 m/s hotter), and no prefix
+> control removes rim speed.

@@ -283,3 +283,129 @@ search and recovers the ~15–25 lines the Stage-2 review named; the honest net 
 5. **Spend the margin.** Issue 22 first (aim the dive at the rim), then issue 20's opener tranche, then
    the opener/act-one draw ranges re-certified into `RidePlanner.TARGET_DRAWS` with their measured
    widths and the act-one order draw on `STREAM_STORY_ACT_ONE`.
+
+## 11. The dive-arc residual — derived, built, run, and **refused** (2026-08-16, Godot 4.7.1)
+
+The spend §8.5 of `2026-08-15-return-seed-derivation-design.md` named: add the built dive arc as a fifth
+closure residual so `dive_approach_s` returns route metres, and the act-one optional swap gets the length
+it needs. Every number below was measured on the production path
+(`RidePlanner.resolve` → `Terrain.generate` → `_plan` → `compile` → `Motion.integrate` →
+`RouteContract.build`), never estimated; the residual was then **built and run** rather than argued about,
+on a scratchpad copy of `godot/`. **Verdict: the residual does not land.** It is inert on canonical (all
+fifteen rides bit-identical) and it can only refuse the swap earlier than today. The wall it was aimed at
+is not the one that is there.
+
+### 11.1 The commissioning premise was wrong on its face
+
+The brief for this stage said the *canonical* fleet builds `outward-dive` at 497.4–497.5 m, overrunning
+its declared 350–490 m role band, and that fixing it would be a declared re-baseline. Measured on all
+fifteen preset seeds, canonical builds the role at **475.604–476.544 m** — inside the band, with
+**13.456 m of ceiling headroom** on the worst seed (77777). Across all fifty closure evaluations the whole
+fleet makes (seed, Jacobian probe, rejected trial, accepted point) the arc runs **475.640–476.721 m**, so
+the closest any canonical observation comes to 490 m is **13.279 m**. There is no canonical overrun, no
+band falsehood on the production path, and **no re-baseline to declare**. 497.4–497.5 m is the *swap's*
+number, exactly as `generator_material_tests.gd` and §10 of the story-energy design already recorded it.
+
+### 11.2 What the role's length actually is — the derivation
+
+Per-span, seed 11, production integration, canonical against the act-one optional swap (metres, m/s):
+
+| block (spans) | s | canonical arc / drop | swap arc / drop |
+| --- | --- | --- | --- |
+| commit — outward-bank, face-approach, outward-release, commit | 3.684 | 64.111 / +0.258 | 74.038 / −0.005 |
+| fall — vertical-entry, core | 3.404 | 112.248 / −108.397 | 118.578 / −111.628 |
+| pull-out — pullout, pullout-release | 4.640 | 299.602 / −139.338 | 304.811 / −135.791 |
+| **role total** | **11.728** | **475.960 / −247.477** | **497.427 / −247.423** |
+
+Two facts fall out, and they decide the stage:
+
+1. **Both stories fall the same cliff, to 5.4 cm.** The role's drop is −247.48 m canonical and −247.42 m
+   swapped, both inside the declared `height_delta_m` band of −250…−240 m and inside the story's
+   0.85–0.93 × relief. The 21.5 m the swap adds is **not** cliff geometry, and no terrain quantity moves.
+2. **The role's length is a rim-speed budget, not a cliff-geometry one.** 63% of it (299.6 m of 476.0 m)
+   is the 4.64 s pull-out block run at 49–70 m/s; the whole role is authored time × speed. The swap
+   arrives at the rim at **20.996 m/s against canonical's 18.565 m/s**, and every one of the eight spans
+   runs proportionally longer — +2.0, +2.7, +2.2, +3.0, +4.5, +1.8, +2.4, +2.9 m, no span carrying the
+   miss. **8.83 m of role length per m/s of rim speed**, measured between the two stories.
+
+So the declared 490 m ceiling, read through that sensitivity, is a statement about the fastest rim entry
+the story may have: canonical's 13.456 m of headroom is **+1.524 m/s of rim speed**. The swap arrives
+**+2.431 m/s** hotter — 0.91 m/s past what the band permits. **The band is not the falsehood and neither is
+the arc. Both are honest reports of what they measure.**
+
+### 11.3 What `dive_approach_s` can actually return
+
+The approach span returns arc at the local rim speed: on seed 11 the 1.00 s span itself builds 17.625 m of
+arc canonically and 20.334 m swapped. The *net* rate, after the commit geometry re-settles around the
+shorter span, is lower and is what matters — measured on the swap, the role runs **497.427 m at 1.00 s and
+494.263 m at 0.80 s**, i.e. **15.82 m of arc per second of approach** (§10.4 of the story-energy design
+measured the same slope further down the range: 497.1 → 490.8 → 487.6 m at 1.00 / 0.60 / 0.40 s, the
+control's own floor). To put the swap under the bare 490 m ceiling needs 0.47 s of the control's 0.60 s of
+range; to put it under a 490 − 5 m aim ceiling needs **0.79 s**, i.e. an approach of 0.21 s — **outside the
+control's own 0.40 s floor**. The residual's absorber is 0.19 s short of the job before anything downstream
+is even consulted, and the four controls together cannot make it up: the solve's own 204 evaluations
+across the four swap seeds never observe an arc below **485.548 m** anywhere in the control box.
+
+### 11.4 And every metre it does return is re-spent, at a loss
+
+`dive_approach_s` pinned, act-one optional swap, four seeds, full build through the route contract:
+
+| approach s | seed 11 | seed 42 | seed 20260809 | seed 4096 |
+| --- | --- | --- | --- | --- |
+| 1.00 (authored) | return converges (34 evals); dive **497.427**, turn-b **572.590**, height-a 308.4; route **refused** on dive + turn-b | return **budget_exhausted** 79/80 | return **budget_exhausted** 79/80 | converges (42); dive **497.457**, turn-b **571.228**, height-a 290.06; route **refused** on dive + turn-b |
+| 0.80 | converges (42); dive **494.263**, turn-b **619.400**, height-a **285.820**; route refused on *three* roles | budget_exhausted | budget_exhausted | budget_exhausted |
+| 0.60 | **budget_exhausted** | budget_exhausted | budget_exhausted | budget_exhausted |
+| 0.40 | plan **refused**: the accepted closure changes the yaw solution | budget_exhausted | — | — |
+
+Read the seed-11 row: 0.20 s of approach buys **3.164 m** of dive arc and costs **+46.810 m of
+`return-turn-b`** and **−22.595 m of `return-height-a`**, taking height-a through its own 290 m floor — the
+return's answer to the moved camelback handoff costs an order of magnitude more geometry than the metres
+returned. Another 0.20 s stops the return converging at all; another 0.20 s after that flips the yaw
+branch and the plan refuses before the solve is reached. Route length is *not* what is binding: on every
+converged swap case the total sits at 8198.76–8198.80 m, and on the short-approach refusals the length
+residual is exactly **0.0** while the geometric residuals blow up. §8.5's "no seed creates metres" was
+right; its conclusion that the prefix could create them was not — **the prefix can, and the return spends
+them re-closing a handoff that moved because they were created.**
+
+### 11.5 Built and run
+
+Fifth residual `dive_arc_m`, observed as `distance_m[last+1] − distance_m[first]` over the `cliff-dive`
+gesture (the same window `route_contract.gd:_validate_role_lengths` measures), scale 5.0, aim band = the
+declared role band inset by a margin, `PREFIX_CONTROL_*`, `MAX_PREFIX_EVALUATIONS` and the other four
+residuals untouched:
+
+- **Canonical is bit-identical, 15/15**, at a 5 m margin (aim band 355–485 m): every accepted control
+  vector, every role length, every route total and every return evaluation count matches the unmodified
+  build byte for byte. The mechanism is the one `RETURN_LENGTH_AIM_MARGIN_M` uses — every canonical
+  observation is strictly interior, `_band_residual` is exactly `0.0` there, and a zero Jacobian row adds
+  exactly `0.0` to `JᵀJ` and `Jᵀr`. Coarse/fine agreement on the new channel is **0.0014 m** (a 0.05 m
+  tolerance would have been ample), so nothing about the plumbing is marginal.
+- **The swap refuses 4/4 at the prefix closure** at that margin, where today it plans 4/4 and compiles
+  2/4 — strictly worse in kind, the same outcome the story-energy re-target produced.
+- At a **3 m** margin (aim ceiling 487 m — below which the swap's own arc floor of 485.5 m cannot reach),
+  the closure converges on seeds 42 and 20260809, delivering the dive at **487.02 / 487.01 m** with
+  `dive_approach_s` at 0.401 / 0.410 — and **both then budget-exhaust their return at 79/80 anyway**,
+  while seeds 11 and 4096 still refuse at the closure. Delivering the dive inside its band does not buy
+  the swap a build.
+
+Under §7's standing rule — buys nothing measurable → it does not land — no code lands. The refusal is
+recorded at the band's ship-once home in `generator.gd`, next to the `outward-dive` role.
+
+### 11.6 What this refuses, and what it names
+
+- **Refused:** the dive-arc residual, and with it the whole "the swap's wall is prefix-side role length"
+  reading in §8.5 of the return-seed design, in §10.4 of the story-energy design, and in `docs/ISSUES.md`.
+  All three are corrected in the same commit.
+- **Refused with them:** re-deriving the 350–490 m band. Even with the dive band widened past 497.5 m the
+  swap still fails `return-turn-b` (571.2 / 572.6 m against 430–570) on the two seeds whose returns
+  converge, and seeds 42 / 20260809 never reach the route contract at all. Widening buys two seeds a build
+  and neither of the two the acceptance named — and it would be fitting a declared band to one story.
+- **What the evidence names instead.** The swap's wall is the *geometric* camelback handoff — pulled back
+  32–66 m, +12–13 m higher, 3.5–5.1° in yaw — and the four closure controls are all durations downstream of
+  act one, so they cannot pin six DOF (§2 said as much about heading and it generalises). Every honest
+  next spend is on that: either **head-domain accommodation** (a control upstream of act one, paying head
+  re-integration per evaluation — measure that cost before choosing, §5's correction), or a **prefix
+  residual on the handoff pose itself** rather than on the dive's own span, which needs more controls than
+  four. Neither is a residual on the dive.
+- **Untouched and still true:** `MAX_PREFIX_EVALUATIONS := 52` (no change was needed or made), the four
+  landed residuals, the fleet margins, and issue 22's rim aim.

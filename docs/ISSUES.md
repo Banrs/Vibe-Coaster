@@ -132,9 +132,44 @@ role's declared 290–480 m band, so the role band binds below the floor and the
 *above* today's value, never below it. The remaining wall the same measurement named is prefix-side
 role length: under the swap `outward-dive` runs 497.4–497.5 m against its 350–490 m band on **every**
 seed while the closure accepts `PREFIX_SEED` unchanged, so those 21 m are prefix geometry, "not a
-control choice or a return seed". Spend there — the dive-arc residual, `dive_approach_s` returning
-route metres — which is also where the swap's length accounting has to be paid, since neither a seed
-nor a return-side bound creates metres.
+control choice or a return seed". ~~Spend there — the dive-arc residual, `dive_approach_s` returning
+route metres~~ — **that spend was taken and refused by its own measurement (2026-08-16); see the next
+entry. The role overrun is real, but it is a symptom of the handoff, not the wall, and the metres it
+would return are not what the swap is short of.**
+
+**Dive-arc residual refused by measurement (2026-08-16), and the "prefix-side role length" reading
+with it.** Third refusal in a row, and like the other two it was built and run rather than argued
+about. Corrections first: **canonical does not overrun its dive band.** It builds `outward-dive` at
+**475.604–476.544 m** on all fifteen seeds (475.640–476.721 m across every closure observation the
+fleet makes), inside the declared 350–490 m band with 13.456 m of headroom, so there was never a
+canonical re-baseline to declare. 497.4–497.5 m is the swap's number alone.
+Measured per span (seed 11, production integration), the role's length is a **rim-speed budget, not a
+cliff-geometry one**: 63% of it is the 4.64 s pull-out run at 49–70 m/s, the swap stretches all eight
+spans proportionally (**8.83 m of role length per m/s of rim entry speed**), and both stories fall the
+same cliff to **5.4 cm** (−247.48 m against −247.42 m, both inside the declared −250…−240 m). So the
+13.456 m of headroom *is* +1.524 m/s of rim speed, and the swap's +2.431 m/s is 0.91 m/s past it.
+The residual itself: aim band = the declared role band inset by a margin, four controls and
+`MAX_PREFIX_EVALUATIONS := 52` untouched. **Canonical is bit-identical 15/15** (every observation
+strictly interior, `_band_residual` exactly 0.0 there, coarse/fine agreement 0.0014 m) and **the swap
+refuses 4/4 at the prefix closure**, where today it plans 4/4. Its only absorber returns ≈ 15.8 m of
+arc per second of `dive_approach_s`, so the swap needs 0.79 s of that control's 0.60 s of range — and
+at a margin small enough to be reachable (3 m), seeds 42 and 20260809 *do* close the dive at
+487.0 m and **still budget-exhaust their return at 79/80**. Worse, every metre the approach returns is
+re-spent at a loss: pinning the approach at 0.80 s buys seed 11 3.164 m of dive arc and costs
+**+46.810 m of `return-turn-b`** and −22.595 m of `return-height-a` (through its 290 m floor); at
+0.60 s seed 11's return stops converging; at 0.40 s the plan refuses because the accepted closure flips
+the yaw solution. Route length was never what bound: every converged swap case sits at
+8198.76–8198.80 m and the short-approach refusals carry a length residual of exactly 0.0.
+Widening the band instead is refused too — even past 497.5 m the swap still fails `return-turn-b`
+(571.2 / 572.6 m against 430–570) on the two seeds whose returns converge, and 42 / 20260809 never
+reach the route contract. **What the evidence names instead:** the swap's wall is the *geometric*
+camelback handoff (pulled back 32–66 m, +12–13 m higher, 3.5–5.1° in yaw), and all four closure
+controls are durations downstream of act one, so they cannot pin six DOF. The honest spends are
+head-domain accommodation (a control upstream of act one — measure the head re-integration cost first)
+or a prefix residual on the handoff pose, which needs more than four controls. Neither is a residual on
+the dive. Full derivation, the pinned-approach matrix and the built-and-run result:
+`docs/superpowers/specs/2026-08-15-prefix-closure-solve-design.md` §11; the refusal is also recorded at
+the band's own home in `generator.gd`'s `outward-dive` role.
 
 ### Decisions — 2026-08-15 review session
 
@@ -307,6 +342,21 @@ below); these seven are **not** covered by the audit's traceability record.
     a prefix-side stage that can be taken on its own evidence: what remains to prove is the
     dive's *geometry* at a shorter approach, not the return's ability to follow it. A gate
     still holds the closure from ever lengthening the approach (fleet 0.996–1.000 s).
+    **What remains, priced 2026-08-16.** The shortening was not taken this session, and the
+    dive-arc work that would have taken it was refused (see *Next session*). What that stage
+    measured about this half, on the canonical path, still stands and is now quantified:
+    `dive_approach_s` is worth **17.625 m of arc per second** at the canonical rim speed
+    (seed 11: the 1.00 s approach span builds 17.625 m of the role's 475.960 m), and the whole
+    commit block — bank-in, approach, bank-out, commit — is 3.684 s and 64.111 m with just
+    +0.258 m of net rise, so it is exactly the flat banked run issue 22 objects to. Shortening
+    it on canonical is a **re-baseline**, not a feasibility question: the return follows
+    (45/45 at 0.80–0.90, §8.1 of the return-seed design) and the dive band has 13.456 m of
+    headroom that a shorter approach only widens. What is still unproven is the one thing the
+    issue is about — the dive's *geometry* at a shorter approach: whether the commit still
+    reaches the face before the vertical entry begins, and whether `dive_edge_span_m` stays
+    inside its aim band without the closure walking the entry back off the rim it was just
+    aimed at (at 0.40 s on the swapped story the accepted closure flipped the yaw solution
+    outright, which is the failure mode to watch for). Measure that before spending the margin.
 23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
     it should not have. The elements hit their force targets while their shapes are visibly
     wrong. Extends 7 beyond inversions and supports to the marquee elements.
@@ -324,6 +374,22 @@ below); these seven are **not** covered by the audit's traceability record.
     — 20, 23 and 25 are plausibly symptoms of it. **Now the recommended next work**, with a
     named first step: the prefix closure solve. See *Next session — start here* for the three
     measured refusals that converge on it.
+    **Still open, and its remaining half now has a measured name (2026-08-16).** The closure
+    solve landed and absorbs tail-domain changes; act-one *permutation* draw certification is
+    still blocked and this entry does not close. Three candidate unblocks have now been built
+    and refused on their own measurements — the return-seed derivation, the story-energy
+    re-target, and the dive-arc residual — and all three failed the same way: they moved a
+    scalar the swap is not actually short of. Measured before/after for the act-one optional
+    swap, unchanged across all three attempts: it **plans 15/15** and **builds 0/15**; on the
+    four gated seeds the returns of 11 and 4096 converge (34 and 42 evaluations) and are then
+    refused by the route contract on `outward-dive` 497.4 / 497.5 m and `return-turn-b` 572.6 /
+    571.2 m, while 42 and 20260809 budget-exhaust their return at 79/80 with
+    `height_a_recovery_duration_s` pinned at its floor. The invariant behind all of it: the
+    swapped act one hands the camelback a handoff pulled back 32–66 m, +12–13 m higher and
+    3.5–5.1° in yaw, and the four closure controls are all durations *downstream* of act one,
+    so they cannot pin six DOF. The next attempt has to add degrees of freedom upstream of the
+    handoff — head-domain accommodation or a handoff-pose residual with more than four controls
+    — not re-aim an existing one.
 25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
     with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
     is missing.

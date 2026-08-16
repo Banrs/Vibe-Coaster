@@ -193,16 +193,24 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 ##     replaces both with a metre of interior, on the same 42 and 34 evaluations. Seeds 42 and
 ##     20260809 still exhaust the budget at 79 of 80, both pinned on the
 ##     `height_a_recovery_duration_s` floor, with length residuals 2.1 m and 5.1 m past the ceiling.
-##   The prefix half is the wall, and it is out of this design's scope. Under the swap the whole
-##     prefix is seed-independent to three decimals and `outward-dive` runs 497.43-497.46 m against
-##     its declared 350-490 m band on *every* seed, against 475.6-476.5 m canonically. The closure
-##     accepts `PREFIX_SEED` unchanged on all four seeds, so those 21 m are not a control choice:
-##     the swapped act one hands the clifftop a faster state and the fixed-duration dive spans
-##     simply cover more ground. No return-side spend creates or destroys them, which is also the
-##     answer to that design's third spend: the swap's own arc is +3.1 to +5.4 m and its handoff is
-##     pulled back 32-66 m, so the story asks for more route than 8200 m has, and seed 42's return
-##     is 8.6 m short of closing inside it. `role-length overruns on a reordered act one` is a
-##     prefix-geometry cycle, not this one.
+##   The prefix half looked like the wall and is not - re-measured 2026-08-16, corrected here.
+##     Under the swap the whole prefix is seed-independent to three decimals and `outward-dive`
+##     runs 497.43-497.46 m against its declared 350-490 m band on *every* seed, against
+##     475.604-476.544 m canonically (canonical never overran it: 13.456 m of headroom, and
+##     475.640-476.721 m across every closure observation the fleet makes). The closure accepts
+##     `PREFIX_SEED` unchanged on all four seeds, so those 21 m are not a control choice - but they
+##     are not the blocker either. Measured per span, the role's length is a rim-speed budget: 63%
+##     of it is the 4.64 s pull-out at 49-70 m/s, both stories fall the same cliff to 5.4 cm, and
+##     the swap's +2.431 m/s of rim speed stretches all eight spans at 8.83 m per m/s. A fifth
+##     closure residual on that arc was built and run (2026-08-16): canonical stays bit-identical
+##     15/15 and the swap goes from planning 4/4 to refusing 4/4, so it did not land. Its only
+##     absorber returns ~15.8 m of arc per second of `dive_approach_s`, and pinning that shorter
+##     costs more than it buys - seed 11 at 0.80 s gains 3.164 m of dive and pays +46.810 m of
+##     `return-turn-b` and -22.595 m of `return-height-a`, through that role's 290 m floor. Route
+##     length was never binding on the seeds that place: every converged swap case sits at
+##     8198.76-8198.80 m and every short-approach refusal carries a length residual of exactly 0.0.
+##     The wall is the geometric camelback handoff, and four duration controls downstream of act
+##     one cannot pin six DOF - see section 11 of the prefix-closure design.
 ##   Section 5.4's expectation that residual 4 absorbs the handoff shift stays half true as
 ##     measured: the record exit speed is pinned (+0.51 to +0.83 m/s inside its band on every
 ##     placed story), the geometric handoff is not.

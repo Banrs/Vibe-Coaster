@@ -2,6 +2,8 @@ extends SceneTree
 
 const Motion := preload("res://motion.gd")
 const RideProgram := preload("res://ride_program.gd")
+const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
+const RideReturnSolve := preload("res://ride_return_solve.gd")
 const RideGenerator := preload("res://generator.gd")
 const CAPTURE_MARGIN_IDS := [
 	"coefficient_margin",
@@ -24,6 +26,32 @@ const CAPTURE_HALF_WIDTH_M := 150.0
 const CAPTURE_HALF_HEIGHT_M := 75.0
 const CAPTURE_RESIDUAL_LIMITS := [0.05, 0.05, 0.00001, 0.00001, 0.00001]
 const CAPTURE_COARSE_RESIDUAL_LIMITS := [0.075, 0.075, 0.0001, 0.0001, 0.0001]
+## The aim bands the closure tests build around the untargeted footprint's own measurements:
+## tight enough that "targeting today's geometry" means today's geometry, wide enough to hold
+## the published tunnel exit's pre-seam sample offset. The record band is a real interior band
+## of the smoke-gated 93.9-95.6 m/s record.
+const PREFIX_SPAN_AIM_TOLERANCE_M := 3.0
+const PREFIX_SUMMIT_AIM_TOLERANCE_M := 2.0
+const PREFIX_RECORD_AIM_BAND_MPS := Vector2(94.2, 95.3)
+## The fifth closure residual's aim band for these fixtures. Deliberately wide: these prefixes are
+## built on synthetic frames, not on the production placement, so their dive arc is not the
+## production role's and a tight band would test the fixture rather than the solve. The fleet
+## measurement of this residual is `generator_material_tests.gd` and `smoke.gd`, on the production
+## band; here it is declared, satisfied and inert, which is what keeps the other four honest.
+const PREFIX_ARC_AIM_BAND_M := Vector2(200.0, 900.0)
+const PREFIX_DISPLACED_RECORD_BAND_MPS := Vector2(95.05, 95.45)
+const PREFIX_DISPLACED_SPAN_AIM_TOLERANCE_M := 12.0
+const PREFIX_DISPLACED_SUMMIT_AIM_TOLERANCE_M := 8.0
+## What these pin: `terrain_story_capability` called without a closure target must stay
+## byte-identical, so an unsolved prefix - every fixture, and the seed every closure starts from -
+## is exactly the authored one. Re-baselined once when production adopted the closure solve: the
+## published footprint gained `tunnel_exit_step_m`, the one production step between the residual's
+## terminal tunnel sample and the pre-seam sample placement consumes. A change here is a
+## re-baseline, never a nudge.
+const PREFIX_CAPABILITY_DIGEST := {
+	-1: "7c7c20d8539f3924916218e7ccc5ea03344f766c910c4ba2d1fb2d18b48fe3b6",
+	1: "076e644f7863687173f17913d473e78828b481fca6b1cee1b12ca049faa5167a",
+}
 var _errors := PackedStringArray()
 
 
@@ -39,6 +67,13 @@ func _initialize() -> void:
 	_test_malformed_capture_is_structured()
 	_test_impossible_capture_is_bounded_without_fallback()
 	_test_nonfinite_capture_margin_is_rejected()
+	_test_return_solve_stays_inside_its_derived_budget()
+	_test_untargeted_prefix_capability_is_unchanged()
+	_test_prefix_closure_solve_targets_todays_geometry()
+	_test_prefix_closure_solve_moves_the_record_handoff()
+	_test_infeasible_prefix_closure_is_structured()
+	_test_prefix_closure_solve_accepts_non_axis_aligned_outward_local()
+	_test_prefix_closure_solve_converges_on_a_drawn_story()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -62,12 +97,12 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			"station_tangent": Vector3.RIGHT, "station_up": Vector3.UP,
 			"reserved_corridor": {"minimum_length_m": 230.0,
 				"capture_length_m": 80.0, "brake_length_m": 150.0,
-				"entry_speed_mps": Vector2(70.0, 77.0)}}
-		var solved := RideProgram._solve_brakes(start, layout)
+				"entry_speed_mps": Vector2(70.0, 80.0)}}
+		var solved := RideReturnSolve._solve_brakes(start, layout)
 		if not _expect(solved.get("ok", false),
 				"the %s brake owner consumes its full distance: %s" % [fixture.id, str(solved)]):
 			continue
-		var repeated := RideProgram._solve_brakes(start, layout)
+		var repeated := RideReturnSolve._solve_brakes(start, layout)
 		_expect(var_to_bytes(solved) == var_to_bytes(repeated),
 			"the %s brake solve is byte-identical" % fixture.id)
 		var parts := _terminal_program_parts(solved.get("spans", []))
@@ -96,9 +131,9 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			and absf(float(full.speed_mps[-1]) - 1.0) <= 0.001,
 			"the %s terminal reaches station at 1 m/s" % fixture.id)
 		var values: Variant = report.get("accepted_values")
-		_expect(report.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.0]]
+		_expect(report.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
 			and parts.hold_duration_s >= 0.5 and parts.hold_duration_s <= 5.0
-			and parts.peak_g >= 0.0 and parts.peak_g <= 3.0,
+			and parts.peak_g >= 0.0 and parts.peak_g <= 3.6,
 			"the %s authored hold and peak satisfy the literal recipe bounds" % fixture.id)
 		_expect(values is Array and values.size() == 2
 			and absf(float(values[0]) - parts.hold_duration_s) <= 0.000001
@@ -336,11 +371,11 @@ func _test_station_local_program_compiles() -> void:
 	var brake: Dictionary = compiled.get("brake_plan", {})
 	_expect(brake.get("positive_drive_allowed", true) == false,
 		"the brake plan forbids positive drive")
-	_expect(brake.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.0]]
+	_expect(brake.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
 		and float(brake.get("hold_duration_s", -1.0)) >= 0.5
 		and float(brake.get("hold_duration_s", 6.0)) <= 5.0
 		and float(brake.get("brake_peak_g", -1.0)) >= 0.0
-		and float(brake.get("brake_peak_g", 4.0)) <= 3.0
+		and float(brake.get("brake_peak_g", 4.0)) <= 3.6
 		and _finite_number(brake.get("distance_residual_m"))
 		and absf(float(brake.distance_residual_m)) <= 0.05,
 		"the public brake reports a bounded hold/peak and closed distance residual")
@@ -383,7 +418,7 @@ func _test_capture_accepts_varied_station_frames() -> void:
 	]
 	var settings: Dictionary = RideProgram._settings(0.025)
 	for fixture: Dictionary in fixtures:
-		var solved: Dictionary = RideProgram._solve_capture(
+		var solved: Dictionary = RideReturnSolve._solve_capture(
 			fixture.state, fixture.layout, settings)
 		if not _expect(solved.get("ok", false),
 				"capture accepts the %s fixture: %s" % [fixture.id, str(solved)]):
@@ -426,7 +461,7 @@ func _capture_fixture(
 		"station_position_m": station, "station_tangent": forward, "station_up": up,
 		"reserved_corridor": {"minimum_length_m": 230.0,
 			"capture_length_m": 80.0, "brake_length_m": 150.0,
-			"entry_speed_mps": Vector2(70.0, 77.0)},
+			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"capture_half_width_m": CAPTURE_HALF_WIDTH_M,
 		"capture_half_height_m": CAPTURE_HALF_HEIGHT_M,
 	}, "state": {
@@ -450,7 +485,7 @@ func _integrated_capture_residuals(
 	fixture: Dictionary, coefficients: Array, step_s: float
 ) -> Dictionary:
 	var route: Dictionary = Motion.integrate(fixture.state,
-		RideProgram._capture_spans(coefficients), RideProgram._settings(step_s))
+		RideReturnSolve._capture_spans(coefficients), RideProgram._settings(step_s))
 	if not route.get("ok", false):
 		return {"ok": false, "errors": route.get("errors", [])}
 	var terminal := Motion.sample_time(route, float(route.time_s[-1]))
@@ -479,7 +514,7 @@ func _return_observations_are_equivalent(actual: Variant, expected: Variant) -> 
 		var field: String = fields[index]
 		if not _finite_number(actual.get(field)) or not _finite_number(expected.get(field)) \
 				or absf(float(actual[field]) - float(expected[field])) \
-				> 0.04 * float(RideProgram.RETURN_RESIDUAL_SCALES[index]):
+				> 0.04 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[index]):
 			return false
 	return true
 
@@ -489,7 +524,7 @@ func _test_malformed_capture_is_structured() -> void:
 		75.4847075745055, 209.0, -0.09809875488281, 0.00093841552734,
 		-0.012743739647, -0.0021031915, -28.5617102)
 	fixture.layout["capture_seed"] = [0.0, 0.0, 0.0, 0.0]
-	var solved := RideProgram._solve_capture(fixture.state, fixture.layout,
+	var solved := RideReturnSolve._solve_capture(fixture.state, fixture.layout,
 		RideProgram._settings(0.025))
 	_expect_capture_failure(solved, 0, 0, "a malformed capture seed fails before evaluation")
 
@@ -499,7 +534,7 @@ func _test_impossible_capture_is_bounded_without_fallback() -> void:
 		75.4847075745055, 209.0, -0.09809875488281, 0.00093841552734,
 		-0.012743739647, -0.0021031915, -28.5617102)
 	fixture.layout["capture_half_width_m"] = -1.0
-	var solved := RideProgram._solve_capture(fixture.state, fixture.layout,
+	var solved := RideReturnSolve._solve_capture(fixture.state, fixture.layout,
 		RideProgram._settings(0.025))
 	_expect_capture_failure(solved, 1, 40,
 		"an impossible negative-width capture corridor fails within the evaluation budget", true)
@@ -510,10 +545,295 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 		75.4847075745055, 209.0, -0.09809875488281, 0.00093841552734,
 		-0.012743739647, -0.0021031915, -28.5617102)
 	fixture.layout["capture_half_width_m"] = NAN
-	var solved := RideProgram._solve_capture(fixture.state, fixture.layout,
+	var solved := RideReturnSolve._solve_capture(fixture.state, fixture.layout,
 		RideProgram._settings(0.025))
 	_expect_capture_failure(solved, 1, 40,
 		"a nonfinite capture margin is rejected before a plan can be accepted", true)
+
+
+## The fast half of the return budget claim; the cap's derivation lives at
+## `RideReturnSolve.MAX_RETURN_EVALUATIONS`. Measured on the design's five-seed set (the three deep
+## seeds plus 1 and 123456) rather than all fifteen: each seed costs a full compile, and the
+## sweep seeds add minutes here without adding a new solve regime. `smoke.gd` carries the
+## fifteen-seed half inside the builds it already pays for.
+func _test_return_solve_stays_inside_its_derived_budget() -> void:
+	_expect(RideReturnSolve.MAX_RETURN_EVALUATIONS == 88,
+		"the return evaluation cap is the derived 88, not %d"
+		% RideReturnSolve.MAX_RETURN_EVALUATIONS)
+	var allowance := int(0.6 * RideReturnSolve.MAX_RETURN_EVALUATIONS)
+	for seed_value in [11, 42, 20260809, 1, 123456]:
+		var decisions := RidePlanner.resolve(seed_value)
+		var plan := RideGenerator._plan(
+			RideTerrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN]), decisions)
+		if not _expect(not plan.has("ok") or plan.ok, "seed %d plans" % seed_value):
+			continue
+		var compiled := RideProgram.compile(plan, RideGenerator._initial_state(plan.station))
+		if not _expect(compiled.get("ok", false),
+				"seed %d compiles: %s" % [seed_value, str(compiled.get("failure", {}))]):
+			continue
+		var report: Dictionary = compiled.get("return_plan", {})
+		var evaluations := int(report.get("unique_evaluations", -1))
+		print("return solve seed %d: %d evaluations, %d iterations, status %s" % [seed_value,
+			evaluations, int(report.get("solver_iterations", -1)),
+			str(report.get("solver_status", "missing"))])
+		_expect(evaluations >= 1 and evaluations <= allowance
+			and report.get("max_unique_evaluations") == RideReturnSolve.MAX_RETURN_EVALUATIONS,
+			"seed %d spends %d return evaluations, over the %d fleet allowance"
+			% [seed_value, evaluations, allowance])
+		_expect_return_closes_interior(seed_value, report)
+		_expect_compiled_prefix_matches_plan(seed_value, plan, compiled)
+
+
+## What `RETURN_LENGTH_AIM_MARGIN_M` buys, read off the accepted point: an accepted return sits
+## interior to its route-length band by construction rather than converging onto the 8200 m ceiling
+## and being refused there. Both halves are checked, because the aim margin shapes the *residual*
+## only - the published margins must still measure the outer band, or acceptance would have moved
+## with the aim and the ride would be gated against a band it was never built to.
+func _expect_return_closes_interior(seed_value: int, report: Dictionary) -> void:
+	var margins: Dictionary = report.get("margins", {})
+	var high := float(margins.get("route_length_high_m", NAN))
+	var low := float(margins.get("route_length_low_m", NAN))
+	var aim := RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M
+	_expect(low >= aim and high >= aim,
+		"seed %d closes %.4f m above and %.4f m below its route-length band; the aim is %.2f m"
+		% [seed_value, low, high, aim])
+	var total := float(report.get("fine_observation", {}).get("route_total_length_m", NAN))
+	_expect(absf(high + total - RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y) <= 0.000001,
+		"seed %d still measures its accepted %.4f m against the outer %.1f m ceiling"
+		% [seed_value, total, RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y])
+
+
+## The threading the closure needs to mean anything: `compile` must build the production span
+## program from the plan's own accepted controls, or the ride would be built from `PREFIX_SEED`
+## while the generator placed the solved footprint. Read off the built spans, not the call site.
+func _expect_compiled_prefix_matches_plan(
+	seed_value: int, plan: Dictionary, compiled: Dictionary
+) -> void:
+	var accepted: Array = plan.terrain_frame.planning.closure.accepted_values
+	var flex_span_ids := ["climb/powered-core", "climb/pull-over", "rim/slow-crest-core",
+		"dive/face-approach"]
+	var built := []
+	for span: Dictionary in compiled.spans:
+		var index := flex_span_ids.find(str(span.span_id))
+		if index >= 0:
+			built.resize(maxi(built.size(), index + 1))
+			built[index] = float(span.duration_s)
+	var matches := built.size() == accepted.size()
+	for index in mini(built.size(), accepted.size()):
+		matches = matches and absf(float(built[index]) - float(accepted[index])) <= 0.000000001
+	_expect(matches, "seed %d builds its prefix from the accepted closure %s, not %s"
+		% [seed_value, str(accepted), str(built)])
+
+
+func _test_untargeted_prefix_capability_is_unchanged() -> void:
+	for side in [-1, 1]:
+		var context := HashingContext.new()
+		context.start(HashingContext.HASH_SHA256)
+		context.update(var_to_bytes(RideProgram.terrain_story_capability(side)))
+		_expect(context.finish().hex_encode() == PREFIX_CAPABILITY_DIGEST[side],
+			"the untargeted station_side %d capability still hashes to its pinned digest" % side)
+
+
+func _test_prefix_closure_solve_targets_todays_geometry() -> void:
+	var untargeted := RideProgram.terrain_story_capability(1)
+	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+		return
+	var target := _closure_target(untargeted, 1, PREFIX_RECORD_AIM_BAND_MPS)
+	var solved := RideProgram.terrain_story_capability(1, {}, target)
+	if not _expect(solved.get("ok", false),
+			"the prefix closes on today's own geometry: %s" % str(solved.get("failure", {}))):
+		return
+	_expect_closure_report(solved.get("closure_plan", {}), "today's geometry")
+	_expect(absf(float(solved.dive_footprint.outward_delta_m)
+			- float(untargeted.dive_footprint.outward_delta_m))
+			<= float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[0]),
+		"closing on today's own bands leaves the published footprint where it was")
+
+
+func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
+	var untargeted := RideProgram.terrain_story_capability(1)
+	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+		return
+	var target := _closure_target(untargeted, 1, PREFIX_DISPLACED_RECORD_BAND_MPS,
+		PREFIX_DISPLACED_SPAN_AIM_TOLERANCE_M, PREFIX_DISPLACED_SUMMIT_AIM_TOLERANCE_M)
+	var solved := {}
+	for side in [-1, 1]:
+		solved[side] = RideProgram.terrain_story_capability(side, {}, target)
+		_expect(solved[side].get("ok", false),
+			"station_side %d closes its prefix on a displaced record band: %s"
+			% [side, str(solved[side].get("failure", {}))])
+	if not solved[-1].get("ok", false) or not solved[1].get("ok", false):
+		return
+	var report: Dictionary = solved[1].get("closure_plan", {})
+	_expect_closure_report(report, "displaced record band")
+	var left: Array = solved[-1].get("closure_plan", {}).get("accepted_values", [])
+	var right: Array = report.get("accepted_values", [])
+	var identical := left.size() == RidePrefixSolve.PREFIX_CONTROL_IDS.size() \
+		and right.size() == RidePrefixSolve.PREFIX_CONTROL_IDS.size()
+	for index in mini(left.size(), right.size()):
+		identical = identical and absf(float(left[index]) - float(right[index])) <= 0.000000001
+	_expect(identical, "both hands solve to one control vector to 1e-9: %s against %s"
+		% [str(left), str(right)])
+	var a: Dictionary = solved[-1].role_13_entry
+	var b: Dictionary = solved[1].role_13_entry
+	_expect(absf(a.offset_m.x - b.offset_m.x) <= 0.05
+		and absf(a.offset_m.y - b.offset_m.y) <= 0.05
+		and absf(a.offset_m.z + b.offset_m.z) <= 0.05
+		and absf(float(solved[-1].dive_footprint.outward_delta_m)
+			- float(solved[1].dive_footprint.outward_delta_m)) <= 0.05,
+		"the solved footprint keeps the 0.05 m hand mirror")
+	var fine: Array = report.get("fine_observation", [])
+	var record_mps: float = float(fine[3]) \
+		if fine.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size() else NAN
+	_expect(int(report.get("unique_evaluations", 0)) > 1
+		and record_mps >= PREFIX_DISPLACED_RECORD_BAND_MPS.x
+			- float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[3])
+		and record_mps <= PREFIX_DISPLACED_RECORD_BAND_MPS.y
+			+ float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[3]),
+		"the solve spends evaluations to move the record handoff to %.3f m/s" % record_mps)
+
+
+func _test_infeasible_prefix_closure_is_structured() -> void:
+	var untargeted := RideProgram.terrain_story_capability(1)
+	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+		return
+	var target := _closure_target(untargeted, 1, PREFIX_RECORD_AIM_BAND_MPS)
+	target["summit_rise_m"] = Vector2(600.0, 620.0)
+	var refused := RideProgram.terrain_story_capability(1, {}, target)
+	_expect(not refused.get("ok", true),
+		"a summit rise no climb can reach refuses the prefix instead of approximating it")
+	var failure: Dictionary = refused.get("failure", {})
+	_expect(failure.get("stage", "") == "prefix-closure",
+		"the refusal names the prefix-closure stage: %s" % str(failure))
+	_expect(failure.has("accepted_values") and failure.has("target_error")
+		and failure.has("margins") and failure.has("solver_status"),
+		"the refusal carries its accepted values, residuals and margins: %s" % str(failure))
+	_expect(int(failure.get("evaluation_count", -1)) >= 1
+		and int(failure.get("evaluation_count", -1)) <= RidePrefixSolve.MAX_PREFIX_EVALUATIONS,
+		"the refusal spends no more than the derived evaluation cap")
+	_expect(not _contains_fallback_or_repair_field(refused),
+		"the refused prefix offers no fallback or repair field")
+
+
+## Every other closure test's target carries the default `outward_local` (the station's own
+## outward, already a unit axis), so `_solve_prefix_closure`'s `axis = axis.normalized()` line
+## never runs on anything but a no-op. This one supplies a rotated, non-unit axis instead -
+## 30 degrees off outward in the horizontal plane, length 1.7 - and still expects convergence,
+## so the normalization path is actually exercised.
+func _test_prefix_closure_solve_accepts_non_axis_aligned_outward_local() -> void:
+	var untargeted := RideProgram.terrain_story_capability(1)
+	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+		return
+	var raw_axis := Vector2(sin(deg_to_rad(30.0)), cos(deg_to_rad(30.0))) * 1.7
+	var target := _closure_target_on_axis(untargeted, raw_axis, PREFIX_RECORD_AIM_BAND_MPS)
+	var solved := RideProgram.terrain_story_capability(1, {}, target)
+	if not _expect(solved.get("ok", false),
+			"the prefix closes on a rotated, non-unit outward_local axis: %s"
+			% str(solved.get("failure", {}))):
+		return
+	_expect_closure_report(solved.get("closure_plan", {}), "rotated outward_local")
+
+
+## Every other closure test targets `story = {}` (the canonical undrawn recipe). This one builds
+## the story the way `generator.gd`'s `_plan` does in production - `sequence`/`targets` straight
+## from `RidePlanner.resolve` - and asserts the closure solve still converges within the same
+## fleet budget on a real drawn story, not just the canonical one.
+func _test_prefix_closure_solve_converges_on_a_drawn_story() -> void:
+	var decisions := RidePlanner.resolve(42)
+	var story := {"sequence": decisions.sequence, "targets": decisions.targets}
+	var untargeted := RideProgram.terrain_story_capability(1, story)
+	if not _expect(untargeted.get("ok", false), "the seed 42 drawn-story prefix capability builds"):
+		return
+	var target := _closure_target(untargeted, 1, PREFIX_RECORD_AIM_BAND_MPS)
+	var solved := RideProgram.terrain_story_capability(1, story, target)
+	if not _expect(solved.get("ok", false),
+			"the seed 42 drawn story closes within the same budget: %s"
+			% str(solved.get("failure", {}))):
+		return
+	_expect_closure_report(solved.get("closure_plan", {}), "seed 42 drawn story")
+
+
+## One target serves both hands: every control is a duration and the aim axis is the station's
+## own outward, so the mirrored prefix measures the same four quantities. Deliberately omits
+## `outward_local` so each hand falls back to its own mirrored default axis inside
+## `_solve_prefix_closure` - do not add it here, that is what lets one target serve both `side`
+## values in `_test_prefix_closure_solve_moves_the_record_handoff`.
+func _closure_target(capability: Dictionary, side: int, record_band: Vector2,
+	span_tolerance_m: float = PREFIX_SPAN_AIM_TOLERANCE_M,
+	summit_tolerance_m: float = PREFIX_SUMMIT_AIM_TOLERANCE_M
+) -> Dictionary:
+	var footprint: Dictionary = capability.dive_footprint
+	var entry: Vector3 = capability.role_13_entry.offset_m
+	var dive_exit: Vector3 = footprint.dive_exit_offset_m
+	var tunnel_exit: Vector3 = footprint.tunnel_exit_offset_m
+	var axis := Vector2(0.0, float(side))
+	var dive_span := Vector2(dive_exit.x - entry.x, dive_exit.z - entry.z).dot(axis)
+	var tunnel_span := Vector2(tunnel_exit.x - dive_exit.x, tunnel_exit.z - dive_exit.z).dot(axis)
+	return {
+		"dive_edge_span_m": Vector2(dive_span - span_tolerance_m, dive_span + span_tolerance_m),
+		"tunnel_edge_span_m": Vector2(tunnel_span - span_tolerance_m,
+			tunnel_span + span_tolerance_m),
+		"summit_rise_m": Vector2(entry.y - summit_tolerance_m, entry.y + summit_tolerance_m),
+		"record_exit_speed_mps": record_band,
+		"dive_arc_m": PREFIX_ARC_AIM_BAND_M,
+	}
+
+
+## Single-sided only (unlike `_closure_target`): builds a target around an explicit, possibly
+## non-unit, non-axis-aligned outward axis, normalized the same way `_solve_prefix_closure`
+## normalizes it, so the aim bands are built around the axis the solve will actually project onto.
+func _closure_target_on_axis(capability: Dictionary, raw_axis: Vector2, record_band: Vector2,
+	span_tolerance_m: float = PREFIX_SPAN_AIM_TOLERANCE_M,
+	summit_tolerance_m: float = PREFIX_SUMMIT_AIM_TOLERANCE_M
+) -> Dictionary:
+	var footprint: Dictionary = capability.dive_footprint
+	var entry: Vector3 = capability.role_13_entry.offset_m
+	var dive_exit: Vector3 = footprint.dive_exit_offset_m
+	var tunnel_exit: Vector3 = footprint.tunnel_exit_offset_m
+	var axis := raw_axis.normalized()
+	var dive_span := Vector2(dive_exit.x - entry.x, dive_exit.z - entry.z).dot(axis)
+	var tunnel_span := Vector2(tunnel_exit.x - dive_exit.x, tunnel_exit.z - dive_exit.z).dot(axis)
+	return {
+		"outward_local": raw_axis,
+		"dive_edge_span_m": Vector2(dive_span - span_tolerance_m, dive_span + span_tolerance_m),
+		"tunnel_edge_span_m": Vector2(tunnel_span - span_tolerance_m,
+			tunnel_span + span_tolerance_m),
+		"summit_rise_m": Vector2(entry.y - summit_tolerance_m, entry.y + summit_tolerance_m),
+		"record_exit_speed_mps": record_band,
+		"dive_arc_m": PREFIX_ARC_AIM_BAND_M,
+	}
+
+
+func _expect_closure_report(report: Dictionary, label: String) -> void:
+	_expect(RidePrefixSolve.MAX_PREFIX_EVALUATIONS == 105,
+		"the prefix evaluation cap is the derived 105, not %d"
+		% RidePrefixSolve.MAX_PREFIX_EVALUATIONS)
+	var evaluations := int(report.get("unique_evaluations", -1))
+	var allowance := int(0.6 * RidePrefixSolve.MAX_PREFIX_EVALUATIONS)
+	print("prefix closure (%s): %d evaluations, status %s, controls %s, fine %s" % [label,
+		evaluations, str(report.get("solver_status", "missing")),
+		str(report.get("accepted_values", [])), str(report.get("fine_observation", []))])
+	_expect(report.get("solver_status", "") == "converged" and evaluations >= 1
+		and evaluations <= allowance
+		and report.get("max_unique_evaluations") == RidePrefixSolve.MAX_PREFIX_EVALUATIONS,
+		"the %s closure converges in %d evaluations, over the %d fleet allowance"
+		% [label, evaluations, allowance])
+	var values: Array = report.get("accepted_values", [])
+	var inside := values.size() == RidePrefixSolve.PREFIX_CONTROL_IDS.size()
+	for index in values.size():
+		var bound: Array = RidePrefixSolve.PREFIX_CONTROL_BOUNDS[index]
+		inside = inside and float(values[index]) >= float(bound[0]) \
+			and float(values[index]) <= float(bound[1])
+	_expect(inside, "every %s control stays inside its declared bounds: %s" % [label, str(values)])
+	var coarse: Array = report.get("coarse_observation", [])
+	var fine: Array = report.get("fine_observation", [])
+	var agrees := coarse.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size() \
+		and fine.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size()
+	for index in mini(coarse.size(), fine.size()):
+		agrees = agrees and absf(float(coarse[index]) - float(fine[index])) \
+			<= float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[index])
+	_expect(agrees, "the %s closure reproduces at the production step: %s against %s"
+		% [label, str(coarse), str(fine)])
 
 
 func _compile(layout: Dictionary) -> Dictionary:
@@ -540,7 +860,7 @@ func _plan(layout: Dictionary) -> Dictionary:
 		"terrain_frame": {"apron_origin_m": layout.station_position_m - along * 80.0,
 			"inward": inward, "along": along, "up": up, "right": right,
 			"shelf_height_m": 275.0, "planning": {
-		"capability_id": "material-v1-prefix-r12@7", "planning_integrations": 1,
+		"capability_id": "material-v1-prefix-r12@8", "planning_integrations": 1,
 				"station_edge_distance_m": -800.0,
 				"station_opener_maximum_edge_m": -100.0,
 				"sampled_station_opener_points": 100,
@@ -554,7 +874,7 @@ func _plan(layout: Dictionary) -> Dictionary:
 			"capture_length_m": 80.0, "brake_length_m": 150.0,
 			"half_width_m": float(layout.get("capture_half_width_m", CAPTURE_HALF_WIDTH_M)),
 			"half_height_m": float(layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)),
-			"entry_speed_mps": Vector2(70.0, 77.0)},
+			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"route_length_m": Vector2(7800.0, 8200.0),
 		"roles": RideGenerator._material_roles()}
 
@@ -566,7 +886,7 @@ func _layout() -> Dictionary:
 		"station_up": Vector3.UP,
 		"reserved_corridor": {"minimum_length_m": 230.0,
 			"capture_length_m": 80.0, "brake_length_m": 150.0,
-			"entry_speed_mps": Vector2(70.0, 77.0)},
+			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"capture_half_width_m": CAPTURE_HALF_WIDTH_M,
 		"capture_half_height_m": CAPTURE_HALF_HEIGHT_M,
 	}

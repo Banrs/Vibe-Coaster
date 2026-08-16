@@ -1,0 +1,137 @@
+{
+  "schema_version": "geometry-reference-manifest@1",
+  "manifest_version": "TEMPLATE — copy this file, do not point REF_MEDIA_MANIFEST at it",
+  "instructions": [
+    "This is a TEMPLATE. Copy it next to your local media (the acquisition script writes reference-media/geometry-reference-manifest.json for you), fill in image_path and sha256, and export REF_MEDIA_MANIFEST=/absolute/path/to/your/copy before running _inspect.gd.",
+    "image_path is relative to the directory containing the manifest. It may not be absolute and may not contain '..'.",
+    "sha256 is the lowercase 64-hex digest of the image file. _inspect.gd verifies it and refuses to composite an entry whose bytes do not match, so a frame swapped underneath the manifest is caught rather than silently used.",
+    "element_id may name a compiled window ('marquee-camelback/crest/00'), a material role ('camelback'), or a bare role id ('crest'). Resolution is attempted in that order and the resolved record says which matched.",
+    "Every entry needs either a timestamp_s (seconds into the named source video) or a description (for a still photograph). Both is better.",
+    "source_id should match a source_id in docs/evidence/fidelity/source-manifest.json wherever the media comes from a committed source. Where it does not, say so plainly in source_id and evidence_class rather than borrowing a committed id.",
+    "POLICY: the media itself is personal-use local reference and is NEVER committed. Add /reference-media/ stays in .gitignore. Only landmarks, provenance strings and digests are ever fit to commit — and even this manifest lives beside the media in practice, not in the repository.",
+    "POLICY: nothing here promotes a source in godot/fidelity_references.gd, creates a catalog target or selector, or closes a ride-quality issue. A composite is evidence to read.",
+    "acquisition records HOW the frame was obtained. 'yt-dlp-frame' is a real frame at a real timestamp. 'thumbnail-fallback' is a video thumbnail: WEAK PROVENANCE — an unknown moment of the ride chosen by the uploader or by YouTube, useful only as a coarse silhouette check. Label it honestly; a weak reference read as a strong one is worse than no reference."
+  ],
+  "entries": [
+    {
+      "element_id": "opener-twisted-drop",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.falcon.forward.cUURkqyn4Zs",
+        "source_url": "https://www.youtube.com/watch?v=cUURkqyn4Zs",
+        "evidence_class": "observation_only",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": [
+        "Forward-facing POV: the element silhouette is foreshortened and cannot be read as a scale measurement."
+      ]
+    },
+    {
+      "element_id": "act-one-immelmann",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.falcon.forward.cUURkqyn4Zs",
+        "source_url": "https://www.youtube.com/watch?v=cUURkqyn4Zs",
+        "evidence_class": "observation_only",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": []
+    },
+    {
+      "element_id": "act-one-loop",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.falcon.forward.cUURkqyn4Zs",
+        "source_url": "https://www.youtube.com/watch?v=cUURkqyn4Zs",
+        "evidence_class": "observation_only",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": []
+    },
+    {
+      "element_id": "clifftop-outward-rim",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.falcon.sdXGD9kMR7s",
+        "source_url": "https://www.youtube.com/watch?v=sdXGD9kMR7s",
+        "evidence_class": "observation_only",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": [
+        "This role is a counterpart evidence gap in godot/fidelity_counterparts.gd; a photograph does not close it."
+      ]
+    },
+    {
+      "element_id": "outward-dive",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.falcon.forward.cUURkqyn4Zs",
+        "source_url": "https://www.youtube.com/watch?v=cUURkqyn4Zs",
+        "evidence_class": "observation_only",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": []
+    },
+    {
+      "element_id": "camelback",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.falcon.backward.J54WKu2nU6o",
+        "source_url": "https://www.youtube.com/watch?v=J54WKu2nU6o",
+        "evidence_class": "observation_only",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": [
+        "Backward-facing POV: left and right are mirrored relative to the generated side view."
+      ]
+    },
+    {
+      "element_id": "return-turn-a",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.tormenta.forward.AHjk",
+        "source_url": "https://www.youtube.com/watch?v=AHjk2R4da_I",
+        "evidence_class": "review_pending",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": [
+        "Tormenta, not Falcon: a class exemplar for the overbanked return turn, never a measurement of the counterpart."
+      ]
+    },
+    {
+      "element_id": "act-one-airtime",
+      "image_path": "",
+      "provenance": {
+        "source_id": "youtube.tormenta.forward.AHjk",
+        "source_url": "https://www.youtube.com/watch?v=AHjk2R4da_I",
+        "evidence_class": "review_pending",
+        "acquisition": "",
+        "timestamp_s": null,
+        "description": "",
+        "sha256": ""
+      },
+      "caveats": []
+    }
+  ]
+}

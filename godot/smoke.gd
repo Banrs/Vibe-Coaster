@@ -4,12 +4,51 @@ const Coaster := preload("res://main.gd")
 const FidelityTests := preload("res://fidelity_tests.gd")
 const FidelityArtifactTests := preload("res://fidelity_artifact_tests.gd")
 const Generator := preload("res://generator.gd")
+const PrefixSolve := preload("res://ride_prefix_solve.gd")
 const RouteContract := preload("res://route_contract.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
 
 const DEEP_SEEDS := [11, 42, 20260809]
+const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+## The fleet must not be one ride fifteen times. Measured spread on 2026-08-16 with the landed
+## draw set, the closed-form placement, the rim-aimed dive and the eight-control return: 49.22 m
+## of route length and 0.515 s of elapsed time across the fifteen seeds, so these floors sit at
+## roughly a tenth of the length spread and a fifth of the duration spread the planner actually
+## produces.
+const FLEET_LENGTH_SPREAD_FLOOR_M := 5.0
+const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
+## The fleet half of the return budget claim. `ride_program.gd` derives the cap and
+## `ride_program_tests.gd` gates five seeds fast; every seed of the fifteen must stay inside
+## this fraction of it, measured here because the compile is already paid.
+const RETURN_EVALUATION_ALLOWANCE := 0.6
+## The prefix-closure margins the whole fleet must carry, and the fraction of the closure's own
+## derived cap it must converge inside — all four margins and the allowance are `generator.gd`'s
+## constants, read here rather than copied, since the closure aims at the same numbers. This is the
+## fifteen-seed half of the prefix convergence claim `ride_program_tests.gd` makes on the canonical
+## and seed-42 stories. The closure aims inside every margin and the closed-form placement lands
+## inside them by construction; measuring them on all fifteen seeds is what turns the aim into a
+## gate. Measured on the grid-search placement this replaced: four seeds missed the dive-entry
+## margin, nine the apron margin, and seven sat exactly on the summit band's floor. Read the summit
+## margin as one-sided: `generator.gd` floors the station at the inner band's 17.99 m (the 40%
+## interior of the 15.01-24.95 band) and every other clearance term can only raise it, so the low
+## side carries 2.98 m by construction and only the high side can ever approach this gate. The
+## fleet's tightest summit margin (+2.96 m, seed 77777) is therefore high-side evidence alone, not
+## a two-sided measurement of the 1.5 m floor. The dive-entry margin reads the other way round
+## since the rim aim landed: it is the *low* side that binds now (+4.30 m worst, seed 1234), which
+## is the measurement of issue 22 — the dive starts at the rim end of its band on every seed.
+## The viewer's POV camera bounds. Measured on seed 42 (2026-08-15): the camera stays within
+## 6.3° of the tangent, the look direction stays 84.5° clear of the pose up axis, and the rumble
+## moves the eye 4.41 mm between 60 fps frames at top speed. The cone and clearance are the
+## limits the camera has to respect rather than the numbers it happens to hit; the shake bound
+## sits at 1.8× the measurement, tight enough to catch a return to above-Nyquist frequencies.
+const VIEWER_POV_TANGENT_CONE_DEG := 40.0
+const VIEWER_POV_UP_CLEARANCE_DEG := 30.0
+const VIEWER_POV_SHAKE_PER_FRAME_M := 0.008
+
+var _fleet_lengths := PackedFloat64Array()
+var _fleet_durations := PackedFloat64Array()
 
 
 func _initialize() -> void:
@@ -21,6 +60,7 @@ func _initialize() -> void:
 	for seed_value in DEEP_SEEDS:
 		errors.append_array(_deep_seed_errors(seed_value))
 	errors.append_array(_sweep_errors())
+	errors.append_array(_diversity_errors())
 	errors.append_array(_viewer_errors())
 	for error in errors:
 		printerr(error)
@@ -38,11 +78,14 @@ func _deep_seed_errors(seed_value: int) -> PackedStringArray:
 	if var_to_bytes(route) != var_to_bytes(repeat):
 		errors.append("seed %d: repeated builds are not bit-identical" % seed_value)
 	var issues := PackedStringArray()
-	_validate_structure_and_placement(route, issues)
+	_validate_structure_and_placement(route, seed_value, issues)
 	var analysis: Dictionary = Verify.analyze(route, RouteContract.ROW_OFFSETS)
 	Verify.validate_loads(analysis, issues)
+	_validate_record_launch_numbers(route, analysis, issues)
 	for issue in issues:
 		errors.append("seed %d: %s" % [seed_value, issue])
+	_fleet_lengths.append(route.length)
+	_fleet_durations.append(route.duration)
 	print(
 		"deep seed %d: %.0f m, %.1f s, %d samples, %.1f km/h top"
 		% [seed_value, route.length, route.duration, route.positions.size(),
@@ -60,8 +103,10 @@ func _sweep_errors() -> PackedStringArray:
 		var route: Dictionary = Generator.build(seed_value)
 		if _accepted_route(route, seed_value, seed_errors):
 			lengths.append(route.length)
+			_fleet_lengths.append(route.length)
+			_fleet_durations.append(route.duration)
 			var issues := PackedStringArray()
-			_validate_structure_and_placement(route, issues)
+			_validate_structure_and_placement(route, seed_value, issues)
 			for issue in issues:
 				seed_errors.append("sweep seed %d: %s" % [seed_value, issue])
 		if seed_errors.is_empty():
@@ -76,6 +121,32 @@ func _sweep_errors() -> PackedStringArray:
 			"seed sweep: %d of %d build and place clean, lengths %.1f-%.1f km"
 			% [clean, SWEEP_SEEDS.size(), lengths[0] / 1000.0, lengths[-1] / 1000.0]
 		)
+	return errors
+
+
+## Seeds must produce different rides, not one ride fifteen times. Determinism is checked
+## per seed above; this is the companion check that nothing else asserted before the planner
+## decision layer landed — a build that collapses back to a single ride fails here.
+func _diversity_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	if _fleet_lengths.size() < DEEP_SEEDS.size() + SWEEP_SEEDS.size():
+		errors.append("the diversity gate saw only %d of %d accepted fleet rides" % [
+			_fleet_lengths.size(), DEEP_SEEDS.size() + SWEEP_SEEDS.size()])
+		return errors
+	var lengths := _fleet_lengths.duplicate()
+	var durations := _fleet_durations.duplicate()
+	lengths.sort()
+	durations.sort()
+	var length_spread: float = lengths[-1] - lengths[0]
+	var duration_spread: float = durations[-1] - durations[0]
+	if length_spread < FLEET_LENGTH_SPREAD_FLOOR_M:
+		errors.append("fleet route lengths span only %.2f m; required more than %.2f m"
+			% [length_spread, FLEET_LENGTH_SPREAD_FLOOR_M])
+	if duration_spread < FLEET_DURATION_SPREAD_FLOOR_S:
+		errors.append("fleet ride durations span only %.3f s; required more than %.3f s"
+			% [duration_spread, FLEET_DURATION_SPREAD_FLOOR_S])
+	print("fleet diversity: %d rides, lengths span %.2f m, durations span %.3f s"
+		% [lengths.size(), length_spread, duration_spread])
 	return errors
 
 
@@ -103,6 +174,81 @@ func _viewer_errors() -> PackedStringArray:
 		% [route.length, route.duration, route.positions.size(),
 			analysis.top_speed * 3.6, elapsed]
 	)
+	errors.append_array(_hud_element_errors(route))
+	errors.append_array(_pov_camera_errors(route, analysis))
+	return errors
+
+
+## The HUD's current→next element lookup, swept over the whole lap. The viewer runs it once per
+## frame; nothing else would notice it going empty, naming the current element as the next one,
+## or drifting out of story order.
+func _hud_element_errors(route: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var story := PackedStringArray()
+	for gesture: Dictionary in route.gesture_windows:
+		for role: Dictionary in gesture.get("role_windows", []):
+			story.append(str(role.get("display_name", role.get("id", ""))))
+	var seen := PackedStringArray()
+	for sample in route.positions.size():
+		var names: PackedStringArray = Coaster.next_element_names(route, sample)
+		if names[1].is_empty():
+			errors.append("viewer HUD: sample %d has no next element" % sample)
+			break
+		if names[0] == names[1]:
+			errors.append(
+				"viewer HUD: sample %d names %s as both current and next" % [sample, names[0]])
+			break
+		if seen.is_empty() or seen[-1] != names[0]:
+			seen.append(names[0])
+	if errors.is_empty() and Array(seen) != Array(story):
+		errors.append("viewer HUD: element sequence %s is not the story order %s" % [
+			str(seen), str(story)])
+	if errors.is_empty():
+		print("seed 42 viewer HUD: %d elements named in story order" % seen.size())
+	return errors
+
+
+## The POV camera, swept over the whole lap. The camera must keep pointing down the track, must
+## never let the look direction fall onto the pose up axis (where `Basis.looking_at` is
+## undefined), and its rumble must stay rumble — a per-frame displacement at 60 fps and top
+## speed measured in millimetres, not the strobe an above-Nyquist shake produces.
+func _pov_camera_errors(route: Dictionary, analysis: Dictionary) -> PackedStringArray:
+	var errors := PackedStringArray()
+	var top_speed: float = analysis.top_speed
+	var worst_tangent_deg := 0.0
+	var closest_up_deg := 180.0
+	var distance := 0.0
+	while distance < route.length:
+		var sample: int = Coaster._lower_index(route.distances, distance)
+		var pose := Coaster.pose_at_distance(route, distance)
+		var camera: Transform3D = Coaster.pov_transform(
+			route, distance, route.speeds[sample], top_speed, 0.0)
+		var forward := -camera.basis.z
+		var tangent_deg := rad_to_deg(
+			acos(clampf(forward.dot(route.tangents[sample]), -1.0, 1.0)))
+		var up_deg := rad_to_deg(acos(clampf(forward.dot(pose.basis.y), -1.0, 1.0)))
+		worst_tangent_deg = maxf(worst_tangent_deg, tangent_deg)
+		closest_up_deg = minf(closest_up_deg, minf(up_deg, 180.0 - up_deg))
+		distance += 5.0
+	var worst_jitter_m := 0.0
+	for step in 600:
+		var phase := step / 300.0
+		var held := Coaster.pov_transform(route, 1000.0, top_speed, top_speed, phase)
+		var next_frame := Coaster.pov_transform(
+			route, 1000.0, top_speed, top_speed, phase + 1.0 / 60.0)
+		worst_jitter_m = maxf(worst_jitter_m, held.origin.distance_to(next_frame.origin))
+	if worst_tangent_deg > VIEWER_POV_TANGENT_CONE_DEG:
+		errors.append("viewer POV: camera strays %.1f° from the tangent" % worst_tangent_deg)
+	if closest_up_deg < VIEWER_POV_UP_CLEARANCE_DEG:
+		errors.append("viewer POV: look direction comes %.1f° from the pose up axis"
+			% closest_up_deg)
+	if worst_jitter_m > VIEWER_POV_SHAKE_PER_FRAME_M:
+		errors.append("viewer POV: shake moves the eye %.1f mm per 60 fps frame"
+			% (worst_jitter_m * 1000.0))
+	print(
+		"seed 42 viewer POV: %.1f° off tangent, %.1f° clear of up, %.2f mm/frame shake"
+		% [worst_tangent_deg, closest_up_deg, worst_jitter_m * 1000.0]
+	)
 	return errors
 
 
@@ -120,11 +266,90 @@ func _accepted_route(
 	return false
 
 
-func _validate_structure_and_placement(route: Dictionary, issues: PackedStringArray) -> void:
+## The record-launch numbers derived on 2026-08-15: the tunnel LSM3 must reach the
+## 338-344 km/h record band, and the entry launch must peak at its 3.9 g class.
+func _validate_record_launch_numbers(
+	route: Dictionary, analysis: Dictionary, issues: PackedStringArray
+) -> void:
+	var top_speed := float(analysis.top_speed)
+	var band: Vector2 = Generator.RECORD_EXIT_SPEED_BAND_MPS
+	if top_speed < band.x or top_speed > band.y:
+		issues.append("top speed %.2f m/s is outside the record band %.1f-%.1f m/s" % [
+			top_speed, band.x, band.y])
+	var launch := {}
+	for window in route.get("gesture_windows", []):
+		if window.get("story_slot_id", "") == "station-launch":
+			launch = window
+			break
+	if launch.is_empty():
+		issues.append("station-launch window is missing")
+		return
+	var peak_drive := 0.0
+	for index in range(int(launch.first), int(launch.last) + 1):
+		peak_drive = maxf(peak_drive, float(route.drive_g[index]))
+	if peak_drive < LAUNCH_DRIVE_BAND_G.x or peak_drive > LAUNCH_DRIVE_BAND_G.y:
+		issues.append("station-launch peak authored drive %.3f g is outside %.1f-%.1f g" % [
+			peak_drive, LAUNCH_DRIVE_BAND_G.x, LAUNCH_DRIVE_BAND_G.y])
+
+
+func _validate_structure_and_placement(
+	route: Dictionary, seed_value: int, issues: PackedStringArray
+) -> void:
 	Verify.validate_structure(route, issues)
 	Verify.validate_seams(route, issues)
 	Verify.validate_clearance(route, route.terrain, issues)
 	Verify.validate_self_clearance(route, issues)
+	var gate: Dictionary = route.get("terrain_story_plan", {}).get("return_entry_gate", {})
+	var evaluations := int(gate.get("solve_evaluations", -1))
+	var allowance := int(RETURN_EVALUATION_ALLOWANCE * int(gate.get("solve_evaluation_cap", 0)))
+	if evaluations < 1 or evaluations > allowance:
+		issues.append("the return solve spent %d evaluations against a %d fleet allowance"
+			% [evaluations, allowance])
+	_validate_prefix_closure(route, seed_value, issues)
+
+
+## The prefix closure, measured on the built ride: the four margins of design section 6 and the
+## solve's own evaluation count. Every quantity here is one the closure aimed at or the placement
+## derived, so a miss means the aim did not survive the ride it produced — never a reason to widen
+## a band. Printed per seed because the closure's cost is a budget claim, not a hope.
+func _validate_prefix_closure(
+	route: Dictionary, seed_value: int, issues: PackedStringArray
+) -> void:
+	var planning: Dictionary = route.get("terrain_story_plan", {}).get("planning", {})
+	var terrain: Dictionary = route.get("terrain", {})
+	var closure: Dictionary = planning.get("closure", {})
+	var fine: Array = closure.get("fine_observation", [])
+	if terrain.is_empty() or fine.size() != PrefixSolve.PREFIX_RESIDUAL_IDS.size():
+		issues.append("the plan publishes no measurable prefix closure")
+		return
+	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
+	var measured := [
+		["dive-entry edge", float(planning.get("dive_entry_edge_m", NAN)) - shelf_m,
+			Generator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, Generator.DIVE_ENTRY_EDGE_MARGIN_M],
+		["dive-exit apron fraction", float(planning.get("dive_exit_apron_fraction", NAN)),
+			Generator.DIVE_EXIT_APRON_BAND, Generator.DIVE_EXIT_APRON_MARGIN],
+		["summit track AGL", float(planning.get("summit_track_agl_m", NAN)),
+			Generator.SUMMIT_TRACK_AGL_BAND_M, Generator.PREFIX_MARGIN_SUMMIT_M],
+		["record exit speed", float(fine[3]), Generator.RECORD_EXIT_SPEED_BAND_MPS,
+			Generator.PREFIX_MARGIN_RECORD_MPS],
+	]
+	var report := PackedStringArray()
+	for entry: Array in measured:
+		var band: Vector2 = entry[2]
+		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
+		report.append("%s %+.4f" % [entry[0], margin])
+		if not is_finite(margin) or margin < float(entry[3]):
+			issues.append("%s sits only %.4f inside %s; the fleet requires %.4f"
+				% [entry[0], margin, str(band), float(entry[3])])
+	var evaluations := int(closure.get("unique_evaluations", -1))
+	var allowance := int(
+		Generator.PREFIX_EVALUATION_ALLOWANCE * int(closure.get("max_unique_evaluations", 0)))
+	if evaluations < 1 or evaluations > allowance \
+			or str(closure.get("solver_status", "")) != "converged":
+		issues.append("the prefix closure spent %d %s evaluations against a %d fleet allowance"
+			% [evaluations, str(closure.get("solver_status", "missing")), allowance])
+	print("seed %d prefix closure: %d of %d evaluations, margins %s"
+		% [seed_value, evaluations, allowance, ", ".join(report)])
 
 
 func _terrain_errors() -> PackedStringArray:

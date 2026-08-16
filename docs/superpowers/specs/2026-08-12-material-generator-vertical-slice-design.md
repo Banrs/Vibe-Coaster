@@ -193,6 +193,15 @@ and roll limits are inequalities, never hidden residual relaxation.
 
 Use an analytic linearized seed and one deterministic box-constrained root solve with at most 40
 unique coarse trajectory evaluations, including one finer-step comparison. Cache identical vectors.
+
+> **Landed note (2026-08-15):** the return solve shipped larger than this section describes:
+> `godot/ride_program.gd` uses **seven** bounded controls and **seven** residuals (adding the
+> 7.8–8.2 km route-length band and the 70–77 m/s passive entry-speed band) with
+> `MAX_RETURN_EVALUATIONS := 220`, solved through `godot/bounded_solver.gd` with coarse/fine
+> agreement. The five-residual description survives in the separate capture solve. The
+> 220-evaluation budget is 5.5× this section's bound and has not been re-derived from an
+> engineering budget; it is flagged in `docs/ISSUES.md` for tightening rather than silently
+> accepted.
 On failure, compilation stops with bounds, residuals, margins, and evaluation counts—no retry,
 fallback, beat deletion, translation, frame reset, positive return drive, or position-space closure.
 The final 100 Hz trajectory rechecks capture and endpoint invariants without reintegration.
@@ -231,6 +240,9 @@ are replaced by these physical/story assertions. Independent safety and human-to
 
 The legacy diagnostic pack is preserved under ignored `out/baselines/legacy-audit-2a891d2` with
 SHA-256 `d828a09d00e78de564b8a2165343e051bf63a2af856a0b375cdae444e2f420ff`.
+(**Landed note 2026-08-15:** `out/` is gitignored, so this pack does not survive a fresh
+clone; the claim is unverifiable from the repository alone and the pack should be treated as
+unavailable unless rebuilt locally from the pinned legacy commit.)
 Post-cutover generation must retain:
 
 - per-gesture side/profile views;
@@ -252,6 +264,9 @@ target is fewer than 2,500 combined non-test lines across every production file 
 planning, recipes, integration, route construction, and their helpers—not merely the four named
 files—and deletion of the current 4,056 generator/element lines. This is a checkpoint review budget,
 not a permanent cap on future additive preset modules or permission to compress unreadable code.
+(**Landed note 2026-08-15:** the deletion criterion was met — the legacy 4,056
+generator/element lines are gone — but the sub-2,500 checkpoint target was not: the landed
+config/planning/recipe/integration/route files total ~3,618 non-test lines.)
 There is no full-route candidate loop, full-resolution solve iteration, duplicate sampler,
 generalized optimizer, or abstraction used only once.
 

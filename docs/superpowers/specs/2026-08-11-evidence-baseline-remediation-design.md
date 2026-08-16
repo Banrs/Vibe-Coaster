@@ -1,7 +1,12 @@
 # Evidence Baseline Remediation Design
 
-**Status:** approved in conversation; independent correctness, lean, verification, and final-delta
-reviews passed on 2026-08-11.
+**Status:** approved 2026-08-11; **stopped 2026-08-12 before execution — governs an
+unexecuted, stopped plan; kept as history (annotated 2026-08-15).** The user stopped the
+remediation because it did not materially change the ride. Its shared physical-consistency
+entry point (`Verify.validate_physical_consistency`) was never built; the seed/load-gating
+policy it describes landed differently (see `godot/smoke.gd` and root `CLAUDE.md`). Its
+baseline line counts (1,296 / 2,333 / 2,218) no longer hold, and the `AGENTS.md` it cites no
+longer exists.
 
 ## Authority and purpose
 

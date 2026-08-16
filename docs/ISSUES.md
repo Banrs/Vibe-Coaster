@@ -5,37 +5,294 @@ point for the next round of work, not a spec: investigate openly, measure, and e
 discover problems beyond what is listed. `docs/TELEMETRY.md` holds measured ground truth;
 root `CLAUDE.md` holds the contract.
 
-## Next session — start here (2026-08-15)
+## Next session — start here (2026-08-15, end of session)
 
-The `codex/material-generator` slice is merged. Verified on Godot 4.7.1 at merge time: the
-import gate, the nine focused suites in `.github/focused-tests.txt`, and `smoke.gd` (2m00s)
-are all green, and all fifteen seeds build and place clean. Two measured gaps found while
-reviewing that branch are the recommended entry points, ahead of the sixteen items below.
+Verified on Godot 4.7.1: the import gate, the twelve focused suites in
+`.github/focused-tests.txt`, and `smoke.gd` are all green, and all fifteen seeds build and
+place clean. Gaps **A** (stage 1) and **B**, which opened this section at the start of the
+session, are closed and gated:
 
-**A. The seed does not vary the ride.** Measured across seeds 11, 42, 20260809, 1 and 99:
-`8132.1–8132.4 m`, `158.8 s`, `328.3 km/h` top — identical to within 0.3 m and 0.1 km/h, and
-the sweep reports `lengths 8.1-8.1 km` for all twelve. Determinism holds and is not the
-problem; diversity is absent by construction. `_material_roles()` in `godot/generator.gd` is a
-hardcoded twenty-entry list that takes no RNG, so every role's `length_m` band, `targets` and
-`recipe_id` are seed-invariant. `_plan()` spends the seeded RNG on exactly three values —
-`side`, `along_m`, `placement_u` — all of which move where the ride sits on the terrain, none
-of which change what the ride *is*. `role_allocations_m` is byte-identical across seeds.
-Decide deliberately whether that is the intended contract: `CLAUDE.md` promises "seeded
-terrain-relative placement", which this satisfies literally, while `README.md`'s framing
-invites the reading that seeds differ as rides. Either narrow the prose or give the plan real
-seeded variation (role ordering, band sampling within the story, per-seed target draws) — and
-if it is variation, `smoke.gd`'s cross-seed determinism check will need a companion check that
-seeds actually *differ*, which nothing currently asserts.
+**B — the record launch is real.** The tunnel LSM3 booster runs at 1.33 g and the built ride
+tops out at 340.40 km/h (94.55 m/s) on all fifteen seeds, gated in smoke at 93.9–95.6 m/s. The
+entry launch peaks at 3.9 g (gated 3.7–4.1) with exit speed conserved. The measured cost of
+closing the record inside 8.2 km without a mid-course brake was the passive capture-entry band,
+widened 70–77 → 70–80 m/s, and the brake bound, raised 3.0 → 3.6 g (measured peak 3.05; the
+envelope allows 4.286 over that hold). Derivation:
+`docs/superpowers/specs/2026-08-15-record-launch-derivation.md`.
 
-**B. The record launch is ~12 km/h short of its declared number.** `CLAUDE.md` and `README.md`
-both declare the tunnel LSM boost as "~340 km/h (the record launch)"; the built ride tops out
-at 328.3 km/h on every seed. Nothing gates top speed, so this is undetected by CI. Resolve it
-in one direction — author the tunnel booster up to the declared figure, or correct both
-documents to the honest built value. Do not leave the contract and the ride disagreeing.
+**A stage 1 — the seed varies the ride.** `godot/ride_planner.gd` holds named decision streams
+(FNV-1a over stream name plus seed, so streams are independent), the story grammar as data, and
+the certified per-seed target draws: return turn-a `transfer_bank_bias` 6.5–8.5°, height-a
+`peak_g` 3.65–3.95, and unload scales 0.95–1.05. Measured fleet spread was 8138.7–8180.6 m
+(41.9 m) and 0.31 s of duration at that landing; re-measured 2026-08-16 under the eight-control
+return re-certification it is 8138.1–8187.3 m (49.2 m) and 0.51 s, with the records still
+pinned on every seed; smoke now has diversity
+floors so the fleet cannot silently collapse back to one ride. A latent bug surfaced and was
+fixed on the way: the terminal-approach corridor was never clearance-sampled, so seed 123456's
+brakes sat 1.82 m under the 2.0 m floor; the approach is now held to station clearance.
 
-Since then Daniel's second ride-through added issues 20–26, and issue 24 — *FVD++ gets the g's
-but not the geometry* — is the strongest candidate for the single root cause behind several of
-them. If one thing is picked up next, pick that.
+### The recommended next work: the prefix closure solve (issue 24)
+
+Stage 2 of gap A — act-one permutation and per-seed draws in the opener and act one — was
+**refused by measurement**, three independent times, and all three refusals hit the same wall.
+The prefix (station through the cliff dive) has no closure solve of its own: its terminal
+geometry is chaotic in its own force parameters, so nothing upstream of the dive can be varied
+without knocking the dive off its placement feasibility edge.
+
+The evidence trail, all measured this session:
+
+1. **Act-one permutation refused.** A ±0.005 change in a single force value moves the dive
+   chord by ~115 m. 12 of 24 candidate permutations fail the capability preflight outright, and
+   the best survivors fail the return solve on 12 of 15 seeds.
+2. **Opener roll tranche refused** (issue 20 work). Any bank-timing change in the opener tips
+   dive placement off its feasibility edge on *every* seed, so the opener's roll stepping could
+   not be fixed with the return and clifftop tranches.
+3. **Opener/act-one target draws refused.** Same mechanism: the draws are legal in capability
+   terms and still leave the prefix unable to land the dive.
+
+So the recommendation is explicit: build a bounded closure solve for the prefix, the way the
+return already has one, so the dive's placement becomes a solved residual instead of a
+hand-calibrated coincidence. That unblocks issue 20's last tranche, stage 2 of gap A, and issue
+22's dive-commit placement, and it is issue 24's real fix — authoring in the rider's frame is
+reproducing the force trace without producing a coherent swept shape, and the prefix is where
+that costs the most.
+
+Issue 24 remains the strongest candidate for the single root cause behind 20, 23 and much of
+15. ~~If one thing is picked up next, pick the prefix closure solve.~~ **That solve landed on
+2026-08-15** (progress notes below), so it is no longer the next pick. **Return height authority
+landed on 2026-08-16** — the return's height-beat peak g is the eighth solved control, seeded
+from the certified draw, with the canonical fleet re-certified 15/15 (spec:
+`docs/superpowers/specs/2026-08-16-return-height-authority-design.md`). It was the DOF the
+honest-drag refusal measured the solve short of, and a candidate for the swap's floor-pinned
+exhaustions; the swap's floor-pinning did clear (issue 24's annotation), but the honest-drag
+fleet test **refused** on all three deep seeds — the residual that remains names the
+*horizontal* capture placement (cross-track 137–235 m, station-forward 52–80 m at every best
+stall), not height. **The measured next spend is therefore the prefix handoff-pose residual**:
+both open walls — issue 24's cross/yaw swap mode and issue 2's honest-drag re-baseline — now
+refuse on the same camelback→return handoff displacement that no return-side control can
+un-move, and §7.4 of the honest-drag spec named it before this stage confirmed it fleet-wide.
+Honest drag is **not** re-baseline-ready until that residual exists.
+
+**Progress, 2026-08-15 (stages 1–3 landed):** the prefix closure solve is in production.
+`_plan` runs preflight → terrain-derived closure target → one bounded four-control solve →
+closed-form placement; the grid search is deleted; the accepted controls thread into
+`compile()` and are verified off the built spans. Fleet-wide gated margins at the stage-3
+baseline (worst seed): dive-entry edge +6.13 m, apron fraction +0.062, summit AGL +2.90 m,
+record exit +0.79 m/s — stage 5a later moved the entry aim to the rim end for issue 22, so
+the current margins live in that entry (dive-entry +4.30 m with the low side binding) —
+with the solve converging in 1–6 of 31 allowed evaluations on all fifteen seeds. One honest
+narrowing recorded: the entry aim band sits inside a band already inset 3 m, so
+terrain the old grid search would have placed can now refuse with a structured error — the
+refusal paths are unreached on the fleet, not unreachable in principle; stage 4's
+refusal-derived tests exercise them.
+
+**Stage 4 measured (2026-08-15): the solve did half its job, and the other half now has a
+name.** Tail-domain changes are absorbed — the act-one loop at −0.005 g places inside all
+four margins on 15/15 seeds, and the act-one optional-member swap places 15/15 (both were
+flat refusals before the solve). But no perturbed or permuted story builds end to end:
+opener (head-domain) changes refuse at the terrain preflight before the solve is reached
+(±0.005 g swings the native chord 245–408 m against a ~270 m terrain span — the four
+controls all live downstream of act one), and every story that does place then fails in the
+seven-control return solve, whose hand-tuned fixed seed does not re-converge for a moved
+handoff (budget-exhausted at 79/80 with residuals nearly closed; the record-exit residual
+pins the speed, the geometric handoff still moves). The two named follow-ons: a
+deterministic per-story derivation of the return seed (a seed derivation, never a retry
+loop), and a measured decision on head accommodation for opener draws. The planning-half
+victories are gated in `generator_material_tests.gd` (four seeds × {swap, loop −0.005};
+~12.7 s locally where the parallel runner hides it, ~25 s on ubuntu's serial CI). Spec
+correction recorded in the design's §5. A review then caught the gated swap helper as a
+no-op; the corrected helper was re-measured across the full grammar — the counts all
+survived, now actually proven, and the complete table exists: of the **36** grammar-legal
+act-one orders (not 24 as earlier prose said), exactly three place at all — canonical,
+the optional-member swap `cutback loop wave airtime` (15/15), and the airtime-dropped
+order (9/15, seeds named in the test comment); the other 33 refuse at the same preflight.
+
+**Story-energy accommodation refused by measurement (2026-08-15).** The proposed prefix-side
+follow-on — re-target the closure's fourth residual from `record_exit_speed_mps` to
+`dive_entry_speed_mps` so the solve can see the pre-dive energy state — was measured before it
+was written, per its own design §9.1, and the measurement refuted it. The swapped story arrives
+at the rim **+2.43…+2.46 m/s** hotter carrying only **+7.7…+20.2 J/kg** (the design derived
+≈ +3 m/s and ≈ 63 J/kg from arc length), and the +21 m of dive arc is **not** an energy surplus:
+at *equal* dive-entry speed the swapped dive still runs +21.7 m longer, and its arc never reaches
+490 m anywhere in `climb_core_s`'s 6–12 s bound (minimum ≈ 494.5 m; ≈ 497.1 m anywhere the summit
+rise stays in its aim band, i.e. at the entry speed it already has — lowering the entry speed
+*lengthens* the arc). The re-target was then implemented and run rather than argued about:
+canonical stays bit-identical on all fifteen seeds, and the swap goes from planning 4/4 to
+**refusing 4/4 at the prefix closure**, because pulling the dive entry down pushes the record exit
+to 96.8–97.2 m/s — inside the summit-rise aim band the swapped record exit spans 94.31–97.94 m/s,
+so the design's "pinning `v_entry` at a pinned entry height *is* pinning the record" is false. The
+change was therefore **not landed**; the measurement lives in that design's new §10. The only
+control that shortens the dive without moving its entry state is `dive_approach_s` (497.1 → 487.6 m
+at 0.40 s, entry speed unchanged), which is issue 22's knob.
+
+**Return-seed derivation refused by measurement (2026-08-16), and the order it implied is void.**
+The follow-on this section named — "the deterministic per-story return-seed derivation first, then a
+dive-arc residual absorbed by `dive_approach_s`" — was measured before more of it was written, and
+both halves of its premise failed. (1) The refusal it existed to fix **does not reproduce**: all
+fifteen seeds × `dive_approach_s` ∈ {0.80, 0.85, 0.90} converge from the unchanged fixed
+`RETURN_SEED` (45/45, worst 68 evaluations), so the fixed seed already follows that moved handoff and
+issue 22's second half is unblocked without it. (2) On the act-one swap — the class the design's §4
+named — **no seed of any form reaches the target**: re-seeded with an oracle (seed 11's exact
+converged vector at the same approach, and the swap's handoff deviation is seed-independent to 0.1 m
+fleet-wide), seeds 42 and 20260809 still budget-exhaust at 79/80 at every approach value, every
+refusal pinning `height_a_recovery_duration_s` at its 0.35 s floor. The wall is a box constraint, not
+a basin. The linear warm start was built and run anyway: it changes no outcome and moves the worst
+scaled residual 0.269 → 0.183 on seed 42 but 0.041 → **0.200** on 20260809 — worse on one of the two
+cases it was for — so no code landed. The measured sensitivity matrix is recorded at §8.3 of the
+design so the work is not lost. Honest order now: **not** the certified
+`height_a_recovery_duration_s` floor relaxation — that trim (0.35 → ~0.30) was already measured and
+refused, recorded at the bound in `ride_return_solve.gd:28-34`: at a 0.30 floor seed 20260809's
+swapped return converges, and its accepted point runs `return-height-a` to 277.6 m against that
+role's declared 290–480 m band, so the role band binds below the floor and the certifiable floor is
+*above* today's value, never below it. The remaining wall the same measurement named is prefix-side
+role length: under the swap `outward-dive` runs 497.4–497.5 m against its 350–490 m band on **every**
+seed while the closure accepts `PREFIX_SEED` unchanged, so those 21 m are prefix geometry, "not a
+control choice or a return seed". ~~Spend there — the dive-arc residual, `dive_approach_s` returning
+route metres~~ — **that spend was taken and refused by its own measurement (2026-08-16); see the next
+entry. The role overrun is real, but it is a symptom of the handoff, not the wall, and the metres it
+would return are not what the swap is short of.**
+
+**Dive-arc residual refused by measurement (2026-08-16), and the "prefix-side role length" reading
+with it.** Third refusal in a row, and like the other two it was built and run rather than argued
+about. Corrections first: **canonical does not overrun its dive band.** It builds `outward-dive` at
+**475.604–476.544 m** on all fifteen seeds (475.640–476.721 m across every closure observation the
+fleet makes), inside the declared 350–490 m band with 13.456 m of headroom, so there was never a
+canonical re-baseline to declare. 497.4–497.5 m is the swap's number alone.
+Measured per span (seed 11, production integration), the role's length is a **rim-speed budget, not a
+cliff-geometry one**: 63% of it is the 4.64 s pull-out run at 49–70 m/s, both stories fall the same
+cliff to **5.4 cm** (−247.48 m against −247.42 m, both inside the declared −250…−240 m), and what the
+swap's **+2.431 m/s** of rim entry buys is length — all eight spans lengthen, **21.467 m** in total.
+That is a **two-point secant of ≈ 8.83 m per m/s** between these two stories (every difference between
+them included), not a per-span law: the commit block grows +15.5% against the pull-out's +1.7%. Read
+through it the 13.456 m of headroom is ≈ +1.5 m/s of rim speed, and the swap's 497.43–497.46 m is
+**7.43–7.46 m past 490 m ≈ 0.84 m/s** too hot (computed on one side of the comparison throughout; the
+earlier 0.91 subtracted seed 77777's headroom from seed 11's rim delta).
+The residual itself: aim band = the declared role band inset by a margin, four controls and
+`MAX_PREFIX_EVALUATIONS := 52` untouched. **Canonical is bit-identical 15/15** (every observation
+strictly interior, `_band_residual` exactly 0.0 there, coarse/fine agreement 0.0014 m) and **the swap
+refuses 4/4 at the prefix closure**, where today it plans 4/4. Its only absorber returns ≈ 15.8 m of
+*net* arc per second of `dive_approach_s`, so the swap needs 0.79 s of that control's 0.60 s of range
+to clear a 490 − 5 m *aim* ceiling (the bare 490 m ceiling needs 0.47 s, inside range — the figure is
+margin-dependent) — and at a margin small enough to be reachable (3 m), seeds 42 and 20260809 *do*
+close the dive at 487.0 m and **still budget-exhaust their return at 79/80** (that run recorded the
+exhaustion and the delivered dive length only; the residual breakdown at 79/80 was not captured).
+Worse, every metre the approach returns is
+re-spent at a loss: pinning the approach at 0.80 s buys seed 11 3.164 m of dive arc and costs
+**+46.810 m of `return-turn-b`** and −22.595 m of `return-height-a` (through its 290 m floor); at
+0.60 s seed 11's return stops converging; at 0.40 s the plan refuses because the accepted closure flips
+the yaw solution. **Length is relieved and the wall remains** — the stronger and better-supported
+reading than "length was never binding": the short-approach refusals carry a length residual of exactly
+0.0 while the geometric residuals blow up; the converged swap cases sit at 8198.76–8198.80 m, which is
+0.20–0.24 m inside the 8199.0 m aim ceiling (`RETURN_LENGTH_AIM_MARGIN_M` = 1.0) and so pressed against
+the constraint, not slack under it; and the un-retracted 2.1 m / 5.1 m length overruns those two
+exhausting seeds carry (`generator_material_tests.gd:193-195`; 4.9–8.1 m against 8200 m in §1 of the
+story-energy design) are more than covered by the ≈ 10.4 m the 3 m-margin run gives back — and they
+exhaust at 79/80 anyway.
+Widening the band instead is refused too — even past 497.5 m the swap still fails `return-turn-b`
+(571.2 / 572.6 m against 430–570) on the two seeds whose returns converge, and 42 / 20260809 never
+reach the route contract. **What the evidence names instead:** the swap's wall is the *geometric*
+camelback handoff (pulled back 32–66 m, +12–13 m higher, 3.5–5.1° in yaw), and all four closure
+controls are durations downstream of act one, so they cannot pin six DOF. The honest spends are
+head-domain accommodation (a control upstream of act one — measure the head re-integration cost first)
+or a prefix residual on the handoff pose, which needs more than four controls. Neither is a residual on
+the dive. Full derivation, the pinned-approach matrix and the built-and-run result:
+`docs/superpowers/specs/2026-08-15-prefix-closure-solve-design.md` §11; the refusal is also recorded at
+the band's own home in `generator.gd`'s `outward-dive` role.
+
+**Honest-drag re-baseline refused by measurement (2026-08-16), and the two reverts it was
+carrying are blocked behind it.** Fourth refusal in the sequence, and the first one that failed
+in the *return* rather than the prefix. The full chain was built and run; §7 of
+`docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` holds the constant table, the
+measured outcomes and the four bounded searches. What this adds to the record beyond issue 2's
+entry:
+
+1. **The launch cannot pay for honest drag, and the analytic note said it could.** Sweeping the
+   3.9 g plateau across 0.95–1.45 s (85 points) measures act-one-exit head at −51.9 … +159.4 m
+   against the old-drag baseline's 186.7 m — non-monotone, and it never gets there, because the
+   faster opener re-sheds what the launch adds. Inside the 300–320 km/h exit band the best is
+   124.4 m, and there act one's minimum speed has collapsed to 21.4 m/s. **1.094 s is the only
+   value in the band where the act-one exit bank crosses zero**, and that matters: 7.4° of
+   residual bank at 1.08 s is amplified by the climb to 53° at the crest and tips the clifftop
+   into a dive. The absorber is the cliff-base assist instead, at roughly double its drive.
+2. **The camelback is not the absorber and was not moved.** Per Daniel's ruling of 2026-08-16 it
+   stays ~250 m and symmetric. Measured, that is not a cost: at `fall_s` 3.20 the honest-drag
+   hill holds 246.86–247.07 m prominence, width/height 3.130–3.137, and comes out *more*
+   mirrored in height than the shipped one (fall/rise 1.012–1.014 vs today's 0.966; arc 0.793 vs
+   0.824; time 0.883 vs 0.878). Probing a taller rise — before the ruling, as a diagnostic —
+   drove prominence to 264–270 m through the 255 ceiling and made the return wall *worse*
+   (−129.5 m height miss against −78.6 m at the pinned height). The ruling and the measurement
+   agree.
+3. **Both reverts fail on today's drag, measured on all three deep seeds.** Capture band
+   70–80 → 70–77: every deep seed budget-exhausts at 79/80 with the entry speed +1.04 … +1.39 m/s
+   past the 77 ceiling. Brake bound 3.6 → 3.0 g: every deep seed refuses with `brake solve
+   reached a parameter bound`, the solved peak on seed 11 being 3.0108 g. Their stated reason
+   does disappear under honest physics — but honest physics has not landed, so the reverts stay
+   where they are and the 2026-08-15 decision below stands until it does.
+
+**Cross-suite build reuse refused by measurement (2026-08-16); the battery's cost is its
+schedule, not its builds.** The battery makes 62 full `RideGenerator.build()` calls per run and
+35 are preset builds a shared pre-built fleet could serve, so sharing them looks free. It is not:
+the reusable builds are not on the critical path. `tools/gates.sh` dispatches in `JOB_LIST` order,
+so `smoke.gd` goes last and ends the run; reorder longest-first and the path becomes
+`ride_planner_tests` at 140 s, 16 of whose 17 builds are `build_with_decisions` at certified-range
+extremes that no preset fleet can serve. Measured: today 183.6 s, longest-first dispatch alone
+**145.2 s and 13/13 green**, reuse in today's order 167.9 s (−8.5%), reuse *plus* that reorder
+160.5 s — **slower than the free reorder**, because the 20.0 s fleet pre-build prologue costs more
+than the 4.9 s reuse takes off the critical path. The full measurement, the per-suite build census
+and the scheduler model live in `tools/gates.sh`'s header. Neither lever reaches ~2 min:
+`ride_planner_tests`' 16 extreme builds are the wall, and the reorder is measured and available.
+
+### Decisions — 2026-08-15 review session
+
+Recorded user decisions from the full-codebase review (they resolve the "decide deliberately"
+items above):
+
+- **Gap A is a bug, not intent: seeds must genuinely vary the ride** — terrain placement,
+  track, element geometry, and element order. Variety is to be built as the approved
+  FVD-first planner vision (named decision streams, story grammar, per-slot recipe/target
+  resolution), not as a simplified RNG sprinkle that would be thrown away. Order variation is
+  limited to grammar cells (act-one pool permutes and may drop one optional member; return
+  composition varies; the spine stays ordered; `sequence.order` stays reserved).
+- **Records are fixed identity; everything else draws.** Camelback ~250 m, the record launch,
+  and the 100–110 m Immelmann stay in tight bands; non-record geometry draws per seed within
+  conservative certified capability ranges grounded in the FF/TRR telemetry counterparts.
+- **Gap B resolves toward the contract, derivation first.** The launch/record numbers are
+  re-derived from real engineering (Do-Dodonpa ≈3.3 g reference; near-future LSM credit)
+  before code is retuned; the derived numbers become both the code and the prose, gated in
+  smoke. Note the honest baseline: the built entry launch (3.2 g) matches the real
+  Do-Dodonpa reference; CLAUDE.md's "~4 g" was the unsupported side of that disagreement.
+- **The version-1 config surface (material plan Task 4) is in scope** and is to be built on
+  the planner decision layer (`build_config`, key registry, overlay algebra).
+- **No document is beyond skepticism** — authority: user decisions → physical derivation +
+  verified evidence → vision docs → code. Doc cleanup is banner-plus-falsehood-fixes;
+  history stays intact.
+- **Return-solve budget flag — discharged 2026-08-15:** the budget was re-derived from the
+  measured evaluation formula and tightened 220 → `MAX_RETURN_EVALUATIONS := 80` (now in
+  `godot/ride_return_solve.gd`), gated at ≤60% usage on all fifteen seeds in smoke.
+- **Capture-entry band widened 70–77 → 70–80 m/s** — accepted as the measured cost of closing
+  the ~340 km/h record inside the 8.2 km route band with no mid-course brake. The brake bound
+  moved 3.0 → 3.6 g for the same reason. Both are recorded in `CLAUDE.md`'s contract, with the
+  derivation in `docs/superpowers/specs/2026-08-15-record-launch-derivation.md`. The derived
+  entry launch landed at a 3.9 g peak, which supersedes the 3.2 g baseline noted above.
+- **Reference imagery is local-only.** Photographic and video reference media is never
+  committed. `tools/fetch-reference-media.sh` builds a local manifest, `REF_MEDIA_MANIFEST`
+  points the inspection run at it, and an absent manifest is reported as a declared gap rather
+  than worked around. (Full POV downloads are bot-blocked from this environment; the thumbnail
+  fallback produced five real overlays, and full frames can be supplied locally.)
+- **Code budget.** Write the minimum code that solves the problem; ship each piece of data once,
+  in code or in a document but never both; the read-only diagnostic layer must not outgrow the
+  generator it measures; if two hundred lines could be fifty, rewrite them. This session's
+  deflation pass removed 664 lines with byte-identical behavior. Standing rule, in `CLAUDE.md`.
+- **Config v1 landed with an honest registry.** `godot/ride_config.gd` and
+  `RideGenerator.build_config()` implement the overlay algebra, canonical hash, and resolution
+  report, but only `preset`, `seed`, and `slot.intensity` on the two return heights are
+  registered — the keys whose full range is certified by `ride_planner_tests.gd`. Every other
+  candidate key carries its measured refusal reason in `RideConfig.UNREGISTERED`. Do not widen
+  the registry ahead of the measurement that certifies it.
+- Housekeeping: the `.superpowers/` working directory referenced by commit `b464a7b`'s
+  message is not in the repository and does not survive a fresh clone. `godot/fidelity_overlay.gd`
+  and its suite landed via commits `bff59ef`/`d2bda61`/`1999ca0` without a planning document;
+  their contract is described in README and the material design's diagnostics section.
 
 Carry-over from the same review: role `targets`, `phases` and `recipe_id` are published in the
 accepted route but still unenforced (see *Known limitations of the baseline itself* below).
@@ -49,7 +306,63 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
    connective beats are absent.
 2. Pacing cheated by near-zero-loss coasting — boring sections hold speed as if
    friction/drag-free, propping up the elapsed average.
+   **Mechanism derived, 2026-08-15.** The integrator's resistance is
+   `0.08 + 0.000075·v²` m/s² (`ride_program.gd` `ROLLING_MPS2`/`AERO_PER_M`). Rolling at
+   0.08 m/s² (c_rr ≈ 0.008) is defensible with near-future bogie credit, but the aero term is
+   3–5× under real physics: a ~12 t open train at Cd·A ≈ 4.5–7 m² in desert air
+   (ρ ≈ 1.1–1.225 kg/m³) gives 0.00021–0.00036 per metre, not 0.000075. At return speeds
+   (~75 m/s) the built ride sheds ~0.05 m of head per metre where honest drag sheds ~0.17.
+   Fixing it re-opens the whole energy chain — launch exit speeds, act-one entry bands, LSM
+   drives, camelback crest, and the record closure (where more honest drag actually *eases*
+   the measured ~21.8 m surplus-head problem) — so it must land as one re-derivation with the
+   prefix closure solve available (issue 24), not as a constant tweak.
+   **Built and refused by measurement, 2026-08-16; nothing landed.** The whole re-baseline was
+   implemented against the landed closure solve and run. Six of seven beats close at
+   `AERO_PER_M = 0.00021`: launch plateau 0.8038 → 1.094 s holds the 3.9 g peak and exits at
+   86.184 m/s (310.3 km/h); the cliff-base assist is re-derived from 0.294 to **0.597 g** with a
+   re-shaped pull-up/core/pull-over that reproduces the old crest to 0.03 m/s and 0.34 m; the
+   tunnel booster grows 1.633 → 1.933 s (184.6 → 211 m) at unchanged 1.33 g; the record holds at
+   **340.22–340.37 km/h** on 11/42/20260809 with the closure converging in 16–28 of 31
+   evaluations; act one keeps honest inversion speed (minimum 37.30 m/s vs 36.08); and the
+   camelback stays pinned at **246.9 m** prominence on `fall_s` 3.40 → 3.20 alone.
+   **The seventh beat, the return, does not close from any control vector** — not in production
+   bounds, not in deliberately over-wide diagnostic bounds, and not with the route band opened
+   to 7000–9500 m. The residual that never yields is the capture-gate height, **−73 to −79 m in
+   every configuration** — measured on **seed 11 only**, so that range spans configurations, not
+   seeds; the deep seeds' camelback-exit states are near-identical, which makes the wall very
+   likely fleet-wide but leaves it untested — because the return's beats are authored at fixed
+   peak g so their rise scales with `v²`, and all seven controls are durations and banks. The
+   prefix's ground track is chaotic in its own force constants, so honest drag moves the
+   camelback→return handoff **426 m forward, 86 m cross, 22.25 m lower (still 18.08 m above the
+   station, not below it) and 23.7° in yaw** — 630.53 m of forward shift and 20.4° of yaw
+   already at the tunnel exit — an order of magnitude past the 32–66 m that defeated three
+   attempts on issue 24's swap.
+   Full derivation, the constant table, the four bounded searches and the two blocked reverts:
+   `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7. The named next spend is
+   height authority in the return (peak-g as a solved control) or a prefix handoff-pose
+   residual — not another seed and not another scalar.
+   **Height authority built and fleet-tested, 2026-08-16: the wall stands, and it changed
+   name.** The peak-g control landed for the production solve (re-certified 15/15 at today's
+   drag) and the honest-drag probe was re-run as the first *fleet* test of §7.2's wall —
+   seeds 11, 42, 20260809, production bounds, both the shipped 70–80 band and §7.2's (40, 90)
+   opening, draw-seeded plus 24 random starts per seed. **Zero convergences.** Freeing the
+   peak cuts the height member roughly fourfold at the best stall (seed 11: −50.6 m pinned →
+   −13.1 m freed) and closes the entry-speed residual, so height authority is real — but what
+   never yields now is the *horizontal* capture placement: cross-track 137–235 m and
+   station-forward 52–80 m at every seed's best point. At the shipped band the solve instead
+   pins the peak at its 3.4 floor trading height for speed (seed 11: height −92.3 m, speed
+   0.29 m/s under the 70 floor). A return-side control cannot un-move a handoff displaced
+   426 m/23.7°; the unblocking spend is §7.4's other candidate, the prefix handoff-pose
+   residual. `AERO_PER_M` stays 0.000075; nothing about drag landed. Numbers:
+   `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §5.
 3. G-force envelope still not reached in many parts.
+   **Measured against the counterpart bands, 2026-08-15** (offline geometry pack, deep
+   seeds; diagnostic labels, not verdicts): the inversion act runs *under* its grounded
+   targets — cutback peak 4.12 g vs the 5.15–5.6 band, Immelmann peak 5.23 g vs 5.79–5.91
+   (misses of 0.05–0.18 normalized) — while the loop entry lobe sits slightly over. Roughly
+   30 of ~94 counterpart windows read `under` per deep seed. The under-shoots are in exactly
+   the roles whose targets are still hardcoded literals; they become drawable/re-targetable
+   when the prefix closure solve (24) unblocks act-one retuning.
 4. Oversmoothing of elements.
 5. Poor FVD implementation — the force-authoring quality itself, not just targets.
 6. Poor terrain awareness — e.g. ~80 m above the terrain at the ride's highest point, never
@@ -62,7 +375,18 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
 11. Overly leisurely in many sections.
 12. Too many flats — between the cliff-dive LSM and the camelback, on the return, and the
     hold extending too far from the cliff edge (so the clifftop is not terrain-hugging).
+    **Measured, 2026-08-15:** ~35.5 s of flat dwell per ~158 s ride on every deep seed;
+    12.5 s is the station itself (legitimately flat), leaving ~23 s (~15% of the ride)
+    of in-ride flats spread across the beats — the per-beat table is in the offline
+    audit's pacing metrics.
 13. Airtime hills etc. too tame.
+    **Quantified, 2026-08-15:** the act-one airtime chain measures −0.325 g against grounded
+    counterpart targets of −1.1 (Falcon deepest mid-course hill), −1.35/−1.73 (I305 ejector
+    hills) and −1.13 (longest float) — the built hills deliver a quarter to a fifth of the
+    counterpart ejector force, the largest normalized misses in the whole comparison. The
+    return heights author −0.45 g × the certified 0.95–1.05 unload draw, similarly tame.
+    Blocked on 24 for act one; the return-side deepening needs its draw range re-certified
+    wider (the envelope allows far more: −3.0 Gz stretched).
 14. Elements miss the original near-future scaling requirements — scaling/geometry feels
     wrong when compared multi-dimensionally (height vs speed vs g vs duration together).
 15. Jerky transitions.
@@ -80,37 +404,220 @@ below); these seven are **not** covered by the audit's traceability record.
     related to 15 and 10, but the specific mechanism is the stepping, and it is a way of
     passing `validate_loads` without earning it — treat any fix that keeps the stepping and
     only reshapes the filtered trace as a cheat.
+    **Partially fixed, 2026-08-15, measured.** Two tranches now roll continuously. Return
+    roles: turn-a peak roll rate 108 → 69°/s, its acceleration break 662 → 258°/s², banked-flat
+    share 0.47 → 0.38 (the height roles came out similar). Clifftop roles: slow-crest
+    acceleration 901 → 515°/s², rim peak roll 115 → 75°/s, seam breaks 134 → 47 and
+    176 → 62°/s². Top speed drifted 94.555 → 94.745 m/s (in band) and the route sits at
+    ~8181 m. **Remaining:** the opener tranche was refused by measurement — any bank-timing
+    change there tips dive placement off its feasibility edge on all seeds — so the worst seam
+    break, 899.7°/s² at drop/unbank-out, stands until the prefix closure solve (24) lands.
 21. Height above terrain is not watched and drifts upward. There is a terrain-clearance floor
     but no ceiling and no control of slow upward drift, so the track wanders away from the
     ground over long stretches. Sharpens 6 with a concrete mechanism: the drift is unwatched,
     not merely mis-tuned.
+    **Measured, 2026-08-15 (deep seeds 11/42/20260809).** Only 20–27% of samples sit within
+    20 m of the ground and 30–34% within 40 m; the longest contiguous stretch above 40 m AGL
+    is 2.8–3.2 km, running from the climb through the camelback into the return. Vertical AGL
+    beside the near-vertical cliff face legitimately inflates the climb/dive rows, but the
+    return is unambiguous drift on the plain: return-turn-b median AGL 101–127 m and
+    return-height-b median 146–175 m — the return's airtime structures ride 100+ m above the
+    ground they should skim. Act one never comes under ~38 m (per-role minima 51–66 m on
+    cutback/loop/airtime/wave), and the `tunnel-lsm3` role runs at 16–52 m AGL, so the
+    "tunnel" record launch is not in a tunnel. Fix split: the opener/act-one floor is prefix
+    territory, blocked on the closure solve (24); the return-side profile is emergent from
+    force authoring — the seven-control solve constrains route length, entry speed, and the
+    capture corridor, and nothing in it references the ground beneath the path — so terrain
+    awareness there means a residual or authored-height reference against local ground.
 22. The cliff dive starts too far out from the cliff edge. The dive should commit at the rim;
     it currently begins well back from it, which also costs the vertigo the beat exists for.
     Interacts with 12's "hold extending too far from the cliff edge" and with the placement
     bands in `generator.gd` (`DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M`, `DIVE_EXIT_APRON_BAND`).
+    **Open, with new evidence (2026-08-15):** dive placement is sitting on a feasibility edge —
+    a ±0.005 change in one upstream force value moves the dive chord ~115 m — so the approach
+    length cannot be shortened by retuning the prefix. It needs the prefix closure solve (24).
+    **Half fixed, 2026-08-15 (stage 5a, measured):** with the closure solve landed, the dive
+    entry now commits at 16.3–19.6 m behind the rim fleet-wide (was 27.1–33.9 m), aimed at
+    the rim end of the clearance band with all margin floors intact (low side now binds at
+    +4.30 m) and per-seed variety preserved. The other half — shortening the 64.1 m / 3.68 s
+    banked pre-commit approach — **is no longer blocked, corrected by re-measurement
+    2026-08-16.** The earlier record (the approach shortening "breaks the return solve on
+    15/15 seeds, with a non-monotone basin where 0.85 passes and 0.80 and 0.90 refuse single
+    seeds") does not reproduce on today's code: all fifteen preset seeds × `dive_approach_s`
+    ∈ {0.80, 0.85, 0.90} — 45 return solves through the production compile seam — converge
+    from the unchanged fixed `RETURN_SEED`, worst 68 evaluations (seed 7 at 0.80, the only one
+    over the 60% = 48 gate); the per-case distribution and the probe that ruled out
+    `RETURN_LENGTH_AIM_MARGIN_M` as the mechanism are in §8.1 of
+    `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`. So the shortening is
+    a prefix-side stage that can be taken on its own evidence: what remains to prove is the
+    dive's *geometry* at a shorter approach, not the return's ability to follow it. A gate
+    still holds the closure from ever lengthening the approach (fleet 0.996–1.000 s).
+    **What remains, priced 2026-08-16.** The shortening was not taken this session, and the
+    dive-arc work that would have taken it was refused (see *Next session*). What that stage
+    measured about this half, on the canonical path, still stands and is now quantified:
+    the approach span itself builds **17.625 m of arc per second** at the canonical rim speed
+    (seed 11: the 1.00 s span is 17.625 m of the role's 475.960 m) — that is the *raw span* rate,
+    not what the role gives back: the **net** rate, after the commit geometry re-settles around a
+    shorter span, is **15.82 m per second** (§11.3 of the prefix-closure design, measured on the
+    swapped story — the canonical net rate was not measured). And the whole
+    commit block — bank-in, approach, bank-out, commit — is 3.684 s and 64.111 m with just
+    +0.258 m of net rise, so it is exactly the flat banked run issue 22 objects to. Shortening
+    it on canonical is a **re-baseline**, not a feasibility question: the return follows
+    (45/45 at 0.80–0.90, §8.1 of the return-seed design) and the dive band has 13.456 m of
+    headroom that a shorter approach only widens. What is still unproven is the one thing the
+    issue is about — the dive's *geometry* at a shorter approach: whether the commit still
+    reaches the face before the vertical entry begins, and whether `dive_edge_span_m` stays
+    inside its aim band without the closure walking the entry back off the rim it was just
+    aimed at (at 0.40 s on the swapped story the accepted closure flipped the yaw solution
+    outright, which is the failure mode to watch for). Measure that before spending the margin.
+    **Unchanged by the composition stage (2026-08-16), and one thing is now easier.** The
+    dive-arc residual landed after all — at a 2 m inset, composed with a turn-b return residual
+    (issue 24 above; §8 of the height-authority design) — but it is **exactly 0.0 on every
+    canonical seed**, so the canonical approach length, the flat 3.684 s commit block and this
+    issue's whole complaint are untouched: nothing here has been spent or closed. What is easier
+    is that `dive_approach_s` is no longer a free parameter a future stage has to justify against
+    the role band by hand — the band is now a residual the closure sees, so a stage that shortens
+    the canonical approach gets told by the solve, not by the route contract afterwards. The
+    unproven half is unchanged: whether the commit still reaches the face at a shorter approach,
+    and whether `dive_edge_span_m` stays in band without the closure walking the entry off the
+    rim.
 23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
     it should not have. The elements hit their force targets while their shapes are visibly
     wrong. Extends 7 beyond inversions and supports to the marquee elements.
+    **Open, now quantified (2026-08-15)** by `godot/geometry_metrics.gd`: the camelback leans
+    24.46° off vertical on the rise, 16.28° at the exit, and 10.05° at the crest, against
+    ≤1.9° on the airtime hills. The likely mechanism is the 42.5° of heading turn taken during
+    the climb. 18 of the 20 roles are grounded against a measured counterpart band
+    (`godot/fidelity_counterparts.gd`, derived in
+    `docs/evidence/fidelity/counterpart-bands.md`); the wave turn and the outward rim turn are
+    declared evidence gaps.
 24. The FVD++ implementation gets the g's but not the geometry, especially in the connecting
     transitions. This is the root cause behind 20, 23 and much of 15: authoring in the rider's
     frame is reproducing the force trace without producing a coherent swept shape, and the
     transitions between elements are where the discrepancy shows most. The deepest of the seven
-    — 20, 23 and 25 are plausibly symptoms of it.
+    — 20, 23 and 25 are plausibly symptoms of it. **Now the recommended next work**, with a
+    named first step: the prefix closure solve. See *Next session — start here* for the three
+    measured refusals that converge on it.
+    **Still open, and its remaining half now has a measured name (2026-08-16).** The closure
+    solve landed and absorbs tail-domain changes; act-one *permutation* draw certification is
+    still blocked and this entry does not close. Three candidate unblocks have now been built
+    and refused on their own measurements — the return-seed derivation, the story-energy
+    re-target, and the dive-arc residual — and all three failed the same way: they moved a
+    scalar the swap is not actually short of. Measured before/after for the act-one optional
+    swap, unchanged across all three attempts: it **plans 15/15** and **builds 0/15**; on the
+    four gated seeds the returns of 11 and 4096 converge (34 and 42 evaluations) and are then
+    refused by the route contract on `outward-dive` 497.4 / 497.5 m and `return-turn-b` 572.6 /
+    571.2 m, while 42 and 20260809 budget-exhaust their return at 79/80 with
+    `height_a_recovery_duration_s` pinned at its floor. The invariant behind all of it: the
+    swapped act one hands the camelback a handoff pulled back 32–66 m, +12–13 m higher and
+    3.5–5.1° in yaw, and the four closure controls are all durations *downstream* of act one,
+    so they cannot pin six DOF. The next attempt has to add degrees of freedom upstream of the
+    handoff — head-domain accommodation or a handoff-pose residual with more than four controls
+    — not re-aim an existing one.
+    **A second, independent chain hit the same wall (2026-08-16).** The honest-drag re-baseline
+    (issue 2) arrived here from the other direction — 630.53 m of forward displacement at the
+    tunnel exit against the swap's 32–66 m at the handoff — and its refusal names a candidate
+    this entry did not have: **return height authority** (`RETURN_HEIGHT_A_PEAK_G` /
+    `RETURN_HEIGHT_B_PEAK_G` becoming solved controls, so the beats hold their rise as `v`
+    falls). That is a candidate for the swap's **floor-pinning** failure mode — the seeds that
+    budget-exhaust with `height_a_recovery_duration_s` pinned at its floor — and **not** for its
+    cross-track/yaw mode, which still needs upstream DOF or a handoff-pose residual. Derivation:
+    `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7.2–§7.4.
+    **The candidate was built and the floor-pinning mode cleared, 2026-08-16.** With the
+    height-a peak as the eighth solved control, all four gated seeds converge the swapped
+    return — 42 and 20260809, the two floor-pinned 79/80 exhausters, converge in 50 and 38
+    evaluations with the recovery 0.386/0.293 s off its floor. The other mode stands exactly as
+    predicted: the swapped build still refuses at the route contract on `outward-dive`
+    497.4–497.5 m (every seed) and `return-turn-b` 570.5–573.2 m (three of four), and the
+    converged swap returns graze the route-length ceiling (0.45–1.19 m inside 8200 m), so the
+    compiled-swap gate was re-founded on the new measurement. **This entry stays open**; its
+    remaining wall is now purely upstream of the camelback handoff — the handoff-pose residual
+    — which the honest-drag fleet test (issue 2) independently confirmed the same day. Spec:
+    `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §6.
+    **The other mode cleared too, and the swap now builds — 2026-08-16, later the same day.
+    This entry still does not close.** The two route-contract refusals were closed by composing
+    two role-band residuals: the dive-arc residual §11 of the prefix-closure design had built and
+    refused (re-aimed from a 3 m to a 2 m inset), plus a new *eighth return residual* on
+    `return-turn-b` interiority — the role §11.4 had itself identified as where the metres the
+    dive gave back were being re-spent. Neither works alone; together, on the four gated seeds,
+    the swapped story builds end to end for the first time: closure converged in 29/40/46/99
+    evaluations of a re-derived 105 cap, return converged in 29–65 of 88, `outward-dive`
+    487.96–488.02 m, `return-turn-b` 529.9–567.7 m, every declared role band interior, route
+    8134.7–8178.5 m, contract and validators clean. The canonical fleet is bit-identical, 15/15,
+    on every published channel — both residuals are exactly 0.0 there. **What still blocks this
+    entry is the permutation certification itself:** the optional-member swap is one of
+    thirty-six grammar-legal act-one orders, and the other thirty-three are still refused at the
+    *preflight*, upstream of the closure, by the head-domain problem §5's correction names. One
+    order building is not a certified draw. Also corrected here: the **handoff-pose residual**
+    this entry named as the next spend is **refused by two independent probe lanes** — the
+    prefix's terrain-neutral authority is 7–74× short of the displacement it would have to
+    absorb, and the swap has no station-frame miss at all (its return reaches the capture gate at
+    |cross| ≤ 0.006 m, |height| ≤ 0.033 m, |yaw| ≤ 0.005°), which is exactly why its refusals
+    were role-length refusals. Spec:
+    `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §8.
 25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
     with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
     is missing.
+    **Hypothesis confirmed by measurement, 2026-08-15.** In the fastest decile of samples
+    (≥80.6–80.9 m/s) the ride is never within 20 m of the ground — the ≤20 m share is 0.000 on
+    all three deep seeds, with minimum 37 m and median 49–58 m AGL. The ride is fastest exactly
+    where it is farthest from anything that could convey speed; AGL, not velocity, is the
+    missing ingredient. The fix is 21's fix.
 26. The clifftop section is just a slow bank, not the twisty, windy suspense the real coaster
-    has there. The declared roles `clifftop-slow-crest` (35–70 m) and `clifftop-outward-rim`
+    has there. The declared roles `clifftop-slow-crest` (35–80 m) and `clifftop-outward-rim`
     (65–120 m) may simply be too short to contain that character at all — check whether this is
     a shaping bug or an under-declared story beat before treating it as either.
+    **Answered by measurement, 2026-08-15: under-declared story beat.** Falcon's Flight's
+    clifftop is two beats, not one — 21.0 s of upper-cliff turns (four distinct banked
+    gestures, bank maxima 79°/52°/52°/67°, three unbank troughs, four corroborating Gz
+    valleys at 1.6–2.1 g) and then the 12.3 s crest crawl; ours is 7–11 s with one bank
+    build. Heading is not the gap (integrated 206–412° vs our declared 160–195°); rhythm
+    and length are. Design: one new role `clifftop-rim-weave` (190–280 m, three alternating
+    sweeps, counterpart bands unstretched) inserted ahead of the crawl so the rim→dive
+    handoff (22) is untouched; no fifth solve control needed — the weave sits inside the
+    solve tail and its energy cost is bounded by the existing residuals. Spec:
+    `docs/superpowers/specs/2026-08-15-clifftop-character-design.md`. Lands after issue
+    24's stages (stage-5 territory).
 
 ## App
 
 17. Loading time.
+    **Addressed and review-approved, 2026-08-15 (viewer):** generation and analysis run on a
+    worker thread; the ride already on screen keeps playing under a "Generating seed N…"
+    HUD line until the new route validates, then the world swaps atomically — a rejected
+    route keeps the old ride and shows a persistent ROUTE INVALID banner. Closing the window
+    mid-build says "Finishing generation…" and quits when the build lands instead of
+    freezing silently. Raw generation time itself is unchanged (issue 19's measurement).
+    Awaiting Daniel's verdict.
 18. Camera/HUD issues.
+    **Scoped by Daniel, first pass landed 2026-08-15, code review found real defects — fix
+    in flight.** First pass: POV look-ahead (0.47–1.5 s depending on speed, 8–45 m clamp),
+    speed shake, nonlinear FOV ramp; HUD dropped envelope-usage %, bank°, roll°/s and
+    elapsed-average, humanized lateral/longitudinal as L/R and accel/brake, added progress
+    (clock + km), current → next element, and peak-so-far stats. The opus review then
+    measured two real defects — the shake frequencies (23.7–45 Hz) aliased at 60 fps Nyquist
+    into up to 7.9 cm of per-frame jitter, and the threaded loader (17) left the CI viewer
+    step running 0 of 120 live frames — and the fix round landed and was re-review-approved
+    the same day: shake re-tuned to 8.2–11.6 Hz on a wall-clock phase in the camera's own
+    basis, measuring 4.41 mm of eye travel per 60 fps frame at top speed; FOV expressed as
+    106.5–123.8° horizontal under KEEP_WIDTH (74–93° vertical at 16:9, ultrawide cannot
+    widen it); so-far stats track peak and minimum Gz, seed from the first live sample, and
+    reset on restart, wrap, new seed, and both row-change paths; the route's own top speed
+    shows alongside the so-far value. The camera/HUD logic is now two pure statics swept by
+    smoke every run (camera ≤6.3° off tangent vs a 40° bound, look 84.5° clear of the up
+    axis vs 30°, per-frame shake ≤8 mm bound at 1.8× measured, element names never empty
+    and in exact story order), and CI's viewer step counts live ride frames and exits 1 on
+    a rejected route — proven able to fail before the injection was removed. Awaiting
+    Daniel's ride-through verdict on the feel.
 19. Generation/CI speed — the time-domain return, capture, and brake solves have bounded
     coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
     GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.
+    **Measured, 2026-08-15:** the latest green main run totals 6.1 min — setup + import 19 s,
+    focused manifest 2 m 51 s (nine suites at the time; twelve now, projected +30–60 s), smoke
+    2 m 48 s, viewer 9 s. At that size, evaluation-cap changes, import caching, or job splitting
+    are complexity the measurement does not justify; re-measure only if the manifest keeps
+    growing. Note CI triggers on push-to-main and pull requests only, so feature branches
+    without a PR run no CI — the local gate sequence is the branch's verification.
 
 ## Code health — 2026-08-15 hygiene review
 
@@ -126,16 +633,17 @@ and none of issues 20–26 is caused by its file layout. The return solve is als
 functional gain. Two bounded targets are worth doing, ideally as part of the issue 24 work
 rather than before it:
 
-- **Duplicated numerics.** `ride_program.gd` preloads `BoundedSolver` and uses it once, at the
-  return solve, while carrying its own private `_linear_solve`, `_finite_difference_jacobian`
-  and `_matrix_conditioning` for the capture and brake solves. Two Gauss-elimination paths that
-  should be one. `godot/bounded_solver.gd` already exists and is tested.
-- **`ride_program.gd` holds five concerns** in 1,746 lines / 55 functions: story-recipe assembly,
-  the return solve, the capture solve, the brake solve, and the numerics above. The solve
-  triple is the natural seam. Decomposition remains a standing user deferral — do it when
-  issue 24 forces changes there, not speculatively.
+- **Duplicated numerics — resolved 2026-08-15.** The capture and brake Newton steps now take
+  their linear solve and conditioning from `BoundedSolver.linear_solve` (one Gauss path);
+  `_finite_difference_jacobian` deliberately stays private in `godot/ride_return_solve.gd` —
+  measured and review-confirmed: adopting `BoundedSolver.solve` wholesale would change the
+  iterate path and break bit-identity.
+- **The five-concern decomposition — done 2026-08-15** (commit `2d3b9b9`): `ride_program.gd`
+  split at the solve seams into `ride_prefix_solve.gd` and `ride_return_solve.gd`,
+  byte-identical routes SHA-verified. The former deferral said do it when issue 24 forces
+  changes there, not speculatively — issue 24's stages fired that trigger.
 
-Not adjusted, deliberately: the flat `godot/` layout (17 production files, prefix-grouped by
+Not adjusted, deliberately: the flat `godot/` layout (19 production files, prefix-grouped by
 name — a directory move would rewrite ~40 preload paths, the `.uid` files, `main.tscn`, the CI
 manifest and every doc reference for modest gain), and the name `_inspect.gd`, whose leading
 underscore reads as private though it is a documented user-facing command (54 references, most
@@ -232,13 +740,27 @@ not fetches.
 - **POV video (YouTube)** — nine sources: Falcon's Flight forward `cUURkqyn4Zs`, backward
   `J54WKu2nU6o`, `poco8rOnW18`, `sdXGD9kMR7s`, CGI `NFVNGgwZk3c`; Tormenta forward
   `AHjk2R4da_I`; CoasterTalk continuous `0UaOSBGSx20` and edited `seNRpi4wP-s`; I305 overlay
-  `wX7uHKj-Ujc`. Four are `corroborative`, three `observation_only`, four `review_pending`.
+  `wX7uHKj-Ujc`. Two are `corroborative`, three `observation_only`, four `review_pending`
+  (the manifest's overall tally is 5 corroborative / 4 review_pending / 3 observation_only,
+  with the three RideForcesDB sources making up the other corroboratives).
   No frames, audio, or copyrighted content are committed — metadata and timestamps only.
 
 **None is `executable`**, which is exactly why the audit emits `no-eligible-finding`. Grounding
 any issue above in measurement means promoting a source through
 `docs/evidence/fidelity/catalog-review.md` and the four-part bar in *Promoting a finding to a
 hard gate* — the links being present is not the same as the evidence being usable.
+
+27. Dense-output kinematic defect metric is tautological. Motion.gd's `max_kinematic_defect_mps`
+    compares `_dense_velocity(...)` against `sample.tangent * sample.speed_mps`, but `_dense_sample`
+    defines tangent and speed as `velocity.normalized()` and `velocity.length()` from the same
+    `_dense_velocity` call, so the metric measures `v.distance_to(v.normalized() * v.length())`
+    — Float32 round-trip noise, measured constant 5.7220459e-06 on all three deep seeds
+    (11/42/20260809) to every printed digit. Consequence: `motion_tests.gd`'s defect gate
+    ("dense output measures its actual dr/dt minus returned vT defect", threshold 1e-5, around
+    lines 436-438) cannot fail. The honest fix is comparing against the independently interpolated
+    speed/tangent channels — but that changes published bits (the metric feeds nothing else;
+    verify which before claiming), so it needs its own measured stage; **not fixed deliberately**,
+    to preserve the bit-identity contract. Evidence source: the 0b36657 task review (2026-08-16).
 
 ## Recommended approach
 

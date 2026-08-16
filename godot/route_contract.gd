@@ -493,7 +493,7 @@ static func _terrain_proofs(
 	var dive_drop_m := _drop_m(trajectory.position_m, dive_bounds)
 	var summit_agl_m: float = trajectory.position_m[dive_bounds.x].y - Terrain.height(terrain,
 		trajectory.position_m[dive_bounds.x].x, trajectory.position_m[dive_bounds.x].z)
-	var dive_intent: Dictionary = plan.roles[12].terrain
+	var dive_intent: Dictionary = _role_terrain_intent(plan, "outward-dive")
 	var cross_to_outward_ratio: float = absf(dive.cross_delta_m) \
 		/ maxf(dive.outward_delta_m, 0.000001)
 	var dive_margin := minf(
@@ -599,6 +599,16 @@ static func _terrain_proofs(
 		"summit_lower_spine_agl_m": summit_spine.y \
 			- Terrain.height(terrain, summit_spine.x, summit_spine.z),
 	}}
+
+
+## The declared terrain intent of one role. Roles are looked up by id, never by slot: the plan's
+## role order is drawn per seed inside the story grammar's cells.
+static func _role_terrain_intent(plan: Dictionary, role_id: String) -> Dictionary:
+	for role in plan.get("roles", []):
+		if role is Dictionary and str(role.get("id", "")) == role_id \
+				and role.get("terrain") is Dictionary:
+			return role.terrain
+	return {}
 
 
 static func _terrain_path_observation(

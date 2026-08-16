@@ -49,6 +49,7 @@ directional_shadow_max_distance = 2600.0
 layers = 2
 
 [node name="PovCamera" type="Camera3D" parent="."]
+keep_aspect = 0
 cull_mask = 1
 near = 0.08
 far = 5000.0

@@ -6,6 +6,10 @@
 > 2026-08-15. Do not execute the steps below: they build the ten-class template scaffold and a
 > dormant candidate program alongside the legacy runtime, an order the material slice explicitly
 > replaced. Native recipes now live in `godot/ride_program.gd`. Read this for rationale.
+> The sixteen-slot / seventeen-recipe vocabulary below (`act1.giant_inversion`,
+> `hydraulic_station_launch`, `PRESET_ID == "future-hybrid@1"`, …) was never built and
+> corresponds to nothing in the repository; the shipped story is ten beats over twenty
+> ordered roles under preset `material-v1`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

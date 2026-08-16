@@ -115,15 +115,21 @@ func _check_preset_fleet_contract() -> void:
 ## band's floor, plus the certified `DIVE_ENTRY_EDGE_MARGIN_M` the fleet may never graze, plus the
 ## rim aim window `placement_u` draws inside.
 ##
-## The second half of the same intent, "no lip pause", is measured rather than aimed. Shortening
-## the authored 1.00 s pre-commit run was tried and refused by measurement (2026-08-15): seeding
-## `dive_approach_s` at the short end of its own 0.4 s bound moves the camelback handoff ~10 m and
-## the seven-control return solve does not re-converge from its fixed seed on *any* of the fifteen
-## — budget_exhausted at 79 of 80 evaluations. The refusal is not monotone in the seed value (0.80
-## refuses seed 7, 0.90 refuses 123456, 0.85 happens to pass all fifteen), so any shortening that
-## does build is a coincidence of that fixed basin rather than a derivation, and the named
-## follow-on is the deterministic per-story return-seed derivation. What is gated here is what the
-## measurement does support: the closure never buys its shorter chord by hovering at the lip.
+## The second half of the same intent, "no lip pause", is measured rather than aimed. The 2026-08-15
+## record — that shortening the authored 1.00 s pre-commit run "does not re-converge from its fixed
+## seed on *any* of the fifteen", with a non-monotone basin in which 0.80 refused seed 7 and 0.90
+## refused 123456 — was **re-measured on 2026-08-16 and does not reproduce**: all fifteen preset
+## seeds at `dive_approach_s` of 0.80, 0.85 and 0.90, driven through this same production seam (the
+## plan's accepted closure vector, which is what `compile()` builds the prefix from), converge their
+## return solve from the unchanged `RETURN_SEED` — 45 of 45, 26 evaluations on 39 of them, worst 68
+## (seed 7 at 0.80). Zeroing `RETURN_LENGTH_AIM_MARGIN_M` on a probe left all 45 converging, so the
+## aim margin is not the mechanism; stage 5a's rim aim and the record launch's 70–80 m/s capture
+## corridor are what moved between the two measurements. The return-seed derivation that record
+## named as its follow-on was refused on its own evidence — see §8 of
+## `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`. The sweep is deliberately
+## *not* gated here: 45 solves cost ~5.8 min serially, against a production path that never runs a
+## shortened approach. What is gated is what production does run: the closure never buys its shorter
+## chord by hovering at the lip.
 func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 	var terrain: Dictionary = route.get("terrain", {})
 	var planning: Dictionary = route.terrain_story_plan.get("planning", {})

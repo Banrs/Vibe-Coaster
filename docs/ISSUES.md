@@ -108,9 +108,26 @@ to 96.8–97.2 m/s — inside the summit-rise aim band the swapped record exit s
 so the design's "pinning `v_entry` at a pinned entry height *is* pinning the record" is false. The
 change was therefore **not landed**; the measurement lives in that design's new §10. The only
 control that shortens the dive without moving its entry state is `dive_approach_s` (497.1 → 487.6 m
-at 0.40 s, entry speed unchanged), which is issue 22's knob and already refused for moving the
-camelback handoff ~10 m. Honest order: **the deterministic per-story return-seed derivation first**,
-then a *dive-arc* residual absorbed by `dive_approach_s` — never a dive-entry-speed one.
+at 0.40 s, entry speed unchanged), which is issue 22's knob.
+
+**Return-seed derivation refused by measurement (2026-08-16), and the order it implied is void.**
+The follow-on this section named — "the deterministic per-story return-seed derivation first, then a
+dive-arc residual absorbed by `dive_approach_s`" — was measured before more of it was written, and
+both halves of its premise failed. (1) The refusal it existed to fix **does not reproduce**: all
+fifteen seeds × `dive_approach_s` ∈ {0.80, 0.85, 0.90} converge from the unchanged fixed
+`RETURN_SEED` (45/45, worst 68 evaluations), so the fixed seed already follows that moved handoff and
+issue 22's second half is unblocked without it. (2) On the act-one swap — the class the design's §4
+named — **no seed of any form reaches the target**: re-seeded with an oracle (seed 11's exact
+converged vector at the same approach, and the swap's handoff deviation is seed-independent to 0.1 m
+fleet-wide), seeds 42 and 20260809 still budget-exhaust at 79/80 at every approach value, every
+refusal pinning `height_a_recovery_duration_s` at its 0.35 s floor. The wall is a box constraint, not
+a basin. The linear warm start was built and run anyway: it changes no outcome and moves the worst
+scaled residual 0.269 → 0.183 on seed 42 but 0.041 → **0.200** on 20260809 — worse on one of the two
+cases it was for — so no code landed. The measured sensitivity matrix is recorded at §8.3 of the
+design so the work is not lost, and its arc column is *exactly zero*: a seed cannot create route
+length, which is what the length-saturated swap needs. Honest order now: **the certified
+`height_a_recovery_duration_s` floor relaxation and the swap's length accounting** (the design's §4
+spends 2 and 3), with the dive-arc residual free to proceed on its own prefix-side evidence.
 
 ### Decisions — 2026-08-15 review session
 
@@ -271,12 +288,20 @@ below); these seven are **not** covered by the audit's traceability record.
     entry now commits at 16.3–19.6 m behind the rim fleet-wide (was 27.1–33.9 m), aimed at
     the rim end of the clearance band with all margin floors intact (low side now binds at
     +4.30 m) and per-seed variety preserved. The other half — shortening the 64.1 m / 3.68 s
-    banked pre-commit approach — was refused by measurement: seeding the approach control at
-    its floor breaks the seven-control return solve on 15/15 seeds, with a non-monotone basin
-    (0.85 s happens to pass while 0.80 and 0.90 refuse single seeds — a coincidence, not a
-    fix). Blocked on the return-length work in
-    `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`; meanwhile a gate
-    holds the closure from ever lengthening the approach (fleet 0.996–1.000 s).
+    banked pre-commit approach — **is no longer blocked, corrected by re-measurement
+    2026-08-16.** The earlier record (the approach shortening "breaks the return solve on
+    15/15 seeds, with a non-monotone basin where 0.85 passes and 0.80 and 0.90 refuse single
+    seeds") does not reproduce on today's code: all fifteen preset seeds × `dive_approach_s`
+    ∈ {0.80, 0.85, 0.90} — 45 return solves through the production compile seam — converge
+    from the unchanged fixed `RETURN_SEED`, 26 evaluations on 39 of the 45 and 68 in the worst
+    case (seed 7 at 0.80, the only one over the 60% = 48 gate). What closed that basin is what
+    landed after the record was taken (stage 5a's rim aim, and the record-launch derivation's
+    70–80 m/s capture corridor) — not `RETURN_LENGTH_AIM_MARGIN_M`, which was zeroed on a
+    probe and left all 45 converging. So the shortening is a prefix-side stage that can be
+    taken on its own evidence: what remains to prove is the dive's *geometry* at a shorter
+    approach, not the return's ability to follow it. A gate still holds the closure from ever
+    lengthening the approach (fleet 0.996–1.000 s). See §8.1 of
+    `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`.
 23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
     it should not have. The elements hit their force targets while their shapes are visibly
     wrong. Extends 7 beyond inversions and supports to the marquee elements.

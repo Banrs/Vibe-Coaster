@@ -184,6 +184,38 @@ for suite in "${JOB_LIST[@]}"; do
 	fi
 done
 
+# Longest-first dispatch keeps critical path = longest suite; unknown suites append
+declare -a desired_order=(
+	"res://ride_planner_tests.gd"
+	"res://smoke.gd"
+	"res://generator_material_tests.gd"
+	"res://ride_program_tests.gd"
+	"res://ride_config_tests.gd"
+	"res://fidelity_artifact_tests.gd"
+	"res://fidelity_overlay_tests.gd"
+	"res://fidelity_tests.gd"
+	"res://terrain_story_material_tests.gd"
+	"res://geometry_metrics_tests.gd"
+	"res://motion_tests.gd"
+	"res://bounded_solver_tests.gd"
+	"res://route_contract_tests.gd"
+)
+declare -a sorted=()
+for job in "${desired_order[@]}"; do
+	for pjob in "${PARALLEL_JOBS[@]}"; do
+		[[ "$job" == "$pjob" ]] && sorted+=("$job") && break
+	done
+done
+# Append any jobs not in desired_order (unknown suites run after known-long ones)
+for pjob in "${PARALLEL_JOBS[@]}"; do
+	found=0
+	for sj in "${sorted[@]}"; do
+		[[ "$pjob" == "$sj" ]] && found=1 && break
+	done
+	[[ $found -eq 0 ]] && sorted+=("$pjob")
+done
+PARALLEL_JOBS=("${sorted[@]}")
+
 # ---------------------------------------------------------------------------
 # Result bookkeeping (shared by serial and parallel paths)
 # ---------------------------------------------------------------------------

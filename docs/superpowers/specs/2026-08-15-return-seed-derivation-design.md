@@ -270,10 +270,19 @@ neither does a return-side bound.
 > derived, built and run; see §11 of `2026-08-15-prefix-closure-solve-design.md`. Three findings void this paragraph's
 > reading. (1) *Canonical never overran its band* — it builds `outward-dive` at 475.604–476.544 m fleet-wide, with
 > 13.456 m of headroom; 497.4–497.5 m is the swap's number alone. (2) *The overrun is a symptom, not the wall* — the
-> role's length is a rim-speed budget (8.83 m per m/s of rim entry speed, measured; both stories fall the same cliff to
-> 5.4 cm), so the 21 m is the swap's +2.431 m/s of rim speed showing up as arc, and no prefix control removes rim speed.
+> role's length is a rim-speed budget (a hotter rim entry buys a longer role, ≈ 8.83 m per m/s as a two-point secant
+> between these two stories — 21.467 m over +2.431 m/s, not a per-span law; both stories fall the same cliff to 5.4 cm),
+> so the 21 m is the swap's rim speed showing up as arc, and no prefix control removes rim speed. Measured against the
+> ceiling on one side of that comparison, the swap's 497.43–497.46 m is 7.43–7.46 m past 490 m ≈ **0.84 m/s** of rim
+> speed too hot.
 > (3) *The metres do not help.* Built, the residual leaves canonical bit-identical 15/15 and refuses the swap 4/4 at the
 > closure; at a margin small enough for the swap to reach, seeds 42 and 20260809 close the dive at 487.0 m and still
 > budget-exhaust their return. Pinning `dive_approach_s` shorter buys seed 11 3.164 m of dive and costs +46.810 m of
-> `return-turn-b`, and the length residual on every short-approach refusal is exactly 0.0 — length was never binding.
-> The wall is the geometric handoff, and four duration controls downstream of act one cannot pin six DOF. `MAX_RETURN_EVALUATIONS := 80` stands untouched, as §2 already ruled.
+> `return-turn-b`. Length is *relieved and the wall remains*, which is stronger than "length was never binding": the
+> short-approach refusals carry a length residual of exactly 0.0, the converged cases sit only 0.20–0.24 m inside the
+> 8199.0 m aim ceiling (pressed against it, not slack), and at the reachable margin the ≈ 10.4 m the dive gives back
+> covers the 2.1 / 5.1 m length overruns those two seeds carry — and they exhaust at 79/80 regardless.
+> The wall is the geometric handoff, and four duration controls downstream of act one cannot pin six DOF.
+
+`MAX_RETURN_EVALUATIONS := 80` stands untouched, as §2 already ruled — a pre-existing ruling, not part of the correction
+above.

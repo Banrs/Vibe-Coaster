@@ -201,14 +201,18 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 ##     `PREFIX_SEED` unchanged on all four seeds, so those 21 m are not a control choice - but they
 ##     are not the blocker either. Measured per span, the role's length is a rim-speed budget: 63%
 ##     of it is the 4.64 s pull-out at 49-70 m/s, both stories fall the same cliff to 5.4 cm, and
-##     the swap's +2.431 m/s of rim speed stretches all eight spans at 8.83 m per m/s. A fifth
+##     the swap's +2.431 m/s of rim speed lengthens all eight spans, 21.467 m in total - a
+##     two-point secant of ~8.83 m per m/s between these two stories, not a per-span law. A fifth
 ##     closure residual on that arc was built and run (2026-08-16): canonical stays bit-identical
 ##     15/15 and the swap goes from planning 4/4 to refusing 4/4, so it did not land. Its only
 ##     absorber returns ~15.8 m of arc per second of `dive_approach_s`, and pinning that shorter
 ##     costs more than it buys - seed 11 at 0.80 s gains 3.164 m of dive and pays +46.810 m of
 ##     `return-turn-b` and -22.595 m of `return-height-a`, through that role's 290 m floor. Route
-##     length was never binding on the seeds that place: every converged swap case sits at
-##     8198.76-8198.80 m and every short-approach refusal carries a length residual of exactly 0.0.
+##     length is relieved and the wall remains, which is the stronger reading: the converged swap
+##     cases sit at 8198.76-8198.80 m, only 0.20-0.24 m inside the 8199.0 m aim ceiling, every
+##     short-approach refusal carries a length residual of exactly 0.0, and at a 3 m residual
+##     margin the ~10.4 m the dive gives back covers the 2.1 / 5.1 m overruns recorded above while
+##     42 and 20260809 budget-exhaust at 79/80 regardless.
 ##     The wall is the geometric camelback handoff, and four duration controls downstream of act
 ##     one cannot pin six DOF - see section 11 of the prefix-closure design.
 ##   Section 5.4's expectation that residual 4 absorbs the handoff shift stays half true as
@@ -237,8 +241,10 @@ func _check_closure_places_the_refused_stories() -> void:
 ## 0.0215 m inside it - both accepted, both by an accident of sign, because `_band_residual` is
 ## flat inside the band and gives the solve no reason to stop anywhere but the edge. A
 ## sub-millimetre margin is not a closure. This is the planning gate's compiled twin: it stops at
-## the return, because everything past the return on a swapped story is the prefix-side role
-## overrun recorded above, which this stage does not own.
+## the return, because everything past it on a swapped story is the route contract refusing both
+## `outward-dive` (497.4-497.5 m) and `return-turn-b` (571.2-572.6 m against 430-570) - the dive
+## overrun is a symptom of the moved camelback handoff, not the named blocker (see above), and
+## neither refusal is this stage's to own.
 func _check_swap_return_closes_interior(seed_value: int, sequence: Array) -> void:
 	var decisions := RidePlanner.resolve(seed_value)
 	decisions["sequence"] = sequence

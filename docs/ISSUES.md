@@ -144,22 +144,35 @@ about. Corrections first: **canonical does not overrun its dive band.** It build
 fleet makes), inside the declared 350–490 m band with 13.456 m of headroom, so there was never a
 canonical re-baseline to declare. 497.4–497.5 m is the swap's number alone.
 Measured per span (seed 11, production integration), the role's length is a **rim-speed budget, not a
-cliff-geometry one**: 63% of it is the 4.64 s pull-out run at 49–70 m/s, the swap stretches all eight
-spans proportionally (**8.83 m of role length per m/s of rim entry speed**), and both stories fall the
-same cliff to **5.4 cm** (−247.48 m against −247.42 m, both inside the declared −250…−240 m). So the
-13.456 m of headroom *is* +1.524 m/s of rim speed, and the swap's +2.431 m/s is 0.91 m/s past it.
+cliff-geometry one**: 63% of it is the 4.64 s pull-out run at 49–70 m/s, both stories fall the same
+cliff to **5.4 cm** (−247.48 m against −247.42 m, both inside the declared −250…−240 m), and what the
+swap's **+2.431 m/s** of rim entry buys is length — all eight spans lengthen, **21.467 m** in total.
+That is a **two-point secant of ≈ 8.83 m per m/s** between these two stories (every difference between
+them included), not a per-span law: the commit block grows +15.5% against the pull-out's +1.7%. Read
+through it the 13.456 m of headroom is ≈ +1.5 m/s of rim speed, and the swap's 497.43–497.46 m is
+**7.43–7.46 m past 490 m ≈ 0.84 m/s** too hot (computed on one side of the comparison throughout; the
+earlier 0.91 subtracted seed 77777's headroom from seed 11's rim delta).
 The residual itself: aim band = the declared role band inset by a margin, four controls and
 `MAX_PREFIX_EVALUATIONS := 52` untouched. **Canonical is bit-identical 15/15** (every observation
 strictly interior, `_band_residual` exactly 0.0 there, coarse/fine agreement 0.0014 m) and **the swap
 refuses 4/4 at the prefix closure**, where today it plans 4/4. Its only absorber returns ≈ 15.8 m of
-arc per second of `dive_approach_s`, so the swap needs 0.79 s of that control's 0.60 s of range — and
-at a margin small enough to be reachable (3 m), seeds 42 and 20260809 *do* close the dive at
-487.0 m and **still budget-exhaust their return at 79/80**. Worse, every metre the approach returns is
+*net* arc per second of `dive_approach_s`, so the swap needs 0.79 s of that control's 0.60 s of range
+to clear a 490 − 5 m *aim* ceiling (the bare 490 m ceiling needs 0.47 s, inside range — the figure is
+margin-dependent) — and at a margin small enough to be reachable (3 m), seeds 42 and 20260809 *do*
+close the dive at 487.0 m and **still budget-exhaust their return at 79/80** (that run recorded the
+exhaustion and the delivered dive length only; the residual breakdown at 79/80 was not captured).
+Worse, every metre the approach returns is
 re-spent at a loss: pinning the approach at 0.80 s buys seed 11 3.164 m of dive arc and costs
 **+46.810 m of `return-turn-b`** and −22.595 m of `return-height-a` (through its 290 m floor); at
 0.60 s seed 11's return stops converging; at 0.40 s the plan refuses because the accepted closure flips
-the yaw solution. Route length was never what bound: every converged swap case sits at
-8198.76–8198.80 m and the short-approach refusals carry a length residual of exactly 0.0.
+the yaw solution. **Length is relieved and the wall remains** — the stronger and better-supported
+reading than "length was never binding": the short-approach refusals carry a length residual of exactly
+0.0 while the geometric residuals blow up; the converged swap cases sit at 8198.76–8198.80 m, which is
+0.20–0.24 m inside the 8199.0 m aim ceiling (`RETURN_LENGTH_AIM_MARGIN_M` = 1.0) and so pressed against
+the constraint, not slack under it; and the un-retracted 2.1 m / 5.1 m length overruns those two
+exhausting seeds carry (`generator_material_tests.gd:193-195`; 4.9–8.1 m against 8200 m in §1 of the
+story-energy design) are more than covered by the ≈ 10.4 m the 3 m-margin run gives back — and they
+exhaust at 79/80 anyway.
 Widening the band instead is refused too — even past 497.5 m the swap still fails `return-turn-b`
 (571.2 / 572.6 m against 430–570) on the two seeds whose returns converge, and 42 / 20260809 never
 reach the route contract. **What the evidence names instead:** the swap's wall is the *geometric*
@@ -345,8 +358,11 @@ below); these seven are **not** covered by the audit's traceability record.
     **What remains, priced 2026-08-16.** The shortening was not taken this session, and the
     dive-arc work that would have taken it was refused (see *Next session*). What that stage
     measured about this half, on the canonical path, still stands and is now quantified:
-    `dive_approach_s` is worth **17.625 m of arc per second** at the canonical rim speed
-    (seed 11: the 1.00 s approach span builds 17.625 m of the role's 475.960 m), and the whole
+    the approach span itself builds **17.625 m of arc per second** at the canonical rim speed
+    (seed 11: the 1.00 s span is 17.625 m of the role's 475.960 m) — that is the *raw span* rate,
+    not what the role gives back: the **net** rate, after the commit geometry re-settles around a
+    shorter span, is **15.82 m per second** (§11.3 of the prefix-closure design, measured on the
+    swapped story — the canonical net rate was not measured). And the whole
     commit block — bank-in, approach, bank-out, commit — is 3.684 s and 64.111 m with just
     +0.258 m of net rise, so it is exactly the flat banked run issue 22 objects to. Shortening
     it on canonical is a **re-baseline**, not a feasibility question: the return follows

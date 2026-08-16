@@ -172,7 +172,10 @@ band at runtime.
   never a candidate loop); that is its own design cycle.
   *Forward pointer (2026-08-16): that cycle ran and **refused** the derivation on its own §8
   measurement (`2026-08-15-return-seed-derivation-design.md`) — the wall is a box constraint no
-  seed reaches, and the unblock is the dive-arc / role-length work on the prefix side instead.*
+  seed reaches. The dive-arc / role-length work it named next was then built and run, and
+  **refused too** (§11 below): the prefix can return the metres, and the swap is not short of
+  metres. The live spend is **head-domain accommodation** (a control upstream of act one) or a
+  prefix residual on the **camelback handoff pose** itself — never a residual on the dive.*
 - Items 2–3 are **domain-split**: the four controls are all downstream of act one, so the solve
   absorbs tail-domain changes (act-one loop −0.005 places 15/15; the optional-member swap
   places 15/15) but head-domain changes (opener literals) refuse at the terrain preflight
@@ -301,8 +304,14 @@ The brief for this stage said the *canonical* fleet builds `outward-dive` at 497
 its declared 350–490 m role band, and that fixing it would be a declared re-baseline. Measured on all
 fifteen preset seeds, canonical builds the role at **475.604–476.544 m** — inside the band, with
 **13.456 m of ceiling headroom** on the worst seed (77777). Across all fifty closure evaluations the whole
-fleet makes (seed, Jacobian probe, rejected trial, accepted point) the arc runs **475.640–476.721 m**, so
-the closest any canonical observation comes to 490 m is **13.279 m**. There is no canonical overrun, no
+fleet makes (seed, Jacobian probe, rejected trial, accepted point) the residual observes the arc between
+**475.640 m and 476.721 m**, so the closest any canonical closure observation comes to 490 m is
+**13.279 m**. The two ranges are measured on different integrations — 475.604–476.544 m is the *built*
+role length the route contract reports on the production integration, 475.640–476.721 m is what the
+*closure* observed across its own evaluations — so they do not nest (475.640 > 475.604) and the earlier
+reading of the second range as containing the first was wrong. Which of step, window or accepted-vector
+re-integration accounts for the 0.036 m at the low end was not captured by this run; both bounds stand as
+measured, and both are ≥ 13.2 m clear of the ceiling. There is no canonical overrun, no
 band falsehood on the production path, and **no re-baseline to declare**. 497.4–497.5 m is the *swap's*
 number, exactly as `generator_material_tests.gd` and §10 of the story-energy design already recorded it.
 
@@ -324,14 +333,23 @@ Two facts fall out, and they decide the stage:
    0.85–0.93 × relief. The 21.5 m the swap adds is **not** cliff geometry, and no terrain quantity moves.
 2. **The role's length is a rim-speed budget, not a cliff-geometry one.** 63% of it (299.6 m of 476.0 m)
    is the 4.64 s pull-out block run at 49–70 m/s; the whole role is authored time × speed. The swap
-   arrives at the rim at **20.996 m/s against canonical's 18.565 m/s**, and every one of the eight spans
-   runs proportionally longer — +2.0, +2.7, +2.2, +3.0, +4.5, +1.8, +2.4, +2.9 m, no span carrying the
-   miss. **8.83 m of role length per m/s of rim speed**, measured between the two stories.
+   arrives at the rim at **20.996 m/s against canonical's 18.565 m/s** (+2.431 m/s) and the role runs
+   **21.467 m longer** for it. Every one of the eight spans lengthens — +2.0, +2.7, +2.2, +3.0, +4.5,
+   +1.8, +2.4, +2.9 m, no span carrying the miss alone — but *not* proportionally, and the table above
+   says so itself: the commit block grows **+15.5%** while the pull-out block grows **+1.7%** (a
+   proportional +13.1% rim scaling would have added ≈ 62 m, not 21.5). The two stories also differ in
+   more than rim speed — their block drops differ by 3.2 m (fall) and 3.5 m (pull-out), netting to the
+   5.4 cm of fact 1. So **8.83 m of role length per m/s of rim speed** is a **two-point secant between
+   these two stories** — 21.467 m / 2.431 m/s, every difference between them included — not a per-span
+   law and not a derivative anyone measured. What is solid is the direction and the size: a hotter rim
+   entry buys a longer role, at ≈ 9 m per m/s over the one interval measured.
 
-So the declared 490 m ceiling, read through that sensitivity, is a statement about the fastest rim entry
-the story may have: canonical's 13.456 m of headroom is **+1.524 m/s of rim speed**. The swap arrives
-**+2.431 m/s** hotter — 0.91 m/s past what the band permits. **The band is not the falsehood and neither is
-the arc. Both are honest reports of what they measure.**
+So the declared 490 m ceiling, read through that secant, *estimates* the fastest rim entry the story may
+have: canonical's 13.456 m of headroom is ≈ **+1.5 m/s of rim speed**. The swap builds 497.43–497.46 m,
+i.e. **7.43–7.46 m past the ceiling ≈ 0.84 m/s** of rim speed past what the band permits. (The earlier
+"0.91 m/s" mixed sides of the comparison — seed 77777's headroom against seed 11's rim delta; computed on
+one side throughout it is 0.84.) **The band is not the falsehood and neither is the arc. Both are honest
+reports of what they measure.**
 
 ### 11.3 What `dive_approach_s` can actually return
 
@@ -361,10 +379,20 @@ Read the seed-11 row: 0.20 s of approach buys **3.164 m** of dive arc and costs 
 `return-turn-b`** and **−22.595 m of `return-height-a`**, taking height-a through its own 290 m floor — the
 return's answer to the moved camelback handoff costs an order of magnitude more geometry than the metres
 returned. Another 0.20 s stops the return converging at all; another 0.20 s after that flips the yaw
-branch and the plan refuses before the solve is reached. Route length is *not* what is binding: on every
-converged swap case the total sits at 8198.76–8198.80 m, and on the short-approach refusals the length
-residual is exactly **0.0** while the geometric residuals blow up. §8.5's "no seed creates metres" was
-right; its conclusion that the prefix could create them was not — **the prefix can, and the return spends
+branch and the plan refuses before the solve is reached. What binds is geometry, not length — but the
+claim has to be scoped to what was measured, because "length was never binding" over-generalises. On the
+**short-approach refusals** the length residual is exactly **0.0** while the geometric residuals blow up;
+that much is direct. The converged cases prove less than they look: at 8198.76–8198.80 m they sit
+**0.20–0.24 m inside the 8199.0 m aim ceiling** (`RETURN_LENGTH_AIM_MARGIN_M` = 1.0), i.e. pressed
+against the constraint, not slack under it. And the length overruns on record are un-retracted — the two
+budget-exhausting seeds carry length residuals of **2.1 m and 5.1 m past the ceiling**
+(`generator_material_tests.gd:193-195`; §1 of the story-energy design prices the same shortfall at
+4.9–8.1 m against 8200 m).
+
+The honest statement is the **stronger** one, and it comes from §11.5's 3 m-margin run: there the dive
+gave back ≈ **10.4 m** (497.43 → 487.02), more than either of those overruns, and seeds 42 and 20260809
+**still budget-exhausted at 79/80**. Length was *relieved* and the wall remained. §8.5's "no seed creates
+metres" was right; its conclusion that the prefix could create them was not — **the prefix can, and the return spends
 them re-closing a handoff that moved because they were created.**
 
 ### 11.5 Built and run
@@ -386,7 +414,12 @@ residuals untouched:
   the closure converges on seeds 42 and 20260809, delivering the dive at **487.02 / 487.01 m** with
   `dive_approach_s` at 0.401 / 0.410 — and **both then budget-exhaust their return at 79/80 anyway**,
   while seeds 11 and 4096 still refuse at the closure. Delivering the dive inside its band does not buy
-  the swap a build.
+  the swap a build, and the ≈ 10.4 m it delivers covers the 2.1 / 5.1 m length overruns those two seeds
+  carry (§11.4) without changing the outcome. **Residual breakdown not captured:** this run recorded the
+  exhaustion and the delivered dive length only, so *which* residuals were still unsatisfied at 79/80
+  here is unmeasured. (The approach-sweep exhaustions in §8.2 of the return-seed design all pinned
+  `height_a_recovery_duration_s` at its 0.35 s floor, but that sweep ran without this residual and is not
+  this run's breakdown.)
 
 Under §7's standing rule — buys nothing measurable → it does not land — no code lands. The refusal is
 recorded at the band's ship-once home in `generator.gd`, next to the `outward-dive` role.

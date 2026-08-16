@@ -208,9 +208,13 @@ the return can re-converge for a moved handoff, no prefix-side residual can buy 
 > **Correction (2026-08-16): both halves of that order were taken and both were refused.** The return-seed derivation was refused by
 > its own §8 measurement (the wall is a box constraint, not a basin), and the dive-arc residual was then derived, built and run and
 > refused too — §11 of `2026-08-15-prefix-closure-solve-design.md`. §10.4's arithmetic survives: `dive_approach_s` is the only
-> control that moves the arc without moving the entry state, at ≈ 15.8 m of arc per second. Its conclusion does not: the swap needs
-> 0.79 s of that control's 0.60 s of range to clear an honest aim ceiling, and every metre it *does* return is re-spent by the return
-> answering a moved handoff (+46.810 m of `return-turn-b` for 3.164 m of dive on seed 11). Route length was never binding — the
-> length residual on every short-approach refusal is exactly 0.0. The role band is a rim-speed budget (8.83 m per m/s, measured;
-> canonical builds 475.604–476.544 m with 13.456 m of headroom = +1.524 m/s, the swap arrives +2.431 m/s hotter), and no prefix
-> control removes rim speed.
+> control that moves the arc without moving the entry state, at ≈ 15.8 m of *net* arc per second. Its conclusion does not: the swap
+> needs **0.79 s** of that control's 0.60 s of range to clear a 490 − 5 m *aim* ceiling (0.47 s, inside range, clears the bare 490 m
+> ceiling — the figure is margin-dependent), and every metre it *does* return is re-spent by the return answering a moved handoff
+> (+46.810 m of `return-turn-b` for 3.164 m of dive on seed 11). Length is **relieved, and the wall remains** — the stronger and
+> more accurate statement than "length was never binding": short-approach refusals carry a length residual of exactly 0.0, the
+> converged swap cases sit only 0.20–0.24 m inside the 8199.0 m aim ceiling, and at the reachable 3 m margin the ≈ 10.4 m the dive
+> returns covers the 2.1 / 5.1 m length overruns of the two exhausting seeds (§1's 4.9–8.1 m shortfall, un-retracted) while both
+> still budget-exhaust at 79/80. The role band is a rim-speed budget (≈ 8.83 m per m/s as a two-point secant between these two
+> stories, 21.467 m over +2.431 m/s — directional, not a per-span law; canonical builds 475.604–476.544 m with 13.456 m of headroom
+> ≈ +1.5 m/s, and the swap's 497.43–497.46 m is ≈ 0.84 m/s of rim speed past the ceiling), and no prefix control removes rim speed.

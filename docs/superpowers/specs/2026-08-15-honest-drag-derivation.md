@@ -167,8 +167,10 @@ terminal brakes. Today's propulsive head ≈ 257 m (launch) + 152 m (LSM2, `9.81
   measurement: `_add_story_prefix` takes its opener/act-one values from `story.targets`, and `RidePlanner.resolve()` supplies
   no such keys today (issue 24 blocks those draws), so the head is the same program on every seed up to the `station_side`
   mirror, and all four closure controls live downstream of the act-one exit — a fleet-*constant* deficit wants a constant, not
-  a control. One link in that argument is **unverified**: that `decisions.sequence` is canonical on all fifteen seeds is taken
-  from prose, not printed. **Conditional:** if issue 24's opener/act-one draws unblock, the head becomes seed-varying and the
+  a control. The one link in that argument that was flagged **unverified** — that `decisions.sequence` is canonical on all
+  fifteen seeds — is discharged by the code itself: `_draw_sequence` (`ride_planner.gd:182`) ignores its `rngs` parameter
+  entirely and returns the canonical sequence unconditionally, so the sequence is canonical on every seed by construction,
+  not by sampled observation. **Conditional:** if issue 24's opener/act-one draws unblock, the head becomes seed-varying and the
   plateau plausibly *does* have to become the fifth control, exactly as this bullet proposed.
 - **Return (seven-control solve):** §3.5–3.6, via a re-derived `CAPTURE_ENTRY_SPEED_MPS` and `RETURN_SEED` against the existing
   route-length and entry-speed band residuals. **Pure constants:** `AERO_PER_M`; the LSM3 tunnel length (or `lsm3_drive_g`);
@@ -251,10 +253,13 @@ refinement from each of the best 20, scored as the sum of squared scaled residua
 
 | bounds | best cost | what remains |
 |---|---|---|
-| production | 2986 | cross-track 249 m, height −70 m, station-forward −215 m |
+| production\* | 2986 | cross-track 249 m, height −70 m, station-forward −215 m |
 | turn-a bank floor 50°→35°, turn-b 60°→40°, duration ceilings raised | 1074 | height **−77.6 m** |
 | deliberately over-wide diagnostic (banks 15–80°, durations to 30 s) | 413 | station-forward 36.9 m, cross 36.7 m, height **−78.6 m**, route +39.5 m past 8200 |
 | the same, plus the route band opened to 7000–9500 m | 537 | station-forward −4.4 m, cross 31.2 m, height **−72.8 m** |
+
+\*Row 1's "production" names the production *scalar bounds* only — like all four rows it ran with `CAPTURE_ENTRY_SPEED_MPS`
+exploratorily opened to (40.0, 90.0) (see "Configuration of the four searches" below), so no row measured the shipped 70–80 band.
 
 **The residual that never yields is the capture-gate height, −73 to −79 m in every configuration**, including one where the
 horizontal placement is essentially solved and the route band has been removed as a constraint. The mechanism is structural, not
@@ -263,7 +268,8 @@ return 8–10 m/s slower and each beat climbs ~20–25% less, while the handoff 
 durations and bank angles. None of them is height authority.** Raising the camelback exit to hand the return more head was
 measured and is worse, not better (§3.4), and the ruling of 2026-08-16 forecloses it regardless.
 
-**Scope correction (2026-08-16): all four searches above, and the return failure itself, were measured on seed 11 only.** The
+**Scope correction (2026-08-16): all four searches above, the fifth (taller-camelback) run of §3.4, and the return failure
+itself, were measured on seed 11 only.** The
 −73 … −79 m range therefore spans **configurations, not configurations × seeds** — the wall is established at seed 11 and its
 fleet-wide status is **untested**. What *is* measured across the deep seeds is the head, probed only as far as the camelback:
 camelback-exit handoff speeds **79.831 / 79.841 / 79.794 m/s** on 11 / 42 / 20260809, camelback entry **94.410 / 94.448 /

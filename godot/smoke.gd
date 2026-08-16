@@ -11,10 +11,11 @@ const Verify := preload("res://verify.gd")
 const DEEP_SEEDS := [11, 42, 20260809]
 const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
-## The fleet must not be one ride fifteen times. Measured spread on 2026-08-15 with the landed
-## draw set, the closed-form placement and the rim-aimed dive: 53.47 m of route length and 0.408 s
-## of elapsed time across the fifteen seeds, so these floors sit at roughly a tenth of the length
-## spread and a quarter of the duration spread the planner actually produces.
+## The fleet must not be one ride fifteen times. Measured spread on 2026-08-16 with the landed
+## draw set, the closed-form placement, the rim-aimed dive and the eight-control return: 49.22 m
+## of route length and 0.515 s of elapsed time across the fifteen seeds, so these floors sit at
+## roughly a tenth of the length spread and a fifth of the duration spread the planner actually
+## produces.
 const FLEET_LENGTH_SPREAD_FLOOR_M := 5.0
 const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## The fleet half of the return budget claim. `ride_program.gd` derives the cap and

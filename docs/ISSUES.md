@@ -23,8 +23,10 @@ envelope allows 4.286 over that hold). Derivation:
 **A stage 1 — the seed varies the ride.** `godot/ride_planner.gd` holds named decision streams
 (FNV-1a over stream name plus seed, so streams are independent), the story grammar as data, and
 the certified per-seed target draws: return turn-a `transfer_bank_bias` 6.5–8.5°, height-a
-`peak_g` 3.65–3.95, and unload scales 0.95–1.05. Measured fleet spread is 8138.7–8180.6 m
-(41.9 m) and 0.31 s of duration, with the records pinned on every seed; smoke now has diversity
+`peak_g` 3.65–3.95, and unload scales 0.95–1.05. Measured fleet spread was 8138.7–8180.6 m
+(41.9 m) and 0.31 s of duration at that landing; re-measured 2026-08-16 under the eight-control
+return re-certification it is 8138.1–8187.3 m (49.2 m) and 0.51 s, with the records still
+pinned on every seed; smoke now has diversity
 floors so the fleet cannot silently collapse back to one ride. A latent bug surfaced and was
 fixed on the way: the terminal-approach corridor was never clearance-sampled, so seed 123456's
 brakes sat 1.82 m under the 2.0 m floor; the approach is now held to station clearance.
@@ -57,12 +59,19 @@ that costs the most.
 
 Issue 24 remains the strongest candidate for the single root cause behind 20, 23 and much of
 15. ~~If one thing is picked up next, pick the prefix closure solve.~~ **That solve landed on
-2026-08-15** (progress notes below), so it is no longer the next pick. **The current named spend,
-in flight as of 2026-08-16, is return height authority** — making the return's two height beats'
-peak g solved controls instead of authoring them at fixed peak g with duration-only controls,
-which is the one degree of freedom four consecutive refusals (return-seed derivation,
-story-energy re-target, dive-arc residual, honest drag) all measured the solve to be short of.
-Update this line when that stage lands or is refused.
+2026-08-15** (progress notes below), so it is no longer the next pick. **Return height authority
+landed on 2026-08-16** — the return's height-beat peak g is the eighth solved control, seeded
+from the certified draw, with the canonical fleet re-certified 15/15 (spec:
+`docs/superpowers/specs/2026-08-16-return-height-authority-design.md`). It was the DOF the
+honest-drag refusal measured the solve short of, and a candidate for the swap's floor-pinned
+exhaustions; the swap's floor-pinning did clear (issue 24's annotation), but the honest-drag
+fleet test **refused** on all three deep seeds — the residual that remains names the
+*horizontal* capture placement (cross-track 137–235 m, station-forward 52–80 m at every best
+stall), not height. **The measured next spend is therefore the prefix handoff-pose residual**:
+both open walls — issue 24's cross/yaw swap mode and issue 2's honest-drag re-baseline — now
+refuse on the same camelback→return handoff displacement that no return-side control can
+un-move, and §7.4 of the honest-drag spec named it before this stage confirmed it fleet-wide.
+Honest drag is **not** re-baseline-ready until that residual exists.
 
 **Progress, 2026-08-15 (stages 1–3 landed):** the prefix closure solve is in production.
 `_plan` runs preflight → terrain-derived closure target → one bounded four-control solve →
@@ -332,6 +341,20 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
    `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7. The named next spend is
    height authority in the return (peak-g as a solved control) or a prefix handoff-pose
    residual — not another seed and not another scalar.
+   **Height authority built and fleet-tested, 2026-08-16: the wall stands, and it changed
+   name.** The peak-g control landed for the production solve (re-certified 15/15 at today's
+   drag) and the honest-drag probe was re-run as the first *fleet* test of §7.2's wall —
+   seeds 11, 42, 20260809, production bounds, both the shipped 70–80 band and §7.2's (40, 90)
+   opening, draw-seeded plus 24 random starts per seed. **Zero convergences.** Freeing the
+   peak cuts the height member roughly fourfold at the best stall (seed 11: −50.6 m pinned →
+   −13.1 m freed) and closes the entry-speed residual, so height authority is real — but what
+   never yields now is the *horizontal* capture placement: cross-track 137–235 m and
+   station-forward 52–80 m at every seed's best point. At the shipped band the solve instead
+   pins the peak at its 3.4 floor trading height for speed (seed 11: height −92.3 m, speed
+   0.29 m/s under the 70 floor). A return-side control cannot un-move a handoff displaced
+   426 m/23.7°; the unblocking spend is §7.4's other candidate, the prefix handoff-pose
+   residual. `AERO_PER_M` stays 0.000075; nothing about drag landed. Numbers:
+   `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §5.
 3. G-force envelope still not reached in many parts.
    **Measured against the counterpart bands, 2026-08-15** (offline geometry pack, deep
    seeds; diagnostic labels, not verdicts): the inversion act runs *under* its grounded
@@ -489,6 +512,17 @@ below); these seven are **not** covered by the audit's traceability record.
     budget-exhaust with `height_a_recovery_duration_s` pinned at its floor — and **not** for its
     cross-track/yaw mode, which still needs upstream DOF or a handoff-pose residual. Derivation:
     `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7.2–§7.4.
+    **The candidate was built and the floor-pinning mode cleared, 2026-08-16.** With the
+    height-a peak as the eighth solved control, all four gated seeds converge the swapped
+    return — 42 and 20260809, the two floor-pinned 79/80 exhausters, converge in 50 and 38
+    evaluations with the recovery 0.386/0.293 s off its floor. The other mode stands exactly as
+    predicted: the swapped build still refuses at the route contract on `outward-dive`
+    497.4–497.5 m (every seed) and `return-turn-b` 570.5–573.2 m (three of four), and the
+    converged swap returns graze the route-length ceiling (0.45–1.19 m inside 8200 m), so the
+    compiled-swap gate was re-founded on the new measurement. **This entry stays open**; its
+    remaining wall is now purely upstream of the camelback handoff — the handoff-pose residual
+    — which the honest-drag fleet test (issue 2) independently confirmed the same day. Spec:
+    `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §6.
 25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
     with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
     is missing.

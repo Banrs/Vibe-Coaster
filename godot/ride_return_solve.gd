@@ -11,14 +11,18 @@ const RidePlanner := preload("res://ride_planner.gd")
 
 const MAX_CAPTURE_EVALUATIONS := 40
 # Derived, not guessed: `BoundedSolver.solve` costs `1 + K*(n+1) + R` unique evaluations, so
-# n = 7 with K <= 8 accepted iterations and R <= 8 rejections gives 1 + 8*8 + 8 = 73. The fleet
-# measures 18-35; `ride_program_tests.gd` gates five seeds at 60% of this cap and `smoke.gd`
-# carries the fleet half, gating all fifteen at the same 60%.
-const MAX_RETURN_EVALUATIONS := 80
+# n = 8 (the seven durations/banks plus the height-a peak) with K <= 8 accepted iterations and
+# R <= 8 rejections gives 1 + 8*9 + 8 = 81; 88 carries the same seven-evaluation slack over the
+# formula that the seven-control cap (73 -> 80) carried. Measured on the enlarged space
+# (2026-08-16): the canonical fleet spends 20-29 unique evaluations (was 18-26 on seven
+# controls), so every seed sits inside the 60% allowance (52) that `ride_program_tests.gd`
+# gates on five seeds and `smoke.gd` on all fifteen; the compiled swap diagnostics, which are
+# not under the allowance, converge in 38-70.
+const MAX_RETURN_EVALUATIONS := 88
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
-	"height_b_recovery_duration_s",
+	"height_b_recovery_duration_s", "height_a_peak_g",
 ]
 const RETURN_SCALAR_BOUNDS := [
 	# Turn-a bank caps at 66 deg: the fixed 0.45 s exit rolls (bank - 45 deg) in one compact
@@ -37,7 +41,25 @@ const RETURN_SCALAR_BOUNDS := [
 	# stay strongly banked even when the solve would trade bank away for closure.
 	[0.35, 4.0], [60.0 * PI / 180.0, 80.0 * PI / 180.0],
 	[2.0, 12.0], [0.1, 2.0], [0.35, 4.6],
+	# Height authority (2026-08-16): how hard both height beats are pulled is the eighth solved
+	# control, not a fixed constant, because all seven other controls are durations and banks and
+	# none of them can move the capture-gate height without moving everything else - the honest-drag
+	# refusal (spec 2026-08-15-honest-drag-derivation.md section 7.2) and issue 24's floor-pinned
+	# swap exhaustions both measured the solve short of that degree of freedom. Measured through
+	# the production compile seam (2026-08-16, spec 2026-08-16-return-height-authority-design.md):
+	# on the fifteen canonical seeds the solve settles the peak 3.725-3.941 - inside the certified
+	# 3.65-3.95 draw band on every seed, never on a bound - and on the act-one optional swap it
+	# clears the height_a_recovery floor-pinning on all four gated seeds (solved peaks 3.678-3.704).
+	# At honest drag the freed control shrinks the capture-gate height miss (seed 11 best stall
+	# -50.6 m pinned vs -13.1 m freed) but no vector closes the pose, so the bounds' ceiling is
+	# exercised only by diagnostic probes. The bounds hold the beat to its authored character: the
+	# 3.4 floor sits 0.25 g under the certified draw band's floor, and the 4.6 ceiling is where
+	# height-b's proportional peak (x0.831) reaches 3.82, still under height-a's own draw band.
+	[3.4, 4.6],
 ]
+# Seven entries for eight controls, on purpose: the eighth (height-a peak g) has no fixed seed -
+# `_solve_return` completes this vector with the build's own certified draw, so the per-seed
+# variety the planner draws is exactly where each solve starts.
 const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
 	1.0471975511966, 6.48573781566998, 0.996333175598368, 3.98838120528104]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
@@ -68,6 +90,15 @@ const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
 ## 2.5 m would fix that structurally - and would put the closest canonical observation
 ## (1.3463 m) inside the margin zone, changing canonical bytes. The metre is the largest
 ## honest value; the swap gate asserts the interior closure it buys.
+##
+## Eight-control re-certification note (2026-08-16): the sweep above was measured on the
+## seven-control solve. On the re-certified eight-control fleet the fifteen accepted points sit
+## >= 12.43 m from the 8200 m ceiling and >= 338 m from the floor, so the aimed band is slack at
+## every accepted canonical point; the margin stays 1.0 m on the same reasoning. The measured,
+## not structural, caveat is now live on the swap diagnostics: their returns converge 0.45-1.19 m
+## inside the true ceiling - past the aim edge, within the 2.5 m convergence slack - so the swap
+## gate now asserts strict true-band interiority and records the grazing rather than asserting
+## the aim margin it no longer buys (see `generator_material_tests.gd`).
 ##
 ## The entry-speed band gets no *additional* aim margin: its existing
 ## `RETURN_ENTRY_SPEED_PADDING_MPS` (0.01 m/s) already exceeds the speed side's 0.002 m/s
@@ -118,7 +149,10 @@ static func _return_spans(
 		targets, "return-height-a", "unload_scale", 1.0)
 	var height_b_airtime_g := -0.5 * RidePlanner.target(
 		targets, "return-height-b", "unload_scale", 1.0)
-	var height_a_peak_g := RidePlanner.target(
+	# The eighth control when the solve owns it; the drawn target (or its authored default) when a
+	# caller authors the return from the seven-vector alone, so the fixed `RETURN_SEED` fixtures
+	# still reproduce the drawn recipe exactly.
+	var height_a_peak_g := float(v[7]) if v.size() > 7 else RidePlanner.target(
 		targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
 	var turn_a_bank_rad := float(v[0])
 	var turn_b_bank_rad := float(v[3])
@@ -279,6 +313,15 @@ static func _solve_return(
 ) -> Dictionary:
 	var cache := {}
 	var initial_bank_rad: float = _capture_residuals(start, layout)[4]
+	# Ownership of the height-a peak, resolved: the certified per-seed draw (3.65-3.95, streams in
+	# `ride_planner.gd`) initialises the eighth control and the solve owns closure from there
+	# inside the control's own derived bounds. The draw proposes, the solve disposes - neither
+	# fights the other, no randomness enters here, and a seven-entry seed (the committed
+	# `RETURN_SEED`) is completed deterministically from the build's own targets.
+	var initial: Array = seed.duplicate()
+	if initial.size() == RETURN_SCALAR_IDS.size() - 1:
+		initial.append(RidePlanner.target(
+			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
 	var lower := []
 	var upper := []
 	for bound: Array in RETURN_SCALAR_BOUNDS:
@@ -290,7 +333,7 @@ static func _solve_return(
 			hand, initial_bank_rad, targets)
 		return observed.scaled if observed.get("ok", false) else [INF]
 	var solved := BoundedSolver.solve(
-		residual, lower, upper, seed, MAX_RETURN_EVALUATIONS - 1)
+		residual, lower, upper, initial, MAX_RETURN_EVALUATIONS - 1)
 	if not solved.get("ok", false):
 		return RideProgram._failure("return did not reach its physical target", "return",
 			{"evaluation_count": solved.get("evaluations", cache.size()),

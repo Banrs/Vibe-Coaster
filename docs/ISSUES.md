@@ -184,6 +184,36 @@ the dive. Full derivation, the pinned-approach matrix and the built-and-run resu
 `docs/superpowers/specs/2026-08-15-prefix-closure-solve-design.md` §11; the refusal is also recorded at
 the band's own home in `generator.gd`'s `outward-dive` role.
 
+**Honest-drag re-baseline refused by measurement (2026-08-16), and the two reverts it was
+carrying are blocked behind it.** Fourth refusal in the sequence, and the first one that failed
+in the *return* rather than the prefix. The full chain was built and run; §7 of
+`docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` holds the constant table, the
+measured outcomes and the four bounded searches. What this adds to the record beyond issue 2's
+entry:
+
+1. **The launch cannot pay for honest drag, and the analytic note said it could.** Sweeping the
+   3.9 g plateau across 0.95–1.45 s (85 points) measures act-one-exit head at −51.9 … +159.4 m
+   against the old-drag baseline's 186.7 m — non-monotone, and it never gets there, because the
+   faster opener re-sheds what the launch adds. Inside the 300–320 km/h exit band the best is
+   124.4 m, and there act one's minimum speed has collapsed to 21.4 m/s. **1.094 s is the only
+   value in the band where the act-one exit bank crosses zero**, and that matters: 7.4° of
+   residual bank at 1.08 s is amplified by the climb to 53° at the crest and tips the clifftop
+   into a dive. The absorber is the cliff-base assist instead, at roughly double its drive.
+2. **The camelback is not the absorber and was not moved.** Per Daniel's ruling of 2026-08-16 it
+   stays ~250 m and symmetric. Measured, that is not a cost: at `fall_s` 3.20 the honest-drag
+   hill holds 246.86–247.07 m prominence, width/height 3.130–3.137, and comes out *more*
+   mirrored in height than the shipped one (fall/rise 1.012–1.014 vs today's 0.966; arc 0.793 vs
+   0.824; time 0.883 vs 0.878). Probing a taller rise — before the ruling, as a diagnostic —
+   drove prominence to 264–270 m through the 255 ceiling and made the return wall *worse*
+   (−129.5 m height miss against −78.6 m at the pinned height). The ruling and the measurement
+   agree.
+3. **Both reverts fail on today's drag, measured on all three deep seeds.** Capture band
+   70–80 → 70–77: every deep seed budget-exhausts at 79/80 with the entry speed +1.04 … +1.39 m/s
+   past the 77 ceiling. Brake bound 3.6 → 3.0 g: every deep seed refuses with `brake solve
+   reached a parameter bound`, the solved peak on seed 11 being 3.0108 g. Their stated reason
+   does disappear under honest physics — but honest physics has not landed, so the reverts stay
+   where they are and the 2026-08-15 decision below stands until it does.
+
 **Cross-suite build reuse refused by measurement (2026-08-16); the battery's cost is its
 schedule, not its builds.** The battery makes 62 full `RideGenerator.build()` calls per run and
 35 are preset builds a shared pre-built fleet could serve, so sharing them looks free. It is not:
@@ -271,6 +301,27 @@ enforcing the rest. None of the sixteen ride-quality issues below is closed.
    drives, camelback crest, and the record closure (where more honest drag actually *eases*
    the measured ~21.8 m surplus-head problem) — so it must land as one re-derivation with the
    prefix closure solve available (issue 24), not as a constant tweak.
+   **Built and refused by measurement, 2026-08-16; nothing landed.** The whole re-baseline was
+   implemented against the landed closure solve and run. Six of seven beats close at
+   `AERO_PER_M = 0.00021`: launch plateau 0.8038 → 1.094 s holds the 3.9 g peak and exits at
+   86.184 m/s (310.3 km/h); the cliff-base assist is re-derived from 0.294 to **0.597 g** with a
+   re-shaped pull-up/core/pull-over that reproduces the old crest to 0.03 m/s and 0.34 m; the
+   tunnel booster grows 1.633 → 1.933 s (184.6 → 211 m) at unchanged 1.33 g; the record holds at
+   **340.22–340.37 km/h** on 11/42/20260809 with the closure converging in 16–28 of 31
+   evaluations; act one keeps honest inversion speed (minimum 37.30 m/s vs 36.08); and the
+   camelback stays pinned at **246.9 m** prominence on `fall_s` 3.40 → 3.20 alone.
+   **The seventh beat, the return, does not close from any control vector** — not in production
+   bounds, not in deliberately over-wide diagnostic bounds, and not with the route band opened
+   to 7000–9500 m. The residual that never yields is the capture-gate height, **−73 to −79 m in
+   every configuration**, because the return's beats are authored at fixed peak g so their rise
+   scales with `v²`, and all seven controls are durations and banks. The prefix's ground track
+   is chaotic in its own force constants, so honest drag moves the camelback→return handoff
+   **426 m forward, 86 m cross, −22 m and ~20° of yaw** (630 m already at the tunnel exit) —
+   an order of magnitude past the 32–66 m that defeated three attempts on issue 24's swap.
+   Full derivation, the constant table, the four bounded searches and the two blocked reverts:
+   `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7. The named next spend is
+   height authority in the return (peak-g as a solved control) or a prefix handoff-pose
+   residual — not another seed and not another scalar.
 3. G-force envelope still not reached in many parts.
    **Measured against the counterpart bands, 2026-08-15** (offline geometry pack, deep
    seeds; diagnostic labels, not verdicts): the inversion act runs *under* its grounded

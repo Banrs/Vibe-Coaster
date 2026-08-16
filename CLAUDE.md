@@ -142,21 +142,26 @@ positions stay raw for physics, verification, and generated-channel measurement.
   (twisted non-inverting side-drop, overbanked teardrop, rising release) into act one, ONE
   flowing arc at honest inversion speed (giant Immelmann 100–110 m: the tallest-inversion
   chase; cutback at the Immelmann exit; helical-leg loop; hills + wave turn, all chained
-  exit-to-entry) → LSM2 boost at the cliff base (~290 km/h)
+  exit-to-entry) → LSM2 boost at the cliff base (the built assist enters at ~175 km/h and
+  peaks at ~177 km/h — measured 2026-08-16; the "~290 km/h" this line used to claim was never
+  what the code built)
   + unpowered decelerating coast up the escarpment → crest crawl/hold (the ride's one
   deliberate slow beat) + compact clifftop suspense (reference-scale only, outward-banked
   rim turn) → 90° cliff dive (~0.85–0.93× relief, monotonic once committed, no lip pause —
   the pre-commit approach length is open issue 22) → tunnel LSM boost to
   ~340 km/h (the record launch; the built top speed is gated in smoke at 93.9–95.6 m/s) →
   record camelback (~250 m structure above its
-  valley) → force-authored return with two overbanked turns and two height/airtime beats →
+  valley, and **symmetric** — the rise and fall profiles mirror each other; pinned by user
+  ruling 2026-08-16, so it is never an energy absorber: a chain that does not close is a
+  refusal to record, not a licence to grow or reshape this hill) → force-authored return with
+  two overbanked turns and two height/airtime beats →
   brakes → explicit C4 station closure.
 - Propulsion = exactly three short boosters, no lifts, no powered climbs (user decision):
   a Do-Dodonpa-like non-LSM air/hydraulic entry launch peaking at 3.9 g out of the station
   (gated 3.7–4.1), then two
   LSM boosters (fastest-current-LSM × near-future credit; each booster's authored drive
-  follows from its speed target and length — currently ~0.3 g on the cliff-base climb assist
-  and ~1.15 g in the tunnel, not a flat "~2 g class"), each shorter than
+  follows from its speed target and length — currently ~0.29 g on the cliff-base climb assist
+  and 1.33 g in the tunnel, not a flat "~2 g class"), each shorter than
   Falcon's booster sections. Boosters need not be flat — like Falcon's, a launch may extend
   into a climb or run a varying gradient. No mid-course brake: one
   continuous energy arc after the tunnel booster. No standalone connector turns, no sub-30 m stub
@@ -167,7 +172,11 @@ positions stay raw for physics, verification, and generated-channel measurement.
   corridor, the 7.8–8.2 km route band, and the 70–80 m/s passive entry-speed band (widened
   from 70–77 on 2026-08-15 — the measured cost of closing the ~340 km/h record inside
   8.2 km without a mid-course brake; see
-  `docs/superpowers/specs/2026-08-15-record-launch-derivation.md`) with
+  `docs/superpowers/specs/2026-08-15-record-launch-derivation.md`. Reverting it to 70–77
+  together with the 3.0 g brake bound was built and refused on 2026-08-16: their reason only
+  disappears under honest drag, honest drag does not close, and on today's drag the revert
+  budget-exhausts the return on all three deep seeds — `docs/ISSUES.md` issue 2 and
+  `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7) with
   coarse/fine agreement, then the capture solve closes the
   station frame. Records live in the marquee elements; suspense/clifftop elements never scale toward
   records; no element class between ~110 m and the ~250 m marquee pair (the gap is the

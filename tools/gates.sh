@@ -42,6 +42,35 @@
 #     collision is real before trusting the fix; see the timestamped
 #     PROOF notes kept with the implementing change for the actual logs.
 #
+# --- battery wall-clock: measured, and what it refused ----------------------
+# Measured 2026-08-16 here (4 CPUs, Godot 4.7.1, -j 4): 183.6 s total (import
+# 5.4 s + 178.2 s parallel), 13/13 green. Per run the suites make 62 full
+# RideGenerator.build() calls -- counted by instrumented census, not grep: smoke
+# 20, generator_material 16, ride_planner 17, ride_config 6, terrain_story 1,
+# fidelity 1, fidelity_overlay 1. 35 of the 62 are preset builds that one shared
+# pre-built fleet could serve, so cross-suite build reuse looks obvious. It was
+# measured before it was written, and refused:
+#   - The critical path is not made of reusable builds. Dispatch is JOB_LIST
+#     order, so smoke.gd goes last, starts at t=48.5 s and ends the run at
+#     178.1 s. Dispatch longest-first instead and the critical path becomes
+#     ride_planner_tests (140 s) -- 16 of whose 17 builds are
+#     `build_with_decisions` at certified-range extremes (4 draws x 2 extremes x
+#     2 seeds). Those are not preset builds; no pre-built fleet can serve them.
+#   - Pre-building the 15-seed fleet costs a measured 20.0 s wall (4 workers) and
+#     26 MB, as a prologue: every long suite needs it before it can start.
+#   - With per-build cost measured at 4.9 s (generous to reuse):
+#       today                        183.6 s  measured
+#       longest-first dispatch       145.2 s  measured, 13/13 green   -20.9%
+#       reuse, today's order         167.9 s  projected               -8.5%
+#       reuse + longest-first        160.5 s  projected   15 s SLOWER than free
+#     Even a zero-cost, perfectly overlapped pre-build tops out at 140.5 s --
+#     4.7 s (3.2%) under the free reorder. Projections come from a scheduler
+#     model validated against both measured runs to within 0.2 s.
+# Reuse buys nothing the dispatch order does not buy for free, and would cost a
+# serialized-route store plus a mandatory hash/fingerprint check in every suite.
+# Refused. To go below ~145 s, attack ride_planner_tests' 16 extreme builds --
+# the reorder above is measured and available, and is not build sharing.
+#
 # If a future suite becomes flaky specifically under this runner's
 # parallelism (not under plain `--serial`), do not "fix" it by weakening the
 # suite — add its res://... path to SERIAL_TAIL_PATTERNS below so it runs

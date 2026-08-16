@@ -184,6 +184,19 @@ the dive. Full derivation, the pinned-approach matrix and the built-and-run resu
 `docs/superpowers/specs/2026-08-15-prefix-closure-solve-design.md` §11; the refusal is also recorded at
 the band's own home in `generator.gd`'s `outward-dive` role.
 
+**Cross-suite build reuse refused by measurement (2026-08-16); the battery's cost is its
+schedule, not its builds.** The battery makes 62 full `RideGenerator.build()` calls per run and
+35 are preset builds a shared pre-built fleet could serve, so sharing them looks free. It is not:
+the reusable builds are not on the critical path. `tools/gates.sh` dispatches in `JOB_LIST` order,
+so `smoke.gd` goes last and ends the run; reorder longest-first and the path becomes
+`ride_planner_tests` at 140 s, 16 of whose 17 builds are `build_with_decisions` at certified-range
+extremes that no preset fleet can serve. Measured: today 183.6 s, longest-first dispatch alone
+**145.2 s and 13/13 green**, reuse in today's order 167.9 s (−8.5%), reuse *plus* that reorder
+160.5 s — **slower than the free reorder**, because the 20.0 s fleet pre-build prologue costs more
+than the 4.9 s reuse takes off the critical path. The full measurement, the per-suite build census
+and the scheduler model live in `tools/gates.sh`'s header. Neither lever reaches ~2 min:
+`ride_planner_tests`' 16 extreme builds are the wall, and the reorder is measured and available.
+
 ### Decisions — 2026-08-15 review session
 
 Recorded user decisions from the full-codebase review (they resolve the "decide deliberately"

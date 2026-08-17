@@ -6,6 +6,7 @@ extends RefCounted
 const GENERATOR_VERSION := "time-domain-v1"
 const ROW_OFFSETS := [0.0, 2.15, 4.30, 6.45, 8.60, 10.75, 12.90]
 const Terrain := preload("res://terrain.gd")
+const ElementContract := preload("res://element_contract.gd")
 const INITIAL_POSITION_TOLERANCE_M := 0.000001
 const INITIAL_FRAME_TOLERANCE := 0.000001
 const INITIAL_SPEED_TOLERANCE_MPS := 0.000001
@@ -60,6 +61,10 @@ static func build(
 		var right := tangent.cross(up).normalized()
 		rights[index] = right
 		banks[index] = _bank_degrees(tangent, up, banks[index - 1] if index > 0 else 0.0)
+
+	var element_contracts := _element_contract_records(plan, compiled, trajectory, banks, terrain)
+	if not element_contracts.ok:
+		return {"ok": false, "errors": element_contracts.errors}
 
 	var propulsion_ids := PackedInt32Array()
 	var minimum_speeds := PackedFloat32Array()
@@ -126,6 +131,7 @@ static func build(
 		"bounds": _bounds(positions),
 		"terrain": terrain,
 		"dense_output": trajectory.dense_output,
+		"element_contracts": element_contracts.records,
 		"generation_stats": compiled.generation_stats.duplicate(true),
 		"terrain_story_plan": {"plan": plan.duplicate(true),
 			"integration_frame": "planned-world", "planning": planning,
@@ -436,6 +442,103 @@ static func _validate_terminal_contract(
 
 static func _finite_number(value: Variant) -> bool:
 	return (value is int or value is float) and is_finite(float(value))
+
+
+
+## Measure every whole material role on the one accepted production trajectory. Unadopted roles
+## are not judged, but they still publish their geometry so absence of a reviewed threshold cannot
+## become absence of evidence. Adopted roles fail route construction on any contract violation.
+static func _element_contract_records(
+	plan: Dictionary, compiled: Dictionary, trajectory: Dictionary,
+	banks: PackedFloat32Array, terrain: Dictionary
+) -> Dictionary:
+	var errors := PackedStringArray()
+	# Synthetic RouteContract fixtures deliberately test terminal/propulsion/window
+	# mechanics without a material story. Production terrain never takes this seam.
+	if terrain.get("kind") == "synthetic":
+		return {"ok": true, "records": {}, "errors": errors}
+	var intents_value: Variant = compiled.get("element_intents")
+	var role_spans_value: Variant = compiled.get("role_spans")
+	if not intents_value is Dictionary:
+		errors.append("compiled program is missing element_intents")
+	if not role_spans_value is Dictionary:
+		errors.append("compiled program is missing role_spans for element contracts")
+	if not errors.is_empty():
+		return {"ok": false, "records": {}, "errors": errors}
+	var intents: Dictionary = intents_value
+	var role_spans: Dictionary = role_spans_value
+	var expected_ids := []
+	for role_value in plan.get("roles", []):
+		if not role_value is Dictionary or str(role_value.get("id", "")).is_empty():
+			errors.append("plan contains a material role without an id")
+			continue
+		expected_ids.append(str(role_value.id))
+	var actual_ids: Array = intents.keys()
+	actual_ids.sort()
+	var sorted_expected := expected_ids.duplicate()
+	sorted_expected.sort()
+	if actual_ids != sorted_expected:
+		errors.append("element_intents must exactly cover the plan's material roles")
+	if not errors.is_empty():
+		return {"ok": false, "records": {}, "errors": errors}
+
+	var measured_route := {
+		"positions": trajectory.position_m,
+		"tangents": trajectory.tangent,
+		"banks": banks,
+	}
+	var records := {}
+	for role_id_value in expected_ids:
+		var role_id := str(role_id_value)
+		var intent_record_value: Variant = intents.get(role_id)
+		if not intent_record_value is Dictionary:
+			errors.append("element intent '%s' is not a Dictionary" % role_id)
+			continue
+		var intent_record: Dictionary = intent_record_value
+		var sample_bounds := _role_sample_bounds(role_spans, role_id, trajectory)
+		if sample_bounds.x < 0 or sample_bounds.y < sample_bounds.x:
+			errors.append("element '%s' has no whole-role sample bounds" % role_id)
+			continue
+		var measurement := ElementContract.measure(
+			measured_route, sample_bounds.x, sample_bounds.y)
+		if measurement.get("status") != "measured":
+			errors.append("element '%s' could not be measured: %s" % [
+				role_id, str(measurement.get("reason", "unknown"))])
+			continue
+		var status := str(intent_record.get("status", ""))
+		var intent_value: Variant = intent_record.get("intent")
+		if status == "unadopted":
+			if not intent_value is Dictionary or not intent_value.is_empty():
+				errors.append("unadopted element '%s' carries a hidden intent" % role_id)
+				continue
+			var reason := str(intent_record.get("reason", ""))
+			if reason.is_empty():
+				errors.append("unadopted element '%s' has no reason" % role_id)
+				continue
+			records[role_id] = {
+				"status": "unadopted",
+				"reason": reason,
+				"intent": {},
+				"measurement": measurement,
+				"violations": PackedStringArray(),
+			}
+		elif status == "adopted":
+			if not intent_value is Dictionary or intent_value.is_empty():
+				errors.append("adopted element '%s' has no executable intent" % role_id)
+				continue
+			var violations := ElementContract.validate(intent_value, measurement)
+			records[role_id] = {
+				"status": "adopted",
+				"reason": str(intent_record.get("reason", "")),
+				"intent": intent_value.duplicate(true),
+				"measurement": measurement,
+				"violations": violations,
+			}
+			for violation in violations:
+				errors.append("element '%s' geometry contract: %s" % [role_id, violation])
+		else:
+			errors.append("element '%s' has invalid intent status '%s'" % [role_id, status])
+	return {"ok": errors.is_empty(), "records": records, "errors": errors}
 
 
 static func _terrain_proofs(

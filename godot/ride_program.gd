@@ -235,6 +235,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		"span_metadata": metadata,
 		"gesture_spans": gestures,
 		"role_spans": role_spans.role_spans,
+		"element_intents": material_element_intents(story.sequence),
 		"propulsion_by_span": propulsion,
 		"minimum_speed_by_span": minimum_speeds,
 		"tunnel_span_ranges": tunnels,
@@ -957,6 +958,24 @@ static func _add_record(
 		"propulsion_id": propulsion_id, "minimum_speed_mps": minimum_speed_mps,
 		"diagnostic_kind": diagnostic_kind})
 	propulsion.append(propulsion_id)
+
+
+## One explicit geometry-intent record per material role. No role is allowed to disappear from
+## geometry review merely because its contract has not been researched yet: an unadopted record
+## publishes that absence honestly, while an adopted record will later carry the executable
+## `ElementContract` intent. The current slice adopts none; the camelback is the first planned
+## promotion after its geometry is rewritten.
+static func material_element_intents(sequence: Array = MATERIAL_ROLE_IDS) -> Dictionary:
+	var role_ids: Array = sequence if not sequence.is_empty() else MATERIAL_ROLE_IDS
+	var records := {}
+	for role_value in role_ids:
+		var role_id := str(role_value)
+		records[role_id] = {
+			"status": "unadopted",
+			"reason": "no reviewed whole-element geometry intent has been adopted",
+			"intent": {},
+		}
+	return records
 
 
 ## Reconstruct which material role owns each authored span. Ownership must be total, ordered

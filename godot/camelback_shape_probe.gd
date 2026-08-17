@@ -1,5 +1,6 @@
 extends SceneTree
 
+const BoundedSolver := preload("res://bounded_solver.gd")
 const Motion := preload("res://motion.gd")
 const RideGenerator := preload("res://generator.gd")
 const RidePlanner := preload("res://ride_planner.gd")
@@ -7,9 +8,14 @@ const RideProgram := preload("res://ride_program.gd")
 const Terrain := preload("res://terrain.gd")
 
 const TARGET_PROMINENCE_M := 250.0
-const TARGET_EXIT_HEIGHT_DELTA_M := 0.0
-const TARGET_EXIT_PITCH_DEG := 0.0
-const TARGET_LENGTH_M := 1000.0
+const LENGTH_BAND_M := Vector2(900.0, 1180.0)
+const CONTROL_IDS := [
+	"unload_s", "crest_s", "fall_s", "pullout_g", "release_s",
+]
+const LOWER := [1.0, 0.5, 2.0, 3.0, 0.30]
+const UPPER := [4.5, 5.0, 7.0, 7.0, 4.00]
+const INITIAL := [3.01169597 * 1.15 - 0.4, 3.62587650 * 1.06, 3.40,
+	5.2662035249371, 1.58]
 
 
 func _initialize() -> void:
@@ -18,51 +24,70 @@ func _initialize() -> void:
 		printerr("camelback shape probe could not produce the common entry state: ", start)
 		quit(1)
 		return
-	var candidates := []
+	var cache := {}
 	var settings := RideProgram._settings(RideProgram.COARSE_STEP_S)
-	for fall_index in 19:
-		var fall_s := 2.50 + 0.25 * fall_index
-		for peak_index in 13:
-			var pullout_g := 3.50 + 0.25 * peak_index
-			for release_index in 11:
-				var release_s := 0.50 + 0.25 * release_index
-				var route := Motion.integrate(
-					start.state, _planar_spans(fall_s, pullout_g, release_s), settings)
-				if not route.get("ok", false):
-					continue
-				var measured := _measure(route, start.state)
-				measured["fall_s"] = fall_s
-				measured["pullout_g"] = pullout_g
-				measured["release_s"] = release_s
-				measured["score"] = _score(measured)
-				candidates.append(measured)
-	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return float(a.score) < float(b.score))
-	var top := []
-	for index in mini(12, candidates.size()):
-		var coarse: Dictionary = candidates[index]
-		var production := Motion.integrate(start.state,
-			_planar_spans(coarse.fall_s, coarse.pullout_g, coarse.release_s),
-			RideProgram._settings(RideProgram.PRODUCTION_STEP_S))
-		var measured := _measure(production, start.state)
-		measured.merge({
-			"fall_s": coarse.fall_s,
-			"pullout_g": coarse.pullout_g,
-			"release_s": coarse.release_s,
-			"coarse_score": coarse.score,
-			"production_score": _score(measured),
-		}, true)
-		top.append(measured)
-	print("planar camelback shape sweep: ", JSON.stringify({
+	var residual := func(candidate: Array) -> Array:
+		var measured := _evaluate(start.state, candidate, settings, cache)
+		return measured.residuals if measured.get("ok", false) else [INF]
+	var solved := BoundedSolver.solve(residual, LOWER, UPPER, INITIAL, 299)
+	var accepted: Array = solved.get("x", INITIAL)
+	var coarse := _evaluate(start.state, accepted, settings, cache)
+	var production := _evaluate(start.state, accepted,
+		RideProgram._settings(RideProgram.PRODUCTION_STEP_S), {})
+	print("planar camelback local solve: ", JSON.stringify({
 		"entry": {
-			"speed_mps": start.state.speed_mps,
-			"pitch_deg": _pitch_deg(start.state.tangent),
 			"height_m": start.state.position_m.y,
+			"pitch_deg": _pitch_deg(start.state.tangent),
+			"speed_mps": start.state.speed_mps,
 		},
-		"candidate_count": candidates.size(),
-		"top": top,
+		"control_ids": CONTROL_IDS,
+		"control_bounds": {"lower": LOWER, "upper": UPPER},
+		"initial": INITIAL,
+		"solver": {
+			"ok": solved.get("ok", false),
+			"status": solved.get("status", ""),
+			"evaluations": solved.get("evaluations", 0),
+			"iterations": solved.get("iterations", 0),
+			"conditioning": solved.get("conditioning", null),
+			"accepted": accepted,
+			"scaled_residuals": solved.get("residuals", []),
+		},
+		"coarse": coarse,
+		"production": production,
 	}))
 	quit(0)
+
+
+func _evaluate(
+	entry: Dictionary, controls: Array, settings: Dictionary, cache: Dictionary
+) -> Dictionary:
+	var key := "%.6f:" % float(settings.step_s)
+	for value in controls:
+		key += "%.10f," % float(value)
+	if cache.has(key):
+		return cache[key]
+	var route := Motion.integrate(entry, _planar_spans(controls), settings)
+	if not route.get("ok", false):
+		var failed := {"ok": false, "errors": route.get("errors", [])}
+		cache[key] = failed
+		return failed
+	var measured := _measure(route, entry)
+	var length_residual := minf(0.0, float(measured.length_m) - LENGTH_BAND_M.x) \
+		+ maxf(0.0, float(measured.length_m) - LENGTH_BAND_M.y)
+	var rise_arc := float(measured.apex_distance_m)
+	var fall_arc := float(measured.length_m) - rise_arc
+	measured["residuals"] = [
+		float(measured.exit_height_delta_m) / 3.0,
+		float(measured.exit_pitch_deg) / 0.25,
+		(float(measured.prominence_m) - TARGET_PROMINENCE_M) / 2.0,
+		length_residual / 25.0,
+		(rise_arc - fall_arc) / 20.0,
+	]
+	measured["rise_arc_m"] = rise_arc
+	measured["fall_arc_m"] = fall_arc
+	measured["controls"] = controls.duplicate()
+	cache[key] = measured
+	return measured
 
 
 func _camelback_start(seed_value: int) -> Dictionary:
@@ -91,12 +116,15 @@ func _camelback_start(seed_value: int) -> Dictionary:
 	return {"ok": true, "state": RideProgram._last_state(prefix)}
 
 
-func _planar_spans(fall_s: float, pullout_g: float, release_s: float) -> Array:
+func _planar_spans(controls: Array) -> Array:
 	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullup_s := 1.87949032 * 1.33555111055541
-	var unload_s := 3.01169597 * 1.15 - 0.4
-	var crest_s := 3.62587650 * 1.06
+	var unload_s := float(controls[0])
+	var crest_s := float(controls[1])
+	var fall_s := float(controls[2])
+	var pullout_g := float(controls[3])
+	var release_s := float(controls[4])
 	return [
 		Motion.span("camelback/pull-up", pullup_s, "moving",
 			Motion.quintic(1.0, positive_g), Motion.constant(0.0),
@@ -144,15 +172,6 @@ func _measure(route: Dictionary, entry: Dictionary) -> Dictionary:
 		"apex_time_s": route.time_s[apex_index] - route.time_s[0],
 		"apex_distance_m": route.distance_m[apex_index] - route.distance_m[0],
 	}
-
-
-func _score(measured: Dictionary) -> float:
-	var height_error := (float(measured.exit_height_delta_m) - TARGET_EXIT_HEIGHT_DELTA_M) / 5.0
-	var pitch_error := (float(measured.exit_pitch_deg) - TARGET_EXIT_PITCH_DEG) / 0.5
-	var prominence_error := (float(measured.prominence_m) - TARGET_PROMINENCE_M) / 3.0
-	var length_error := (float(measured.length_m) - TARGET_LENGTH_M) / 50.0
-	return height_error * height_error + pitch_error * pitch_error \
-		+ prominence_error * prominence_error + 0.1 * length_error * length_error
 
 
 func _pitch_deg(tangent: Vector3) -> float:

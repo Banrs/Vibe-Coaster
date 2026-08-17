@@ -33,7 +33,7 @@ jobs:
           old = 'length_residual / 25.0'
           if text.count(old) != 1:
               raise SystemExit(f'expected one length residual scale, found {text.count(old)}')
-          path.write_text(text.replace(old, 'length_residual / 5.0'))
+          path.write_text(text.replace(old, 'length_residual / 1.0'))
           PY
       - name: Measure the local shape before adapting the return
         run: |

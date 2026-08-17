@@ -1,0 +1,26 @@
+name: Measure camelback red baseline
+
+on:
+  push:
+    branches:
+      - agent/issues-register-cleanup
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/issues-register-cleanup
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.1
+          use-dotnet: false
+          include-templates: false
+      - name: Import project
+        run: godot --headless --path godot --editor --quit
+      - name: Run the intentionally red camelback gate
+        run: godot --headless --path godot --script res://camelback_geometry_tests.gd

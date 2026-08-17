@@ -1,772 +1,1719 @@
-# Open issues — user review, 2026-08-09
+# Vibe-Coaster — Geometry and Ride-Quality Defect Register
 
-Daniel's ride-through/review findings after the fidelity campaign. This is the starting
-point for the next round of work, not a spec: investigate openly, measure, and expect to
-discover problems beyond what is listed. `docs/TELEMETRY.md` holds measured ground truth;
-root `CLAUDE.md` holds the contract.
+> **Canonical active register.** This file records the current geometry, transition, pacing,
+> terrain, validation, and presentation defects. It replaces the previous chronological
+> `docs/ISSUES.md`; rejected experiments and superseded hypotheses remain available in dated
+> design documents and Git history rather than being repeated here.
+>
+> **Revision:** 2026-08-17
+> **Audited code:** `2686fcb53fa95a65a19456251741672453ea21bc`
+> **Scope:** source, committed diagnostics and telemetry, the previous register, and the user's
+> ride-through observations. No fresh executable render was produced during this document-only
+> review.
 
-## Next session — start here (2026-08-15, end of session)
+## 1. How to read this register
 
-Verified on Godot 4.7.1: the import gate, the twelve focused suites in
-`.github/focused-tests.txt`, and `smoke.gd` are all green, and all fifteen seeds build and
-place clean. Gaps **A** (stage 1) and **B**, which opened this section at the start of the
-session, are closed and gated:
+A route can be numerically valid while its geometry and ride experience remain wrong. The
+reported symptoms—incorrect element shapes, transitions that are mathematically joined but feel
+micro-stitched, apparently arbitrary banking, weak terrain use, poor pacing, and a very poor
+sense of speed—are therefore treated as first-class defects rather than as cosmetic preferences.
 
-**B — the record launch is real.** The tunnel LSM3 booster runs at 1.33 g and the built ride
-tops out at 340.40 km/h (94.55 m/s) on all fifteen seeds, gated in smoke at 93.9–95.6 m/s. The
-entry launch peaks at 3.9 g (gated 3.7–4.1) with exit speed conserved. The measured cost of
-closing the record inside 8.2 km without a mid-course brake was the passive capture-entry band,
-widened 70–77 → 70–80 m/s, and the brake bound, raised 3.0 → 3.6 g (measured peak 3.05; the
-envelope allows 4.286 over that hold). Derivation:
-`docs/superpowers/specs/2026-08-15-record-launch-derivation.md`.
+Each issue records the visible defect, the strongest mechanism currently supported by evidence,
+the required direction of repair, and a closure test. Evidence labels mean:
 
-**A stage 1 — the seed varies the ride.** `godot/ride_planner.gd` holds named decision streams
-(FNV-1a over stream name plus seed, so streams are independent), the story grammar as data, and
-the certified per-seed target draws: return turn-a `transfer_bank_bias` 6.5–8.5°, height-a
-`peak_g` 3.65–3.95, and unload scales 0.95–1.05. Measured fleet spread was 8138.7–8180.6 m
-(41.9 m) and 0.31 s of duration at that landing; re-measured 2026-08-16 under the eight-control
-return re-certification it is 8138.1–8187.3 m (49.2 m) and 0.51 s, with the records still
-pinned on every seed; smoke now has diversity
-floors so the fleet cannot silently collapse back to one ride. A latent bug surfaced and was
-fixed on the way: the terminal-approach corridor was never clearance-sampled, so seed 123456's
-brakes sat 1.82 m under the 2.0 m floor; the approach is now held to station clearance.
+- **Confirmed:** established directly by source or committed measurements.
+- **Corroborated:** a confirmed mechanism agrees with a user-observed symptom.
+- **Needs capture:** the mechanism is established, but its visible magnitude still needs a fresh,
+  deterministic render or POV comparison.
 
-### The recommended next work: the prefix closure solve (issue 24)
+`VC-*` identifiers are the primary IDs in this register. Legacy issue numbers remain compatibility
+aliases because the current fidelity audit hard-codes IDs `1..16`; see [§12](#12-legacy-id-compatibility).
+Do not remove that mapping until the audit code and its generated artifacts have migrated.
 
-Stage 2 of gap A — act-one permutation and per-seed draws in the opener and act one — was
-**refused by measurement**, three independent times, and all three refusals hit the same wall.
-The prefix (station through the cliff dive) has no closure solve of its own: its terminal
-geometry is chaotic in its own force parameters, so nothing upstream of the dive can be varied
-without knocking the dive off its placement feasibility edge.
+## 2. Executive verdict
 
-The evidence trail, all measured this session:
+The generator is a force/time-domain ride compiler with bounded endpoint solves, but it does not
+yet enforce enough spatial intent to be a dependable geometric coaster generator.
 
-1. **Act-one permutation refused.** A ±0.005 change in a single force value moves the dive
-   chord by ~115 m. 12 of 24 candidate permutations fail the capability preflight outright, and
-   the best survivors fail the return solve on 12 of 15 seeds.
-2. **Opener roll tranche refused** (issue 20 work). Any bank-timing change in the opener tips
-   dive placement off its feasibility edge on *every* seed, so the opener's roll stepping could
-   not be fixed with the return and clifftop tranches.
-3. **Opener/act-one target draws refused.** Same mechanism: the draws are legal in capability
-   terms and still leave the prefix unable to land the dive.
+The dominant failure chain is:
 
-So the recommendation is explicit: build a bounded closure solve for the prefix, the way the
-return already has one, so the dive's placement becomes a solved residual instead of a
-hand-calibrated coincidence. That unblocks issue 20's last tranche, stage 2 of gap A, and issue
-22's dive-commit placement, and it is issue 24's real fix — authoring in the rider's frame is
-reproducing the force trace without producing a coherent swept shape, and the prefix is where
-that costs the most.
+```text
+fixed story + hard role-length bands + sparse terrain anchors
+                         ↓
+global solves spend durations, banks, and load timing on placement/closure
+                         ↓
+local silhouettes and bank narratives drift
+                         ↓
+self-contained roll/load pulses stop and restart inside nominal transitions
+                         ↓
+seam checks pass at authored boundaries while the ride still looks stitched
+                         ↓
+high AGL + sparse near-field detail + inconsistent viewer sampling weaken speed cues
+```
 
-Issue 24 remains the strongest candidate for the single root cause behind 20, 23 and much of
-15. ~~If one thing is picked up next, pick the prefix closure solve.~~ **That solve landed on
-2026-08-15** (progress notes below), so it is no longer the next pick. **Return height authority
-landed on 2026-08-16** — the return's height-beat peak g is the eighth solved control, seeded
-from the certified draw, with the canonical fleet re-certified 15/15 (spec:
-`docs/superpowers/specs/2026-08-16-return-height-authority-design.md`). It was the DOF the
-honest-drag refusal measured the solve short of, and a candidate for the swap's floor-pinned
-exhaustions; the swap's floor-pinning did clear (issue 24's annotation), but the honest-drag
-fleet test **refused** on all three deep seeds — the residual that remains names the
-*horizontal* capture placement (cross-track 137–235 m, station-forward 52–80 m at every best
-stall), not height. **The measured next spend is therefore the prefix handoff-pose residual**:
-both open walls — issue 24's cross/yaw swap mode and issue 2's honest-drag re-baseline — now
-refuse on the same camelback→return handoff displacement that no return-side control can
-un-move, and §7.4 of the honest-drag spec named it before this stage confirmed it fleet-wide.
-Honest drag is **not** re-baseline-ready until that residual exists.
+The problem is **not FVD itself**, nor is every time-domain profile inherently wrong. The problem
+is using time-domain force and roll profiles as the main shape description without complete
+spatial contracts, then allowing distant closure objectives to alter local element variables.
 
-**Progress, 2026-08-15 (stages 1–3 landed):** the prefix closure solve is in production.
-`_plan` runs preflight → terrain-derived closure target → one bounded four-control solve →
-closed-form placement; the grid search is deleted; the accepted controls thread into
-`compile()` and are verified off the built spans. Fleet-wide gated margins at the stage-3
-baseline (worst seed): dive-entry edge +6.13 m, apron fraction +0.062, summit AGL +2.90 m,
-record exit +0.79 m/s — stage 5a later moved the entry aim to the rim end for issue 22, so
-the current margins live in that entry (dive-entry +4.30 m with the low side binding) —
-with the solve converging in 1–6 of 31 allowed evaluations on all fifteen seeds. One honest
-narrowing recorded: the entry aim band sits inside a band already inset 3 m, so
-terrain the old grid search would have placed can now refuse with a structured error — the
-refusal paths are unreached on the fleet, not unreachable in principle; stage 4's
-refusal-derived tests exercise them.
+The required direction is a deliberate hybrid:
 
-**Stage 4 measured (2026-08-15): the solve did half its job, and the other half now has a
-name.** Tail-domain changes are absorbed — the act-one loop at −0.005 g places inside all
-four margins on 15/15 seeds, and the act-one optional-member swap places 15/15 (both were
-flat refusals before the solve). But no perturbed or permuted story builds end to end:
-opener (head-domain) changes refuse at the terrain preflight before the solve is reached
-(±0.005 g swings the native chord 245–408 m against a ~270 m terrain span — the four
-controls all live downstream of act one), and every story that does place then fails in the
-seven-control return solve, whose hand-tuned fixed seed does not re-converge for a moved
-handoff (budget-exhausted at 79/80 with residuals nearly closed; the record-exit residual
-pins the speed, the geometric handoff still moves). The two named follow-ons: a
-deterministic per-story derivation of the return seed (a seed derivation, never a retry
-loop), and a measured decision on head accommodation for opener draws. The planning-half
-victories are gated in `generator_material_tests.gd` (four seeds × {swap, loop −0.005};
-~12.7 s locally where the parallel runner hides it, ~25 s on ubuntu's serial CI). Spec
-correction recorded in the design's §5. A review then caught the gated swap helper as a
-no-op; the corrected helper was re-measured across the full grammar — the counts all
-survived, now actually proven, and the complete table exists: of the **36** grammar-legal
-act-one orders (not 24 as earlier prose said), exactly three place at all — canonical,
-the optional-member swap `cutback loop wave airtime` (15/15), and the airtime-dropped
-order (9/15, seeds named in the test comment); the other 33 refuse at the same preflight.
+- retain rider-frame integration and time-domain control where time is the physical intent;
+- author reusable element shape over arc length/geometric phase, or enforce equivalent spatial
+  invariants around any time-domain recipe;
+- give every element explicit entry/exit, silhouette, bank, and terrain contracts;
+- make one continuous roll function own each intentional bank transition;
+- solve macro anchors and corridors before local element geometry;
+- promote reviewed geometry and terrain intent into acceptance gates;
+- repair viewer interpolation and speed cues without using presentation effects to hide bad track.
 
-**Story-energy accommodation refused by measurement (2026-08-15).** The proposed prefix-side
-follow-on — re-target the closure's fourth residual from `record_exit_speed_mps` to
-`dive_entry_speed_mps` so the solve can see the pre-dive energy state — was measured before it
-was written, per its own design §9.1, and the measurement refuted it. The swapped story arrives
-at the rim **+2.43…+2.46 m/s** hotter carrying only **+7.7…+20.2 J/kg** (the design derived
-≈ +3 m/s and ≈ 63 J/kg from arc length), and the +21 m of dive arc is **not** an energy surplus:
-at *equal* dive-entry speed the swapped dive still runs +21.7 m longer, and its arc never reaches
-490 m anywhere in `climb_core_s`'s 6–12 s bound (minimum ≈ 494.5 m; ≈ 497.1 m anywhere the summit
-rise stays in its aim band, i.e. at the entry speed it already has — lowering the entry speed
-*lengthens* the arc). The re-target was then implemented and run rather than argued about:
-canonical stays bit-identical on all fifteen seeds, and the swap goes from planning 4/4 to
-**refusing 4/4 at the prefix closure**, because pulling the dive entry down pushes the record exit
-to 96.8–97.2 m/s — inside the summit-rise aim band the swapped record exit spans 94.31–97.94 m/s,
-so the design's "pinning `v_entry` at a pinned entry height *is* pinning the record" is false. The
-change was therefore **not landed**; the measurement lives in that design's new §10. The only
-control that shortens the dive without moving its entry state is `dive_approach_s` (497.1 → 487.6 m
-at 0.40 s, entry speed unchanged), which is issue 22's knob.
+## 3. Priority definitions
 
-**Return-seed derivation refused by measurement (2026-08-16), and the order it implied is void.**
-The follow-on this section named — "the deterministic per-story return-seed derivation first, then a
-dive-arc residual absorbed by `dive_approach_s`" — was measured before more of it was written, and
-both halves of its premise failed. (1) The refusal it existed to fix **does not reproduce**: all
-fifteen seeds × `dive_approach_s` ∈ {0.80, 0.85, 0.90} converge from the unchanged fixed
-`RETURN_SEED` (45/45, worst 68 evaluations), so the fixed seed already follows that moved handoff and
-issue 22's second half is unblocked without it. (2) On the act-one swap — the class the design's §4
-named — **no seed of any form reaches the target**: re-seeded with an oracle (seed 11's exact
-converged vector at the same approach, and the swap's handoff deviation is seed-independent to 0.1 m
-fleet-wide), seeds 42 and 20260809 still budget-exhaust at 79/80 at every approach value, every
-refusal pinning `height_a_recovery_duration_s` at its 0.35 s floor. The wall is a box constraint, not
-a basin. The linear warm start was built and run anyway: it changes no outcome and moves the worst
-scaled residual 0.269 → 0.183 on seed 42 but 0.041 → **0.200** on 20260809 — worse on one of the two
-cases it was for — so no code landed. The measured sensitivity matrix is recorded at §8.3 of the
-design so the work is not lost. Honest order now: **not** the certified
-`height_a_recovery_duration_s` floor relaxation — that trim (0.35 → ~0.30) was already measured and
-refused, recorded at the bound in `ride_return_solve.gd:28-34`: at a 0.30 floor seed 20260809's
-swapped return converges, and its accepted point runs `return-height-a` to 277.6 m against that
-role's declared 290–480 m band, so the role band binds below the floor and the certifiable floor is
-*above* today's value, never below it. The remaining wall the same measurement named is prefix-side
-role length: under the swap `outward-dive` runs 497.4–497.5 m against its 350–490 m band on **every**
-seed while the closure accepts `PREFIX_SEED` unchanged, so those 21 m are prefix geometry, "not a
-control choice or a return seed". ~~Spend there — the dive-arc residual, `dive_approach_s` returning
-route metres~~ — **that spend was taken and refused by its own measurement (2026-08-16); see the next
-entry. The role overrun is real, but it is a symptom of the handoff, not the wall, and the metres it
-would return are not what the swap is short of.**
+| Priority | Meaning |
+|---|---|
+| **P0 — Foundation blocker** | Prevents trustworthy geometry or makes downstream tuning disposable. |
+| **P1 — Major ride-quality defect** | Materially damages element identity, flow, terrain use, pacing, or POV quality. |
+| **P2 — Validation or maintainability gap** | Allows regression, weakens evidence, or makes defects difficult to diagnose. |
+| **P3 — Operational or presentation debt** | Worth tracking, but not a reason to delay the geometry foundation. |
 
-**Dive-arc residual refused by measurement (2026-08-16), and the "prefix-side role length" reading
-with it.** Third refusal in a row, and like the other two it was built and run rather than argued
-about. Corrections first: **canonical does not overrun its dive band.** It builds `outward-dive` at
-**475.604–476.544 m** on all fifteen seeds (475.640–476.721 m across every closure observation the
-fleet makes), inside the declared 350–490 m band with 13.456 m of headroom, so there was never a
-canonical re-baseline to declare. 497.4–497.5 m is the swap's number alone.
-Measured per span (seed 11, production integration), the role's length is a **rim-speed budget, not a
-cliff-geometry one**: 63% of it is the 4.64 s pull-out run at 49–70 m/s, both stories fall the same
-cliff to **5.4 cm** (−247.48 m against −247.42 m, both inside the declared −250…−240 m), and what the
-swap's **+2.431 m/s** of rim entry buys is length — all eight spans lengthen, **21.467 m** in total.
-That is a **two-point secant of ≈ 8.83 m per m/s** between these two stories (every difference between
-them included), not a per-span law: the commit block grows +15.5% against the pull-out's +1.7%. Read
-through it the 13.456 m of headroom is ≈ +1.5 m/s of rim speed, and the swap's 497.43–497.46 m is
-**7.43–7.46 m past 490 m ≈ 0.84 m/s** too hot (computed on one side of the comparison throughout; the
-earlier 0.91 subtracted seed 77777's headroom from seed 11's rim delta).
-The residual itself: aim band = the declared role band inset by a margin, four controls and
-`MAX_PREFIX_EVALUATIONS := 52` untouched. **Canonical is bit-identical 15/15** (every observation
-strictly interior, `_band_residual` exactly 0.0 there, coarse/fine agreement 0.0014 m) and **the swap
-refuses 4/4 at the prefix closure**, where today it plans 4/4. Its only absorber returns ≈ 15.8 m of
-*net* arc per second of `dive_approach_s`, so the swap needs 0.79 s of that control's 0.60 s of range
-to clear a 490 − 5 m *aim* ceiling (the bare 490 m ceiling needs 0.47 s, inside range — the figure is
-margin-dependent) — and at a margin small enough to be reachable (3 m), seeds 42 and 20260809 *do*
-close the dive at 487.0 m and **still budget-exhaust their return at 79/80** (that run recorded the
-exhaustion and the delivered dive length only; the residual breakdown at 79/80 was not captured).
-Worse, every metre the approach returns is
-re-spent at a loss: pinning the approach at 0.80 s buys seed 11 3.164 m of dive arc and costs
-**+46.810 m of `return-turn-b`** and −22.595 m of `return-height-a` (through its 290 m floor); at
-0.60 s seed 11's return stops converging; at 0.40 s the plan refuses because the accepted closure flips
-the yaw solution. **Length is relieved and the wall remains** — the stronger and better-supported
-reading than "length was never binding": the short-approach refusals carry a length residual of exactly
-0.0 while the geometric residuals blow up; the converged swap cases sit at 8198.76–8198.80 m, which is
-0.20–0.24 m inside the 8199.0 m aim ceiling (`RETURN_LENGTH_AIM_MARGIN_M` = 1.0) and so pressed against
-the constraint, not slack under it; and the un-retracted 2.1 m / 5.1 m length overruns those two
-exhausting seeds carry (`generator_material_tests.gd:193-195`; 4.9–8.1 m against 8200 m in §1 of the
-story-energy design) are more than covered by the ≈ 10.4 m the 3 m-margin run gives back — and they
-exhaust at 79/80 anyway.
-Widening the band instead is refused too — even past 497.5 m the swap still fails `return-turn-b`
-(571.2 / 572.6 m against 430–570) on the two seeds whose returns converge, and 42 / 20260809 never
-reach the route contract. **What the evidence names instead:** the swap's wall is the *geometric*
-camelback handoff (pulled back 32–66 m, +12–13 m higher, 3.5–5.1° in yaw), and all four closure
-controls are durations downstream of act one, so they cannot pin six DOF. The honest spends are
-head-domain accommodation (a control upstream of act one — measure the head re-integration cost first)
-or a prefix residual on the handoff pose, which needs more than four controls. Neither is a residual on
-the dive. Full derivation, the pinned-approach matrix and the built-and-run result:
-`docs/superpowers/specs/2026-08-15-prefix-closure-solve-design.md` §11; the refusal is also recorded at
-the band's own home in `generator.gd`'s `outward-dive` role.
+## 4. Root causes
 
-**Honest-drag re-baseline refused by measurement (2026-08-16), and the two reverts it was
-carrying are blocked behind it.** Fourth refusal in the sequence, and the first one that failed
-in the *return* rather than the prefix. The full chain was built and run; §7 of
-`docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` holds the constant table, the
-measured outcomes and the four bounded searches. What this adds to the record beyond issue 2's
-entry:
+### RC-A — Time-domain profiles are not spatially invariant
 
-1. **The launch cannot pay for honest drag, and the analytic note said it could.** Sweeping the
-   3.9 g plateau across 0.95–1.45 s (85 points) measures act-one-exit head at −51.9 … +159.4 m
-   against the old-drag baseline's 186.7 m — non-monotone, and it never gets there, because the
-   faster opener re-sheds what the launch adds. Inside the 300–320 km/h exit band the best is
-   124.4 m, and there act one's minimum speed has collapsed to 21.4 m/s. **1.094 s is the only
-   value in the band where the act-one exit bank crosses zero**, and that matters: 7.4° of
-   residual bank at 1.08 s is amplified by the climb to 53° at the crest and tips the clifftop
-   into a dive. The absorber is the cliff-base assist instead, at roughly double its drive.
-2. **The camelback is not the absorber and was not moved.** Per Daniel's ruling of 2026-08-16 it
-   stays ~250 m and symmetric. Measured, that is not a cost: at `fall_s` 3.20 the honest-drag
-   hill holds 246.86–247.07 m prominence, width/height 3.130–3.137, and comes out *more*
-   mirrored in height than the shipped one (fall/rise 1.012–1.014 vs today's 0.966; arc 0.793 vs
-   0.824; time 0.883 vs 0.878). Probing a taller rise — before the ruling, as a diagnostic —
-   drove prominence to 264–270 m through the 255 ceiling and made the return wall *worse*
-   (−129.5 m height miss against −78.6 m at the pinned height). The ruling and the measurement
-   agree.
-3. **Both reverts fail on today's drag, measured on all three deep seeds.** Capture band
-   70–80 → 70–77: every deep seed budget-exhausts at 79/80 with the entry speed +1.04 … +1.39 m/s
-   past the 77 ceiling. Brake bound 3.6 → 3.0 g: every deep seed refuses with `brake solve
-   reached a parameter bound`, the solved peak on seed 11 being 3.0108 g. Their stated reason
-   does disappear under honest physics — but honest physics has not landed, so the reverts stay
-   where they are and the 2026-08-15 decision below stands until it does.
+`godot/motion.gd` samples normal G, lateral G, drive G, and roll rate at normalised span time,
+while spatial curvature depends on current speed:
 
-**Cross-suite build reuse refused by measurement (2026-08-16); the battery's cost is its
-schedule, not its builds.** The battery makes 62 full `RideGenerator.build()` calls per run and
-35 are preset builds a shared pre-built fleet could serve, so sharing them looks free. It is not:
-the reusable builds are not on the critical path. `tools/gates.sh` dispatches in `JOB_LIST` order,
-so `smoke.gd` goes last and ends the run; reorder longest-first and the path becomes
-`ride_planner_tests` at 140 s, 16 of whose 17 builds are `build_with_decisions` at certified-range
-extremes that no preset fleet can serve. Measured: today 183.6 s, longest-first dispatch alone
-**145.2 s and 13/13 green**, reuse in today's order 167.9 s (−8.5%), reuse *plus* that reorder
-160.5 s — **slower than the free reorder**, because the 20.0 s fleet pre-build prologue costs more
-than the 4.9 s reuse takes off the critical path. The full measurement, the per-suite build census
-and the scheduler model live in `tools/gates.sh`'s header. Neither lever reaches ~2 min:
-`ride_planner_tests`' 16 extreme builds are the wall, and the reorder is measured and available.
+```text
+curvature_vector = transverse_acceleration / speed²
+```
 
-### Decisions — 2026-08-15 review session
+That is physically coherent, but it means the same recipe can produce a different silhouette when
+entry speed, drag, gravity projection, or upstream geometry changes. Time-domain authoring therefore
+needs explicit spatial invariants or a spatially authored element layer; it cannot be treated as a
+complete reusable geometry contract on its own.
 
-Recorded user decisions from the full-codebase review (they resolve the "decide deliberately"
-items above):
+### RC-B — Named roles do not have complete geometric contracts
 
-- **Gap A is a bug, not intent: seeds must genuinely vary the ride** — terrain placement,
-  track, element geometry, and element order. Variety is to be built as the approved
-  FVD-first planner vision (named decision streams, story grammar, per-slot recipe/target
-  resolution), not as a simplified RNG sprinkle that would be thrown away. Order variation is
-  limited to grammar cells (act-one pool permutes and may drop one optional member; return
-  composition varies; the spine stays ordered; `sequence.order` stays reserved).
-- **Records are fixed identity; everything else draws.** Camelback ~250 m, the record launch,
-  and the 100–110 m Immelmann stay in tight bands; non-record geometry draws per seed within
-  conservative certified capability ranges grounded in the FF/TRR telemetry counterparts.
-- **Gap B resolves toward the contract, derivation first.** The launch/record numbers are
-  re-derived from real engineering (Do-Dodonpa ≈3.3 g reference; near-future LSM credit)
-  before code is retuned; the derived numbers become both the code and the prose, gated in
-  smoke. Note the honest baseline: the built entry launch (3.2 g) matches the real
-  Do-Dodonpa reference; CLAUDE.md's "~4 g" was the unsupported side of that disagreement.
-- **The version-1 config surface (material plan Task 4) is in scope** and is to be built on
-  the planner decision layer (`build_config`, key registry, overlay algebra).
-- **No document is beyond skepticism** — authority: user decisions → physical derivation +
-  verified evidence → vision docs → code. Doc cleanup is banner-plus-falsehood-fixes;
-  history stays intact.
-- **Return-solve budget flag — discharged 2026-08-15:** the budget was re-derived from the
-  measured evaluation formula and tightened 220 → `MAX_RETURN_EVALUATIONS := 80` (now in
-  `godot/ride_return_solve.gd`), gated at ≤60% usage on all fifteen seeds in smoke.
-- **Capture-entry band widened 70–77 → 70–80 m/s** — accepted as the measured cost of closing
-  the ~340 km/h record inside the 8.2 km route band with no mid-course brake. The brake bound
-  moved 3.0 → 3.6 g for the same reason. Both are recorded in `CLAUDE.md`'s contract, with the
-  derivation in `docs/superpowers/specs/2026-08-15-record-launch-derivation.md`. The derived
-  entry launch landed at a 3.9 g peak, which supersedes the 3.2 g baseline noted above.
-- **Reference imagery is local-only.** Photographic and video reference media is never
-  committed. `tools/fetch-reference-media.sh` builds a local manifest, `REF_MEDIA_MANIFEST`
-  points the inspection run at it, and an absent manifest is reported as a declared gap rather
-  than worked around. (Full POV downloads are bot-blocked from this environment; the thumbnail
-  fallback produced five real overlays, and full frames can be supplied locally.)
-- **Code budget.** Write the minimum code that solves the problem; ship each piece of data once,
-  in code or in a document but never both; the read-only diagnostic layer must not outgrow the
-  generator it measures; if two hundred lines could be fifty, rewrite them. This session's
-  deflation pass removed 664 lines with byte-identical behavior. Standing rule, in `CLAUDE.md`.
-- **Config v1 landed with an honest registry.** `godot/ride_config.gd` and
-  `RideGenerator.build_config()` implement the overlay algebra, canonical hash, and resolution
-  report, but only `preset`, `seed`, and `slot.intensity` on the two return heights are
-  registered — the keys whose full range is certified by `ride_planner_tests.gd`. Every other
-  candidate key carries its measured refusal reason in `RideConfig.UNREGISTERED`. Do not widen
-  the registry ahead of the measurement that certifies it.
-- Housekeeping: the `.superpowers/` working directory referenced by commit `b464a7b`'s
-  message is not in the repository and does not survive a fresh clone. `godot/fidelity_overlay.gd`
-  and its suite landed via commits `bff59ef`/`d2bda61`/`1999ca0` without a planning document;
-  their contract is described in README and the material design's diagnostics section.
+Roles identify an Immelmann, cutback, wave, camelback, and other beats, but production acceptance
+does not require each whole element to meet declared entry/exit pitch, heading, bank, curvature,
+torsion, planarity, height, width, apex, or landmark conditions. Force continuity and a role name
+do not prove element identity.
 
-Carry-over from the same review: role `targets`, `phases` and `recipe_id` are published in the
-accepted route but still unenforced (see *Known limitations of the baseline itself* below).
-Only `length_m` and the three terrain intents are proven against the built ride, by
-`_validate_role_lengths` in `godot/route_contract.gd` — that function is the working model for
-enforcing the rest. None of the sixteen ride-quality issues below is closed.
+### RC-C — Closure objectives can consume local aesthetic variables
 
-## Ride quality
+The prefix solve changes authored durations to meet dive, tunnel, summit, speed, and role-length
+targets. The return solve changes major banks, durations, airtime timing, and peak load to reach
+the station corridor. The final capture then corrects five pose components over a very short
+terminal manoeuvre. None of those objectives contains a complete local-shape cost.
 
-1. Missing micro elements — e.g. the slow-ish hilltop section Falcon's Flight has; small
-   connective beats are absent.
-2. Pacing cheated by near-zero-loss coasting — boring sections hold speed as if
-   friction/drag-free, propping up the elapsed average.
-   **Mechanism derived, 2026-08-15.** The integrator's resistance is
-   `0.08 + 0.000075·v²` m/s² (`ride_program.gd` `ROLLING_MPS2`/`AERO_PER_M`). Rolling at
-   0.08 m/s² (c_rr ≈ 0.008) is defensible with near-future bogie credit, but the aero term is
-   3–5× under real physics: a ~12 t open train at Cd·A ≈ 4.5–7 m² in desert air
-   (ρ ≈ 1.1–1.225 kg/m³) gives 0.00021–0.00036 per metre, not 0.000075. At return speeds
-   (~75 m/s) the built ride sheds ~0.05 m of head per metre where honest drag sheds ~0.17.
-   Fixing it re-opens the whole energy chain — launch exit speeds, act-one entry bands, LSM
-   drives, camelback crest, and the record closure (where more honest drag actually *eases*
-   the measured ~21.8 m surplus-head problem) — so it must land as one re-derivation with the
-   prefix closure solve available (issue 24), not as a constant tweak.
-   **Built and refused by measurement, 2026-08-16; nothing landed.** The whole re-baseline was
-   implemented against the landed closure solve and run. Six of seven beats close at
-   `AERO_PER_M = 0.00021`: launch plateau 0.8038 → 1.094 s holds the 3.9 g peak and exits at
-   86.184 m/s (310.3 km/h); the cliff-base assist is re-derived from 0.294 to **0.597 g** with a
-   re-shaped pull-up/core/pull-over that reproduces the old crest to 0.03 m/s and 0.34 m; the
-   tunnel booster grows 1.633 → 1.933 s (184.6 → 211 m) at unchanged 1.33 g; the record holds at
-   **340.22–340.37 km/h** on 11/42/20260809 with the closure converging in 16–28 of 31
-   evaluations; act one keeps honest inversion speed (minimum 37.30 m/s vs 36.08); and the
-   camelback stays pinned at **246.9 m** prominence on `fall_s` 3.40 → 3.20 alone.
-   **The seventh beat, the return, does not close from any control vector** — not in production
-   bounds, not in deliberately over-wide diagnostic bounds, and not with the route band opened
-   to 7000–9500 m. The residual that never yields is the capture-gate height, **−73 to −79 m in
-   every configuration** — measured on **seed 11 only**, so that range spans configurations, not
-   seeds; the deep seeds' camelback-exit states are near-identical, which makes the wall very
-   likely fleet-wide but leaves it untested — because the return's beats are authored at fixed
-   peak g so their rise scales with `v²`, and all seven controls are durations and banks. The
-   prefix's ground track is chaotic in its own force constants, so honest drag moves the
-   camelback→return handoff **426 m forward, 86 m cross, 22.25 m lower (still 18.08 m above the
-   station, not below it) and 23.7° in yaw** — 630.53 m of forward shift and 20.4° of yaw
-   already at the tunnel exit — an order of magnitude past the 32–66 m that defeated three
-   attempts on issue 24's swap.
-   Full derivation, the constant table, the four bounded searches and the two blocked reverts:
-   `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7. The named next spend is
-   height authority in the return (peak-g as a solved control) or a prefix handoff-pose
-   residual — not another seed and not another scalar.
-   **Height authority built and fleet-tested, 2026-08-16: the wall stands, and it changed
-   name.** The peak-g control landed for the production solve (re-certified 15/15 at today's
-   drag) and the honest-drag probe was re-run as the first *fleet* test of §7.2's wall —
-   seeds 11, 42, 20260809, production bounds, both the shipped 70–80 band and §7.2's (40, 90)
-   opening, draw-seeded plus 24 random starts per seed. **Zero convergences.** Freeing the
-   peak cuts the height member roughly fourfold at the best stall (seed 11: −50.6 m pinned →
-   −13.1 m freed) and closes the entry-speed residual, so height authority is real — but what
-   never yields now is the *horizontal* capture placement: cross-track 137–235 m and
-   station-forward 52–80 m at every seed's best point. At the shipped band the solve instead
-   pins the peak at its 3.4 floor trading height for speed (seed 11: height −92.3 m, speed
-   0.29 m/s under the 70 floor). A return-side control cannot un-move a handoff displaced
-   426 m/23.7°; the unblocking spend is §7.4's other candidate, the prefix handoff-pose
-   residual. `AERO_PER_M` stays 0.000075; nothing about drag landed. Numbers:
-   `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §5.
-3. G-force envelope still not reached in many parts.
-   **Measured against the counterpart bands, 2026-08-15** (offline geometry pack, deep
-   seeds; diagnostic labels, not verdicts): the inversion act runs *under* its grounded
-   targets — cutback peak 4.12 g vs the 5.15–5.6 band, Immelmann peak 5.23 g vs 5.79–5.91
-   (misses of 0.05–0.18 normalized) — while the loop entry lobe sits slightly over. Roughly
-   30 of ~94 counterpart windows read `under` per deep seed. The under-shoots are in exactly
-   the roles whose targets are still hardcoded literals; they become drawable/re-targetable
-   when the prefix closure solve (24) unblocks act-one retuning.
-4. Oversmoothing of elements.
-5. Poor FVD implementation — the force-authoring quality itself, not just targets.
-6. Poor terrain awareness — e.g. ~80 m above the terrain at the ride's highest point, never
-   under 40 m; not actually terrain-hugging.
-7. Overlapping supports and poor element shaping, especially inversions.
-8. Poor sense of speed.
-9. Entry launch should hit significantly higher speed — similar class to the camelback
-   (tunnel) booster.
-10. Poor element flow — jerky useless-bank → flat → useless-bank sequences.
-11. Overly leisurely in many sections.
-12. Too many flats — between the cliff-dive LSM and the camelback, on the return, and the
-    hold extending too far from the cliff edge (so the clifftop is not terrain-hugging).
-    **Measured, 2026-08-15:** ~35.5 s of flat dwell per ~158 s ride on every deep seed;
-    12.5 s is the station itself (legitimately flat), leaving ~23 s (~15% of the ride)
-    of in-ride flats spread across the beats — the per-beat table is in the offline
-    audit's pacing metrics.
-13. Airtime hills etc. too tame.
-    **Quantified, 2026-08-15:** the act-one airtime chain measures −0.325 g against grounded
-    counterpart targets of −1.1 (Falcon deepest mid-course hill), −1.35/−1.73 (I305 ejector
-    hills) and −1.13 (longest float) — the built hills deliver a quarter to a fifth of the
-    counterpart ejector force, the largest normalized misses in the whole comparison. The
-    return heights author −0.45 g × the certified 0.95–1.05 unload draw, similarly tame.
-    Blocked on 24 for act one; the return-side deepening needs its draw range re-certified
-    wider (the envelope allows far more: −3.0 Gz stretched).
-14. Elements miss the original near-future scaling requirements — scaling/geometry feels
-    wrong when compared multi-dimensionally (height vs speed vs g vs duration together).
-15. Jerky transitions.
-16. Many more hard-to-describe "feel" gaps beyond the itemizable ones.
+### RC-D — Boundary smoothness is mistaken for ride-level smoothness
 
-### Second review pass — 2026-08-15
+The compiler checks control continuity at authored span boundaries, and `verify.gd` samples
+curvature derivatives around those boundaries. Those checks do not prevent a complete pulse from
+rising and returning to zero inside one span, followed immediately by another complete pulse.
+The seam can be legal while the rider experiences roll → pause → roll or turn → straighten → turn.
 
-Daniel's findings after riding the merged material-generator build. Numbered from 20 to keep
-1–16 stable, because those IDs are wired into the catalog and the audit (see the coverage note
-below); these seven are **not** covered by the audit's traceability record.
+### RC-E — Terrain is checked at selected anchors rather than designed through the full route
 
-20. Roll sections cheat the g and jerk budget. The roll is delivered as abrupt
-    roll → flat → roll → flat steps rather than a coherent continuous roll, which keeps the
-    filtered channels inside the envelope while the actual motion is incoherent. Closely
-    related to 15 and 10, but the specific mechanism is the stepping, and it is a way of
-    passing `validate_loads` without earning it — treat any fix that keeps the stepping and
-    only reshapes the filtered trace as a cheat.
-    **Partially fixed, 2026-08-15, measured.** Two tranches now roll continuously. Return
-    roles: turn-a peak roll rate 108 → 69°/s, its acceleration break 662 → 258°/s², banked-flat
-    share 0.47 → 0.38 (the height roles came out similar). Clifftop roles: slow-crest
-    acceleration 901 → 515°/s², rim peak roll 115 → 75°/s, seam breaks 134 → 47 and
-    176 → 62°/s². Top speed drifted 94.555 → 94.745 m/s (in band) and the route sits at
-    ~8181 m. **Remaining:** the opener tranche was refused by measurement — any bank-timing
-    change there tips dive placement off its feasibility edge on all seeds — so the worst seam
-    break, 899.7°/s² at drop/unbank-out, stands until the prefix closure solve (24) lands.
-21. Height above terrain is not watched and drifts upward. There is a terrain-clearance floor
-    but no ceiling and no control of slow upward drift, so the track wanders away from the
-    ground over long stretches. Sharpens 6 with a concrete mechanism: the drift is unwatched,
-    not merely mis-tuned.
-    **Measured, 2026-08-15 (deep seeds 11/42/20260809).** Only 20–27% of samples sit within
-    20 m of the ground and 30–34% within 40 m; the longest contiguous stretch above 40 m AGL
-    is 2.8–3.2 km, running from the climb through the camelback into the return. Vertical AGL
-    beside the near-vertical cliff face legitimately inflates the climb/dive rows, but the
-    return is unambiguous drift on the plain: return-turn-b median AGL 101–127 m and
-    return-height-b median 146–175 m — the return's airtime structures ride 100+ m above the
-    ground they should skim. Act one never comes under ~38 m (per-role minima 51–66 m on
-    cutback/loop/airtime/wave), and the `tunnel-lsm3` role runs at 16–52 m AGL, so the
-    "tunnel" record launch is not in a tunnel. Fix split: the opener/act-one floor is prefix
-    territory, blocked on the closure solve (24); the return-side profile is emergent from
-    force authoring — the seven-control solve constrains route length, entry speed, and the
-    capture corridor, and nothing in it references the ground beneath the path — so terrain
-    awareness there means a residual or authored-height reference against local ground.
-22. The cliff dive starts too far out from the cliff edge. The dive should commit at the rim;
-    it currently begins well back from it, which also costs the vertigo the beat exists for.
-    Interacts with 12's "hold extending too far from the cliff edge" and with the placement
-    bands in `generator.gd` (`DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M`, `DIVE_EXIT_APRON_BAND`).
-    **Open, with new evidence (2026-08-15):** dive placement is sitting on a feasibility edge —
-    a ±0.005 change in one upstream force value moves the dive chord ~115 m — so the approach
-    length cannot be shortened by retuning the prefix. It needs the prefix closure solve (24).
-    **Half fixed, 2026-08-15 (stage 5a, measured):** with the closure solve landed, the dive
-    entry now commits at 16.3–19.6 m behind the rim fleet-wide (was 27.1–33.9 m), aimed at
-    the rim end of the clearance band with all margin floors intact (low side now binds at
-    +4.30 m) and per-seed variety preserved. The other half — shortening the 64.1 m / 3.68 s
-    banked pre-commit approach — **is no longer blocked, corrected by re-measurement
-    2026-08-16.** The earlier record (the approach shortening "breaks the return solve on
-    15/15 seeds, with a non-monotone basin where 0.85 passes and 0.80 and 0.90 refuse single
-    seeds") does not reproduce on today's code: all fifteen preset seeds × `dive_approach_s`
-    ∈ {0.80, 0.85, 0.90} — 45 return solves through the production compile seam — converge
-    from the unchanged fixed `RETURN_SEED`, worst 68 evaluations (seed 7 at 0.80, the only one
-    over the 60% = 48 gate); the per-case distribution and the probe that ruled out
-    `RETURN_LENGTH_AIM_MARGIN_M` as the mechanism are in §8.1 of
-    `docs/superpowers/specs/2026-08-15-return-seed-derivation-design.md`. So the shortening is
-    a prefix-side stage that can be taken on its own evidence: what remains to prove is the
-    dive's *geometry* at a shorter approach, not the return's ability to follow it. A gate
-    still holds the closure from ever lengthening the approach (fleet 0.996–1.000 s).
-    **What remains, priced 2026-08-16.** The shortening was not taken this session, and the
-    dive-arc work that would have taken it was refused (see *Next session*). What that stage
-    measured about this half, on the canonical path, still stands and is now quantified:
-    the approach span itself builds **17.625 m of arc per second** at the canonical rim speed
-    (seed 11: the 1.00 s span is 17.625 m of the role's 475.960 m) — that is the *raw span* rate,
-    not what the role gives back: the **net** rate, after the commit geometry re-settles around a
-    shorter span, is **15.82 m per second** (§11.3 of the prefix-closure design, measured on the
-    swapped story — the canonical net rate was not measured). And the whole
-    commit block — bank-in, approach, bank-out, commit — is 3.684 s and 64.111 m with just
-    +0.258 m of net rise, so it is exactly the flat banked run issue 22 objects to. Shortening
-    it on canonical is a **re-baseline**, not a feasibility question: the return follows
-    (45/45 at 0.80–0.90, §8.1 of the return-seed design) and the dive band has 13.456 m of
-    headroom that a shorter approach only widens. What is still unproven is the one thing the
-    issue is about — the dive's *geometry* at a shorter approach: whether the commit still
-    reaches the face before the vertical entry begins, and whether `dive_edge_span_m` stays
-    inside its aim band without the closure walking the entry back off the rim it was just
-    aimed at (at 0.40 s on the swapped story the accepted closure flipped the yaw solution
-    outright, which is the failure mode to watch for). Measure that before spending the margin.
-    **Unchanged by the composition stage (2026-08-16), and one thing is now easier.** The
-    dive-arc residual landed after all — at a 2 m inset, composed with a turn-b return residual
-    (issue 24 above; §8 of the height-authority design) — but it is **exactly 0.0 on every
-    canonical seed**, so the canonical approach length, the flat 3.684 s commit block and this
-    issue's whole complaint are untouched: nothing here has been spent or closed. What is easier
-    is that `dive_approach_s` is no longer a free parameter a future stage has to justify against
-    the role band by hand — the band is now a residual the closure sees, so a stage that shortens
-    the canonical approach gets told by the solve, not by the route contract afterwards. The
-    unproven half is unchanged: whether the commit still reaches the face at a shorter approach,
-    and whether `dive_edge_span_m` stays in band without the closure walking the entry off the
-    rim.
-23. Too many elements are geometrically distorted — e.g. the camelback carries a sideways tilt
-    it should not have. The elements hit their force targets while their shapes are visibly
-    wrong. Extends 7 beyond inversions and supports to the marquee elements.
-    **Open, now quantified (2026-08-15)** by `godot/geometry_metrics.gd`: the camelback leans
-    24.46° off vertical on the rise, 16.28° at the exit, and 10.05° at the crest, against
-    ≤1.9° on the airtime hills. The likely mechanism is the 42.5° of heading turn taken during
-    the climb. 18 of the 20 roles are grounded against a measured counterpart band
-    (`godot/fidelity_counterparts.gd`, derived in
-    `docs/evidence/fidelity/counterpart-bands.md`); the wave turn and the outward rim turn are
-    declared evidence gaps.
-24. The FVD++ implementation gets the g's but not the geometry, especially in the connecting
-    transitions. This is the root cause behind 20, 23 and much of 15: authoring in the rider's
-    frame is reproducing the force trace without producing a coherent swept shape, and the
-    transitions between elements are where the discrepancy shows most. The deepest of the seven
-    — 20, 23 and 25 are plausibly symptoms of it. **Now the recommended next work**, with a
-    named first step: the prefix closure solve. See *Next session — start here* for the three
-    measured refusals that converge on it.
-    **Still open, and its remaining half now has a measured name (2026-08-16).** The closure
-    solve landed and absorbs tail-domain changes; act-one *permutation* draw certification is
-    still blocked and this entry does not close. Three candidate unblocks have now been built
-    and refused on their own measurements — the return-seed derivation, the story-energy
-    re-target, and the dive-arc residual — and all three failed the same way: they moved a
-    scalar the swap is not actually short of. Measured before/after for the act-one optional
-    swap, unchanged across all three attempts: it **plans 15/15** and **builds 0/15**; on the
-    four gated seeds the returns of 11 and 4096 converge (34 and 42 evaluations) and are then
-    refused by the route contract on `outward-dive` 497.4 / 497.5 m and `return-turn-b` 572.6 /
-    571.2 m, while 42 and 20260809 budget-exhaust their return at 79/80 with
-    `height_a_recovery_duration_s` pinned at its floor. The invariant behind all of it: the
-    swapped act one hands the camelback a handoff pulled back 32–66 m, +12–13 m higher and
-    3.5–5.1° in yaw, and the four closure controls are all durations *downstream* of act one,
-    so they cannot pin six DOF. The next attempt has to add degrees of freedom upstream of the
-    handoff — head-domain accommodation or a handoff-pose residual with more than four controls
-    — not re-aim an existing one.
-    **A second, independent chain hit the same wall (2026-08-16).** The honest-drag re-baseline
-    (issue 2) arrived here from the other direction — 630.53 m of forward displacement at the
-    tunnel exit against the swap's 32–66 m at the handoff — and its refusal names a candidate
-    this entry did not have: **return height authority** (`RETURN_HEIGHT_A_PEAK_G` /
-    `RETURN_HEIGHT_B_PEAK_G` becoming solved controls, so the beats hold their rise as `v`
-    falls). That is a candidate for the swap's **floor-pinning** failure mode — the seeds that
-    budget-exhaust with `height_a_recovery_duration_s` pinned at its floor — and **not** for its
-    cross-track/yaw mode, which still needs upstream DOF or a handoff-pose residual. Derivation:
-    `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md` §7.2–§7.4.
-    **The candidate was built and the floor-pinning mode cleared, 2026-08-16.** With the
-    height-a peak as the eighth solved control, all four gated seeds converge the swapped
-    return — 42 and 20260809, the two floor-pinned 79/80 exhausters, converge in 50 and 38
-    evaluations with the recovery 0.386/0.293 s off its floor. The other mode stands exactly as
-    predicted: the swapped build still refuses at the route contract on `outward-dive`
-    497.4–497.5 m (every seed) and `return-turn-b` 570.5–573.2 m (three of four), and the
-    converged swap returns graze the route-length ceiling (0.45–1.19 m inside 8200 m), so the
-    compiled-swap gate was re-founded on the new measurement. **This entry stays open**; its
-    remaining wall is now purely upstream of the camelback handoff — the handoff-pose residual
-    — which the honest-drag fleet test (issue 2) independently confirmed the same day. Spec:
-    `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §6.
-    **The other mode cleared too, and the swap now builds — 2026-08-16, later the same day.
-    This entry still does not close.** The two route-contract refusals were closed by composing
-    two role-band residuals: the dive-arc residual §11 of the prefix-closure design had built and
-    refused (re-aimed from a 3 m to a 2 m inset), plus a new *eighth return residual* on
-    `return-turn-b` interiority — the role §11.4 had itself identified as where the metres the
-    dive gave back were being re-spent. Neither works alone; together, on the four gated seeds,
-    the swapped story builds end to end for the first time: closure converged in 29/40/46/99
-    evaluations of a re-derived 105 cap, return converged in 29–65 of 88, `outward-dive`
-    487.96–488.02 m, `return-turn-b` 529.9–567.7 m, every declared role band interior, route
-    8134.7–8178.5 m, contract and validators clean. The canonical fleet is bit-identical, 15/15,
-    on every published channel — both residuals are exactly 0.0 there. **What still blocks this
-    entry is the permutation certification itself:** the optional-member swap is one of
-    thirty-six grammar-legal act-one orders, and the other thirty-three are still refused at the
-    *preflight*, upstream of the closure, by the head-domain problem §5's correction names. One
-    order building is not a certified draw. Also corrected here: the **handoff-pose residual**
-    this entry named as the next spend is **refused by two independent probe lanes** — the
-    prefix's terrain-neutral authority is 7–74× short of the displacement it would have to
-    absorb, and the swap has no station-frame miss at all (its return reaches the capture gate at
-    |cross| ≤ 0.006 m, |height| ≤ 0.033 m, |yaw| ≤ 0.005°), which is exactly why its refusals
-    were role-length refusals. Spec:
-    `docs/superpowers/specs/2026-08-16-return-height-authority-design.md` §8.
-25. Still no sense of speed, possibly because of the height off the ground (see 21). Restates 8
-    with a candidate cause worth testing directly: measure whether AGL, not velocity, is what
-    is missing.
-    **Hypothesis confirmed by measurement, 2026-08-15.** In the fastest decile of samples
-    (≥80.6–80.9 m/s) the ride is never within 20 m of the ground — the ≤20 m share is 0.000 on
-    all three deep seeds, with minimum 37 m and median 49–58 m AGL. The ride is fastest exactly
-    where it is farthest from anything that could convey speed; AGL, not velocity, is the
-    missing ingredient. The fix is 21's fix.
-26. The clifftop section is just a slow bank, not the twisty, windy suspense the real coaster
-    has there. The declared roles `clifftop-slow-crest` (35–80 m) and `clifftop-outward-rim`
-    (65–120 m) may simply be too short to contain that character at all — check whether this is
-    a shaping bug or an under-declared story beat before treating it as either.
-    **Answered by measurement, 2026-08-15: under-declared story beat.** Falcon's Flight's
-    clifftop is two beats, not one — 21.0 s of upper-cliff turns (four distinct banked
-    gestures, bank maxima 79°/52°/52°/67°, three unbank troughs, four corroborating Gz
-    valleys at 1.6–2.1 g) and then the 12.3 s crest crawl; ours is 7–11 s with one bank
-    build. Heading is not the gap (integrated 206–412° vs our declared 160–195°); rhythm
-    and length are. Design: one new role `clifftop-rim-weave` (190–280 m, three alternating
-    sweeps, counterpart bands unstretched) inserted ahead of the crawl so the rim→dive
-    handoff (22) is untouched; no fifth solve control needed — the weave sits inside the
-    solve tail and its energy cost is bounded by the existing residuals. Spec:
-    `docs/superpowers/specs/2026-08-15-clifftop-character-design.md`. Lands after issue
-    24's stages (stage-5 territory).
+The seeded escarpment is useful, but the planner constrains only a small subset of the centreline
+against it. Long sections, especially the return, are consequently free to drift high above local
+ground. This damages terrain identity and removes the near-field optic flow needed to communicate
+speed.
 
-## App
+### RC-F — Viewer position and orientation use different interpolation models
 
-17. Loading time.
-    **Addressed and review-approved, 2026-08-15 (viewer):** generation and analysis run on a
-    worker thread; the ride already on screen keeps playing under a "Generating seed N…"
-    HUD line until the new route validates, then the world swaps atomically — a rejected
-    route keeps the old ride and shows a persistent ROUTE INVALID banner. Closing the window
-    mid-build says "Finishing generation…" and quits when the build lands instead of
-    freezing silently. Raw generation time itself is unchanged (issue 19's measurement).
-    Awaiting Daniel's verdict.
-18. Camera/HUD issues.
-    **Scoped by Daniel, first pass landed 2026-08-15, code review found real defects — fix
-    in flight.** First pass: POV look-ahead (0.47–1.5 s depending on speed, 8–45 m clamp),
-    speed shake, nonlinear FOV ramp; HUD dropped envelope-usage %, bank°, roll°/s and
-    elapsed-average, humanized lateral/longitudinal as L/R and accel/brake, added progress
-    (clock + km), current → next element, and peak-so-far stats. The opus review then
-    measured two real defects — the shake frequencies (23.7–45 Hz) aliased at 60 fps Nyquist
-    into up to 7.9 cm of per-frame jitter, and the threaded loader (17) left the CI viewer
-    step running 0 of 120 live frames — and the fix round landed and was re-review-approved
-    the same day: shake re-tuned to 8.2–11.6 Hz on a wall-clock phase in the camera's own
-    basis, measuring 4.41 mm of eye travel per 60 fps frame at top speed; FOV expressed as
-    106.5–123.8° horizontal under KEEP_WIDTH (74–93° vertical at 16:9, ultrawide cannot
-    widen it); so-far stats track peak and minimum Gz, seed from the first live sample, and
-    reset on restart, wrap, new seed, and both row-change paths; the route's own top speed
-    shows alongside the so-far value. The camera/HUD logic is now two pure statics swept by
-    smoke every run (camera ≤6.3° off tangent vs a 40° bound, look 84.5° clear of the up
-    axis vs 30°, per-frame shake ≤8 mm bound at 1.8× measured, element names never empty
-    and in exact story order), and CI's viewer step counts live ride frames and exits 1 on
-    a rejected route — proven able to fail before the injection was removed. Awaiting
-    Daniel's ride-through verdict on the feel.
-19. Generation/CI speed — the time-domain return, capture, and brake solves have bounded
-    coarse/fine/production evaluations, but the full fleet gate can still be slow. Measure current
-    GitHub Actions timings before changing evaluation caps, caching imports, or splitting jobs.
-    **Measured, 2026-08-15:** the latest green main run totals 6.1 min — setup + import 19 s,
-    focused manifest 2 m 51 s (nine suites at the time; twelve now, projected +30–60 s), smoke
-    2 m 48 s, viewer 9 s. At that size, evaluation-cap changes, import caching, or job splitting
-    are complexity the measurement does not justify; re-measure only if the manifest keeps
-    growing. Note CI triggers on push-to-main and pull requests only, so feature branches
-    without a PR run no CI — the local gate sequence is the branch's verification.
+The motion kernel contains Hermite dense-position sampling. The viewer's route sampler linearly
+interpolates position while independently slerping orientation. The mismatch is confirmed in
+source; its visible contribution relative to AGL, scenery, lens, and track detail still needs a
+controlled capture.
 
-## Code health — 2026-08-15 hygiene review
+---
 
-Production is 8,959 SLOC across 17 files; tests are 7,252 across 9. By subsystem: fidelity
-4,080 · generator 3,544 · viewer 483 · verify 448 · harness 404. The read-only diagnostic layer
-is the largest thing in the repository — larger than the generator it measures — which is worth
-knowing before anyone reads `CLAUDE.md`'s "physics, generation, and validation are the product"
-as a description of where the code is.
+## 5. Current issue register
 
-A **full** generator refactor is not recommended: it is green, deterministic, freshly landed,
-and none of issues 20–26 is caused by its file layout. The return solve is also basin-sensitive
-(act-one force changes perturb it), so gratuitous motion risks a hand-calibrated result for no
-functional gain. Two bounded targets are worth doing, ideally as part of the issue 24 work
-rather than before it:
+### Architecture and macro layout
 
-- **Duplicated numerics — resolved 2026-08-15.** The capture and brake Newton steps now take
-  their linear solve and conditioning from `BoundedSolver.linear_solve` (one Gauss path);
-  `_finite_difference_jacobian` deliberately stays private in `godot/ride_return_solve.gd` —
-  measured and review-confirmed: adopting `BoundedSolver.solve` wholesale would change the
-  iterate path and break bit-identity.
-- **The five-concern decomposition — done 2026-08-15** (commit `2d3b9b9`): `ride_program.gd`
-  split at the solve seams into `ride_prefix_solve.gd` and `ride_return_solve.gd`,
-  byte-identical routes SHA-verified. The former deferral said do it when issue 24 forces
-  changes there, not speculatively — issue 24's stages fired that trigger.
+#### VC-001 — Time-domain element recipes lack spatial invariants
 
-Not adjusted, deliberately: the flat `godot/` layout (19 production files, prefix-grouped by
-name — a directory move would rewrite ~40 preload paths, the `.uid` files, `main.tscn`, the CI
-manifest and every doc reference for modest gain), and the name `_inspect.gd`, whose leading
-underscore reads as private though it is a documented user-facing command (54 references, most
-in historical plans).
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/motion.gd`, `godot/ride_program.gd`
 
-## Audit coverage for issues 1–16
+**Observed defect**
 
-**The range in this heading is a code contract, not prose.** `1..16` is hardcoded in
-`godot/fidelity.gd` (`_validate_issues` rejects any issue id outside it), in
-`godot/fidelity_artifacts.gd` (`range(1, 17)` builds the coverage records), and in two focused
-suites. Issues 17–19 and 20–26 therefore have no coverage record and cannot be referenced from
-a catalog target, review prompt, or evidence gap. Extending the audit to the 2026-08-15
-findings is a code change in those four places plus `_ISSUE_TEXT`, not a documentation edit —
-do it deliberately, or leave 20–26 tracked here only and say so.
+A nominally unchanged element can alter its radius, height, heading, apex location, and bank
+progression when entry speed, drag, an upstream beat, or a solved duration changes.
 
-The offline fidelity baseline (see README) emits a deterministic traceability record for every
-issue in that range: `review/issue-coverage.json` and `review/issue-coverage.md` under
-`INSPECT_OUT`, with `review/checklist.md` holding the review prompts and `audit.md` holding the
-evidence snapshot, POV map, and gap list. Each record links the issue to the evidence IDs,
-review prompts, and generated artifacts that bear on it.
+**Verified mechanism**
 
-**No issue here is closed by an audit result.** As of the 2026-08-11 baseline, every one of the
-sixteen is in state `review-prompt` or `evidence-gap`: catalog
-`2026-08-10.evidence-baseline.2` holds no `executable` source and empty `selectors`,
-`observations` and `targets`, so the run legitimately produces zero findings and the
-recommendation `no-eligible-finding`. That is the contracted output for an empty eligible set —
-it records that nothing was eligible to compare against, not that the ride is right. A
-diagnostic number, a green run, or an unlinked artifact is never sufficient to mark a
-ride-quality issue solved; only measurement against reviewed evidence, or an explicit user
-decision, closes one.
+The four rider-frame controls are sampled using `u = elapsed / duration`, while tangent curvature
+is derived from transverse acceleration divided by speed squared. The implementation therefore
+defines a force history, not a speed-independent centreline. Repository measurements already show
+very large downstream placement changes from small upstream force perturbations.
 
-### Promoting a finding to a hard gate
+**Required fix**
 
-A finding becomes an enforced gate only through a new Superpowers design cycle that establishes,
-in writing and in code:
+Use a hybrid element authoring layer:
 
-1. Reviewed **executable** evidence — a committed source artifact or content digest, retrieval
-   date, exact window, axis mapping, row/seat, transform ID, confidence rationale, and the
-   required corroborating links. Corroborative, observation-only, and review-pending sources
-   cannot define a band.
-2. An explicit **threshold and scope**: which metric, which axis and polarity, which selector
-   and window role, which seeds, and what counts as a miss.
-3. A **focused failing test** that fails before the change and passes after, plus a decision on
-   whether the check joins the smoke gate or stays diagnostic.
-4. Proof that the promoted gate **cannot be satisfied by cheating**: it must not reward geometry
-   smoothing, a fitted or clamped radius, a viewer-only path, or hidden drive. Generated
-   positions stay raw integrator output; any filtering must be the labelled human-tolerance
-   filter or a catalogued evidence comparison.
+- describe reusable shape over arc length or explicit geometric phase where practical;
+- where time-domain FVD remains preferable, solve and enforce spatial landmarks, entry/exit state,
+  silhouette, and corridor constraints as part of the element itself;
+- retain time-domain profiles without extra spatial machinery for genuinely temporal
+  infrastructure such as launches, brakes, and station motion.
 
-Optional local `RFDB_4804_CSV` / `RFDB_6383_CSV` overlays are diagnostic-only. They do not
-modify the committed catalog, create catalog selectors, observations or targets, create
-fleet-comparison findings, promote a source to `executable`, or satisfy the evidence requirement
-above.
+The goal is spatial invariance of element identity, not replacing one authoring method dogmatically.
 
-## Known limitations of the baseline itself
+**Closure test**
 
-- Plan role `targets`, `phases`, and `recipe_id` (e.g. the Immelmann's declared
-  `vertical_excursion_m`) are published in the accepted route's `terrain_story_plan` but no
-  code measures or enforces them — only `length_m` and the three terrain intents are proven
-  against the built ride. Confirmed by the 2026-08-15 pre-push review; enforcing them the way
-  `_validate_role_lengths` enforces lengths is deliberate next-cycle scope (the planned
-  Immelmann re-scale exercises exactly those fields).
+Across each element's certified entry-speed range, fixed geometry parameters keep height, width,
+heading change, apex location, exit frame, and sampled centreline within reviewed tolerances.
+Force traces may vary; element identity may not.
 
-- The radius strip in the channel sheets is degenerate. Near-straight track yields enormous
-  finite radii, so the linear plot range runs to ~5.4e8 m (seed 42), ~7.7e8 m (seed 11) and
-  ~8.0e8 m (seed 20260809), collapsing all small-radius detail onto the baseline. The sidecar
-  legend declares the non-finite (`unbounded`) counts honestly, but the strip is not usefully
-  readable as drawn. Lives in `godot/fidelity_artifacts.gd`.
-- Issue coverage links only `review/seed-42/channels.png` as the generated artifact for every
-  issue, and only issues 9, 12, 14 and 15 carry their real titles — the rest render as
-  "Issue N". The top, elevation, and element side views are written and hashed but never linked
-  from the coverage record, so the support-overlap and element-shaping prompts point at a
-  channel sheet rather than the views they ask for.
-- The POV map is entirely gaps because no source landmark has a committed alignment. Supplying
-  either optional RFDB export still renders diagnostic seed-42 midpoint POVs for supported
-  side-view beats;
-  those frames neither resolve nor promote an alignment.
+---
 
-## Where the POV and force-diagram links already live
+#### VC-002 — There is no first-class element boundary-state and silhouette contract
 
-They are committed — nothing needs re-researching. All twelve catalogued sources are in
-`docs/evidence/fidelity/source-manifest.json` (retrieved 2026-08-10), each with its URL,
-`current_state`, permitted axes, promotion prerequisites, and the SHA-256 of its metadata
-artifact. Per-source records sit alongside it in `docs/evidence/fidelity/rideforcesdb/` and
-`docs/evidence/fidelity/youtube/`, and `godot/fidelity_references.gd` carries the same URLs as
-inert provenance strings. There is no network client anywhere in `godot/` — these are records,
-not fetches.
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/ride_program.gd`, `godot/route_contract.gd`, `godot/geometry_metrics.gd`
 
-- **Force diagrams (RideForcesDB)** — Falcon's Flight `?id=4804`; Tormenta `?id=6369` and
-  `?id=6383`. All three are `corroborative`; 4804 is flagged unreliable and cannot promote
-  alone. `docs/evidence/fidelity/catalog-review.md` records that raw acquisition was blocked.
-  Local CSV exports for the diagnostic overlay are hash-pinned in
-  `rfdb-local-overlay-manifest.json` and supplied via `RFDB_4804_CSV` / `RFDB_6383_CSV`.
-- **POV video (YouTube)** — nine sources: Falcon's Flight forward `cUURkqyn4Zs`, backward
-  `J54WKu2nU6o`, `poco8rOnW18`, `sdXGD9kMR7s`, CGI `NFVNGgwZk3c`; Tormenta forward
-  `AHjk2R4da_I`; CoasterTalk continuous `0UaOSBGSx20` and edited `seNRpi4wP-s`; I305 overlay
-  `wX7uHKj-Ujc`. Two are `corroborative`, three `observation_only`, four `review_pending`
-  (the manifest's overall tally is 5 corroborative / 4 review_pending / 3 observation_only,
-  with the three RideForcesDB sources making up the other corroboratives).
-  No frames, audio, or copyrighted content are committed — metadata and timestamps only.
+**Observed defect**
 
-**None is `executable`**, which is exactly why the audit emits `no-eligible-finding`. Grounding
-any issue above in measurement means promoting a source through
-`docs/evidence/fidelity/catalog-review.md` and the four-part bar in *Promoting a finding to a
-hard gate* — the links being present is not the same as the evidence being usable.
+Named elements can exit with unintended bank, heading, pitch, curvature, or torsion and still pass. A “camelback” can become a tilted three-dimensional manoeuvre; a “wave” can finish with residual frame twist; an inversion can be assembled from stopped half-rolls.
 
-27. Dense-output kinematic defect metric is tautological. Motion.gd's `max_kinematic_defect_mps`
-    compares `_dense_velocity(...)` against `sample.tangent * sample.speed_mps`, but `_dense_sample`
-    defines tangent and speed as `velocity.normalized()` and `velocity.length()` from the same
-    `_dense_velocity` call, so the metric measures `v.distance_to(v.normalized() * v.length())`
-    — Float32 round-trip noise, measured constant 5.7220459e-06 on all three deep seeds
-    (11/42/20260809) to every printed digit. Consequence: `motion_tests.gd`'s defect gate
-    ("dense output measures its actual dr/dt minus returned vT defect", threshold 1e-5, around
-    lines 436-438) cannot fail. The honest fix is comparing against the independently interpolated
-    speed/tangent channels — but that changes published bits (the metric feeds nothing else;
-    verify which before claiming), so it needs its own measured stage; **not fixed deliberately**,
-    to preserve the bit-identity contract. Evidence source: the 0b36657 task review (2026-08-16).
+**Verified mechanism**
 
-## Recommended approach
+The plan declares role identity and length bands, but recipes do not publish and the route contract does not enforce a complete element state. Geometry metrics are post-hoc and report-only. Entry/exit control values being `1.0 G / 0 lateral / 0 roll rate` does not imply level bank, neutral torsion, desired heading, or a correct silhouette.
 
-Compare the ride element by element against real high-thrill coasters — not just the two
-named references. Use RideForcesDB (raw per-recording traces are decodable; multiple
-recordings of one ride can be cross-checked) and similar sources, plus POV video extraction
-and analysis, to ground every element class in measured reality and in how the real thing
-*feels*. Discovery is the point: ride it, trace it, and chase whatever looks or feels wrong,
-whether or not it is on this list.
+**Required fix**
+
+Add an `ElementSpec`/`ElementResult` contract with, at minimum:
+
+- input frame and speed range;
+- exit pitch, heading, bank, curvature, and torsion targets/tolerances;
+- intended planarity class;
+- height, width, length, and heading-change bands;
+- apex/inflection landmarks and monotonic phases;
+- bank narrative and allowed roll reversals;
+- terrain corridor and AGL intent;
+- force and onset envelopes.
+
+The element builder must either return a result satisfying the contract or fail with a structured diagnostic. A role name alone must never be evidence that the geometry is correct.
+
+**Closure test**
+
+Every material role has a reviewed specification and executable checks against the whole role. No role can be accepted solely because its constituent control seams are continuous.
+
+---
+
+#### VC-003 — Global solvers deform local elements to satisfy layout and closure
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/ride_prefix_solve.gd`, `godot/ride_return_solve.gd`
+
+**Observed defect**
+
+Transitions, banks, and element proportions appear arbitrary because they are paying for distant endpoint constraints rather than expressing local track intent.
+
+**Verified mechanism**
+
+The prefix solve adjusts climb-core duration, pull-over duration, crest hold, and dive approach to satisfy dive span, tunnel span, summit rise, record exit speed, and dive arc length. The return solve adjusts turn banks of roughly 50–66° and 60–80°, core durations, recovery durations, airtime timing, and peak G to hit station/corridor residuals. Neither objective contains an element-shape cost.
+
+**Required fix**
+
+Split planning into two levels:
+
+1. **Macro layout solve:** choose anchors, corridors, headings, elevations, reserved transition lengths, station approach, and terrain relationships.
+2. **Local element solve:** fit each element inside its assigned corridor while preserving its own geometric contract.
+
+The macro solve may move anchors or allocate length. It must not reach inside a completed element and arbitrarily alter its roll/bank narrative. If the assigned corridor cannot host the requested element, the plan is infeasible and must be redrawn at the macro level.
+
+**Closure test**
+
+A closure perturbation changes route anchors or neutral connectors, not the silhouette metrics of already accepted elements beyond their explicit parameter ranges.
+
+---
+
+#### VC-004 — The hard 7.8–8.2 km route band and fixed nominal role allocations encourage geometric bloat
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/ride_program.gd`, `godot/ride_planner.gd`
+
+**Observed defect**
+
+Elements and returns are stretched to consume distance, creating oversized, weakly articulated geometry and long high-altitude travel. The nominal role lengths sum to approximately the lower edge of the total route band, so the length target is effectively designed into every build before terrain or element quality is considered.
+
+**Verified mechanism**
+
+The plan validates a fixed nominal length inside every role band and enforces a total
+`Vector2(7800.0, 8200.0)` route band. The return solve also carries route length as a residual, so
+duration controls can be spent on recovering total length even when local element proportions
+would be better left alone.
+
+**Required fix**
+
+Make total length an outcome of the chosen story and site, with a broad design range rather than a closure target that every role must fill. Give roles semantic minimum/maximum geometry bands derived from their element family. Allocate uncommitted distance only to deliberately designed terrain runs or infrastructure—not by inflating turn cores, recovery holds, or return loops.
+
+**Closure test**
+
+Removing or substituting an optional element changes total route length naturally. No solver has to stretch unrelated roles to restore an arbitrary exact band.
+
+---
+
+#### VC-005 — Terrain is used as a backdrop and anchor check, not as a full-route design constraint
+
+**Priority:** P0 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `godot/generator.gd`, `godot/terrain.gd`, `godot/route_contract.gd`
+
+**Observed defect**
+
+The route spends too much distance on stilts or in open air. Fast sections do not skim terrain, so the site contributes little to pacing or speed sensation. The return is especially detached from the landscape.
+
+**Committed baseline**
+
+The previous audit reports only about 20–27% of samples within 20 m AGL, roughly 2.8–3.2 km above 40 m AGL, return median AGL around 101–175 m, and the nominal tunnel role around 16–52 m AGL. The fastest decile reportedly never reaches 20 m AGL.
+
+**Verified mechanism**
+
+The generator fits the authored prefix to the escarpment and proves selected dive/tunnel relationships. It does not reserve or solve terrain corridors for every material role. The analytic terrain exists under the entire route, but most roles have no AGL or terrain-following objective.
+
+**Required fix**
+
+Perform terrain-aware macro routing before element generation. Every role receives a corridor with horizontal bounds, elevation/AGL intent, and clearance envelope. Distinguish:
+
+- terrain-hugging speed runs;
+- exposed height/suspense beats;
+- structural record elements;
+- tunnel/trench segments;
+- station/maintenance infrastructure.
+
+Do not apply one universal low-AGL target; use the contrast deliberately. The fastest sustained ground-run roles should be close enough to terrain to create optic flow, while designated scenic/suspense roles may remain high.
+
+**Closure test**
+
+Publish AGL distributions per role and speed decile. Designated terrain-hugging roles meet reviewed median and percentile bands, and the fastest decile includes a sustained near-terrain interval rather than being entirely elevated.
+
+---
+
+#### VC-006 — The drag and energy model is too permissive, flattening the pace
+
+**Priority:** P1 · **Evidence:** Confirmed by current constants and committed audit<br>
+**Primary code:** `godot/ride_program.gd`, `godot/motion.gd`
+
+**Observed defect**
+
+The ride maintains extreme speed too easily, reducing contrast between launches, drops, valleys, and recovery beats. High average speed does not automatically feel exciting; when almost everything is fast and elevated, acceleration cues and proximity contrast disappear.
+
+**Verified mechanism**
+
+Resistance is a simple rolling term plus `aero_per_m × v²`. The committed audit identifies the current aerodynamic coefficient as several times too low for an honest train model. An earlier honest-drag experiment failed to re-close the route, showing that the current geometry and closure depend on the permissive energy model.
+
+**Required fix**
+
+Derive drag from explicit train mass, rider mass, frontal area, drag coefficient, rolling resistance, wind assumptions, and any claimed fairing credit. Rebaseline the ride around that physical model. Retune launches, elevations, and element geometry afterwards; do not preserve canonical bytes or current endpoint timing at the expense of honest energy.
+
+**Closure test**
+
+The accepted route closes using the documented physical resistance model, with no hidden positive drive outside declared launch zones and no coefficient selected merely because it preserves the old route.
+
+---
+
+#### VC-007 — Seed variation is narrow, while the architecture is not actually composable
+
+**Priority:** P2 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/ride_planner.gd`, `godot/generator.gd`
+
+**Observed defect**
+
+The project presents itself as a seeded generator, but the current sequence is canonical and most geometry is fixed. Variation is concentrated in terrain/placement and a few return targets. Attempts to reorder or perturb upstream cells often break prefix placement or return closure.
+
+**Verified mechanism**
+
+`_draw_sequence()` currently returns the fixed role order. Only a small set of return target values are drawn. Source comments document that most legal story orders do not build end-to-end and that tiny upstream target changes can move downstream geometry dramatically.
+
+**Required fix**
+
+Do not expand random draws yet. First make element outputs contract-stable and give the macro planner a real corridor/anchor model. Once cells are composable, allow sequence and dimensions to vary only over certified combinations. A seed should choose meaningful design decisions, not merely perturb a globally coupled trajectory.
+
+**Closure test**
+
+A matrix of legal element substitutions and orders builds without changing unrelated element geometry beyond declared entry-speed adaptation. Failed combinations are rejected at planning time with a clear corridor/energy reason, not after a distant return solve exhausts its budget.
+
+---
+
+#### VC-008 — The final capture is a late five-degree-of-freedom correction manoeuvre
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/ride_return_solve.gd`, `godot/ride_program.gd`
+
+**Observed defect**
+
+The ride reaches the station through a short terminal steering manoeuvre that can read as a final
+micro-correction rather than as the natural end of a planned return and brake approach.
+
+**Verified mechanism**
+
+The capture solve adjusts early/late lateral load, early/late normal load, and roll area to close
+cross-track position, height, yaw, pitch, and roll. Its three spans total 1.05 s and are entered at
+the return corridor's 70–80 m/s speed band. The manoeuvre is explicit in source but hidden from the
+high-level story as a generic `terminal-capture-brakes` role.
+
+**Required fix**
+
+Reserve a long, geometrically aligned station approach during macro planning. The return must enter
+that corridor with a near-neutral frame and enough distance for a deliberately shaped deceleration.
+Keep a small numerical capture only for sub-tolerance closure, with strict limits that prevent it
+from becoming visible geometry.
+
+**Closure test**
+
+Removing the capture correction or setting its coefficients to zero leaves the train inside a
+tight pre-capture pose corridor. Any retained correction is below reviewed curvature, torsion,
+roll, and lateral-load visibility thresholds.
+
+---
+
+#### VC-009 — Geometry diagnostics are report-only and cannot reject a bad ride
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/geometry_metrics.gd`, `godot/fidelity.gd`, `godot/verify.gd`
+
+**Observed defect**
+
+The repository can measure roll segmentation, planarity, and shape ratios yet still publish geometry known to be wrong. Passing load, clearance, and seam checks is treated as route validity even when the element silhouette is visibly unacceptable.
+
+**Verified mechanism**
+
+`geometry_metrics.gd` labels its outputs `report-only`. Production route validity is
+decided by structural, seam, clearance, role-length, terrain-anchor, and load checks; there is no
+adopted whole-element morphology gate capable of rejecting a wrong silhouette.
+
+**Required fix**
+
+Promote reviewed geometry intent into route acceptance. Keep exploratory metrics report-only while thresholds are being established, but every production material role must eventually have adopted gates. At minimum, gate:
+
+- whole-element boundary frame;
+- intended planarity/non-planarity;
+- height/width/length and heading change;
+- roll segment count and allowed reversals;
+- curvature/torsion continuity and extrema count;
+- key landmarks such as apex pitch and drop steepness;
+- role-specific AGL/corridor compliance.
+
+**Closure test**
+
+A deliberately distorted camelback, split-roll Immelmann, over-segmented wave, and elevated “terrain run” each fail the production validation suite for a specific geometric reason.
+
+---
+
+#### VC-010 — Legacy audit IDs and the active register are not backed by one stable source
+
+**Priority:** P2 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/fidelity.gd`, `godot/fidelity_artifacts.gd`
+**Primary document:** `docs/ISSUES.md`
+
+**Observed defect**
+
+The active register now uses stable `VC-*` IDs, while the fidelity audit and generated coverage
+artifacts still assume numeric issues `1..16`. Other repository documents also refer to legacy
+issues 17–27. Without an explicit compatibility layer, references can become ambiguous or silently
+stale when the register is reorganised.
+
+**Verified mechanism**
+
+The audit range and issue text are encoded in production/report code rather than loaded from a
+single machine-readable registry. Documentation-only renumbering cannot update those consumers.
+
+**Required fix**
+
+Keep the compatibility mapping in §12 authoritative for now. In a later focused change, move issue
+identity, title, status, and aliases into one validated data source consumed by both the Markdown
+register and audit artifacts. Preserve historical aliases in generated reports.
+
+**Closure test**
+
+A repository-wide reference check resolves every `VC-*` and legacy numeric reference to one current
+record. Audit output no longer depends on a separately maintained hard-coded issue list.
+
+---
+
+### Element morphology and banking
+
+#### VC-011 — The opener drop exits through a four-fragment micro-unbank
+
+**Priority:** P1 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `RideProgram._add_opener()` in `godot/ride_program.gd`
+
+**Observed defect**
+
+The twisted drop does not resolve in one coherent roll/load transition. It visibly feels assembled from small corrective pieces before the teardrop begins.
+
+**Verified mechanism**
+
+The exit is split into approximately:
+
+- 0.115 s `drop/unbank-in`;
+- 0.185 s `drop/unbank-recover`;
+- about 0.035 s `drop/unbank-hold`;
+- 0.115 s `drop/unbank-out`.
+
+Normal load recovery and roll-rate shaping are distributed differently across those fragments. The shortest semantic “hold” is only a few hundredths of a second and has no perceptible design meaning.
+
+**Required fix**
+
+Replace the sequence with one continuous exit transition defined by the intended drop exit bank, curvature, and next-element entry state. It may have internal spline knots for numerical evaluation, but those knots must not represent separate stop/start motions or independent semantic spans.
+
+**Closure test**
+
+Roll rate, roll acceleration, curvature, and torsion remain continuous and single-lobed across the whole drop exit. No interior flat-roll interval appears while the bank change is incomplete.
+
+---
+
+#### VC-012 — The Immelmann half-roll is split into two self-contained stopped pulses
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `RideProgram._add_act_one_immelmann()`
+
+**Observed defect**
+
+The inversion reads as two stitched roll events rather than one continuous 180° rotation through a coherent Immelmann top and recovery.
+
+**Verified mechanism**
+
+`immelmann-roll` and `immelmann-recover` each carry a compact pulse integrating to approximately 90°. A compact pulse returns roll rate to zero at both ends, so the roll stops at the internal seam before restarting for the second half.
+
+**Required fix**
+
+Author one continuous 180° roll schedule over the inversion’s geometric top/recovery phases. The rate may accelerate, hold, and decelerate, but it must not return to zero halfway unless a deliberate, visibly held orientation is part of the design—which it is not here. Couple the roll to an explicit exit heading and bank contract.
+
+**Closure test**
+
+The whole-element roll profile has one rolling segment, no unintended zero-rate plateau, and one approved direction. Orthographic and POV captures show a recognisable Immelmann silhouette and continuous top rotation.
+
+---
+
+#### VC-013 — The cutback is assembled from four roll pulses and has no proven neutral exit bank
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `RideProgram._add_act_one_cutback()`
+
+**Observed defect**
+
+The cutback banks repeatedly and appears to wobble or “choose” bank directions without a clear geometric narrative.
+
+**Verified mechanism**
+
+Entry and arc each use a positive compact roll pulse; reverse and release each use a negative compact pulse. Every pulse returns to zero independently. The commanded rider-frame roll-rate integral across the cell is not zero (approximately +34.6° for the authored hand), although that integral is not identical to published world-bank change because curve transport also rotates the frame. The important defect is that the recipe does not prove the desired exit bank.
+
+The final 0.3 s normal-G recover and 0.3 s settle add another short load bump after the nominal cutback shape.
+
+**Required fix**
+
+Define the cutback by its intended centreline and bank sequence: entry roll, sustained/reversing curvature, apex/reversal landmark, and continuous exit roll. Solve the complete roll schedule to the declared exit bank. Remove post-element G bumps that exist only to restore a control value.
+
+**Closure test**
+
+One continuous bank narrative is visible in plan/elevation/POV. The exit frame matches the next cell contract, and the whole-element roll integral/transport resolves to the declared bank within tolerance.
+
+---
+
+#### VC-014 — The loop’s lateral and roll pulses make its geometry under-specified
+
+**Priority:** P1 · **Evidence:** Confirmed; visual classification needs capture<br>
+**Primary code:** `RideProgram._add_act_one_loop()`
+
+**Observed defect**
+
+The nominal loop can become an uncontrolled helical or skewed inversion rather than a deliberately shaped vertical or helical loop.
+
+**Verified mechanism**
+
+The rise and entry include lateral compact pulses. The fall and release include additional opposite lateral pulses and two independent roll pulses. No whole-element plane, torsion, heading, or exit-bank contract says what kind of loop should result.
+
+**Required fix**
+
+Choose and name the design:
+
+- for a vertical loop, require near-planarity, controlled heading drift, and a bank schedule consistent with the loop plane;
+- for a helical loop, explicitly specify torsion, heading change, and roll progression.
+
+Then author a continuous spatial curvature/torsion profile rather than relying on lateral/roll pulse combinations to produce an emergent shape.
+
+**Closure test**
+
+The loop meets its declared planarity class and silhouette bands over the whole material role, not only per diagnostic sub-window.
+
+---
+
+#### VC-015 — The wave turn crosses bank through repeated stop-start pulses
+
+**Priority:** P1 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `RideProgram._add_act_one_wave()`
+
+**Observed defect**
+
+The wave turn contains too many bank events and feels micro-stitched through its crest and recovery.
+
+**Verified mechanism**
+
+The cell rolls to roughly one side, then distributes the cross-over through separate compact pulses in unload, crest, and recovery—each returning roll rate to zero—before another two-pulse exit roll. A transition that should read as one flowing bank cross-over is represented by several self-contained lobes.
+
+**Required fix**
+
+Use one continuous cross-over function spanning unload → crest → recovery, with the bank zero-crossing and peak opposite bank tied to geometric landmarks. Use a second continuous exit function only if the design intentionally changes again after the wave. Remove pulse boundaries as design events.
+
+**Closure test**
+
+The roll profile contains the reviewed number of segments and reversals; the zero-crossing occurs once at the declared landmark; no banked-flat interval interrupts the cross-over.
+
+---
+
+#### VC-016 — The marquee camelback is non-planar by construction and contains a 0.01 s pseudo-hold
+
+**Priority:** P0 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `RideProgram._add_camelback()`
+
+**Observed defect**
+
+The marquee hill is tilted, turns sideways, and does not read as a clean large camelback. Its pullout also contains a meaningless micro-segment.
+
+**Committed baseline**
+
+The previous geometry audit reports substantial fitted-plane tilt across camelback phases (approximately 24.5° on the rise, 10.1° at the crest, and 16.3° on the exit) and about 42.5° of heading change during the climb.
+
+**Verified mechanism**
+
+The recipe injects lateral pulses and alternating ±18° roll excursions across rise, unload, crest, and fall. A clean planar hill is therefore not the default result. `camelback/pullout-hold` lasts 0.01 s—one production integration step and around a metre at record speed—before a separate release.
+
+**Required fix**
+
+Rewrite the default camelback as a true planar or near-planar element:
+
+- pin a pitch-zero apex;
+- specify rise/fall planes and allowed heading drift;
+- use speed-aware spatial curvature to shape the ascent and descent;
+- make any intentional 3D variant a separately named family;
+- remove the 0.01 s hold and use one continuous pullout/release profile.
+
+**Closure test**
+
+The default camelback satisfies a reviewed whole-element plane-tilt and out-of-plane RMS gate, has an apex pitch near zero, and contains no unexplained bank reversal or micro-hold.
+
+---
+
+#### VC-017 — The clifftop sequence is too short and semantically under-authored
+
+**Priority:** P1 · **Evidence:** Confirmed by committed comparison; visual result corroborated<br>
+**Primary code:** `RideProgram._add_story_prefix()`
+
+**Observed defect**
+
+The clifftop does not establish a convincing slow suspense beat. It compresses a complex real-world sequence into a small number of generic bank/hold operations, so the subsequent dive lacks anticipation and site scale.
+
+**Verified mechanism**
+
+The previous audit compares the current roughly 7–11 s/one-main-bank treatment with a reference sequence around 21 s and multiple distinct bank gestures, including a longer crest crawl/hold narrative.
+
+**Required fix**
+
+Design the clifftop as a sequence of geometric beats, not a longer scalar hold:
+
+1. powered climb release;
+2. crest compression and sightline reveal;
+3. deliberate crawl/hold;
+4. edge traverse with terrain exposure;
+5. outward rim turn;
+6. clean commitment into the drop.
+
+Each beat needs speed, bank, heading, AGL, and duration intent. The slow section must create contrast without inserting dead, featureless track.
+
+**Closure test**
+
+A deterministic POV review can identify every intended beat without the HUD. Timing and sightline artifacts show a clear build of suspense into the dive.
+
+---
+
+#### VC-018 — The dive begins with a long, nearly level banked approach instead of committing at the edge
+
+**Priority:** P1 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `RideProgram._add_story_prefix()`, prefix closure controls
+
+**Observed defect**
+
+The track appears to “pretend” to begin a drop while still travelling along a mostly level, banked segment. This weakens both geometry and pacing.
+
+**Committed baseline**
+
+The previous audit measured the commit block at about 3.684 s and 64.111 m with only about +0.258 m net rise before the actual vertical development.
+
+**Verified mechanism**
+
+The dive has an outward bank, a solver-controlled face approach, an outward release, and then separate commit/vertical-entry/core phases. The approach duration is one of the global prefix closure controls, so the solve can spend a visually obvious pre-drop stretch to hit terrain span targets.
+
+**Required fix**
+
+Move the macro anchor so the element’s geometric commitment begins at the intended rim location. The dive element should own one continuous pitch/curvature development from edge traverse into descent. The macro solver may place the edge anchor; it may not lengthen an almost-flat internal approach to repair the terrain chord.
+
+**Closure test**
+
+The declared dive start landmark coincides with the visual/kinematic onset of sustained descent within a reviewed distance. No solver-controlled neutral run exists inside the dive role.
+
+---
+
+#### VC-019 — Return banks and counter-banks are closure devices rather than a coherent ride narrative
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `RideReturnSolve._return_spans()`
+
+**Observed defect**
+
+The return contains large and apparently random bank changes, including counter-banked transfer behaviour, because its primary job is to unwind heading and close the station.
+
+**Verified mechanism**
+
+Turn A and B bank are solver controls with large bounds. The source explicitly describes the counter-banked sweep as a way to spend distance while unwinding heading and keeping the loaded arc short. The implementation has improved from one pulse per span to shared roll ramps, but the macro shape is still selected for residual closure rather than terrain/ride-story clarity.
+
+**Required fix**
+
+Plan the return as a small number of named terrain and pacing elements with fixed corridor intent. Give the macro route a heading/elevation path to the station before building its turns. Permit the return solve to vary radii and neutral connector lengths within those corridors, but not to invent counter-banks unless the element specification explicitly calls for them and they are force-balanced.
+
+**Closure test**
+
+A plan-view render and bank plot tell the same story: each bank direction corresponds to a signed curvature/element intent, and no large counter-bank exists solely to satisfy terminal residuals.
+
+---
+
+#### VC-020 — Act-one cells are control-seam composable, not geometrically composable
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `RideProgram._add_story_act_one()`, `RidePlanner`
+
+**Observed defect**
+
+The code treats cells as reorderable because they enter and leave at nominal `1.0 G`, but alternate orders frequently fail placement or return closure and may create bad frame handoffs.
+
+**Verified mechanism**
+
+A zero lateral/roll-rate control seam and 1.0 normal G do not define position, heading, pitch, bank, curvature, torsion, energy, or available corridor. Source comments document that most grammar-legal permutations are not end-to-end buildable.
+
+**Required fix**
+
+Define a cell interface in geometric state space. A composable cell must advertise accepted input-state bands and guaranteed output-state bands. The planner must connect compatible cells through explicit transitions or reject the sequence before integration.
+
+**Closure test**
+
+All certified sequences pass an interface compatibility check before building. Reordering two compatible cells does not require unrelated prefix/return magic-number changes.
+
+---
+
+#### VC-021 — The “tunnel” is not proven to be a tunnel through terrain
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/route_contract.gd`, `godot/verify.gd`, `godot/main.gd`
+
+**Observed defect**
+
+A visually enclosed rock-box section may be floating above or insufficiently embedded in the terrain. The scenery can disguise a corridor that is not physically bored through the heightfield.
+
+**Verified mechanism**
+
+Terrain clearance validation skips tunnel samples. The terrain proof checks boundary crossing, monotonic direction, exit, and drop, but does not require roof cover and side cover around a full tunnel envelope. The viewer then places crude rock boxes around the track regardless of actual terrain cover.
+
+**Required fix**
+
+Define a tunnel excavation envelope and verify terrain cover above and to both sides at regular cross-sections, with portal transition rules. Render the actual cut/excavation or terrain-intersection geometry rather than an unconditional decorative shell.
+
+**Closure test**
+
+Every non-portal tunnel cross-section has positive reviewed roof and side cover outside the train/clearance envelope. Removing the decorative boxes still leaves a route visibly passing through terrain.
+
+---
+
+#### VC-022 — Track and support placement is visually and structurally naive
+
+**Priority:** P2 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `godot/main.gd`
+
+**Observed defect**
+
+Supports overlap, appear implausible, disappear on steep sections, or fail to communicate scale. Generic rail/support geometry also makes the ride look procedural and weakens speed cues.
+
+**Verified mechanism**
+
+Supports are attempted at fixed 32 m spacing, skipped above a tangent-slope threshold, and placed as simple two-leg cylinders based on local height. They do not reason about element loads, neighbouring supports, terrain footings, track crossings, tunnel zones, structural spans, or sightline rhythm.
+
+**Required fix**
+
+Keep structural art separate from centreline correctness, but replace fixed-spacing placement with a support planner that uses curvature, bank, elevation, terrain, crossings, and exclusion volumes. At minimum, prevent collisions and unsupported long spans; later, provide element-appropriate support families.
+
+**Closure test**
+
+Automated support/track/train clearance passes, maximum unsupported spans are bounded by context, and deterministic overview captures contain no obvious overlaps or floating structures.
+
+
+### Transition construction, interpolation, and validation
+
+#### VC-023 — The project’s “C4 seams” do not prove perceptually smooth transitions
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `RideProgram._validate_control_seams()`, `RideVerify.validate_seams()`
+
+**Observed defect**
+
+Transitions look stitched even though the route passes seam continuity tests.
+
+**Verified mechanism**
+
+The compiler compares value, first derivative, and second derivative of the four **control profiles** at named span boundaries. The verifier estimates first and second spatial derivatives of curvature only around those boundaries. These tests answer “does the signal jump at this seam?” They do not answer:
+
+- does the signal form several complete pulses inside one intended transition?
+- does roll rate stop and restart between adjacent spans?
+- does curvature reverse unnecessarily?
+- is torsion coherent?
+- does the complete element have the intended silhouette?
+- does a tiny semantic span create a visible kink or pause?
+
+A C4 centreline is also not automatically a well-paced or well-banked coaster. Continuity order is necessary, not sufficient.
+
+**Required fix**
+
+Retain seam checks, but add continuous whole-transition analysis. Evaluate curvature, torsion, bank, roll rate, roll acceleration, and their extrema over each intended transition. A transition is a semantic object that may contain evaluation knots, not a list of independently validated pulses.
+
+**Closure test**
+
+A synthetic roll → flat → roll transition with perfectly matching endpoint jets is rejected. A single coherent analytic roll with internal knots passes.
+
+---
+
+#### VC-024 — Semantic micro-spans and hidden connector stubs are permitted
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/ride_program.gd`, `godot/motion.gd`
+
+**Observed defect**
+
+Tiny fragments are used to settle, hold, recover, unbank, or close a state. They are too short to read as intentional track and instead appear as micro-stitching.
+
+**Verified mechanism**
+
+- camelback pullout hold: 0.01 s;
+- opener unbank hold: roughly 0.035 s;
+- opener unbank fragments: 0.115–0.185 s;
+- capture terminal shoulder: 0.15 s;
+- several 0.3–0.45 s recover/settle spans.
+
+At high speed, even 0.1 s can be around 9–10 m; at low speed it can be a tiny visual bump. The defect is not simply “short duration.” It is that these fragments are separate semantic control events rather than invisible knots on one continuous profile.
+
+**Required fix**
+
+Enforce two different concepts:
+
+1. **Semantic transition/connector:** must have a reviewed geometric purpose and sufficient spatial length; preserve the existing design rule against sub-30 m connective stubs unless a named infrastructure exception is approved.
+2. **Numerical knot:** may be arbitrarily close for evaluation, but cannot reset profile derivatives, create a separate role, or change the semantic state machine.
+
+Delete micro-holds and settle spans whose only purpose is restoring convenient endpoint values.
+
+**Closure test**
+
+The compiler lists every semantic span with built arc length. No unnamed connector violates the reviewed spatial floor, and splitting an analytic profile into additional numerical knots leaves route bytes/geometry invariant within numerical tolerance.
+
+---
+
+#### VC-025 — `compact_pulse` encourages roll → flat → roll authoring
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `RideMotion.compact_pulse()`, multiple element recipes
+
+**Observed defect**
+
+Banking repeatedly starts, stops, and starts again across one intended transition. This is the most direct code-level explanation for the reported “cheated” micro-stitching.
+
+**Verified mechanism**
+
+A compact pulse is deliberately zero, with zero first and second derivatives, at both endpoints. It is useful for a single isolated event. It becomes harmful when each neighbouring span receives its own pulse: every span guarantees a complete roll acceleration and deceleration cycle, even where the intended motion should continue through the boundary.
+
+The return has already partly acknowledged this problem by introducing shared `_roll_ramp()` profiles across multiple spans. Other elements still use pulse-per-span authoring.
+
+**Required fix**
+
+Make roll transitions first-class objects. One transition owns a continuous roll-rate spline across all of its geometric phases. Provide reusable profiles such as:
+
+- ramp-up → hold → ramp-down;
+- monotone cross-over through level;
+- one-direction inversion roll;
+- reviewed reversal with a declared zero-crossing.
+
+`compact_pulse` should remain available only for truly isolated roll impulses and should be flagged when adjacent to another same-transition pulse.
+
+**Closure test**
+
+The geometry audit reports one roll segment for every transition specified as continuous. Adjacent compact pulses in the same semantic transition fail lint/validation.
+
+---
+
+#### VC-026 — Normal load, lateral load, and roll are authored independently, so bank is not reliably force-balanced
+
+**Priority:** P0 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/motion.gd`, `godot/ride_program.gd`, `godot/ride_return_solve.gd`
+
+**Observed defect**
+
+Banks can look arbitrary or produce unintended lateral behaviour because roll angle is not the primary geometric quantity and the normal/lateral loads do not necessarily match the instantaneous bank/curvature state.
+
+**Verified mechanism**
+
+The motion kernel accepts four independent channels. It contains `bank_balance(from_bank, to_bank)`, which computes the exact proper normal load required for a level compact-pulse bank transition, but production recipes do not use it. Even the improved return roll ramps approximate normal load with a quintic between endpoint `sec(bank)` values rather than evaluating the exact load along the actual bank schedule.
+
+This does not mean every turn must be perfectly balanced; deliberate lateral G and outward banking are valid. The defect is that the intended relationship is not declared or enforced.
+
+**Required fix**
+
+For each transition, declare one of:
+
+- balanced turn/bank transition;
+- specified lateral-G manoeuvre;
+- inversion/free-roll transition;
+- intentionally outward/counter-banked element.
+
+Generate normal/lateral targets from the geometric curvature and bank intent where possible. Use exact bank-balance mathematics for level balanced transitions. Where imbalance is intentional, gate the signed lateral profile and explain its role.
+
+**Closure test**
+
+A bank-versus-signed-curvature/lateral-G report shows that every large bank has a declared purpose. Unexplained large bank with near-zero or opposite curvature fails.
+
+---
+
+#### VC-027 — There are no hard gates for torsion, curvature extrema, or bank/curvature coherence
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/verify.gd`, `godot/geometry_metrics.gd`
+
+**Observed defect**
+
+A centreline can contain excessive wiggles, accidental helical drift, needless inflections, or rapid bank reversals without violating current structure/load checks.
+
+**Verified mechanism**
+
+`verify.gd` gates frames, sampled seam derivatives, clearance, and loads. The geometry
+layer reports selected planarity, heading, shape, and roll metrics, but it does not calculate and
+enforce a role-specific torsion/curvature narrative across the whole element.
+
+**Required fix**
+
+Add whole-element spatial metrics:
+
+- signed curvature in a stable local frame;
+- curvature magnitude and derivative over arc length;
+- torsion and torsion derivative;
+- number and location of curvature extrema/zero crossings;
+- bank extrema, roll segments, and reversals;
+- correlation between bank sign and horizontal curvature sign;
+- integrated heading/pitch/bank change;
+- minimum osculating radius and transition length.
+
+Thresholds must come from each element specification, not one global “smoothness” number.
+
+**Closure test**
+
+Known bad synthetic shapes—wiggle, corkscrew drift in a planar hill, needless S-bank, and repeated curvature pulses—are rejected while intended inversions and wave turns pass their own role-specific rules.
+
+---
+
+#### VC-028 — The 5 Hz filtered validation chain can hide brief raw micro-transients
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/verify.gd`
+
+**Observed defect**
+
+Short load or banking defects can feel sharp or visually abrupt while filtered onset and duration envelopes remain acceptable.
+
+**Verified mechanism**
+
+Force series are resampled to 100 Hz and passed through a four-pole single-pass 5 Hz Butterworth filter before onset/envelope analysis. Filtering is appropriate for human-response standards, but it attenuates high-frequency defects. The project also gates raw force peaks and raw roll rate, yet does not gate raw roll acceleration, raw curvature-rate, raw jerk, or short spatial oscillation.
+
+**Required fix**
+
+Keep the filtered safety/comfort chain, but add a separate engineering-quality chain on native/dense spatial data. Gate raw or lightly filtered:
+
+- roll acceleration and jerk;
+- curvature derivative and second derivative over distance;
+- angular velocity/acceleration of the rider frame;
+- short-lived reversals and pulse counts.
+
+Do not use a safety filter as a geometry-smoothing filter.
+
+**Closure test**
+
+A sub-0.2 s roll or load stitch that is attenuated below the filtered onset limit still fails the engineering-quality gate.
+
+---
+
+#### VC-029 — The dense-output defect metric is tautological and cannot detect a bad interpolant
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `RideMotion._measure_dense_defect()`
+
+**Observed defect**
+
+The route publishes a reassuring dense-output defect value that does not test the claimed property.
+
+**Verified mechanism**
+
+The metric compares a velocity vector with `velocity.normalized() × velocity.length()`, which is algebraically the same vector apart from degenerate floating-point cases. It therefore cannot reveal whether dense position, tangent, speed, and distance agree with the integrated dynamics.
+
+**Required fix**
+
+Replace it with independent residuals, for example:
+
+- derivative of dense position minus dense `speed × tangent`;
+- derivative of dense distance minus dense speed;
+- derivative of dense tangent minus curvature × speed;
+- dense frame orthogonality and angular-rate consistency;
+- coarse/fine trajectory convergence over representative elements.
+
+**Closure test**
+
+Deliberately corrupting dense position or tangent causes a non-zero failure. The metric has synthetic positive and negative tests rather than only checking the canonical route.
+
+---
+
+#### VC-030 — The planarity diagnostic can self-exempt a badly distorted planar element
+
+**Priority:** P2 · **Evidence:** Confirmed<br>
+**Primary code:** `RideGeometryMetrics.planarity_of()`
+
+**Observed defect**
+
+A role intended to be planar can become distorted enough to be classified “three-dimensional,” after which its vertical-plane tilt is marked not meaningful. The diagnostic describes the output instead of judging it against the intended class.
+
+**Verified mechanism**
+
+`planarity_of()` classifies the generated output from its out-of-plane ratio. Once the
+output crosses the `three-dimensional` classification, `tilt_is_meaningful` becomes false even if
+the intended family was a planar hill or loop.
+
+**Required fix**
+
+Move planarity intent into `ElementSpec`. A camelback, conventional vertical loop, straight drop, or planar airtime hill remains subject to planarity gates no matter how badly the generated output misses them. Only explicitly three-dimensional families may opt out.
+
+**Closure test**
+
+Injecting lateral drift into a planar-role fixture makes the test fail; it cannot escape by changing its measured classification.
+
+---
+
+#### VC-031 — Per-window metrics can hide whole-element morphology
+
+**Priority:** P2 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/geometry_metrics.gd`, gesture/role-window mapping
+
+**Observed defect**
+
+A camelback split into rise/crest/fall/exit or a dive split into commit/vertical-entry/core/pullout can look acceptable in local windows while the whole material role has a wrong plane, heading drift, or proportion.
+
+**Verified mechanism**
+
+The standard planarity, shape, and ranking reports iterate compiled role windows.
+Material roles such as the camelback and dive are split across several windows. Although diagnostic
+helpers can aggregate a selected material role, whole-role morphology is not the mandatory unit of
+production acceptance.
+
+**Required fix**
+
+Produce both:
+
+- phase metrics for local diagnosis;
+- mandatory whole-material-role metrics for acceptance.
+
+The whole-role geometry must own entry/exit state, global best-fit plane, height/width ratio, total heading change, torsion budget, and landmark ordering.
+
+**Closure test**
+
+A defect distributed across several individually mild phases is caught by the whole-role gate.
+
+---
+
+#### VC-032 — Clearance validation does not model the complete moving and structural envelope
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/verify.gd`, `godot/route_contract.gd`, `godot/main.gd`
+
+**Observed defect**
+
+Centreline/rail clearance can pass while the train, rider envelope, supports, tunnel shell, or adjacent banked track conflicts. Tunnel samples are skipped by normal terrain clearance.
+
+**Verified mechanism**
+
+Terrain clearance samples a lower-spine point and skips authored tunnel ranges;
+self-clearance compares sampled centreline points. The train body, rider envelope, banked rail
+cross-section, support geometry, footings, and tunnel shell are not part of one swept-volume test.
+
+**Required fix**
+
+Validate swept volumes rather than centreline points:
+
+- train/rider dynamic clearance envelope along the frame;
+- both rails and spine;
+- adjacent track and train envelopes;
+- supports and footings;
+- tunnel excavation and portal envelopes;
+- terrain clearance at banked cross-sections.
+
+Use adaptive sampling based on curvature and proximity, not every second native sample in a fixed 4 m grid.
+
+**Closure test**
+
+Synthetic near-miss fixtures fail for train-to-terrain, train-to-track, track-to-support, and tunnel-side/roof clearance even when the centreline separation alone would pass.
+
+---
+
+#### VC-033 — The canonical fleet and scalar tests do not provide a visual geometry regression gate
+
+**Priority:** P1 · **Evidence:** Confirmed<br>
+**Primary code:** smoke/material tests and fidelity artifacts
+
+**Observed defect**
+
+A change can preserve all numerical contracts and still make the ride look worse. Conversely, a necessary geometry rewrite may be blocked because it changes canonical bytes even when quality improves.
+
+**Verified mechanism**
+
+The current gates emphasise deterministic hashes, scalar bands, solver margins, and
+synthetic channel checks. Geometry images and POV artifacts are diagnostic outputs rather than
+required, reviewed pull-request evidence, so a visually worse centreline can remain numerically
+green.
+
+**Required fix**
+
+Add deterministic review artifacts for a small canonical set, including seed 42:
+
+- plan, front elevation, side elevation, and isometric centreline renders;
+- bank/roll/curvature/torsion/speed/AGL plots over distance;
+- per-element close-ups with landmarks;
+- fixed-camera and POV clips at native speed;
+- before/after difference summaries.
+
+Use numeric image/curve comparisons only for gross regressions. Human approval remains required for ride morphology until the geometric targets are sufficiently complete.
+
+**Closure test**
+
+Every geometry-affecting pull request publishes the artifacts and records a human visual verdict. “All unit tests pass” is not sufficient evidence of ride quality.
+
+---
+
+#### VC-034 — Authoring is concentrated, magic-number-heavy, and coupled to solver history
+
+**Priority:** P2 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/ride_program.gd`, solve files
+
+**Observed defect**
+
+Many decimal constants encode previous closure experiments, and long comments narrate measurements that are difficult to distinguish from current invariants. Editing one element requires understanding global solver history.
+
+**Verified mechanism**
+
+Element recipes and solve seeds contain many high-precision literals, while production
+comments preserve a large amount of dated experiment rationale. The current module boundary makes
+local recipe edits depend on global closure history and discourages isolated element fixtures.
+
+**Required fix**
+
+After the representation and contracts are settled, split element families into focused modules. Store reviewed parameters in named immutable specs with units and provenance. Move experiment history to dated documents. Production comments should explain invariant intent, not preserve a chronological debate.
+
+**Closure test**
+
+A contributor can change one element’s geometric parameters and run its isolated fixtures without reading the return solver or historical issue log.
+
+---
+
+### Sense of speed, pacing, and viewer fidelity
+
+#### VC-035 — The fastest track is too high above terrain to communicate speed
+
+**Priority:** P1 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `godot/generator.gd`, `godot/ride_return_solve.gd`, `godot/main.gd`
+
+**Observed defect**
+
+The ride reaches extreme numerical speed without a matching visual impression. The fastest sections
+feel detached from the terrain and lack close objects that would generate strong optic flow.
+
+**Verified mechanism**
+
+Committed measurements report that the fastest decile is never within 20 m of the ground on the
+three deep seeds, with minimum AGL around 37 m and median AGL roughly 49–58 m. The return also spends
+long stretches far above the plain because no solve residual or role contract controls local AGL.
+
+**Required fix**
+
+Give each role a reviewed terrain intent: terrain-hugging, exposed-height, tunnelled, or neutral.
+Plan the record-speed line through close terrain, trench/tunnel structure, supports, or other
+credible near-field references while preserving clearance and sightline safety. Do not fake the
+effect with camera shake or FOV alone.
+
+**Closure test**
+
+The designated high-speed role meets its AGL/corridor target, and controlled engineering-POV
+captures show materially stronger optic flow at unchanged speed and lens settings.
+
+---
+
+#### VC-036 — The scene lacks dense near-field references, audio, and physical motion cues
+
+**Priority:** P1 · **Evidence:** Confirmed and corroborated<br>
+**Primary code:** `godot/main.gd`
+
+**Observed defect**
+
+Rails over smooth terrain, 4 m ties, 32 m supports, sparse station/tunnel boxes, and a placeholder train provide weak scale and optic-flow information. There is no wind/rail audio, motion blur, vibration tied to track texture, or visible train nose/seat reference.
+
+**Verified mechanism**
+
+`main.gd` constructs a placeholder box train, simple rail tubes, periodic ties, sparse
+supports, coarse terrain colour, and simple station/tunnel boxes. There is no audio or vehicle-based
+motion model; the only added motion cue is a small speed-scaled camera rumble.
+
+**Required fix**
+
+After geometry and interpolation are corrected, add a restrained presentation baseline:
+
+- denser near-field track detail with physically consistent spacing;
+- terrain texture and small-scale relief;
+- close structure in designated speed corridors;
+- speed- and surface-dependent wind/rail audio;
+- optional physically plausible motion blur;
+- visible train/seat/nose reference in POV;
+- vibration derived from speed and track/vehicle model, not generic screen shake.
+
+These cues must reveal speed, not conceal geometry.
+
+**Closure test**
+
+A/B captures with a fixed camera transform show improved speed discrimination without changing playback rate or using extreme FOV tricks.
+
+---
+
+#### VC-037 — The POV lens and look-ahead stabilisation damp useful motion cues
+
+**Priority:** P1 · **Evidence:** Confirmed; magnitude needs capture<br>
+**Primary code:** `RideMain.pov_transform()`
+
+**Observed defect**
+
+The POV feels detached from the track and rapid pitch/yaw changes are softened. The large baseline FOV also makes additional speed-linked widening less perceptually meaningful and can reduce object scale.
+
+**Verified mechanism**
+
+The camera uses a very wide horizontal FOV range (about 106.5–123.8°), looks 0.6 s ahead clamped to 8–45 m, and slerps 22% toward that future look direction. The rider frame is therefore partially stabilised toward the upcoming track rather than rigidly representing a head/seat model.
+
+**Required fix**
+
+Define a physical camera model:
+
+- seat/eye location and visible vehicle reference;
+- base lens chosen for the target display, with restrained or no speed-FOV modulation;
+- optional head dynamics driven by angular acceleration and restraint compliance;
+- look-ahead only as a subtle biological gaze model, not a generic smoothing filter.
+
+Provide a strict engineering POV that follows the track frame exactly and a presentation POV only after the engineering view is approved.
+
+**Closure test**
+
+The engineering POV reproduces route angular motion without damping. The presentation POV’s additional head model has bounded, documented lag and cannot hide a transition defect.
+
+---
+
+#### VC-038 — Viewer position and orientation use inconsistent interpolation
+
+**Priority:** P2 · **Evidence:** Confirmed mechanism; visible magnitude needs capture<br>
+**Primary code:** `godot/route_sampling.gd`, `godot/motion.gd`, `godot/main.gd`
+
+**Observed defect**
+
+The camera, train, or rail mesh may feel subtly faceted or detached from the direction it faces,
+especially at high speed. This is a plausible contributor to micro-jitter, but it is not yet proven
+to be the dominant sense-of-speed defect.
+
+**Verified mechanism**
+
+`pose_at_distance()` linearly interpolates origin between native samples and quaternion-slerps the
+two endpoint frames. The derivative of that chord is generally not the slerped tangent. At the
+record speed and 0.01 s integration step, adjacent native points can be close to one metre apart.
+
+**Required fix**
+
+Use one continuous trajectory sampler for position, derivative/tangent, frame, speed, and distance.
+A cubic Hermite or equivalent dense interpolant may be suitable, provided its derivative defines the
+rendered tangent and the rider frame remains consistent. Build camera, train, and rail sampling from
+the same state.
+
+**Closure test**
+
+At arbitrary sub-sample distances, the rendered position derivative aligns with the rendered
+tangent within a reviewed tolerance. Fixed-path captures at 30, 60, 120, and 240 fps show no
+cadence-dependent wobble.
+
+---
+
+#### VC-039 — Pacing is numerically fast but insufficiently contrasted
+
+**Priority:** P1 · **Evidence:** Corroborated<br>
+**Primary code:** `godot/ride_program.gd`, `godot/generator.gd`, `godot/main.gd`
+**Primary causes:** energy model, hard role lengths, high AGL, simplified clifftop
+
+**Observed defect**
+
+The ride feels leisurely or monotonous despite extreme top speed. There are too many long, broad, steady-force sections and too little contrast between crawl, acceleration, plunge, near-ground speed, inversion, airtime, and recovery.
+
+**Verified mechanism**
+
+The current combination of permissive drag, fixed long role allocations, high return
+AGL, broad steady-force elements, and a compressed clifftop produces weak contrast. Top speed and
+elapsed average therefore overstate the intensity perceived from the actual sequence of beats.
+
+**Required fix**
+
+Design pacing as a story graph with measurable beat intent. For every role, declare ranges for:
+
+- entry/exit speed and acceleration character;
+- duration and distance;
+- AGL/proximity;
+- positive/negative/lateral load character;
+- visual scale and sightline reveal;
+- transition into the next beat.
+
+Optimise contrast, not average speed. A slow beat must be purposeful and visually rich; a fast beat must have near-field reference; a record element must have setup and release.
+
+**Closure test**
+
+Publish speed, acceleration, G, AGL, and curvature plots with beat boundaries. Human reviewers can identify the intended rhythm from both plots and POV without relying on labels.
+
+---
+
+#### VC-040 — Fixed repetitive track spacing weakens scale and can alias motion
+
+**Priority:** P2 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/main.gd`
+
+**Observed defect**
+
+Uniform 4 m ties and sparse 32 m supports provide limited high-frequency motion reference. Repetition can also alias at high speed and frame rates, making motion look slower or stroboscopic rather than continuous.
+
+**Verified mechanism**
+
+The viewer uses fixed `TIE_SPACING = 4.0` m and `SUPPORT_SPACING = 32.0` m. At the
+record speed, ties pass at roughly 24 Hz, so periodic geometry can interact strongly with display
+sampling while supports are too sparse to provide continuous scale.
+
+**Required fix**
+
+Use physically plausible sleeper/fastener spacing and richer but non-distracting track detail. Vary support rhythm by structure while preserving deterministic layout. Validate temporal frequencies at target speeds/frame rates so repeated geometry does not create obvious alias bands.
+
+**Closure test**
+
+High-speed captures at supported frame rates retain continuous forward motion and clear scale without visible tie/support strobing.
+
+---
+
+### Operational and inspection issues retained from the previous register
+
+#### VC-041 — Generation remains too slow for rapid geometry iteration
+
+**Priority:** P3 · **Evidence:** Confirmed by source comments and the previous register<br>
+**Primary code:** `godot/main.gd`, bounded solves, inspection tooling
+
+**Observed defect**
+
+Asynchronous generation prevents the viewer from freezing, but a new seed can still take long
+enough to interrupt repeated element-by-element inspection. Closing during a build must also wait
+for the worker to finish.
+
+**Verified mechanism**
+
+The viewer runs the complete deterministic generator and analysis on a worker thread. It has no
+safe cancellation point and no validated artifact cache for canonical inspection routes.
+
+**Required fix**
+
+Keep publish builds deterministic and complete. For inspection only, add stage-level progress,
+profiling, safe cancellation between bounded stages, and validated cached artifacts for canonical
+seeds. Never expose a partial route as accepted output.
+
+**Closure test**
+
+A reviewer can reopen canonical inspection routes quickly, live generation reports meaningful
+stages, and cancellation leaves no published partial route or stranded worker.
+
+---
+
+#### VC-042 — Geometry inspection is not a first-class viewer workflow
+
+**Priority:** P3 · **Evidence:** Confirmed<br>
+**Primary code:** `godot/main.gd`, `godot/_inspect.gd`
+
+**Observed defect**
+
+POV, chase, overview, and fly cameras are useful, but a reviewer must still manually navigate to
+many defects and correlate them with separate reports.
+
+**Verified mechanism**
+
+The viewer lacks deterministic element stepping, freeze-at-landmark controls, frame/curvature
+overlays, orthographic element views, and one-command capture of the standard regression pack.
+
+**Required fix**
+
+Add element navigation, landmark stepping, engineering-frame overlays, linked metric panels, and
+deterministic capture commands. Keep this tooling separate from presentation polish.
+
+**Closure test**
+
+A reviewer can select any material role, inspect its frame and whole-element metrics, and export the
+standard views without manually flying the camera.
+
+---
+
+#### VC-043 — Validation cost is not layered around geometry iteration
+
+**Priority:** P3 · **Evidence:** Confirmed by test structure and prior timing measurements<br>
+**Primary code:** focused suites, `godot/smoke.gd`, fidelity and fleet tests
+
+**Observed defect**
+
+The complete fleet and bounded solves are expensive enough that developers may delay useful
+feedback or rely too heavily on canonical hashes. Geometry changes need faster local evidence
+without weakening merge-time acceptance.
+
+**Verified mechanism**
+
+Current validation combines isolated logic, multi-seed generation, solver certification, viewer
+checks, and large fidelity suites. The longest planner/fleet work dominates the critical path.
+
+**Required fix**
+
+Layer validation into:
+
+1. fast isolated element and transition fixtures;
+2. a medium seed-42 integration plus deterministic artifacts;
+3. the full fleet and compatibility matrix;
+4. scheduled evidence-heavy and visual-regression runs.
+
+**Closure test**
+
+A local geometry edit receives focused shape/transition feedback quickly, while pull-request CI
+still runs the complete acceptance matrix before merge.
+
+---
+
+## 6. Specific micro-stitches and suspicious bank constructions to remove
+
+The table below identifies concrete current patterns. “Commanded roll integral” means the integral of authored rider-frame roll-rate controls; it is a diagnostic flag, **not** a direct claim about final world-bank change, because curvature transport also rotates the rider frame.
+
+| Area | Current construction | Why it is suspect | Required replacement |
+|---|---|---|---|
+| Opener drop exit | Four unbank/recover/hold/out fragments, including ~0.035 s hold | Semantic micro-stitch; separate load and roll repairs | One continuous drop-exit profile to declared next-state |
+| Immelmann | Two compact pulses of roughly 90° each | Roll rate returns to zero at the midpoint | One continuous 180° inversion roll |
+| Cutback | Four compact roll pulses; commanded integral ≈ +34.6° | Repeated stop/start and no proven neutral exit | One reviewed entry/reversal/exit bank schedule |
+| Loop | Lateral pulses plus two release-side roll pulses; commanded integral ≈ −25° | Emergent helix/skew; no declared plane/torsion | Explicit vertical or helical loop family |
+| Wave | Three-pulse bank cross-over plus two-pulse exit; commanded integral ≈ +17.4° | Multiple zero-rate stops inside one flowing wave | One cross-over spline tied to crest landmarks |
+| Camelback | Alternating ±18° roll excursions and lateral turn | Default hill is intentionally non-planar | Planar default; separate named 3D variant |
+| Camelback pullout | 0.01 s hold | One-step pseudo-feature | Delete; continuous pullout/release |
+| Dive approach | Solver-controlled near-level banked run before vertical development | Terrain closure is paid inside the element | Move macro rim anchor; start descent at declared commit |
+| Return | 50–80° solved banks plus counter-bank used to unwind heading | Banking serves terminal residuals | Plan return corridors/elements first |
+| Capture | 1.05 s, five solved pose residuals | Hidden exact correction at 70–80 m/s | Long pre-aligned station approach; no visible repair |
+
+A useful automated lint rule is: **two adjacent roll profiles that belong to one declared transition may not both return to zero at their shared boundary unless a deliberate held-bank phase is specified there.**
+
+## 7. Replacement architecture and implementation order
+
+The following sequence is intentionally dependency-ordered. Skipping ahead to element retuning or camera polish will produce disposable work.
+
+### Phase 0 — Freeze an honest failure baseline
+
+Before rewriting geometry, produce deterministic artifacts for seed 42 and a small representative fleet:
+
+- route plan, side, front, and isometric views;
+- whole-route and per-element plots of speed, AGL, pitch, heading, bank, roll rate, curvature, torsion, and G;
+- semantic-span arc lengths and durations;
+- engineering POV with fixed lens and no look-ahead smoothing;
+- current presentation POV;
+- 30/60/120 fps playback samples;
+- issue-linked snapshots of opener, Immelmann, cutback, loop, wave, camelback, clifftop/dive, return, and capture.
+
+These artifacts are evidence of failure, not a golden route that future geometry must match byte-for-byte.
+
+### Phase 1 — Repair measurement and rendering truth
+
+1. Replace the tautological dense-output metric.
+2. Make route sampling use a continuous position/tangent/frame interpolant.
+3. Build track mesh, train, and cameras from that sampler.
+4. Add raw spatial derivative metrics alongside filtered human-response metrics.
+5. Add whole-material-role measurement and intent declarations.
+6. Add deterministic geometry artifact generation.
+
+This phase makes later improvements observable. It must not try to beautify the old element recipes.
+
+### Phase 2 — Introduce a spatial element contract
+
+Create a focused element layer, for example:
+
+```text
+godot/elements/element_spec.gd
+godot/elements/element_result.gd
+godot/elements/transition_profile.gd
+godot/elements/<family>.gd
+```
+
+A practical contract should resemble:
+
+```gdscript
+ElementSpec {
+    id
+    family
+    entry_state_band
+    exit_state_target
+    corridor
+    spatial_length_band
+    planarity_intent
+    landmarks
+    curvature_profile
+    bank_profile
+    force_envelopes
+    terrain_intent
+}
+
+ElementResult {
+    centreline/frame samples or analytic segments
+    achieved entry/exit state
+    landmarks
+    geometry metrics
+    force metrics
+    feasibility margins
+}
+```
+
+The exact API may differ, but the separation is mandatory: geometry intent, generated geometry, and validation evidence cannot remain implicit inside one list of time-domain spans.
+
+### Phase 3 — Replace pulse-per-span transitions
+
+Build continuous transition primitives over arc length/geometric phase:
+
+- curvature ramp and blend;
+- bank ramp with optional held rate;
+- monotone bank cross-over;
+- inversion roll;
+- force-balanced level turn;
+- pull-up/pullout with apex/inflection landmarks;
+- neutral connector with explicit minimum length and endpoint state.
+
+Internal spline knots are allowed. They must not create semantic pauses or reset motion.
+
+### Phase 4 — Rewrite elements from highest leverage to lowest
+
+Recommended order:
+
+1. **Camelback** — it is the clearest whole-element geometry failure and a good planar fixture.
+2. **Immelmann** — proves continuous inversion roll and boundary contracts.
+3. **Wave and cutback** — prove cross-over/reversal handling.
+4. **Loop** — proves declared planar versus helical families.
+5. **Opener** — removes the four-fragment unbank and establishes drop-transition patterns.
+6. **Clifftop and dive** — integrates element landmarks with terrain anchors.
+7. **Return** — replace closure-driven banks with planned elements/corridors.
+8. **Station approach/capture** — remove the visible exact-pose repair.
+
+Do not rewrite all roles simultaneously. Each family should land with isolated fixtures and standard artifacts.
+
+### Phase 5 — Move layout solving to anchors and corridors
+
+The planner should first choose:
+
+- station pose and reserved approach;
+- terrain corridors and exclusion zones;
+- major element anchors and headings;
+- elevation/AGL story;
+- energy budget and launch locations;
+- approximate lengths/radii required by each family;
+- return route and crossing topology.
+
+It then asks element builders to fit those assignments. Failure means the layout is infeasible. The solver may change anchors/corridor allocation and retry at the planning level under a bounded, deterministic strategy; it must not hide the problem in a 0.01 s hold or 70° counter-bank.
+
+### Phase 6 — Rebaseline energy and pacing
+
+After spatial geometry is stable:
+
+- derive rolling and aerodynamic resistance honestly;
+- retune launches and heights;
+- preserve the intended record-speed objective only if the physical energy budget supports it;
+- tune beat contrast using speed, acceleration, G, AGL, and sightlines;
+- certify slow beats as deliberate rather than accidental flat travel.
+
+### Phase 7 — Improve visual speed cues without hiding geometry
+
+Only after the engineering POV is approved:
+
+- choose a restrained presentation lens;
+- add a physical head/seat model;
+- add near-field track/terrain detail and structure;
+- add wind/rail audio and optional motion blur;
+- improve train and support visuals;
+- validate across frame rates and aspect ratios.
+
+## 8. Proposed production quality gates
+
+These are the minimum categories. Numeric thresholds should be adopted per element family and committed with their rationale.
+
+### 8.1 Whole-route gates
+
+- honest resistance model and declared propulsion only;
+- route closes without visible pose-repair geometry;
+- complete swept-volume terrain/track/support/tunnel clearance;
+- designated terrain-hugging and exposed-height roles meet separate AGL bands;
+- no hidden semantic connector below its reviewed spatial minimum;
+- deterministic plan/elevation/POV artifacts produced for canonical seeds;
+- rendered position derivative aligns with rendered tangent;
+- no frame-rate-dependent path wobble.
+
+### 8.2 Whole-element gates
+
+- accepted entry-state range and achieved exit-state tolerance;
+- reviewed height/width/length/heading bands;
+- declared planarity/torsion class;
+- landmark order and location;
+- curvature and torsion extrema/zero-crossing counts;
+- bank extrema, roll segments, reversals, and zero-crossings;
+- signed bank/curvature/lateral-G relationship;
+- role-specific force and onset envelopes;
+- terrain corridor and AGL compliance.
+
+### 8.3 Transition gates
+
+- one continuous analytic motion per declared transition;
+- no interior zero roll-rate stop while a bank change remains incomplete, unless explicitly designed;
+- no curvature or torsion impulse hidden by a filtered safety channel;
+- no semantic micro-hold or settle span;
+- continuity checked over the entire transition, not only at authored knots;
+- adaptive spatial sampling proves convergence.
+
+### 8.4 Suggested initial guardrails for review
+
+These are starting points, not immutable standards:
+
+- planar-role best-fit vertical-plane tilt: target ≤3° unless the spec says otherwise;
+- planar-role out-of-plane RMS: target ≤2% of bounding diagonal;
+- default camelback heading drift: target ≤5° and bank near neutral unless a 3D variant is selected;
+- no standalone neutral connector below 30 m without an approved infrastructure exception;
+- no semantic transition whose only purpose is a control-value repair;
+- designated terrain-hugging role: median AGL target ≤10 m and 90th percentile ≤20 m where terrain/clearance permits;
+- rendered tangent/position-derivative alignment: target sub-degree, tightened after numerical study;
+- continuous-roll transitions: one segment and the specified number of reversals exactly.
+
+## 9. File-by-file remediation map
+
+| File/area | Required direction |
+|---|---|
+| `godot/motion.gd` | Keep physical integration; add spatial/geometric profile support, real dense residuals, continuous state sampler, raw derivative metrics. |
+| `godot/ride_program.gd` | Stop being the monolithic element library; migrate recipes into element families and compile accepted element results. |
+| `godot/ride_prefix_solve.gd` | Solve macro anchors/corridors or a small set of geometric parameters; stop using internal beat duration as terrain-repair authority. |
+| `godot/ride_return_solve.gd` | Plan a return path and station approach; remove large closure-driven bank invention and visible capture correction. |
+| `godot/ride_planner.gd` | Draw meaningful story/layout decisions only after cell interfaces are composable; reject infeasible combinations early. |
+| `godot/generator.gd` | Perform terrain-aware macro routing and energy budgeting before local element construction. |
+| `godot/route_contract.gd` | Validate whole-element geometry intent, full terrain/tunnel/swept-envelope constraints, and solver provenance. |
+| `godot/verify.gd` | Separate human-response filtering from raw engineering smoothness; add whole-transition/element gates. |
+| `godot/geometry_metrics.gd` | Make metrics intent-aware; add torsion, signed curvature, extrema, bank coherence, whole-role aggregation. |
+| `godot/route_sampling.gd` | Replace chord-origin + slerp-frame sampling with a consistent continuous trajectory sampler. |
+| `godot/main.gd` | Provide strict engineering POV and deterministic inspection tools; improve physical speed cues after geometry is fixed. |
+| tests/artifacts | Add isolated family fixtures, bad-shape negative tests, standard renders/plots, and layered CI. |
+
+## 10. Rejected shortcuts
+
+The following approaches can make screenshots or scalar tests look better while preserving the underlying defect:
+
+1. **Do not add more short spans** to “smooth” a transition. More self-contained pulses usually create more stitching.
+2. **Do not increase camera look-ahead, shake, FOV, or motion blur** to conceal bad geometry.
+3. **Do not filter geometry or roll channels more aggressively** so onset tests pass.
+4. **Do not zero every bank.** The problem is unjustified bank, not banking itself.
+5. **Do not give closure solvers more local element controls** before element contracts exist.
+6. **Do not loosen role-length, load, clearance, or seam gates** to preserve the current route.
+7. **Do not preserve byte-identical canonical routes** when the accepted geometry is the thing being replaced.
+8. **Do not tune isolated decimal constants without before/after shape and POV artifacts.**
+9. **Do not call a role “three-dimensional” after generation merely to exempt it from a planar design requirement.**
+10. **Do not treat a passing safety envelope as evidence of a good element.** Safety, physical consistency, morphology, and presentation are separate requirements.
+
+## 11. Required regression artifacts for every geometry-affecting change
+
+A pull request changing any element, solver, motion profile, route sampling, terrain layout, or camera must attach or generate:
+
+- commit/config/seed identifiers;
+- affected material roles;
+- pre/post plan, side, front, and isometric views;
+- pre/post whole-role centreline overlay;
+- bank, roll rate, curvature, torsion, speed, AGL, and G plots over distance;
+- entry/exit state and landmark table;
+- semantic span durations and built arc lengths;
+- engineering POV clip with fixed lens and no smoothing;
+- presentation POV clip if presentation code changed;
+- automated gate results and any changed thresholds;
+- a brief human visual verdict naming remaining defects.
+
+A numerical improvement with a worse silhouette is not an improvement. A prettier POV with a less faithful engineering camera is not an improvement.
+
+## 12. Legacy ID compatibility
+
+> **Do not delete or renumber these aliases in a documentation-only change.** The current fidelity code accepts only legacy IDs `1..16`, and several docs/comments refer to `17..27`. A later code migration may generate this table from a single registry.
+
+Legacy numeric IDs remain compatibility aliases. IDs `1..16` are still consumed by the current audit code; IDs `17..27` remain common prose references elsewhere in the repository. The active mapping is:
+
+| Old issue | Disposition in this register |
+|---:|---|
+| 1 — Missing micro-elements | Folded into VC-004, VC-017, VC-039; add content only after P0 geometry architecture. |
+| 2 — Cheated pacing / near-zero-loss coasting | VC-006 and VC-039. |
+| 3 — Underused G envelope | VC-009 and VC-039; proportional use belongs in element specs, not universal maximisation. |
+| 4 — Oversmoothing | VC-023, VC-025, VC-028. |
+| 5 — Poor FVD implementation | VC-001–VC-003 and VC-026. |
+| 6 — Poor terrain awareness | VC-005 and VC-035. |
+| 7 — Supports/poor shaping | VC-022 and VC-032. |
+| 8 — Poor speed sense | VC-035–VC-040. |
+| 9 — Launch speed low | Treat as a stale scalar symptom; re-evaluate only after VC-006 and spatial rewrite. |
+| 10 — Bank → flat → bank | VC-023–VC-026. |
+| 11 — Leisurely ride | VC-006, VC-017, VC-035, VC-039. |
+| 12 — Flats | VC-004, VC-018, VC-024, VC-039. |
+| 13 — Tame airtime | Element-spec force targets under VC-002/VC-009; do not increase G before geometry is correct. |
+| 14 — Scale/geometry wrong | VC-001–VC-005 and element issues VC-011–VC-020. |
+| 15 — Jerky transitions | VC-023–VC-029 and VC-038. |
+| 16 — Nebulous feel gaps | Resolved into explicit geometry, pacing, terrain, and presentation issues above. |
+| 17 — App loading | VC-041. |
+| 18 — Camera/HUD | VC-037 and VC-042. |
+| 19 — CI speed | VC-043. |
+| 20 — Roll sections cheat | VC-011–VC-016 and VC-023–VC-026. |
+| 21 — Terrain drift | VC-005 and VC-035. |
+| 22 — Dive starts too far from edge | VC-018. |
+| 23 — Camelback distortion | VC-016 and VC-030–VC-031. |
+| 24 — FVD gets G but not geometry | VC-001–VC-003, VC-009, VC-020. |
+| 25 — Speed sense is mainly AGL | VC-035, with viewer contributors VC-036–VC-040. |
+| 26 — Clifftop under-declared | VC-017. |
+| 27 — Dense-output metric tautological | VC-029 and rendered sampler VC-038. |
+
+## 13. Closure policy
+
+An issue may be closed only when all of the following are true:
+
+1. the root mechanism is removed, not hidden;
+2. the relevant automated negative and positive tests pass;
+3. standard geometry plots and views are attached;
+4. an engineering POV at native speed has been reviewed;
+5. the change does not create an undocumented solver repair elsewhere;
+6. any new threshold has a stated design rationale;
+7. the issue record links to the evidence and names any consciously deferred limitation.
+
+“C2/C4 passes,” “G is within the envelope,” “the route closes,” “the canonical bytes match,” and “the camera looks smoother” are each insufficient on their own.
+
+## 14. Immediate next milestone
+
+The next milestone should **not** be a full visual polish or a route-wide retune. It should be a geometry-truth vertical slice:
+
+1. correct dense/rendered sampling;
+2. introduce the element contract and whole-role gates;
+3. rewrite the camelback as a planar spatial element;
+4. generate standard before/after artifacts;
+5. prove that its geometry remains stable across certified entry speeds;
+6. then use the same infrastructure for the Immelmann’s continuous 180° roll.
+
+That vertical slice tests the new foundation against the two clearest current failures: wrong whole-element geometry and micro-stitched roll construction. Once those are solved honestly, the remaining elements can migrate without another architectural reset.

@@ -1,4 +1,5 @@
 res://motion_tests.gd
+res://route_sampling_tests.gd
 res://bounded_solver_tests.gd
 res://route_contract_tests.gd
 res://ride_program_tests.gd
@@ -10,3 +11,7 @@ res://terrain_story_material_tests.gd
 res://geometry_metrics_tests.gd
 res://ride_planner_tests.gd
 res://ride_config_tests.gd
+res://dense_output_tests.gd
+res://element_contract_tests.gd
+res://element_contract_integration_tests.gd
+res://camelback_geometry_tests.gd

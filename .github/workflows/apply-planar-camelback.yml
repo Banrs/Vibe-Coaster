@@ -1,0 +1,70 @@
+name: Apply planar camelback rewrite
+
+on:
+  push:
+    branches:
+      - agent/issues-register-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/issues-register-cleanup
+          fetch-depth: 0
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.1
+          use-dotnet: false
+          include-templates: false
+      - name: Rewrite and adopt the default camelback
+        run: |
+          python3 .github/apply_planar_camelback.py
+          python3 .github/expand_camelback_shape_probe.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('godot/camelback_shape_probe.gd')
+          text = path.read_text()
+          old = 'const LENGTH_BAND_M := Vector2(900.0, 1180.0)'
+          new = 'const LENGTH_BAND_M := Vector2(900.0, 1179.0)'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one local length aim, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+      - name: Measure the local shape before adapting the return
+        run: |
+          godot --headless --path godot --editor --quit
+          godot --headless --path godot --script res://camelback_shape_probe.gd
+          godot --headless --path godot --script res://camelback_return_probe.gd
+      - name: Verify affected production paths
+        run: |
+          godot --headless --path godot --script res://camelback_geometry_tests.gd
+          godot --headless --path godot --script res://element_contract_integration_tests.gd
+          godot --headless --path godot --script res://ride_program_tests.gd
+          godot --headless --path godot --script res://generator_material_tests.gd
+          godot --headless --path godot --script res://smoke.gd
+      - name: Commit the tested rewrite and remove one-shot helpers
+        shell: bash
+        run: |
+          rm .github/workflows/apply-planar-camelback.yml \
+            .github/workflows/measure-camelback-red.yml \
+            .github/apply_planar_camelback.py \
+            .github/expand_camelback_shape_probe.py \
+            godot/camelback_return_probe.gd \
+            godot/camelback_shape_probe.gd
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add godot/ride_program.gd \
+            .github/workflows/apply-planar-camelback.yml \
+            .github/workflows/measure-camelback-red.yml \
+            .github/apply_planar_camelback.py \
+            .github/expand_camelback_shape_probe.py \
+            godot/camelback_return_probe.gd \
+            godot/camelback_shape_probe.gd
+          git commit -m 'fix: make the default camelback planar'
+          git push origin HEAD:agent/issues-register-cleanup

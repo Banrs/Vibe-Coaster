@@ -599,12 +599,17 @@ static func _test_route_sampling(errors: PackedStringArray) -> void:
 	_expect(errors, is_equal_approx(sampling.distance_at_time(route, 2.25), 2.5),
 		"time wraps by ride duration")
 	var pose: Transform3D = sampling.pose_at_distance(route, 5.0)
-	_expect(errors, pose.origin.is_equal_approx(Vector3(5.0, 0.0, 0.0)),
-		"pose origin lerps between knot positions")
-	var diagonal := sqrt(0.5)
-	_expect(errors, (-pose.basis.z).is_equal_approx(Vector3(diagonal, 0.0, -diagonal))
-		and pose.basis.y.is_equal_approx(Vector3.UP),
-		"pose orientation slerps halfway through the quarter-turn between knots")
+	_expect(errors, pose.origin.is_equal_approx(Vector3(6.25, 0.0, 1.25)),
+		"pose origin follows the Hermite path defined by accepted endpoint tangents")
+	var half_width_m := 0.001
+	var before: Transform3D = sampling.pose_at_distance(route, 5.0 - half_width_m)
+	var after: Transform3D = sampling.pose_at_distance(route, 5.0 + half_width_m)
+	var derivative := (after.origin - before.origin) / (2.0 * half_width_m)
+	_expect(errors, derivative.length_squared() > 0.0
+		and derivative.normalized().distance_to((-pose.basis.z).normalized()) < 0.001,
+		"pose tangent is the derivative of the rendered Hermite position")
+	_expect(errors, absf(pose.basis.y.dot(-pose.basis.z)) < 0.000001,
+		"pose up is re-orthogonalised around the rendered tangent")
 	_expect(errors, sampling.pose_at_distance(route, 25.0) == pose, "distance wraps by ride length")
 	for distance in [0.0, 3.75, 10.0, 14.5, 19.9, 41.0]:
 		_expect(errors, viewer.pose_at_distance(route, distance)

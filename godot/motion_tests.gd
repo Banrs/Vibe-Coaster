@@ -434,9 +434,27 @@ func _test_dense_output_distance_and_defect() -> void:
 	var sampled: Dictionary = Motion.sample_distance(route, midpoint)
 	_expect_close(float(sampled.get("distance_m", -1.0)), midpoint,
 		"dense distance inversion is monotone and returns the requested coordinate")
-	var kinematic_defect: float = route.dense_output.get("max_kinematic_defect_mps", INF)
-	_expect(kinematic_defect >= 0.0 and kinematic_defect <= 0.00001,
-		"dense output measures its actual dr/dt minus returned vT defect")
+	var dense: Dictionary = route.dense_output
+	var component_fields := [
+		"max_position_velocity_defect_mps",
+		"max_distance_speed_defect_mps",
+		"max_velocity_channel_defect_mps",
+	]
+	var component_maximum := 0.0
+	for field in component_fields:
+		var value := float(dense.get(field, INF))
+		_expect(is_finite(value) and value >= 0.0,
+			"dense output publishes finite independent residual '%s'" % field)
+		component_maximum = maxf(component_maximum, value)
+	var kinematic_defect: float = dense.get("max_kinematic_defect_mps", INF)
+	_expect(absf(kinematic_defect - component_maximum) <= 0.000000001,
+		"the compatibility defect is the maximum independent residual")
+	# This constant-control curved fixture measures 1.28433e-4 m/s on the real
+	# Hermite-versus-channel comparison. 1.5e-4 is a measured guardrail with headroom for
+	# PackedVector3 narrowing, not the old 1e-5 bound on an algebraic identity.
+	_expect(kinematic_defect <= 0.00015,
+		"independent dense-output residual stays below 1.5e-4 m/s; got %.9f"
+			% kinematic_defect)
 	var by_time: Dictionary = Motion.sample_time(route, sampled.get("time_s", -1.0))
 	_expect_vector(by_time.get("position_m", Vector3.INF), sampled.get("position_m", Vector3.ZERO),
 		"time and distance sampling agree on position", 0.000001)

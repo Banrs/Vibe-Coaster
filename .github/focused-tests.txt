@@ -13,3 +13,4 @@ res://ride_planner_tests.gd
 res://ride_config_tests.gd
 res://dense_output_tests.gd
 res://element_contract_tests.gd
+res://element_contract_integration_tests.gd

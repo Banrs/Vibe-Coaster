@@ -16,16 +16,22 @@ replacement = '''static func _add_camelback(
 	# and handing the return an 11 degree residual bank. A three-dimensional hill, if added later,
 	# is a separate named family; the default record camelback is not allowed to acquire heading
 	# or bank as an accidental consequence of closure.
+	#
+	# These seven values are the accepted production point of an element-local bounded solve,
+	# measured on seed 42 at both 0.05 s and 0.01 s integration. The solve targeted interior
+	# geometry bands rather than the station: exit height [-0.5, 0.5] m, exit/apex pitch
+	# [-0.1, 0.1] deg, prominence 247-253 m inside the 245-255 m route contract, length <=1179 m
+	# inside the 1180 m role ceiling, rise/fall arc imbalance <=5 m, and crest load within
+	# -1.604..-1.504 g. Production measured 1178.994 m, 247.430 m prominence, -0.489 m exit
+	# height, -0.096 deg exit pitch, -0.098 deg apex pitch and 3.666 m arc imbalance.
 	var positive_g := 4.60068864065765
-	var negative_g := -1.55352865073772
-	var pullout_g := 5.2662035249371
-	var pullup_s := 1.87949032 * 1.33555111055541
-	var unload_s := 3.01169597 * 1.15 - 0.4
-	var crest_s := 3.62587650 * 1.06
-	# The fall remains the prominence authority. Removing bank restores the full normal-load
-	# component to the vertical plane; production geometry/prominence gates decide whether these
-	# inherited timings remain valid rather than a hidden lateral or roll correction doing so.
-	var fall_s := 3.40
+	var pullup_s := 2.39060811463344
+	var unload_s := 2.53095186885577
+	var crest_s := 3.84271115326828
+	var negative_g := -1.52988589350247
+	var fall_s := 3.30305878961966
+	var pullout_g := 4.12750135859898
+	var release_s := 2.71672804094249
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving", Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")
 	_add(spans, metadata, propulsion, "camelback/rise-hold", 0.4, "moving",
@@ -38,7 +44,7 @@ replacement = '''static func _add_camelback(
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g, pullout_g), 0.0, 0.0, 0.0, "fall")
 	# One continuous release replaces the one-integration-step 0.01 s pseudo-hold.
-	_add(spans, metadata, propulsion, "camelback/pullout-release", 1.58, "moving",
+	_add(spans, metadata, propulsion, "camelback/pullout-release", release_s, "moving",
 		Motion.quintic(pullout_g, 1.0), 0.0, 0.0, 0.0, "exit")
 '''
 text = text[:start] + replacement + text[end:]
@@ -66,13 +72,13 @@ new = '''		records[role_id] = {
 					"max_heading_drift_deg": 5.0,
 					"entry": {
 						"pitch_deg": -2.0,
-						"pitch_tolerance_deg": 1.0,
+						"pitch_tolerance_deg": 0.25,
 						"bank_deg": 0.0,
 						"bank_tolerance_deg": 3.0,
 					},
 					"exit": {
 						"pitch_deg": 0.0,
-						"pitch_tolerance_deg": 2.0,
+						"pitch_tolerance_deg": 0.25,
 						"bank_deg": 0.0,
 						"bank_tolerance_deg": 3.0,
 					},

@@ -24,9 +24,10 @@ jobs:
           include-templates: false
       - name: Rewrite and adopt the default camelback
         run: python3 .github/apply_planar_camelback.py
-      - name: Verify the geometry and affected production paths
+      - name: Trace the moved handoff and verify affected production paths
         run: |
           godot --headless --path godot --editor --quit
+          godot --headless --path godot --script res://camelback_return_probe.gd
           godot --headless --path godot --script res://camelback_geometry_tests.gd
           godot --headless --path godot --script res://element_contract_integration_tests.gd
           godot --headless --path godot --script res://ride_program_tests.gd
@@ -37,12 +38,14 @@ jobs:
         run: |
           rm .github/workflows/apply-planar-camelback.yml \
             .github/workflows/measure-camelback-red.yml \
-            .github/apply_planar_camelback.py
+            .github/apply_planar_camelback.py \
+            godot/camelback_return_probe.gd
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add godot/ride_program.gd \
             .github/workflows/apply-planar-camelback.yml \
             .github/workflows/measure-camelback-red.yml \
-            .github/apply_planar_camelback.py
+            .github/apply_planar_camelback.py \
+            godot/camelback_return_probe.gd
           git commit -m 'fix: make the default camelback planar'
           git push origin HEAD:agent/issues-register-cleanup

@@ -23,7 +23,18 @@ jobs:
           use-dotnet: false
           include-templates: false
       - name: Wire whole-element records into the accepted route
-        run: python3 .github/apply_element_contract_integration.py
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/apply_element_contract_integration.py')
+          text = path.read_text()
+          old = "helper = r'''"
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one raw helper string, found {text.count(old)}')
+          path.write_text(text.replace(old, "helper = '''"))
+          PY
+          python3 .github/apply_element_contract_integration.py
       - name: Verify targeted production paths
         run: |
           godot --headless --path godot --editor --quit

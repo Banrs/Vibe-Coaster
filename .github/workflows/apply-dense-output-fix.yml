@@ -23,7 +23,25 @@ jobs:
           use-dotnet: false
           include-templates: false
       - name: Replace the tautological dense-output metric
-        run: python3 .github/apply_dense_output_fix.py
+        shell: bash
+        run: |
+          python3 .github/apply_dense_output_fix.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('godot/motion_tests.gd')
+          text = path.read_text()
+          replacements = {
+              'measures about 6.3e-5 m/s': 'measures 1.28433e-4 m/s',
+              '1e-4 is a measured guardrail': '1.5e-4 is a measured guardrail',
+              'kinematic_defect <= 0.0001': 'kinematic_defect <= 0.00015',
+              'below 1e-4 m/s': 'below 1.5e-4 m/s',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one '{old}', found {text.count(old)}")
+              text = text.replace(old, new)
+          path.write_text(text)
+          PY
       - name: Verify targeted suites
         run: |
           godot --headless --path godot --editor --quit

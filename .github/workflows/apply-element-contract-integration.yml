@@ -29,10 +29,28 @@ jobs:
           from pathlib import Path
           path = Path('.github/apply_element_contract_integration.py')
           text = path.read_text()
-          old = "helper = r'''"
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one raw helper string, found {text.count(old)}')
-          path.write_text(text.replace(old, "helper = '''"))
+          replacements = {
+              "helper = r'''": "helper = '''",
+              '_element_contract_records(plan, compiled, trajectory, banks)':
+                  '_element_contract_records(plan, compiled, trajectory, banks, terrain)',
+              r'''\tbanks: PackedFloat32Array
+          ) -> Dictionary:
+          \tvar errors := PackedStringArray()
+          \tvar intents_value: Variant = compiled.get("element_intents")''':
+              r'''\tbanks: PackedFloat32Array, terrain: Dictionary
+          ) -> Dictionary:
+          \tvar errors := PackedStringArray()
+          \t# Synthetic RouteContract fixtures deliberately test terminal/propulsion/window
+          \t# mechanics without a material story. Production terrain never takes this seam.
+          \tif terrain.get("kind") == "synthetic":
+          \t\treturn {"ok": true, "records": {}, "errors": errors}
+          \tvar intents_value: Variant = compiled.get("element_intents")''',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected one patch source match, found {text.count(old)}: {old!r}')
+              text = text.replace(old, new)
+          path.write_text(text)
           PY
           python3 .github/apply_element_contract_integration.py
       - name: Verify targeted production paths

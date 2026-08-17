@@ -11,3 +11,4 @@ res://terrain_story_material_tests.gd
 res://geometry_metrics_tests.gd
 res://ride_planner_tests.gd
 res://ride_config_tests.gd
+res://dense_output_tests.gd

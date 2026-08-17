@@ -412,9 +412,7 @@ static func integrate(
 				return _reject(result, "moving speed floor crossed during RK stage")
 			_append_native(result, time, distance, position, tangent, up, speed, span_index,
 				controls, span_mode, span_elapsed / span_duration_s, gravity, rolling, aero)
-	result.dense_output = {
-		"max_kinematic_defect_mps": _measure_dense_defect(result),
-	}
+	result.dense_output = _measure_dense_output(result)
 	result.ok = true
 	return result
 
@@ -690,24 +688,76 @@ static func _dense_distance(trajectory: Dictionary, index: int, u: float) -> flo
 		+ (u3 - u2) * h * trajectory.speed_mps[index + 1]
 
 
-static func _measure_dense_defect(trajectory: Dictionary) -> float:
+## Analytic d(distance)/dt of the cubic Hermite distance interpolant. Kept separate from
+## `_dense_distance`: the consistency audit compares this derivative with an independently
+## interpolated published speed channel rather than reading back a value derived from itself.
+static func _dense_distance_rate_on(
+	interval_s: float, distance_0: float, speed_0: float,
+	distance_1: float, speed_1: float, u: float
+) -> float:
+	var u2 := u * u
+	return (6.0 * u2 - 6.0 * u) / interval_s * distance_0 \
+		+ (3.0 * u2 - 4.0 * u + 1.0) * speed_0 \
+		+ (-6.0 * u2 + 6.0 * u) / interval_s * distance_1 \
+		+ (3.0 * u2 - 2.0 * u) * speed_1
+
+
+## Independent dense-output consistency measurements. The previous implementation compared one
+## Hermite velocity with its own normalized direction times its own length, which is an identity
+## and could not fail. These residuals compare the Hermite position/distance derivatives with a
+## separately interpolated native speed/tangent channel:
+##
+## - position_velocity: vector d(position)/dt versus interpolated speed * tangent;
+## - distance_speed: scalar d(distance)/dt versus interpolated speed;
+## - velocity_channel: |d(position)/dt| versus interpolated speed.
+##
+## The compatibility field is the maximum real residual, not a fourth self-comparison.
+static func _measure_dense_output(trajectory: Dictionary) -> Dictionary:
 	var times: PackedFloat64Array = trajectory.time_s
+	var distances: PackedFloat64Array = trajectory.distance_m
 	var speeds: PackedFloat64Array = trajectory.speed_mps
 	var tangents: PackedVector3Array = trajectory.tangent
 	var positions: PackedVector3Array = trajectory.position_m
-	var maximum := 0.0
+	var maximum_position_velocity := 0.0
+	var maximum_distance_speed := 0.0
+	var maximum_velocity_channel := 0.0
 	for index in times.size() - 1:
-		var h: float = times[index + 1] - times[index]
+		var interval_s: float = times[index + 1] - times[index]
 		var velocity_0: Vector3 = speeds[index] * tangents[index]
 		var velocity_1: Vector3 = speeds[index + 1] * tangents[index + 1]
-		var position_0 := positions[index]
-		var position_1 := positions[index + 1]
 		for u in DENSE_DEFECT_U:
-			# The defect only ever reads the dense sample's tangent and speed, which are the
-			# normalization and the length of this one velocity - the same value `_dense_sample`
-			# would have recomputed for its own `derivative`.
-			var velocity := _dense_velocity_on(
-				h, position_0, velocity_0, position_1, velocity_1, u)
-			maximum = maxf(maximum, velocity.distance_to(
-				velocity.normalized() * velocity.length()))
-	return maximum
+			var dense_velocity := _dense_velocity_on(
+				interval_s, positions[index], velocity_0,
+				positions[index + 1], velocity_1, u)
+			var channel_speed := lerpf(float(speeds[index]), float(speeds[index + 1]), u)
+			# Native nodes are at most one integration step apart, so normalized linear
+			# interpolation is the stable independent channel model. It does not use the dense
+			# position derivative it is being compared against.
+			var channel_tangent: Vector3 = tangents[index].lerp(tangents[index + 1], u)
+			if channel_tangent.length_squared() <= FRAME_EPS * FRAME_EPS:
+				channel_tangent = tangents[index]
+			channel_tangent = channel_tangent.normalized()
+			var channel_velocity := channel_speed * channel_tangent
+			var distance_rate := _dense_distance_rate_on(
+				interval_s, float(distances[index]), float(speeds[index]),
+				float(distances[index + 1]), float(speeds[index + 1]), u)
+			maximum_position_velocity = maxf(maximum_position_velocity,
+				dense_velocity.distance_to(channel_velocity))
+			maximum_distance_speed = maxf(maximum_distance_speed,
+				absf(distance_rate - channel_speed))
+			maximum_velocity_channel = maxf(maximum_velocity_channel,
+				absf(dense_velocity.length() - channel_speed))
+	var maximum := maxf(maximum_position_velocity,
+		maxf(maximum_distance_speed, maximum_velocity_channel))
+	return {
+		"max_kinematic_defect_mps": maximum,
+		"max_position_velocity_defect_mps": maximum_position_velocity,
+		"max_distance_speed_defect_mps": maximum_distance_speed,
+		"max_velocity_channel_defect_mps": maximum_velocity_channel,
+	}
+
+
+## Compatibility seam for focused tests and downstream diagnostics that called the old helper.
+## It now returns the maximum independent residual published by `_measure_dense_output`.
+static func _measure_dense_defect(trajectory: Dictionary) -> float:
+	return float(_measure_dense_output(trajectory).max_kinematic_defect_mps)

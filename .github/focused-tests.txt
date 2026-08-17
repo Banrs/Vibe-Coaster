@@ -14,3 +14,4 @@ res://ride_config_tests.gd
 res://dense_output_tests.gd
 res://element_contract_tests.gd
 res://element_contract_integration_tests.gd
+res://camelback_geometry_tests.gd

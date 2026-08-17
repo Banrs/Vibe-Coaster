@@ -30,10 +30,16 @@ jobs:
           from pathlib import Path
           path = Path('godot/camelback_shape_probe.gd')
           text = path.read_text()
-          old = 'length_residual / 25.0'
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one length residual scale, found {text.count(old)}')
-          path.write_text(text.replace(old, 'length_residual / 1.0'))
+          replacements = {
+              'const LENGTH_BAND_M := Vector2(900.0, 1180.0)':
+                  'const LENGTH_BAND_M := Vector2(900.0, 1179.0)',
+              'length_residual / 25.0': 'length_residual / 1.0',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected one probe target {old!r}, found {text.count(old)}')
+              text = text.replace(old, new)
+          path.write_text(text)
           PY
       - name: Measure the local shape before adapting the return
         run: |

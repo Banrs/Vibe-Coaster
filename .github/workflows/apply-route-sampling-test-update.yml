@@ -1,0 +1,71 @@
+name: Apply route-sampling test update
+
+on:
+  push:
+    branches:
+      - agent/issues-register-cleanup
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/issues-register-cleanup
+          fetch-depth: 0
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.1
+          use-dotnet: false
+          include-templates: false
+      - name: Replace the stale linear/slerp characterization
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('godot/fidelity_artifact_tests.gd')
+          text = path.read_text()
+          old = '''\tvar pose: Transform3D = sampling.pose_at_distance(route, 5.0)
+          \t_expect(errors, pose.origin.is_equal_approx(Vector3(5.0, 0.0, 0.0)),
+          \t\t"pose origin lerps between knot positions")
+          \tvar diagonal := sqrt(0.5)
+          \t_expect(errors, (-pose.basis.z).is_equal_approx(Vector3(diagonal, 0.0, -diagonal))
+          \t\tand pose.basis.y.is_equal_approx(Vector3.UP),
+          \t\t"pose orientation slerps halfway through the quarter-turn between knots")
+          '''
+          new = '''\tvar pose: Transform3D = sampling.pose_at_distance(route, 5.0)
+          \t_expect(errors, pose.origin.is_equal_approx(Vector3(6.25, 0.0, 1.25)),
+          \t\t"pose origin follows the Hermite path defined by accepted endpoint tangents")
+          \tvar half_width_m := 0.001
+          \tvar before: Transform3D = sampling.pose_at_distance(route, 5.0 - half_width_m)
+          \tvar after: Transform3D = sampling.pose_at_distance(route, 5.0 + half_width_m)
+          \tvar derivative := (after.origin - before.origin) / (2.0 * half_width_m)
+          \t_expect(errors, derivative.length_squared() > 0.0
+          \t\tand derivative.normalized().distance_to((-pose.basis.z).normalized()) < 0.001,
+          \t\t"pose tangent is the derivative of the rendered Hermite position")
+          \t_expect(errors, absf(pose.basis.y.dot(-pose.basis.z)) < 0.000001,
+          \t\t"pose up is re-orthogonalised around the rendered tangent")
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one stale route-sampling block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+      - name: Verify targeted suites
+        run: |
+          godot --headless --path godot --editor --quit
+          godot --headless --path godot --script res://route_sampling_tests.gd
+          godot --headless --path godot --script res://fidelity_artifact_tests.gd
+      - name: Commit the tested patch and remove this one-shot workflow
+        shell: bash
+        run: |
+          rm .github/workflows/apply-route-sampling-test-update.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add godot/fidelity_artifact_tests.gd .github/workflows/apply-route-sampling-test-update.yml
+          git commit -m 'test: require kinematically consistent route sampling'
+          git push origin HEAD:agent/issues-register-cleanup

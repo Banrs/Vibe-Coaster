@@ -1,0 +1,32 @@
+name: Export Godot binary
+
+on:
+  push:
+    branches:
+      - agent/full-refoundation
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.7.1
+          use-dotnet: false
+          include-templates: false
+      - name: Package executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/godot
+          cp "$(command -v godot)" out/godot/godot
+          chmod +x out/godot/godot
+          out/godot/godot --version > out/godot/version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: godot-4.7.1-linux
+          path: out/godot
+          retention-days: 1

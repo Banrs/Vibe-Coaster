@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/spatial-v2-refoundation
+  pull_request:
   workflow_dispatch:
 
 permissions:

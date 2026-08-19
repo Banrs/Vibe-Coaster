@@ -241,7 +241,9 @@ static func normalize(file_config: Dictionary, cli_overrides: Array = []) -> Dic
 
 ## The canonical hash of a resolved document: SHA-256 over the canonical JSON of its *effective*
 ## values only. Provenance is deliberately excluded, so the same effective configuration hashes
-## the same whether the seed arrived from the file or from a CLI override.
+## the same whether the seed arrived from the file or from a CLI override. The constraint arrays
+## are re-sorted by (scope, key, id) here: their published order is rule-5 precedence, which is
+## derived from the source layer and would otherwise leak provenance into the hash.
 static func config_hash(resolved: Dictionary) -> String:
 	var payload := {
 		DOCUMENT_VERSION_FIELD: int(resolved.get(DOCUMENT_VERSION_FIELD, VERSION)),
@@ -255,6 +257,10 @@ static func config_hash(resolved: Dictionary) -> String:
 			canonical.append(_with_values(
 				{"id": str(record.id), "scope": str(record.scope), "key": str(record.key)},
 				record))
+		canonical.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+			if left.scope != right.scope: return left.scope < right.scope
+			if left.key != right.key: return left.key < right.key
+			return left.id < right.id)
 		payload.constraints[bucket] = canonical
 	var text := CanonicalDataScript.canonical_json(payload)
 	if text.is_empty():

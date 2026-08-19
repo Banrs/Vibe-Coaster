@@ -96,8 +96,9 @@ static func build(
 	var positions: PackedVector3Array = trajectory.position_m
 	var terrain_proofs := _terrain_proofs(plan, compiled, trajectory, terrain)
 	if not terrain_proofs.ok:
-		return {"ok": false, "errors": PackedStringArray(["terrain_intent_miss"]),
-			"failure": terrain_proofs.failure}
+		return {"ok": false,
+			"errors": PackedStringArray(terrain_proofs.get("errors", ["terrain_intent_miss"])),
+			"failure": terrain_proofs.get("failure", {})}
 	var planning: Dictionary = plan.terrain_frame.get("planning", {}).duplicate(true)
 	planning.merge(terrain_proofs.planning, true)
 	return {
@@ -293,6 +294,20 @@ static func _validate(
 	return errors
 
 
+## The one fixture seam: synthetic RouteContract fixtures carry `terrain.kind == "synthetic"`
+## and skip the material gates. Production terrain is stamped `"material"` by `Terrain.generate`;
+## anything else is an error, so a renamed or missing stamp can never silently disable the
+## role-length, element-contract and terrain-proof gates.
+static func _is_synthetic_terrain(terrain: Dictionary, errors: PackedStringArray) -> bool:
+	var kind := str(terrain.get("kind", ""))
+	if kind == "synthetic":
+		return true
+	if kind != "material":
+		errors.append("terrain kind must be 'material' or 'synthetic', got '%s'" % kind)
+		return true
+	return false
+
+
 ## The declared per-role length bands are a claim about the built ride, so they are measured on
 ## the accepted trajectory here: the one place that holds both the plan and its geometry.
 ## Roles partition the route, so a role spans from its first sample to the next role's.
@@ -300,7 +315,7 @@ static func _validate_role_lengths(
 	plan: Dictionary, compiled: Dictionary, trajectory: Dictionary, terrain: Dictionary,
 	errors: PackedStringArray
 ) -> void:
-	if terrain.get("kind") == "synthetic":
+	if _is_synthetic_terrain(terrain, errors):
 		return
 	var roles: Variant = plan.get("roles")
 	if not roles is Array or roles.is_empty():
@@ -455,8 +470,8 @@ static func _element_contract_records(
 	var errors := PackedStringArray()
 	# Synthetic RouteContract fixtures deliberately test terminal/propulsion/window
 	# mechanics without a material story. Production terrain never takes this seam.
-	if terrain.get("kind") == "synthetic":
-		return {"ok": true, "records": {}, "errors": errors}
+	if _is_synthetic_terrain(terrain, errors):
+		return {"ok": errors.is_empty(), "records": {}, "errors": errors}
 	var intents_value: Variant = compiled.get("element_intents")
 	var role_spans_value: Variant = compiled.get("role_spans")
 	if not intents_value is Dictionary:
@@ -544,8 +559,10 @@ static func _element_contract_records(
 static func _terrain_proofs(
 	plan: Dictionary, compiled: Dictionary, trajectory: Dictionary, terrain: Dictionary
 ) -> Dictionary:
-	if terrain.get("kind") == "synthetic":
-		return {"ok": true, "proofs": {}, "planning": {}}
+	var kind_errors := PackedStringArray()
+	if _is_synthetic_terrain(terrain, kind_errors):
+		return {"ok": kind_errors.is_empty(), "proofs": {}, "planning": {},
+			"errors": kind_errors}
 	var role_spans: Variant = compiled.get("role_spans")
 	if not role_spans is Dictionary:
 		return _terrain_failure("", "role_spans", {}, {"missing": true})

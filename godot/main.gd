@@ -42,6 +42,8 @@ var paused := false
 var train_rows: MultiMesh
 var build_thread: Thread
 var building_seed := 0
+## A seed requested while a build is in flight; it starts when the current build lands.
+var queued_seed := 0
 var pending_quit := false
 var route_errors := PackedStringArray()
 var smoke_frames_target := 0
@@ -73,6 +75,7 @@ func _ready() -> void:
 ## screen keeps playing meanwhile — nothing here touches `route` or the meshes.
 func _rebuild(seed_value: int) -> void:
 	if build_thread != null:
+		queued_seed = seed_value
 		return
 	building_seed = seed_value
 	route_errors = PackedStringArray()
@@ -112,6 +115,10 @@ func _finish_rebuild(built: Dictionary, built_analysis: Dictionary) -> void:
 		get_tree().quit(1)
 	elif pending_quit:
 		get_tree().quit(0)
+	elif queued_seed != 0:
+		var next_seed := queued_seed
+		queued_seed = 0
+		_rebuild(next_seed)
 
 
 func _notification(what: int) -> void:
@@ -557,6 +564,8 @@ func _hud_banner() -> String:
 	var banner := ""
 	if building_seed != 0:
 		banner += "Generating seed %d…\n" % building_seed
+		if queued_seed != 0:
+			banner += "Seed %d queued behind it\n" % queued_seed
 	if pending_quit:
 		banner += "Finishing generation…\n"
 	if not route_errors.is_empty():

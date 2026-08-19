@@ -25,6 +25,7 @@ func _initialize() -> void:
 	_test_generated_role_lengths_inside_declared_bands_are_accepted()
 	_test_generated_role_length_outside_its_declared_band_is_rejected()
 	_test_missing_role_span_ownership_is_rejected()
+	_test_unstamped_terrain_is_refused_not_exempted()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -163,6 +164,17 @@ func _test_missing_role_span_ownership_is_rejected() -> void:
 
 ## One synthetic span per declared role, so a role's generated length is the distance the
 ## trajectory covers between its span boundary and the next role's.
+## The fixture seam is the only thing that may skip the material gates; a missing or renamed
+## stamp must refuse the route, never exempt it.
+func _test_unstamped_terrain_is_refused_not_exempted() -> void:
+	var unstamped := _role_fixture()
+	unstamped.terrain = {"relief": 1.0}
+	_expect_rejected(unstamped, "terrain kind", "terrain without a kind stamp")
+	var renamed := _role_fixture()
+	renamed.terrain = {"kind": "role-fixture"}
+	_expect_rejected(renamed, "terrain kind", "terrain with an unknown kind stamp")
+
+
 func _role_fixture(step_overrides: Dictionary = {}) -> Dictionary:
 	var span_count := MATERIAL_ROLE_IDS.size()
 	var spans := []
@@ -261,8 +273,9 @@ func _role_fixture(step_overrides: Dictionary = {}) -> Dictionary:
 		"dense_output": {"max_kinematic_defect_mps": 0.0},
 	}
 	return {
-		# Not "synthetic": the declared-band gate is skipped only for the terrain-free fixture.
-		"terrain": {"kind": "role-fixture"},
+		# Stamped like production terrain, not "synthetic": the declared-band gate is skipped
+		# only for the terrain-free fixture, and any other kind is now refused outright.
+		"terrain": {"kind": "material"},
 		"initial": {
 			"position_m": Vector3.ZERO,
 			"tangent": Vector3.RIGHT,

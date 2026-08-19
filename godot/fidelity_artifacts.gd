@@ -58,9 +58,25 @@ const _CATEGORY_IDS := {
 	"terrain/clearance": "terrain-clearance",
 	"support overlap": "support-overlap",
 }
-const _ISSUE_TEXT := {
-	9: "Entry-launch speed", 12: "Flats",
-	14: "Multidimensional scaling", 15: "Transition jerk",
+## The sixteen legacy issue ids the audit covers, with the titles docs/ISSUES.md §12 gives them
+## (that table is the one source; VC-010 tracks replacing these ids with the VC-* register).
+const ISSUE_TEXT := {
+	1: "Missing micro-elements",
+	2: "Cheated pacing / near-zero-loss coasting",
+	3: "Underused G envelope",
+	4: "Oversmoothing",
+	5: "Poor FVD implementation",
+	6: "Poor terrain awareness",
+	7: "Supports / poor shaping",
+	8: "Poor speed sense",
+	9: "Launch speed low",
+	10: "Bank → flat → bank",
+	11: "Leisurely ride",
+	12: "Flats",
+	13: "Tame airtime",
+	14: "Scale / geometry wrong",
+	15: "Jerky transitions",
+	16: "Nebulous feel gaps",
 }
 const _SIDE_VIEW_KINDS := [
 	"hill", "immelmann", "loop", "cutback", "twisted_drop",
@@ -146,8 +162,13 @@ static func write_text_checked(path: String, content: String) -> PackedStringArr
 
 static func save_png_checked(image: Image, path: String) -> PackedStringArray:
 	var error := image.save_png(path)
-	if error == OK and FileAccess.file_exists(path) and FileAccess.get_file_as_bytes(path).size() > 0:
-		return PackedStringArray()
+	if error == OK and FileAccess.file_exists(path):
+		var reopened := Image.new()
+		if reopened.load_png_from_buffer(FileAccess.get_file_as_bytes(path)) == OK \
+				and reopened.get_width() == image.get_width() \
+				and reopened.get_height() == image.get_height():
+			return PackedStringArray()
+		return PackedStringArray(["artifact_write: '%s' did not reopen as a PNG" % path])
 	return PackedStringArray(["artifact_write: PNG failed '%s' (%s)" % [path, error_string(error)]])
 
 static func _validate_base_commit(value: Variant, errors: Array[String]) -> void:
@@ -332,7 +353,7 @@ static func _catalog_context(
 	var coverage_records := []
 	for issue_id in range(1, 17):
 		coverage_records.append({
-			"issue_id": issue_id, "issue_text": _ISSUE_TEXT.get(issue_id, "Issue %d" % issue_id),
+			"issue_id": issue_id, "issue_text": ISSUE_TEXT[issue_id],
 			"linked_measurement_ids": [], "linked_target_ids": [],
 			"linked_evidence_ids": [], "generated_artifact_paths": [], "state": "evidence-gap",
 		})
@@ -1057,8 +1078,12 @@ static func _draw_line(
 
 
 ## The whole checked pack: text, renders, sidecars, then the manifest from the reopened bytes.
+## `extra_records` are files the caller already wrote through the checked writers (the geometry
+## pack) as `{path, artifact_kind, seed, beat_id}`; they are reopened, hashed and manifested with
+## the rest, so the manifest holds one record per written file.
 static func write_pack(
-	output_dir: String, report: Dictionary, routes_by_seed: Dictionary, overlays: Dictionary = {}
+	output_dir: String, report: Dictionary, routes_by_seed: Dictionary, overlays: Dictionary = {},
+	extra_records: Array = []
 ) -> PackedStringArray:
 	var errors := PackedStringArray()
 	if report.get("schema_version") != "ride-fidelity-audit@1":
@@ -1092,6 +1117,7 @@ static func write_pack(
 		_write_render(root, request, routes_by_seed, beats, records, errors)
 	if not overlays.is_empty():
 		_write_overlays(root, overlays, records, errors)
+	records.append_array(extra_records)
 	var files := _manifest_files(root, records, errors)
 	if not errors.is_empty():
 		return errors
@@ -1412,7 +1438,11 @@ static func _write(
 	seed_value: Variant, beat_id: Variant, records: Array, errors: PackedStringArray
 ) -> void:
 	var absolute := "%s/%s" % [root, path]
-	DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
+	var made := DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
+	if made != OK and made != ERR_ALREADY_EXISTS:
+		errors.append("artifact_write: cannot create '%s' (%s)"
+			% [absolute.get_base_dir(), error_string(made)])
+		return
 	var failures := (
 		save_png_checked(content, absolute) if content is Image
 		else write_text_checked(absolute, content)
@@ -1447,7 +1477,7 @@ static func _manifest_files(root: String, records: Array, errors: PackedStringAr
 			height = image.get_height()
 		files.append({
 			"path": record.path, "kind": kind, "artifact_kind": record.artifact_kind,
-			"byte_size": bytes.size(), "sha256": _sha256_bytes(bytes),
+			"byte_size": bytes.size(), "sha256": _CANONICAL_DATA.sha256_bytes(bytes),
 			"seed": record.seed, "beat_id": record.beat_id, "width": width, "height": height,
 		})
 	files.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.path < b.path)
@@ -1459,10 +1489,3 @@ static func _sample_index(distances: PackedFloat32Array, at: float) -> int:
 	if absf(distances[index + 1] - at) < absf(distances[index] - at):
 		return index + 1
 	return index
-
-
-static func _sha256_bytes(bytes: PackedByteArray) -> String:
-	var context := HashingContext.new()
-	context.start(HashingContext.HASH_SHA256)
-	context.update(bytes)
-	return context.finish().hex_encode()

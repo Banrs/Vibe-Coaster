@@ -6,6 +6,9 @@ const MIN_MOVING_SPEED_MPS := 2.0
 const FRAME_EPS := 0.000001
 const STATION_TRANSVERSE_TOLERANCE_G := 0.00001
 const PLATEAU_PULSE_AREA := 2.0 / 3.0
+## Area under the compact pulse over u in [0, 1] (`_compact_pulse_integral(1.0)`); recipes divide
+## a bank change by it to get the pulse amplitude.
+const COMPACT_PULSE_AREA := 100.0 / 231.0
 const STEP_FOLD_FRACTION := 0.005
 const DENSE_DEFECT_U := [0.25, 0.5, 0.75]
 
@@ -118,11 +121,11 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
 			var pulse := 4.0 * h * (1.0 - h)
 			var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
-			var fraction := _compact_pulse_integral(u) / (100.0 / 231.0)
+			var fraction := _compact_pulse_integral(u) / COMPACT_PULSE_AREA
 			var bank_delta: float = profile.to - profile.from
 			var bank: float = profile.from + bank_delta * fraction
-			var bank_derivative := bank_delta * pulse / (100.0 / 231.0)
-			var bank_second := bank_delta * pulse_derivative / (100.0 / 231.0)
+			var bank_derivative := bank_delta * pulse / COMPACT_PULSE_AREA
+			var bank_second := bank_delta * pulse_derivative / COMPACT_PULSE_AREA
 			var secant := 1.0 / cos(bank)
 			var tangent := tan(bank)
 			return Vector3(secant, secant * tangent * bank_derivative,
@@ -175,7 +178,7 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 				+ 6.0 * shoulder_u ** 5
 			return Vector3(profile.amplitude * h, 0.0, 0.0).x
 		"bank_balance":
-			var fraction := _compact_pulse_integral(u) / (100.0 / 231.0)
+			var fraction := _compact_pulse_integral(u) / COMPACT_PULSE_AREA
 			var bank_delta: float = profile.to - profile.from
 			var bank: float = profile.from + bank_delta * fraction
 			return Vector3(1.0 / cos(bank), 0.0, 0.0).x
@@ -207,7 +210,9 @@ static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 	return 0.0
 
 
-## Returns resistance, dq/dv, and d2q/dv2.
+## The one drag model: resistance, dq/dv, and d2q/dv2. The integrator and the published
+## longitudinal channel read `.x`; the Vector3 return is deliberate — its Float32 narrowing is
+## part of the bit-identical contract, so do not "simplify" the value path to a bare float.
 static func resistance(speed_mps: float, rolling_mps2: float, aero_per_m: float) -> Vector3:
 	return Vector3(
 		rolling_mps2 + aero_per_m * speed_mps * speed_mps,
@@ -412,7 +417,11 @@ static func integrate(
 				return _reject(result, "moving speed floor crossed during RK stage")
 			_append_native(result, time, distance, position, tangent, up, speed, span_index,
 				controls, span_mode, span_elapsed / span_duration_s, gravity, rolling, aero)
-	result.dense_output = _measure_dense_output(result)
+	# The independent dense-output residuals are an O(3N) pass with three vector residuals per
+	# interval. Production's one accepted integration and the focused tests measure it; the
+	# solver evaluations (~250 per build) pass `measure_dense_output: false` and leave it empty.
+	if bool(settings.get("measure_dense_output", true)):
+		result.dense_output = _measure_dense_output(result)
 	result.ok = true
 	return result
 
@@ -494,8 +503,7 @@ static func _rk4_derivative(
 		var tangent_rate := _stage_tangent_rate
 		_stage_rider_up_rate = -tangent * tangent_rate.dot(up) + roll * right
 	_stage_position_rate = speed * tangent
-	_stage_speed_rate = gravity.dot(tangent) + G0 * drive \
-		- Vector3(rolling + aero * speed * speed, 0.0, 0.0).x
+	_stage_speed_rate = gravity.dot(tangent) + G0 * drive - resistance(speed, rolling, aero).x
 	_stage_distance_rate = speed
 	return ""
 
@@ -537,8 +545,7 @@ static func _set_native_controls(
 	result.normal_g[index] = normal
 	result.lateral_g[index] = lateral
 	result.drive_g[index] = drive
-	result.longitudinal_g[index] = drive \
-		- Vector3(rolling + aero * speed * speed, 0.0, 0.0).x / G0
+	result.longitudinal_g[index] = drive - resistance(speed, rolling, aero).x / G0
 	result.roll_rate_rad_s[index] = roll
 	result.curvature_vector_m_inv[index] = curvature
 	result.curvature_m_inv[index] = curvature.length()

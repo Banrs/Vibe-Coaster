@@ -18,7 +18,7 @@ static func build(
 	measurement: Dictionary, route: Dictionary, transforms: Dictionary
 ) -> Dictionary:
 	var errors := _errors(manifest, manifest_bytes, transforms)
-	var output := {"schema_version": SCHEMA, "manifest_sha256": _sha(manifest_bytes),
+	var output := {"schema_version": SCHEMA, "manifest_sha256": CanonicalData.sha256_bytes(manifest_bytes),
 		"recordings": [], "comparisons": [], "gaps": [], "errors": Array(errors)}
 	if not errors.is_empty():
 		output["status"] = "invalid-input"
@@ -97,7 +97,7 @@ static func _load(recording: Dictionary, path_value: Variant) -> Dictionary:
 	if not path_value is String or str(path_value).is_empty() or not FileAccess.file_exists(path_value):
 		return _unavailable(null)
 	var bytes := FileAccess.get_file_as_bytes(path_value)
-	var digest := _sha(bytes)
+	var digest := CanonicalData.sha256_bytes(bytes)
 	if bytes.size() != int(recording.expected_byte_size) or digest != recording.expected_sha256:
 		return _unavailable(digest)
 	var lines := bytes.get_string_from_utf8().split("\n", false)
@@ -324,6 +324,3 @@ static func _gap(id: String, role: String, reason: String) -> Dictionary:
 	return {"comparison_id": id, "role": role, "reason": reason}
 static func _unavailable(digest: Variant) -> Dictionary:
 	return {"status": "source_trace_unavailable", "sha256": digest, "samples": []}
-static func _sha(bytes: PackedByteArray) -> String:
-	var context := HashingContext.new(); context.start(HashingContext.HASH_SHA256); context.update(bytes)
-	return context.finish().hex_encode()

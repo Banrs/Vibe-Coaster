@@ -43,6 +43,7 @@ const PUSH_PULL_CAP := 6.667
 const PUSH_PULL_HOLD := 3.0
 const REVERSAL_GAP := 0.2
 const SAMPLE_HZ := 100.0
+const FILTER_CUTOFF_HZ := 5.0
 
 const BRIEF_POSITIVE := 8.0
 const BRIEF_NEGATIVE := 3.0
@@ -78,7 +79,7 @@ static func filter(values: PackedFloat32Array) -> PackedFloat32Array:
 
 
 static func _biquad(values: PackedFloat32Array, q: float) -> PackedFloat32Array:
-	const OMEGA := TAU * 5.0 / 100.0
+	const OMEGA := TAU * FILTER_CUTOFF_HZ / SAMPLE_HZ
 	var cosine := cos(OMEGA)
 	var alpha := sin(OMEGA) / (2.0 * q)
 	var divisor := 1.0 + alpha
@@ -107,13 +108,16 @@ static func _biquad(values: PackedFloat32Array, q: float) -> PackedFloat32Array:
 static func envelope_usage(values: PackedFloat32Array, points: Array, polarity: float) -> Dictionary:
 	var worst := {"usage": 0.0, "duration": 0.0, "held": 0.0, "limit": 0.0}
 	var held_curve := _held_curve(values, polarity)
+	var first_window := roundi((points[0] as Vector2).x * SAMPLE_HZ) + 1
 	var last_window := mini(held_curve.size() - 1, roundi((points[-1] as Vector2).x * SAMPLE_HZ) + 1)
-	for window in range(21, last_window + 1):
+	for window in range(first_window, last_window + 1):
 		var duration := (window - 1) / SAMPLE_HZ
 		var limit := limit_at(points, duration)
 		var held: float = held_curve[window]
 		var usage := held / limit
-		if usage > worst.usage:
+		# `>=` so that on a flat limit plateau the longest tying window wins: the usage is the
+		# same either way, but the reported duration is then how long the load is really held.
+		if usage >= worst.usage and usage > 0.0:
 			worst = {"usage": usage, "duration": duration, "held": held, "limit": limit}
 	return worst
 
@@ -230,6 +234,11 @@ static func reversal_violations(
 				last_end = i - 1
 				inside = 0
 			continue
+		if inside != 0 and sign_now != inside:
+			# A direct flip with no sub-threshold gap is the worst reversal of all.
+			last_sign = inside
+			last_end = i - 1
+			inside = 0
 		if inside == 0 and sign_now != last_sign and last_sign != 0:
 			if (i - 1 - last_end) < roundi(REVERSAL_GAP * SAMPLE_HZ):
 				violations += 1
@@ -258,10 +267,16 @@ static func combined_usage(
 ## ------------------------------------------------------------------- per-row load analysis
 
 
+## `front_index`, when the caller holds it, names the sample at `front_distance`; the front
+## tangent and longitudinal channel are then read directly instead of re-searched.
 static func row_forces_at(
-	route: Dictionary, front_distance: float, train_speed: float, row_offset: float
+	route: Dictionary, front_distance: float, train_speed: float, row_offset: float,
+	front_index: int = -1
 ) -> Dictionary:
-	var front := _sample_fields(route, front_distance)
+	var front: Dictionary = (
+		{"tangent": route.tangents[front_index],
+			"longitudinal": route.longitudinal_g[front_index]}
+		if front_index >= 0 else _sample_fields(route, front_distance))
 	var row := _sample_fields(route, front_distance - row_offset)
 	var tangent: Vector3 = row.tangent
 	var gravity_along: float = GRAVITY.dot(tangent)
@@ -285,7 +300,10 @@ static func row_forces_at(
 
 
 static func _sample_fields(route: Dictionary, distance: float) -> Dictionary:
-	var at := fposmod(distance, route.length)
+	# Rows behind the station wrap to the end of the loop; a front distance that Float32 rounding
+	# carried past `route.length` must clamp to the last sample, not wrap to the start.
+	var at := fposmod(distance, route.length) if distance < 0.0 \
+		else minf(distance, route.distances[-1])
 	var low := 0
 	var high: int = route.distances.size() - 1
 	while low + 1 < high:
@@ -348,7 +366,7 @@ static func _analyze_row(route: Dictionary, offset: float) -> Dictionary:
 	var peak_longitudinal_negative := INF
 	var peak_roll := 0.0
 	for i in count:
-		var forces := row_forces_at(route, route.distances[i], route.speeds[i], offset)
+		var forces := row_forces_at(route, route.distances[i], route.speeds[i], offset, i)
 		normal[i] = forces.normal
 		lateral[i] = forces.lateral
 		longitudinal[i] = forces.longitudinal
@@ -503,7 +521,10 @@ static func validate_self_clearance(route: Dictionary, issues: PackedStringArray
 			for y in range(-1, 2):
 				for z in range(-1, 2):
 					var neighbor := cell + Vector3i(x, y, z)
-					for other in cells.get(neighbor, []):
+					var bucket: Variant = cells.get(neighbor)
+					if bucket == null:
+						continue
+					for other in bucket:
 						var separation: float = absf(route.distances[i] - route.distances[other])
 						separation = minf(separation, route.length - separation)
 						if separation > 30.0 and position.distance_to(route.positions[other]) < CLEARANCE:

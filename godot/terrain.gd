@@ -14,6 +14,7 @@ static func generate(rng: RandomNumberGenerator) -> Dictionary:
 	var relief := rng.randf_range(270.0, 285.0)
 	var face_share := rng.randf_range(0.78, 0.85)
 	return {
+		"kind": "material",
 		"relief": relief,
 		"face_height": relief * face_share,
 		"apron_height": relief * (1.0 - face_share),

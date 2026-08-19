@@ -9,6 +9,7 @@ const Motion := preload("res://motion.gd")
 const RideConfig := preload("res://ride_config.gd")
 const RidePlanner := preload("res://ride_planner.gd")
 const RideProgram := preload("res://ride_program.gd")
+const RideReturnSolve := preload("res://ride_return_solve.gd")
 const RouteContract := preload("res://route_contract.gd")
 const Terrain := preload("res://terrain.gd")
 
@@ -140,6 +141,9 @@ static func build_config(file_config: Dictionary, cli_overrides: Array = []) -> 
 ## The certification seam: build a seed from an explicitly supplied planner decision set.
 ## Production always passes `RidePlanner.resolve(seed_value)`; tests use this to place a draw at
 ## a range extreme and prove the whole range is feasible, without a runtime candidate loop.
+## Single use: `decisions.streams` holds live generators that `Terrain.generate()` and `_plan()`
+## advance, so a second build off the same dictionary is a different ride — resolve again for
+## a replay (see generator_material_tests.gd for the idiom).
 static func build_with_decisions(seed_value: int, decisions: Dictionary) -> Dictionary:
 	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
 	var plan := _plan(terrain, decisions)
@@ -154,6 +158,7 @@ static func build_with_decisions(seed_value: int, decisions: Dictionary) -> Dict
 		return _failure("ride program omitted integration settings")
 	settings = settings.duplicate(true)
 	settings["step_s"] = INTEGRATION_STEP_S
+	settings["measure_dense_output"] = true
 	var accepted_integrations := 0
 	var trajectory := Motion.integrate(initial_state, compiled.get("spans", []), settings)
 	if not trajectory.get("ok", false):
@@ -173,6 +178,10 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	var along_2d := Vector2(-inward_2d.y, inward_2d.x)
 	var inward := Vector3(inward_2d.x, 0.0, inward_2d.y)
 	var along := Vector3(along_2d.x, 0.0, along_2d.y)
+	# The three placement draws are the one randomness outside `ride_planner.gd`'s certified
+	# target draws: they are drawn here, on the planner's placement stream, and certified only by
+	# the fifteen-seed fleet gate (smoke + generator_material_tests), not at range extremes. All
+	# three are published in `plan.decisions` so a refusal carries its placement provenance.
 	var placement_rng: RandomNumberGenerator = decisions.streams[RidePlanner.STREAM_PLACEMENT]
 	var side := -1 if placement_rng.randf() < 0.5 else 1
 	var along_m := placement_rng.randf_range(60.0, 120.0)
@@ -180,7 +189,7 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	var sequence: Array = decisions.sequence
 	var targets: Dictionary = decisions.targets
 	var story := {"sequence": sequence, "targets": targets}
-	var roles := _material_roles(sequence, targets)
+	var roles := _material_roles(sequence)
 	var dive_role: Dictionary = _role_by_id(roles, "outward-dive")
 	var dive_intent: Dictionary = dive_role.terrain
 	var tunnel_length_m: Vector2 = _role_by_id(roles, "tunnel-lsm3").length_m
@@ -230,6 +239,9 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	# along; a different branch would measure the closure on an axis the ride is not built in.
 	var accepted_local := _outward_local(
 		accepted, dive_intent, terrain_dive_span_m, minimum_total_span_m)
+	if accepted_local == Vector2.ZERO:
+		return _failure("the accepted prefix closure has no yaw solution", [], {
+			"stage": "prefix-closure", "preflight_outward_local": outward_local})
 	if accepted_local.dot(outward_local) < YAW_SOLUTION_AGREEMENT_DOT:
 		return _failure("the accepted prefix closure changes the yaw solution", [], {
 			"stage": "prefix-closure", "preflight_outward_local": outward_local,
@@ -309,16 +321,18 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 		"schema_version": PLAN_SCHEMA_VERSION,
 		"preset_id": PRESET_ID,
 		"decisions": {"station_side": side, "station_along_m": along_m,
-			"dive_exit_apron_fraction": exit_fraction,
+			"dive_entry_aim_u": placement_u, "dive_exit_apron_fraction": exit_fraction,
 			"targets": targets.duplicate(true), "draws": decisions.draws.duplicate(true)},
 		"terrain_frame": {"apron_origin_m": inward * float(terrain.edge_offset), "inward": inward,
 			"along": along, "up": up, "right": right,
 			"shelf_height_m": float(terrain.relief), "planning": planning},
 		"station": station,
 		"corridor": {"approach_length_m": APPROACH_LENGTH_M, "capture_length_m": 80.0,
-			"brake_length_m": 150.0, "half_width_m": 150.0, "half_height_m": 75.0,
-			"entry_speed_mps": Vector2(70.0, 80.0)},
-		"route_length_m": Vector2(7800.0, 8200.0),
+			"brake_length_m": 150.0,
+			"half_width_m": RideReturnSolve.CAPTURE_HALF_WIDTH_M,
+			"half_height_m": RideReturnSolve.CAPTURE_HALF_HEIGHT_M,
+			"entry_speed_mps": RideReturnSolve.CAPTURE_ENTRY_SPEED_MPS},
+		"route_length_m": RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M,
 		"roles": roles,
 	}
 
@@ -498,6 +512,9 @@ static func _outward_local(parts: Dictionary, dive_intent: Dictionary,
 				or terrain_delta.dot(candidate) < minimum_total_span_m \
 				or terrain_delta.normalized().dot(candidate) < 0.75:
 			continue
+		# Measured 2026-08-19: maximising the corridor's *minimum* projection is what keeps the
+		# station/opener corridor furthest back on the plain — on every fleet seed the opposite
+		# reduction (minimising the maximum) brought the corridor 85-145 m closer to the edge.
 		var opener_clearance_m := INF
 		for position: Vector3 in parts.station_opener.positions_m:
 			opener_clearance_m = minf(opener_clearance_m,
@@ -686,7 +703,7 @@ static func _dive_placement_observation(
 ## terrain intents come from the one table below; the per-seed resolved targets stay in
 ## `plan.decisions.targets` with their draw provenance, so the declared role bands remain a
 ## claim about the built ride rather than a mixture of bands and drawn scalars.
-static func _material_roles(sequence: Array = [], _targets: Dictionary = {}) -> Array:
+static func _material_roles(sequence: Array = []) -> Array:
 	var roles: Array = []
 	for role_id in (sequence if not sequence.is_empty() else RidePlanner.canonical_role_ids()):
 		roles.append(_material_role(str(role_id)))

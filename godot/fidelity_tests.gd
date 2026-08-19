@@ -3,7 +3,6 @@ extends SceneTree
 const FIDELITY_PATH := "res://fidelity.gd"
 const REFERENCES_PATH := "res://fidelity_references.gd"
 const GENERATOR_PATH := "res://generator.gd"
-const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
 const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 
 
@@ -62,7 +61,6 @@ static func _test_native_input_boundary(fidelity: Script, errors: PackedStringAr
 	_expect(errors, route is Dictionary, "generator build returns a Dictionary")
 	if not route is Dictionary:
 		return
-	_expect(errors, LEGACY_BASE_COMMIT == "3fa14885bef2daf3a7d9c0e544424cb6a296fd99", "legacy report contract pins the pre-foundation commit")
 	for key in ["positions", "tangents", "ups", "rights", "curvatures"]:
 		_expect(errors, route.get(key) is PackedVector3Array, "generator keeps packed vector channel %s" % key)
 	for key in [

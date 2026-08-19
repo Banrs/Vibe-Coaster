@@ -71,6 +71,14 @@
 # Refused. To go below ~145 s, attack ride_planner_tests' 16 extreme builds --
 # the reorder above is measured and available, and is not build sharing.
 #
+# Those numbers describe the 13-job battery of 2026-08-16. Five suites joined the
+# manifest since (route_sampling, dense_output, element_contract,
+# element_contract_integration, plus the camelback gate that is now run by hand)
+# and are slotted into desired_order by their measured local cost on 2026-08-19
+# (element_contract_integration 2.4 s; the other four <= 0.2 s each). They sit
+# well off the critical path, so the ranking above stands; re-measure the total on
+# the 4-CPU runner before citing it.
+#
 # If a future suite becomes flaky specifically under this runner's
 # parallelism (not under plain `--serial`), do not "fix" it by weakening the
 # suite — add its res://... path to SERIAL_TAIL_PATTERNS below so it runs
@@ -194,11 +202,15 @@ declare -a desired_order=(
 	"res://fidelity_artifact_tests.gd"
 	"res://fidelity_overlay_tests.gd"
 	"res://fidelity_tests.gd"
+	"res://element_contract_integration_tests.gd"
 	"res://terrain_story_material_tests.gd"
 	"res://geometry_metrics_tests.gd"
 	"res://motion_tests.gd"
+	"res://route_sampling_tests.gd"
 	"res://bounded_solver_tests.gd"
 	"res://route_contract_tests.gd"
+	"res://dense_output_tests.gd"
+	"res://element_contract_tests.gd"
 )
 declare -a sorted=()
 for job in "${desired_order[@]}"; do

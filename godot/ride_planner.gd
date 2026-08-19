@@ -4,14 +4,17 @@ extends RefCounted
 ## The material-v1 planner decision layer: named decision streams, the story grammar as data,
 ## and the conservatively certified target ranges drawn on those streams.
 ##
-## Everything random about a ride is drawn here, before compilation: `RideProgram`, `Motion` and
-## `RouteContract` never see a `RandomNumberGenerator`. One generator per *named* decision keeps
-## the draws independent — adding a stream, or appending a draw to one stream, never disturbs the
-## values another stream produces for the same seed.
+## Everything random about a ride is drawn on the streams minted here, before compilation:
+## `RideProgram`, `Motion` and `RouteContract` never see a `RandomNumberGenerator`. One generator
+## per *named* decision keeps the draws independent — adding a stream, or appending a draw to one
+## stream, never disturbs the values another stream produces for the same seed. Two draws happen
+## outside this file, on streams it hands out: the terrain draws in `Terrain.generate()` and the
+## three station-placement draws in `RideGenerator._plan()`; both are certified by the
+## fifteen-seed fleet gate rather than at range extremes.
 ##
-## There are no candidate loops anywhere downstream. A draw range is a claim that every value in
-## it builds an accepted ride, certified at both extremes by `ride_planner_tests.gd`; a failed
-## solve is a structured error carrying its draw provenance, never a retry.
+## There are no candidate loops anywhere downstream. A target draw range is a claim that every
+## value in it builds an accepted ride, certified at both extremes by `ride_planner_tests.gd`; a
+## failed solve is a structured error carrying its draw provenance, never a retry.
 
 const STREAM_TERRAIN := "terrain"
 const STREAM_PLACEMENT := "placement"

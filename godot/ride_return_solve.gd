@@ -65,6 +65,8 @@ const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RETURN_TRANSFER_BANK_BIAS_RAD := 7.5 * PI / 180.0
+## The one owner of the route-length band: the generator writes it into the plan and the program
+## validator checks the plan against this same constant.
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
 ## How far inside its route-length band the solve is driven to close. `_band_residual` is flat
 ## everywhere inside a band, so the length residual gives the solve no reason to stay interior: it
@@ -136,6 +138,10 @@ const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.0
 ## apart about which spans the role is.
 const RETURN_TURN_B_SPAN_PREFIX := "raceway/turn-b/"
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
+## A normal-g span whose ends differ by no more than this is authored as a constant profile. It
+## is an absolute tolerance well inside the 1e-6 seam gate, so no pair can be flattened here and
+## still be reported as a C2 seam mismatch downstream.
+const CONSTANT_PROFILE_TOLERANCE_G := 1e-9
 const RETURN_ENTRY_SPEED_PADDING_MPS := 0.01
 const RETURN_ENTRY_POSITION_PADDING_M := 0.25
 const CAPTURE_HALF_WIDTH_M := 150.0
@@ -313,7 +319,8 @@ static func _roll_bank_spans(
 			from_normal = entry_normal
 		if index == ids.size() - 1 and is_finite(exit_normal):
 			to_normal = exit_normal
-		var normal := Motion.constant(from_normal) if is_equal_approx(from_normal, to_normal) \
+		var normal := Motion.constant(from_normal) \
+			if absf(from_normal - to_normal) <= CONSTANT_PROFILE_TOLERANCE_G \
 			else Motion.quintic(from_normal, to_normal)
 		spans.append(Motion.span(str(ids[index]), float(durations[index]), "moving", normal,
 			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index]))
@@ -322,7 +329,7 @@ static func _roll_bank_spans(
 
 static func _return_span(id: String, duration_s: float, from_g: float, to_g: float,
 	roll_peak_rad_s: float = 0.0) -> Dictionary:
-	var normal := Motion.constant(from_g) if is_equal_approx(from_g, to_g) \
+	var normal := Motion.constant(from_g) if absf(from_g - to_g) <= CONSTANT_PROFILE_TOLERANCE_G \
 		else Motion.quintic(from_g, to_g)
 	var roll := Motion.constant(0.0) if absf(roll_peak_rad_s) < 0.000001 else Motion.compact_pulse(roll_peak_rad_s)
 	return Motion.span(id, duration_s, "moving", normal, Motion.constant(0.0),
@@ -489,8 +496,8 @@ static func _return_observation(
 	var total_length_m := float(route.distance_m[-1]) + approach
 	var turn_b_band: Vector2 = layout.get("turn_b_length_m", RETURN_UNBOUNDED_BAND_M)
 	var turn_b_length_m := _role_arc_m(route, spans, RETURN_TURN_B_SPAN_PREFIX)
-	var half_width: float = layout.get("capture_half_width_m", 150.0)
-	var half_height: float = layout.get("capture_half_height_m", 75.0)
+	var half_width: float = layout.get("capture_half_width_m", CAPTURE_HALF_WIDTH_M)
+	var half_height: float = layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)
 	var residuals := [
 		forward + approach - RETURN_ENTRY_POSITION_PADDING_M, capture[0], capture[1],
 		state.tangent.normalized().dot(station_right),

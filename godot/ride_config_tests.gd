@@ -252,6 +252,19 @@ func _test_hash_is_source_independent_and_value_sensitive() -> void:
 		"a different catalogued choice hashes differently")
 	_expect(str(low.resolved.config_hash) != EMPTY_CONFIG_HASH,
 		"a configured document hashes differently from the bare preset")
+	var both_in_file := RideConfig.normalize({"constraints": {"preferred": [
+		{"id": "float_a", "scope": "return-height-a", "key": "slot.intensity",
+			"choice": "low"},
+		{"id": "float_b", "scope": "return-height-b", "key": "slot.intensity",
+			"choice": "high"},
+	]}})
+	var split_over_layers := RideConfig.normalize({"constraints": {"preferred": [
+		{"id": "float_a", "scope": "return-height-a", "key": "slot.intensity",
+			"choice": "low"},
+	]}}, ["float_b@return-height-b/slot.intensity=high"])
+	_expect(both_in_file.ok and split_over_layers.ok, "both layered documents normalize")
+	_expect(str(both_in_file.resolved.config_hash) == str(split_over_layers.resolved.config_hash),
+		"the same effective constraint set hashes the same whichever layer supplied each record")
 
 
 func _test_intensity_maps_onto_the_certified_thirds() -> void:

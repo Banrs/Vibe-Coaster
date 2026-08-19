@@ -3,6 +3,7 @@ extends RefCounted
 
 const Verify := preload("res://verify.gd")
 const Terrain := preload("res://terrain.gd")
+const CanonicalData := preload("res://canonical_data.gd")
 
 const CONFIDENCE := ["high", "medium", "low"]
 const DIMENSIONS := ["loads", "geometry", "pacing", "terrain", "flow"]
@@ -478,6 +479,8 @@ static func _reduce_comparison_records(records: Array, reducer: String) -> float
 			var record: Dictionary = record_value
 			weighted_total += float(record.value) * float(record.seconds)
 			total_seconds += float(record.seconds)
+		if total_seconds <= 0.0:
+			return 0.0
 		return weighted_total / total_seconds
 	var values := []
 	for record_value in records:
@@ -2243,10 +2246,7 @@ static func _validate_artifact(
 	if file == null:
 		errors.append("source '%s' %s artifact is unreadable: %s" % [source_id, label, repository_path])
 		return
-	var context := HashingContext.new()
-	context.start(HashingContext.HASH_SHA256)
-	context.update(file.get_buffer(file.get_length()))
-	var actual := context.finish().hex_encode()
+	var actual := CanonicalData.sha256_bytes(file.get_buffer(file.get_length()))
 	if actual != expected:
 		errors.append("source '%s' %s artifact digest mismatch: %s" % [source_id, label, repository_path])
 

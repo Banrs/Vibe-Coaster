@@ -21,6 +21,8 @@ func _initialize() -> void:
 	_test_stepped_roll_reports_the_seam_jump()
 	_test_roll_profile_counts_the_steps()
 	_test_shape_ratios_measure_the_silhouette()
+	_test_near_vertical_tangents_do_not_invent_heading()
+	_test_degenerate_window_is_unavailable_not_planar()
 	_test_element_geometry_resolution()
 	_test_missing_fields_are_reported()
 	_test_determinism()
@@ -518,6 +520,44 @@ func _write_png(path: String, width: int, height: int) -> String:
 
 func _bytes(manifest: Dictionary) -> PackedByteArray:
 	return JSON.stringify(manifest).to_utf8_buffer()
+
+
+## A 90° dive: the horizontal projection of a near-vertical tangent carries float noise whose
+## direction is meaningless; the heading must carry through it, not sum the noise.
+func _test_near_vertical_tangents_do_not_invent_heading() -> void:
+	var tangents := PackedVector3Array([
+		Vector3(1.0, 0.0, 0.0),
+		Vector3(0.7, -0.7141, 0.0).normalized(),
+		Vector3(0.00001, -1.0, -0.000007).normalized(),
+		Vector3(-0.000004, -1.0, 0.000009).normalized(),
+		Vector3(0.000008, -1.0, 0.000002).normalized(),
+		Vector3(0.7, -0.7141, 0.0).normalized(),
+		Vector3(1.0, 0.0, 0.0),
+	])
+	var headings := Metrics._plan_headings_deg(tangents, 0, tangents.size() - 1)
+	_expect(headings.size() == tangents.size(), "one heading per sample")
+	var accumulated := 0.0
+	for index in range(1, headings.size()):
+		accumulated += absf(rad_to_deg(angle_difference(
+			deg_to_rad(headings[index - 1]), deg_to_rad(headings[index]))))
+	_expect(accumulated < 0.001,
+		"a vertical dive with no plan turn accumulates no heading change, got %.6f" % accumulated)
+	var leading := PackedVector3Array([
+		Vector3(0.00001, -1.0, 0.0).normalized(), Vector3(0.0, -0.7, 0.7141).normalized()])
+	var led := Metrics._plan_headings_deg(leading, 0, 1)
+	_expect(absf(led[0] - led[1]) < 0.001,
+		"a window that opens near-vertical takes the first measurable heading")
+
+
+## Coincident samples have no plane; the diagnostic says so instead of reporting 0° tilt.
+func _test_degenerate_window_is_unavailable_not_planar() -> void:
+	var positions := PackedVector3Array()
+	for index in 8:
+		positions.append(Vector3(100.0, 20.0, -5.0) + Vector3.ONE * 0.0001 * float(index % 2))
+	var planarity := Metrics.planarity_of({"positions": positions}, 0, positions.size() - 1)
+	_expect(planarity.status == "degenerate-extent" and planarity.planarity_class == "unavailable"
+		and planarity.vertical_plane_tilt_deg == null and not planarity.tilt_is_meaningful,
+		"a degenerate window is reported unavailable, got %s" % str(planarity))
 
 
 func _expect(condition: bool, message: String) -> void:

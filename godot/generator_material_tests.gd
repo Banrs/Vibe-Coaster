@@ -530,6 +530,9 @@ func _check_route_scale_and_flow(route: Dictionary) -> void:
 		_expect_range("%s native length" % story_id, length_m,
 			float(band[1]), float(band[2]), "m")
 	_check_no_neutral_filler(route)
+	for story_id in ["clifftop-suspense", "opener", "marquee-camelback"]:
+		if not lengths.has(story_id):
+			return  # the missing window is already a recorded failure above
 	var summit := _window(route, "clifftop-suspense"); var opener := _window(route, "opener"); var camel := _window(route, "marquee-camelback")
 	var summit_activity := _native_activity(route, int(summit.first), int(summit.last)); var camel_activity := _native_activity(route, int(camel.first), int(camel.last))
 	var summit_speed: float = lengths["clifftop-suspense"] / (float(route.times[int(summit.last)]) - float(route.times[int(summit.first)]))

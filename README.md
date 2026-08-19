@@ -114,7 +114,8 @@ Output contract, all paths relative to `INSPECT_OUT`:
 - `manifest.json` — `fidelity-artifact-manifest@1`: `generation_counts` plus one record per
   written file with byte size, SHA-256, kind, seed, beat, and PNG dimensions.
 - `review/pov-map.{json,md}`, `review/checklist.md`, `review/issue-coverage.{json,md}` — the
-  human review pack, keyed to the sixteen open issues in `docs/ISSUES.md`.
+  human review pack, keyed to the sixteen legacy issue ids of `docs/ISSUES.md` §12 (the
+  compatibility aliases of the active `VC-*` register).
 - `review/seed-<n>/channels.{json,md,png}` — eleven stacked raw-generated channels (speed,
   normal, lateral and longitudinal proper g, pitch, roll rate, AGL, reconstructed curvature,
   radius, roll acceleration, jerk). The PNG carries no text; the JSON/Markdown sidecar names
@@ -130,9 +131,11 @@ Output contract, all paths relative to `INSPECT_OUT`:
 - `review/seed-<n>/geometry-metrics.{json,md}` and `review/counterpart-comparison.{json,md}` —
   the geometry pack: seam roll continuity, element planarity and tilt, shape ratios, and each
   role measured against its counterpart band (`docs/evidence/fidelity/counterpart-bands.md`).
-  Reference-image overlays are written only when `REF_MEDIA_MANIFEST` points at a local
-  manifest, e.g. one built by `tools/fetch-reference-media.sh`; reference media is never
-  committed, and an absent manifest is reported as a declared gap.
+  Reference-image overlays, `review/overlays/geometry/<element>.png`, are written only when
+  `REF_MEDIA_MANIFEST` points at a local manifest, e.g. one built by
+  `tools/fetch-reference-media.sh`; reference media is never committed, and an absent manifest
+  is reported as a declared gap. The geometry pack is written before `manifest.json` and is
+  recorded in it like every other file.
 
 Committed evidence authoring is a separate, manual workflow. Sources are researched, reviewed,
 and committed as metadata, timestamped landmarks, and hashes under `docs/evidence/fidelity/`;

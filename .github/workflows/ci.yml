@@ -5,9 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the run in flight; main's own pushes are never cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   godot:
     runs-on: ubuntu-latest
+    # Step timeouts cover the engine; this is the backstop for a hung checkout or engine install.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: chickensoft-games/setup-godot@v2

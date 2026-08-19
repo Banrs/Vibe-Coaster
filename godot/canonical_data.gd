@@ -28,7 +28,11 @@ static func canonical_json(value: Variant) -> String:
 
 
 static func sha256_text(value: String) -> String:
+	return sha256_bytes(value.to_utf8_buffer())
+
+
+static func sha256_bytes(bytes: PackedByteArray) -> String:
 	var context := HashingContext.new()
 	context.start(HashingContext.HASH_SHA256)
-	context.update(value.to_utf8_buffer())
+	context.update(bytes)
 	return context.finish().hex_encode()

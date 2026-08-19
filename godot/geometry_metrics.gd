@@ -36,6 +36,11 @@ const WORST_COUNT := 12
 const FLAT_ROLL_DPS := 2.0
 ## |bank| at or above this is "banked" — a flat-roll run inside it is a step, not a neutral stretch.
 const BANKED_DEG := 10.0
+## Horizontal tangent length below which a plan heading is not measurable (pitch within ~1.1°
+## of vertical); see `_plan_headings_deg`.
+const NEAR_VERTICAL_PLAN_LENGTH := 0.02
+## Bounding diagonal below which a window has no measurable plane (see `planarity_of`).
+const DEGENERATE_DIAGONAL_M := 0.01
 ## Out-of-plane RMS as a fraction of the element's bounding diagonal.
 const PLANAR_RATIO := 0.02
 const QUASI_PLANAR_RATIO := 0.08
@@ -263,7 +268,17 @@ static func planarity_of(route: Dictionary, first: int, last: int) -> Dictionary
 			maximum = maxf(maximum, absf(deviation))
 		var rms := sqrt(squared / float(count))
 		var diagonal: float = (high - low).length()
-		var ratio := rms / diagonal if diagonal > 1e-9 else 0.0
+		if diagonal <= DEGENERATE_DIAGONAL_M:
+			# Coincident samples have no plane to fit: the covariance is ~zero, the eigenbasis is
+			# the identity and a "planar, 0° tilt" reading would be an artefact, not a measurement.
+			return {
+				"sample_count": count, "status": "degenerate-extent", "rms_out_of_plane_m": rms,
+				"max_out_of_plane_m": maximum, "out_of_plane_ratio": null,
+				"plane_normal": null, "vertical_plane_tilt_deg": null,
+				"principal_axis_pitch_deg": null, "planarity_class": "unavailable",
+				"tilt_is_meaningful": false, "bounding_diagonal_m": diagonal,
+			}
+		var ratio := rms / diagonal
 		var chord: Vector3 = positions[last] - positions[first]
 		if principal.dot(chord) < 0.0:
 			principal = -principal
@@ -356,14 +371,13 @@ static func shape_of(route: Dictionary, first: int, last: int) -> Dictionary:
 	var sideways: float = across_high - across_low
 	var horizontal := maxf(along, sideways)
 	var track_length: float = float(route.distances[last]) - float(route.distances[first])
-	var entry_heading := _plan_heading_deg(tangents[first])
-	var exit_heading := _plan_heading_deg(tangents[last])
+	var headings := _plan_headings_deg(tangents, first, last)
+	var entry_heading: float = headings[0]
+	var exit_heading: float = headings[-1]
 	var accumulated := 0.0
-	for index in range(first, last):
+	for index in range(1, headings.size()):
 		accumulated += rad_to_deg(angle_difference(
-			deg_to_rad(_plan_heading_deg(tangents[index])),
-			deg_to_rad(_plan_heading_deg(tangents[index + 1]))
-		))
+			deg_to_rad(headings[index - 1]), deg_to_rad(headings[index])))
 	return {
 		"status": "measured", "first_sample": first, "last_sample": last,
 		"seconds": float(route.times[last]) - float(route.times[first]),
@@ -1050,11 +1064,25 @@ static func _rotate_columns(matrix: Array, p: int, q: int, c: float, s: float) -
 		matrix[k][q] = s * kp + c * kq
 
 
-static func _plan_heading_deg(tangent: Vector3) -> float:
-	var plan := Vector2(tangent.x, tangent.z)
-	if plan.length_squared() <= 0.0:
-		return 0.0
-	return rad_to_deg(atan2(plan.y, plan.x))
+## Plan headings over a window. The heading of a near-vertical tangent (the 90° dive) is the
+## direction of a vanishing horizontal projection — numerically meaningless, and summing its
+## sample-to-sample noise would invent heading change. Below `NEAR_VERTICAL_PLAN_LENGTH` the
+## previous valid heading is carried forward (or the next valid one, at the start of a window).
+static func _plan_headings_deg(tangents: PackedVector3Array, first: int, last: int) -> PackedFloat64Array:
+	var headings := PackedFloat64Array()
+	headings.resize(last - first + 1)
+	var previous := NAN
+	var pending_from := 0
+	for index in range(first, last + 1):
+		var plan := Vector2(tangents[index].x, tangents[index].z)
+		if plan.length() >= NEAR_VERTICAL_PLAN_LENGTH:
+			var heading := rad_to_deg(atan2(plan.y, plan.x))
+			if is_nan(previous):
+				for fill in range(pending_from, index - first):
+					headings[fill] = heading
+			previous = heading
+		headings[index - first] = previous if not is_nan(previous) else 0.0
+	return headings
 
 
 static func _pitch_deg(tangent: Vector3) -> float:

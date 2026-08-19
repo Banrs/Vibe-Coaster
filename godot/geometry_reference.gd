@@ -20,6 +20,7 @@ extends RefCounted
 ## the geometry report simply declares reference overlays as a gap — that is the honest default,
 ## not a failure.
 
+const CanonicalData := preload("res://canonical_data.gd")
 const MANIFEST_SCHEMA := "geometry-reference-manifest@1"
 const SCHEMA := "geometry-reference-overlays@1"
 
@@ -66,7 +67,7 @@ static func build(manifest_bytes: PackedByteArray, base_dir: String) -> Dictiona
 		"schema_version": SCHEMA,
 		"status": "ok",
 		"manifest_schema": MANIFEST_SCHEMA,
-		"manifest_sha256": _sha(manifest_bytes),
+		"manifest_sha256": CanonicalData.sha256_bytes(manifest_bytes),
 		"manifest_version": str(manifest.get("manifest_version", "")),
 		"base_dir": base_dir,
 		"entry_count": entries.size(),
@@ -156,7 +157,7 @@ static func _resolve(entry: Dictionary, base_dir: String) -> Dictionary:
 	if bytes.is_empty():
 		record["status"] = "file-empty"
 		return record
-	record["observed_sha256"] = _sha(bytes)
+	record["observed_sha256"] = CanonicalData.sha256_bytes(bytes)
 	if record.observed_sha256 != record.expected_sha256:
 		record["status"] = "digest-mismatch"
 		return record
@@ -361,12 +362,6 @@ static func _strings(value: Variant) -> Array:
 			output.append(str(item))
 	return output
 
-
-static func _sha(bytes: PackedByteArray) -> String:
-	var context := HashingContext.new()
-	context.start(HashingContext.HASH_SHA256)
-	context.update(bytes)
-	return context.finish().hex_encode()
 
 
 static func _text(value: Variant) -> bool:

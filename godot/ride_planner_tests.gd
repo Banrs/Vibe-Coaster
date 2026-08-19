@@ -145,7 +145,7 @@ func _test_draw_provenance_is_recorded() -> void:
 			"draw %s resolves to the value the recipes read" % draw.key)
 	var plan: Dictionary = RideGenerator.build(42).get(
 		"terrain_story_plan", {}).get("plan", {})
-	_expect(plan.get("decisions", {}).get("draws", []).size() == decisions.draws.size(),
+	_expect(var_to_bytes(plan.get("decisions", {}).get("draws", [])) == var_to_bytes(decisions.draws),
 		"the published plan carries the same draw provenance the planner recorded")
 
 

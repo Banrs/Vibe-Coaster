@@ -27,7 +27,9 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 	if not is_finite(sse):
 		return _result(false, "invalid_residual", _to_x(z, lower, widths), values, evaluation_count[0], 0, INF)
 	if _max_abs(values) <= 0.02:
-		return _result(true, "converged", _to_x(z, lower, widths), values, evaluation_count[0], 0, 1.0)
+		# Converged at the initial point: no Jacobian was formed, so conditioning is unmeasured
+		# (INF, like every other unmeasured exit), not a fabricated 1.0.
+		return _result(true, "converged", _to_x(z, lower, widths), values, evaluation_count[0], 0, INF)
 	var damping := 0.01
 	var radius := 0.25
 	var iterations := 0

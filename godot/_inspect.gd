@@ -82,23 +82,24 @@ func _audit() -> int:
 		for error in report.get("errors", ["artifact_report: the audit report was not built"]):
 			_operational.append(str(error))
 		return _fail()
-	for error in _write_artifact_pack(OUT, report, audit.routes_by_seed, overlays):
-		_operational.append(str(error))
-	if not _operational.is_empty():
-		return _fail()
-
 	var reference := _reference_media(OS.get_environment(REFERENCE_MANIFEST_ENV))
 	if reference.get("status") == "invalid-manifest":
 		for error in reference.get("errors", ["reference manifest is invalid"]):
 			_operational.append("reference_manifest: %s" % str(error))
 		return _fail()
-	for error in _write_geometry_pack(OUT, audit.routes_by_seed, reference):
+	var geometry := _write_geometry_pack(OUT, audit.routes_by_seed, reference)
+	for error in geometry.errors:
+		_operational.append(str(error))
+	if not _operational.is_empty():
+		return _fail()
+	for error in _write_artifact_pack(OUT, report, audit.routes_by_seed, overlays,
+			geometry.records):
 		_operational.append(str(error))
 	if not _operational.is_empty():
 		return _fail()
 
 	for line in _diagnostic_lines(report, OUT): print(line)
-	for line in _geometry_lines(OUT, reference): print(line)
+	for line in _geometry_lines(geometry.comparisons, reference): print(line)
 	_print_findings(report)
 	print("AUDIT %d seeds, %d render requests, pack written to %s" % [
 		AUDIT_SEEDS.size(), report.render_requests.size(), OUT])
@@ -135,10 +136,10 @@ static func _artifact_report(
 
 
 static func _write_artifact_pack(
-	output_dir: String, report: Dictionary, routes_by_seed: Dictionary, overlays: Dictionary
+	output_dir: String, report: Dictionary, routes_by_seed: Dictionary, overlays: Dictionary,
+	extra_records: Array = []
 ) -> PackedStringArray:
-	if overlays.is_empty(): return Artifacts.write_pack(output_dir, report, routes_by_seed)
-	return Artifacts.write_pack(output_dir, report, routes_by_seed, overlays)
+	return Artifacts.write_pack(output_dir, report, routes_by_seed, overlays, extra_records)
 
 
 ## The local reference manifest, if the operator supplied one. Absent is the normal case and is a
@@ -153,33 +154,32 @@ static func _reference_media(path: String) -> Dictionary:
 
 
 ## Geometry artifacts for the deep-review seeds, written through the same checked writers as the
-## rest of the pack. Findings are diagnostic; only a failed write is operational.
+## rest of the pack and handed to `write_pack` as records so `manifest.json` holds them too.
+## Findings are diagnostic; only a failed write is operational. Returns
+## `{errors, records, comparisons}`.
 func _write_geometry_pack(
 	output_dir: String, routes_by_seed: Dictionary, reference: Dictionary
-) -> PackedStringArray:
+) -> Dictionary:
 	var errors := PackedStringArray()
+	var records := []
 	var root := output_dir.rstrip("/")
 	var comparisons := []
 	for seed_value in DEEP_REVIEW_SEEDS:
-		if not routes_by_seed.has(seed_value):
-			errors.append("artifact_write: no retained route for deep-review seed %d" % seed_value)
-			continue
 		var route: Dictionary = routes_by_seed[seed_value]
 		var pack: Dictionary = GeometryMetrics.measure(route)
-		var stem := "%s/review/seed-%d" % [root, seed_value]
-		DirAccess.make_dir_recursive_absolute(stem)
+		var stem := "review/seed-%d" % seed_value
 		var json := Artifacts.canonical_json(pack)
 		if json.is_empty():
 			errors.append("artifact_write: seed %d geometry pack is not canonical JSON data"
 				% seed_value)
 			continue
-		errors.append_array(
-			Artifacts.write_text_checked("%s/geometry-metrics.json" % stem, json))
-		errors.append_array(Artifacts.write_text_checked(
-			"%s/geometry-metrics.md" % stem, GeometryMetrics.markdown(pack, reference)))
+		_write_geometry_file(root, "%s/geometry-metrics.json" % stem, "geometry-metrics",
+			json, seed_value, records, errors)
+		_write_geometry_file(root, "%s/geometry-metrics.md" % stem, "geometry-metrics",
+			GeometryMetrics.markdown(pack, reference), seed_value, records, errors)
 		comparisons.append(GeometryMetrics.counterpart_comparison(route))
 		if seed_value == GEOMETRY_OVERLAY_SEED:
-			errors.append_array(_write_geometry_overlays(root, route, reference))
+			_write_geometry_overlays(root, route, reference, records, errors)
 	var fleet := {
 		"schema_version": GeometryMetrics.COUNTERPART_SCHEMA,
 		"judgement": "report-only",
@@ -189,24 +189,45 @@ func _write_geometry_pack(
 	var fleet_json := Artifacts.canonical_json(fleet)
 	if fleet_json.is_empty():
 		errors.append("artifact_write: the counterpart comparison is not canonical JSON data")
-		return errors
-	errors.append_array(Artifacts.write_text_checked(
-		"%s/review/counterpart-comparison.json" % root, fleet_json))
-	errors.append_array(Artifacts.write_text_checked(
-		"%s/review/counterpart-comparison.md" % root,
-		GeometryMetrics.counterpart_markdown(comparisons)))
-	return errors
+		return {"errors": errors, "records": records, "comparisons": comparisons}
+	_write_geometry_file(root, "review/counterpart-comparison.json", "counterpart-comparison",
+		fleet_json, null, records, errors)
+	_write_geometry_file(root, "review/counterpart-comparison.md", "counterpart-comparison",
+		GeometryMetrics.counterpart_markdown(comparisons), null, records, errors)
+	return {"errors": errors, "records": records, "comparisons": comparisons}
+
+
+## One checked write plus its manifest record, in the shape `write_pack` records its own files.
+static func _write_geometry_file(
+	root: String, path: String, artifact_kind: String, content: Variant, seed_value: Variant,
+	records: Array, errors: PackedStringArray
+) -> void:
+	var absolute := "%s/%s" % [root, path]
+	var made := DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
+	if made != OK and made != ERR_ALREADY_EXISTS:
+		errors.append("artifact_write: cannot create '%s' (%s)"
+			% [absolute.get_base_dir(), error_string(made)])
+		return
+	var failures := (
+		Artifacts.save_png_checked(content, absolute) if content is Image
+		else Artifacts.write_text_checked(absolute, content)
+	)
+	if failures.is_empty():
+		records.append({
+			"path": path, "artifact_kind": artifact_kind, "seed": seed_value, "beat_id": null,
+		})
+	errors.append_array(failures)
 
 
 ## Side-by-side composites: the local reference frame against the generated element side view.
 ## Only entries whose local file is present and hashes correctly produce an image; every other
 ## entry is already recorded as a gap in the manifest record the Markdown prints.
 func _write_geometry_overlays(
-	root: String, route: Dictionary, reference: Dictionary
-) -> PackedStringArray:
-	var errors := PackedStringArray()
+	root: String, route: Dictionary, reference: Dictionary, records: Array,
+	errors: PackedStringArray
+) -> void:
 	if reference.get("status") != "ok":
-		return errors
+		return
 	for entry_value in reference.entries:
 		var entry: Dictionary = entry_value
 		if entry.status != "available":
@@ -223,27 +244,22 @@ func _write_geometry_overlays(
 		var composite := GeometryReference.composite(image, generated,
 			GeometryReference.footer_lines(str(entry.element_id), geometry.shape,
 				geometry.planarity, entry))
-		var path := "%s/review/overlays/geometry/%s.png" % [
-			root, str(entry.element_id).replace("/", "__")]
-		DirAccess.make_dir_recursive_absolute(path.get_base_dir())
-		errors.append_array(Artifacts.save_png_checked(composite, path))
-	return errors
+		_write_geometry_file(root, "review/overlays/geometry/%s.png"
+			% str(entry.element_id).replace("/", "__"), "geometry-overlay", composite,
+			GEOMETRY_OVERLAY_SEED, records, errors)
 
 
-static func _geometry_lines(output_dir: String, reference: Dictionary) -> PackedStringArray:
+static func _geometry_lines(comparisons: Array, reference: Dictionary) -> PackedStringArray:
 	var lines := PackedStringArray()
-	var path := "%s/review/counterpart-comparison.json" % output_dir.rstrip("/")
-	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
-	if parsed is Dictionary:
-		for comparison: Dictionary in parsed.get("comparisons", []):
-			var totals: Dictionary = comparison.get("totals", {})
-			var keys: Array = totals.keys()
-			keys.sort()
-			var parts := PackedStringArray()
-			for key in keys:
-				parts.append("%s %d" % [str(key), int(totals[key])])
-			lines.append("COUNTERPART seed %s  %s" % [
-				str(comparison.get("seed", "")), "  ".join(parts)])
+	for comparison: Dictionary in comparisons:
+		var totals: Dictionary = comparison.get("totals", {})
+		var keys: Array = totals.keys()
+		keys.sort()
+		var parts := PackedStringArray()
+		for key in keys:
+			parts.append("%s %d" % [str(key), int(totals[key])])
+		lines.append("COUNTERPART seed %s  %s" % [
+			str(comparison.get("seed", "")), "  ".join(parts)])
 	if reference.is_empty():
 		lines.append("REFERENCE none (REF_MEDIA_MANIFEST unset) — geometry overlays are a declared gap")
 	else:

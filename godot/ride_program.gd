@@ -9,7 +9,7 @@ const RideReturnSolve := preload("res://ride_return_solve.gd")
 const GENERATOR_VERSION := "time-domain-v1"
 const ROLLING_MPS2 := 0.08
 const AERO_PER_M := 0.000075
-const COMPACT_PULSE_AREA := 100.0 / 231.0
+const COMPACT_PULSE_AREA := Motion.COMPACT_PULSE_AREA
 const COARSE_STEP_S := 0.05
 const FINE_STEP_S := 0.025
 const PRODUCTION_STEP_S := 0.01
@@ -139,10 +139,6 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	var station_error := _validate_station_layout(layout, initial_state)
 	if not station_error.is_empty():
 		return _failure(station_error, "input")
-	var capture_seed: Variant = layout.get("capture_seed", [0.0, 0.0, 0.0, 0.0, 0.0])
-	if not capture_seed is Array or capture_seed.size() != 5:
-		return RideReturnSolve._capture_failure(
-			"capture seed must contain five coefficients", 0)
 	var spans: Array = []
 	var metadata: Array = []
 	var gestures: Array = []
@@ -693,14 +689,25 @@ static func _add_raceway(
 	var authored := RideReturnSolve._return_spans(
 		RideReturnSolve.RETURN_SEED if parameters.is_empty() else parameters,
 		hand, initial_bank_rad, targets)
-	var role_ids := ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"]
-	var role_ends := [8, 13, 16, 21]
-	var first := 0
-	for role_index in 4:
-		for i in range(first, role_ends[role_index]):
-			_add_record(s, m, p, authored[i], role_ids[role_index], 0, 45.0,
-				"overbank" if role_index % 2 == 0 else "hill")
-		first = role_ends[role_index]
+	# Roles follow the span ids the return solve authored, so a span added to or removed from
+	# `_return_spans` can never be silently dropped or mis-owned here; an id outside the four
+	# raceway families is authored wrongly and is refused, not guessed.
+	var families := {
+		"raceway/turn-a/": ["turn-a", "overbank"],
+		"raceway/height-a/": ["height-airtime-a", "hill"],
+		"raceway/turn-b/": ["turn-b", "overbank"],
+		"raceway/height-b/": ["height-airtime-b", "hill"],
+	}
+	for motion_span: Dictionary in authored:
+		var family: Array = []
+		for prefix: String in families:
+			if str(motion_span.span_id).begins_with(prefix):
+				family = families[prefix]
+				break
+		assert(not family.is_empty(),
+			"return span '%s' belongs to no raceway family" % str(motion_span.span_id))
+		_add_record(s, m, p, motion_span, str(family[0]) if not family.is_empty() else "",
+			0, 45.0, str(family[1]) if not family.is_empty() else "")
 
 
 static func _add_capture_and_brakes(
@@ -831,7 +838,7 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 		maximum_sum += band.y
 		allocations[role_id] = nominal
 	var route_band: Variant = plan.get("route_length_m")
-	if not route_band is Vector2 or route_band != Vector2(7800.0, 8200.0) \
+	if not route_band is Vector2 or route_band != RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M \
 			or minimum_sum > route_band.y or maximum_sum < route_band.x:
 		return _failure("aggregate role lengths cannot satisfy the route band", "plan",
 			{"bounds": {"role_sum_m": Vector2(minimum_sum, maximum_sum),
@@ -936,9 +943,12 @@ static func _last_state(route: Dictionary) -> Dictionary:
 	}
 
 
+## Solver and planning integrations skip the dense-output measurement; the generator's one
+## accepted production integration turns it back on (`RouteContract` requires it there).
 static func _settings(step_s: float) -> Dictionary:
 	return {"step_s": step_s, "rolling_mps2": ROLLING_MPS2,
-		"aero_per_m": AERO_PER_M, "gravity_mps2": Vector3.DOWN * Motion.G0}
+		"aero_per_m": AERO_PER_M, "gravity_mps2": Vector3.DOWN * Motion.G0,
+		"measure_dense_output": false}
 
 
 static func _failure(
@@ -985,7 +995,7 @@ static func material_role_spans(spans: Array, sequence: Array = MATERIAL_ROLE_ID
 	var role_ids: Array = sequence if not sequence.is_empty() else MATERIAL_ROLE_IDS
 	var prefixes := {
 		"station-launch": ["launch/"],
-		"opener-twisted-drop": ["crest/", "drop/"],
+		"opener-twisted-drop": ["drop/"],
 		"opener-teardrop": ["teardrop/"],
 		"opener-release": ["release/"],
 		"act-one-immelmann": ["act-one/immelmann-"],

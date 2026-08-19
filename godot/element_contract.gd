@@ -118,8 +118,17 @@ static func validate(intent: Dictionary, measurement: Dictionary) -> PackedStrin
 	var planarity := str(intent.get("planarity", ""))
 	if planarity not in VALID_PLANARITY:
 		errors.append("intent.planarity must be one of %s" % str(VALID_PLANARITY))
-	var maximum_tilt := _required_nonnegative(intent, "max_plane_tilt_deg", errors)
-	var maximum_ratio := _required_nonnegative(intent, "max_out_of_plane_ratio", errors)
+	# The plane limits are enforced only for vertical-plane intents, so only they may declare
+	# them: a free-3d intent carrying plane limits would read as gated when it is not.
+	var maximum_tilt := NAN
+	var maximum_ratio := NAN
+	if planarity == "vertical-plane":
+		maximum_tilt = _required_nonnegative(intent, "max_plane_tilt_deg", errors)
+		maximum_ratio = _required_nonnegative(intent, "max_out_of_plane_ratio", errors)
+	else:
+		for key in ["max_plane_tilt_deg", "max_out_of_plane_ratio"]:
+			if intent.has(key):
+				errors.append("intent.%s is only meaningful for planarity 'vertical-plane'" % key)
 	var maximum_heading := _required_nonnegative(intent, "max_heading_drift_deg", errors)
 	var entry_value: Variant = intent.get("entry")
 	var exit_value: Variant = intent.get("exit")

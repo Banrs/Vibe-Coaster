@@ -1448,16 +1448,12 @@ static func _expected_issue(issue_id: int) -> Dictionary:
 		evidence = (evidence + ["gap.unmeasured"])
 		evidence.sort()
 	return {
-		"issue_id": issue_id, "issue_text": ISSUE_TEXT.get(issue_id, "Issue %d" % issue_id),
+		"issue_id": issue_id, "issue_text": load(ARTIFACTS_PATH).ISSUE_TEXT[issue_id],
 		"linked_measurement_ids": measurements, "linked_target_ids": targets,
 		"linked_evidence_ids": evidence, "generated_artifact_paths": artifacts, "state": state,
 	}
 
 
-const ISSUE_TEXT := {
-	9: "Entry-launch speed", 12: "Flats",
-	14: "Multidimensional scaling", 15: "Transition jerk",
-}
 
 const PROMPT_FOR_ISSUE := {
 	2: "prompt.shaping", 14: "prompt.shaping",
@@ -1557,22 +1553,22 @@ Gap: youtube.unaligned — alignment-not-present (video.crest)
 ## Issue coverage
 | issue | text | state | targets | evidence | artifacts |
 | ---: | --- | --- | --- | --- | --- |
-| 1 | Issue 1 | measured | target.load | obs.window, source.raw | review/seed-42/channels.png |
-| 2 | Issue 2 | review-prompt |  | prompt.shaping, source.raw | review/seed-42/channels.png |
-| 3 | Issue 3 | review-prompt |  | prompt.feel, source.raw | review/seed-42/channels.png |
-| 4 | Issue 4 | review-prompt |  | prompt.speed, source.raw | review/seed-42/channels.png |
-| 5 | Issue 5 | review-prompt |  | prompt.terrain, source.raw | review/seed-42/channels.png |
-| 6 | Issue 6 | review-prompt |  | prompt.support, source.raw | review/seed-42/channels.png |
-| 7 | Issue 7 | evidence-gap |  | gap.unmeasured |  |
-| 8 | Issue 8 | evidence-gap |  | gap.unmeasured |  |
-| 9 | Entry-launch speed | measured | target.load | gap.unmeasured, obs.window, source.raw | review/seed-42/channels.png |
-| 10 | Issue 10 | evidence-gap |  | gap.unmeasured |  |
-| 11 | Issue 11 | evidence-gap |  | gap.unmeasured |  |
+| 1 | Missing micro-elements | measured | target.load | obs.window, source.raw | review/seed-42/channels.png |
+| 2 | Cheated pacing / near-zero-loss coasting | review-prompt |  | prompt.shaping, source.raw | review/seed-42/channels.png |
+| 3 | Underused G envelope | review-prompt |  | prompt.feel, source.raw | review/seed-42/channels.png |
+| 4 | Oversmoothing | review-prompt |  | prompt.speed, source.raw | review/seed-42/channels.png |
+| 5 | Poor FVD implementation | review-prompt |  | prompt.terrain, source.raw | review/seed-42/channels.png |
+| 6 | Poor terrain awareness | review-prompt |  | prompt.support, source.raw | review/seed-42/channels.png |
+| 7 | Supports / poor shaping | evidence-gap |  | gap.unmeasured |  |
+| 8 | Poor speed sense | evidence-gap |  | gap.unmeasured |  |
+| 9 | Launch speed low | measured | target.load | gap.unmeasured, obs.window, source.raw | review/seed-42/channels.png |
+| 10 | Bank → flat → bank | evidence-gap |  | gap.unmeasured |  |
+| 11 | Leisurely ride | evidence-gap |  | gap.unmeasured |  |
 | 12 | Flats | review-prompt |  | gap.unmeasured, prompt.terrain, source.raw | review/seed-42/channels.png |
-| 13 | Issue 13 | evidence-gap |  | gap.unmeasured |  |
-| 14 | Multidimensional scaling | review-prompt |  | prompt.shaping, source.raw | review/seed-42/channels.png |
-| 15 | Transition jerk | review-prompt |  | gap.unmeasured, prompt.feel, source.raw | review/seed-42/channels.png |
-| 16 | Issue 16 | review-prompt |  | prompt.support, source.raw | review/seed-42/channels.png |
+| 13 | Tame airtime | evidence-gap |  | gap.unmeasured |  |
+| 14 | Scale / geometry wrong | review-prompt |  | prompt.shaping, source.raw | review/seed-42/channels.png |
+| 15 | Jerky transitions | review-prompt |  | gap.unmeasured, prompt.feel, source.raw | review/seed-42/channels.png |
+| 16 | Nebulous feel gaps | review-prompt |  | prompt.support, source.raw | review/seed-42/channels.png |
 
 ## Render requests
 | path | kind | seed | beat |

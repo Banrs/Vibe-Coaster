@@ -73,9 +73,12 @@ local timings.
   a 7.8–8.2 km route band.
 - `godot/ride_planner.gd` — the decision layer: named decision streams (FNV-1a over the stream
   name plus the seed, so streams are independent), the story grammar as data, and the certified
-  per-seed target draws. Randomness lives only here and in terrain generation; every draw range
-  is a claim that the whole range builds, certified by `ride_planner_tests.gd` — there are no
-  candidate loops downstream.
+  per-seed target draws. Randomness lives only on the streams minted here: the certified target
+  draws in this file, the terrain draws in `Terrain.generate()`, and the three station-placement
+  draws in `generator._plan()` (side, along-distance, dive-entry aim — fleet-certified, not
+  extremes-certified, published in `plan.decisions`). Every target draw range is a claim that the
+  whole range builds, certified by `ride_planner_tests.gd` — there are no candidate loops
+  downstream.
 - `godot/ride_config.gd` — the version-1 configuration surface behind
   `RideGenerator.build_config()`: overlay algebra (rules 1–7), canonical hash, resolution report.
   The registry is deliberately narrow — `preset`, `seed`, and `slot.intensity` on the two return
@@ -84,13 +87,17 @@ local timings.
 - `godot/ride_program.gd` — native force/time-domain recipes, plan validation, and the public
   `RideProgram` API; its two solve seams live in `godot/ride_prefix_solve.gd` (prefix
   capability + closure solve) and `godot/ride_return_solve.gd` (bounded return, capture, and
-  brake solves). `godot/motion.gd` is the sole accepted rider-frame integrator;
-  `godot/route_contract.gd` validates and publishes its trajectory.
+  brake solves — and the one owner of the route-length band and capture corridor constants).
+  `godot/bounded_solver.gd` is the damped bounded least-squares solver both seams call.
+  `godot/motion.gd` is the sole accepted rider-frame integrator; `godot/route_contract.gd`
+  validates and publishes its trajectory, and `godot/element_contract.gd` is the intent-aware
+  whole-element geometry contract it evaluates for adopted roles (none adopted yet).
 - `godot/verify.gd` — the load-verification toolkit: 100 Hz resample → 4-pole 5 Hz
   Butterworth → duration-dependent envelope usage (held-curve), plus push-pull, the 0.2 s
   reversal rule, pairwise combined-axis ellipses, onset (least-squares over 100 ms), and the
   structural checks (frames, seams, terrain/self clearance). Parametric — no element names.
-- `godot/main.gd` — viewer: meshes, cameras, seven rows, metrics HUD, seed key (N). Its
+- `godot/main.gd` — viewer: meshes, cameras, seven rows, metrics HUD, seed key (N; a press
+  during a build is queued and runs next). `godot/fly_camera.gd` is its free camera. Its
   static sampling API is a thin delegate to `route_sampling.gd`; behavior is unchanged.
 - `godot/route_sampling.gd` — the one route time/distance/pose interpolation, shared by the
   viewer and the deterministic POV artifacts. `godot/canonical_data.gd` — the one canonical
@@ -123,6 +130,7 @@ local timings.
   bands, exact held values, time-weighted pacing shares, transition windows, raw channel
   reconstruction, fleet comparison, deterministic recommendation. `godot/fidelity_artifacts.gd`
   — deterministic report/Markdown, checked writes, and the render helpers.
+  `godot/fidelity_overlay.gd` — the optional local-RFDB overlay comparisons (diagnostic only).
 - `godot/_inspect.gd` — inspection harness (not a gate) and the offline fidelity-audit runner.
   It keeps every existing diagnostic — per-element stats, phase tables, element side views,
   top/elevation, the stacked ride traces — and adds reconstructed longitudinal proper

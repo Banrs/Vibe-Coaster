@@ -48,10 +48,12 @@ godot --headless --path godot --script res://smoke.gd
 ```
 
 Smoke alone does not run most of the test suites: CI additionally executes every script in
-`.github/focused-tests.txt` (twelve focused suites — motion, bounded-solver, route-contract,
-ride-program, generator-material, terrain-story, geometry-metrics, ride-planner, ride-config,
-and three fidelity suites). When your change touches one of those areas, run the matching
-focused suite(s) locally too:
+`.github/focused-tests.txt` (sixteen focused suites — motion, route-sampling, bounded-solver,
+route-contract, ride-program, generator-material, terrain-story, geometry-metrics, ride-planner,
+ride-config, dense-output, element-contract, element-contract-integration, and three fidelity
+suites). `camelback_geometry_tests.gd` is the deliberately red VC-016 production gate; it is
+run by hand, not by the manifest, until the planar camelback lands. When your change touches
+one of those areas, run the matching focused suite(s) locally too:
 
 ```sh
 godot --headless --path godot --script res://<suite>.gd

@@ -1,5 +1,12 @@
 extends SceneTree
 
+# Deliberately RED production gate for docs/ISSUES.md VC-016 (geometry-truth plan, Task 4).
+# It is not in .github/focused-tests.txt: the planar recipe solves as an element but the return
+# cannot re-close behind it within its existing authority (see the VC-016 status note), and the
+# plan forbids closing it by adding solver authority. Run by hand until the rewrite lands:
+#   godot --headless --path godot --script res://camelback_geometry_tests.gd
+# Re-add it to the manifest in the same change that turns it green.
+
 const RideGenerator := preload("res://generator.gd")
 const RideProgram := preload("res://ride_program.gd")
 

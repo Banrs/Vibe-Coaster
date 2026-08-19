@@ -68,7 +68,7 @@ godot --headless --path godot --script res://smoke.gd
 
 The smoke gate self-tests the verification toolkit against synthetic signals, runs two of the
 three fidelity suites (`fidelity_tests.gd`, `fidelity_artifact_tests.gd` — the overlay suite
-and the other nine focused suites run via `.github/focused-tests.txt` in CI), and builds
+and the other thirteen focused suites run via `.github/focused-tests.txt` in CI), and builds
 multiple seeds twice — identical output, all checks green, on CI's ubuntu baseline as the
 performance floor. It also asserts the record band (top speed 93.9–95.6 m/s), the entry-launch
 peak (3.7–4.1 g), and fleet diversity: floors on how far the fleet's lengths and durations must

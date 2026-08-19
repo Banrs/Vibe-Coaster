@@ -596,6 +596,17 @@ Rewrite the default camelback as a true planar or near-planar element:
 
 The default camelback satisfies a reviewed whole-element plane-tilt and out-of-plane RMS gate, has an apex pitch near zero, and contains no unexplained bank reversal or micro-hold.
 
+**Status 2026-08-19 — rewrite attempted, refused by return closure.** The production gate exists
+(`godot/camelback_geometry_tests.gd`; run by hand, not in the CI manifest, so `main` is not
+permanently red on a known-open defect). A planar recipe was solved element-locally on
+2026-08-17 (seven controls, converged: length 1178.99 m, prominence 247.43 m, exit height
+−0.49 m, exit pitch −0.10°, arc imbalance 3.67 m; the recipe is preserved at commit `e6b20c7`,
+`.github/apply_planar_camelback.py`). It hands the return a pose 158.9 m of cross-track,
+400.6 m of forward and 45.8° of yaw away from the old hill's exit, and the eight-control return
+solve then exhausts its budget (station-forward miss 136 m, tangent-right 35.6, entry-speed band
+21.1 m/s over). Per Task 4 step 4 that is a stop, not a licence to add return authority: the
+next spend is anchor/corridor planning for the post-camelback return, not the hill itself.
+
 ---
 
 #### VC-017 — The clifftop sequence is too short and semantically under-authored

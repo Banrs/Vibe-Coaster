@@ -530,9 +530,6 @@ static func _add_act_one_immelmann(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
 ) -> void:
 	var area := COMPACT_PULSE_AREA
-	var roll_duration_s := 2.07647312 + 2.47289653
-	var roll_rate_rad_s := 2.0 * PI * hand / roll_duration_s
-	var lateral_peak_g := 2.0 * area * 1.13212909 * hand
 	_add(spans, metadata, propulsion, "act-one/immelmann-entry", 0.33, "moving",
 		Motion.quintic(1.0, 5.2), 0.0, 0.0, 0.0, "giant-inversion", 0, 2.0, "immelmann")
 	_add(spans, metadata, propulsion, "act-one/immelmann-hold", 2.93637456, "moving",
@@ -541,12 +538,12 @@ static func _add_act_one_immelmann(
 		Motion.quintic(5.2, -1.0), 0.0, 0.0, 0.0,
 		"giant-inversion", 0, 2.0, "immelmann")
 	_add(spans, metadata, propulsion, "act-one/immelmann-roll", 2.07647312, "moving",
-		Motion.quintic(-1.0, 0.0), Motion.quintic(0.0, lateral_peak_g), 0.0,
-		Motion.quintic(0.0, roll_rate_rad_s),
+		Motion.quintic(-1.0, 0.0), Motion.compact_pulse(1.13212909 * hand), 0.0,
+		Motion.compact_pulse(PI * hand / (2.0 * area * 2.07647312)),
 		"giant-inversion", 0, 2.0, "immelmann")
 	_add(spans, metadata, propulsion, "act-one/immelmann-recover", 2.47289653, "moving",
-		Motion.quintic(0.0, 2.28038016), Motion.quintic(lateral_peak_g, 0.0), 0.0,
-		Motion.quintic(roll_rate_rad_s, 0.0),
+		Motion.quintic(0.0, 2.28038016), Motion.compact_pulse(1.13212909 * hand), 0.0,
+		Motion.compact_pulse(PI * hand / (2.0 * area * 2.47289653)),
 		"giant-inversion", 0, 2.0, "immelmann")
 	_add(spans, metadata, propulsion, "act-one/immelmann-settle", 0.53603802, "moving",
 		Motion.quintic(2.28038016, 1.0), 0.0, 0.0, 0.0,

@@ -470,7 +470,7 @@ static func _add_camelback(
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
-	var fall_s := 3.40
+	var fall_s := 3.60
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",
 		Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")

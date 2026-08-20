@@ -445,8 +445,11 @@ static func _add_opener(
 	targets: Dictionary = {}
 ) -> void:
 	var area := COMPACT_PULSE_AREA
-	var unbank_duration_s := 0.45
-	var unbank_peak_rad_s := 0.6981317 / (unbank_duration_s * Motion.PLATEAU_PULSE_AREA)
+	var unbank_ramp_s := 0.115
+	var unbank_hold_s := 0.22012288
+	var normal_recovery_s := 0.18512288
+	var normal_mid_g := 3.46722071542319
+	var unbank_peak_rad_s := 0.6981317 / (unbank_ramp_s + unbank_hold_s)
 	# Drawn per seed: how hard the twisted drop carves through its core, and how strongly the
 	# teardrop is loaded over the top. Both are held constant across the spans that enter, hold
 	# and leave the shape, so the C2 control seams stay exact at any drawn value.
@@ -469,9 +472,20 @@ static func _add_opener(
 		Motion.quintic(-0.58313246, 4.99988044),
 		Motion.quintic(drop_lateral_g * hand, 0.0), 0.0, 0.0,
 		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank", unbank_duration_s, "moving",
-		Motion.quintic(4.99988044, 1.0), 0.0, 0.0,
-		Motion.plateau_pulse(-unbank_peak_rad_s * hand),
+	_add(spans, metadata, propulsion, "drop/unbank-in", unbank_ramp_s, "moving",
+		Motion.quintic(4.99988044, normal_mid_g), 0.0, 0.0,
+		Motion.quintic(0.0, -unbank_peak_rad_s * hand),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/unbank-recover", normal_recovery_s, "moving",
+		Motion.quintic(normal_mid_g, 1.0), 0.0, 0.0,
+		Motion.constant(-unbank_peak_rad_s * hand),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/unbank-hold",
+		unbank_hold_s - normal_recovery_s, "moving",
+		1.0, 0.0, 0.0, Motion.constant(-unbank_peak_rad_s * hand),
+		"twisted-drop", 0, 2.0, "twisted_drop")
+	_add(spans, metadata, propulsion, "drop/unbank-out", unbank_ramp_s, "moving",
+		1.0, 0.0, 0.0, Motion.quintic(-unbank_peak_rad_s * hand, 0.0),
 		"twisted-drop", 0, 2.0, "twisted_drop")
 
 	var teardrop_shoulder_s := 1.9827842973471

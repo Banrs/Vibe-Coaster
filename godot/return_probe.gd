@@ -31,9 +31,10 @@ func _initialize() -> void:
 		"station_up": Vector3.UP, "reserved_corridor": {"minimum_length_m": 230.0,
 			"entry_speed_mps": Vector2(70.0, 80.0)}, "capture_half_width_m": 150.0,
 		"capture_half_height_m": 75.0}
-	print("start position=%s tangent=%s up=%s speed=%f distance=%f" % [
+	var initial_bank := float(RideReturnSolve._capture_residuals(start, layout)[4])
+	print("start position=%s tangent=%s up=%s speed=%f distance=%f initial_bank=%f" % [
 		str(start.position_m), str(start.tangent), str(start.rider_up), start.speed_mps,
-		start.distance_m])
+		start.distance_m, initial_bank])
 	var candidates := [
 		RideReturnSolve.RETURN_SEED.duplicate() + [3.8],
 		[1.07, 0.55, 3.13, 1.05, 6.35, 0.42, 3.12, 3.52],
@@ -44,7 +45,8 @@ func _initialize() -> void:
 	]
 	for candidate: Array in candidates:
 		var result := RideReturnSolve._return_evaluation(start, layout, candidate,
-			RideProgram._settings(RideProgram.PRODUCTION_STEP_S), {}, -hand, 0.0, story.targets)
+			RideProgram._settings(RideProgram.PRODUCTION_STEP_S), {}, -hand, initial_bank,
+			story.targets)
 		print("candidate=%s residuals=%s observation=%s" % [str(candidate),
 			str(result.get("residuals", [])), str(result.get("observation", {}))])
 	quit(0)

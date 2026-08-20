@@ -920,9 +920,10 @@ static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 		"capture_half_width_m": corridor.half_width_m,
 		"capture_half_height_m": corridor.half_height_m,
 		"route_length_m": plan.route_length_m,
-		# The return solve observes the two role bands its own candidate integration owns outright;
+		# The return solve observes the three role bands its own candidate integration owns outright;
 		# each is handed the plan's declared band rather than a copy of it. A plan that declares no
 		# such role hands back the unbounded band and the residual it feeds is inert.
+		"turn_a_length_m": _role_length_band(plan, "return-turn-a"),
 		"turn_b_length_m": _role_length_band(plan, "return-turn-b"),
 		"record_release_length_m": _role_length_band(plan, "record-release-turn"),
 		"reserved_corridor": {

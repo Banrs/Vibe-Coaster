@@ -120,7 +120,10 @@ static func transition_audit(spans: Array) -> Dictionary:
 		var duration := float(span.get("duration_s", NAN))
 		if not is_finite(duration) or duration <= 0.0:
 			errors.append("span %d has an invalid duration" % index)
-		elif bool(span.get("semantic", false)) and duration < SEMANTIC_SPAN_MIN_S:
+		# Motion.span records are semantic by construction unless a future diagnostic-only
+		# producer explicitly opts out. This keeps authored micro-spans visible in production
+		# without adding another field to the serialized span digest.
+		elif bool(span.get("semantic", true)) and duration < SEMANTIC_SPAN_MIN_S:
 			short_spans.append({"index": index, "span_id": str(span.get("span_id", "")),
 				"duration_s": duration})
 			errors.append("semantic span %s is shorter than %.2f s" % [

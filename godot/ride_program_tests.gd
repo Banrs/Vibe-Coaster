@@ -188,6 +188,26 @@ func _test_camelback_is_planar_and_continuous() -> void:
 	var transition_audit := GeometryMetrics.transition_audit(spans)
 	_expect(transition_audit.ok, "camelback transition audit is clean: %s"
 		% str(transition_audit.errors))
+	var route := RideGenerator.build(42)
+	if not _expect(route.get("ok", false),
+			"production seed 42 publishes a route for the camelback audit"):
+		return
+	var role_record: Dictionary = route.get("geometry_audit", {}).get("roles", {}).get("camelback", {})
+	_expect(role_record.get("status") == "measured",
+		"production camelback publishes measured role evidence")
+	var lateral_range: Dictionary = role_record.get("lateral_g", {})
+	var roll_range: Dictionary = role_record.get("roll_rate_dps", {})
+	_expect(absf(float(lateral_range.get("minimum", INF))) <= 0.0001
+		and absf(float(lateral_range.get("maximum", INF))) <= 0.0001,
+		"production camelback has no lateral force shift: %s" % str(lateral_range))
+	_expect(absf(float(roll_range.get("minimum", INF))) <= 0.0001
+		and absf(float(roll_range.get("maximum", INF))) <= 0.0001,
+		"production camelback has neutral roll rate: %s" % str(roll_range))
+	var agl: Dictionary = role_record.get("agl", {})
+	_expect(agl.get("status") == "measured"
+		and float(agl.get("apex_m", -INF)) >= 140.0
+		and float(agl.get("apex_m", INF)) <= 170.0,
+		"production camelback apex stays in its 140-170 m AGL band: %s" % str(agl))
 
 
 func _test_material_return_recipe() -> void:

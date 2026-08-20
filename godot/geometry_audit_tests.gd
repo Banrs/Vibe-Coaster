@@ -56,9 +56,7 @@ func _test_lateral_restart_is_rejected() -> void:
 func _test_short_semantic_span_is_reported() -> void:
 	var span := Motion.span("test/connector", 0.15, "moving", Motion.constant(1.0),
 		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0))
-	var mutable := span.duplicate(true)
-	mutable["semantic"] = true
-	var result := Metrics.transition_audit([mutable])
+	var result := Metrics.transition_audit([span])
 	_expect(not result.ok, "a semantic span under 0.30 s must fail")
 	_expect(result.short_spans.size() == 1 and result.short_spans[0].span_id == "test/connector",
 		"the short span is named in the audit")

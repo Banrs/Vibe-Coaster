@@ -62,6 +62,7 @@ func _initialize() -> void:
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
 	_test_first_return_turn_unbanks_directly()
+	_test_record_release_turn_is_declared_macro_authority()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
@@ -277,6 +278,21 @@ func _test_first_return_turn_unbanks_directly() -> void:
 		and reversals == 1 and not post_core_positive,
 		"the first return turn banks in once and directly unbanks without a counter-steer: %s"
 		% str(directions))
+
+
+func _test_record_release_turn_is_declared_macro_authority() -> void:
+	var roles := RidePlanner.canonical_role_ids()
+	var release_index := roles.find("record-release-turn")
+	var controls := RideReturnSolve.RETURN_SCALAR_IDS
+	var residuals := RideReturnSolve.RETURN_RESIDUAL_IDS
+	_expect(release_index > 0 and release_index + 1 < roles.size()
+		and roles[release_index - 1] == "tunnel-lsm3"
+		and roles[release_index + 1] == "camelback"
+		and controls.has("record_release_core_duration_s")
+		and residuals.has("record_release_length_band_m")
+		and controls.size() == residuals.size(),
+		"the record release is an ordered role with a declared square macro axis: %s / %s / %s"
+		% [str(roles), str(controls), str(residuals)])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:

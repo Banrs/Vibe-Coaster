@@ -70,7 +70,7 @@ const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 0.72865206901364
 const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.73015276312264
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
-const RECORD_RELEASE_CORE_DURATION_S := 2.11869683630988
+const RECORD_RELEASE_CORE_DURATION_S := 2.29
 ## The one owner of the route-length band: the generator writes it into the plan and the program
 ## validator checks the plan against this same constant.
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)

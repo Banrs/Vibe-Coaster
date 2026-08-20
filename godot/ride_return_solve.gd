@@ -164,7 +164,7 @@ const CAPTURE_COEFFICIENT_BOUNDS := [
 
 static func _return_spans(
 	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0, targets: Dictionary = {},
-	unbank_profile: Array = [0.85, 0.90]
+	unbank_profile: Array = []
 ) -> Array:
 	# Drawn per seed: how hard each return height beat is pulled and how deeply it unloads. The
 	# solve still owns the durations, so a stronger beat is paid for in its own timing rather
@@ -196,7 +196,9 @@ static func _return_spans(
 	var turn_a_in := _roll_ramp(turn_a_in_s, initial_bank_rad, turn_a_bank_rad_signed)
 	# The direct unbank stays one continuous roll from the solved turn bank to level while its
 	# two semantic spans retain the turn-a transition ownership.
-	var turn_a_out_s := [float(unbank_profile[0]), float(unbank_profile[1])]
+	var turn_a_out_s := [0.85, 0.90]
+	if unbank_profile.size() == 2:
+		turn_a_out_s = [float(unbank_profile[0]), float(unbank_profile[1])]
 	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what
@@ -412,7 +414,7 @@ static func _maximum_absolute(values: Array) -> float:
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
 	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
 	initial_bank_rad: float = 0.0, targets: Dictionary = {},
-	unbank_profile: Array = [0.85, 0.90]
+	unbank_profile: Array = []
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)

@@ -1,5 +1,6 @@
 extends SceneTree
 
+const BoundedSolver := preload("res://bounded_solver.gd")
 const Motion := preload("res://motion.gd")
 const RideGenerator := preload("res://generator.gd")
 const RidePlanner := preload("res://ride_planner.gd")
@@ -97,6 +98,50 @@ func _run_lane(direction: int, core_duration_s: float, initial_state: Dictionary
 		if not accepted is Array or accepted.size() != RideReturnSolve.RETURN_SCALAR_IDS.size():
 			break
 		solve_seed = accepted.duplicate()
+	_probe_direct_root(post_camelback, layout, return_hand, targets, solve_seed)
+
+
+func _probe_direct_root(start: Dictionary, layout: Dictionary, hand: float,
+	targets: Dictionary, values: Array
+) -> void:
+	var cache := {}
+	var initial_bank_rad: float = RideReturnSolve._capture_residuals(start, layout)[4]
+	var evaluate := func(candidate: Array) -> Dictionary:
+		return RideReturnSolve._return_evaluation(
+			start, layout, candidate, RideProgram._settings(RideProgram.PRODUCTION_STEP_S),
+			cache, hand, initial_bank_rad, targets)
+	var base: Dictionary = evaluate.call(values)
+	if not base.get("ok", false):
+		print("return heading probe direct-root base failure=%s" % str(base))
+		return
+	var deltas := []
+	for bound: Array in RideReturnSolve.RETURN_SCALAR_BOUNDS:
+		deltas.append(0.005 * (float(bound[1]) - float(bound[0])))
+	var difference := RideReturnSolve._finite_difference_jacobian(
+		values, base.scaled, RideReturnSolve.RETURN_SCALAR_BOUNDS, deltas, evaluate)
+	if not difference.get("ok", false):
+		print("return heading probe direct-root difference failure=%s" % str(difference))
+		return
+	var solved := BoundedSolver.linear_solve(difference.jacobian, base.scaled)
+	var conditioning := RideReturnSolve._conditioning(solved, values)
+	print("return heading probe direct-root conditioning=%s base=%s" % [
+		str(conditioning), str(base.scaled)])
+	if not conditioning.get("ok", false):
+		return
+	for alpha in [1.0, 0.5, 0.25, 0.125, 0.0625]:
+		var candidate := values.duplicate()
+		for index in candidate.size():
+			candidate[index] = clampf(float(candidate[index])
+				- float(alpha) * float(solved.x[index]),
+				float(RideReturnSolve.RETURN_SCALAR_BOUNDS[index][0]),
+				float(RideReturnSolve.RETURN_SCALAR_BOUNDS[index][1]))
+		var observed: Dictionary = evaluate.call(candidate)
+		print("return heading probe direct-root trial=%s" % str({
+			"alpha": alpha,
+			"candidate": candidate,
+			"scaled_residuals": observed.get("scaled", []),
+			"margins": observed.get("margins", {}),
+		}))
 
 
 func _heading_transition_spans(direction: int, core_duration_s: float) -> Array:

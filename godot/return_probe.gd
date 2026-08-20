@@ -1,37 +1,35 @@
 extends SceneTree
 
-const Generator := preload("res://generator.gd")
-const RidePlanner := preload("res://ride_planner.gd")
-const Terrain := preload("res://terrain.gd")
 const RideProgram := preload("res://ride_program.gd")
+const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
 const RideReturnSolve := preload("res://ride_return_solve.gd")
 const Motion := preload("res://motion.gd")
 
 
 func _initialize() -> void:
-	var decisions := RidePlanner.resolve(42)
-	var plan := Generator._plan(Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN]), decisions)
-	if not plan.get("ok", false):
-		printerr("plan failed: %s" % str(plan))
+	var program := RidePrefixSolve._prefix_program(1, {}, RidePrefixSolve.PREFIX_SEED)
+	if not program.get("ok", false):
+		printerr("prefix program failed: %s" % str(program))
 		quit(1)
 		return
 	var spans: Array = []
 	var metadata: Array = []
 	var gestures: Array = []
 	var propulsion := PackedInt32Array()
-	var hand := -float(plan.decisions.station_side)
-	var story := RideProgram._story_from_plan(plan)
-	RideProgram._add_story_prefix(spans, metadata, gestures, propulsion, hand, story,
-		RideProgram._prefix_controls_from_plan(plan))
+	var hand := -1.0
+	spans.append_array(program.spans)
 	RideProgram._add_camelback(spans, metadata, propulsion)
-	var start_route := Motion.integrate(Generator._initial_state(plan.station), spans,
+	var start_route := Motion.integrate(RidePrefixSolve._prefix_initial_state(), spans,
 		RideProgram._settings(RideProgram.PRODUCTION_STEP_S))
 	if not start_route.get("ok", false):
 		printerr("prefix failed: %s" % str(start_route))
 		quit(1)
 		return
 	var start := RideProgram._last_state(start_route)
-	var layout := RideProgram._layout_from_plan(plan)
+	var layout := {"station_position_m": Vector3.ZERO, "station_tangent": Vector3.RIGHT,
+		"station_up": Vector3.UP, "reserved_corridor": {"minimum_length_m": 230.0,
+			"entry_speed_mps": Vector2(70.0, 80.0)}, "capture_half_width_m": 150.0,
+		"capture_half_height_m": 75.0}
 	print("start position=%s tangent=%s up=%s speed=%f distance=%f" % [
 		str(start.position_m), str(start.tangent), str(start.rider_up), start.speed_mps,
 		start.distance_m])

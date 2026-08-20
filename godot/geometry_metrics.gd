@@ -24,6 +24,7 @@ const Fidelity := preload("res://fidelity.gd")
 const Counterparts := preload("res://fidelity_counterparts.gd")
 const Verify := preload("res://verify.gd")
 const Sampling := preload("res://route_sampling.gd")
+const Motion := preload("res://motion.gd")
 
 const SCHEMA := "ride-geometry-metrics@1"
 const COUNTERPART_SCHEMA := "ride-geometry-counterpart-comparison@1"
@@ -50,6 +51,9 @@ const COUNTERPART_ROW_OFFSET_M := 6.45
 ## A counterpart axis quoted as a single number is compared against this diagnostic tolerance.
 ## It is a labelling convenience for reading the report, NOT a reviewed threshold and NOT a gate.
 const SCALAR_BAND_FRACTION := 0.15
+
+const TRANSITION_ZERO_TOLERANCE := 0.000001
+const SEMANTIC_SPAN_MIN_S := 0.30
 
 const REQUIRED_FIELDS := [
 	"positions", "tangents", "ups", "banks", "roll_rates", "times", "distances",
@@ -95,6 +99,67 @@ const MATERIAL_ROLE_BY_WINDOW := {
 	"brakes-station-capture/brakes/0": "terminal-capture-brakes",
 	"brakes-station-capture/station/0": "terminal-capture-brakes",
 }
+
+
+## Audit authored transition ownership before FVD integration. A transition ID is deliberately
+## explicit: this function never guesses whether two adjacent spans belong to one gesture from
+## their names or observed geometry. The same transition returning both roll and lateral controls
+## to zero at an internal boundary is the pulse/restart defect this audit is meant to expose.
+static func transition_audit(spans: Array) -> Dictionary:
+	var errors := PackedStringArray()
+	var seams := []
+	var short_spans := []
+	for index in spans.size():
+		var span: Variant = spans[index]
+		if not span is Dictionary:
+			errors.append("span %d is not a Dictionary" % index)
+			continue
+		var duration := float(span.get("duration_s", NAN))
+		if not is_finite(duration) or duration <= 0.0:
+			errors.append("span %d has an invalid duration" % index)
+		elif bool(span.get("semantic", false)) and duration < SEMANTIC_SPAN_MIN_S:
+			short_spans.append({"index": index, "span_id": str(span.get("span_id", "")),
+				"duration_s": duration})
+		var transition_id := str(span.get("transition_id", ""))
+		if index == 0 or transition_id.is_empty():
+			continue
+		var previous: Variant = spans[index - 1]
+		if not previous is Dictionary or str(previous.get("transition_id", "")) != transition_id:
+			continue
+		var restarted_channels := PackedStringArray()
+		for channel in ["lateral_g", "roll_rate_rad_s"]:
+			var before_profile: Variant = previous.get(channel)
+			var after_profile: Variant = span.get(channel)
+			if not before_profile is Dictionary or not after_profile is Dictionary:
+				errors.append("transition %s has incomplete %s profiles" % [transition_id, channel])
+				continue
+			var before_end := _profile_value(before_profile, 1.0)
+			var after_start := _profile_value(after_profile, 0.0)
+			if absf(before_end) <= TRANSITION_ZERO_TOLERANCE \
+					and absf(after_start) <= TRANSITION_ZERO_TOLERANCE \
+					and (_profile_has_motion(before_profile) or _profile_has_motion(after_profile)):
+				restarted_channels.append(channel)
+		if not restarted_channels.is_empty():
+			seams.append({"index": index, "transition_id": transition_id,
+				"before_span_id": str(previous.get("span_id", "")),
+				"after_span_id": str(span.get("span_id", "")),
+				"restarted_channels": restarted_channels})
+			errors.append("transition %s restarts %s at span %d" % [
+				transition_id, ", ".join(restarted_channels), index])
+	return {"schema_version": SCHEMA, "metric": "transition_audit", "ok": errors.is_empty(),
+		"semantic_span_min_s": SEMANTIC_SPAN_MIN_S, "seams": seams,
+		"short_spans": short_spans, "errors": errors}
+
+
+static func _profile_value(profile: Dictionary, u: float) -> float:
+	return float(Motion.profile_sample(profile, clampf(u, 0.0, 1.0)).x)
+
+
+static func _profile_has_motion(profile: Dictionary) -> bool:
+	for u in [0.25, 0.5, 0.75]:
+		if absf(_profile_value(profile, u)) > TRANSITION_ZERO_TOLERANCE:
+			return true
+	return false
 
 
 # ---------------------------------------------------------------------------------------------

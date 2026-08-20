@@ -228,7 +228,8 @@ static func span(
 	normal_g: Dictionary,
 	lateral_g: Dictionary,
 	drive_g: Dictionary,
-	roll_rate_rad_s: Dictionary
+	roll_rate_rad_s: Dictionary,
+	transition_id: String = ""
 ) -> Dictionary:
 	assert(is_finite(duration_s) and duration_s > 0.0, "span duration must be positive and finite")
 	assert(mode == "moving" or mode == "station", "invalid span mode")
@@ -257,6 +258,7 @@ static func span(
 		"lateral_g": lateral_g,
 		"drive_g": drive_g,
 		"roll_rate_rad_s": roll_rate_rad_s,
+		"transition_id": transition_id,
 	}
 	record.make_read_only()
 	return record

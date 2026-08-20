@@ -140,7 +140,7 @@ func _test_generated_role_lengths_inside_declared_bands_are_accepted() -> void:
 
 
 func _test_generated_role_length_outside_its_declared_band_is_rejected() -> void:
-	var fixture := _role_fixture({15: 100.0})
+	var fixture := _role_fixture({16: 100.0})
 	_expect_rejected(fixture, "generated length",
 		"a generated role longer than its declared band")
 	var route := _built_role_route(fixture)

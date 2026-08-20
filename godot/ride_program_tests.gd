@@ -296,9 +296,10 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 			"record_release_core_duration_s"]
 		and controls.has("record_release_core_duration_s")
 		and residuals.has("turn_a_length_band_m")
+		and residuals.has("height_a_length_band_m")
 		and residuals.has("record_release_length_band_m")
-		and controls.size() == residuals.size(),
-		"the record release is an ordered role with a declared square macro axis: %s / %s / %s"
+		and controls.size() + 1 == residuals.size(),
+		"the record release is ordered and the return exposes one overdetermined role row: %s / %s / %s"
 		% [str(roles), str(controls), str(residuals)])
 	var return_spans := RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED)
 	var height_a_airtime := return_spans.filter(func(span: Dictionary) -> bool:
@@ -329,14 +330,17 @@ func _test_return_aim_margins_exceed_solver_slack() -> void:
 	var route_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[5])
 	var release_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[8])
 	var turn_a_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[9])
+	var height_a_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[10])
 	_expect(RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M > route_slack_m
 		and RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M > release_slack_m
-		and RideReturnSolve.RETURN_TURN_A_AIM_MARGIN_M > turn_a_slack_m,
-		"return aim margins exceed convergence slack: %.3f/%.3f/%.3f m vs %.3f/%.3f/%.3f m"
+		and RideReturnSolve.RETURN_TURN_A_AIM_MARGIN_M > turn_a_slack_m
+		and RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M > height_a_slack_m,
+		"return aim margins exceed convergence slack: %.3f/%.3f/%.3f/%.3f m vs %.3f/%.3f/%.3f/%.3f m"
 		% [RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M,
 			RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M,
 			RideReturnSolve.RETURN_TURN_A_AIM_MARGIN_M,
-			route_slack_m, release_slack_m, turn_a_slack_m])
+			RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M,
+			route_slack_m, release_slack_m, turn_a_slack_m, height_a_slack_m])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:
@@ -661,7 +665,8 @@ func _return_production_observations_match(actual: Variant, expected: Variant) -
 		["station_forward_m", 0], ["cross_track_m", 1], ["height_m", 2],
 		["yaw_rad", 3], ["pitch_rad", 4], ["roll_rad", 4],
 		["route_total_length_m", 5], ["speed_mps", 6],
-		["turn_b_length_m", 7], ["record_release_length_m", 8], ["turn_a_length_m", 9],
+		["turn_b_length_m", 7], ["record_release_length_m", 8],
+		["turn_a_length_m", 9], ["height_a_length_m", 10],
 	]:
 		var field: String = field_and_index[0]
 		var tolerance_index: int = field_and_index[1]

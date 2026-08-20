@@ -91,21 +91,24 @@ const RETURN_LENGTH_AIM_MARGIN_M := 3.0
 ## interiority an accepted point carries here is structural rather than only measured.
 const RETURN_TURN_B_AIM_MARGIN_M := 3.0
 const RETURN_TURN_A_AIM_MARGIN_M := 3.0
+const RETURN_HEIGHT_A_AIM_MARGIN_M := 3.0
 ## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, tightening this
 ## role band by the same structural margin as the route-length aim.
 const RECORD_RELEASE_LENGTH_AIM_MARGIN_M := 3.0
 ## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
-## exactly 0.0 against it, so fixed-layout fixtures keep all three role-band rows inert in the
-## ten-residual solve.
+## exactly 0.0 against it, so fixed-layout fixtures keep all four role-band rows inert in the
+## eleven-residual solve.
 const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
 	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
-	"record_release_length_band_m", "turn_a_length_band_m",
+	"record_release_length_band_m", "turn_a_length_band_m", "height_a_length_band_m",
 ]
-const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0]
+const RETURN_RESIDUAL_SCALES := [
+	5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0, 125.0,
+]
 const RETURN_FINE_TOLERANCES := [
-	0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.075, 0.075,
+	0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.075, 0.075, 0.075,
 ]
 ## The `return-turn-b` role, by the same span-id prefix `RideProgram.material_role_spans` owns it
 ## with. Named here rather than re-derived so the residual and the route contract cannot drift
@@ -113,6 +116,7 @@ const RETURN_FINE_TOLERANCES := [
 const RETURN_TURN_B_SPAN_PREFIX := "raceway/turn-b/"
 const RECORD_RELEASE_SPAN_PREFIX := "record-release-turn/"
 const RETURN_TURN_A_SPAN_PREFIX := "raceway/turn-a/"
+const RETURN_HEIGHT_A_SPAN_PREFIX := "raceway/height-a/"
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
 ## A normal-g span whose ends differ by no more than this is authored as a constant profile. It
 ## is an absolute tolerance well inside the 1e-6 seam gate, so no pair can be flattened here and
@@ -421,7 +425,7 @@ static func _solve_return(
 				["yaw_rad", 3], ["pitch_rad", 4], ["roll_rad", 4],
 				["route_total_length_m", 5], ["speed_mps", 6],
 				["turn_b_length_m", 7], ["record_release_length_m", 8],
-				["turn_a_length_m", 9],
+				["turn_a_length_m", 9], ["height_a_length_m", 10],
 			]:
 				var field: String = field_and_index[0]
 				var tolerance_index: int = field_and_index[1]
@@ -588,6 +592,8 @@ static func _return_observation(
 	var turn_b_length_m := _role_arc_m(route, spans, RETURN_TURN_B_SPAN_PREFIX)
 	var turn_a_band: Vector2 = layout.get("turn_a_length_m", RETURN_UNBOUNDED_BAND_M)
 	var turn_a_length_m := _role_arc_m(route, spans, RETURN_TURN_A_SPAN_PREFIX)
+	var height_a_band: Vector2 = layout.get("height_a_length_m", RETURN_UNBOUNDED_BAND_M)
+	var height_a_length_m := _role_arc_m(route, spans, RETURN_HEIGHT_A_SPAN_PREFIX)
 	var record_release_band: Vector2 = layout.get(
 		"record_release_length_m", RETURN_UNBOUNDED_BAND_M)
 	if not is_finite(record_release_length_m):
@@ -614,6 +620,9 @@ static func _return_observation(
 		RideProgram._band_residual(turn_a_length_m, Vector2(
 			turn_a_band.x + RETURN_TURN_A_AIM_MARGIN_M,
 			turn_a_band.y - RETURN_TURN_A_AIM_MARGIN_M)),
+		RideProgram._band_residual(height_a_length_m, Vector2(
+			height_a_band.x + RETURN_HEIGHT_A_AIM_MARGIN_M,
+			height_a_band.y - RETURN_HEIGHT_A_AIM_MARGIN_M)),
 	]
 	var margins := {
 		"corridor_forward_low_m": forward + approach,
@@ -636,6 +645,7 @@ static func _return_observation(
 			"turn_b_length_m": turn_b_length_m,
 			"record_release_length_m": record_release_length_m,
 			"turn_a_length_m": turn_a_length_m,
+			"height_a_length_m": height_a_length_m,
 			"route_total_length_m": total_length_m}}
 
 

@@ -26,7 +26,21 @@ jobs:
           use-dotnet: false
           include-templates: false
       - name: Import project
-        run: timeout 10m godot --headless --path godot --editor --quit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/ci-diagnostics
+          budget_ms=30000
+          start_ns=$(date +%s%N)
+          timeout 10m godot --headless --path godot --editor --quit 2>&1 \
+            | tee out/ci-diagnostics/import.log
+          elapsed_ms=$((($(date +%s%N) - start_ns) / 1000000))
+          printf 'import_startup_ms=%s\nimport_startup_budget_ms=%s\n' \
+            "$elapsed_ms" "$budget_ms" | tee out/ci-diagnostics/import-timing.txt
+          (( elapsed_ms <= budget_ms )) || {
+            echo "project import exceeded the startup budget" >&2
+            exit 1
+          }
       - name: Run focused test manifest
         shell: bash
         run: |
@@ -54,6 +68,21 @@ jobs:
           }
       - name: Validate ride and meshes
         run: timeout 20m godot --headless --path godot --script res://smoke.gd
+      - name: Measure first live viewer frame
+        shell: bash
+        run: |
+          set -euo pipefail
+          budget_ms=120000
+          start_ns=$(date +%s%N)
+          timeout 3m env VIEWER_SMOKE_FRAMES=1 godot --headless --path godot 2>&1 \
+            | tee out/ci-diagnostics/viewer-first-frame.log
+          elapsed_ms=$((($(date +%s%N) - start_ns) / 1000000))
+          printf 'viewer_first_frame_ms=%s\nviewer_first_frame_budget_ms=%s\n' \
+            "$elapsed_ms" "$budget_ms" | tee out/ci-diagnostics/viewer-first-frame-timing.txt
+          (( elapsed_ms <= budget_ms )) || {
+            echo "first live viewer frame exceeded the startup budget" >&2
+            exit 1
+          }
       # --quit-after counts engine frames, which all elapse while the generator thread is still
       # working: it used to exit before the first ride frame ever ran. VIEWER_SMOKE_FRAMES counts
       # live ride frames after the build lands, and exits 1 if the viewer rejects the route.

@@ -1202,15 +1202,21 @@ func _return_trajectory_is_material(
 			return false
 		if role_index % 2 == 0:
 			var heading := _trajectory_heading_work(trajectory.tangent, owned)
-			if heading < deg_to_rad(20.0) or heading > deg_to_rad(225.0) \
-					or _trajectory_cross_track(trajectory.position_m, trajectory.tangent, owned) < 25.0:
+			var cross_track := _trajectory_cross_track(
+				trajectory.position_m, trajectory.tangent, owned)
+			if heading < deg_to_rad(20.0) or heading > deg_to_rad(225.0) or cross_track < 25.0:
+				print("return material turn %s: heading=%.3f deg cross=%.3f m"
+					% [role.id, rad_to_deg(heading), cross_track])
 				return false
 		else:
 			var apex := _maximum_trajectory_height(trajectory, owned)
 			var nadir := _minimum_trajectory_height(trajectory, owned)
-			if trajectory.position_m[apex].y - trajectory.position_m[nadir].y < 35.0 \
-					or _linear_held_at_or_below(trajectory.time_s,
-						trajectory.normal_g, owned, 0.5) < 0.35:
+			var height := trajectory.position_m[apex].y - trajectory.position_m[nadir].y
+			var unload_s := _linear_held_at_or_below(
+				trajectory.time_s, trajectory.normal_g, owned, 0.5)
+			if height < 35.0 or unload_s < 0.35:
+				print("return material height %s: height=%.3f m unload=%.3f s"
+					% [role.id, height, unload_s])
 				return false
 	var up: Vector3 = layout.station_up.normalized()
 	var initial: float = 0.5 * float(trajectory.speed_mps[bounds.x]) ** 2 + Motion.G0 * (
@@ -1230,10 +1236,15 @@ func _return_trajectory_is_material(
 	var station_forward: float = (trajectory.position_m[terminal_index] \
 		- layout.station_position_m).dot(layout.station_tangent.normalized())
 	var approach_length_m := float(layout.reserved_corridor.minimum_length_m)
-	return length_m >= 1100.0 and length_m <= 3000.0 and initial - previous >= 50.0 \
+	var accepted := length_m >= 1100.0 and length_m <= 3000.0 and initial - previous >= 50.0 \
 		and trajectory.speed_mps[bounds.x] - trajectory.speed_mps[terminal_index] >= 5.0 \
 		and minimum_speed >= 45.0 and station_forward >= -approach_length_m \
 		and station_forward <= -(approach_length_m - 45.0)
+	if not accepted:
+		print("return material terminal: length=%.3f energy_drop=%.3f speed=%.3f->%.3f min=%.3f forward=%.3f"
+			% [length_m, initial - previous, trajectory.speed_mps[bounds.x],
+				trajectory.speed_mps[terminal_index], minimum_speed, station_forward])
+	return accepted
 
 
 func _compiled_return_flow_is_continuous(compiled: Dictionary, layout: Dictionary) -> bool:
@@ -1500,6 +1511,9 @@ func _near_future_story_is_physical(compiled: Dictionary, layout: Dictionary) ->
 		if (point[1] != null and (height < point[1] or height > point[2])) \
 				or trajectory.speed_mps[index] < point[3] or trajectory.speed_mps[index] > point[4] \
 				or absf(trajectory.tangent[index].dot(layout.station_up.normalized())) > point[5]:
+			print("near-future point: height=%.3f speed=%.3f pitch_dot=%.6f bounds=%s"
+				% [height, trajectory.speed_mps[index],
+					absf(trajectory.tangent[index].dot(layout.station_up.normalized())), str(point)])
 			return false
 	var return_entry: int = camel_bounds.y
 	var return_height: float = (trajectory.position_m[return_entry] \
@@ -1546,7 +1560,7 @@ func _near_future_story_is_physical(compiled: Dictionary, layout: Dictionary) ->
 		- trajectory.position_m[dive_bounds.y].y
 	var route_envelope := _trajectory_vertical_span(trajectory.position_m,
 		Vector2i(0, trajectory.position_m.size() - 1))
-	return immel_height >= 94.9 and immel_height <= 109.5 \
+	var accepted := immel_height >= 94.9 and immel_height <= 109.5 \
 		and loop_height >= 94.0 and loop_height <= 100.0 \
 		and cutback_height >= 40.0 \
 		and slow_held >= 2.7 and slow_held <= 4.2 \
@@ -1574,6 +1588,21 @@ func _near_future_story_is_physical(compiled: Dictionary, layout: Dictionary) ->
 		and route_envelope >= 290.0 and route_envelope <= 305.0 \
 		and _linear_held_at_or_below(
 			trajectory.time_s, trajectory.normal_g, camel_bounds, 0.0) >= 4.0
+	if not accepted:
+		print("near-future shape: immel=%.3f loop=%.3f cutback=%.3f slow=%.3f climb=%.3f rim_heading=%.3f rim_cross=%.3f rim_bank=%.3f rim_hold=%.3f rim_lateral=%.6f rim_duration=%.3f rim_distance=%.3f rim_exit_bank=%.3f rim_exit_pitch=%.3f dive_drop=%.3f dive_min_tangent=%.6f dive_normal=%.3f..%.3f dive_step=%.6f tunnel_speed=%.3f camel=%.3f ratio=%.3f envelope=%.3f camel_unload=%.3f"
+			% [immel_height, loop_height, cutback_height, slow_held, climb_rise,
+				rad_to_deg(_trajectory_heading_change(trajectory.tangent, rim_bounds)),
+				_trajectory_cross_track(trajectory.position_m, trajectory.tangent, rim_bounds),
+				rad_to_deg(_trajectory_maximum_bank(trajectory.tangent, trajectory.rider_up, rim_bounds)),
+				_linear_held_at_or_below(trajectory.time_s, rim_bank, rim_bounds, -deg_to_rad(40.0)),
+				rim_lateral, rim_duration, rim_distance, rad_to_deg(rim_exit_bank),
+				rad_to_deg(rim_exit_pitch), dive_drop, dive_minimum_tangent, dive_minimum_normal,
+				dive_maximum_normal, dive_maximum_step,
+				trajectory.speed_mps[_trajectory_span_bounds(
+					trajectory, int(lsm3.first_span), int(lsm3.last_span)).y],
+				camel_prominence, camel_width / camel_prominence, route_envelope,
+				_linear_held_at_or_below(trajectory.time_s, trajectory.normal_g, camel_bounds, 0.0)])
+	return accepted
 
 
 func _trajectory_vertical_span(positions: PackedVector3Array, bounds: Vector2i) -> float:

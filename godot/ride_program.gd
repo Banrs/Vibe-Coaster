@@ -466,8 +466,8 @@ static func _add_camelback(
 	var pullout_g := 5.2662035249371
 	# Once the fall endpoint is below the approach, rise duration owns the remaining local
 	# prominence. At the same 3.60 s fall, CI measured 238.200 m at 2.510 s and 233.836 m
-	# at 2.660 s; this bounded continuation step keeps the return solve in that local basin.
-	var pullup_s := 2.460
+	# at 2.660 s; this measured handoff is the controlled baseline for the current root family.
+	var pullup_s := 2.51015538415414
 	var unload_s := 3.01169597 * 1.15 - 0.4
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry

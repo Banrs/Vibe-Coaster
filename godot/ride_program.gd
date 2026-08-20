@@ -464,13 +464,15 @@ static func _add_camelback(
 	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
-	var pullup_s := 1.87949032 * 1.33555111055541
+	# Once the fall endpoint is below the approach, rise duration owns the remaining local
+	# prominence. This adds 0.15 s to the measured balanced-release handoff without changing load.
+	var pullup_s := 2.66015538415414
 	var unload_s := 3.01169597 * 1.15 - 0.4
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
-	var fall_s := 3.70
+	var fall_s := 3.60
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",
 		Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")

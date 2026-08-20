@@ -464,11 +464,10 @@ static func _add_camelback(
 	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
-	# Once the fall endpoint is below the approach, rise duration owns the remaining local
-	# prominence. At the same 3.60 s fall, CI measured 238.200 m at 2.510 s and 233.836 m
-	# at 2.660 s; this bounded continuation step keeps the current return root family.
-	var pullup_s := 2.585
-	var unload_s := 3.01169597 * 1.15 - 0.4
+	# This is the last CI point that keeps the balanced-release return on its healthy root family.
+	var pullup_s := 2.560
+	# The extra 0.060 s raises the apex through the force transition without changing either peak.
+	var unload_s := 3.1234503655
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the

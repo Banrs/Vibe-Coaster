@@ -88,11 +88,41 @@ jobs:
       # live ride frames after the build lands, and exits 1 if the viewer rejects the route.
       - name: Exercise viewer runtime
         run: timeout 3m env VIEWER_SMOKE_FRAMES=120 godot --headless --path godot
+      - name: Generate full-ride visual audit pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/visual-audit
+          timeout 20m env INSPECT_OUT=out/visual-audit INSPECT_GENERATED_POVS=1 \
+            godot --headless --path godot --script res://_inspect.gd \
+            2>&1 | tee out/ci-diagnostics/visual-audit.log
+          test -s out/visual-audit/manifest.json
+          for seed in 11 42 20260809; do
+            test -s "out/visual-audit/review/seed-$seed/top.png"
+            test -s "out/visual-audit/review/seed-$seed/elevation.png"
+            test -s "out/visual-audit/review/seed-$seed/channels.png"
+          done
+          element_count=$(find out/visual-audit/review/seed-42/elements \
+            -type f -name '*.png' | wc -l)
+          pov_count=$(find out/visual-audit/review/seed-42/pov \
+            -type f -name '*.png' | wc -l)
+          (( element_count >= 10 )) || {
+            echo "full-ride visual audit produced too few element shots: $element_count" >&2
+            exit 1
+          }
+          (( pov_count >= 10 )) || {
+            echo "full-ride visual audit produced too few POV shots: $pov_count" >&2
+            exit 1
+          }
+          printf 'visual_seed_count=3\nvisual_element_shot_count=%s\nvisual_pov_shot_count=%s\n' \
+            "$element_count" "$pov_count" | tee out/ci-diagnostics/visual-audit-summary.txt
       - name: Upload bounded CI diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ci-diagnostics
-          path: out/ci-diagnostics
+          path: |
+            out/ci-diagnostics
+            out/visual-audit
           if-no-files-found: ignore
           retention-days: 7

@@ -77,7 +77,9 @@ func _audit() -> int:
 		for error in overlays.get("errors", ["overlay manifest is invalid"]):
 			_operational.append(str(error))
 		return _fail()
-	var report := _artifact_report(audit, References.CATALOG, LEGACY_BASE_COMMIT, overlays)
+	var include_generated_povs := OS.get_environment("INSPECT_GENERATED_POVS") == "1"
+	var report := _artifact_report(audit, References.CATALOG, LEGACY_BASE_COMMIT, overlays,
+		include_generated_povs)
 	if report.get("schema_version") != "ride-fidelity-audit@1":
 		for error in report.get("errors", ["artifact_report: the audit report was not built"]):
 			_operational.append(str(error))
@@ -126,13 +128,14 @@ static func _local_rfdb_files(environment_lookup: Callable) -> Dictionary:
 
 
 static func _artifact_report(
-	audit: Dictionary, catalog: Dictionary, legacy_base_commit: String, overlays: Dictionary
+	audit: Dictionary, catalog: Dictionary, legacy_base_commit: String, overlays: Dictionary,
+	include_generated_povs: bool = false
 ) -> Dictionary:
 	if overlays.is_empty():
 		return Artifacts.build_report(audit.measurements, audit.comparison, catalog,
-			legacy_base_commit, audit.generation_counts)
+			legacy_base_commit, audit.generation_counts, include_generated_povs)
 	return Artifacts.build_report(audit.measurements, audit.comparison, catalog,
-		legacy_base_commit, audit.generation_counts, true)
+		legacy_base_commit, audit.generation_counts, true or include_generated_povs)
 
 
 static func _write_artifact_pack(

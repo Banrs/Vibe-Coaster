@@ -60,8 +60,8 @@ const RETURN_SCALAR_BOUNDS := [
 # Seven entries for nine controls, on purpose: `_solve_return` completes this vector with the
 # build's own certified height-a draw and the nominal record-release macro duration, so the
 # per-seed variety the planner draws is exactly where each solve starts.
-const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
-	1.0471975511966, 6.48573781566998, 0.996333175598368, 3.98838120528104]
+const RETURN_SEED := [1.30550387165005, 1.27974834911463, 0.8539502968208,
+	1.14613340404144, 5.69366242819916, 0.72410090683625, 5.34923442880672]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29

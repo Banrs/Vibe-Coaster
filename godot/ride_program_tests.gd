@@ -712,9 +712,9 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 			continue
 		var report: Dictionary = compiled.get("return_plan", {})
 		var evaluations := int(report.get("unique_evaluations", -1))
-		print("return solve seed %d: %d evaluations, %d iterations, status %s" % [seed_value,
+		print("return solve seed %d: %d evaluations, %d iterations, status %s, controls %s" % [seed_value,
 			evaluations, int(report.get("solver_iterations", -1)),
-			str(report.get("solver_status", "missing"))])
+			str(report.get("solver_status", "missing")), str(report.get("accepted_values", []))])
 		_expect(evaluations >= 1 and evaluations <= allowance
 			and report.get("max_unique_evaluations") == RideReturnSolve.MAX_RETURN_EVALUATIONS,
 			"seed %d spends %d return evaluations, over the %d fleet allowance"

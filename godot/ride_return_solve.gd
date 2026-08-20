@@ -17,7 +17,7 @@ const MAX_RETURN_EVALUATIONS := 220
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
-	"height_b_recovery_duration_s", "height_a_peak_g",
+	"height_b_recovery_duration_s", "return_handoff_lateral_g", "height_a_peak_g",
 ]
 const RETURN_SCALAR_BOUNDS := [
 	# The continuous return ramps spread the turn over 1.6-2.05 s, so the previous compact-pulse
@@ -37,7 +37,7 @@ const RETURN_SCALAR_BOUNDS := [
 	# it decisively banked without forcing an unnecessary overbank when the solved handoff needs
 	# to unwind heading.
 	[0.35, 6.0], [45.0 * PI / 180.0, 80.0 * PI / 180.0],
-	[2.0, 16.0], [0.1, 2.0], [0.35, 6.0],
+	[2.0, 16.0], [0.1, 2.0], [0.35, 6.0], [-0.8, 0.8],
 	# Height authority (2026-08-16): how hard both height beats are pulled is the eighth solved
 	# control, not a fixed constant, because all seven other controls are durations and banks and
 	# none of them can move the capture-gate height without moving everything else - the honest-drag
@@ -174,11 +174,12 @@ static func _return_spans(
 		targets, "return-height-a", "unload_scale", 1.0)
 	var height_b_airtime_g := -0.5 * RidePlanner.target(
 		targets, "return-height-b", "unload_scale", 1.0)
-	# The eighth control when the solve owns it; the drawn target (or its authored default) when a
-	# caller authors the return from the seven-vector alone, so the fixed `RETURN_SEED` fixtures
-	# still reproduce the drawn recipe exactly.
-	var height_a_peak_g := float(v[7]) if v.size() > 7 else RidePlanner.target(
-		targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
+	# The ninth control is a short, continuous FVD lateral handoff in the first return turn. The
+	# eighth control remains the height-a peak; a seven-entry seed is completed with zero handoff
+	# and the drawn peak so the authored seed stays deterministic.
+	var handoff_lateral_g := float(v[7]) * hand if v.size() > 8 else 0.0
+	var height_a_peak_g := float(v[8]) if v.size() > 8 else (float(v[7]) if v.size() > 7 else \
+		RidePlanner.target(targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
 	var turn_a_bank_rad := float(v[0])
 	var turn_b_bank_rad := float(v[3])
 	# The second beat's peak follows the first proportionally rather than drawing on its own:
@@ -221,7 +222,8 @@ static func _return_spans(
 	var turn_b_out_s := [0.85, 0.75]
 	var turn_b_out := _roll_ramp(turn_b_out_s, turn_b_bank_rad_signed, 0.0)
 	var spans := _roll_bank_spans(
-		["raceway/turn-a/entry", "raceway/turn-a/load"], turn_a_in_s, turn_a_in, 1.0)
+		["raceway/turn-a/entry", "raceway/turn-a/load"], turn_a_in_s, turn_a_in, 1.0, NAN,
+		handoff_lateral_g)
 	spans.append(_return_span("raceway/turn-a/core", float(v[1]), turn_a_normal, turn_a_normal))
 	spans.append_array(_roll_bank_spans(
 		["raceway/turn-a/exit", "raceway/turn-a/transfer-bank", "raceway/turn-a/transfer-cross"],
@@ -305,7 +307,7 @@ static func _roll_ramp(durations: Array, from_bank_rad: float, to_bank_rad: floa
 ## the first and last loads where the chain has to meet a neighbour that is not a level bank.
 static func _roll_bank_spans(
 	ids: Array, durations: Array, ramp: Dictionary, entry_normal: float = NAN,
-	exit_normal: float = NAN
+	exit_normal: float = NAN, lateral_peak_g: float = 0.0
 ) -> Array:
 	var banks: Array = ramp.banks
 	var spans := []
@@ -319,9 +321,14 @@ static func _roll_bank_spans(
 		var normal := Motion.constant(from_normal) \
 			if absf(from_normal - to_normal) <= CONSTANT_PROFILE_TOLERANCE_G \
 			else Motion.quintic(from_normal, to_normal)
+		var lateral := Motion.constant(0.0)
+		if absf(lateral_peak_g) > CONSTANT_PROFILE_TOLERANCE_G:
+			lateral = Motion.quintic(0.0, lateral_peak_g) if index == 0 \
+				else Motion.quintic(lateral_peak_g, 0.0) if index == ids.size() - 1 \
+				else Motion.constant(lateral_peak_g)
 		var transition_id := str(ids[index]).get_slice("/", 1)
 		spans.append(Motion.span(str(ids[index]), float(durations[index]), "moving", normal,
-			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index], transition_id))
+			lateral, Motion.constant(0.0), ramp.roll[index], transition_id))
 	return spans
 
 
@@ -346,7 +353,11 @@ static func _solve_return(
 	# fights the other, no randomness enters here, and a seven-entry seed (the committed
 	# `RETURN_SEED`) is completed deterministically from the build's own targets.
 	var initial: Array = seed.duplicate()
-	if initial.size() == RETURN_SCALAR_IDS.size() - 1:
+	if initial.size() == RETURN_SCALAR_IDS.size() - 2:
+		initial.append(0.0)
+		initial.append(RidePlanner.target(
+			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
+	elif initial.size() == RETURN_SCALAR_IDS.size() - 1:
 		initial.append(RidePlanner.target(
 			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
 	var lower := []

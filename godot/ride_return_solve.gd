@@ -160,8 +160,6 @@ const TERMINAL_DISTANCE_TOLERANCE_M := 0.05
 const CAPTURE_COEFFICIENT_BOUNDS := [
 	[-1.5, 1.5], [-1.5, 1.5], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
 ]
-# Temporary CI-only seam used by return_basin_probe.gd; an empty value is production behavior.
-static var PROBE_UNBANK_PROFILE: Array = []
 
 
 static func _return_spans(
@@ -198,8 +196,6 @@ static func _return_spans(
 	# The direct unbank stays one continuous roll from the solved turn bank to level while its
 	# two semantic spans retain the turn-a transition ownership.
 	var turn_a_out_s := [0.85, 0.90]
-	if PROBE_UNBANK_PROFILE.size() == 2:
-		turn_a_out_s = [float(PROBE_UNBANK_PROFILE[0]), float(PROBE_UNBANK_PROFILE[1])]
 	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what

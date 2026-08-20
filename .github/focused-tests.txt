@@ -1,4 +1,4 @@
-res://return_basin_probe.gd
+res://return_heading_probe.gd
 res://motion_tests.gd
 res://route_sampling_tests.gd
 res://bounded_solver_tests.gd

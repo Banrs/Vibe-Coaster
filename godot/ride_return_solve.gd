@@ -36,8 +36,8 @@ const RETURN_SCALAR_BOUNDS := [
 	# The second return sweep is a recovery turn after the planar camelback; a 45 deg floor keeps
 	# it decisively banked without forcing an unnecessary overbank when the solved handoff needs
 	# to unwind heading.
-	[0.35, 4.0], [45.0 * PI / 180.0, 80.0 * PI / 180.0],
-	[2.0, 12.0], [0.1, 2.0], [0.35, 4.6],
+	[0.35, 6.0], [45.0 * PI / 180.0, 80.0 * PI / 180.0],
+	[2.0, 16.0], [0.1, 2.0], [0.35, 6.0],
 	# Height authority (2026-08-16): how hard both height beats are pulled is the eighth solved
 	# control, not a fixed constant, because all seven other controls are durations and banks and
 	# none of them can move the capture-gate height without moving everything else - the honest-drag

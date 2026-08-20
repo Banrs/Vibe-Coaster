@@ -62,6 +62,7 @@ func _initialize() -> void:
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
 	_test_first_return_turn_unbanks_directly()
+	_test_return_unbank_has_a_declared_closure_axis()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
@@ -277,6 +278,17 @@ func _test_first_return_turn_unbanks_directly() -> void:
 		and reversals == 1 and not post_core_positive,
 		"the first return turn banks in once and directly unbanks without a counter-steer: %s"
 		% str(directions))
+
+
+func _test_return_unbank_has_a_declared_closure_axis() -> void:
+	var controls := RideReturnSolve.RETURN_SCALAR_IDS
+	var residuals := RideReturnSolve.RETURN_RESIDUAL_IDS
+	_expect(controls.has("height_a_peak_g")
+		and controls.has("turn_a_unbank_duration_s")
+		and residuals.has("roll_rad")
+		and controls.size() == residuals.size(),
+		"the direct-unbank duration and terminal roll form a declared square closure axis: %s / %s"
+		% [str(controls), str(residuals)])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:

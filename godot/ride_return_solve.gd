@@ -60,8 +60,8 @@ const RETURN_SCALAR_BOUNDS := [
 # Seven entries for nine controls, on purpose: this is the CI-measured continuation anchor for
 # the structurally role-gated return. `_solve_return` still appends each story's certified
 # height-a draw and nominal release duration.
-const RETURN_SEED := [1.28940535229884, 1.75374839974762, 0.35001753325239,
-	1.24326252369185, 5.10338424411946, 0.79588639399383, 4.17947544409835]
+const RETURN_SEED := [1.29021989353132, 1.75731046916552, 0.35023411026532,
+	1.23806664481683, 5.14845092773176, 0.8369040348961, 4.14299570604331]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29
@@ -85,26 +85,20 @@ const RETURN_LENGTH_AIM_MARGIN_M := 3.0
 ## slack on this channel (0.02 x the 125.0 scale = 2.5 m), so unlike the route-length margin the
 ## interiority an accepted point carries here is structural rather than only measured.
 const RETURN_TURN_B_AIM_MARGIN_M := 3.0
-## The first return turn is independently role-gated too. The same margin makes its lower bound
-## visible to the solve before the route contract sees the accepted root.
-const RETURN_TURN_A_AIM_MARGIN_M := 3.0
 ## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, tightening this
 ## role band by the same structural margin as the route-length aim.
 const RECORD_RELEASE_LENGTH_AIM_MARGIN_M := 3.0
 ## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
-## exactly 0.0 against it, so fixed-layout fixtures keep all three role-band rows inert in the
-## ten-residual solve.
+## exactly 0.0 against it, so fixed-layout fixtures keep both role-band rows inert in the
+## nine-residual solve.
 const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
-	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_a_length_band_m",
-	"turn_b_length_band_m", "record_release_length_band_m",
+	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
+	"record_release_length_band_m",
 ]
-const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0]
-const RETURN_FINE_TOLERANCES := [
-	0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.075, 0.075,
-]
-const RETURN_TURN_A_SPAN_PREFIX := "raceway/turn-a/"
+const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0]
+const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.075]
 ## The `return-turn-b` role, by the same span-id prefix `RideProgram.material_role_spans` owns it
 ## with. Named here rather than re-derived so the residual and the route contract cannot drift
 ## apart about which spans the role is.
@@ -408,8 +402,7 @@ static func _solve_return(
 				["station_forward_m", 0], ["cross_track_m", 1], ["height_m", 2],
 				["yaw_rad", 3], ["pitch_rad", 4], ["roll_rad", 4],
 				["route_total_length_m", 5], ["speed_mps", 6],
-				["turn_a_length_m", 7], ["turn_b_length_m", 8],
-				["record_release_length_m", 9],
+				["turn_b_length_m", 7], ["record_release_length_m", 8],
 			]:
 				var field: String = field_and_index[0]
 				var tolerance_index: int = field_and_index[1]
@@ -572,8 +565,6 @@ static func _return_observation(
 	var entry_speed_band: Vector2 = layout.get("reserved_corridor", {}).get(
 		"entry_speed_mps", CAPTURE_ENTRY_SPEED_MPS)
 	var total_length_m := float(route.distance_m[-1]) + approach
-	var turn_a_band: Vector2 = layout.get("turn_a_length_m", RETURN_UNBOUNDED_BAND_M)
-	var turn_a_length_m := _role_arc_m(route, spans, RETURN_TURN_A_SPAN_PREFIX)
 	var turn_b_band: Vector2 = layout.get("turn_b_length_m", RETURN_UNBOUNDED_BAND_M)
 	var turn_b_length_m := _role_arc_m(route, spans, RETURN_TURN_B_SPAN_PREFIX)
 	var record_release_band: Vector2 = layout.get(
@@ -592,9 +583,6 @@ static func _return_observation(
 		RideProgram._band_residual(float(state.speed_mps), Vector2(
 			entry_speed_band.x + RETURN_ENTRY_SPEED_PADDING_MPS,
 			entry_speed_band.y - RETURN_ENTRY_SPEED_PADDING_MPS)),
-		RideProgram._band_residual(turn_a_length_m, Vector2(
-			turn_a_band.x + RETURN_TURN_A_AIM_MARGIN_M,
-			turn_a_band.y - RETURN_TURN_A_AIM_MARGIN_M)),
 		RideProgram._band_residual(turn_b_length_m, Vector2(
 			turn_b_band.x + RETURN_TURN_B_AIM_MARGIN_M,
 			turn_b_band.y - RETURN_TURN_B_AIM_MARGIN_M)),
@@ -621,7 +609,7 @@ static func _return_observation(
 			"cross_track_m": capture[0], "yaw_rad": capture[2], "pitch_rad": capture[3],
 			"roll_rad": capture[4], "speed_mps": state.speed_mps,
 			"return_length_m": float(route.distance_m[-1]) - float(route.distance_m[0]),
-			"turn_a_length_m": turn_a_length_m, "turn_b_length_m": turn_b_length_m,
+			"turn_b_length_m": turn_b_length_m,
 			"record_release_length_m": record_release_length_m,
 			"route_total_length_m": total_length_m}}
 

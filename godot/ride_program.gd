@@ -161,7 +161,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	var return_hand := -hand
 
 	_begin_gesture(gestures, "record-release-turn", spans.size(), "record-release-turn")
-	_add_record_release_turn(spans, metadata, propulsion, -return_hand)
+	_add_record_release_turn(spans, metadata, propulsion, return_hand)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")

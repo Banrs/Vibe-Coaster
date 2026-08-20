@@ -25,6 +25,8 @@ const Counterparts := preload("res://fidelity_counterparts.gd")
 const Verify := preload("res://verify.gd")
 const Sampling := preload("res://route_sampling.gd")
 const Motion := preload("res://motion.gd")
+const ElementContract := preload("res://element_contract.gd")
+const Terrain := preload("res://terrain.gd")
 
 const SCHEMA := "ride-geometry-metrics@1"
 const COUNTERPART_SCHEMA := "ride-geometry-counterpart-comparison@1"
@@ -109,6 +111,7 @@ static func transition_audit(spans: Array) -> Dictionary:
 	var errors := PackedStringArray()
 	var seams := []
 	var short_spans := []
+	var unowned := []
 	for index in spans.size():
 		var span: Variant = spans[index]
 		if not span is Dictionary:
@@ -120,8 +123,20 @@ static func transition_audit(spans: Array) -> Dictionary:
 		elif bool(span.get("semantic", false)) and duration < SEMANTIC_SPAN_MIN_S:
 			short_spans.append({"index": index, "span_id": str(span.get("span_id", "")),
 				"duration_s": duration})
+			errors.append("semantic span %s is shorter than %.2f s" % [
+				str(span.get("span_id", index)), SEMANTIC_SPAN_MIN_S])
 		var transition_id := str(span.get("transition_id", ""))
-		if index == 0 or transition_id.is_empty():
+		if transition_id.is_empty():
+			var unowned_channels := PackedStringArray()
+			for channel in ["lateral_g", "roll_rate_rad_s"]:
+				var profile: Variant = span.get(channel)
+				if profile is Dictionary and _profile_has_motion(profile):
+					unowned_channels.append(channel)
+			if not unowned_channels.is_empty():
+				unowned.append({"index": index, "span_id": str(span.get("span_id", "")),
+					"channels": unowned_channels})
+			continue
+		if index == 0:
 			continue
 		var previous: Variant = spans[index - 1]
 		if not previous is Dictionary or str(previous.get("transition_id", "")) != transition_id:
@@ -148,7 +163,87 @@ static func transition_audit(spans: Array) -> Dictionary:
 				transition_id, ", ".join(restarted_channels), index])
 	return {"schema_version": SCHEMA, "metric": "transition_audit", "ok": errors.is_empty(),
 		"semantic_span_min_s": SEMANTIC_SPAN_MIN_S, "seams": seams,
-		"short_spans": short_spans, "errors": errors}
+		"short_spans": short_spans, "unowned": unowned, "errors": errors}
+
+
+## Measure every declared material role through one evidence path. `role_bounds` contains inclusive
+## published trajectory sample bounds, not authored span indices. Missing terrain is an explicit
+## unavailable AGL record; it never becomes a fabricated zero.
+static func role_audit(
+	route: Dictionary, role_bounds: Dictionary, expected_role_ids: Array = [],
+	terrain: Dictionary = {}
+) -> Dictionary:
+	var required := ["positions", "tangents", "banks", "times", "distances", "speeds",
+		"normal_g", "lateral_g", "roll_rates"]
+	var missing := []
+	for field in required:
+		if not route.has(field):
+			missing.append(field)
+	if not missing.is_empty():
+		return {"schema_version": SCHEMA, "metric": "role_audit", "ok": false,
+			"errors": PackedStringArray(["role audit missing fields: %s" % ", ".join(missing)]),
+			"roles": {}}
+	var role_ids: Array = expected_role_ids.duplicate()
+	if role_ids.is_empty():
+		role_ids = role_bounds.keys()
+	role_ids.sort()
+	var errors := PackedStringArray()
+	var roles := {}
+	for role_value in role_ids:
+		var role_id := str(role_value)
+		var bounds_value: Variant = role_bounds.get(role_id)
+		if not bounds_value is Vector2i or bounds_value.x < 0 or bounds_value.y < bounds_value.x:
+			errors.append("role %s has no published sample bounds" % role_id)
+			roles[role_id] = {"status": "missing", "role_id": role_id}
+			continue
+		var bounds: Vector2i = bounds_value
+		var measurement := ElementContract.measure(route, bounds.x, bounds.y)
+		if measurement.get("status") != "measured":
+			errors.append("role %s measurement unavailable: %s" % [
+				role_id, str(measurement.get("reason", "unknown"))])
+			roles[role_id] = {"status": "unavailable", "role_id": role_id,
+				"measurement": measurement}
+			continue
+		var shape := shape_of(route, bounds.x, bounds.y)
+		var agl := _agl_distribution(route, bounds.x, bounds.y, terrain)
+		roles[role_id] = {"status": "measured", "role_id": role_id,
+			"first_sample": bounds.x, "last_sample": bounds.y,
+			"measurement": measurement, "shape": shape, "agl": agl,
+			"speed_mps": _range(route.speeds, bounds.x, bounds.y),
+			"normal_g": _range(route.normal_g, bounds.x, bounds.y),
+			"lateral_g": _range(route.lateral_g, bounds.x, bounds.y),
+			"roll_rate_dps": _range(route.roll_rates, bounds.x, bounds.y)}
+	return {"schema_version": SCHEMA, "metric": "role_audit", "ok": errors.is_empty(),
+		"roles": roles, "errors": errors}
+
+
+static func _agl_distribution(
+	route: Dictionary, first: int, last: int, terrain: Dictionary
+) -> Dictionary:
+	if terrain.is_empty() or str(terrain.get("kind", "")) != "material":
+		return {"status": "unavailable", "reason": "terrain evidence is not available"}
+	var values := PackedFloat64Array()
+	for index in range(first, last + 1):
+		var position: Vector3 = route.positions[index]
+		values.append(position.y - Terrain.height(terrain, position.x, position.z))
+	if values.is_empty():
+		return {"status": "unavailable", "reason": "role has no terrain samples"}
+	var sorted := values.duplicate()
+	sorted.sort()
+	return {"status": "measured", "minimum_m": float(sorted[0]),
+		"median_m": float(sorted[int(sorted.size() / 2)]),
+		"p90_m": float(sorted[mini(sorted.size() - 1, ceili(sorted.size() * 0.9) - 1)]),
+		"maximum_m": float(sorted[-1])}
+
+
+static func _range(values: Variant, first: int, last: int) -> Dictionary:
+	var low := INF
+	var high := -INF
+	for index in range(first, last + 1):
+		var value := float(values[index])
+		low = minf(low, value)
+		high = maxf(high, value)
+	return {"minimum": low, "maximum": high}
 
 
 static func _profile_value(profile: Dictionary, u: float) -> float:

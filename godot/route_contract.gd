@@ -7,6 +7,7 @@ const GENERATOR_VERSION := "time-domain-v1"
 const ROW_OFFSETS := [0.0, 2.15, 4.30, 6.45, 8.60, 10.75, 12.90]
 const Terrain := preload("res://terrain.gd")
 const ElementContract := preload("res://element_contract.gd")
+const GeometryMetrics := preload("res://geometry_metrics.gd")
 const INITIAL_POSITION_TOLERANCE_M := 0.000001
 const INITIAL_FRAME_TOLERANCE := 0.000001
 const INITIAL_SPEED_TOLERANCE_MPS := 0.000001
@@ -101,6 +102,23 @@ static func build(
 			"failure": terrain_proofs.get("failure", {})}
 	var planning: Dictionary = plan.terrain_frame.get("planning", {}).duplicate(true)
 	planning.merge(terrain_proofs.planning, true)
+	var role_bounds := {}
+	var expected_role_ids := []
+	for role_value in plan.get("roles", []):
+		var role_id := str(role_value.get("id", ""))
+		if role_id.is_empty():
+			continue
+		expected_role_ids.append(role_id)
+		role_bounds[role_id] = _role_sample_bounds(compiled.role_spans, role_id, trajectory)
+	var measured_route := {"positions": trajectory.position_m, "tangents": trajectory.tangent,
+		"banks": banks, "ups": trajectory.rider_up, "times": trajectory.time_s,
+		"distances": trajectory.distance_m, "speeds": trajectory.speed_mps,
+		"normal_g": trajectory.normal_g, "lateral_g": trajectory.lateral_g,
+		"roll_rates": _degrees(trajectory.roll_rate_rad_s)}
+	var geometry_audit := GeometryMetrics.role_audit(
+		measured_route, role_bounds, expected_role_ids, terrain)
+	if not geometry_audit.ok:
+		return {"ok": false, "errors": geometry_audit.errors}
 	return {
 		"ok": true,
 		"errors": PackedStringArray(),
@@ -133,6 +151,7 @@ static func build(
 		"terrain": terrain,
 		"dense_output": trajectory.dense_output,
 		"element_contracts": element_contracts.records,
+		"geometry_audit": geometry_audit,
 		"generation_stats": compiled.generation_stats.duplicate(true),
 		"terrain_story_plan": {"plan": plan.duplicate(true),
 			"integration_frame": "planned-world", "planning": planning,

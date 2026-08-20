@@ -57,11 +57,11 @@ const RETURN_SCALAR_BOUNDS := [
 	# authority to move the downstream station-local closure.
 	[2.0, 2.6],
 ]
-# Seven entries for nine controls, on purpose: this warm start is the first seven controls of the
-# seed-123456 root measured in CI with balanced release support. `_solve_return` still appends the
-# build's own certified height-a draw and nominal release duration for each story.
-const RETURN_SEED := [1.39626340159546, 0.76772837857454, 1.0363033559425,
-	1.11773700572712, 6.1411231204817, 0.88634746099593, 4.57054291643165]
+# Seven entries for nine controls, on purpose: this is the coordinate-wise median of the five
+# production roots measured in CI with balanced release support. `_solve_return` still appends
+# each story's certified height-a draw and nominal release duration.
+const RETURN_SEED := [1.39626340159546, 0.73918546271028, 0.95748367615848,
+	1.13999185181908, 6.13702383346477, 0.76892439773047, 4.53482087043434]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29

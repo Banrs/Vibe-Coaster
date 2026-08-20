@@ -154,7 +154,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		_prefix_controls_from_plan(plan))
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
-	_add_camelback(spans, metadata, propulsion, hand)
+	_add_camelback(spans, metadata, propulsion)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	var return_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
@@ -413,13 +413,11 @@ static func _add_story_prefix(
 
 
 static func _add_camelback(
-	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+	spans: Array, metadata: Array, propulsion: PackedInt32Array
 ) -> void:
-	var turn := -0.25001368 * hand
 	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
-	var pullout_hold_s := 0.01
 	var pullup_s := 1.87949032 * 1.33555111055541
 	var unload_s := 3.01169597 * 1.15 - 0.4
 	var crest_s := 3.62587650 * 1.06
@@ -427,27 +425,18 @@ static func _add_camelback(
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
 	var fall_s := 3.40
-	var bank := -deg_to_rad(18.0) * hand
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",
-		Motion.quintic(1.0, positive_g), Motion.compact_pulse(turn), 0.0,
-		Motion.compact_pulse(bank / (pullup_s * COMPACT_PULSE_AREA)), "rise")
-	_add(spans, metadata, propulsion, "camelback/rise-hold", 0.4, "moving",
-		positive_g, Motion.compact_pulse(turn), 0.0, 0.0, "rise")
+		Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
-		Motion.compact_pulse(turn), 0.0,
-		Motion.compact_pulse(-bank / (unload_s * COMPACT_PULSE_AREA)), "rise")
+		0.0, 0.0, 0.0, "rise")
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		negative_g, Motion.compact_pulse(-turn), 0.0,
-		Motion.compact_pulse(-bank / (crest_s * COMPACT_PULSE_AREA)), "crest")
+		Motion.quintic(negative_g, negative_g * 0.88), 0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
-		Motion.quintic(negative_g, pullout_g), Motion.compact_pulse(-turn), 0.0,
-		Motion.compact_pulse(bank / (fall_s * COMPACT_PULSE_AREA)), "fall")
-	_add(spans, metadata, propulsion, "camelback/pullout-hold", pullout_hold_s, "moving",
-		pullout_g, 0.0, 0.0, 0.0, "exit")
+		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")
 	_add(spans, metadata, propulsion, "camelback/pullout-release",
-		1.58 - pullout_hold_s, "moving",
+		1.58, "moving",
 		Motion.quintic(pullout_g, 1.0), 0.0, 0.0, 0.0, "exit")
 
 
@@ -1134,16 +1123,17 @@ static func _add(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array, span_id: String,
 	duration_s: float, mode: String, normal: Variant, lateral: Variant, drive: Variant,
 	roll: Variant, role: String, propulsion_id: int = 0, minimum_speed_mps: float = 2.0,
-	diagnostic_kind: String = ""
+	diagnostic_kind: String = "", transition_id: String = ""
 ) -> void:
 	var normal_profile: Dictionary = normal if normal is Dictionary else Motion.constant(float(normal))
 	var lateral_profile: Dictionary = lateral if lateral is Dictionary else Motion.constant(float(lateral))
 	var drive_profile: Dictionary = drive if drive is Dictionary else Motion.constant(float(drive))
 	var roll_profile: Dictionary = roll if roll is Dictionary else Motion.constant(float(roll))
+	var owned_transition := transition_id if not transition_id.is_empty() else diagnostic_kind
 	spans.append(Motion.span(span_id, duration_s, mode, normal_profile, lateral_profile,
-		drive_profile, roll_profile))
+		drive_profile, roll_profile, owned_transition))
 	metadata.append({"span_id": span_id, "role_id": role,
 		"propulsion_id": propulsion_id,
 		"minimum_speed_mps": minimum_speed_mps,
-		"diagnostic_kind": diagnostic_kind})
+		"diagnostic_kind": diagnostic_kind, "transition_id": owned_transition})
 	propulsion.append(propulsion_id)

@@ -119,6 +119,7 @@ static func build(
 		measured_route, role_bounds, expected_role_ids, terrain)
 	if not geometry_audit.ok:
 		return {"ok": false, "errors": geometry_audit.errors}
+	geometry_audit["transitions"] = GeometryMetrics.transition_audit(compiled.spans)
 	return {
 		"ok": true,
 		"errors": PackedStringArray(),

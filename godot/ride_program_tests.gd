@@ -5,6 +5,7 @@ const RideProgram := preload("res://ride_program.gd")
 const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
 const RideReturnSolve := preload("res://ride_return_solve.gd")
 const RideGenerator := preload("res://generator.gd")
+const GeometryMetrics := preload("res://geometry_metrics.gd")
 const CAPTURE_MARGIN_IDS := [
 	"coefficient_margin",
 	"brake_reserve_m",
@@ -60,6 +61,7 @@ func _initialize() -> void:
 	_test_preset_return_gate_contract()
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
+	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
 	_test_station_local_program_compiles()
@@ -165,6 +167,27 @@ func _test_sustained_brake_closes_without_padding() -> void:
 			"the %s brake publishes its bounded solve diagnostics" % fixture.id)
 	_expect(accepted_holds.size() == 2 and accepted_holds[1] >= accepted_holds[0] + 0.3,
 		"additional distance alone materially lengthens the accepted brake hold")
+
+
+func _test_camelback_is_planar_and_continuous() -> void:
+	var spans: Array = []
+	var metadata: Array = []
+	var propulsion := PackedInt32Array()
+	RideProgram._add_camelback(spans, metadata, propulsion)
+	_expect(spans.size() == 5, "camelback has five meaningful FVD phases, got %d" % spans.size())
+	for span: Dictionary in spans:
+		_expect(str(span.span_id).find("hold") < 0,
+			"camelback has no semantic hold span: %s" % str(span.span_id))
+		_expect(float(span.duration_s) >= 0.30,
+			"camelback phase is long enough to be geometric: %s" % str(span.span_id))
+		_expect(span.lateral_g.kind == "constant" and absf(float(span.lateral_g.value)) <= 0.000001,
+			"camelback lateral force is zero: %s" % str(span.span_id))
+		_expect(span.roll_rate_rad_s.kind == "constant"
+			and absf(float(span.roll_rate_rad_s.value)) <= 0.000001,
+			"camelback roll rate is zero: %s" % str(span.span_id))
+	var transition_audit := GeometryMetrics.transition_audit(spans)
+	_expect(transition_audit.ok, "camelback transition audit is clean: %s"
+		% str(transition_audit.errors))
 
 
 func _test_material_return_recipe() -> void:

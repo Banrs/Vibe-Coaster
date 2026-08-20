@@ -322,8 +322,9 @@ static func _roll_bank_spans(
 		var normal := Motion.constant(from_normal) \
 			if absf(from_normal - to_normal) <= CONSTANT_PROFILE_TOLERANCE_G \
 			else Motion.quintic(from_normal, to_normal)
+		var transition_id := str(ids[index]).get_slice("/", 1)
 		spans.append(Motion.span(str(ids[index]), float(durations[index]), "moving", normal,
-			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index]))
+			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index], transition_id))
 	return spans
 
 
@@ -333,7 +334,7 @@ static func _return_span(id: String, duration_s: float, from_g: float, to_g: flo
 		else Motion.quintic(from_g, to_g)
 	var roll := Motion.constant(0.0) if absf(roll_peak_rad_s) < 0.000001 else Motion.compact_pulse(roll_peak_rad_s)
 	return Motion.span(id, duration_s, "moving", normal, Motion.constant(0.0),
-		Motion.constant(0.0), roll)
+		Motion.constant(0.0), roll, id.get_slice("/", 1))
 
 
 static func _solve_return(

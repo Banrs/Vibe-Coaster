@@ -10,7 +10,11 @@ const RideTerrain := preload("res://terrain.gd")
 const SEED := 42
 const BANK_RAD := PI / 3.0
 const ROLL_DURATION_S := 0.9
-const CORE_DURATIONS_S := [0.0, 1.5, 3.0, 4.5]
+const CORE_DURATIONS_S := [1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8]
+const REFINED_SEED := [
+	1.14939439795607, 3.63085938907567, 0.52940611020326, 1.08263010796811,
+	5.9870104368986, 1.48234433817609, 4.65395199671949, 4.33097047505739,
+]
 
 
 func _initialize() -> void:
@@ -29,10 +33,9 @@ func _initialize() -> void:
 	var return_hand := -hand
 	var targets: Dictionary = story.targets
 	var controls := RideProgram._prefix_controls_from_plan(plan)
-	for direction in [-1, 1]:
-		for core_duration_s in CORE_DURATIONS_S:
-			_run_lane(direction, float(core_duration_s), initial_state, story, controls,
-				layout, hand, return_hand, targets)
+	for core_duration_s in CORE_DURATIONS_S:
+		_run_lane(-1, float(core_duration_s), initial_state, story, controls,
+			layout, hand, return_hand, targets)
 	quit(1)
 
 
@@ -78,7 +81,7 @@ func _run_lane(direction: int, core_duration_s: float, initial_state: Dictionary
 		"speed_mps": post_camelback.speed_mps,
 	}))
 	var solved_return := RideReturnSolve._solve_return(
-		post_camelback, layout, return_hand, RideReturnSolve.RETURN_SEED, targets)
+		post_camelback, layout, return_hand, REFINED_SEED, targets)
 	print("return heading probe solve=%s" % str({
 		"direction": direction,
 		"core_duration_s": core_duration_s,

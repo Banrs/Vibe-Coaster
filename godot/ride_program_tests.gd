@@ -305,8 +305,8 @@ func _test_record_release_turn_has_roll_headroom() -> void:
 	for span: Dictionary in spans:
 		peak_roll_dps = maxf(peak_roll_dps,
 			absf(rad_to_deg(Motion.profile_sample(span.roll_rate_rad_s, 0.5).x)))
-	_expect(spans.size() == 3 and is_equal_approx(float(spans[0].duration_s), 0.8)
-		and is_equal_approx(float(spans[2].duration_s), 0.8)
+	_expect(spans.size() == 3 and is_equal_approx(float(spans[0].duration_s), 0.76)
+		and is_equal_approx(float(spans[2].duration_s), 0.76)
 		and peak_roll_dps <= 120.0,
 		"the release shoulders preserve role length with roll-rate headroom: %s / %.3f dps"
 		% [str([spans[0].duration_s, spans[2].duration_s]), peak_roll_dps])

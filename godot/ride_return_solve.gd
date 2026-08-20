@@ -11,14 +11,14 @@ const RidePlanner := preload("res://ride_planner.gd")
 
 const MAX_CAPTURE_EVALUATIONS := 40
 # The planar camelback handoff is a different solve regime from the former banked handoff: its
-# bounded LM path needs room for up to twenty accepted/rejected steps across ten controls. The
+# bounded LM path needs room for up to twenty accepted/rejected steps across eleven controls. The
 # 220 cap is finite and derived from that fixed iteration allowance, not an open-ended retry.
 const MAX_RETURN_EVALUATIONS := 220
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
-	"height_b_recovery_duration_s", "height_a_peak_g", "height_a_airtime_duration_s",
-	"record_release_core_duration_s",
+	"height_b_recovery_duration_s", "height_a_peak_g", "height_a_unload_duration_s",
+	"height_a_airtime_duration_s", "record_release_core_duration_s",
 ]
 const RETURN_SCALAR_BOUNDS := [
 	# The continuous return ramps spread the turn over 1.6-1.75 s, so the previous compact-pulse
@@ -54,19 +54,20 @@ const RETURN_SCALAR_BOUNDS := [
 	# height-b's proportional peak (x0.831) reaches 3.82, still under height-a's own draw band.
 	[3.4, 4.6],
 	# Height-a owns the same real constant-force airtime duration authority as height-b. The
-	# original authored 0.75 s remains the deterministic seed and sits well inside this band.
-	[0.1, 2.0],
+	# original authored unload and airtime durations remain deterministic interior seeds.
+	[0.35, 2.0], [0.1, 2.0],
 	# The record-release turn is a real banked release, not a neutral interval: its 0.8 s shoulders
 	# and 2.29 s nominal core fit the 340-390 m material band while leaving the macro duration enough
 	# authority to move the downstream station-local closure.
 	[2.0, 2.6],
 ]
-# Seven entries for ten controls, on purpose: this is the CI-measured continuation anchor for
+# Seven entries for eleven controls, on purpose: this is the CI-measured continuation anchor for
 # the structurally role-gated return. `_solve_return` still appends each story's certified
-# height-a draw, authored height-a airtime, and nominal release duration.
+# height-a draw, authored height-a transition durations, and nominal release duration.
 const RETURN_SEED := [1.29337946548361, 1.7984801825552, 0.3968173833826,
 	1.20424395090884, 5.45194693720828, 0.76263241699466, 4.15128365153676]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
+const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 1.05
 const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.75
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29
@@ -157,11 +158,13 @@ static func _return_spans(
 		targets, "return-height-a", "unload_scale", 1.0)
 	var height_b_airtime_g := -0.5 * RidePlanner.target(
 		targets, "return-height-b", "unload_scale", 1.0)
-	# The final three controls are height-a peak, its real airtime duration, and the production
+	# The final four controls are height-a peak, its real transition durations, and the production
 	# prefix seam. Direct recipe callers may omit them and receive deterministic authored values.
 	var height_a_peak_g := float(v[7]) if v.size() > 7 else \
 		RidePlanner.target(targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
-	var height_a_airtime_s := float(v[8]) if v.size() > 8 else \
+	var height_a_unload_s := float(v[8]) if v.size() > 8 else \
+		RETURN_HEIGHT_A_UNLOAD_DURATION_S
+	var height_a_airtime_s := float(v[9]) if v.size() > 9 else \
 		RETURN_HEIGHT_A_AIRTIME_DURATION_S
 	var turn_a_bank_rad := float(v[0])
 	var turn_b_bank_rad := float(v[3])
@@ -199,7 +202,8 @@ static func _return_spans(
 		turn_a_out_s, turn_a_out))
 	spans.append_array([
 		_return_span("raceway/height-a/pullup", 0.75, 1.0, height_a_peak_g),
-		_return_span("raceway/height-a/unload", 1.05, height_a_peak_g, height_a_airtime_g),
+		_return_span("raceway/height-a/unload", height_a_unload_s,
+			height_a_peak_g, height_a_airtime_g),
 		_return_span("raceway/height-a/airtime", height_a_airtime_s, height_a_airtime_g,
 			height_a_airtime_g),
 		_return_span("raceway/height-a/recovery", float(v[2]), height_a_airtime_g,
@@ -315,13 +319,15 @@ static func _solve_return(
 	if initial.size() == 7:
 		initial.append(RidePlanner.target(
 			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
+		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
 		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
 		initial.append(RECORD_RELEASE_CORE_DURATION_S)
 	elif initial.size() == 8:
+		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
 		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
 		initial.append(RECORD_RELEASE_CORE_DURATION_S)
-	elif initial.size() == 9:
-		return RideProgram._failure("ambiguous legacy nine-value return seed", "return")
+	elif initial.size() == 9 or initial.size() == 10:
+		return RideProgram._failure("ambiguous legacy return seed", "return")
 	elif initial.size() != RETURN_SCALAR_IDS.size():
 		return RideProgram._failure("return seed has invalid control count", "return")
 	var lower := []

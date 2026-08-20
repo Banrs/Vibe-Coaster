@@ -292,22 +292,26 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 	_expect(release_index > 0 and release_index + 1 < roles.size()
 		and roles[release_index - 1] == "tunnel-lsm3"
 		and roles[release_index + 1] == "camelback"
-		and controls.slice(-3) == ["height_a_peak_g", "height_a_airtime_duration_s",
-			"record_release_core_duration_s"]
+		and controls.slice(-4) == ["height_a_peak_g", "height_a_unload_duration_s",
+			"height_a_airtime_duration_s", "record_release_core_duration_s"]
 		and controls.has("record_release_core_duration_s")
 		and residuals.has("turn_a_length_band_m")
 		and residuals.has("height_a_length_band_m")
 		and residuals.has("record_release_length_band_m")
-		and controls.size() + 1 == residuals.size(),
-		"the record release is ordered and the return exposes one overdetermined role row: %s / %s / %s"
+		and controls.size() == residuals.size(),
+		"the record release is ordered with a square role-gated solve: %s / %s / %s"
 		% [str(roles), str(controls), str(residuals)])
 	var return_spans := RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED)
 	var height_a_airtime := return_spans.filter(func(span: Dictionary) -> bool:
 		return str(span.span_id) == "raceway/height-a/airtime")
-	_expect(height_a_airtime.size() == 1
+	var height_a_unload := return_spans.filter(func(span: Dictionary) -> bool:
+		return str(span.span_id) == "raceway/height-a/unload")
+	_expect(height_a_airtime.size() == 1 and height_a_unload.size() == 1
 		and is_equal_approx(float(height_a_airtime[0].duration_s),
-			RideReturnSolve.RETURN_HEIGHT_A_AIRTIME_DURATION_S),
-		"the seven-value seed receives the authored height-a airtime duration")
+			RideReturnSolve.RETURN_HEIGHT_A_AIRTIME_DURATION_S)
+		and is_equal_approx(float(height_a_unload[0].duration_s),
+			RideReturnSolve.RETURN_HEIGHT_A_UNLOAD_DURATION_S),
+		"the seven-value seed receives the authored height-a transition durations")
 
 
 func _test_record_release_turn_has_roll_headroom() -> void:

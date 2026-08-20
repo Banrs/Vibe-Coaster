@@ -428,7 +428,7 @@ static func _add_record_release_turn(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float = 1.0,
 	core_duration_s: float = RideReturnSolve.RECORD_RELEASE_CORE_DURATION_S
 ) -> void:
-	var bank_rad := hand * deg_to_rad(60.0)
+	var bank_rad := hand * deg_to_rad(65.0)
 	var banked_normal := 1.0 / cos(bank_rad)
 	var roll_in := RideReturnSolve._roll_ramp([0.9], 0.0, bank_rad)
 	var roll_out := RideReturnSolve._roll_ramp([0.9], bank_rad, 0.0)

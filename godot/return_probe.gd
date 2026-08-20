@@ -40,16 +40,19 @@ func _initialize() -> void:
 		1.25698645092423, 3.39547844224014, 6.0, 1.27965900475676,
 		2.0, 0.1, 6.0, 3.818829,
 	]
-	var return_result := RideReturnSolve._return_evaluation(start, layout, accepted,
-		RideProgram._settings(RideProgram.PRODUCTION_STEP_S), {}, -hand, initial_bank,
-		story.targets)
+	var settings := RideProgram._settings(RideProgram.PRODUCTION_STEP_S)
+	var return_spans := RideReturnSolve._return_spans(
+		accepted, -hand, initial_bank, story.targets)
+	var return_route := Motion.integrate(start, return_spans, settings)
+	var return_result := RideReturnSolve._return_observation(
+		return_route, layout, return_spans) if return_route.get("ok", false) else return_route
 	print("return_observation=%s" % str(return_result.get("observation", {})))
 	print("return_margins=%s" % str(return_result.get("margins", {})))
 	if not return_result.get("ok", false):
 		print("capture_outcome=skipped_return_failure:%s" % str(return_result))
 		quit(0)
 		return
-	var capture_start := RideProgram._last_state(return_result.route)
+	var capture_start := RideProgram._last_state(return_route)
 	var capture := RideReturnSolve._solve_capture(capture_start, layout,
 		RideProgram._settings(RideProgram.FINE_STEP_S))
 	print("capture_outcome=%s" % str(capture))

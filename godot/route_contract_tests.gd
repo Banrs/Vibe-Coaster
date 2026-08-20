@@ -6,7 +6,7 @@ const MATERIAL_ROLE_IDS := [
 	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
 	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
 	"act-one-wave", "climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
-	"outward-dive", "tunnel-lsm3", "camelback", "return-turn-a", "return-height-a",
+	"outward-dive", "tunnel-lsm3", "record-release-turn", "camelback", "return-turn-a", "return-height-a",
 	"return-turn-b", "return-height-b", "terminal-capture-brakes",
 ]
 const ROLE_FIXTURE_BAND_M := Vector2(10.0, 20.0)

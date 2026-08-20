@@ -26,17 +26,18 @@ const MATERIAL_ROLE_IDS := [
 	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
 	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
 	"act-one-wave", "climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
-	"outward-dive", "tunnel-lsm3", "camelback", "return-turn-a", "return-height-a",
+	"outward-dive", "tunnel-lsm3", "record-release-turn", "camelback", "return-turn-a", "return-height-a",
 	"return-turn-b", "return-height-b", "terminal-capture-brakes",
 ]
 ## Nominal role lengths, keyed by role id: a plan authors the roles its drawn sequence declares,
-## so the nominal a role is checked against cannot be an index into one fixed twenty-list.
+## so the nominal a role is checked against cannot be an index into one fixed role list.
 const ROLE_NOMINAL_LENGTH_M := {
 	"station-launch": 180.0, "opener-twisted-drop": 620.0, "opener-teardrop": 650.0,
 	"opener-release": 330.0, "act-one-immelmann": 430.0, "act-one-cutback": 310.0,
 	"act-one-loop": 360.0, "act-one-airtime": 260.0, "act-one-wave": 240.0,
 	"climb-lsm2": 600.0, "clifftop-slow-crest": 50.0, "clifftop-outward-rim": 90.0,
-	"outward-dive": 420.0, "tunnel-lsm3": 180.0, "camelback": 1000.0,
+	"outward-dive": 420.0, "tunnel-lsm3": 180.0, "record-release-turn": 365.0,
+	"camelback": 1000.0,
 	"return-turn-a": 480.0, "return-height-a": 420.0, "return-turn-b": 500.0,
 	"return-height-b": 520.0, "terminal-capture-brakes": 230.0,
 }
@@ -153,18 +154,23 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	_add_story_prefix(spans, metadata, gestures, propulsion, hand, story,
 		_prefix_controls_from_plan(plan))
 
+	_begin_gesture(gestures, "record-release-turn", spans.size(), "record-release-turn")
+	_add_record_release_turn(spans, metadata, propulsion, hand)
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
 	_add_camelback(spans, metadata, propulsion)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
+	var return_hand := -hand
+	var solved_return := RideReturnSolve._solve_return(initial_state, layout,
+		return_hand, RideReturnSolve.RETURN_SEED, targets, spans)
+	if not solved_return.ok:
+		return solved_return
+	_set_record_release_duration(spans, solved_return.parameters)
 	var return_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
 	if not return_prefix.get("ok", false):
 		return _failure("upstream return handoff failed integration", "return")
-	var return_hand := -hand
-	var solved_return := RideReturnSolve._solve_return(_last_state(return_prefix), layout,
-		return_hand, RideReturnSolve.RETURN_SEED, targets)
-	if not solved_return.ok:
-		return solved_return
 	var settings := _settings(PRODUCTION_STEP_S)
 	_begin_gesture(gestures, "raceway-return", spans.size())
 	_add_raceway(spans, metadata, propulsion, solved_return.parameters, return_hand,
@@ -410,6 +416,39 @@ static func _add_story_prefix(
 		1.0, 0.0, Motion.quintic(lsm3_drive_g, 0.0), 0.0, "core", 3)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
+
+
+static func _add_record_release_turn(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float = 1.0,
+	core_duration_s: float = RideReturnSolve.RECORD_RELEASE_CORE_DURATION_S
+) -> void:
+	var bank_rad := hand * deg_to_rad(60.0)
+	var banked_normal := 1.0 / cos(bank_rad)
+	var roll_in := RideReturnSolve._roll_ramp([0.9], 0.0, bank_rad)
+	var roll_out := RideReturnSolve._roll_ramp([0.9], bank_rad, 0.0)
+	_add(spans, metadata, propulsion, "record-release-turn/roll-in", 0.9, "moving",
+		Motion.quintic(1.0, banked_normal), 0.0, 0.0, roll_in.roll[0],
+		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-in")
+	_add(spans, metadata, propulsion, "record-release-turn/core", core_duration_s, "moving",
+		banked_normal, 0.0, 0.0, 0.0,
+		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-core")
+	_add(spans, metadata, propulsion, "record-release-turn/roll-out", 0.9, "moving",
+		Motion.quintic(banked_normal, 1.0), 0.0, 0.0, roll_out.roll[0],
+		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-out")
+
+
+static func _set_record_release_duration(spans: Array, parameters: Array) -> void:
+	var control_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+	if control_index < 0 or control_index >= parameters.size():
+		return
+	for index in spans.size():
+		var span: Dictionary = spans[index]
+		if str(span.get("span_id", "")) != "record-release-turn/core":
+			continue
+		spans[index] = Motion.span(str(span.span_id), float(parameters[control_index]),
+			str(span.mode), span.normal_g, span.lateral_g, span.drive_g, span.roll_rate_rad_s,
+			str(span.get("transition_id", "")))
+		return
 
 
 static func _add_camelback(
@@ -872,11 +911,11 @@ static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 		"capture_half_width_m": corridor.half_width_m,
 		"capture_half_height_m": corridor.half_height_m,
 		"route_length_m": plan.route_length_m,
-		# The one role band the return solve observes directly: `return-turn-b` is the role its own
-		# geometry owns outright, so the solve is handed the plan's declared band rather than a copy
-		# of it. A plan that declares no such role hands back the unbounded band and the residual
-		# it feeds is inert.
+		# The return solve observes the two role bands its own candidate integration owns outright;
+		# each is handed the plan's declared band rather than a copy of it. A plan that declares no
+		# such role hands back the unbounded band and the residual it feeds is inert.
 		"turn_b_length_m": _role_length_band(plan, "return-turn-b"),
+		"record_release_length_m": _role_length_band(plan, "record-release-turn"),
 		"reserved_corridor": {
 			"approach_start_m": station.position_m - station.tangent * approach_length,
 			"station_position_m": station.position_m,
@@ -998,6 +1037,7 @@ static func material_role_spans(spans: Array, sequence: Array = MATERIAL_ROLE_ID
 		"clifftop-outward-rim": ["rim/outward-"],
 		"outward-dive": ["dive/"],
 		"tunnel-lsm3": ["tunnel/"],
+		"record-release-turn": ["record-release-turn/"],
 		"camelback": ["camelback/"],
 		"return-turn-a": ["raceway/turn-a/"],
 		"return-height-a": ["raceway/height-a/"],

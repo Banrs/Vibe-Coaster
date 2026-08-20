@@ -51,7 +51,7 @@ const ACT_ONE_ANCHOR := "act-one-immelmann"
 const ACT_ONE_POOL := ["act-one-cutback", "act-one-loop", "act-one-airtime", "act-one-wave"]
 const ACT_ONE_OPTIONAL := ["act-one-airtime", "act-one-wave"]
 const SPINE_TAIL := ["climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
-	"outward-dive", "tunnel-lsm3", "camelback"]
+	"outward-dive", "tunnel-lsm3", "record-release-turn", "camelback"]
 const RETURN_CELL := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
 const SPINE_CLOSE := ["terminal-capture-brakes"]
 
@@ -89,7 +89,7 @@ const SPINE_CLOSE := ["terminal-capture-brakes"]
 ## continued return solve, not a wider range.
 const TARGET_DRAWS := [
 	# The return is downstream of every placement observation and closes through its own bounded
-	# eight-control solve, so its beats can be drawn properly: how hard each height beat is pulled
+	# nine-control solve, so its beats can be drawn properly: how hard each height beat is pulled
 	# and how deeply it floats.
 	# One draw sets how hard both height beats are pulled: height-b's peak follows height-a's
 	# proportionally, because the strong-a/weak-b diagonal is the one corner of the draw box the

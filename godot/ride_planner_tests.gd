@@ -77,7 +77,7 @@ func _test_stream_seeds_are_stable_integers() -> void:
 
 func _test_grammar_legality() -> void:
 	var canonical := RidePlanner.canonical_role_ids()
-	_expect(canonical.size() == 20, "the canonical grammar authors twenty roles")
+	_expect(canonical.size() == 21, "the canonical grammar authors twenty-one roles")
 	_expect(RidePlanner.is_legal_sequence(canonical),
 		"the canonical sequence is grammar-legal")
 	_expect(RidePlanner.is_legal_sequence(RidePlanner.resolve(42).sequence),
@@ -98,8 +98,8 @@ func _test_grammar_legality() -> void:
 	_expect(not RidePlanner.is_legal_sequence(spine_moved),
 		"permuting the opener spine is illegal")
 	var return_moved: Array = canonical.duplicate()
-	return_moved[15] = canonical[17]
-	return_moved[17] = canonical[15]
+	return_moved[16] = canonical[18]
+	return_moved[18] = canonical[16]
 	_expect(not RidePlanner.is_legal_sequence(return_moved),
 		"permuting the return cell is illegal at this checkpoint")
 	var dropped_optional: Array = canonical.duplicate()

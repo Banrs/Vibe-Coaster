@@ -89,6 +89,7 @@ const MATERIAL_ROLE_BY_WINDOW := {
 	"cliff-dive/pullout/0": "outward-dive",
 	"cliff-dive/exit/0": "outward-dive",
 	"tunnel-lsm3/core/0": "tunnel-lsm3",
+	"record-release-turn/record-release-turn/0": "record-release-turn",
 	"marquee-camelback/rise/0": "camelback",
 	"marquee-camelback/crest/0": "camelback",
 	"marquee-camelback/fall/0": "camelback",

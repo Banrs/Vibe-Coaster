@@ -2,7 +2,7 @@ class_name RideFidelityCounterparts
 extends RefCounted
 
 ## Per-element counterpart bands as data: the measured real-ride value that grounds each of the
-## twenty material roles, from docs/TELEMETRY.md and docs/TELEMETRY-I305.md. The design target is
+## twenty-one material roles, from docs/TELEMETRY.md and docs/TELEMETRY-I305.md. The design target is
 ## DERIVED, not stored — measured x the per-axis stretch below, rounded to 0.01 g — so the two can
 ## never drift apart; an axis that deliberately adopts no target carries an explicit `target: null`.
 ## Hold durations and thresholds are measured values carried through unchanged, and geometry is
@@ -234,6 +234,11 @@ const BANDS := {
 			"This is the worst-supported magnitude in the table and the 4804 figure is deliberately not adopted; the target comes from the class band.",
 			"The burst STRUCTURE - four bursts of 0.30-0.36 s - is worth carrying from 4804, because burst timing is a shape and is not distorted by an amplitude artefact the way the magnitude is. It matches Pantheon's measured 0.3-1.5 s boost lengths.",
 		],
+	},
+	"record-release-turn": {
+		"evidence_gap": true,
+		"reason": "No committed source isolates a record-speed, approximately 60 degree banked release turn between an LSM launch and a camelback. The role is a declared design element, not a measured counterpart.",
+		"closes_with": "A documented high-speed banked release turn with compatible force, angle and timing context.",
 	},
 	"camelback": {
 		"counterpart": {"ride": "Falcon's Flight, corroborated by Source 2, with Top Thrill 2 and Red Force top-hats as class exemplars",

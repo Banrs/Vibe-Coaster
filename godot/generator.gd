@@ -783,6 +783,12 @@ static func _material_role(role_id: String) -> Dictionary:
 			return _role("tunnel-lsm3", "tunnel_lsm3", Vector2(150.0, 220.0), {}, [],
 				{"boundary_crossings": [{"boundary_id": &"apron_edge", "from_side": 1,
 					"to_side": -1}]}, 3)
+		"record-release-turn":
+			var record_release := _role("record-release-turn", "record_release_turn",
+				Vector2(340.0, 390.0))
+			record_release["geometry"] = {"bank_deg": Vector2(55.0, 65.0),
+				"planarity": "horizontal-turn"}
+			return record_release
 		"camelback":
 			# The record camelback is longer than the 328 km/h one: the same authored normal-g
 			# profile sweeps more track per second at the 340 km/h entry, and the fall lengthens

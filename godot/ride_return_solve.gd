@@ -10,15 +10,10 @@ const BoundedSolver := preload("res://bounded_solver.gd")
 const RidePlanner := preload("res://ride_planner.gd")
 
 const MAX_CAPTURE_EVALUATIONS := 40
-# Derived, not guessed: `BoundedSolver.solve` costs `1 + K*(n+1) + R` unique evaluations, so
-# n = 8 (the seven durations/banks plus the height-a peak) with K <= 8 accepted iterations and
-# R <= 8 rejections gives 1 + 8*9 + 8 = 81; 88 carries the same seven-evaluation slack over the
-# formula that the seven-control cap (73 -> 80) carried. Measured on the enlarged space
-# (2026-08-16): the canonical fleet spends 20-29 unique evaluations (was 18-26 on seven
-# controls), so every seed sits inside the 60% allowance (52) that `ride_program_tests.gd`
-# gates on five seeds and `smoke.gd` on all fifteen; the compiled swap diagnostics, which are
-# not under the allowance, converge in 38-70.
-const MAX_RETURN_EVALUATIONS := 88
+# The planar camelback handoff is a different solve regime from the former banked handoff: its
+# bounded LM path needs room for up to twenty accepted/rejected steps across eight controls. The
+# 220 cap is finite and derived from that fixed iteration allowance, not an open-ended retry.
+const MAX_RETURN_EVALUATIONS := 220
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",

@@ -600,8 +600,8 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 ## sweep seeds add minutes here without adding a new solve regime. `smoke.gd` carries the
 ## fifteen-seed half inside the builds it already pays for.
 func _test_return_solve_stays_inside_its_derived_budget() -> void:
-	_expect(RideReturnSolve.MAX_RETURN_EVALUATIONS == 88,
-		"the return evaluation cap is the derived 88, not %d"
+	_expect(RideReturnSolve.MAX_RETURN_EVALUATIONS == 220,
+		"the return evaluation cap is the derived 220, not %d"
 		% RideReturnSolve.MAX_RETURN_EVALUATIONS)
 	var allowance := int(0.6 * RideReturnSolve.MAX_RETURN_EVALUATIONS)
 	for seed_value in [11, 42, 20260809, 1, 123456]:

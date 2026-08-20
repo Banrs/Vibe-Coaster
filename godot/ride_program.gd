@@ -158,16 +158,16 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		return _failure("upstream return handoff failed integration", "return")
 	var fixed_prefix_state := _last_state(fixed_prefix)
 	var variable_prefix_start := spans.size()
+	var return_hand := -hand
 
 	_begin_gesture(gestures, "record-release-turn", spans.size(), "record-release-turn")
-	_add_record_release_turn(spans, metadata, propulsion, hand)
+	_add_record_release_turn(spans, metadata, propulsion, return_hand)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
 	_add_camelback(spans, metadata, propulsion)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
-	var return_hand := -hand
 	var variable_prefix_spans: Array = spans.slice(variable_prefix_start)
 	var solved_return := RideReturnSolve._solve_return(fixed_prefix_state, layout,
 		return_hand, RideReturnSolve.RETURN_SEED, targets, variable_prefix_spans)

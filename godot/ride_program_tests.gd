@@ -195,7 +195,8 @@ func _test_camelback_is_planar_and_continuous() -> void:
 		% str(transition_audit.errors))
 	var route := RideGenerator.build(42)
 	if not _expect(route.get("ok", false),
-			"production seed 42 publishes a route for the camelback audit"):
+			"production seed 42 publishes a route for the camelback audit: %s"
+			% str(route.get("failure", route.get("errors", [])))):
 		return
 	var role_record: Dictionary = route.get("geometry_audit", {}).get("roles", {}).get("camelback", {})
 	_expect(role_record.get("status") == "measured",
@@ -777,8 +778,10 @@ func _test_untargeted_prefix_capability_is_unchanged() -> void:
 		var context := HashingContext.new()
 		context.start(HashingContext.HASH_SHA256)
 		context.update(var_to_bytes(RideProgram.terrain_story_capability(side)))
-		_expect(context.finish().hex_encode() == PREFIX_CAPABILITY_DIGEST[side],
-			"the untargeted station_side %d capability still hashes to its pinned digest" % side)
+		var actual := context.finish().hex_encode()
+		_expect(actual == PREFIX_CAPABILITY_DIGEST[side],
+			"the untargeted station_side %d capability hash is pinned: expected %s, got %s"
+			% [side, PREFIX_CAPABILITY_DIGEST[side], actual])
 
 
 func _test_prefix_closure_solve_targets_todays_geometry() -> void:

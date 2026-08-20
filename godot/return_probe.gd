@@ -52,4 +52,6 @@ func _initialize() -> void:
 	for seed: Array in [candidates[1], candidates[2], candidates[3], candidates[5]]:
 		var solved := RideReturnSolve._solve_return(start, layout, -hand, seed, story.targets)
 		print("solve_seed=%s result=%s" % [str(seed), str(solved)])
+		var mirrored := RideReturnSolve._solve_return(start, layout, hand, seed, story.targets)
+		print("mirror_seed=%s result=%s" % [str(seed), str(mirrored)])
 	quit(0)

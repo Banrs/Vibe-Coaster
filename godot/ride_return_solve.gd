@@ -194,7 +194,7 @@ static func _return_spans(
 	var turn_a_normal := 1.0 / cos(turn_a_bank_rad)
 	var turn_b_normal := 1.0 / cos(turn_b_bank_rad)
 	var turn_a_bank_rad_signed := hand * turn_a_bank_rad
-	var turn_b_bank_rad_signed := hand * turn_b_bank_rad
+	var turn_b_bank_rad_signed := -hand * turn_b_bank_rad
 	# Every bank change on the return is one continuous roll, not one saturated pulse per span
 	# with flat either side (issue 20). Both return turns lay over through a ramped plateau that
 	# spans the whole transition, so the peak rate is roughly half what the burst authoring spent

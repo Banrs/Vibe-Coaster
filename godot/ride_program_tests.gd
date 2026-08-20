@@ -62,6 +62,7 @@ func _initialize() -> void:
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
 	_test_first_return_turn_unbanks_directly()
+	_test_return_turns_share_one_sweep_hand()
 	_test_record_release_turn_is_declared_macro_authority()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
@@ -278,6 +279,23 @@ func _test_first_return_turn_unbanks_directly() -> void:
 		and reversals == 1 and not post_core_positive,
 		"the first return turn banks in once and directly unbanks without a counter-steer: %s"
 		% str(directions))
+
+
+func _test_return_turns_share_one_sweep_hand() -> void:
+	var spans := RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED)
+	var entry_directions := {}
+	for span: Dictionary in spans:
+		var span_id := str(span.span_id)
+		for role_id in ["turn-a", "turn-b"]:
+			if entry_directions.has(role_id) \
+					or not span_id.begins_with("raceway/%s/" % role_id):
+				continue
+			var roll_rate := Motion.profile_sample(span.roll_rate_rad_s, 0.5).x
+			if absf(roll_rate) > 0.000001:
+				entry_directions[role_id] = 1 if roll_rate > 0.0 else -1
+	_expect(entry_directions.get("turn-a", 0) != 0
+		and entry_directions.get("turn-a") == entry_directions.get("turn-b"),
+		"both return turns enter the same-handed C sweep: %s" % str(entry_directions))
 
 
 func _test_record_release_turn_is_declared_macro_authority() -> void:

@@ -64,6 +64,7 @@ func _initialize() -> void:
 	_test_first_return_turn_unbanks_directly()
 	_test_record_release_turn_is_declared_macro_authority()
 	_test_record_release_turn_has_roll_headroom()
+	_test_return_aim_margins_exceed_solver_slack()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
@@ -305,11 +306,22 @@ func _test_record_release_turn_has_roll_headroom() -> void:
 	for span: Dictionary in spans:
 		peak_roll_dps = maxf(peak_roll_dps,
 			absf(rad_to_deg(Motion.profile_sample(span.roll_rate_rad_s, 0.5).x)))
-	_expect(spans.size() == 3 and is_equal_approx(float(spans[0].duration_s), 0.76)
-		and is_equal_approx(float(spans[2].duration_s), 0.76)
+	_expect(spans.size() == 3 and is_equal_approx(float(spans[0].duration_s), 0.8)
+		and is_equal_approx(float(spans[2].duration_s), 0.8)
 		and peak_roll_dps <= 120.0,
 		"the release shoulders preserve role length with roll-rate headroom: %s / %.3f dps"
 		% [str([spans[0].duration_s, spans[2].duration_s]), peak_roll_dps])
+
+
+func _test_return_aim_margins_exceed_solver_slack() -> void:
+	var route_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[5])
+	var release_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[8])
+	_expect(RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M > route_slack_m
+		and RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M > release_slack_m,
+		"return aim margins exceed convergence slack: %.3f/%.3f m vs %.3f/%.3f m"
+		% [RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M,
+			RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M,
+			route_slack_m, release_slack_m])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:

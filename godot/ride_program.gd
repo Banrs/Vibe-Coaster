@@ -430,7 +430,7 @@ static func _add_record_release_turn(
 ) -> void:
 	var bank_rad := hand * deg_to_rad(60.0)
 	var banked_normal := 1.0 / cos(bank_rad)
-	var shoulder_s := 0.76
+	var shoulder_s := 0.8
 	var roll_in := RideReturnSolve._roll_ramp([shoulder_s], 0.0, bank_rad)
 	var roll_out := RideReturnSolve._roll_ramp([shoulder_s], bank_rad, 0.0)
 	_add(spans, metadata, propulsion, "record-release-turn/roll-in", shoulder_s, "moving",

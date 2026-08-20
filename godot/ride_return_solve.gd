@@ -64,8 +64,8 @@ const RETURN_SCALAR_BOUNDS := [
 # Seven entries for ten controls, on purpose: this is the CI-measured continuation anchor for
 # the structurally role-gated return. `_solve_return` still appends each story's certified
 # height-a draw, authored height-a airtime, and nominal release duration.
-const RETURN_SEED := [1.29783843287076, 1.6622134106584, 0.38405820207769,
-	1.23821675210444, 5.14725907485319, 0.79738562571265, 4.1917749300655]
+const RETURN_SEED := [1.29337946548361, 1.7984801825552, 0.3968173833826,
+	1.20424395090884, 5.45194693720828, 0.76263241699466, 4.15128365153676]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.75
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466

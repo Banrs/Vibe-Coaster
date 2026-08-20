@@ -53,8 +53,9 @@ const RETURN_SCALAR_BOUNDS := [
 	# height-b's proportional peak (x0.831) reaches 3.82, still under height-a's own draw band.
 	[3.4, 4.6],
 	# The direct unbank's two-span ramp peaks at twice its bank change over its total duration.
-	# At the 80 deg ceiling, the 1.35 s floor therefore yields 118.52 deg/s, below the existing
-	# 120 deg/s rate limit; 2.20 s keeps the unbank from becoming an authored dead interval.
+	# At the 80 deg ceiling, the 1.35 s floor therefore yields an authored 118.52 deg/s; the
+	# accepted route's row-scaled roll remains governed by the unchanged 120 deg/s verifier.
+	# The 2.20 s ceiling keeps the unbank from becoming an authored dead interval.
 	[1.35, 2.20],
 ]
 # Seven entries for nine controls, on purpose: `_solve_return` completes this vector with the

@@ -63,6 +63,13 @@ static func bank_balance(from_bank_rad: float, to_bank_rad: float) -> Dictionary
 	return profile
 
 
+## Proper normal load for a bank transition driven by plateau-pulse roll.
+static func plateau_bank_balance(from_bank_rad: float, to_bank_rad: float) -> Dictionary:
+	var profile := {"kind": "plateau_bank_balance", "from": from_bank_rad, "to": to_bank_rad}
+	profile.make_read_only()
+	return profile
+
+
 ## A normalized piecewise profile keeps a reviewed transition continuous without publishing
 ## sub-semantic connector spans. Segment durations are in the same units as the parent span.
 static func staged(profiles: Array, durations: Array) -> Dictionary:
@@ -150,6 +157,30 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 			return Vector3(secant, secant * tangent * bank_derivative,
 				secant * ((tangent * tangent + secant * secant)
 					* bank_derivative * bank_derivative + tangent * bank_second))
+		"plateau_bank_balance":
+			var edge_u := minf(u, 1.0 - u)
+			var bank_delta: float = profile.to - profile.from
+			var bank: float = float(profile.from) \
+				+ bank_delta * _plateau_pulse_integral(u) / PLATEAU_PULSE_AREA
+			var pulse := 1.0
+			var pulse_derivative := 0.0
+			if edge_u < 1.0 / 3.0:
+				var shoulder_u := edge_u * 3.0
+				var h := 10.0 * shoulder_u ** 3 - 15.0 * shoulder_u ** 4 \
+					+ 6.0 * shoulder_u ** 5
+				var dh := 30.0 * shoulder_u ** 2 - 60.0 * shoulder_u ** 3 \
+					+ 30.0 * shoulder_u ** 4
+				pulse = h
+				pulse_derivative = dh * 3.0
+			var direction := 1.0 if u <= 0.5 else -1.0
+			pulse_derivative *= direction
+			var bank_derivative := bank_delta * pulse / PLATEAU_PULSE_AREA
+			var bank_second := bank_delta * pulse_derivative / PLATEAU_PULSE_AREA
+			var secant := 1.0 / cos(bank)
+			var tangent := tan(bank)
+			return Vector3(secant, secant * tangent * bank_derivative,
+				secant * ((tangent * tangent + secant * secant)
+					* bank_derivative * bank_derivative + tangent * bank_second))
 		"staged":
 			var elapsed := 0.0
 			var total := float(profile.duration_s)
@@ -213,6 +244,11 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 			var bank_delta: float = profile.to - profile.from
 			var bank: float = profile.from + bank_delta * fraction
 			return Vector3(1.0 / cos(bank), 0.0, 0.0).x
+		"plateau_bank_balance":
+			var bank_delta: float = profile.to - profile.from
+			var bank: float = float(profile.from) \
+				+ bank_delta * _plateau_pulse_integral(u) / PLATEAU_PULSE_AREA
+			return Vector3(1.0 / cos(bank), 0.0, 0.0).x
 		"staged":
 			return profile_sample(profile, u).x
 	assert(false, "invalid motion profile")
@@ -235,6 +271,11 @@ static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 		"plateau_pulse":
 			return 5.625 * absf(float(profile.amplitude))
 		"bank_balance":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
+		"plateau_bank_balance":
 			var peak := 0.0
 			for index in 257:
 				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
@@ -287,6 +328,9 @@ static func span(
 			"bank_balance": assert(profile.has("from") and profile.has("to")
 				and absf(float(profile.from)) < PI * 0.5
 				and absf(float(profile.to)) < PI * 0.5, "invalid bank balance profile")
+			"plateau_bank_balance": assert(profile.has("from") and profile.has("to")
+				and absf(float(profile.from)) < PI * 0.5
+				and absf(float(profile.to)) < PI * 0.5, "invalid plateau bank balance profile")
 			"staged": assert(profile.has("segments") and profile.has("duration_s")
 				and profile.segments is Array and not profile.segments.is_empty()
 				and is_finite(float(profile.duration_s)) and float(profile.duration_s) > 0.0,
@@ -474,6 +518,16 @@ static func _compact_pulse_integral(u: float) -> float:
 	return 10.0 * u ** 4 - 12.0 * u ** 5 + 4.0 * u ** 6 \
 		- (400.0 / 7.0) * u ** 7 + 150.0 * u ** 8 \
 		- (460.0 / 3.0) * u ** 9 + 72.0 * u ** 10 - (144.0 / 11.0) * u ** 11
+
+
+static func _plateau_pulse_integral(u: float) -> float:
+	var edge_u := minf(u, 1.0 - u)
+	if edge_u < 1.0 / 3.0:
+		var shoulder_u := edge_u * 3.0
+		var shoulder_area := 2.5 * shoulder_u ** 4 - 3.0 * shoulder_u ** 5 \
+			+ shoulder_u ** 6
+		return shoulder_area / 3.0 if u <= 0.5 else PLATEAU_PULSE_AREA - shoulder_area / 3.0
+	return u - 1.0 / 6.0
 
 
 static func _empty_trajectory() -> Dictionary:

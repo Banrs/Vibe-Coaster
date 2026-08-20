@@ -70,9 +70,23 @@ func _test_c2_profiles() -> void:
 		"bank balance ends at the exact banked level-load jet")
 	_expect_close(Motion.profile_sample(bank, 0.5).x, 1.0 / cos(deg_to_rad(30.0)),
 		"bank balance follows the integrated compact-roll angle")
+	var plateau_bank := Motion.plateau_bank_balance(0.0, deg_to_rad(60.0))
+	_expect_vector(Motion.profile_sample(plateau_bank, 0.0), Vector3(1.0, 0.0, 0.0),
+		"plateau bank balance starts at the exact level-load jet")
+	_expect_vector(Motion.profile_sample(plateau_bank, 1.0), Vector3(2.0, 0.0, 0.0),
+		"plateau bank balance ends at the exact banked level-load jet")
+	_expect_close(Motion.profile_sample(plateau_bank, 0.5).x, 1.0 / cos(deg_to_rad(30.0)),
+		"plateau bank balance follows the exact plateau-pulse bank fraction")
+	var probe_u := 1.0 / 6.0
+	var probe_h := 0.001
+	var numerical_derivative := (Motion.profile_sample(plateau_bank, probe_u + probe_h).x
+		- Motion.profile_sample(plateau_bank, probe_u - probe_h).x) / (2.0 * probe_h)
+	_expect_close(Motion.profile_sample(plateau_bank, probe_u).y, numerical_derivative,
+		"plateau bank balance derivative follows its sampled load", 0.001)
 	var span_record := Motion.span("immutable", 1.0, "moving", held, held, held, held)
 	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only()
-		and notch.is_read_only() and plateau.is_read_only() and bank.is_read_only(),
+		and notch.is_read_only() and plateau.is_read_only() and bank.is_read_only()
+		and plateau_bank.is_read_only(),
 		"profile records are immutable")
 	_expect(span_record.is_read_only(), "span records are immutable")
 
@@ -88,6 +102,9 @@ func _test_profile_peak_abs_derivative_estimate() -> void:
 		10.699182439179779, "positive compact pulse reports its exact analytic peak derivative")
 	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(-3.0)),
 		10.699182439179779, "negative compact pulse has the same absolute peak derivative")
+	_expect(Motion.profile_peak_abs_derivative_estimate(
+		Motion.plateau_bank_balance(0.0, deg_to_rad(60.0))) > 0.0,
+		"plateau bank balance reports a nonzero peak derivative")
 
 
 func _test_resistance_law() -> void:

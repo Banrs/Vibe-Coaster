@@ -1211,7 +1211,7 @@ func _return_trajectory_is_material(
 		else:
 			var apex := _maximum_trajectory_height(trajectory, owned)
 			var nadir := _minimum_trajectory_height(trajectory, owned)
-			var height := trajectory.position_m[apex].y - trajectory.position_m[nadir].y
+			var height: float = trajectory.position_m[apex].y - trajectory.position_m[nadir].y
 			var unload_s := _linear_held_at_or_below(
 				trajectory.time_s, trajectory.normal_g, owned, 0.5)
 			if height < 35.0 or unload_s < 0.35:
@@ -1236,7 +1236,7 @@ func _return_trajectory_is_material(
 	var station_forward: float = (trajectory.position_m[terminal_index] \
 		- layout.station_position_m).dot(layout.station_tangent.normalized())
 	var approach_length_m := float(layout.reserved_corridor.minimum_length_m)
-	var accepted := length_m >= 1100.0 and length_m <= 3000.0 and initial - previous >= 50.0 \
+	var accepted: bool = length_m >= 1100.0 and length_m <= 3000.0 and initial - previous >= 50.0 \
 		and trajectory.speed_mps[bounds.x] - trajectory.speed_mps[terminal_index] >= 5.0 \
 		and minimum_speed >= 45.0 and station_forward >= -approach_length_m \
 		and station_forward <= -(approach_length_m - 45.0)
@@ -1560,7 +1560,7 @@ func _near_future_story_is_physical(compiled: Dictionary, layout: Dictionary) ->
 		- trajectory.position_m[dive_bounds.y].y
 	var route_envelope := _trajectory_vertical_span(trajectory.position_m,
 		Vector2i(0, trajectory.position_m.size() - 1))
-	var accepted := immel_height >= 94.9 and immel_height <= 109.5 \
+	var accepted: bool = immel_height >= 94.9 and immel_height <= 109.5 \
 		and loop_height >= 94.0 and loop_height <= 100.0 \
 		and cutback_height >= 40.0 \
 		and slow_held >= 2.7 and slow_held <= 4.2 \

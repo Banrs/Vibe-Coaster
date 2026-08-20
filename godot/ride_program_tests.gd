@@ -283,12 +283,33 @@ func _test_first_return_turn_unbanks_directly() -> void:
 func _test_return_unbank_has_a_declared_closure_axis() -> void:
 	var controls := RideReturnSolve.RETURN_SCALAR_IDS
 	var residuals := RideReturnSolve.RETURN_RESIDUAL_IDS
-	_expect(controls.has("height_a_peak_g")
+	var declared := controls.has("height_a_peak_g")
 		and controls.has("turn_a_unbank_duration_s")
 		and residuals.has("roll_rad")
-		and controls.size() == residuals.size(),
+		and controls.size() == residuals.size()
+	_expect(declared,
 		"the direct-unbank duration and terminal roll form a declared square closure axis: %s / %s"
 		% [str(controls), str(residuals)])
+	if not declared:
+		return
+	var control_index := controls.find("turn_a_unbank_duration_s")
+	var low_values := RideReturnSolve.RETURN_SEED.duplicate()
+	low_values.append(RideReturnSolve.RETURN_HEIGHT_A_PEAK_G)
+	low_values.append(float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][0]))
+	var high_values := low_values.duplicate()
+	high_values[control_index] = float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][1])
+	var durations := []
+	for values: Array in [low_values, high_values]:
+		var duration_s := 0.0
+		for span: Dictionary in RideReturnSolve._return_spans(values):
+			if str(span.span_id) in ["raceway/turn-a/exit", "raceway/turn-a/unbank"]:
+				duration_s += float(span.duration_s)
+		durations.append(duration_s)
+	_expect(absf(float(durations[0]) - float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][0]))
+		<= 0.000001 and absf(float(durations[1])
+		- float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][1])) <= 0.000001,
+		"the declared unbank control owns the complete direct-unbank duration: %s"
+		% str(durations))
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:

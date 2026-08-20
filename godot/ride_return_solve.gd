@@ -11,13 +11,13 @@ const RidePlanner := preload("res://ride_planner.gd")
 
 const MAX_CAPTURE_EVALUATIONS := 40
 # The planar camelback handoff is a different solve regime from the former banked handoff: its
-# bounded LM path needs room for up to twenty accepted/rejected steps across eight controls. The
+# bounded LM path needs room for up to twenty accepted/rejected steps across nine controls. The
 # 220 cap is finite and derived from that fixed iteration allowance, not an open-ended retry.
 const MAX_RETURN_EVALUATIONS := 220
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
-	"height_b_recovery_duration_s", "height_a_peak_g",
+	"height_b_recovery_duration_s", "height_a_peak_g", "turn_a_unbank_duration_s",
 ]
 const RETURN_SCALAR_BOUNDS := [
 	# The continuous return ramps spread the turn over 1.6-1.75 s, so the previous compact-pulse
@@ -52,14 +52,19 @@ const RETURN_SCALAR_BOUNDS := [
 	# 3.4 floor sits 0.25 g under the certified draw band's floor, and the 4.6 ceiling is where
 	# height-b's proportional peak (x0.831) reaches 3.82, still under height-a's own draw band.
 	[3.4, 4.6],
+	# The direct unbank's two-span ramp peaks at twice its bank change over its total duration.
+	# At the 80 deg ceiling, the 1.35 s floor therefore yields 118.52 deg/s, below the existing
+	# 120 deg/s rate limit; 2.20 s keeps the unbank from becoming an authored dead interval.
+	[1.35, 2.20],
 ]
-# Seven entries for eight controls, on purpose: the eighth (height-a peak g) has no fixed seed -
-# `_solve_return` completes this vector with the build's own certified draw, so the per-seed
-# variety the planner draws is exactly where each solve starts.
+# Seven entries for nine controls, on purpose: `_solve_return` completes this vector with the
+# build's own certified height-a draw and the 1.75 s unbank default, so the per-seed variety the
+# planner draws is exactly where each solve starts.
 const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
 	1.0471975511966, 6.48573781566998, 0.996333175598368, 3.98838120528104]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
+const RETURN_UNBANK_DEFAULT_DURATION_S := 1.75
 ## The one owner of the route-length band: the generator writes it into the plan and the program
 ## validator checks the plan against this same constant.
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
@@ -119,15 +124,16 @@ const RETURN_LENGTH_AIM_MARGIN_M := 1.0
 ## interiority an accepted point carries here is structural rather than only measured.
 const RETURN_TURN_B_AIM_MARGIN_M := 3.0
 ## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
-## exactly 0.0 against it, so the fixed-layout fixtures see the same seven-residual solve they
-## always did with an eighth row that is identically zero.
+## exactly 0.0 against it, so the fixed-layout fixtures see the same nine-residual solve they
+## always did; the turn-b-length row remains identically zero when no role band is declared.
 const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
 	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
+	"roll_rad",
 ]
-const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0]
-const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075]
+const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 0.02]
+const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.0001]
 ## The `return-turn-b` role, by the same span-id prefix `RideProgram.material_role_spans` owns it
 ## with. Named here rather than re-derived so the residual and the route contract cannot drift
 ## apart about which spans the role is.
@@ -172,10 +178,13 @@ static func _return_spans(
 		targets, "return-height-a", "unload_scale", 1.0)
 	var height_b_airtime_g := -0.5 * RidePlanner.target(
 		targets, "return-height-b", "unload_scale", 1.0)
-	# The eighth control is the height-a peak; a seven-entry seed is completed with the drawn peak
-	# so the authored seed stays deterministic.
+	# The eighth control is the height-a peak and the ninth is the direct-unbank duration; a
+	# seven-entry seed is completed with the drawn peak and the default duration so the authored
+	# seed stays deterministic.
 	var height_a_peak_g := float(v[7]) if v.size() > 7 else \
 		RidePlanner.target(targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
+	var turn_a_unbank_duration_s := float(v[8]) if v.size() > 8 else \
+		RETURN_UNBANK_DEFAULT_DURATION_S
 	var turn_a_bank_rad := float(v[0])
 	var turn_b_bank_rad := float(v[3])
 	# The second beat's peak follows the first proportionally rather than drawing on its own:
@@ -195,7 +204,8 @@ static func _return_spans(
 	var turn_a_in := _roll_ramp(turn_a_in_s, initial_bank_rad, turn_a_bank_rad_signed)
 	# The direct unbank stays one continuous roll from the solved turn bank to level while its
 	# two semantic spans retain the turn-a transition ownership.
-	var turn_a_out_s := [0.85, 0.90]
+	var unbank_duration_scale := turn_a_unbank_duration_s / RETURN_UNBANK_DEFAULT_DURATION_S
+	var turn_a_out_s := [0.85 * unbank_duration_scale, 0.90 * unbank_duration_scale]
 	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what
@@ -225,8 +235,8 @@ static func _return_spans(
 	spans.append_array(_roll_bank_spans(
 		["raceway/turn-b/exit", "raceway/height-b/pullup"], turn_b_out_s, turn_b_out,
 		NAN, height_b_peak_g))
-	# The second height beat pays for the longer turn-b roll out of its own ramps, so the return's
-	# authored time is unchanged overall and the bounded solve still closes from its fixed seed.
+	# The second height beat pays for the longer turn-b roll out of its own ramps; the direct-unbank
+	# duration is the separate ninth solve control that closes terminal roll.
 	spans.append_array([
 		_return_span("raceway/height-b/unload", 1.2, height_b_peak_g, height_b_airtime_g),
 		_return_span("raceway/height-b/airtime", float(v[5]), height_b_airtime_g,
@@ -320,12 +330,15 @@ static func _solve_return(
 	# Ownership of the height-a peak, resolved: the certified per-seed draw (3.65-3.95, streams in
 	# `ride_planner.gd`) initialises the eighth control and the solve owns closure from there
 	# inside the control's own derived bounds. The draw proposes, the solve disposes - neither
-	# fights the other, no randomness enters here, and a seven-entry seed (the committed
-	# `RETURN_SEED`) is completed deterministically from the build's own targets.
+	# fights the other, no randomness enters here, and the seven-entry seed (the committed
+	# `RETURN_SEED`) is completed deterministically from the build's own targets and default unbank.
 	var initial: Array = seed.duplicate()
-	if initial.size() == RETURN_SCALAR_IDS.size() - 1:
+	if initial.size() == RETURN_SCALAR_IDS.size() - 2:
 		initial.append(RidePlanner.target(
 			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
+		initial.append(RETURN_UNBANK_DEFAULT_DURATION_S)
+	elif initial.size() == RETURN_SCALAR_IDS.size() - 1:
+		initial.append(RETURN_UNBANK_DEFAULT_DURATION_S)
 	var lower := []
 	var upper := []
 	for bound: Array in RETURN_SCALAR_BOUNDS:
@@ -486,6 +499,7 @@ static func _return_observation(
 		RideProgram._band_residual(turn_b_length_m, Vector2(
 			turn_b_band.x + RETURN_TURN_B_AIM_MARGIN_M,
 			turn_b_band.y - RETURN_TURN_B_AIM_MARGIN_M)),
+		capture[4],
 	]
 	var margins := {
 		"corridor_forward_low_m": forward + approach,

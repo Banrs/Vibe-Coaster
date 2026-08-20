@@ -1,3 +1,4 @@
+res://return_probe.gd
 res://motion_tests.gd
 res://route_sampling_tests.gd
 res://bounded_solver_tests.gd
@@ -15,4 +16,3 @@ res://dense_output_tests.gd
 res://element_contract_tests.gd
 res://element_contract_integration_tests.gd
 res://geometry_audit_tests.gd
-res://return_probe.gd

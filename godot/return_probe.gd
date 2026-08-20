@@ -49,4 +49,7 @@ func _initialize() -> void:
 			story.targets)
 		print("candidate=%s residuals=%s observation=%s" % [str(candidate),
 			str(result.get("residuals", [])), str(result.get("observation", {}))])
+	for seed: Array in [candidates[1], candidates[2], candidates[3], candidates[5]]:
+		var solved := RideReturnSolve._solve_return(start, layout, -hand, seed, story.targets)
+		print("solve_seed=%s result=%s" % [str(seed), str(solved)])
 	quit(0)

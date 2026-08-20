@@ -194,8 +194,10 @@ static func _return_spans(
 	var turn_a_in_s := [0.85, 0.75]
 	var turn_a_in := _roll_ramp(turn_a_in_s, initial_bank_rad, turn_a_bank_rad_signed)
 	# The direct unbank stays one continuous roll from the solved turn bank to level while its
-	# two semantic spans retain the turn-a transition ownership.
-	var turn_a_out_s := [0.85, 0.90]
+	# two semantic spans retain the turn-a transition ownership. Its 1.35 s duration yields an
+	# authored 118.52 deg/s at the 80 deg bank ceiling; accepted rides remain subject to the
+	# unchanged row-scaled 120 deg/s verifier.
+	var turn_a_out_s := [0.65, 0.70]
 	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what

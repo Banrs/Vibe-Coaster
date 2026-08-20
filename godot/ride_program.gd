@@ -465,8 +465,9 @@ static func _add_camelback(
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
 	# Once the fall endpoint is below the approach, rise duration owns the remaining local
-	# prominence. This adds 0.15 s to the measured balanced-release handoff without changing load.
-	var pullup_s := 2.66015538415414
+	# prominence. At the same 3.60 s fall, CI measured 238.200 m at 2.510 s and 233.836 m
+	# at 2.660 s; extending that local slope targets the unchanged 245 m lower contract edge.
+	var pullup_s := 2.276
 	var unload_s := 3.01169597 * 1.15 - 0.4
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry

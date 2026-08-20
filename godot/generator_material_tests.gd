@@ -17,8 +17,8 @@ const STORY_IDS := [
 	"clifftop-suspense",
 	"cliff-dive",
 	"tunnel-lsm3",
-	"marquee-camelback",
 	"record-release-turn",
+	"marquee-camelback",
 	"raceway-return",
 	"brakes-station-capture",
 ]
@@ -27,7 +27,7 @@ const MATERIAL_ROLE_IDS := [
 	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
 	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
 	"act-one-wave", "climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
-	"outward-dive", "tunnel-lsm3", "camelback", "record-release-turn", "return-turn-a", "return-height-a",
+	"outward-dive", "tunnel-lsm3", "record-release-turn", "camelback", "return-turn-a", "return-height-a",
 	"return-turn-b", "return-height-b", "terminal-capture-brakes",
 ]
 
@@ -76,8 +76,8 @@ func _initialize() -> void:
 	_check_clifftop_contract(route)
 	_expect(_dive_is_physical(route),
 		"the full cliff dive is sample-monotonic within 5 cm and steep while its literal core stays unloaded")
-	_expect(_lsm3_feeds_camelback_and_release(route),
-		"LSM3 reaches the 340 km/h class and feeds the marquee camelback into the banked release")
+	_expect(_lsm3_feeds_release_and_camelback(route),
+		"LSM3 reaches the 340 km/h class and feeds the banked release into the marquee camelback")
 	_check_native_verifier_contract(route)
 	_expect(_camelback_geometry_is_material(route),
 		"the camelback has material rise-apex-fall geometry")
@@ -516,7 +516,7 @@ func _check_route_scale_and_flow(route: Dictionary) -> void:
 	var role_bands := [["station-launch", 140.0, 220.0], ["opener", 1300.0, 1800.0],
 		["act-one", 1400.0, 1800.0], ["escarpment-climb", 520.0, 680.0], ["clifftop-suspense", 80.0, 190.0],
 		["cliff-dive", 350.0, 490.0], ["tunnel-lsm3", 150.0, 220.0],
-		["marquee-camelback", 900.0, 1180.0], ["record-release-turn", 340.0, 390.0],
+		["record-release-turn", 340.0, 390.0], ["marquee-camelback", 900.0, 1180.0],
 		["raceway-return", 1700.0, 2500.0], ["brakes-station-capture",
 			terminal_length_m - integration_tolerance_m,
 			terminal_length_m + integration_tolerance_m]]
@@ -695,7 +695,7 @@ func _dive_is_physical(route: Dictionary) -> bool:
 		and minimum_tangent_y <= -sin(deg_to_rad(75.0)) \
 		and maximum_abs_normal_g <= 0.35
 
-func _lsm3_feeds_camelback_and_release(route: Dictionary) -> bool:
+func _lsm3_feeds_release_and_camelback(route: Dictionary) -> bool:
 	var boost := _role(route, "tunnel-lsm3", "core")
 	var release := _window(route, "record-release-turn")
 	var camel := _window(route, "marquee-camelback")
@@ -709,7 +709,7 @@ func _lsm3_feeds_camelback_and_release(route: Dictionary) -> bool:
 	var release_activity := _native_activity(route, int(release.first), int(release.last))
 	return route.speeds[last] >= 93.9 and route.speeds[last] <= 95.6 \
 		and route.speeds[last] >= route.speeds[first] + 20.0 \
-		and int(camel.first) == last + 1 and int(release.first) == int(camel.last) + 1 \
+		and int(release.first) == last + 1 and int(camel.first) == int(release.last) + 1 \
 		and release_activity.bank_active and release_activity.heading_deg >= 20.0
 
 func _check_native_verifier_contract(route: Dictionary) -> void:

@@ -26,7 +26,7 @@ const MATERIAL_ROLE_IDS := [
 	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
 	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
 	"act-one-wave", "climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
-	"outward-dive", "tunnel-lsm3", "camelback", "record-release-turn", "return-turn-a", "return-height-a",
+	"outward-dive", "tunnel-lsm3", "record-release-turn", "camelback", "return-turn-a", "return-height-a",
 	"return-turn-b", "return-height-b", "terminal-capture-brakes",
 ]
 ## Nominal role lengths, keyed by role id: a plan authors the roles its drawn sequence declares,
@@ -162,6 +162,10 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 
 	_begin_gesture(gestures, "record-release-turn", spans.size(), "record-release-turn")
 	_add_record_release_turn(spans, metadata, propulsion, return_hand)
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
+	_add_camelback(spans, metadata, propulsion)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	var variable_prefix_spans: Array = spans.slice(variable_prefix_start)
@@ -416,10 +420,6 @@ static func _add_story_prefix(
 		1.0, 0.0, lsm3_drive_g, 0.0, "core", 3)
 	_add(spans, metadata, propulsion, "tunnel/lsm3-release", 0.30, "moving",
 		1.0, 0.0, Motion.quintic(lsm3_drive_g, 0.0), 0.0, "core", 3)
-	_end_gesture(gestures, metadata, spans.size() - 1)
-
-	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
-	_add_camelback(spans, metadata, propulsion)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 

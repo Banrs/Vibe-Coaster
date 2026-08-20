@@ -44,12 +44,14 @@ const ACT_ONE_ANCHOR := "act-one-immelmann"
 ## non-canonical order - the pool's two optional members exchanged - now closes its prefix and
 ## places it inside every fleet margin, on all fifteen seeds, and that is gated in
 ## `generator_material_tests.gd`. The other 22 are still refused before the solve runs, because the
-## preflight frames the yaw solution from the *unsolved* prefix. The camelback stays in the fixed
-## prefix; the following record release owns the one variable macro duration at the return handoff.
+## preflight frames the yaw solution from the *unsolved* prefix. What no reordered story does yet
+## is build end to end: the seven-control return solve does not re-converge from its fixed seed on
+## the moved camelback handoff. The full matrix, including what each order costs, is recorded with
+## that gate. Drawing an order needs the return's seed or budget, not a wider range here.
 const ACT_ONE_POOL := ["act-one-cutback", "act-one-loop", "act-one-airtime", "act-one-wave"]
 const ACT_ONE_OPTIONAL := ["act-one-airtime", "act-one-wave"]
 const SPINE_TAIL := ["climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
-	"outward-dive", "tunnel-lsm3", "camelback", "record-release-turn"]
+	"outward-dive", "tunnel-lsm3", "record-release-turn", "camelback"]
 const RETURN_CELL := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
 const SPINE_CLOSE := ["terminal-capture-brakes"]
 

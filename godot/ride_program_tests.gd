@@ -289,13 +289,12 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 	var controls := RideReturnSolve.RETURN_SCALAR_IDS
 	var residuals := RideReturnSolve.RETURN_RESIDUAL_IDS
 	_expect(release_index > 0 and release_index + 1 < roles.size()
-		and roles[release_index - 1] == "camelback"
-		and roles[release_index - 2] == "tunnel-lsm3"
-		and roles[release_index + 1] == "return-turn-a"
+		and roles[release_index - 1] == "tunnel-lsm3"
+		and roles[release_index + 1] == "camelback"
 		and controls.has("record_release_core_duration_s")
 		and residuals.has("record_release_length_band_m")
 		and controls.size() == residuals.size(),
-		"the record release follows the fixed camelback with a declared square macro axis: %s / %s / %s"
+		"the record release is an ordered role with a declared square macro axis: %s / %s / %s"
 		% [str(roles), str(controls), str(residuals)])
 
 

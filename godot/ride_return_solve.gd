@@ -163,7 +163,8 @@ const CAPTURE_COEFFICIENT_BOUNDS := [
 
 
 static func _return_spans(
-	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0, targets: Dictionary = {}
+	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0, targets: Dictionary = {},
+	unbank_profile: Array = [0.85, 0.90]
 ) -> Array:
 	# Drawn per seed: how hard each return height beat is pulled and how deeply it unloads. The
 	# solve still owns the durations, so a stronger beat is paid for in its own timing rather
@@ -194,10 +195,8 @@ static func _return_spans(
 	var turn_a_in_s := [0.85, 0.75]
 	var turn_a_in := _roll_ramp(turn_a_in_s, initial_bank_rad, turn_a_bank_rad_signed)
 	# The direct unbank stays one continuous roll from the solved turn bank to level while its
-	# two semantic spans retain the turn-a transition ownership. Its 1.35 s duration yields an
-	# authored 118.52 deg/s at the 80 deg bank ceiling; accepted rides remain subject to the
-	# unchanged row-scaled 120 deg/s verifier.
-	var turn_a_out_s := [0.65, 0.70]
+	# two semantic spans retain the turn-a transition ownership.
+	var turn_a_out_s := [float(unbank_profile[0]), float(unbank_profile[1])]
 	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what
@@ -412,7 +411,8 @@ static func _maximum_absolute(values: Array) -> float:
 
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
 	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
-	initial_bank_rad: float = 0.0, targets: Dictionary = {}) -> Dictionary:
+	initial_bank_rad: float = 0.0, targets: Dictionary = {},
+	unbank_profile: Array = [0.85, 0.90]
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)
@@ -421,7 +421,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	if cache.size() >= MAX_RETURN_EVALUATIONS:
 		return RideProgram._failure("return exceeded its evaluation cap", "return",
 			{"evaluation_count": cache.size()})
-	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
+	var spans := _return_spans(parameters, hand, initial_bank_rad, targets, unbank_profile)
 	var route := Motion.integrate(start, spans, settings)
 	if not route.get("ok", false):
 		var failed := RideProgram._failure("return candidate failed integration", "return",

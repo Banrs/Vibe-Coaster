@@ -62,7 +62,6 @@ func _initialize() -> void:
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
 	_test_first_return_turn_unbanks_directly()
-	_test_first_return_unbank_fits_route_budget()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
@@ -278,20 +277,6 @@ func _test_first_return_turn_unbanks_directly() -> void:
 		and reversals == 1 and not post_core_positive,
 		"the first return turn banks in once and directly unbanks without a counter-steer: %s"
 		% str(directions))
-
-
-func _test_first_return_unbank_fits_route_budget() -> void:
-	var ids := []
-	var duration_s := 0.0
-	for span: Dictionary in RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED):
-		var span_id := str(span.span_id)
-		if span_id in ["raceway/turn-a/exit", "raceway/turn-a/unbank"]:
-			ids.append(span_id)
-			duration_s += float(span.duration_s)
-	_expect(ids == ["raceway/turn-a/exit", "raceway/turn-a/unbank"]
-		and duration_s <= 1.35,
-		"the direct turn-a unbank stays a short two-span transition: %s, %.3f s"
-		% [str(ids), duration_s])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:

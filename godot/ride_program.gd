@@ -473,7 +473,7 @@ static func _add_opener(
 		Motion.quintic(drop_lateral_g * hand, 0.0), 0.0, 0.0,
 		"twisted-drop", 0, 2.0, "twisted_drop")
 	_add(spans, metadata, propulsion, "drop/unbank",
-		unbank_ramp_s + unbank_hold_s, "moving",
+		2.0 * unbank_ramp_s + unbank_hold_s, "moving",
 		Motion.staged([
 			Motion.quintic(4.99988044, normal_mid_g), Motion.quintic(normal_mid_g, 1.0),
 			Motion.constant(1.0), Motion.constant(1.0)],

@@ -64,13 +64,13 @@ const RETURN_SCALAR_BOUNDS := [
 # Seven entries for eleven controls, on purpose: this is the CI-measured continuation anchor for
 # the structurally role-gated return. `_solve_return` still appends each story's certified
 # height-a draw, authored height-a transition durations, and nominal release duration.
-const RETURN_SEED := [1.29506247515953, 1.75423102856726, 0.90570381696204,
-	1.2482733349434, 5.06062260968018, 0.5976171561393, 4.10607423594385]
+const RETURN_SEED := [1.29783417083128, 1.75278505041637, 0.92815830881482,
+	1.23323464577337, 5.16453223713761, 0.77597055608471, 3.9642570818138]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
-const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 0.75794739804
-const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.66737545314808
+const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 0.72865206901364
+const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.73015276312264
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
-const RECORD_RELEASE_CORE_DURATION_S := 2.16163293081402
+const RECORD_RELEASE_CORE_DURATION_S := 2.11869683630988
 ## The one owner of the route-length band: the generator writes it into the plan and the program
 ## validator checks the plan against this same constant.
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)

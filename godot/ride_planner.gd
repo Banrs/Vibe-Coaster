@@ -89,10 +89,8 @@ const SPINE_CLOSE := ["terminal-capture-brakes"]
 ## continued return solve, not a wider range.
 const TARGET_DRAWS := [
 	# The return is downstream of every placement observation and closes through its own bounded
-	# seven-control solve, so its beats can be drawn properly: how far the overbanked transfer is
-	# biased, and how hard each height beat is pulled and how deeply it floats.
-	{"role_id": "return-turn-a", "key": "transfer_bank_bias_rad",
-		"range": Vector2(6.5 * PI / 180.0, 8.5 * PI / 180.0)},
+	# eight-control solve, so its beats can be drawn properly: how hard each height beat is pulled
+	# and how deeply it floats.
 	# One draw sets how hard both height beats are pulled: height-b's peak follows height-a's
 	# proportionally, because the strong-a/weak-b diagonal is the one corner of the draw box the
 	# return solve cannot close from its fixed seed. See `_return_spans` in `ride_program.gd`.

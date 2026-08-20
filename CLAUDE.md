@@ -162,8 +162,8 @@ positions stay raw for physics, verification, and generated-channel measurement.
   duration t is `stretch × F2291_limit(t)` per axis — see `verify.gd` constants.
 - Material story, twenty ordered roles with seeded terrain-relative placement, plus per-seed
   target draws made through `ride_planner.gd`'s named decision streams. Today only the
-  return-side draw set is certified (turn-a transfer bank bias, height-a peak g, the unload
-  scales); act-one permutation and the opener/act-one geometry draws were refused by
+  return-side draw set is certified (height-a peak g and the unload scales); act-one permutation
+  and the opener/act-one geometry draws were refused by
   measurement and stay blocked until the prefix closure solve lands — see `docs/ISSUES.md`
   issue 24. The story itself:
   station → 3.9 g-peak air-launch (band-gated) + unpowered coast over the opener crest → three-role opener

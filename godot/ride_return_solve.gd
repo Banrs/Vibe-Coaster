@@ -17,13 +17,12 @@ const MAX_RETURN_EVALUATIONS := 220
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
-	"height_b_recovery_duration_s", "return_handoff_lateral_g", "height_a_peak_g",
+	"height_b_recovery_duration_s", "height_a_peak_g",
 ]
 const RETURN_SCALAR_BOUNDS := [
-	# The continuous return ramps spread the turn over 1.6-2.05 s, so the previous compact-pulse
+	# The continuous return ramps spread the turn over 1.6-1.75 s, so the previous compact-pulse
 	# 66 deg ceiling no longer describes the authored rate envelope. The 80 deg ceiling keeps the
-	# loaded turn inside a real overbank band while giving the planar camelback handoff enough
-	# heading authority to close without a lateral shortcut.
+	# loaded turn inside a real overbank band without relying on a lateral shortcut.
 	[50.0 * PI / 180.0, 80.0 * PI / 180.0], [0.55, 6.00],
 	# The 0.35 s height-a recovery floor stays where it is. Trimming it to ~0.30 was this stage's
 	# proposed second spend and measurement refused it (2026-08-15): at a 0.30 floor the act-one
@@ -61,7 +60,6 @@ const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
 	1.0471975511966, 6.48573781566998, 0.996333175598368, 3.98838120528104]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
-const RETURN_TRANSFER_BANK_BIAS_RAD := 7.5 * PI / 180.0
 ## The one owner of the route-length band: the generator writes it into the plan and the program
 ## validator checks the plan against this same constant.
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
@@ -174,12 +172,10 @@ static func _return_spans(
 		targets, "return-height-a", "unload_scale", 1.0)
 	var height_b_airtime_g := -0.5 * RidePlanner.target(
 		targets, "return-height-b", "unload_scale", 1.0)
-	# The ninth control is a short, continuous FVD lateral handoff in the first return turn. The
-	# eighth control remains the height-a peak; a seven-entry seed is completed with zero handoff
-	# and the drawn peak so the authored seed stays deterministic.
-	var handoff_lateral_g := float(v[7]) * hand if v.size() > 8 else 0.0
-	var height_a_peak_g := float(v[8]) if v.size() > 8 else (float(v[7]) if v.size() > 7 else \
-		RidePlanner.target(targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
+	# The eighth control is the height-a peak; a seven-entry seed is completed with the drawn peak
+	# so the authored seed stays deterministic.
+	var height_a_peak_g := float(v[7]) if v.size() > 7 else \
+		RidePlanner.target(targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
 	var turn_a_bank_rad := float(v[0])
 	var turn_b_bank_rad := float(v[3])
 	# The second beat's peak follows the first proportionally rather than drawing on its own:
@@ -187,15 +183,6 @@ static func _return_spans(
 	# draw box the seven-control solve cannot close from its fixed seed (measured 2026-08-15:
 	# every such corner exhausts the 220-evaluation budget while every proportional pair lands).
 	var height_b_peak_g := RETURN_HEIGHT_B_PEAK_G * height_a_peak_g / RETURN_HEIGHT_A_PEAK_G
-	# Drawn per seed: how far the counter-banked transfer is biased against the loaded arc, which
-	# is what sets how much heading the sweep unwinds. The roll through the transfer is now one
-	# continuous motion (issue 20), so the bias lands on where that motion ends rather than on the
-	# intermediate bank angles it used to stop at.
-	var transfer_bank_bias_rad := RidePlanner.target(
-		targets, "return-turn-a", "transfer_bank_bias_rad", RETURN_TRANSFER_BANK_BIAS_RAD)
-	var transfer_bank_rad := deg_to_rad(37.5)
-	var counter_transfer_bank_rad := -hand * (transfer_bank_rad - transfer_bank_bias_rad)
-	var counter_transfer_normal := 1.0 / cos(counter_transfer_bank_rad)
 	var turn_a_normal := 1.0 / cos(turn_a_bank_rad)
 	var turn_b_normal := 1.0 / cos(turn_b_bank_rad)
 	var turn_a_bank_rad_signed := hand * turn_a_bank_rad
@@ -206,14 +193,10 @@ static func _return_spans(
 	# and the rider never feels the roll stop and restart inside a transition.
 	var turn_a_in_s := [0.85, 0.75]
 	var turn_a_in := _roll_ramp(turn_a_in_s, initial_bank_rad, turn_a_bank_rad_signed)
-	# The transfer rolls from the loaded arc all the way through level to the counter bank as one
-	# motion. The drawn bias still sets where that motion ends; the intermediate waypoints it used
-	# to stop at are now where the shared rate happens to stand.
-	var turn_a_out_s := [0.50, 0.60, 0.95]
-	var turn_a_out := _roll_ramp(
-		turn_a_out_s, turn_a_bank_rad_signed, counter_transfer_bank_rad)
-	var turn_a_unbank_s := [1.00]
-	var turn_a_unbank := _roll_ramp(turn_a_unbank_s, counter_transfer_bank_rad, 0.0)
+	# The direct unbank stays one continuous roll from the solved turn bank to level while its
+	# two semantic spans retain the turn-a transition ownership.
+	var turn_a_out_s := [0.85, 0.90]
+	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what
 	# the real rides do through a transition.
@@ -222,19 +205,11 @@ static func _return_spans(
 	var turn_b_out_s := [0.85, 0.75]
 	var turn_b_out := _roll_ramp(turn_b_out_s, turn_b_bank_rad_signed, 0.0)
 	var spans := _roll_bank_spans(
-		["raceway/turn-a/entry", "raceway/turn-a/load"], turn_a_in_s, turn_a_in, 1.0, NAN,
-		handoff_lateral_g)
+		["raceway/turn-a/entry", "raceway/turn-a/load"], turn_a_in_s, turn_a_in, 1.0, NAN)
 	spans.append(_return_span("raceway/turn-a/core", float(v[1]), turn_a_normal, turn_a_normal))
 	spans.append_array(_roll_bank_spans(
-		["raceway/turn-a/exit", "raceway/turn-a/transfer-bank", "raceway/turn-a/transfer-cross"],
+		["raceway/turn-a/exit", "raceway/turn-a/unbank"],
 		turn_a_out_s, turn_a_out))
-	# The counter-banked sweep is what lets the loaded arc stay short: it spends the
-	# role's remaining distance while unwinding heading instead of adding to it. It is held
-	# briefly now, because the transfer either side of it rolls for far longer than it used to.
-	spans.append(_return_span("raceway/turn-a/counter-sweep", 0.50,
-		counter_transfer_normal, counter_transfer_normal))
-	spans.append_array(_roll_bank_spans(
-		["raceway/turn-a/transfer-unbank"], turn_a_unbank_s, turn_a_unbank))
 	spans.append_array([
 		_return_span("raceway/height-a/pullup", 0.75, 1.0, height_a_peak_g),
 		_return_span("raceway/height-a/unload", 1.05, height_a_peak_g, height_a_airtime_g),
@@ -307,7 +282,7 @@ static func _roll_ramp(durations: Array, from_bank_rad: float, to_bank_rad: floa
 ## the first and last loads where the chain has to meet a neighbour that is not a level bank.
 static func _roll_bank_spans(
 	ids: Array, durations: Array, ramp: Dictionary, entry_normal: float = NAN,
-	exit_normal: float = NAN, lateral_peak_g: float = 0.0
+	exit_normal: float = NAN
 ) -> Array:
 	var banks: Array = ramp.banks
 	var spans := []
@@ -321,14 +296,9 @@ static func _roll_bank_spans(
 		var normal := Motion.constant(from_normal) \
 			if absf(from_normal - to_normal) <= CONSTANT_PROFILE_TOLERANCE_G \
 			else Motion.quintic(from_normal, to_normal)
-		var lateral := Motion.constant(0.0)
-		if absf(lateral_peak_g) > CONSTANT_PROFILE_TOLERANCE_G:
-			lateral = Motion.quintic(0.0, lateral_peak_g) if index == 0 \
-				else Motion.quintic(lateral_peak_g, 0.0) if index == ids.size() - 1 \
-				else Motion.constant(lateral_peak_g)
 		var transition_id := str(ids[index]).get_slice("/", 1)
 		spans.append(Motion.span(str(ids[index]), float(durations[index]), "moving", normal,
-			lateral, Motion.constant(0.0), ramp.roll[index], transition_id))
+			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index], transition_id))
 	return spans
 
 
@@ -353,11 +323,7 @@ static func _solve_return(
 	# fights the other, no randomness enters here, and a seven-entry seed (the committed
 	# `RETURN_SEED`) is completed deterministically from the build's own targets.
 	var initial: Array = seed.duplicate()
-	if initial.size() == RETURN_SCALAR_IDS.size() - 2:
-		initial.append(0.0)
-		initial.append(RidePlanner.target(
-			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
-	elif initial.size() == RETURN_SCALAR_IDS.size() - 1:
+	if initial.size() == RETURN_SCALAR_IDS.size() - 1:
 		initial.append(RidePlanner.target(
 			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
 	var lower := []

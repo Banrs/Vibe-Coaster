@@ -153,6 +153,11 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	# ride that gets built and the footprint the generator placed are the same prefix.
 	_add_story_prefix(spans, metadata, gestures, propulsion, hand, story,
 		_prefix_controls_from_plan(plan))
+	var fixed_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
+	if not fixed_prefix.get("ok", false):
+		return _failure("upstream return handoff failed integration", "return")
+	var fixed_prefix_state := _last_state(fixed_prefix)
+	var variable_prefix_start := spans.size()
 
 	_begin_gesture(gestures, "record-release-turn", spans.size(), "record-release-turn")
 	_add_record_release_turn(spans, metadata, propulsion, hand)
@@ -163,8 +168,9 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
 	var return_hand := -hand
-	var solved_return := RideReturnSolve._solve_return(initial_state, layout,
-		return_hand, RideReturnSolve.RETURN_SEED, targets, spans)
+	var variable_prefix_spans: Array = spans.slice(variable_prefix_start)
+	var solved_return := RideReturnSolve._solve_return(fixed_prefix_state, layout,
+		return_hand, RideReturnSolve.RETURN_SEED, targets, variable_prefix_spans)
 	if not solved_return.ok:
 		return solved_return
 	_set_record_release_duration(spans, solved_return.parameters)

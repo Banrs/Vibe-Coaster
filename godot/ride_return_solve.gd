@@ -52,7 +52,7 @@ const RETURN_SCALAR_BOUNDS := [
 	# 3.4 floor sits 0.25 g under the certified draw band's floor, and the 4.6 ceiling is where
 	# height-b's proportional peak (x0.831) reaches 3.82, still under height-a's own draw band.
 	[3.4, 4.6],
-	# The record-release turn is a real banked release, not a neutral interval: its 0.9 s shoulders
+	# The record-release turn is a real banked release, not a neutral interval: its 0.8 s shoulders
 	# and 2.29 s nominal core fit the 340-390 m material band while leaving the macro duration enough
 	# authority to move the downstream station-local closure.
 	[2.0, 2.6],

@@ -430,15 +430,16 @@ static func _add_record_release_turn(
 ) -> void:
 	var bank_rad := hand * deg_to_rad(60.0)
 	var banked_normal := 1.0 / cos(bank_rad)
-	var roll_in := RideReturnSolve._roll_ramp([0.9], 0.0, bank_rad)
-	var roll_out := RideReturnSolve._roll_ramp([0.9], bank_rad, 0.0)
-	_add(spans, metadata, propulsion, "record-release-turn/roll-in", 0.9, "moving",
+	var shoulder_s := 0.8
+	var roll_in := RideReturnSolve._roll_ramp([shoulder_s], 0.0, bank_rad)
+	var roll_out := RideReturnSolve._roll_ramp([shoulder_s], bank_rad, 0.0)
+	_add(spans, metadata, propulsion, "record-release-turn/roll-in", shoulder_s, "moving",
 		Motion.quintic(1.0, banked_normal), 0.0, 0.0, roll_in.roll[0],
 		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-in")
 	_add(spans, metadata, propulsion, "record-release-turn/core", core_duration_s, "moving",
 		banked_normal, 0.0, 0.0, 0.0,
 		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-core")
-	_add(spans, metadata, propulsion, "record-release-turn/roll-out", 0.9, "moving",
+	_add(spans, metadata, propulsion, "record-release-turn/roll-out", shoulder_s, "moving",
 		Motion.quintic(banked_normal, 1.0), 0.0, 0.0, roll_out.roll[0],
 		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-out")
 

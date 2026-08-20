@@ -104,19 +104,22 @@ static func build(
 	planning.merge(terrain_proofs.planning, true)
 	var role_bounds := {}
 	var expected_role_ids := []
+	var geometry_intents := {}
 	for role_value in plan.get("roles", []):
 		var role_id := str(role_value.get("id", ""))
 		if role_id.is_empty():
 			continue
 		expected_role_ids.append(role_id)
 		role_bounds[role_id] = _role_sample_bounds(compiled.role_spans, role_id, trajectory)
+		if role_value.get("geometry") is Dictionary:
+			geometry_intents[role_id] = role_value.geometry
 	var measured_route := {"positions": trajectory.position_m, "tangents": trajectory.tangent,
 		"banks": banks, "ups": trajectory.rider_up, "times": trajectory.time_s,
 		"distances": trajectory.distance_m, "speeds": trajectory.speed_mps,
 		"normal_g": trajectory.normal_g, "lateral_g": trajectory.lateral_g,
 		"roll_rates": _degrees(trajectory.roll_rate_rad_s)}
 	var geometry_audit := GeometryMetrics.role_audit(
-		measured_route, role_bounds, expected_role_ids, terrain)
+		measured_route, role_bounds, expected_role_ids, terrain, geometry_intents)
 	if not geometry_audit.ok:
 		return {"ok": false, "errors": geometry_audit.errors}
 	geometry_audit["transitions"] = GeometryMetrics.transition_audit(compiled.spans)

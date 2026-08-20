@@ -171,7 +171,7 @@ static func transition_audit(spans: Array) -> Dictionary:
 ## unavailable AGL record; it never becomes a fabricated zero.
 static func role_audit(
 	route: Dictionary, role_bounds: Dictionary, expected_role_ids: Array = [],
-	terrain: Dictionary = {}
+	terrain: Dictionary = {}, geometry_intents: Dictionary = {}
 ) -> Dictionary:
 	var required := ["positions", "tangents", "banks", "times", "distances", "speeds",
 		"normal_g", "lateral_g", "roll_rates"]
@@ -206,13 +206,22 @@ static func role_audit(
 			continue
 		var shape := shape_of(route, bounds.x, bounds.y)
 		var agl := _agl_distribution(route, bounds.x, bounds.y, terrain)
+		var intent: Dictionary = geometry_intents.get(role_id, {})
+		var violations := PackedStringArray()
+		if agl.get("status") == "measured" and intent.get("apex_agl_m") is Vector2:
+			var apex_band: Vector2 = intent.apex_agl_m
+			var apex_agl := float(agl.apex_m)
+			if apex_agl < apex_band.x or apex_agl > apex_band.y:
+				violations.append("apex AGL %.3f m is outside %.3f–%.3f m" % [
+					apex_agl, apex_band.x, apex_band.y])
 		roles[role_id] = {"status": "measured", "role_id": role_id,
 			"first_sample": bounds.x, "last_sample": bounds.y,
 			"measurement": measurement, "shape": shape, "agl": agl,
 			"speed_mps": _range(route.speeds, bounds.x, bounds.y),
 			"normal_g": _range(route.normal_g, bounds.x, bounds.y),
 			"lateral_g": _range(route.lateral_g, bounds.x, bounds.y),
-			"roll_rate_dps": _range(route.roll_rates, bounds.x, bounds.y)}
+			"roll_rate_dps": _range(route.roll_rates, bounds.x, bounds.y),
+			"geometry_intent": intent.duplicate(true), "violations": violations}
 	return {"schema_version": SCHEMA, "metric": "role_audit", "ok": errors.is_empty(),
 		"roles": roles, "errors": errors}
 
@@ -223,8 +232,11 @@ static func _agl_distribution(
 	if terrain.is_empty() or str(terrain.get("kind", "")) != "material":
 		return {"status": "unavailable", "reason": "terrain evidence is not available"}
 	var values := PackedFloat64Array()
+	var apex_index := first
 	for index in range(first, last + 1):
 		var position: Vector3 = route.positions[index]
+		if position.y > route.positions[apex_index].y:
+			apex_index = index
 		values.append(position.y - Terrain.height(terrain, position.x, position.z))
 	if values.is_empty():
 		return {"status": "unavailable", "reason": "role has no terrain samples"}
@@ -233,7 +245,8 @@ static func _agl_distribution(
 	return {"status": "measured", "minimum_m": float(sorted[0]),
 		"median_m": float(sorted[int(sorted.size() / 2)]),
 		"p90_m": float(sorted[mini(sorted.size() - 1, ceili(sorted.size() * 0.9) - 1)]),
-		"maximum_m": float(sorted[-1])}
+		"maximum_m": float(sorted[-1]), "apex_m": float(values[apex_index - first]),
+		"apex_sample": apex_index}
 
 
 static func _range(values: Variant, first: int, last: int) -> Dictionary:

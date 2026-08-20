@@ -15,6 +15,7 @@ func _initialize() -> void:
 	_test_role_audit_covers_expected_roles()
 	_test_role_audit_measures_shifted_shape()
 	_test_role_audit_reports_missing_terrain()
+	_test_role_audit_measures_apex_agl()
 	_test_role_audit_is_deterministic()
 	for error in _errors:
 		printerr(error)
@@ -107,6 +108,21 @@ func _test_role_audit_is_deterministic() -> void:
 	var first := Metrics.role_audit(route, {"alpha": Vector2i(0, 9)}, ["alpha"])
 	var second := Metrics.role_audit(route, {"alpha": Vector2i(0, 9)}, ["alpha"])
 	_expect(var_to_bytes(first) == var_to_bytes(second), "role audit is byte-deterministic")
+
+
+func _test_role_audit_measures_apex_agl() -> void:
+	var terrain := {"kind": "material", "relief": 0.0, "face_height": 0.0,
+		"apron_height": 0.0, "edge_normal": Vector2.RIGHT, "edge_offset": 0.0,
+		"apron_width": 1.0, "face_width": 1.0, "wobble_amplitude": 0.0,
+		"wobble_wavelength": 1.0, "detail_amplitude": 0.0, "noise_seed": 0}
+	var route := _route(6)
+	for index in route.positions.size():
+		route.positions[index].y = float(index) * 20.0
+	var result := Metrics.role_audit(route, {"hill": Vector2i(0, 5)}, ["hill"], terrain,
+		{"hill": {"apex_agl_m": Vector2(90.0, 110.0)}})
+	_expect(result.ok, "a measured AGL target inside its band passes")
+	_expect(absf(float(result.roles.hill.agl.apex_m) - 100.0) < 0.001,
+		"the apex AGL is measured at the role apex")
 
 
 func _route(count: int) -> Dictionary:

@@ -787,7 +787,10 @@ static func _material_role(role_id: String) -> Dictionary:
 			# The record camelback is longer than the 328 km/h one: the same authored normal-g
 			# profile sweeps more track per second at the 340 km/h entry, and the fall lengthens
 			# to keep the marquee standing ~250 m above its valley.
-			return _role("camelback", "camelback", Vector2(900.0, 1180.0))
+			var camelback := _role("camelback", "camelback", Vector2(900.0, 1180.0))
+			camelback["geometry"] = {"apex_agl_m": Vector2(140.0, 170.0),
+				"prominence_m": Vector2(245.0, 255.0), "planarity": "vertical-plane"}
+			return camelback
 		"return-turn-a":
 			# Turn-a lengthens and height-a shortens against the old bands: the widened
 			# capture-entry corridor lets the passive return carry more speed, and the solve

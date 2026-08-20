@@ -61,6 +61,7 @@ func _initialize() -> void:
 	_test_preset_return_gate_contract()
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
+	_test_first_return_turn_unbanks_directly()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
@@ -245,6 +246,37 @@ func _test_material_return_recipe() -> void:
 		contiguous = contiguous and int(role.first_span) <= int(role.last_span)
 	_expect(contiguous,
 		"the four physical return roles contiguously own the complete recipe")
+
+
+func _test_first_return_turn_unbanks_directly() -> void:
+	var spans := RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED)
+	var directions := []
+	var post_core_positive := false
+	var in_core := false
+	for span: Dictionary in spans:
+		var span_id := str(span.span_id)
+		if span_id == "raceway/turn-a/core":
+			in_core = true
+			continue
+		if not span_id.begins_with("raceway/turn-a/"):
+			if in_core:
+				break
+			continue
+		var roll_rate := Motion.profile_sample(span.roll_rate_rad_s, 0.5).x
+		if absf(roll_rate) <= 0.000001:
+			continue
+		var direction := 1 if roll_rate > 0.0 else -1
+		directions.append(direction)
+		if in_core and direction > 0:
+			post_core_positive = true
+	var reversals := 0
+	for index in range(1, directions.size()):
+		if directions[index] != directions[index - 1]:
+			reversals += 1
+	_expect(directions.size() >= 2 and directions[0] > 0 and directions[-1] < 0
+		and reversals == 1 and not post_core_positive,
+		"the first return turn banks in once and directly unbanks without a counter-steer: %s"
+		% str(directions))
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:

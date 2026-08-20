@@ -10,10 +10,10 @@ const RideTerrain := preload("res://terrain.gd")
 const SEED := 42
 const BANK_RAD := PI / 3.0
 const ROLL_DURATION_S := 0.9
-const CORE_DURATIONS_S := [2.21, 2.22, 2.23, 2.24, 2.25, 2.26, 2.27, 2.28, 2.29]
+const CORE_DURATIONS_S := [2.29]
 const REFINED_SEED := [
-	1.28553539742647, 1.52044740170923, 0.82207007975797, 1.14164906679756,
-	5.70836336099341, 0.80534367918859, 5.25552481007653, 3.75445905699032,
+	1.30550387165005, 1.27974834911463, 0.8539502968208, 1.14613340404144,
+	5.69366242819916, 0.72410090683625, 5.34923442880672, 3.68793247130473,
 ]
 
 
@@ -80,13 +80,23 @@ func _run_lane(direction: int, core_duration_s: float, initial_state: Dictionary
 		},
 		"speed_mps": post_camelback.speed_mps,
 	}))
-	var solved_return := RideReturnSolve._solve_return(
-		post_camelback, layout, return_hand, REFINED_SEED, targets)
-	print("return heading probe solve=%s" % str({
-		"direction": direction,
-		"core_duration_s": core_duration_s,
-		"result": solved_return,
-	}))
+	var solve_seed: Array = REFINED_SEED.duplicate()
+	for continuation in 3:
+		var solved_return := RideReturnSolve._solve_return(
+			post_camelback, layout, return_hand, solve_seed, targets)
+		print("return heading probe solve=%s" % str({
+			"direction": direction,
+			"core_duration_s": core_duration_s,
+			"continuation": continuation,
+			"start": solve_seed,
+			"result": solved_return,
+		}))
+		if solved_return.get("ok", false):
+			break
+		var accepted: Variant = solved_return.get("failure", {}).get("accepted_values")
+		if not accepted is Array or accepted.size() != RideReturnSolve.RETURN_SCALAR_IDS.size():
+			break
+		solve_seed = accepted.duplicate()
 
 
 func _heading_transition_spans(direction: int, core_duration_s: float) -> Array:

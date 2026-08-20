@@ -60,8 +60,8 @@ const RETURN_SCALAR_BOUNDS := [
 # Seven entries for nine controls, on purpose: this is the CI-measured seed-42 anchor for the
 # in-band balanced-release branch. `_solve_return` still appends each story's certified height-a
 # draw and nominal release duration.
-const RETURN_SEED := [1.36499713507363, 1.00995423117919, 0.74642922306479,
-	1.17449087177599, 5.56569144360173, 0.87134790005407, 4.5807386683678]
+const RETURN_SEED := [1.35186739973685, 1.10415905446732, 0.66456169883088,
+	1.17576951409366, 5.55120374141253, 0.91486320628159, 4.55659253883216]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29

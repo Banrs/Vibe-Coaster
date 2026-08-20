@@ -324,6 +324,7 @@ static func _solve_return(
 	targets: Dictionary = {}, prefix_spans: Array = []
 ) -> Dictionary:
 	var cache := {}
+	var prefix_cache := {}
 	var initial_bank_rad: float = _capture_residuals(start, layout)[4]
 	# Ownership of the height-a peak and record-release macro, resolved: the certified per-seed draw
 	# initialises the eighth control, while the ninth is the nominal macro duration. The solve owns
@@ -346,7 +347,7 @@ static func _solve_return(
 	var residual := func(candidate: Array) -> Array:
 		var observed := _return_evaluation(
 			start, layout, candidate, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-			hand, initial_bank_rad, targets, prefix_spans)
+			hand, initial_bank_rad, targets, prefix_spans, prefix_cache)
 		return observed.scaled if observed.get("ok", false) else [INF]
 	var solved := BoundedSolver.solve(
 		residual, lower, upper, initial, MAX_RETURN_EVALUATIONS - 1)
@@ -359,12 +360,12 @@ static func _solve_return(
 	var parameters: Array = solved.x
 	var coarse := _return_evaluation(
 		start, layout, parameters, RideProgram._settings(RideProgram.FINE_STEP_S), cache, hand,
-		initial_bank_rad, targets, prefix_spans)
+		initial_bank_rad, targets, prefix_spans, prefix_cache)
 	if not coarse.get("ok", false):
 		return coarse
 	var fine := _return_evaluation(
 		start, layout, parameters, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-		hand, initial_bank_rad, targets, prefix_spans)
+		hand, initial_bank_rad, targets, prefix_spans, prefix_cache)
 	if not fine.ok:
 		return fine
 	if _maximum_absolute(fine.scaled) > 0.02:
@@ -422,7 +423,8 @@ static func _maximum_absolute(values: Array) -> float:
 
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
 	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
-	initial_bank_rad: float = 0.0, targets: Dictionary = {}, prefix_spans: Array = []) -> Dictionary:
+	initial_bank_rad: float = 0.0, targets: Dictionary = {}, prefix_spans: Array = [],
+	prefix_cache: Dictionary = {}) -> Dictionary:
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)
@@ -433,29 +435,42 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 			{"evaluation_count": cache.size()})
 	var candidate_start := start
 	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
+	var record_release_length_m := NAN
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
-		var candidate_prefix := _prefix_with_record_release_duration(prefix_spans,
-			float(parameters[record_index]))
-		var prefix_route := Motion.integrate(start, candidate_prefix, settings)
-		if not prefix_route.get("ok", false):
+		var record_duration_s := float(parameters[record_index])
+		var prefix_key := "%.6f:%.12f" % [float(settings.step_s), record_duration_s]
+		var prefix_result: Dictionary
+		if prefix_cache.has(prefix_key):
+			prefix_result = prefix_cache[prefix_key]
+		else:
+			var candidate_prefix := _prefix_with_record_release_duration(prefix_spans, record_duration_s)
+			var prefix_route := Motion.integrate(start, candidate_prefix, settings)
+			if not prefix_route.get("ok", false):
+				prefix_result = {"ok": false, "errors": prefix_route.get("errors", [])}
+			else:
+				var prefix_start := RideProgram._last_state(prefix_route)
+				prefix_result = {"ok": true, "candidate_start": prefix_start,
+					"initial_bank_rad": _capture_residuals(prefix_start, layout)[4],
+					"record_release_length_m": _role_arc_m(prefix_route, candidate_prefix,
+						RECORD_RELEASE_SPAN_PREFIX)}
+			prefix_cache[prefix_key] = prefix_result
+		if not prefix_result.get("ok", false):
 			var prefix_failed := RideProgram._failure("return candidate prefix failed integration", "return",
 				{"evaluation_count": cache.size() + 1})
 			cache[key] = prefix_failed
 			return prefix_failed
-		candidate_start = RideProgram._last_state(prefix_route)
-		initial_bank_rad = _capture_residuals(candidate_start, layout)[4]
-		spans = candidate_prefix.duplicate()
-		spans.append_array(_return_spans(parameters, hand, initial_bank_rad, targets))
-	var route := Motion.integrate(candidate_start, _return_spans(parameters, hand,
-		initial_bank_rad, targets), settings) if prefix_spans.is_empty() else \
-		Motion.integrate(start, spans, settings)
+		candidate_start = prefix_result.candidate_start
+		initial_bank_rad = float(prefix_result.initial_bank_rad)
+		record_release_length_m = float(prefix_result.record_release_length_m)
+		spans = _return_spans(parameters, hand, initial_bank_rad, targets)
+	var route := Motion.integrate(candidate_start, spans, settings)
 	if not route.get("ok", false):
 		var failed := RideProgram._failure("return candidate failed integration", "return",
 			{"evaluation_count": cache.size() + 1})
 		cache[key] = failed
 		return failed
-	var result := _return_observation(route, layout, spans)
+	var result := _return_observation(route, layout, spans, record_release_length_m)
 	result["scaled"] = []
 	for index in RETURN_RESIDUAL_IDS.size():
 		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
@@ -496,7 +511,8 @@ static func _role_arc_m(route: Dictionary, spans: Array, prefix: String) -> floa
 
 
 static func _return_observation(
-	route: Dictionary, layout: Dictionary, spans: Array
+	route: Dictionary, layout: Dictionary, spans: Array,
+	record_release_length_m: float = NAN
 ) -> Dictionary:
 	var state := RideProgram._last_state(route)
 	var station_forward: Vector3 = layout.station_tangent.normalized()
@@ -515,7 +531,8 @@ static func _return_observation(
 	var turn_b_length_m := _role_arc_m(route, spans, RETURN_TURN_B_SPAN_PREFIX)
 	var record_release_band: Vector2 = layout.get(
 		"record_release_length_m", RETURN_UNBOUNDED_BAND_M)
-	var record_release_length_m := _role_arc_m(route, spans, RECORD_RELEASE_SPAN_PREFIX)
+	if not is_finite(record_release_length_m):
+		record_release_length_m = _role_arc_m(route, spans, RECORD_RELEASE_SPAN_PREFIX)
 	var half_width: float = layout.get("capture_half_width_m", CAPTURE_HALF_WIDTH_M)
 	var half_height: float = layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)
 	var residuals := [

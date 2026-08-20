@@ -67,12 +67,13 @@ func _midpoint_seed() -> Array:
 
 func _run_lane(lane: String, profile: Array, seed: Array, start: Dictionary,
 	layout: Dictionary, hand: float, targets: Dictionary) -> Dictionary:
+	RideReturnSolve.PROBE_UNBANK_PROFILE = profile.duplicate()
 	var cache := {}
 	var initial_bank_rad: float = RideReturnSolve._capture_residuals(start, layout)[4]
 	var residual := func(candidate: Array) -> Array:
 		var observed := RideReturnSolve._return_evaluation(
 			start, layout, candidate, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-			hand, initial_bank_rad, targets, profile)
+			hand, initial_bank_rad, targets)
 		return observed.get("scaled", [INF]) if observed.get("ok", false) else [INF]
 	var solved: Dictionary = BoundedSolver.solve(
 		residual, _lower_bounds(), _upper_bounds(), seed, MAX_EVALUATIONS)
@@ -82,10 +83,10 @@ func _run_lane(lane: String, profile: Array, seed: Array, start: Dictionary,
 	if solved.ok:
 		var production := RideReturnSolve._return_evaluation(
 			start, layout, solved.x, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-			hand, initial_bank_rad, targets, profile)
+			hand, initial_bank_rad, targets)
 		var fine := RideReturnSolve._return_evaluation(
 			start, layout, solved.x, RideProgram._settings(RideProgram.FINE_STEP_S), cache,
-			hand, initial_bank_rad, targets, profile)
+			hand, initial_bank_rad, targets)
 		print(("return basin probe lane=%s profile=%s production_observation=%s "
 			+ "fine_observation=%s production_margins=%s fine_margins=%s") % [lane,
 			str(profile),

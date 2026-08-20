@@ -160,11 +160,12 @@ const TERMINAL_DISTANCE_TOLERANCE_M := 0.05
 const CAPTURE_COEFFICIENT_BOUNDS := [
 	[-1.5, 1.5], [-1.5, 1.5], [-0.45, 0.45], [-0.45, 0.45], [-1.2, 1.2],
 ]
+# Temporary CI-only seam used by return_basin_probe.gd; an empty value is production behavior.
+static var PROBE_UNBANK_PROFILE: Array = []
 
 
 static func _return_spans(
-	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0, targets: Dictionary = {},
-	unbank_profile: Array = []
+	v: Array, hand: float = 1.0, initial_bank_rad: float = 0.0, targets: Dictionary = {}
 ) -> Array:
 	# Drawn per seed: how hard each return height beat is pulled and how deeply it unloads. The
 	# solve still owns the durations, so a stronger beat is paid for in its own timing rather
@@ -197,8 +198,8 @@ static func _return_spans(
 	# The direct unbank stays one continuous roll from the solved turn bank to level while its
 	# two semantic spans retain the turn-a transition ownership.
 	var turn_a_out_s := [0.85, 0.90]
-	if unbank_profile.size() == 2:
-		turn_a_out_s = [float(unbank_profile[0]), float(unbank_profile[1])]
+	if PROBE_UNBANK_PROFILE.size() == 2:
+		turn_a_out_s = [float(PROBE_UNBANK_PROFILE[0]), float(PROBE_UNBANK_PROFILE[1])]
 	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what
@@ -413,8 +414,7 @@ static func _maximum_absolute(values: Array) -> float:
 
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
 	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
-	initial_bank_rad: float = 0.0, targets: Dictionary = {},
-	unbank_profile: Array = []
+	initial_bank_rad: float = 0.0, targets: Dictionary = {}) -> Dictionary:
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)
@@ -423,7 +423,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	if cache.size() >= MAX_RETURN_EVALUATIONS:
 		return RideProgram._failure("return exceeded its evaluation cap", "return",
 			{"evaluation_count": cache.size()})
-	var spans := _return_spans(parameters, hand, initial_bank_rad, targets, unbank_profile)
+	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
 	var route := Motion.integrate(start, spans, settings)
 	if not route.get("ok", false):
 		var failed := RideProgram._failure("return candidate failed integration", "return",

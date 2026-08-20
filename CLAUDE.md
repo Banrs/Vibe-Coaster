@@ -195,7 +195,7 @@ positions stay raw for physics, verification, and generated-channel measurement.
   sections, no flat grades between elements (design intent — reviewed, not yet mechanically
   enforced by any validator); elapsed average speed is reported, never
   targeted — pacing is organic. Length 7.8–8.2 km. The unpowered return is authored in normal-g
-  and bank/roll functions; a bounded nine-control solve targets the derived capture-entry
+  and bank/roll functions; a bounded eight-control solve targets the derived capture-entry
   corridor, the 7.8–8.2 km route band, and the 70–80 m/s passive entry-speed band (widened
   from 70–77 on 2026-08-15 — the measured cost of closing the ~340 km/h record inside
   8.2 km without a mid-course brake; see

@@ -62,7 +62,7 @@ func _initialize() -> void:
 	_test_sustained_brake_closes_without_padding()
 	_test_material_return_recipe()
 	_test_first_return_turn_unbanks_directly()
-	_test_return_unbank_has_a_declared_closure_axis()
+	_test_first_return_unbank_fits_route_budget()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
 	_test_terrain_story_capability_is_finite_and_handed()
@@ -280,44 +280,18 @@ func _test_first_return_turn_unbanks_directly() -> void:
 		% str(directions))
 
 
-func _test_return_unbank_has_a_declared_closure_axis() -> void:
-	var controls := RideReturnSolve.RETURN_SCALAR_IDS
-	var residuals := RideReturnSolve.RETURN_RESIDUAL_IDS
-	var declared := (
-		controls.has("height_a_peak_g")
-		and controls.has("turn_a_unbank_duration_s")
-		and residuals.has("roll_rad")
-		and controls.size() == residuals.size()
-	)
-	_expect(declared,
-		"the direct-unbank duration and terminal roll form a declared square closure axis: %s / %s"
-		% [str(controls), str(residuals)])
-	if not declared:
-		return
-	var control_index := controls.find("turn_a_unbank_duration_s")
-	var seven_values := RideReturnSolve.RETURN_SEED.duplicate()
-	var eight_values := seven_values.duplicate()
-	eight_values.append(RideReturnSolve.RETURN_HEIGHT_A_PEAK_G)
-	var low_values := eight_values.duplicate()
-	low_values.append(float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][0]))
-	var high_values := low_values.duplicate()
-	high_values[control_index] = float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][1])
-	var durations := []
-	for values: Array in [seven_values, eight_values, low_values, high_values]:
-		var duration_s := 0.0
-		for span: Dictionary in RideReturnSolve._return_spans(values):
-			if str(span.span_id) in ["raceway/turn-a/exit", "raceway/turn-a/unbank"]:
-				duration_s += float(span.duration_s)
-		durations.append(duration_s)
-	_expect(absf(float(durations[0]) - RideReturnSolve.RETURN_UNBANK_DEFAULT_DURATION_S)
-		<= 0.000001 and absf(float(durations[1])
-		- RideReturnSolve.RETURN_UNBANK_DEFAULT_DURATION_S) <= 0.000001
-		and absf(float(durations[2])
-		- float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][0])) <= 0.000001
-		and absf(float(durations[3])
-		- float(RideReturnSolve.RETURN_SCALAR_BOUNDS[control_index][1])) <= 0.000001,
-		"seven-, eight-, and nine-value recipes preserve or control direct-unbank duration: %s"
-		% str(durations))
+func _test_first_return_unbank_fits_route_budget() -> void:
+	var ids := []
+	var duration_s := 0.0
+	for span: Dictionary in RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED):
+		var span_id := str(span.span_id)
+		if span_id in ["raceway/turn-a/exit", "raceway/turn-a/unbank"]:
+			ids.append(span_id)
+			duration_s += float(span.duration_s)
+	_expect(ids == ["raceway/turn-a/exit", "raceway/turn-a/unbank"]
+		and duration_s <= 1.35,
+		"the direct turn-a unbank stays a short two-span transition: %s, %.3f s"
+		% [str(ids), duration_s])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:
@@ -624,14 +598,13 @@ func _return_observations_are_equivalent(actual: Variant, expected: Variant) -> 
 	if not actual is Dictionary or not expected is Dictionary:
 		return false
 	var fields := ["station_forward_m", "cross_track_m", "height_m", "yaw_rad",
-		"pitch_rad", "route_total_length_m", "speed_mps", "roll_rad"]
-	var scales := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 0.02]
+		"pitch_rad", "route_total_length_m", "speed_mps"]
 	# Two independently accepted solutions may lie on opposite sides of the solver tolerance.
 	for index in fields.size():
 		var field: String = fields[index]
 		if not _finite_number(actual.get(field)) or not _finite_number(expected.get(field)) \
 				or absf(float(actual[field]) - float(expected[field])) \
-				> 0.04 * float(scales[index]):
+				> 0.04 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[index]):
 			return false
 	return true
 

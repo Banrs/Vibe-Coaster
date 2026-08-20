@@ -54,4 +54,43 @@ func _initialize() -> void:
 		print("solve_seed=%s result=%s" % [str(seed), str(solved)])
 		var mirrored := RideReturnSolve._solve_return(start, layout, hand, seed, story.targets)
 		print("mirror_seed=%s result=%s" % [str(seed), str(mirrored)])
+	var rolled_spans: Array = program.spans.duplicate()
+	var rolled_metadata: Array = []
+	var rolled_propulsion := PackedInt32Array()
+	_add_rolled_camelback(rolled_spans, rolled_metadata, rolled_propulsion, hand)
+	var rolled_route := Motion.integrate(RidePrefixSolve._prefix_initial_state(), rolled_spans,
+		RideProgram._settings(RideProgram.PRODUCTION_STEP_S))
+	var rolled_start := RideProgram._last_state(rolled_route)
+	var rolled_bank := float(RideReturnSolve._capture_residuals(rolled_start, layout)[4])
+	var rolled_solve := RideReturnSolve._solve_return(rolled_start, layout, -hand, candidates[1],
+		story.targets)
+	print("rolled_zero_lateral start=%s bank=%f solve=%s" % [str(rolled_start.position_m),
+		rolled_bank, str(rolled_solve)])
 	quit(0)
+
+
+func _add_rolled_camelback(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+) -> void:
+	var positive_g := 4.60068864065765
+	var negative_g := -1.55352865073772
+	var pullout_g := 5.2662035249371
+	var pullup_s := 1.87949032 * 1.33555111055541
+	var unload_s := 3.01169597 * 1.15 - 0.4
+	var crest_s := 3.62587650 * 1.06
+	var fall_s := 3.40
+	var bank := -deg_to_rad(18.0) * hand
+	RideProgram._add(spans, metadata, propulsion, "probe/pull-up", pullup_s, "moving",
+		Motion.quintic(1.0, positive_g), Motion.constant(0.0), 0.0,
+		Motion.compact_pulse(bank / (pullup_s * RideProgram.COMPACT_PULSE_AREA)), "probe")
+	RideProgram._add(spans, metadata, propulsion, "probe/unload", unload_s, "moving",
+		Motion.quintic(positive_g, negative_g), Motion.constant(0.0), 0.0,
+		Motion.compact_pulse(-bank / (unload_s * RideProgram.COMPACT_PULSE_AREA)), "probe")
+	RideProgram._add(spans, metadata, propulsion, "probe/crest", crest_s, "moving",
+		negative_g, Motion.constant(0.0), 0.0,
+		Motion.compact_pulse(-bank / (crest_s * RideProgram.COMPACT_PULSE_AREA)), "probe")
+	RideProgram._add(spans, metadata, propulsion, "probe/fall", fall_s, "moving",
+		Motion.quintic(negative_g, pullout_g), Motion.constant(0.0), 0.0,
+		Motion.compact_pulse(bank / (fall_s * RideProgram.COMPACT_PULSE_AREA)), "probe")
+	RideProgram._add(spans, metadata, propulsion, "probe/pullout", 1.58, "moving",
+		Motion.quintic(pullout_g, 1.0), Motion.constant(0.0), 0.0, 0.0, "probe")

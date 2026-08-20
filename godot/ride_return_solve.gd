@@ -25,10 +25,11 @@ const RETURN_SCALAR_IDS := [
 	"height_b_recovery_duration_s", "height_a_peak_g",
 ]
 const RETURN_SCALAR_BOUNDS := [
-	# Turn-a bank caps at 66 deg: the fixed 0.45 s exit rolls (bank - 45 deg) in one compact
-	# pulse, so peaks stay under the 120 deg/s envelope only for bank < ~68.4 deg, and the
-	# sweep seeds never run the load gate that would catch a breach.
-	[50.0 * PI / 180.0, 66.0 * PI / 180.0], [0.55, 6.00],
+	# The continuous return ramps spread the turn over 1.6-2.05 s, so the previous compact-pulse
+	# 66 deg ceiling no longer describes the authored rate envelope. The 80 deg ceiling keeps the
+	# loaded turn inside a real overbank band while giving the planar camelback handoff enough
+	# heading authority to close without a lateral shortcut.
+	[50.0 * PI / 180.0, 80.0 * PI / 180.0], [0.55, 6.00],
 	# The 0.35 s height-a recovery floor stays where it is. Trimming it to ~0.30 was this stage's
 	# proposed second spend and measurement refused it (2026-08-15): at a 0.30 floor the act-one
 	# optional swap on seed 20260809 does converge its return - and the accepted point runs the

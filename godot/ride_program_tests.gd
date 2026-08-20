@@ -639,6 +639,24 @@ func _return_observations_are_equivalent(actual: Variant, expected: Variant) -> 
 	return true
 
 
+func _return_production_observations_match(actual: Variant, expected: Variant) -> bool:
+	if not actual is Dictionary or not expected is Dictionary:
+		return false
+	for field_and_index: Array in [
+		["station_forward_m", 0], ["cross_track_m", 1], ["height_m", 2],
+		["yaw_rad", 3], ["pitch_rad", 4], ["roll_rad", 4],
+		["route_total_length_m", 5], ["speed_mps", 6],
+		["turn_b_length_m", 7], ["record_release_length_m", 8],
+	]:
+		var field: String = field_and_index[0]
+		var tolerance_index: int = field_and_index[1]
+		if not _finite_number(actual.get(field)) or not _finite_number(expected.get(field)) \
+				or absf(float(actual[field]) - float(expected[field])) \
+					> RideReturnSolve.RETURN_FINE_TOLERANCES[tolerance_index]:
+			return false
+	return true
+
+
 func _test_malformed_capture_is_structured() -> void:
 	var fixture := _capture_fixture("malformed", Vector3.ZERO, Vector3.RIGHT,
 		75.4847075745055, 209.0, -0.09809875488281, 0.00093841552734,
@@ -717,10 +735,16 @@ func _expect_return_closes_interior(seed_value: int, report: Dictionary) -> void
 	_expect(low >= aim and high >= aim,
 		"seed %d closes %.4f m above and %.4f m below its route-length band; the aim is %.2f m"
 		% [seed_value, low, high, aim])
-	var total := float(report.get("fine_observation", {}).get("route_total_length_m", NAN))
+	var fine: Dictionary = report.get("fine_observation", {})
+	var production: Dictionary = report.get("production_observation", {})
+	var total := float(production.get("route_total_length_m", NAN))
 	_expect(absf(high + total - RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y) <= 0.000001,
 		"seed %d still measures its accepted %.4f m against the outer %.1f m ceiling"
 		% [seed_value, total, RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y])
+	_expect(report.get("verification_integrations") == 1
+		and _return_production_observations_match(production, fine),
+		"seed %d publishes one continuous production verification matching its segmented solve"
+		% seed_value)
 
 
 ## The threading the closure needs to mean anything: `compile` must build the production span

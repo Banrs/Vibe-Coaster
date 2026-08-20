@@ -68,47 +68,9 @@ const RECORD_RELEASE_CORE_DURATION_S := 2.29
 ## The one owner of the route-length band: the generator writes it into the plan and the program
 ## validator checks the plan against this same constant.
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
-## How far inside its route-length band the solve is driven to close. `_band_residual` is flat
-## everywhere inside a band, so the length residual gives the solve no reason to stay interior: it
-## drifts onto the 8200 m ceiling and converges there, where a strictly positive
-## `route_length_high_m` margin is all that separates an accepted ride from a refused one.
-## Measured 2026-08-15 on the act-one optional swap, under production bounds: seed 4096 closes
-## 0.00075 m inside the ceiling and seed 11 0.0215 m inside it - accepted, but by the sign of a
-## sub-millimetre number rather than by anything the solve was asked to achieve; at a 0.30 s
-## recovery floor the same point lands 0.00078 m the other side and is refused outright. Aiming one
-## metre inside replaces that coin flip with an interior closure on the same 42 and 34 evaluations.
-##
-## The metre is the fleet's own headroom, not a proposal. Every route-length observation made by
-## every return solve on all fifteen preset seeds - seed, Jacobian probe, rejected trial and
-## accepted point, at all three step sizes - was measured: the closest any of them comes to the
-## 8200 m ceiling is 1.3463 m (seed 20250101; 1.3676 m on 1234, >= 3.57 m on the other thirteen),
-## and none is within 341 m of the 7800 m floor. One metre therefore leaves every canonical
-## observation strictly inside the aimed band, where this residual is exactly 0.0 as it is today,
-## so the fifteen production rides stay bit-identical rather than approximately unchanged.
-##
-## The interior-closure guarantee is measured, not structural: convergence tolerates
-## 0.02 x the 125.0 length scale = 2.5 m of scaled slack, more than this metre, so a
-## non-canonical story can still converge while grazing the aimed band. Sizing the margin above
-## 2.5 m would fix that structurally - and would put the closest canonical observation
-## (1.3463 m) inside the margin zone, changing canonical bytes. The metre is the largest
-## honest value; the swap gate asserts the interior closure it buys.
-##
-## Eight-control re-certification note (2026-08-16): the sweep above was measured on the
-## seven-control solve. On the re-certified eight-control fleet the fifteen accepted points sit
-## >= 12.43 m from the 8200 m ceiling and >= 338 m from the floor, so the aimed band is slack at
-## every accepted canonical point; the margin stays 1.0 m on the same reasoning. The measured,
-## not structural, caveat is now live on the swap diagnostics: their returns converge 0.45-1.19 m
-## inside the true ceiling - past the aim edge, within the 2.5 m convergence slack - so the swap
-## gate now asserts strict true-band interiority and records the grazing rather than asserting
-## the aim margin it no longer buys (see `generator_material_tests.gd`).
-##
-## The entry-speed band gets no *additional* aim margin: its existing
-## `RETURN_ENTRY_SPEED_PADDING_MPS` (0.01 m/s) already exceeds the speed side's 0.002 m/s
-## convergence slack (0.02 x the 0.1 scale), so an accepted speed margin is structurally
-## positive and the length pathology cannot occur there. Widening it further would move
-## canonical residuals - the same sweep measures canonical candidates 0.39 m/s past the
-## 80 m/s ceiling on seed 42.
-const RETURN_LENGTH_AIM_MARGIN_M := 1.0
+## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, so this is a
+## structural tightening of the route-length aim rather than a tolerance-sized suggestion.
+const RETURN_LENGTH_AIM_MARGIN_M := 3.0
 ## The same mechanism as `RETURN_LENGTH_AIM_MARGIN_M`, applied to the one role band the return's
 ## own geometry owns outright. `return-turn-b` is the role whose length the solve moves most - the
 ## loaded arc is where a moved handoff is paid for - and it is the role the route contract refuses
@@ -123,10 +85,12 @@ const RETURN_LENGTH_AIM_MARGIN_M := 1.0
 ## slack on this channel (0.02 x the 125.0 scale = 2.5 m), so unlike the route-length margin the
 ## interiority an accepted point carries here is structural rather than only measured.
 const RETURN_TURN_B_AIM_MARGIN_M := 3.0
-const RECORD_RELEASE_LENGTH_AIM_MARGIN_M := 1.0
+## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, tightening this
+## role band by the same structural margin as the route-length aim.
+const RECORD_RELEASE_LENGTH_AIM_MARGIN_M := 3.0
 ## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
-## exactly 0.0 against it, so the fixed-layout fixtures see the same seven-residual solve they
-## always did with an eighth row that is identically zero.
+## exactly 0.0 against it, so fixed-layout fixtures keep both role-band rows inert in the
+## nine-residual solve.
 const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
@@ -328,9 +292,8 @@ static func _solve_return(
 	var initial_bank_rad: float = _capture_residuals(start, layout)[4]
 	# Ownership of the height-a peak and record-release macro, resolved: the certified per-seed draw
 	# initialises the eighth control, while the ninth is the nominal macro duration. The solve owns
-	# closure from the full prefix when production supplies `prefix_spans`.
-	# inside the control's own derived bounds. The draw proposes, the solve disposes - neither
-	# fights the other, no randomness enters here, and the seven-entry seed is completed
+	# closure from the full prefix when production supplies `prefix_spans`. Each draw stays inside
+	# its control's derived bounds; no randomness enters here, and the seven-entry seed is completed
 	# deterministically from the build's own targets and the authored macro.
 	var initial: Array = seed.duplicate()
 	if initial.size() == RETURN_SCALAR_IDS.size() - 2:
@@ -382,12 +345,83 @@ static func _solve_return(
 			return RideProgram._failure("return coarse/fine observations disagree", "return",
 				{"evaluation_count": cache.size(), "coarse": coarse.residuals,
 					"fine": fine.residuals})
-	var margins: Dictionary = fine.margins.duplicate(true)
+	var accepted_initial_bank_rad := initial_bank_rad
+	var return_entry_gate_state: Dictionary = start
+	var production_observation: Dictionary = fine.observation.duplicate(true)
+	var production_margins: Dictionary = fine.margins.duplicate(true)
+	var verification_integrations := 0
+	if not prefix_spans.is_empty():
+		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+		var record_duration_s := float(parameters[record_index])
+		var prefix_key := "%.6f:%.12f" % [RideProgram.PRODUCTION_STEP_S, record_duration_s]
+		if not prefix_cache.has(prefix_key):
+			return RideProgram._failure("return production verification lacks accepted prefix cache",
+				"return", {"evaluation_count": cache.size()})
+		var prefix_result: Dictionary = prefix_cache[prefix_key]
+		if not prefix_result.get("ok", false):
+			return RideProgram._failure("return production verification has no accepted prefix",
+				"return", {"evaluation_count": cache.size()})
+		var accepted_prefix := _prefix_with_record_release_duration(prefix_spans, record_duration_s)
+		if accepted_prefix.size() != prefix_spans.size():
+			return RideProgram._failure("return production verification prefix shape mismatches",
+				"return", {"evaluation_count": cache.size()})
+		accepted_initial_bank_rad = float(prefix_result.initial_bank_rad)
+		return_entry_gate_state = prefix_result.candidate_start
+		var accepted_return_spans := _return_spans(
+			parameters, hand, accepted_initial_bank_rad, targets)
+		var verification_spans := accepted_prefix.duplicate()
+		verification_spans.append_array(accepted_return_spans)
+		var verification_route := Motion.integrate(
+			start, verification_spans, RideProgram._settings(RideProgram.PRODUCTION_STEP_S))
+		verification_integrations = 1
+		if not verification_route.get("ok", false):
+			return RideProgram._failure("return production verification failed integration", "return",
+				{"evaluation_count": cache.size()})
+		var production := _return_observation(verification_route, layout, verification_spans)
+		production["scaled"] = []
+		for index in RETURN_RESIDUAL_IDS.size():
+			production.scaled.append(production.residuals[index] / RETURN_RESIDUAL_SCALES[index])
+		if _maximum_absolute(production.scaled) > 0.02:
+			return RideProgram._failure(
+				"return production verification misses its physical target", "return",
+				{"evaluation_count": cache.size(), "target_error": production.scaled,
+					"observed": production.observation})
+		if not _margins_are_valid(production.margins):
+			return RideProgram._failure("return production verification misses true margins", "return",
+				{"evaluation_count": cache.size(), "observed": production.observation,
+					"margins": production.margins})
+		for segmented: Dictionary in [coarse, fine]:
+			for index in RETURN_RESIDUAL_IDS.size():
+				if absf(production.residuals[index] - segmented.residuals[index]) \
+						> RETURN_FINE_TOLERANCES[index]:
+					return RideProgram._failure(
+						"return segmented/production observations disagree", "return",
+						{"evaluation_count": cache.size(), "segmented": segmented.residuals,
+							"production": production.residuals})
+			for field_and_index: Array in [
+				["station_forward_m", 0], ["cross_track_m", 1], ["height_m", 2],
+				["yaw_rad", 3], ["pitch_rad", 4], ["roll_rad", 4],
+				["route_total_length_m", 5], ["speed_mps", 6],
+				["turn_b_length_m", 7], ["record_release_length_m", 8],
+			]:
+				var field: String = field_and_index[0]
+				var tolerance_index: int = field_and_index[1]
+				if absf(float(production.observation[field])
+						- float(segmented.observation[field])) \
+						> RETURN_FINE_TOLERANCES[tolerance_index]:
+					return RideProgram._failure(
+						"return segmented/production raw observations disagree", "return",
+						{"evaluation_count": cache.size(), "field": field,
+							"segmented": segmented.observation[field],
+							"production": production.observation[field]})
+		production_observation = production.observation
+		production_margins = production.margins
+	var margins: Dictionary = production_margins.duplicate(true)
 	for index in parameters.size():
 		margins["scalar_%s" % RETURN_SCALAR_IDS[index]] = minf(
 			parameters[index] - RETURN_SCALAR_BOUNDS[index][0],
 			RETURN_SCALAR_BOUNDS[index][1] - parameters[index])
-	return {"ok": true, "parameters": parameters, "initial_bank_rad": initial_bank_rad,
+	return {"ok": true, "parameters": parameters, "initial_bank_rad": accepted_initial_bank_rad,
 		"report": {
 		"scalar_ids": RETURN_SCALAR_IDS,
 		"scalar_bounds": RETURN_SCALAR_BOUNDS, "accepted_values": parameters,
@@ -397,10 +431,14 @@ static func _solve_return(
 		"solver_status": solved.status, "solver_iterations": solved.iterations,
 		"solver_conditioning": solved.conditioning,
 		"coarse_observation": coarse.observation, "fine_observation": fine.observation,
+		"production_observation": production_observation,
+		"verification_integrations": verification_integrations,
 		"margins": margins,
 		"return_entry_gate": {"source": "derived-terminal-corridor",
-			"position_m": start.position_m, "tangent": start.tangent,
-			"up": start.rider_up, "speed_mps": start.speed_mps,
+			"position_m": return_entry_gate_state.position_m,
+			"tangent": return_entry_gate_state.tangent,
+			"up": return_entry_gate_state.rider_up,
+			"speed_mps": return_entry_gate_state.speed_mps,
 			"corridor_approach_length_m": _approach_length(layout),
 			# The one solve field that reaches the published route: it lets smoke measure this
 			# budget on all fifteen seeds inside the compiles it already pays for. It repeats the

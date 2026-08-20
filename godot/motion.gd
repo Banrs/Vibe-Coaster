@@ -63,6 +63,25 @@ static func bank_balance(from_bank_rad: float, to_bank_rad: float) -> Dictionary
 	return profile
 
 
+## A normalized piecewise profile keeps a reviewed transition continuous without publishing
+## sub-semantic connector spans. Segment durations are in the same units as the parent span.
+static func staged(profiles: Array, durations: Array) -> Dictionary:
+	assert(not profiles.is_empty() and profiles.size() == durations.size(),
+		"staged profile segments must have matching non-empty arrays")
+	var total := 0.0
+	var segments := []
+	for index in profiles.size():
+		var duration := float(durations[index])
+		assert(duration > 0.0 and profiles[index] is Dictionary,
+			"staged profile segments must be finite profiles with positive durations")
+		total += duration
+		segments.append({"profile": profiles[index], "duration_s": duration})
+	assert(is_finite(total) and total > 0.0, "staged profile duration must be positive")
+	var profile := {"kind": "staged", "segments": segments, "duration_s": total}
+	profile.make_read_only()
+	return profile
+
+
 ## Returns value, first derivative with respect to normalized profile time, and second derivative.
 static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 	match profile.get("kind", ""):
@@ -131,6 +150,18 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 			return Vector3(secant, secant * tangent * bank_derivative,
 				secant * ((tangent * tangent + secant * secant)
 					* bank_derivative * bank_derivative + tangent * bank_second))
+		"staged":
+			var elapsed := 0.0
+			var total := float(profile.duration_s)
+			for index in profile.segments.size():
+				var segment: Dictionary = profile.segments[index]
+				var fraction := float(segment.duration_s) / total
+				var end := elapsed + fraction
+				if u <= end or index == profile.segments.size() - 1:
+					var local_u := clampf((u - elapsed) / fraction, 0.0, 1.0)
+					var sample := profile_sample(segment.profile, local_u)
+					return Vector3(sample.x, sample.y / fraction, sample.z / (fraction * fraction))
+				elapsed = end
 	assert(false, "invalid motion profile")
 	return Vector3.ZERO
 
@@ -182,6 +213,8 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 			var bank_delta: float = profile.to - profile.from
 			var bank: float = profile.from + bank_delta * fraction
 			return Vector3(1.0 / cos(bank), 0.0, 0.0).x
+		"staged":
+			return profile_sample(profile, u).x
 	assert(false, "invalid motion profile")
 	return Vector3.ZERO.x
 
@@ -202,6 +235,11 @@ static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 		"plateau_pulse":
 			return 5.625 * absf(float(profile.amplitude))
 		"bank_balance":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
+		"staged":
 			var peak := 0.0
 			for index in 257:
 				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
@@ -249,6 +287,10 @@ static func span(
 			"bank_balance": assert(profile.has("from") and profile.has("to")
 				and absf(float(profile.from)) < PI * 0.5
 				and absf(float(profile.to)) < PI * 0.5, "invalid bank balance profile")
+			"staged": assert(profile.has("segments") and profile.has("duration_s")
+				and profile.segments is Array and not profile.segments.is_empty()
+				and is_finite(float(profile.duration_s)) and float(profile.duration_s) > 0.0,
+				"invalid staged profile")
 			_: assert(false, "invalid span profile kind")
 	var record := {
 		"span_id": span_id,

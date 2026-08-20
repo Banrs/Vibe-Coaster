@@ -472,20 +472,21 @@ static func _add_opener(
 		Motion.quintic(-0.58313246, 4.99988044),
 		Motion.quintic(drop_lateral_g * hand, 0.0), 0.0, 0.0,
 		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-in", unbank_ramp_s, "moving",
-		Motion.quintic(4.99988044, normal_mid_g), 0.0, 0.0,
-		Motion.quintic(0.0, -unbank_peak_rad_s * hand),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-recover", normal_recovery_s, "moving",
-		Motion.quintic(normal_mid_g, 1.0), 0.0, 0.0,
-		Motion.constant(-unbank_peak_rad_s * hand),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-hold",
-		unbank_hold_s - normal_recovery_s, "moving",
-		1.0, 0.0, 0.0, Motion.constant(-unbank_peak_rad_s * hand),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-out", unbank_ramp_s, "moving",
-		1.0, 0.0, 0.0, Motion.quintic(-unbank_peak_rad_s * hand, 0.0),
+	_add(spans, metadata, propulsion, "drop/unbank",
+		unbank_ramp_s + unbank_hold_s, "moving",
+		Motion.staged([
+			Motion.quintic(4.99988044, normal_mid_g), Motion.quintic(normal_mid_g, 1.0),
+			Motion.constant(1.0), Motion.constant(1.0)],
+			[unbank_ramp_s, normal_recovery_s, unbank_hold_s - normal_recovery_s,
+				unbank_ramp_s]),
+		0.0, 0.0,
+		Motion.staged([
+			Motion.quintic(0.0, -unbank_peak_rad_s * hand),
+			Motion.constant(-unbank_peak_rad_s * hand),
+			Motion.constant(-unbank_peak_rad_s * hand),
+			Motion.quintic(-unbank_peak_rad_s * hand, 0.0)],
+			[unbank_ramp_s, normal_recovery_s, unbank_hold_s - normal_recovery_s,
+				unbank_ramp_s]),
 		"twisted-drop", 0, 2.0, "twisted_drop")
 
 	var teardrop_shoulder_s := 1.9827842973471

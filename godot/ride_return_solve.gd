@@ -58,10 +58,10 @@ const RETURN_SCALAR_BOUNDS := [
 	[2.0, 2.6],
 ]
 # Seven entries for nine controls, on purpose: this is the bounded continuation median measured
-# in CI at the nearest balanced-release camelback handoff. `_solve_return` still appends each
+# in CI at the current balanced-release camelback handoff. `_solve_return` still appends each
 # story's certified height-a draw and nominal release duration.
-const RETURN_SEED := [1.39626340159546, 0.75507029725104, 0.81916228122682,
-	1.17813871207427, 5.81090078104999, 0.74397637722746, 4.40363985331837]
+const RETURN_SEED := [1.39626340159546, 0.79327253980498, 0.62061561016564,
+	1.20448921977709, 5.73171603360113, 0.72119996656055, 4.00985415890347]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29

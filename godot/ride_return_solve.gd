@@ -57,11 +57,11 @@ const RETURN_SCALAR_BOUNDS := [
 	# authority to move the downstream station-local closure.
 	[2.0, 2.6],
 ]
-# Seven entries for nine controls, on purpose: this is the bounded continuation median measured
-# in CI at the current balanced-release camelback handoff. `_solve_return` still appends each
-# story's certified height-a draw and nominal release duration.
-const RETURN_SEED := [1.36727747057876, 0.96669729569174, 0.82089421560892,
-	1.18217335051581, 5.52839236544369, 0.75773694677087, 4.65570866424111]
+# Seven entries for nine controls, on purpose: this is the CI-measured seed-42 anchor for the
+# in-band balanced-release branch. `_solve_return` still appends each story's certified height-a
+# draw and nominal release duration.
+const RETURN_SEED := [1.36891294832977, 0.97712754663359, 0.79250765782749,
+	1.17120738602267, 5.58861018754817, 0.85304970326439, 4.6172795206124]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29

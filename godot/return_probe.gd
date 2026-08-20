@@ -26,6 +26,7 @@ func _initialize() -> void:
 		quit(1)
 		return
 	var start := RideProgram._last_state(start_route)
+	var story := {"targets": {}}
 	var layout := {"station_position_m": Vector3.ZERO, "station_tangent": Vector3.RIGHT,
 		"station_up": Vector3.UP, "reserved_corridor": {"minimum_length_m": 230.0,
 			"entry_speed_mps": Vector2(70.0, 80.0)}, "capture_half_width_m": 150.0,

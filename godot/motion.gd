@@ -35,6 +35,14 @@ static func quintic(from: float, to: float) -> Dictionary:
 	return profile
 
 
+## C2 quintic transition plus a zero-area, zero-first-moment center offset.
+static func balanced_quintic(from: float, to: float, depth: float) -> Dictionary:
+	var profile := {"kind": "balanced_quintic", "from": from, "to": to,
+		"amplitude": depth * 3100.0 / 1099.0}
+	profile.make_read_only()
+	return profile
+
+
 static func compact_pulse(amplitude: float) -> Dictionary:
 	var profile := {"kind": "compact_pulse", "amplitude": amplitude}
 	profile.make_read_only()
@@ -100,6 +108,23 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
 			var delta: float = profile.to - profile.from
 			return Vector3(profile.from + delta * h, delta * dh, delta * d2h)
+		"balanced_quintic":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
+			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
+			var pulse := 4.0 * h * (1.0 - h)
+			var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
+			var pulse_second := 4.0 * (
+				d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
+			var balance := 4199.0 / 3100.0
+			var scale: float = profile.amplitude
+			var delta: float = profile.to - profile.from
+			return Vector3(
+				profile.from + delta * h + scale * pulse * (1.0 - balance * pulse),
+				delta * dh + scale * pulse_derivative * (1.0 - 2.0 * balance * pulse),
+				delta * d2h + scale * (pulse_second * (1.0 - 2.0 * balance * pulse)
+					- 2.0 * balance * pulse_derivative * pulse_derivative)
+			)
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
@@ -220,6 +245,13 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var delta: float = profile.to - profile.from
 			return Vector3(profile.from + delta * h, 0.0, 0.0).x
+		"balanced_quintic":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var pulse := 4.0 * h * (1.0 - h)
+			var balance := 4199.0 / 3100.0
+			var delta: float = profile.to - profile.from
+			return Vector3(profile.from + delta * h
+				+ profile.amplitude * pulse * (1.0 - balance * pulse), 0.0, 0.0).x
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var scale: float = 4.0 * profile.amplitude
@@ -261,6 +293,11 @@ static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 			return 0.0
 		"quintic":
 			return 1.875 * absf(float(profile.to) - float(profile.from))
+		"balanced_quintic":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
 		"compact_pulse":
 			return 3.5663941463932597 * absf(float(profile.amplitude))
 		"balanced_notch":
@@ -317,6 +354,10 @@ static func span(
 		match profile.kind:
 			"constant": assert(profile.has("value"), "invalid constant profile")
 			"quintic": assert(profile.has("from") and profile.has("to"), "invalid quintic profile")
+			"balanced_quintic": assert(profile.has("from") and profile.has("to")
+				and profile.has("amplitude") and is_finite(float(profile.from))
+				and is_finite(float(profile.to)) and is_finite(float(profile.amplitude))
+				and float(profile.amplitude) >= 0.0, "invalid balanced quintic profile")
 			"compact_pulse":
 				assert(profile.has("amplitude") and is_finite(float(profile.amplitude)),
 					"invalid compact pulse profile")

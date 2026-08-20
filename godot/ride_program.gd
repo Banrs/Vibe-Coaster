@@ -461,7 +461,7 @@ static func _set_record_release_duration(spans: Array, parameters: Array) -> voi
 static func _add_camelback(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array
 ) -> void:
-	var positive_g := 4.70068864065765
+	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
 	# This is the last CI point that keeps the balanced-release return on its healthy root family.
@@ -479,7 +479,8 @@ static func _add_camelback(
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
 		0.0, 0.0, 0.0, "rise")
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.quintic(negative_g, negative_g * 0.88), 0.0, 0.0, 0.0, "crest")
+		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.40),
+		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")
 	_add(spans, metadata, propulsion, "camelback/pullout-release",

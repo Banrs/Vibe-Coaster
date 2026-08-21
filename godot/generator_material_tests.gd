@@ -236,7 +236,7 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 ## compile it used to stop at, plus the production integration and contract the build now runs. The
 ## closures themselves cost no more than before the dive-arc residual: they used to burn the whole
 ## budget refusing (4 x 51 evaluations) and now converge in 214.
-## `tools/gates.sh` runs the twelve suites concurrently with smoke.gd, so that growth hides behind
+## `tools/gates.sh` runs the seventeen suites concurrently with smoke.gd, so that growth hides behind
 ## the longest job and the battery total barely moves; `.github/workflows/ci.yml` runs the same
 ## manifest serially before smoke.gd, so real CI pays every second of it. Widen this gate only
 ## against that serial number - which is why exactly one seed is built rather than four.

@@ -2,6 +2,8 @@ extends SceneTree
 
 const RideGenerator := preload("res://generator.gd")
 const RideTerrain := preload("res://terrain.gd")
+const RideProgram := preload("res://ride_program.gd")
+const RouteContract := preload("res://route_contract.gd")
 
 const SEED := 42
 const LOWER_SPINE_SURFACE_OFFSET_M := 1.79
@@ -35,6 +37,10 @@ func _initialize() -> void:
 	else:
 		_check_public_terrain_story(route)
 	_check_terrain_story_plan_contract(route)
+	_test_return_terrace_tracks_actual_camelback_apex(route)
+	_test_route_contract_return_terrace_proof(route)
+	_test_return_terrace_heightfield()
+	_test_malformed_return_terrace_is_rejected(route)
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -224,8 +230,7 @@ func _check_terrain_story_plan_contract(route: Dictionary) -> void:
 	var planning: Dictionary = story.get("planning", {})
 	_expect(planning.get("capability_id", "") != "" \
 			and planning.get("planning_integrations", -1) == 2,
-		"the plan publishes its two deterministic prefix integrations: the frame preflight "
-		+ "and the accepted closure")
+		"the plan publishes two deterministic planning integrations: frame preflight and accepted closure")
 	for key in ["station_edge_distance_m", "shelf_edge_distance_m",
 			"dive_entry_edge_m", "dive_exit_edge_m", "tunnel_exit_edge_m",
 			"station_lower_spine_agl_m", "summit_lower_spine_agl_m",
@@ -247,6 +252,25 @@ func _check_terrain_story_plan_contract(route: Dictionary) -> void:
 		_expect(float(planning.get("tunnel_exit_edge_m", INF)) <= -8.0,
 			"the graded tunnel exits across the apron boundary onto the plain")
 	var plan: Dictionary = story.get("plan", {})
+	var plan_terrain: Dictionary = plan.get("terrain", {})
+	var return_terrace: Dictionary = plan_terrain.get("return_terrace", {})
+	var terrace_evidence: Dictionary = planning.get("return_terrace", {})
+	_expect(var_to_bytes(plan_terrain) == var_to_bytes(terrain)
+		and return_terrace.get("center_m") is Vector2
+		and return_terrace.get("along") is Vector2
+		and return_terrace.get("half_length_m") == 240.0
+		and return_terrace.get("half_width_m") == 140.0
+		and is_finite(float(return_terrace.get("elevation_m", NAN)))
+		and float(return_terrace.get("elevation_m", 0.0)) > 0.0
+		and float(return_terrace.get("elevation_m", INF)) <= 160.0,
+		"the material plan carries the stamped deterministic return terrace")
+	_expect(terrace_evidence.get("accepted_apex_world_m") is Vector3
+		and is_finite(float(terrace_evidence.get("base_terrain_height_m", NAN)))
+		and terrace_evidence.get("target_agl_m") == 155.0
+		and terrace_evidence.get("elevation_m") == return_terrace.get("elevation_m")
+		and terrace_evidence.get("half_length_m") == 240.0
+		and terrace_evidence.get("half_width_m") == 140.0,
+		"planning evidence records the actual apex, base terrain, target AGL, elevation, and dimensions")
 	var decisions: Dictionary = plan.get("decisions", {})
 	_expect(not decisions.has("station_inset_m"),
 		"the material plan has no random fixed station inset")
@@ -264,6 +288,120 @@ func _check_terrain_story_plan_contract(route: Dictionary) -> void:
 	_expect(not source.contains("candidates") and not source.contains("sort_custom")
 			and not source.contains("TERRAIN_PLACEMENT_STEP_M"),
 		"placement is closed-form: no candidate list, no grid step, no scored search")
+
+
+func _test_return_terrace_heightfield() -> void:
+	var base := _terrain_fixture()
+	var stamped := base.duplicate(true)
+	stamped["return_terrace"] = {
+		"center_m": Vector2(100.0, -40.0), "along": Vector2.RIGHT,
+		"half_length_m": 240.0, "half_width_m": 140.0, "elevation_m": 80.0}
+	var center := stamped.return_terrace.center_m
+	var center_height := RideTerrain.height(stamped, center.x, center.y)
+	var base_height := RideTerrain.height(base, center.x, center.y)
+	_expect(center_height == base_height + 80.0,
+		"return terrace center adds its exact authored elevation")
+	_expect(RideTerrain.height(stamped, center.x + 240.0, center.y)
+		== RideTerrain.height(base, center.x + 240.0, center.y)
+		and RideTerrain.height(stamped, center.x, center.y + 140.0)
+		== RideTerrain.height(base, center.x, center.y + 140.0),
+		"return terrace support is exactly unchanged at and beyond its ellipse boundary")
+	var repeated := stamped.duplicate(true)
+	for point in [Vector2(100.0, -40.0), Vector2(220.0, -40.0), Vector2(100.0, 30.0)]:
+		_expect(RideTerrain.height(stamped, point.x, point.y)
+			== RideTerrain.height(repeated, point.x, point.y),
+			"return terrace height is deterministic at %s" % point)
+
+
+func _test_return_terrace_tracks_actual_camelback_apex(route: Dictionary) -> void:
+	var camelback := _window(route, "marquee-camelback")
+	var terrain_story: Dictionary = route.get("terrain_story_plan", {})
+	var plan: Dictionary = terrain_story.get("plan", {})
+	var terrain: Dictionary = route.get("terrain", {})
+	var terrace: Dictionary = plan.get("terrain", {}).get("return_terrace", {})
+	var evidence: Dictionary = terrain_story.get("planning", {}).get("return_terrace", {})
+	if camelback.is_empty() or plan.is_empty() or terrain.is_empty() or terrace.is_empty():
+		_expect(false, "the published route must expose an accepted camelback and return terrace")
+		return
+	var apex_index := int(camelback.first)
+	for index in range(int(camelback.first) + 1, int(camelback.last) + 1):
+		if route.positions[index].y > route.positions[apex_index].y:
+			apex_index = index
+	var actual_apex: Vector3 = route.positions[apex_index]
+	var actual_agl_m := actual_apex.y - RideTerrain.height(terrain, actual_apex.x, actual_apex.z)
+	_expect(terrace.center_m.is_equal_approx(Vector2(actual_apex.x, actual_apex.z))
+		and evidence.accepted_apex_world_m.is_equal_approx(actual_apex),
+		"the published terrace center and evidence must use the actual final camelback maximum sample")
+	_expect(absf(actual_agl_m - 155.0) <= 0.000001,
+		"the actual final camelback maximum sample must be exactly 155 m AGL within production precision")
+
+
+func _test_route_contract_return_terrace_proof(route: Dictionary) -> void:
+	var story: Dictionary = route.get("terrain_story_plan", {})
+	var plan: Dictionary = story.get("plan", {})
+	var terrain: Dictionary = route.get("terrain", {})
+	var camelback := _window(route, "marquee-camelback")
+	if plan.is_empty() or terrain.is_empty() or camelback.is_empty():
+		_expect(false, "seed 42 must publish inputs for the RouteContract return terrace proof")
+		return
+	var trajectory := {"position_m": route.positions, "tangent": route.tangents}
+	var camelback_bounds := Vector2i(int(camelback.first), int(camelback.last))
+	var accepted := RouteContract._return_terrace_proof(
+		plan, trajectory, terrain, camelback_bounds)
+	_expect(accepted.get("ok", false),
+		"the RouteContract return terrace proof accepts the built seed-42 route")
+	var corrupted_plan: Dictionary = plan.duplicate(true)
+	var rotated_along: Vector2 = corrupted_plan.terrain.return_terrace.along.rotated(PI / 2.0)
+	corrupted_plan.terrain.return_terrace.along = rotated_along
+	corrupted_plan.terrain_frame.planning.return_terrace.along = rotated_along
+	var rejected := RouteContract._return_terrace_proof(
+		corrupted_plan, trajectory, corrupted_plan.terrain, camelback_bounds)
+	_expect(not rejected.get("ok", true),
+		"the RouteContract return terrace proof rejects jointly rotated terrace and evidence directions")
+
+
+func _test_malformed_return_terrace_is_rejected(route: Dictionary) -> void:
+	var plan: Dictionary = route.get("terrain_story_plan", {}).get("plan", {}).duplicate(true)
+	if plan.is_empty():
+		return
+	var missing := plan.duplicate(true)
+	missing.terrain.erase("return_terrace")
+	_expect(not RideProgram._validate_plan(missing).get("ok", true),
+		"a material plan missing its return terrace is rejected")
+	var wrong_dimensions := plan.duplicate(true)
+	wrong_dimensions.terrain.return_terrace.half_length_m = 241.0
+	_expect(not RideProgram._validate_plan(wrong_dimensions).get("ok", true),
+		"a return terrace with non-authored dimensions is rejected")
+	var too_high := plan.duplicate(true)
+	too_high.terrain.return_terrace.elevation_m = 160.000001
+	_expect(not RideProgram._validate_plan(too_high).get("ok", true),
+		"a return terrace above the elevation ceiling is rejected")
+	var wrong_center := plan.duplicate(true)
+	wrong_center.terrain.return_terrace.center_m += Vector2.RIGHT
+	_expect(not RideProgram._validate_plan(wrong_center).get("ok", true),
+		"a return terrace whose center misses the actual apex is rejected")
+	var wrong_equation := plan.duplicate(true)
+	wrong_equation.terrain_frame.planning.return_terrace.base_terrain_height_m += 1.0
+	_expect(not RideProgram._validate_plan(wrong_equation).get("ok", true),
+		"return terrace evidence with the wrong AGL equation is rejected")
+	var coupled_height := plan.duplicate(true)
+	coupled_height.terrain.return_terrace.elevation_m -= 1.0
+	coupled_height.terrain_frame.planning.return_terrace.base_terrain_height_m += 1.0
+	coupled_height.terrain_frame.planning.return_terrace.elevation_m -= 1.0
+	_expect(not RideProgram._validate_plan(coupled_height).get("ok", true),
+		"return terrace evidence rejects coupled base/elevation corruption")
+	var malformed := plan.duplicate(true)
+	malformed.terrain.return_terrace.half_width_m = 0.0
+	var result := RideProgram._validate_plan(malformed)
+	_expect(not result.get("ok", true),
+		"a material plan with a nonpositive return terrace width is rejected")
+
+
+func _terrain_fixture() -> Dictionary:
+	return {"kind": "material", "edge_normal": Vector2.RIGHT, "edge_offset": 0.0,
+		"wobble_amplitude": 1.0, "wobble_wavelength": 100.0, "apron_height": 50.0,
+		"apron_width": 250.0, "face_height": 225.0, "face_width": 50.0,
+		"detail_amplitude": 2.0, "noise_seed": 1}
 
 
 func _window_drop_m(route: Dictionary, window: Dictionary) -> float:

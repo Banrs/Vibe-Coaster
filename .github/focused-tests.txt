@@ -2,7 +2,6 @@ res://motion_tests.gd
 res://route_sampling_tests.gd
 res://bounded_solver_tests.gd
 res://route_contract_tests.gd
-res://terrain_macro_probe.gd
 res://ride_program_tests.gd
 res://fidelity_tests.gd
 res://fidelity_artifact_tests.gd

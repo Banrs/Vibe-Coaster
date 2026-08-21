@@ -691,6 +691,10 @@ static func _terrain_proofs(
 			{"band_m": scale.camel_prominence_m}, {"value_m": camel_prominence_m})
 	proofs["camelback"] = {"ok": true, "prominence_m": camel_prominence_m,
 		"minimum_margin": maxf(0.0, camel_margin)}
+	var return_terrace_proof := _return_terrace_proof(plan, trajectory, terrain, camel_bounds)
+	if not return_terrace_proof.get("ok", false):
+		return return_terrace_proof
+	proofs["return-terrace"] = return_terrace_proof.proof
 	proofs["native-scale"] = {"ok": true, "terrain_relief_m": terrain.relief,
 		"route_vertical_envelope_m": route_envelope_m,
 		"minimum_margin": maxf(0.0, scale_margin)}
@@ -742,6 +746,60 @@ static func _terrain_proofs(
 		"summit_lower_spine_agl_m": summit_spine.y \
 			- Terrain.height(terrain, summit_spine.x, summit_spine.z),
 	}}
+
+
+static func _return_terrace_proof(
+	plan: Dictionary, trajectory: Dictionary, terrain: Dictionary, camelback_bounds: Vector2i
+) -> Dictionary:
+	var terrace_value: Variant = terrain.get("return_terrace")
+	var frame_value: Variant = plan.get("terrain_frame")
+	var planning_value: Variant = frame_value.get("planning", {}) \
+		if frame_value is Dictionary else {}
+	var evidence_value: Variant = planning_value.get("return_terrace") \
+		if planning_value is Dictionary else null
+	if not terrace_value is Dictionary or not evidence_value is Dictionary \
+			or camelback_bounds.x < 0 or camelback_bounds.y < camelback_bounds.x:
+		return _terrain_failure("camelback", "return_terrace", {}, {"missing": true})
+	var terrace: Dictionary = terrace_value
+	var evidence: Dictionary = evidence_value
+	var evidence_apex_value: Variant = evidence.get("accepted_apex_world_m")
+	var evidence_along_value: Variant = evidence.get("along")
+	if not evidence_apex_value is Vector3 or not evidence_along_value is Vector2 \
+			or not evidence_apex_value.is_finite() or not evidence_along_value.is_finite():
+		return _terrain_failure("camelback", "return_terrace", {}, {"evidence": "invalid"})
+	var terrace_center_value: Variant = terrace.get("center_m")
+	var terrace_along_value: Variant = terrace.get("along")
+	if not terrace_center_value is Vector2 or not terrace_along_value is Vector2 \
+			or not terrace_center_value.is_finite() or not terrace_along_value.is_finite():
+		return _terrain_failure("camelback", "return_terrace", {}, {"terrace": "invalid"})
+	var maximum_index := camelback_bounds.x
+	for index in range(camelback_bounds.x + 1, camelback_bounds.y + 1):
+		if trajectory.position_m[index].y > trajectory.position_m[maximum_index].y:
+			maximum_index = index
+	var accepted_apex: Vector3 = trajectory.position_m[maximum_index]
+	var actual_tangent: Vector3 = trajectory.tangent[maximum_index]
+	var horizontal_tangent := Vector2(actual_tangent.x, actual_tangent.z)
+	if not accepted_apex.is_finite() or not actual_tangent.is_finite() \
+			or horizontal_tangent.length_squared() <= 0.000001:
+		return _terrain_failure("camelback", "return_terrace", {}, {"finite": false})
+	horizontal_tangent = horizontal_tangent.normalized()
+	var terrace_center: Vector2 = terrace_center_value
+	var terrace_along: Vector2 = terrace_along_value
+	var evidence_apex: Vector3 = evidence_apex_value
+	var evidence_along: Vector2 = evidence_along_value
+	var actual_agl_m := accepted_apex.y - Terrain.height(
+		terrain, accepted_apex.x, accepted_apex.z)
+	if terrace_center.distance_to(Vector2(accepted_apex.x, accepted_apex.z)) > 0.000001 \
+			or evidence_apex.distance_to(accepted_apex) > 0.000001 \
+			or terrace_along.distance_to(horizontal_tangent) > 0.000001 \
+			or evidence_along.distance_to(horizontal_tangent) > 0.000001 \
+			or not is_finite(actual_agl_m) or absf(actual_agl_m - 155.0) > 0.000001:
+		return _terrain_failure("camelback", "return_terrace", {}, {
+			"sample_index": maximum_index, "accepted_apex_world_m": accepted_apex,
+			"actual_horizontal_tangent": horizontal_tangent, "actual_agl_m": actual_agl_m})
+	return {"ok": true, "proof": {"sample_index": maximum_index,
+		"accepted_apex_world_m": accepted_apex, "actual_horizontal_tangent": horizontal_tangent,
+		"actual_agl_m": actual_agl_m}}
 
 
 ## The declared terrain intent of one role. Roles are looked up by id, never by slot: the plan's

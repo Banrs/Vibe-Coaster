@@ -165,12 +165,14 @@ static func build_with_decisions(seed_value: int, decisions: Dictionary) -> Dict
 		return _failure("motion integration failed", trajectory.get("errors", []))
 	accepted_integrations += 1
 	var accepted: Dictionary = compiled.duplicate(true)
+	var accepted_plan: Dictionary = compiled.get("plan", {})
 	accepted["generation_stats"] = {
 		"accepted_integrations": accepted_integrations,
-		"planning_integrations": int(plan.terrain_frame.planning.planning_integrations),
+		"planning_integrations": int(accepted_plan.terrain_frame.planning.planning_integrations),
 		"repair_count": 0,
 	}
-	return RouteContract.build(seed_value, terrain, initial_state, plan, accepted, trajectory)
+	return RouteContract.build(seed_value, accepted_plan.terrain, initial_state, accepted_plan,
+		accepted, trajectory)
 
 
 static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
@@ -294,9 +296,9 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 		}])
 	var planning := {
 		"capability_id": str(solved.get("capability_id", "")),
-		# Two prefix integrations at the production step: the preflight that chooses the frame,
-		# and the accepted closure. The solve's own evaluations are coarse and tail-only, and are
-		# reported by the closure plan rather than counted here.
+		# Two planning integrations at the production step: the preflight that chooses the frame and
+		# the accepted closure. The solve's own evaluations are coarse and tail-only, and are reported
+		# by the closure plan rather than counted here.
 		"planning_integrations": int(preflight.planning_integrations)
 			+ int(solved.get("planning_integrations", 0)),
 		"station_edge_distance_m": station_edge_m,

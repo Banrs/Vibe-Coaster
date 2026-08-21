@@ -8,18 +8,17 @@ extends RefCounted
 const Motion := preload("res://motion.gd")
 const BoundedSolver := preload("res://bounded_solver.gd")
 const RidePlanner := preload("res://ride_planner.gd")
-const Terrain := preload("res://terrain.gd")
 
 const MAX_CAPTURE_EVALUATIONS := 40
-# The planar camelback handoff is a different solve regime from the former banked handoff: its
-# bounded LM path supports at most 16 complete 12-probe-plus-trial iterations. The
-# 220 cap is finite and derived from that fixed iteration allowance, not an open-ended retry.
+# The bounded LM path supports at most 18 complete 11-probe-plus-trial iterations under the 219
+# solver budget. The 220 cap is finite and derived from that fixed iteration allowance, not an
+# open-ended retry.
 const MAX_RETURN_EVALUATIONS := 220
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
 	"height_b_recovery_duration_s", "height_a_peak_g", "height_a_unload_duration_s",
-	"height_a_airtime_duration_s", "record_release_core_duration_s", "record_release_bank_rad",
+	"height_a_airtime_duration_s", "record_release_core_duration_s",
 ]
 const RETURN_SCALAR_BOUNDS := [
 	# The continuous return ramps spread the turn over 1.6-1.75 s, so the previous compact-pulse
@@ -40,7 +39,7 @@ const RETURN_SCALAR_BOUNDS := [
 	[0.35, 6.0], [45.0 * PI / 180.0, 80.0 * PI / 180.0],
 	[2.0, 16.0], [0.1, 2.0], [0.35, 6.0],
 	# Height authority (2026-08-16): how hard both height beats are pulled is the eighth solved
-	# control, not a fixed constant, because all eleven other controls are durations and banks and
+	# control, not a fixed constant, because the other ten solved controls are durations and banks and
 	# none of them can move the capture-gate height without moving everything else - the honest-drag
 	# refusal (spec 2026-08-15-honest-drag-derivation.md section 7.2) and issue 24's floor-pinned
 	# swap exhaustions both measured the solve short of that degree of freedom. Measured through
@@ -61,14 +60,11 @@ const RETURN_SCALAR_BOUNDS := [
 	# and interior nominal core fit the 340-390 m material band while leaving the macro duration enough
 	# authority to move the downstream station-local closure.
 	[2.0, 2.6],
-	# The existing record-release geometry intent is 55-65 degrees, with 60 degrees nominal. Keep
-	# the new physical placement authority inside that reviewed horizontal-turn band.
-	[55.0 * PI / 180.0, 65.0 * PI / 180.0],
 ]
-# Seven entries for twelve controls, on purpose: this is the CI-measured continuation anchor for
+# Seven entries for eleven controls, on purpose: this is the CI-measured continuation anchor for
 # the structurally role-gated return. `_solve_return` still appends each story's certified
-# height-a draw, authored height-a transition durations, nominal release duration, and nominal
-# release bank.
+# height-a draw, authored height-a transition durations, and nominal release duration. The authored
+# release bank is fixed outside the solve.
 const RETURN_SEED := [1.29783417083128, 1.75278505041637, 0.92815830881482,
 	1.23323464577337, 5.16453223713761, 0.77597055608471, 3.9642570818138]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
@@ -102,25 +98,20 @@ const RETURN_HEIGHT_A_AIM_MARGIN_M := 3.0
 ## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, tightening this
 ## role band by the same structural margin as the route-length aim.
 const RECORD_RELEASE_LENGTH_AIM_MARGIN_M := 3.0
-## Three metres also exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack for the
-## terrain-relative camelback apex target.
-const CAMELBACK_APEX_AGL_AIM_MARGIN_M := 3.0
 ## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
 ## exactly 0.0 against it, so fixed-layout fixtures keep their undeclared role-band rows inert in
-## the twelve-residual solve.
+## the eleven-residual solve.
 const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
 	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
 	"record_release_length_band_m", "turn_a_length_band_m", "height_a_length_band_m",
-	"camelback_apex_agl_band_m",
 ]
 const RETURN_RESIDUAL_SCALES := [
-	5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0, 125.0, 125.0,
+	5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0, 125.0,
 ]
 const RETURN_FINE_TOLERANCES := [
 	0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.075, 0.075, 0.075,
-	0.075,
 ]
 ## The `return-turn-b` role, by the same span-id prefix `RideProgram.material_role_spans` owns it
 ## with. Named here rather than re-derived so the residual and the route contract cannot drift
@@ -169,9 +160,9 @@ static func _return_spans(
 		targets, "return-height-a", "unload_scale", 1.0)
 	var height_b_airtime_g := -0.5 * RidePlanner.target(
 		targets, "return-height-b", "unload_scale", 1.0)
-	# The final five controls are height-a peak, its real transition durations, and the production
-	# prefix seam's release duration and bank. Direct recipe callers may omit them and receive
-	# deterministic authored values.
+	# The final four controls are height-a peak, its real transition durations, and the production
+	# prefix seam's release duration. Direct recipe callers may omit them and receive deterministic
+	# authored values; the release bank is fixed at the reviewed nominal bank.
 	var height_a_peak_g := float(v[7]) if v.size() > 7 else \
 		RidePlanner.target(targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
 	var height_a_unload_s := float(v[8]) if v.size() > 8 else \
@@ -334,14 +325,10 @@ static func _solve_return(
 		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
 		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
 		initial.append(RECORD_RELEASE_CORE_DURATION_S)
-		initial.append(RECORD_RELEASE_BANK_RAD)
 	elif initial.size() == 8:
 		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
 		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
 		initial.append(RECORD_RELEASE_CORE_DURATION_S)
-		initial.append(RECORD_RELEASE_BANK_RAD)
-	elif initial.size() == 11:
-		initial.append(RECORD_RELEASE_BANK_RAD)
 	elif initial.size() == 9 or initial.size() == 10:
 		return RideProgram._failure("ambiguous legacy return seed", "return")
 	elif initial.size() != RETURN_SCALAR_IDS.size():
@@ -396,11 +383,8 @@ static func _solve_return(
 	var verification_integrations := 0
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
-		var bank_index := RETURN_SCALAR_IDS.find("record_release_bank_rad")
 		var record_duration_s := float(parameters[record_index])
-		var release_bank_rad := hand * absf(float(parameters[bank_index]))
-		var prefix_key := "%.6f:%.12f:%.12f" % [RideProgram.PRODUCTION_STEP_S,
-			record_duration_s, release_bank_rad]
+		var prefix_key := "%.6f:%.12f" % [RideProgram.PRODUCTION_STEP_S, record_duration_s]
 		if not prefix_cache.has(prefix_key):
 			return RideProgram._failure("return production verification lacks accepted prefix cache",
 				"return", {"evaluation_count": cache.size()})
@@ -409,7 +393,7 @@ static func _solve_return(
 			return RideProgram._failure("return production verification has no accepted prefix",
 				"return", {"evaluation_count": cache.size()})
 		var accepted_prefix := _prefix_with_record_release_parameters(
-			prefix_spans, record_duration_s, release_bank_rad)
+			prefix_spans, record_duration_s, hand)
 		if accepted_prefix.size() != prefix_spans.size():
 			return RideProgram._failure("return production verification prefix shape mismatches",
 				"return", {"evaluation_count": cache.size()})
@@ -425,8 +409,7 @@ static func _solve_return(
 		if not verification_route.get("ok", false):
 			return RideProgram._failure("return production verification failed integration", "return",
 				{"evaluation_count": cache.size()})
-		var production := _return_observation(verification_route, layout, verification_spans, NAN,
-			_camelback_apex_agl_m(verification_route, verification_spans, layout.get("terrain", {})))
+		var production := _return_observation(verification_route, layout, verification_spans, NAN)
 		production["scaled"] = []
 		for index in RETURN_RESIDUAL_IDS.size():
 			production.scaled.append(production.residuals[index] / RETURN_RESIDUAL_SCALES[index])
@@ -453,7 +436,6 @@ static func _solve_return(
 				["route_total_length_m", 5], ["speed_mps", 6],
 				["turn_b_length_m", 7], ["record_release_length_m", 8],
 				["turn_a_length_m", 9], ["height_a_length_m", 10],
-				["camelback_apex_agl_m", 11],
 			]:
 				var field: String = field_and_index[0]
 				var tolerance_index: int = field_and_index[1]
@@ -525,20 +507,16 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	var candidate_start := start
 	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
 	var record_release_length_m := NAN
-	var camelback_apex_agl_m := NAN
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
-		var bank_index := RETURN_SCALAR_IDS.find("record_release_bank_rad")
 		var record_duration_s := float(parameters[record_index])
-		var release_bank_rad := hand * absf(float(parameters[bank_index]))
-		var prefix_key := "%.6f:%.12f:%.12f" % [float(settings.step_s),
-			record_duration_s, release_bank_rad]
+		var prefix_key := "%.6f:%.12f" % [float(settings.step_s), record_duration_s]
 		var prefix_result: Dictionary
 		if prefix_cache.has(prefix_key):
 			prefix_result = prefix_cache[prefix_key]
 		else:
 			var candidate_prefix := _prefix_with_record_release_parameters(
-				prefix_spans, record_duration_s, release_bank_rad)
+				prefix_spans, record_duration_s, hand)
 			var prefix_route := Motion.integrate(start, candidate_prefix, settings)
 			if not prefix_route.get("ok", false):
 				prefix_result = {"ok": false, "errors": prefix_route.get("errors", [])}
@@ -547,9 +525,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 				prefix_result = {"ok": true, "candidate_start": prefix_start,
 					"initial_bank_rad": _capture_residuals(prefix_start, layout)[4],
 					"record_release_length_m": _role_arc_m(prefix_route, candidate_prefix,
-						RECORD_RELEASE_SPAN_PREFIX),
-					"camelback_apex_agl_m": _camelback_apex_agl_m(prefix_route, candidate_prefix,
-						layout.get("terrain", {}))}
+						RECORD_RELEASE_SPAN_PREFIX)}
 			prefix_cache[prefix_key] = prefix_result
 		if not prefix_result.get("ok", false):
 			var prefix_failed := RideProgram._failure("return candidate prefix failed integration", "return",
@@ -559,7 +535,6 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 		candidate_start = prefix_result.candidate_start
 		initial_bank_rad = float(prefix_result.initial_bank_rad)
 		record_release_length_m = float(prefix_result.record_release_length_m)
-		camelback_apex_agl_m = float(prefix_result.camelback_apex_agl_m)
 		spans = _return_spans(parameters, hand, initial_bank_rad, targets)
 	var route := Motion.integrate(candidate_start, spans, settings)
 	if not route.get("ok", false):
@@ -567,8 +542,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 			{"evaluation_count": cache.size() + 1})
 		cache[key] = failed
 		return failed
-	var result := _return_observation(route, layout, spans, record_release_length_m,
-		camelback_apex_agl_m)
+	var result := _return_observation(route, layout, spans, record_release_length_m)
 	result["scaled"] = []
 	for index in RETURN_RESIDUAL_IDS.size():
 		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
@@ -577,10 +551,10 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 
 
 static func _prefix_with_record_release_parameters(
-	prefix_spans: Array, duration_s: float, bank_rad: float
+	prefix_spans: Array, duration_s: float, hand: float
 ) -> Array:
 	var result := prefix_spans.duplicate()
-	RideProgram._apply_record_release_parameters(result, duration_s, bank_rad)
+	RideProgram._apply_record_release_parameters(result, duration_s, hand)
 	for span: Dictionary in result:
 		if str(span.get("span_id", "")) == "record-release-turn/core":
 			return result
@@ -608,7 +582,7 @@ static func _role_arc_m(route: Dictionary, spans: Array, prefix: String) -> floa
 
 static func _return_observation(
 	route: Dictionary, layout: Dictionary, spans: Array,
-	record_release_length_m: float = NAN, camelback_apex_agl_m: float = NAN
+	record_release_length_m: float = NAN
 ) -> Dictionary:
 	var state := RideProgram._last_state(route)
 	var station_forward: Vector3 = layout.station_tangent.normalized()
@@ -629,8 +603,6 @@ static func _return_observation(
 	var turn_a_length_m := _role_arc_m(route, spans, RETURN_TURN_A_SPAN_PREFIX)
 	var height_a_band: Vector2 = layout.get("height_a_length_m", RETURN_UNBOUNDED_BAND_M)
 	var height_a_length_m := _role_arc_m(route, spans, RETURN_HEIGHT_A_SPAN_PREFIX)
-	var camelback_apex_band: Vector2 = layout.get(
-		"camelback_apex_agl_band_m", RETURN_UNBOUNDED_BAND_M)
 	var record_release_band: Vector2 = layout.get(
 		"record_release_length_m", RETURN_UNBOUNDED_BAND_M)
 	if not is_finite(record_release_length_m):
@@ -660,11 +632,6 @@ static func _return_observation(
 		RideProgram._band_residual(height_a_length_m, Vector2(
 			height_a_band.x + RETURN_HEIGHT_A_AIM_MARGIN_M,
 			height_a_band.y - RETURN_HEIGHT_A_AIM_MARGIN_M)),
-		0.0 if not is_finite(camelback_apex_agl_m) \
-			or camelback_apex_band == RETURN_UNBOUNDED_BAND_M else
-			RideProgram._band_residual(camelback_apex_agl_m, Vector2(
-				camelback_apex_band.x + CAMELBACK_APEX_AGL_AIM_MARGIN_M,
-				camelback_apex_band.y - CAMELBACK_APEX_AGL_AIM_MARGIN_M)),
 	]
 	var margins := {
 		"corridor_forward_low_m": forward + approach,
@@ -688,30 +655,7 @@ static func _return_observation(
 			"record_release_length_m": record_release_length_m,
 			"turn_a_length_m": turn_a_length_m,
 			"height_a_length_m": height_a_length_m,
-			"camelback_apex_agl_m": camelback_apex_agl_m,
 			"route_total_length_m": total_length_m}}
-
-
-static func _camelback_apex_agl_m(route: Dictionary, spans: Array, terrain: Dictionary) -> float:
-	if str(terrain.get("kind", "")) != "material" \
-			or not route.get("position_m") is PackedVector3Array \
-			or not route.get("span_index") is PackedInt32Array:
-		return NAN
-	var maximum_index := -1
-	var maximum_y := -INF
-	for index in route.position_m.size():
-		var span_index := int(route.span_index[index])
-		if span_index < 0 or span_index >= spans.size() \
-				or not str(spans[span_index].get("span_id", "")).begins_with("camelback/"):
-			continue
-		var position: Vector3 = route.position_m[index]
-		if position.y > maximum_y:
-			maximum_y = position.y
-			maximum_index = index
-	if maximum_index < 0:
-		return NAN
-	var apex: Vector3 = route.position_m[maximum_index]
-	return apex.y - Terrain.height(terrain, apex.x, apex.z)
 
 
 static func _margins_are_valid(margins: Dictionary) -> bool:

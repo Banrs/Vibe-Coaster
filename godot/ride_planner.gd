@@ -45,7 +45,7 @@ const ACT_ONE_ANCHOR := "act-one-immelmann"
 ## places it inside every fleet margin, on all fifteen seeds, and that is gated in
 ## `generator_material_tests.gd`. The other 22 are still refused before the solve runs, because the
 ## preflight frames the yaw solution from the *unsolved* prefix. What no reordered story does yet
-## is build end to end: the seven-control return solve does not re-converge from its fixed seed on
+## is build end to end: the 11-control return solve does not re-converge from its fixed seed on
 ## the moved camelback handoff. The full matrix, including what each order costs, is recorded with
 ## that gate. Drawing an order needs the return's seed or budget, not a wider range here.
 const ACT_ONE_POOL := ["act-one-cutback", "act-one-loop", "act-one-airtime", "act-one-wave"]
@@ -89,7 +89,7 @@ const SPINE_CLOSE := ["terminal-capture-brakes"]
 ## continued return solve, not a wider range.
 const TARGET_DRAWS := [
 	# The return is downstream of every placement observation and closes through its own bounded
-	# nine-control solve, so its beats can be drawn properly: how hard each height beat is pulled
+	# 11-control solve, so its beats can be drawn properly: how hard each height beat is pulled
 	# and how deeply it floats.
 	# One draw sets how hard both height beats are pulled: height-b's peak follows height-a's
 	# proportionally, because the strong-a/weak-b diagonal is the one corner of the draw box the

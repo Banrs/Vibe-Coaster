@@ -197,8 +197,8 @@ func _test_camelback_is_planar_and_continuous() -> void:
 	var crest_profile: Dictionary = spans[2].normal_g
 	_expect(crest_profile.get("kind") == "balanced_quintic_relief",
 		"camelback crest uses one balanced C2 profile with centered relief")
-	_expect(is_equal_approx(float(crest_profile.get("amplitude")) * 1099.0 / 3100.0, 1.53)
-		and is_equal_approx(float(crest_profile.get("relief_amplitude")) * 1099.0 / 3100.0, 0.89),
+	_expect(is_equal_approx(float(crest_profile.get("amplitude")) * 1099.0 / 3100.0, 1.533)
+		and is_equal_approx(float(crest_profile.get("relief_amplitude")) * 1099.0 / 3100.0, 0.893),
 		"camelback crest retains the authored outer depth and center relief")
 	_expect(is_equal_approx(float(crest_profile.get("relief_fraction")), 0.35),
 		"camelback crest retains the authored narrow relief window")

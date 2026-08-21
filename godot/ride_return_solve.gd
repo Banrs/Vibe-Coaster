@@ -61,12 +61,12 @@ const RETURN_SCALAR_BOUNDS := [
 	# authority to move the downstream station-local closure.
 	[2.0, 2.6],
 ]
-# Seven entries for eleven controls, on purpose: this is the CI-measured continuation anchor for
-# the structurally role-gated return. `_solve_return` still appends each story's certified
-# height-a draw, authored height-a transition durations, and nominal release duration. The authored
-# release bank is fixed outside the solve.
-const RETURN_SEED := [1.29783417083128, 1.75278505041637, 0.92815830881482,
-	1.23323464577337, 5.16453223713761, 0.77597055608471, 3.9642570818138]
+# Seven entries for eleven controls, on purpose: the coordinate median of the five accepted
+# continuation points for seeds 11/42/20260809/1/123456 after the camelback crest audit.
+# `_solve_return` still appends each story's certified height-a draw, authored height-a transition
+# durations, and nominal release duration. The authored release bank is fixed outside the solve.
+const RETURN_SEED := [1.29484076888669, 1.7501762309172, 0.95725285614866,
+	1.26245517297608, 4.93904574686855, 0.79836069127238, 3.86205678366268]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 0.72865206901364
 const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.73015276312264

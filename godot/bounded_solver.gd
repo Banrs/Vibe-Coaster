@@ -5,10 +5,11 @@ const CONVERGENCE_TOLERANCE := 0.02
 const POLISH_RESIDUAL_THRESHOLD := 0.05
 
 static func solve(residual: Callable, lower: Array, upper: Array, initial: Array,
-		max_evaluations: int = 80) -> Dictionary:
+		max_evaluations: int = 80, normalized_difference_step: float = 0.005) -> Dictionary:
 	var n := lower.size()
 	if not residual.is_valid() or n == 0 or upper.size() != n or initial.size() != n \
-			or max_evaluations <= 0:
+			or max_evaluations <= 0 or not is_finite(normalized_difference_step) \
+			or normalized_difference_step <= 0.0 or normalized_difference_step > 1.0:
 		return _result(false, "invalid_input", initial.duplicate(), [], 0, 0, INF)
 	var widths: Array[float] = []
 	var z: Array[float] = []
@@ -48,7 +49,8 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 			row.fill(0.0)
 			jacobian.append(row)
 		for column in range(n):
-			var delta := 0.005 if z[column] <= 0.995 else -0.005
+			var delta := normalized_difference_step if z[column] <= 1.0 - normalized_difference_step \
+				else -normalized_difference_step
 			var probe := z.duplicate()
 			probe[column] = clampf(probe[column] + delta, 0.0, 1.0)
 			var sampled := _evaluate(residual, probe, lower, widths, cache, evaluation_count, max_evaluations)

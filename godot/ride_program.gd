@@ -137,7 +137,9 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {},
 	return published
 
 
-static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
+static func compile(plan: Dictionary, initial_state: Dictionary,
+		return_normalized_difference_step: float = 0.005, return_diagnostics: Variant = null
+) -> Dictionary:
 	var resolved_plan: Dictionary = plan.duplicate(true)
 	var plan_check := _validate_plan(resolved_plan, false)
 	if not plan_check.ok:
@@ -176,7 +178,8 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 
 	var variable_prefix_spans: Array = spans.slice(variable_prefix_start)
 	var solved_return := RideReturnSolve._solve_return(fixed_prefix_state, layout,
-		return_hand, RideReturnSolve.RETURN_SEED, targets, variable_prefix_spans)
+		return_hand, RideReturnSolve.RETURN_SEED, targets, variable_prefix_spans,
+		return_normalized_difference_step, return_diagnostics)
 	if not solved_return.ok:
 		return solved_return
 	_set_return_prefix_parameters(spans, solved_return.parameters, return_hand)

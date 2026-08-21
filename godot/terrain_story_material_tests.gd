@@ -296,7 +296,7 @@ func _test_return_terrace_heightfield() -> void:
 	stamped["return_terrace"] = {
 		"center_m": Vector2(100.0, -40.0), "along": Vector2.RIGHT,
 		"half_length_m": 240.0, "half_width_m": 140.0, "elevation_m": 80.0}
-	var center := stamped.return_terrace.center_m
+	var center: Vector2 = stamped.return_terrace.center_m
 	var center_height := RideTerrain.height(stamped, center.x, center.y)
 	var base_height := RideTerrain.height(base, center.x, center.y)
 	_expect(center_height == base_height + 80.0,
@@ -312,7 +312,7 @@ func _test_return_terrace_heightfield() -> void:
 			== RideTerrain.height(repeated, point.x, point.y),
 			"return terrace height is deterministic at %s" % point)
 	var shoulder_r2 := 0.75
-	var shoulder_point := center + Vector2(240.0 * sqrt(shoulder_r2), 0.0)
+	var shoulder_point: Vector2 = center + Vector2(240.0 * sqrt(shoulder_r2), 0.0)
 	var shoulder_input := 1.0 - shoulder_r2
 	var cubic_smoothstep := shoulder_input * shoulder_input \
 		* (3.0 - 2.0 * shoulder_input)
@@ -325,13 +325,13 @@ func _test_return_terrace_heightfield() -> void:
 	var offsets := [0.0, 60.0, 120.0, 180.0, 220.0, 239.0]
 	var previous_bump := INF
 	for offset in offsets:
-		var point := center + Vector2(offset, 0.0)
+		var point: Vector2 = center + Vector2(offset, 0.0)
 		var bump := RideTerrain.height(stamped, point.x, point.y) \
 			- RideTerrain.height(base, point.x, point.y)
 		_expect(bump <= previous_bump,
 			"return terrace bump is monotone from center toward its boundary at %.1f m" % offset)
 		previous_bump = bump
-	var boundary_x := center.x + 240.0
+	var boundary_x: float = center.x + 240.0
 	var inner_step := 0.1
 	var inner_near := RideTerrain.height(stamped, boundary_x - inner_step, center.y) \
 		- RideTerrain.height(base, boundary_x - inner_step, center.y)

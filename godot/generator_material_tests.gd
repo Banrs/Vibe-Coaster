@@ -79,7 +79,6 @@ func _initialize() -> void:
 	_expect(_lsm3_feeds_release_and_camelback(route),
 		"LSM3 reaches the 340 km/h class and feeds the banked release into the marquee camelback")
 	_check_native_verifier_contract(route)
-	_temporary_return_terrace_clearance_diagnostic(route)
 	_expect(_camelback_geometry_is_material(route),
 		"the camelback has material rise-apex-fall geometry")
 	_check_station_launch_contract(route)
@@ -771,52 +770,6 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 	RideVerify.validate_seams(seam_miss, issues)
 	_expect(str(issues).contains("sample %d" % seam),
 		"the verifier checks geometry at native span boundaries")
-
-
-## TEMPORARY CI-32442427378 DIAGNOSTIC: remove after the terrace profile decision.
-## Test code only; this mirrors RideVerify.validate_clearance's exact rail drop and skips tunnels.
-func _temporary_return_terrace_clearance_diagnostic(route: Dictionary) -> void:
-	var terrain: Dictionary = route.terrain.duplicate(true)
-	var terrace: Dictionary = terrain.return_terrace
-	var terrace_center: Vector2 = terrace.center_m
-	var terrace_along: Vector2 = terrace.along
-	terrain.erase("return_terrace")
-	var worst_clearance_m := INF
-	var worst: Dictionary = {}
-	for index in route.positions.size():
-		var in_tunnel := false
-		for tunnel in route.tunnel_ranges:
-			if index >= tunnel.x and index <= tunnel.y:
-				in_tunnel = true
-				break
-		if in_tunnel:
-			continue
-		var rail: Vector3 = route.positions[index] - route.ups[index] * 1.55
-		var base_clearance_m := rail.y - Terrain.height(terrain, rail.x, rail.z)
-		var point := Vector2(rail.x, rail.z)
-		var delta: Vector2 = point - terrace_center
-		var cross := Vector2(-terrace_along.y, terrace_along.x)
-		var along_distance: float = delta.dot(terrace_along)
-		var cross_distance: float = delta.dot(cross)
-		var r2: float = (along_distance / float(terrace.half_length_m)) ** 2 \
-			+ (cross_distance / float(terrace.half_width_m)) ** 2
-		var profile_input := maxf(0.0, 1.0 - r2)
-		var cubic := profile_input * profile_input * (3.0 - 2.0 * profile_input)
-		var original_contribution_m := float(terrace.elevation_m) * cubic
-		var squared_contribution_m := float(terrace.elevation_m) * cubic * cubic
-		var cubed_contribution_m := squared_contribution_m * cubic
-		var predicted_clearance_m := base_clearance_m - cubed_contribution_m
-		if predicted_clearance_m < worst_clearance_m:
-			worst_clearance_m = predicted_clearance_m
-			var gesture_index := int(route.gesture_indices[index])
-			var window_id := "unknown"
-			if gesture_index >= 0 and gesture_index < route.gesture_windows.size():
-				window_id = str(route.gesture_windows[gesture_index].get("window_id", "unknown"))
-			worst = {"sample": index, "window": window_id, "base_clearance_m": base_clearance_m,
-				"r2": r2, "x": profile_input, "original_cubic_m": original_contribution_m,
-				"squared_m": squared_contribution_m, "cubed_m": cubed_contribution_m,
-				"predicted_clearance_m": predicted_clearance_m}
-	print("[TEMP CI-32445278007] worst cubed return-terrace clearance: %s" % str(worst))
 
 func _camelback_geometry_is_material(route: Dictionary) -> bool:
 	var camel := _window(route, "marquee-camelback")

@@ -567,14 +567,12 @@ static func _apply_record_release_parameters(
 static func _add_camelback(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array
 ) -> void:
-	var positive_g := 4.60068864065765
+	var positive_g := 4.70068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
 	# This is the last CI point that keeps the balanced-release return on its healthy root family.
 	var pullup_s := 2.560
-	# The extra 0.060 s restores the apex through the force transition without changing either
-	# peak after the crest notch is brought inside its held-load envelope.
-	var unload_s := 3.1234503655
+	var unload_s := 3.0634503655
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the

@@ -69,8 +69,8 @@ const RETURN_SCALAR_BOUNDS := [
 # the structurally role-gated return. `_solve_return` still appends each story's certified
 # height-a draw, authored height-a transition durations, nominal release duration, and camelback
 # fall duration. The authored release bank is fixed outside the solve.
-const RETURN_SEED := [1.29783417083128, 1.75278505041637, 0.92815830881482,
-	1.23323464577337, 5.16453223713761, 0.77597055608471, 3.9642570818138]
+const RETURN_SEED := [1.27297181922917, 1.80308315712382, 0.68003957514417,
+	1.26139535393517, 4.99279541002869, 0.87028723148716, 4.34611116989452]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
 const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 0.72865206901364
 const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.73015276312264

@@ -778,6 +778,8 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 func _temporary_return_terrace_clearance_diagnostic(route: Dictionary) -> void:
 	var terrain: Dictionary = route.terrain.duplicate(true)
 	var terrace: Dictionary = terrain.return_terrace
+	var terrace_center: Vector2 = terrace.center_m
+	var terrace_along: Vector2 = terrace.along
 	terrain.erase("return_terrace")
 	var worst_clearance_m := INF
 	var worst: Dictionary = {}
@@ -792,11 +794,11 @@ func _temporary_return_terrace_clearance_diagnostic(route: Dictionary) -> void:
 		var rail: Vector3 = route.positions[index] - route.ups[index] * 1.55
 		var base_clearance_m := rail.y - Terrain.height(terrain, rail.x, rail.z)
 		var point := Vector2(rail.x, rail.z)
-		var delta := point - terrace.center_m
-		var cross := Vector2(-terrace.along.y, terrace.along.x)
-		var along_distance := delta.dot(terrace.along)
-		var cross_distance := delta.dot(cross)
-		var r2 := (along_distance / float(terrace.half_length_m)) ** 2 \
+		var delta: Vector2 = point - terrace_center
+		var cross := Vector2(-terrace_along.y, terrace_along.x)
+		var along_distance: float = delta.dot(terrace_along)
+		var cross_distance: float = delta.dot(cross)
+		var r2: float = (along_distance / float(terrace.half_length_m)) ** 2 \
 			+ (cross_distance / float(terrace.half_width_m)) ** 2
 		var profile_input := maxf(0.0, 1.0 - r2)
 		var cubic := profile_input * profile_input * (3.0 - 2.0 * profile_input)

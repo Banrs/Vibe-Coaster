@@ -933,7 +933,7 @@ func _expect_compiled_prefix_matches_plan(
 	var bank_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_bank_rad")
 	var expected_bank := float(plan.decisions.station_side) * absf(float(
 		compiled.return_plan.accepted_values[bank_index]))
-	var release_spans := compiled.spans.filter(func(span: Dictionary) -> bool:
+	var release_spans: Array = compiled.spans.filter(func(span: Dictionary) -> bool:
 		return str(span.span_id).begins_with("record-release-turn/"))
 	var roll_in := RideReturnSolve._roll_ramp([0.8], 0.0, expected_bank)
 	var roll_out := RideReturnSolve._roll_ramp([0.8], expected_bank, 0.0)

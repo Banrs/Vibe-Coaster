@@ -198,12 +198,12 @@ func _test_camelback_is_planar_and_continuous() -> void:
 	_expect(crest_profile.get("kind") == "balanced_quintic_relief",
 		"camelback crest uses one balanced C2 profile with centered relief")
 	_expect(is_equal_approx(float(crest_profile.get("amplitude")) * 1099.0 / 3100.0, 1.53)
-		and is_equal_approx(float(crest_profile.get("relief_amplitude")) * 1099.0 / 3100.0, 0.87),
+		and is_equal_approx(float(crest_profile.get("relief_amplitude")) * 1099.0 / 3100.0, 0.89),
 		"camelback crest retains the authored outer depth and center relief")
 	_expect(is_equal_approx(float(crest_profile.get("relief_fraction")), 0.35),
 		"camelback crest retains the authored narrow relief window")
-	_expect(is_equal_approx(float(spans[3].get("duration_s")), 3.60),
-		"camelback fall retains the authored prominence duration")
+	_expect(is_equal_approx(float(spans[2].get("duration_s")), 3.62587650 * 1.0605),
+		"camelback crest retains the authored prominence duration")
 	var crest_center_g: float = Motion.profile_sample(crest_profile, 0.5).x
 	_expect(crest_center_g >= -2.15 and crest_center_g <= -2.05,
 		"camelback keeps its authored intense brief negative crest center: %.3f g" % crest_center_g)

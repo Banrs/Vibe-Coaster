@@ -573,7 +573,7 @@ static func _add_camelback(
 	# This is the last CI point that keeps the balanced-release return on its healthy root family.
 	var pullup_s := 2.560
 	var unload_s := 3.0634503655
-	var crest_s := 3.62587650 * 1.06
+	var crest_s := 3.62587650 * 1.0605
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
@@ -587,7 +587,7 @@ static func _add_camelback(
 	# Retain the full balanced crest's outer lift while independently relieving its brief centre;
 	# both perturbations have zero area and first moment, so no connector span is introduced.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.balanced_quintic_relief(negative_g, negative_g * 0.88, 1.53, 0.87, 0.35),
+		Motion.balanced_quintic_relief(negative_g, negative_g * 0.88, 1.53, 0.89, 0.35),
 		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")

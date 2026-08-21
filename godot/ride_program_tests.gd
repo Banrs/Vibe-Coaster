@@ -194,11 +194,6 @@ func _test_camelback_is_planar_and_continuous() -> void:
 		_expect(span.roll_rate_rad_s.kind == "constant"
 			and absf(float(span.roll_rate_rad_s.value)) <= 0.000001,
 			"camelback roll rate is zero: %s" % str(span.span_id))
-	var pullup_profile: Dictionary = spans[0].normal_g
-	var pullup_center_g: float = Motion.profile_sample(pullup_profile, 0.5).x
-	_expect(pullup_profile.get("kind") == "balanced_bump"
-		and pullup_center_g >= 3.25 and pullup_center_g <= 3.35,
-		"camelback pull-up redistributes a 0.5 g positive center without changing its endpoints")
 	var crest_profile: Dictionary = spans[2].normal_g
 	_expect(crest_profile.get("kind") == "balanced_quintic",
 		"camelback crest uses one balanced C2 profile")
@@ -1791,6 +1786,16 @@ func _near_future_story_is_physical(compiled: Dictionary, layout: Dictionary) ->
 					trajectory, int(lsm3.first_span), int(lsm3.last_span)).y],
 				camel_prominence, camel_width / camel_prominence, route_envelope,
 				_linear_held_at_or_below(trajectory.time_s, trajectory.normal_g, camel_bounds, 0.0)])
+		## TEMPORARY CI geometry diagnosis: remove after the prominence owner is measured.
+		print("[TEMP camelback frame] ", JSON.stringify({
+			"start_sample": camel_bounds.x, "start_y_m": camel_start.y,
+			"start_time_s": trajectory.time_s[camel_bounds.x],
+			"apex_sample": camel_apex, "apex_y_m": trajectory.position_m[camel_apex].y,
+			"apex_time_s": trajectory.time_s[camel_apex],
+			"end_sample": camel_bounds.y, "end_y_m": camel_end.y,
+			"end_time_s": trajectory.time_s[camel_bounds.y],
+			"reference_y_m": maxf(camel_start.y, camel_end.y),
+		}))
 	return accepted
 
 

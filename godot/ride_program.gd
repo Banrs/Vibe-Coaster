@@ -587,7 +587,7 @@ static func _add_camelback(
 	# Retain the full balanced crest's outer lift while independently relieving its brief centre;
 	# both perturbations have zero area and first moment, so no connector span is introduced.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.balanced_quintic_relief(negative_g, negative_g * 0.88, 1.53, 0.89, 0.34),
+		Motion.balanced_quintic_relief(negative_g, negative_g * 0.88, 1.532, 0.89, 0.35),
 		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")

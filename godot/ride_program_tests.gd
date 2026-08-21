@@ -194,6 +194,11 @@ func _test_camelback_is_planar_and_continuous() -> void:
 		_expect(span.roll_rate_rad_s.kind == "constant"
 			and absf(float(span.roll_rate_rad_s.value)) <= 0.000001,
 			"camelback roll rate is zero: %s" % str(span.span_id))
+	var pullup_profile: Dictionary = spans[0].normal_g
+	var pullup_center_g: float = Motion.profile_sample(pullup_profile, 0.5).x
+	_expect(pullup_profile.get("kind") == "balanced_bump"
+		and pullup_center_g >= 3.25 and pullup_center_g <= 3.35,
+		"camelback pull-up redistributes a 0.5 g positive center without changing its endpoints")
 	var crest_profile: Dictionary = spans[2].normal_g
 	_expect(crest_profile.get("kind") == "balanced_quintic",
 		"camelback crest uses one balanced C2 profile")

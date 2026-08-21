@@ -570,9 +570,10 @@ static func _add_camelback(
 	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
-	# At the same 3.60 s fall, CI measured 4.364 m more prominence here than at the 2.660 s
-	# endpoint; reuse that measured shorter point without changing either load endpoint.
-	var pullup_s := 2.51015538415414
+	# Keep the closure-proven duration and redistribute its interior curvature without changing
+	# either load endpoint, total impulse, or first moment.
+	var pullup_s := 2.560
+	var pullup_bump_g := 0.5
 	var unload_s := 3.0634503655
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
@@ -581,7 +582,7 @@ static func _add_camelback(
 	var fall_s := 3.60
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",
-		Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")
+		Motion.balanced_bump(1.0, positive_g, pullup_bump_g), 0.0, 0.0, 0.0, "rise")
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
 		0.0, 0.0, 0.0, "rise")

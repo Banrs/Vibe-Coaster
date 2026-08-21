@@ -63,22 +63,40 @@ func _test_c2_profiles() -> void:
 		"balanced quintic has an exact C2 exit jet")
 	_expect_close(Motion.profile_sample(balanced_transition, 0.5).x, -2.8,
 		"balanced quintic reaches its authored center offset")
+	var balanced_bump := Motion.balanced_bump(1.0, 4.6, 0.5)
+	_expect_vector(Motion.profile_sample(balanced_bump, 0.0), Vector3(1.0, 0.0, 0.0),
+		"balanced bump has an exact C2 entry jet")
+	_expect_vector(Motion.profile_sample(balanced_bump, 1.0), Vector3(4.6, 0.0, 0.0),
+		"balanced bump has an exact C2 exit jet")
+	_expect_close(Motion.profile_sample(balanced_bump, 0.5).x, 3.3,
+		"balanced bump reaches its authored positive center offset")
 	var perturbation_area := 0.0
 	var perturbation_first_moment := 0.0
+	var bump_area := 0.0
+	var bump_first_moment := 0.0
 	var intervals := 4096
 	for index in range(intervals + 1):
 		var u := float(index) / float(intervals)
 		var weight := 1.0 if index == 0 or index == intervals else (2.0 if index % 2 == 0 else 4.0)
 		var delta := Motion.profile_sample(balanced_transition, u).x \
 			- Motion.profile_sample(Motion.quintic(-1.5, -1.3), u).x
+		var bump_delta := Motion.profile_sample(balanced_bump, u).x \
+			- Motion.profile_sample(Motion.quintic(1.0, 4.6), u).x
 		perturbation_area += weight * delta
 		perturbation_first_moment += weight * u * delta
+		bump_area += weight * bump_delta
+		bump_first_moment += weight * u * bump_delta
 	perturbation_area /= 3.0 * float(intervals)
 	perturbation_first_moment /= 3.0 * float(intervals)
+	bump_area /= 3.0 * float(intervals)
+	bump_first_moment /= 3.0 * float(intervals)
 	_expect_close(perturbation_area, 0.0,
 		"balanced quintic perturbation has zero area")
 	_expect_close(perturbation_first_moment, 0.0,
 		"balanced quintic perturbation has zero first moment")
+	_expect_close(bump_area, 0.0, "balanced bump perturbation has zero area")
+	_expect_close(bump_first_moment, 0.0,
+		"balanced bump perturbation has zero first moment")
 	var plateau := Motion.plateau_pulse(2.0)
 	_expect_vector(Motion.profile_sample(plateau, 0.0), Vector3.ZERO,
 		"plateau pulse has a zero C2 entry jet")
@@ -108,7 +126,7 @@ func _test_c2_profiles() -> void:
 		"plateau bank balance derivative follows its sampled load", 0.001)
 	var span_record := Motion.span("immutable", 1.0, "moving", held, held, held, held)
 	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only()
-		and notch.is_read_only() and balanced_transition.is_read_only()
+		and notch.is_read_only() and balanced_transition.is_read_only() and balanced_bump.is_read_only()
 		and plateau.is_read_only() and bank.is_read_only()
 		and plateau_bank.is_read_only(),
 		"profile records are immutable")

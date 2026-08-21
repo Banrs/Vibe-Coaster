@@ -234,13 +234,17 @@ func _temporary_print_endpoint_diagnostic(
 	var rows: Array = analysis.get("rows", [])
 	var row0: Dictionary = rows[0] if not rows.is_empty() else {}
 	var worst: Dictionary = _temporary_worst_power4_clearance(route)
-	print("[TEMP CI-32442427378 endpoint] label=%s row0_positive=%s row0_negative=%s "
-		+ "row0_lateral=%s row0_longitudinal_positive=%s row0_longitudinal_negative=%s "
-		+ "combined_usage=%s issues=%s worst_clearance=%s" % [
-			label, str(row0.positive_envelope), str(row0.negative_envelope),
-			str(row0.lateral_envelope), str(row0.longitudinal_positive_envelope),
-			str(row0.longitudinal_negative_envelope), str(row0.combined_usage),
-			str(issues), str(worst)])
+	print("[TEMP CI-32442427378 endpoint] ", JSON.stringify({
+		"label": label,
+		"row0_positive": row0.get("positive_envelope", {}),
+		"row0_negative": row0.get("negative_envelope", {}),
+		"row0_lateral": row0.get("lateral_envelope", {}),
+		"row0_longitudinal_positive": row0.get("longitudinal_positive_envelope", {}),
+		"row0_longitudinal_negative": row0.get("longitudinal_negative_envelope", {}),
+		"combined_usage": row0.get("combined_usage", NAN),
+		"issues": Array(issues),
+		"worst_clearance": worst,
+	}))
 
 
 ## TEMPORARY CI-32442427378 DIAGNOSTIC: remove with the endpoint print above.

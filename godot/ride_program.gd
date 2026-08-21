@@ -574,8 +574,6 @@ static func _add_camelback(
 	var pullup_s := 2.560
 	var unload_s := 3.0634503655
 	var crest_s := 3.62587650 * 1.06
-	var crest_notch_s := 2.8
-	var crest_shoulder_s := 0.5 * (crest_s - crest_notch_s)
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
@@ -586,15 +584,10 @@ static func _add_camelback(
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
 		0.0, 0.0, 0.0, "rise")
-	# Keep the original brief -2.90 g centre and the crest's total duration and mean load. Equal
-	# endpoint-matched C2 shoulders compress the balanced notch itself below the unchanged 0.5 s
-	# held-load envelope without publishing connector spans or softening the peak.
+	# Keep the original brief -2.90 g centre and the crest's total duration and mean load by
+	# centering the balanced notch in a 2.8 s window without publishing connector spans.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.staged([
-			Motion.constant(negative_g),
-			Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.440),
-			Motion.constant(negative_g * 0.88),
-		], [crest_shoulder_s, crest_notch_s, crest_shoulder_s]),
+		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.440, 2.8 / crest_s),
 		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")

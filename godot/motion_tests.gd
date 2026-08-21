@@ -8,6 +8,7 @@ var _errors := PackedStringArray()
 
 func _initialize() -> void:
 	_test_c2_profiles()
+	_test_balanced_quintic_width()
 	_test_profile_peak_abs_derivative_estimate()
 	_test_resistance_law()
 	_test_constant_rolling_coast()
@@ -129,6 +130,96 @@ func _test_profile_peak_abs_derivative_estimate() -> void:
 	_expect(Motion.profile_peak_abs_derivative_estimate(
 		Motion.plateau_bank_balance(0.0, deg_to_rad(60.0))) > 0.0,
 		"plateau bank balance reports a nonzero peak derivative")
+
+
+func _test_balanced_quintic_width() -> void:
+	const NOTCH_FRACTION := 0.7285161074742241
+	var from := -1.5
+	var to := -1.3
+	var depth := 1.4
+	var baseline := Motion.quintic(from, to)
+	var default_profile := Motion.balanced_quintic(from, to, depth)
+	_expect(not default_profile.has("notch_fraction"),
+		"default balanced quintic omits its optional notch fraction")
+	for u in [0.0, 0.137, 0.5, 0.863, 1.0]:
+		_expect(var_to_bytes(Motion.profile_sample(default_profile, u))
+			== var_to_bytes(_legacy_balanced_quintic_sample(from, to, depth, u)),
+			"default balanced quintic keeps legacy sample bytes at u=%.3f" % u)
+
+	var width_profile := Motion.balanced_quintic(from, to, depth, NOTCH_FRACTION)
+	var window_start := 0.5 * (1.0 - NOTCH_FRACTION)
+	var window_end := 0.5 * (1.0 + NOTCH_FRACTION)
+	_expect(width_profile.get("notch_fraction") == NOTCH_FRACTION,
+		"width balanced quintic publishes its requested fraction")
+	_expect_vector(Motion.profile_sample(width_profile, 0.0),
+		Motion.profile_sample(baseline, 0.0),
+		"width balanced quintic preserves its entry C2 jet")
+	_expect_vector(Motion.profile_sample(width_profile, 1.0),
+		Motion.profile_sample(baseline, 1.0),
+		"width balanced quintic preserves its exit C2 jet")
+	_expect_vector(Motion.profile_sample(width_profile, window_start),
+		Motion.profile_sample(baseline, window_start),
+		"width balanced quintic has a C2 left window boundary")
+	_expect_vector(Motion.profile_sample(width_profile, window_end),
+		Motion.profile_sample(baseline, window_end),
+		"width balanced quintic has a C2 right window boundary")
+	for u in [0.05, 0.1, 0.9, 0.95]:
+		_expect(var_to_bytes(Motion.profile_sample(width_profile, u))
+			== var_to_bytes(Motion.profile_sample(baseline, u)),
+			"width balanced quintic equals its baseline outside the window at u=%.3f" % u)
+	_expect_close(Motion.profile_sample(width_profile, 0.5).x
+		- Motion.profile_sample(baseline, 0.5).x, -depth,
+		"width balanced quintic keeps its authored center depth")
+
+	var local_probe := 0.25
+	var probe_u := window_start + NOTCH_FRACTION * local_probe
+	var local_perturbation := Motion.profile_sample(
+		Motion.balanced_quintic(0.0, 0.0, depth), local_probe)
+	var width_sample := Motion.profile_sample(width_profile, probe_u)
+	var baseline_sample := Motion.profile_sample(baseline, probe_u)
+	_expect_close(width_sample.y - baseline_sample.y,
+		local_perturbation.y / NOTCH_FRACTION,
+		"width balanced quintic scales its first derivative", 0.00001)
+	_expect_close(width_sample.z - baseline_sample.z,
+		local_perturbation.z / (NOTCH_FRACTION * NOTCH_FRACTION),
+		"width balanced quintic scales its second derivative", 0.00001)
+
+	var perturbation_area := 0.0
+	var perturbation_first_moment := 0.0
+	var intervals := 4096
+	for index in range(intervals + 1):
+		var local_u := float(index) / float(intervals)
+		var u := window_start + NOTCH_FRACTION * local_u
+		var weight := 1.0 if index == 0 or index == intervals else (2.0 if index % 2 == 0 else 4.0)
+		var delta := Motion.profile_sample(width_profile, u).x \
+			- Motion.profile_sample(baseline, u).x
+		perturbation_area += weight * delta
+		perturbation_first_moment += weight * u * delta
+	perturbation_area *= NOTCH_FRACTION / (3.0 * float(intervals))
+	perturbation_first_moment *= NOTCH_FRACTION / (3.0 * float(intervals))
+	_expect_close(perturbation_area, 0.0,
+		"centered balanced quintic perturbation has zero area")
+	_expect_close(perturbation_first_moment, 0.0,
+		"centered balanced quintic perturbation has zero first moment")
+
+
+func _legacy_balanced_quintic_sample(from: float, to: float, depth: float, u: float) -> Vector3:
+	var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+	var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
+	var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
+	var pulse := 4.0 * h * (1.0 - h)
+	var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
+	var pulse_second := 4.0 * (
+		d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
+	var balance := 4199.0 / 3100.0
+	var amplitude := depth * 3100.0 / 1099.0
+	var delta := to - from
+	return Vector3(
+		from + delta * h + amplitude * pulse * (1.0 - balance * pulse),
+		delta * dh + amplitude * pulse_derivative * (1.0 - 2.0 * balance * pulse),
+		delta * d2h + amplitude * (pulse_second * (1.0 - 2.0 * balance * pulse)
+			- 2.0 * balance * pulse_derivative * pulse_derivative)
+	)
 
 
 func _test_resistance_law() -> void:

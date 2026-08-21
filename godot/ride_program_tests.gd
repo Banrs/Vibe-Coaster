@@ -195,18 +195,13 @@ func _test_camelback_is_planar_and_continuous() -> void:
 			and absf(float(span.roll_rate_rad_s.value)) <= 0.000001,
 			"camelback roll rate is zero: %s" % str(span.span_id))
 	var crest_profile: Dictionary = spans[2].normal_g
-	var crest_segments: Array = crest_profile.get("segments", [])
-	_expect(crest_profile.get("kind") == "staged" and crest_segments.size() == 3,
-		"camelback crest keeps one semantic span with three internal C2 stages")
-	if crest_segments.size() == 3:
-		var first_shoulder_s := float(crest_segments[0].duration_s)
-		var notch_s := float(crest_segments[1].duration_s)
-		var last_shoulder_s := float(crest_segments[2].duration_s)
-		_expect(absf(first_shoulder_s - last_shoulder_s) <= 0.000001
-			and absf(notch_s - 2.8) <= 0.000001
-			and absf(first_shoulder_s + notch_s + last_shoulder_s
-				- float(spans[2].duration_s)) <= 0.000001,
-			"camelback crest shoulders symmetrically compress the brief notch without changing duration")
+	_expect(crest_profile.get("kind") == "balanced_quintic",
+		"camelback crest uses one centered balanced quintic profile")
+	var crest_s := 3.62587650 * 1.06
+	var notch_fraction := float(crest_profile.get("notch_fraction", -1.0))
+	_expect(absf(notch_fraction * float(spans[2].duration_s) - 2.8) <= 0.000001
+		and absf(float(spans[2].duration_s) - crest_s) <= 0.000001,
+		"camelback crest keeps a 2.8 s notch inside its unchanged total duration")
 	var crest_center_g: float = Motion.profile_sample(crest_profile, 0.5).x
 	_expect(crest_center_g >= -2.95 and crest_center_g <= -2.85,
 		"camelback keeps its authored intense brief negative crest center: %.3f g" % crest_center_g)

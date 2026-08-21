@@ -234,6 +234,7 @@ func _temporary_print_endpoint_diagnostic(
 	var rows: Array = analysis.get("rows", [])
 	var row0: Dictionary = rows[0] if not rows.is_empty() else {}
 	var worst: Dictionary = _temporary_worst_power4_clearance(route)
+	var negative_source: Dictionary = _temporary_worst_negative_half_second(route)
 	print("[TEMP CI-32442427378 endpoint] ", JSON.stringify({
 		"label": label,
 		"row0_positive": row0.get("positive_envelope", {}),
@@ -243,6 +244,7 @@ func _temporary_print_endpoint_diagnostic(
 		"row0_longitudinal_negative": row0.get("longitudinal_negative_envelope", {}),
 		"combined_usage": row0.get("combined_usage", NAN),
 		"issues": Array(issues),
+		"negative_half_second_source": negative_source,
 		"worst_clearance": worst,
 	}))
 
@@ -298,6 +300,45 @@ func _temporary_worst_power4_clearance(route: Dictionary) -> Dictionary:
 				"r2": r2, "u": u, "power4_contribution_m": contribution_m,
 				"final_clearance_m": final_clearance_m}
 	return worst
+
+
+## TEMPORARY CI-32442427378 DIAGNOSTIC: locate the measured 0.5 s -Gz window.
+func _temporary_worst_negative_half_second(route: Dictionary) -> Dictionary:
+	var native := PackedFloat32Array()
+	var times: PackedFloat32Array = route.get("times", PackedFloat32Array())
+	var distances: PackedFloat32Array = route.get("distances", PackedFloat32Array())
+	var speeds: PackedFloat32Array = route.get("speeds", PackedFloat32Array())
+	native.resize(times.size())
+	for index in times.size():
+		var forces: Dictionary = RideVerify.row_forces_at(
+			route, distances[index], speeds[index], 0.0, index)
+		native[index] = float(forces.get("normal", NAN))
+	var filtered: PackedFloat32Array = RideVerify.filter(RideVerify.resample(times, native))
+	var window_samples := roundi(0.5 * RideVerify.SAMPLE_HZ) + 1
+	var rolling_sum := 0.0
+	var minimum_mean := INF
+	var minimum_start := -1
+	for index in filtered.size():
+		rolling_sum += filtered[index]
+		if index >= window_samples:
+			rolling_sum -= filtered[index - window_samples]
+		if index >= window_samples - 1:
+			var mean: float = rolling_sum / window_samples
+			if mean < minimum_mean:
+				minimum_mean = mean
+				minimum_start = index - window_samples + 1
+	var midpoint_s := (minimum_start + 0.5 * (window_samples - 1)) / RideVerify.SAMPLE_HZ
+	var native_index := 0
+	while native_index + 1 < times.size() and times[native_index + 1] < midpoint_s:
+		native_index += 1
+	var gesture_index := int(route.gesture_indices[native_index])
+	var window_id := "unknown"
+	if gesture_index >= 0 and gesture_index < route.gesture_windows.size():
+		window_id = str(route.gesture_windows[gesture_index].get("window_id", "unknown"))
+	return {"held_g": minimum_mean, "start_s": minimum_start / RideVerify.SAMPLE_HZ,
+		"end_s": (minimum_start + window_samples - 1) / RideVerify.SAMPLE_HZ,
+		"midpoint_native_sample": native_index,
+		"span_index": int(route.span_indices[native_index]), "window": window_id}
 
 
 func _expect_range(label: String, value: float, band: Vector2, unit: String) -> void:

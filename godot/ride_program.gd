@@ -853,7 +853,7 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 			or not terrain_value is Dictionary \
 			or str(terrain_value.get("kind", "")) not in ["material", "synthetic"]:
 		return _failure("material-v1 decisions, terrain frame, or terrain stamp is incomplete", "plan")
-	var terrain: Dictionary = terrain_value
+	var plan_terrain: Dictionary = terrain_value
 	var planning: Dictionary = terrain_frame.planning
 	# The prefix integration count is a constant of the path that produced the plan, not a budget:
 	# one for a fixture built from a single capability, two for production (preflight + closure).
@@ -900,8 +900,8 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 			or camelback_apex_agl_band.y <= camelback_apex_agl_band.x \
 			or camelback_apex_agl_band != Vector2(140.0, 170.0):
 		return _failure("material-v1 camelback apex AGL intent is missing or invalid", "plan")
-	if str(terrain.get("kind", "")) == "material" \
-			and not _material_terrain_heightfield_is_valid(terrain):
+	if str(plan_terrain.get("kind", "")) == "material" \
+			and not _material_terrain_heightfield_is_valid(plan_terrain):
 		return _failure("material-v1 terrain heightfield inputs are missing or invalid", "plan")
 	var minimum_sum := 0.0
 	var maximum_sum := 0.0

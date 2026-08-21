@@ -572,13 +572,14 @@ static func _add_camelback(
 	var pullout_g := 5.2662035249371
 	# This is the last CI point that keeps the balanced-release return on its healthy root family.
 	var pullup_s := 2.560
-	var unload_s := 3.0634503655
+	# The extra 0.060 s restores the apex through the force transition without changing either
+	# peak after the crest notch is brought inside its held-load envelope.
+	var unload_s := 3.1234503655
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
-	# camelback entry speed. The extra 0.05 s restores the unchanged prominence band after the
-	# crest notch is brought inside its held-load envelope; the accepted-apex terrace owns AGL.
-	var fall_s := 3.65
+	# camelback entry speed rather than the crest being scaled.
+	var fall_s := 3.60
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",
 		Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")

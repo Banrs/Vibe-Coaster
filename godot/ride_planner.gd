@@ -42,12 +42,10 @@ const ACT_ONE_ANCHOR := "act-one-immelmann"
 ## prefix closure solve that was named as this draw's blocker has landed, and it moved the verdict
 ## without lifting it: re-measured on 2026-08-15 across all 24 grammar-legal orders, exactly one
 ## non-canonical order - the pool's two optional members exchanged - now closes its prefix and
-## places it inside every fleet margin, on all fifteen seeds, and that is gated in
-## `generator_material_tests.gd`. The other 22 are still refused before the solve runs, because the
-## preflight frames the yaw solution from the *unsolved* prefix. What no reordered story does yet
-## is build end to end: the 11-control return solve does not re-converge from its fixed seed on
-## the moved camelback handoff. The full matrix, including what each order costs, is recorded with
-## that gate. Drawing an order needs the return's seed or budget, not a wider range here.
+## return, but its public build is refused by route-scale geometry below the unchanged vertical
+## envelope lower bound; that is gated in `generator_material_tests.gd`. The other 22 are still
+## refused before the solve runs, because the preflight frames the yaw solution from the *unsolved*
+## prefix. No band is widened to make the swap publishable.
 const ACT_ONE_POOL := ["act-one-cutback", "act-one-loop", "act-one-airtime", "act-one-wave"]
 const ACT_ONE_OPTIONAL := ["act-one-airtime", "act-one-wave"]
 const SPINE_TAIL := ["climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",

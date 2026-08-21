@@ -39,8 +39,8 @@ const PRESET_SEEDS := [
 ## The stage-4 refusal seeds: the three deep seeds smoke gates on loads, plus 4096, one of the two
 ## seeds whose canonical closure spends the most evaluations (6 of 31). Fixed, never sampled.
 const REFUSAL_SEEDS := [11, 42, 20260809, 4096]
-## The single seed whose swapped story is built end to end, not just planned. Fixed, and argued
-## for at `_check_swap_builds_end_to_end`; one build is what the serial CI budget below affords.
+## The single seed whose swapped story is checked through route-scale refusal after its prefix and
+## return close. Fixed, and argued for at `_check_swap_refuses_at_route_scale`.
 const SWAP_COMPILE_SEED := 4096
 ## The perturbation the refusal evidence in `ride_planner.gd` names, applied to the authored value.
 const REFUSAL_DELTA := 0.005
@@ -214,25 +214,25 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 ##     built and run on 2026-08-16 and *refused* on its first measurement, because at the 5 m and
 ##     3 m insets tried there it took the swap from planning 4/4 to refusing 4/4 or 2/4 while the
 ##     returns that did converge budget-exhausted anyway.
-##   Composed 2026-08-16 with the return's own role-band residual, and the refusal above does not
-##     survive the composition. Two things had to be true at once, and neither alone was enough:
+##   Composed 2026-08-16 with the return's own role-band residual, the prefix and return now close
+##     on the swap, but its public build remains refused by route-scale geometry. Two things had to
+##     be true at once, and neither alone was enough:
 ##     the prefix has to deliver the dive inside its band (the residual above, at a 2 m inset -
 ##     derived at 20x the solver's 0.1 m convergence slack on that channel and a fifth of the
 ##     fleet's 13.456 m headroom), and the return has to be able to see `return-turn-b` leaving its
 ##     own band while it still has controls to spend (the eighth return residual, 3 m inset). With
-##     both live, all four gated seeds build end to end for the first time: closure converged in
-##     29/40/46/99 evaluations of the re-derived 105 cap, return converged in 65/60/38/29 of 88,
-##     `outward-dive` at 487.96-488.02 m and `return-turn-b` at 529.93-567.71 m, every other
-##     declared role band interior, route 8134.7-8178.5 m, contract and validators clean. The
-##     earlier refusal was right about its own measurements and wrong about their reach: it tested
-##     the dive residual alone, and the metres it returned were re-spent on a turn-b nothing was
-##     watching.
+##     both live, all four gated seeds close their prefix and return: closure converged in
+##     29/40/46/99 evaluations of the re-derived 105 cap; current return convergence is asserted
+##     below against its published cap, and the solve-side role-band observations are interior.
+##     The public swap remains refused by route-scale geometry below the unchanged 290 m
+##     vertical-envelope lower bound; no widening is
+##     justified by the closure/interiority result.
 ##   Section 5.4's expectation that residual 4 absorbs the handoff shift stays half true as
 ##     measured: the record exit speed is pinned (+0.51 to +0.83 m/s inside its band on every
 ##     placed story), the geometric handoff is not.
 ##
 ## Cost, named by runner because the two runners disagree: the eight plans below add ~12.7 s local
-## (~25 s on ubuntu) and the one swap built end to end adds ~17 s local (~34 s on ubuntu) - the
+## (~25 s on ubuntu) and the one swap route-scale refusal check adds ~17 s local (~34 s on ubuntu) - the
 ## compile it used to stop at, plus the production integration and contract the build now runs. The
 ## closures themselves cost no more than before the dive-arc residual: they used to burn the whole
 ## budget refusing (4 x 51 evaluations) and now converge in 214.
@@ -247,12 +247,13 @@ func _check_closure_places_the_refused_stories() -> void:
 		_check_refused_story_places(seed_value, "act-one-loop/positive_g -0.005", [],
 			{"act-one-loop": {"positive_g":
 				RideProgram.ACT_ONE_LOOP_POSITIVE_G - REFUSAL_DELTA}})
-	_check_swap_builds_end_to_end(SWAP_COMPILE_SEED, permuted)
+	_check_swap_refuses_at_route_scale(SWAP_COMPILE_SEED, permuted)
 
 
-## The one swap built end to end, and why it is seed 4096: with the dive-arc residual live it is
-## the seed whose closure works hardest - 99 unique evaluations of the derived 105, against 29-46
-## on the other three - so the seed that gates the build is also the seed that gates the budget.
+## The one swap checked through route-scale refusal, and why it is seed 4096: with the dive-arc
+## residual live it is the seed whose closure works hardest - 99 unique evaluations of the derived
+## 105, against 29-46 on the other three - so the seed that gates the build is also the seed that
+## gates the budget. Its prefix and return close, but route-scale geometry refuses the public build.
 ##
 ## History, kept because the refusals are the evidence this gate rests on. Before
 ## `RETURN_LENGTH_AIM_MARGIN_M`, 4096's swapped return converged 0.00075 m inside the 8200 m
@@ -267,14 +268,10 @@ func _check_closure_places_the_refused_stories() -> void:
 ## Re-founded 2026-08-16 on the composition that closes both: the dive arc is the prefix closure's
 ## fifth residual and turn-b interiority is the return solve's eighth, so both role bands are
 ## quantities a solve can see while it still has controls to spend. Measured on all four gated
-## seeds, the swapped story now builds end to end - closure converged, return converged, every
-## declared role band satisfied, route contract and validators clean. So the gate asserts the
-## build, not the refusal: closure and return convergence, the recovery off its floor, strict
-## true-band interiority on route length, `outward-dive` and `return-turn-b`, and the published
-## route itself. What it does not claim is that issue 24 is closed - the swap is one of thirty-six
-## grammar-legal act-one orders and the other thirty-three are still refused at the preflight, so
-## the permutation draw stays uncertified.
-func _check_swap_builds_end_to_end(seed_value: int, sequence: Array) -> void:
+## seeds, the swapped story closes its prefix and return, but seed 4096 is refused by route-scale
+## geometry: its route vertical envelope is below the unchanged 290 m lower bound. So the gate
+## asserts closure/interiority and the exact route-scale refusal, with no widening of the bands.
+func _check_swap_refuses_at_route_scale(seed_value: int, sequence: Array) -> void:
 	var decisions := RidePlanner.resolve(seed_value)
 	decisions["sequence"] = sequence
 	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
@@ -308,15 +305,27 @@ func _check_swap_builds_end_to_end(seed_value: int, sequence: Array) -> void:
 	_expect(turn_b_m > turn_b_band.x and turn_b_m < turn_b_band.y,
 		"seed %d act-one optional swap builds return-turn-b at %.3f m inside %s"
 		% [seed_value, turn_b_m, str(turn_b_band)])
-	# The whole point of the stage: the story that has never built, built. A fresh `resolve` -
-	# `Terrain.generate` consumes the seeded stream, so a second build off the same decisions
-	# dictionary would be a different ride.
+	# A fresh `resolve` - `Terrain.generate` consumes the seeded stream, so a second build off the
+	# same decisions dictionary would be a different ride. The accepted prefix/return is then
+	# refused by the public route-scale geometry contract.
 	var rebuilt := RidePlanner.resolve(seed_value)
 	rebuilt["sequence"] = sequence
 	var route := RideGenerator.build_with_decisions(seed_value, rebuilt)
-	_expect(route.get("ok", false) and route.get("errors", []).is_empty(),
-		"seed %d act-one optional swap builds end to end: errors=%s failure=%s"
-		% [seed_value, str(route.get("errors", [])), str(route.get("failure", {}))])
+	var failure: Dictionary = route.get("failure", {})
+	var bounds: Dictionary = failure.get("bounds", {})
+	var observed: Dictionary = failure.get("observed", {})
+	var published_scale: Dictionary = plan.terrain_frame.planning.scale
+	var expected_scale := {"route_vertical_envelope_m": Vector2(290.0, 305.0),
+		"dive_drop_m": Vector2(240.0, 250.0),
+		"camel_prominence_m": Vector2(245.0, 255.0)}
+	_expect(not route.get("ok", true) and str(failure.get("stage", "")) == "contract"
+		and str(failure.get("reason", "")) == "terrain_intent_miss"
+		and float(observed.get("route_vertical_envelope_m", INF)) < 290.0
+		and bounds.get("route_vertical_envelope_m") == published_scale.route_vertical_envelope_m
+		and bounds.get("terrain_relief_m") == Vector2(270.0, 285.0)
+		and published_scale == expected_scale,
+		"seed %d act-one optional swap is refused by route-scale geometry below the unchanged 290 m bound: %s"
+		% [seed_value, str(failure)])
 
 
 static func _role_band(plan: Dictionary, role_id: String) -> Vector2:
@@ -324,6 +333,13 @@ static func _role_band(plan: Dictionary, role_id: String) -> Vector2:
 		if str(role.id) == role_id:
 			return role.length_m
 	return Vector2(NAN, NAN)
+
+
+static func _aggregate_role_band(plan: Dictionary, role_ids: Array) -> Vector2:
+	var result := Vector2.ZERO
+	for role_id in role_ids:
+		result += _role_band(plan, str(role_id))
+	return result
 
 
 ## The act-one order this gate uses, assembled from the grammar's own cells: the pool with its two
@@ -516,11 +532,13 @@ func _check_route_scale_and_flow(route: Dictionary) -> void:
 	var plan: Dictionary = route.get("terrain_story_plan", {}).get("plan", {})
 	var terminal_length_m := float(plan.get("corridor", {}).get("approach_length_m", 230.0))
 	var integration_tolerance_m := 2.0
+	var return_band := _aggregate_role_band(plan,
+		["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"])
 	var role_bands := [["station-launch", 140.0, 220.0], ["opener", 1300.0, 1800.0],
 		["act-one", 1400.0, 1800.0], ["escarpment-climb", 520.0, 680.0], ["clifftop-suspense", 80.0, 190.0],
 		["cliff-dive", 350.0, 490.0], ["tunnel-lsm3", 150.0, 220.0],
 		["record-release-turn", 340.0, 390.0], ["marquee-camelback", 900.0, 1180.0],
-		["raceway-return", 1700.0, 2500.0], ["brakes-station-capture",
+		["raceway-return", return_band.x, return_band.y], ["brakes-station-capture",
 			terminal_length_m - integration_tolerance_m,
 			terminal_length_m + integration_tolerance_m]]
 	for band: Array in role_bands:
@@ -648,8 +666,11 @@ func _neutral_scan_exempt(route: Dictionary, index: int) -> bool:
 	var gesture_index := int(route.gesture_indices[index])
 	if gesture_index < 0 or gesture_index >= route.gesture_windows.size():
 		return false
+	# Record-release-turn is exempt only from this generic neutral-window scan; the adjacent
+	# `_lsm3_feeds_release_and_camelback` gate separately requires whole-role bank activity and
+	# heading >=20 degrees.
 	return route.gesture_windows[gesture_index].story_slot_id \
-		in ["station-launch", "tunnel-lsm3", "brakes-station-capture"]
+		in ["station-launch", "tunnel-lsm3", "brakes-station-capture", "record-release-turn"]
 func _native_activity(route: Dictionary, first: int, last: int) -> Dictionary:
 	var heading := 0.0; var vertical := 0.0; var bank_work := 0.0
 	var coordinated_bank_s := 0.0; var load_gs := 0.0; var curvature_rad := 0.0

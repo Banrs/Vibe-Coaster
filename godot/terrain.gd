@@ -70,7 +70,12 @@ static func _return_terrace_height(terrain: Dictionary, point_m: Vector2) -> flo
 		+ (cross_distance / float(terrace.half_width_m)) ** 2
 	if r2 >= 1.0:
 		return 0.0
-	return float(terrace.elevation_m) * _smoothstep01(1.0 - r2)
+	return float(terrace.elevation_m) * _return_terrace_smootherstep01(1.0 - r2)
+
+
+static func _return_terrace_smootherstep01(x: float) -> float:
+	var t := clampf(x, 0.0, 1.0)
+	return t ** 3.0 * (t * (t * 6.0 - 15.0) + 10.0)
 
 
 static func _smoothstep01(x: float) -> float:

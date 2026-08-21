@@ -287,7 +287,7 @@ func _root_observation(seed_value: int, root_index: int, root: Vector2,
 		var placement := RideGenerator._place_dive(terrain, inward, footprint, parts,
 			lerpf(entry_band.x, entry_band.y, placement_u))
 		var station_position: Vector3 = placement.station_position_m
-		var apex_world := station_position + footprint.tangent * local_apex.x \
+		var apex_world: Vector3 = station_position + footprint.tangent * local_apex.x \
 			+ Vector3.UP * local_apex.y + footprint.right * local_apex.z
 		var apex_terrain := Terrain.height(terrain, apex_world.x, apex_world.z)
 		var apex_edge := Terrain.edge_distance(terrain, apex_world.x, apex_world.z)
@@ -301,7 +301,7 @@ func _root_observation(seed_value: int, root_index: int, root: Vector2,
 		row["root_observation_reasons"].append("entry_band_nonfinite")
 	row["station_opener_plain"] = plain
 	row["validity"]["station_opener_plain"] = plain.get("valid", false)
-	var geometry_valid := accepted_outward_agrees_with_preflight \
+	var geometry_valid: bool = accepted_outward_agrees_with_preflight \
 		and edge_spans_finite_positive and entry_band_valid \
 		and plain.get("valid", false)
 	var return_ok: bool = return_report.get("ok", true)
@@ -329,11 +329,11 @@ func _plain_margins(terrain: Dictionary, parts: Dictionary, footprint: Dictionar
 	for index in parts.station_opener.positions_m.size():
 		var native_position: Vector3 = parts.station_opener.positions_m[index]
 		var native_up: Vector3 = parts.station_opener.rider_up[index]
-		var world_offset := footprint.tangent * native_position.x + Vector3.UP * native_position.y \
+		var world_offset: Vector3 = footprint.tangent * native_position.x + Vector3.UP * native_position.y \
 			+ footprint.right * native_position.z
-		var world_up := footprint.tangent * native_up.x + Vector3.UP * native_up.y \
+		var world_up: Vector3 = footprint.tangent * native_up.x + Vector3.UP * native_up.y \
 			+ footprint.right * native_up.z
-		var lower := station_position + world_offset \
+		var lower: Vector3 = station_position + world_offset \
 			- world_up * RideGenerator.LOWER_SPINE_SURFACE_OFFSET_M
 		maximum_opener_edge = maxf(maximum_opener_edge,
 			Terrain.edge_distance(terrain, lower.x, lower.z))

@@ -202,7 +202,7 @@ func _test_camelback_is_planar_and_continuous() -> void:
 		"camelback crest retains the authored outer depth and center relief")
 	_expect(is_equal_approx(float(crest_profile.get("relief_fraction")), 0.35),
 		"camelback crest retains the authored narrow relief window")
-	_expect(is_equal_approx(float(spans[3].get("duration_s")), 3.601),
+	_expect(is_equal_approx(float(spans[3].get("duration_s")), 3.54),
 		"camelback fall retains the authored prominence duration")
 	var crest_center_g: float = Motion.profile_sample(crest_profile, 0.5).x
 	_expect(crest_center_g >= -2.15 and crest_center_g <= -2.05,

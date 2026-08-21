@@ -130,7 +130,6 @@ const RETURN_TURN_B_SPAN_PREFIX := "raceway/turn-b/"
 const RECORD_RELEASE_SPAN_PREFIX := "record-release-turn/"
 const RETURN_TURN_A_SPAN_PREFIX := "raceway/turn-a/"
 const RETURN_HEIGHT_A_SPAN_PREFIX := "raceway/height-a/"
-const RETURN_HEIGHT_B_SPAN_PREFIX := "raceway/height-b/"
 const CAMELBACK_SPAN_PREFIX := "camelback/"
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
 ## A normal-g span whose ends differ by no more than this is authored as a constant profile. It
@@ -319,8 +318,7 @@ static func _return_span(id: String, duration_s: float, from_g: float, to_g: flo
 
 static func _solve_return(
 	start: Dictionary, layout: Dictionary, hand: float = 1.0, seed: Array = RETURN_SEED,
-	targets: Dictionary = {}, prefix_spans: Array = [],
-	normalized_difference_step: float = 0.005, diagnostics: Variant = null
+	targets: Dictionary = {}, prefix_spans: Array = []
 ) -> Dictionary:
 	var cache := {}
 	var prefix_cache := {}
@@ -356,12 +354,10 @@ static func _solve_return(
 	var residual := func(candidate: Array) -> Array:
 		var observed := _return_evaluation(
 			start, layout, candidate, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-			hand, initial_bank_rad, targets, prefix_spans, prefix_cache, diagnostics)
-		_record_return_diagnostic(diagnostics, observed)
+			hand, initial_bank_rad, targets, prefix_spans, prefix_cache)
 		return observed.scaled if observed.get("ok", false) else [INF]
 	var solved := BoundedSolver.solve(
-		residual, lower, upper, initial, MAX_RETURN_EVALUATIONS - 1, normalized_difference_step)
-	_record_solver_diagnostic(diagnostics, solved)
+		residual, lower, upper, initial, MAX_RETURN_EVALUATIONS - 1)
 	if not solved.get("ok", false):
 		return RideProgram._failure("return did not reach its physical target", "return",
 			{"evaluation_count": solved.get("evaluations", cache.size()),
@@ -371,14 +367,12 @@ static func _solve_return(
 	var parameters: Array = solved.x
 	var coarse := _return_evaluation(
 		start, layout, parameters, RideProgram._settings(RideProgram.FINE_STEP_S), cache, hand,
-		initial_bank_rad, targets, prefix_spans, prefix_cache, diagnostics)
-	_record_return_diagnostic(diagnostics, coarse)
+		initial_bank_rad, targets, prefix_spans, prefix_cache)
 	if not coarse.get("ok", false):
 		return coarse
 	var fine := _return_evaluation(
 		start, layout, parameters, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-		hand, initial_bank_rad, targets, prefix_spans, prefix_cache, diagnostics)
-	_record_return_diagnostic(diagnostics, fine)
+		hand, initial_bank_rad, targets, prefix_spans, prefix_cache)
 	if not fine.ok:
 		return fine
 	if _maximum_absolute(fine.scaled) > 0.02:
@@ -518,7 +512,7 @@ static func _maximum_absolute(values: Array) -> float:
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
 	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
 	initial_bank_rad: float = 0.0, targets: Dictionary = {}, prefix_spans: Array = [],
-	prefix_cache: Dictionary = {}, diagnostics: Variant = null) -> Dictionary:
+	prefix_cache: Dictionary = {}) -> Dictionary:
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)
@@ -530,7 +524,6 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	var candidate_start := start
 	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
 	var record_release_length_m := NAN
-	var camelback_length_m := NAN
 	var camelback_prominence_m := NAN
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
@@ -556,9 +549,6 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 						RECORD_RELEASE_SPAN_PREFIX),
 					"camelback_prominence_m": _role_prominence_m(
 						prefix_route, candidate_prefix, CAMELBACK_SPAN_PREFIX)}
-				if diagnostics is Dictionary:
-					prefix_result["camelback_length_m"] = _role_arc_m(
-						prefix_route, candidate_prefix, CAMELBACK_SPAN_PREFIX)
 			prefix_cache[prefix_key] = prefix_result
 		if not prefix_result.get("ok", false):
 			var prefix_failed := RideProgram._failure("return candidate prefix failed integration", "return",
@@ -568,8 +558,6 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 		candidate_start = prefix_result.candidate_start
 		initial_bank_rad = float(prefix_result.initial_bank_rad)
 		record_release_length_m = float(prefix_result.record_release_length_m)
-		if diagnostics is Dictionary:
-			camelback_length_m = float(prefix_result.get("camelback_length_m", NAN))
 		camelback_prominence_m = float(prefix_result.camelback_prominence_m)
 		spans = _return_spans(parameters, hand, initial_bank_rad, targets)
 	var route := Motion.integrate(candidate_start, spans, settings)
@@ -580,56 +568,11 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 		return failed
 	var result := _return_observation(
 		route, layout, spans, record_release_length_m, camelback_prominence_m)
-	if diagnostics is Dictionary:
-		result["return_role_lengths_m"] = _return_role_lengths_m(
-			route, spans, record_release_length_m, camelback_length_m)
 	result["scaled"] = []
 	for index in RETURN_RESIDUAL_IDS.size():
 		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
 	cache[key] = result
 	return result
-
-
-static func _record_return_diagnostic(diagnostics: Variant, observed: Dictionary) -> void:
-	if not diagnostics is Dictionary or not observed.get("ok", false):
-		return
-	var active_residual_ids := []
-	var residuals: Array = observed.get("residuals", [])
-	for index in mini(residuals.size(), RETURN_RESIDUAL_IDS.size()):
-		if float(residuals[index]) != 0.0:
-			active_residual_ids.append(RETURN_RESIDUAL_IDS[index])
-	diagnostics["last_evaluation"] = {
-		"active_residual_ids": active_residual_ids,
-		"margins": observed.get("margins", {}).duplicate(true),
-		"return_role_lengths_m": observed.get("return_role_lengths_m", {}).duplicate(true),
-		"unscaled_observations": observed.get("observation", {}).duplicate(true),
-		"unscaled_residuals": residuals.duplicate(),
-	}
-
-
-static func _record_solver_diagnostic(diagnostics: Variant, solved: Dictionary) -> void:
-	if not diagnostics is Dictionary:
-		return
-	diagnostics["solver_conditioning"] = solved.get("conditioning", INF)
-	diagnostics["solver_evaluations"] = solved.get("evaluations", 0)
-	diagnostics["solver_iterations"] = solved.get("iterations", 0)
-	diagnostics["solver_status"] = solved.get("status", "invalid")
-
-
-static func _return_role_lengths_m(
-	route: Dictionary, spans: Array, record_release_length_m: float, camelback_length_m: float
-) -> Dictionary:
-	var lengths := {
-		"return-turn-a": _role_arc_m(route, spans, RETURN_TURN_A_SPAN_PREFIX),
-		"return-height-a": _role_arc_m(route, spans, RETURN_HEIGHT_A_SPAN_PREFIX),
-		"return-turn-b": _role_arc_m(route, spans, RETURN_TURN_B_SPAN_PREFIX),
-		"return-height-b": _role_arc_m(route, spans, RETURN_HEIGHT_B_SPAN_PREFIX),
-	}
-	if is_finite(record_release_length_m):
-		lengths["record-release-turn"] = record_release_length_m
-	if is_finite(camelback_length_m):
-		lengths["camelback"] = camelback_length_m
-	return lengths
 
 
 static func _prefix_with_solved_parameters(

@@ -68,9 +68,6 @@ jobs:
           }
       - name: Validate ride and meshes
         run: timeout 20m godot --headless --path godot --script res://smoke.gd
-      - name: Gather temporary return-solver evidence
-        if: always()
-        run: timeout 20m godot --headless --path godot --script res://solver_evidence.gd
       - name: Measure first live viewer frame
         shell: bash
         run: |

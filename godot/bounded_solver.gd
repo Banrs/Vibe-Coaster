@@ -108,7 +108,8 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 			# Near a root, reuse the accepted step as a secant direction before paying for another
 			# complete Jacobian. Every polish trial still consumes the caller's unchanged budget.
 			if _max_abs(values) <= POLISH_RESIDUAL_THRESHOLD \
-					and evaluation_count[0] < max_evaluations:
+					and evaluation_count[0] < max_evaluations \
+					and evaluation_count[0] + n + 1 > max_evaluations:
 				var numerator := 0.0
 				var denominator := 0.0
 				for row_index in range(values.size()):

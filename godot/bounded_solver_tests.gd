@@ -59,8 +59,19 @@ func _test_near_root_secant_polish_uses_the_remaining_budget() -> void:
 		_nearby_diagonal_root, [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], 5)
 	_expect(result.get("ok", false) and result.get("status", "") == "converged",
 		"an accepted near-root step is polished before a fresh Jacobian exhausts the budget")
-	_expect(result.get("evaluations", 0) == 5 and _max_abs(result.get("residuals", [])) <= 0.02,
+	_expect(result.get("evaluations", 0) == 5 and result.get("residuals", []).size() == 2
+		and _max_abs(result.get("residuals", [])) <= 0.02,
 		"the secant polish converges inside the unchanged hard evaluation budget")
+	var headroom := BoundedSolver.solve(
+		_nearby_diagonal_root, [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], 80)
+	_expect(headroom.get("ok", false) and headroom.get("status", "") == "converged"
+		and headroom.get("evaluations", 0) == 7
+		and headroom.get("residuals", []).size() == 2
+		and _max_abs(headroom.get("residuals", [])) <= 0.02
+		and headroom.get("x", []).size() == 2 and result.get("x", []).size() == 2
+		and absf(float(headroom.x[0]) - 0.205) <= 0.0001
+		and absf(float(headroom.x[1]) - 0.205) <= 0.0001,
+		"the polish stays dormant when a complete Jacobian and trial still fit the budget")
 
 
 func _test_repeated_results_are_byte_identical() -> void:

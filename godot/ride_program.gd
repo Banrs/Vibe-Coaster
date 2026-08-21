@@ -584,8 +584,11 @@ static func _add_camelback(
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
 		0.0, 0.0, 0.0, "rise")
+	# Keep the zero-area, zero-first-moment crest shaping that preserves the downstream handoff,
+	# but hold its brief centre near -2.46 g. The former -2.90 g notch sustained more than the
+	# unchanged 0.5 s negative-normal envelope permits after the verification filter.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.440),
+		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.0),
 		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")

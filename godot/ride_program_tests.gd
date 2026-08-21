@@ -194,6 +194,10 @@ func _test_camelback_is_planar_and_continuous() -> void:
 		_expect(span.roll_rate_rad_s.kind == "constant"
 			and absf(float(span.roll_rate_rad_s.value)) <= 0.000001,
 			"camelback roll rate is zero: %s" % str(span.span_id))
+	var crest_center_g: float = Motion.profile_sample(spans[2].normal_g, 0.5).x
+	_expect(crest_center_g >= -2.50 and crest_center_g <= -2.40,
+		"camelback keeps its authored intense brief negative crest center: %.3f g"
+		% crest_center_g)
 	var transition_audit := GeometryMetrics.transition_audit(spans)
 	_expect(transition_audit.ok, "camelback transition audit is clean: %s"
 		% str(transition_audit.errors))

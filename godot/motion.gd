@@ -43,6 +43,18 @@ static func balanced_quintic(from: float, to: float, depth: float) -> Dictionary
 	return profile
 
 
+## Balanced quintic with a centered, independently balanced positive relief.
+static func balanced_quintic_relief(
+	from: float, to: float, depth: float, relief_height: float, relief_fraction: float
+) -> Dictionary:
+	var profile := {"kind": "balanced_quintic_relief", "from": from, "to": to,
+		"amplitude": depth * 3100.0 / 1099.0,
+		"relief_amplitude": relief_height * 3100.0 / 1099.0,
+		"relief_fraction": relief_fraction}
+	profile.make_read_only()
+	return profile
+
+
 static func compact_pulse(amplitude: float) -> Dictionary:
 	var profile := {"kind": "compact_pulse", "amplitude": amplitude}
 	profile.make_read_only()
@@ -125,6 +137,44 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 				delta * d2h + scale * (pulse_second * (1.0 - 2.0 * balance * pulse)
 					- 2.0 * balance * pulse_derivative * pulse_derivative)
 			)
+		"balanced_quintic_relief":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
+			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
+			var pulse := 4.0 * h * (1.0 - h)
+			var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
+			var pulse_second := 4.0 * (
+				d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
+			var balance := 4199.0 / 3100.0
+			var delta: float = profile.to - profile.from
+			var value: float = profile.from + delta * h \
+				+ profile.amplitude * pulse * (1.0 - balance * pulse)
+			var first: float = delta * dh \
+				+ profile.amplitude * pulse_derivative * (1.0 - 2.0 * balance * pulse)
+			var second: float = delta * d2h + profile.amplitude * (
+				pulse_second * (1.0 - 2.0 * balance * pulse)
+				- 2.0 * balance * pulse_derivative * pulse_derivative)
+			var width: float = profile.relief_fraction
+			var window_start := (1.0 - width) * 0.5
+			if u >= window_start and u <= window_start + width:
+				var local_u := (u - window_start) / width
+				var local_h := 10.0 * local_u ** 3 - 15.0 * local_u ** 4 + 6.0 * local_u ** 5
+				var local_dh := 30.0 * local_u ** 2 - 60.0 * local_u ** 3 \
+					+ 30.0 * local_u ** 4
+				var local_d2h := 60.0 * local_u - 180.0 * local_u ** 2 \
+					+ 120.0 * local_u ** 3
+				var local_pulse := 4.0 * local_h * (1.0 - local_h)
+				var local_pulse_derivative := 4.0 * local_dh * (1.0 - 2.0 * local_h)
+				var local_pulse_second := 4.0 * (
+					local_d2h * (1.0 - 2.0 * local_h) - 2.0 * local_dh * local_dh)
+				value -= profile.relief_amplitude * local_pulse * (1.0 - balance * local_pulse)
+				first -= profile.relief_amplitude * local_pulse_derivative \
+					* (1.0 - 2.0 * balance * local_pulse) / width
+				second -= profile.relief_amplitude * (
+					local_pulse_second * (1.0 - 2.0 * balance * local_pulse)
+					- 2.0 * balance * local_pulse_derivative * local_pulse_derivative) \
+					/ (width * width)
+			return Vector3(value, first, second)
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
@@ -252,6 +302,21 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 			var delta: float = profile.to - profile.from
 			return Vector3(profile.from + delta * h
 				+ profile.amplitude * pulse * (1.0 - balance * pulse), 0.0, 0.0).x
+		"balanced_quintic_relief":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var pulse := 4.0 * h * (1.0 - h)
+			var balance := 4199.0 / 3100.0
+			var delta: float = profile.to - profile.from
+			var value: float = profile.from + delta * h \
+				+ profile.amplitude * pulse * (1.0 - balance * pulse)
+			var width: float = profile.relief_fraction
+			var window_start := (1.0 - width) * 0.5
+			if u >= window_start and u <= window_start + width:
+				var local_u := (u - window_start) / width
+				var local_h := 10.0 * local_u ** 3 - 15.0 * local_u ** 4 + 6.0 * local_u ** 5
+				var local_pulse := 4.0 * local_h * (1.0 - local_h)
+				value -= profile.relief_amplitude * local_pulse * (1.0 - balance * local_pulse)
+			return Vector3(value, 0.0, 0.0).x
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var scale: float = 4.0 * profile.amplitude
@@ -293,7 +358,7 @@ static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 			return 0.0
 		"quintic":
 			return 1.875 * absf(float(profile.to) - float(profile.from))
-		"balanced_quintic":
+		"balanced_quintic", "balanced_quintic_relief":
 			var peak := 0.0
 			for index in 257:
 				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
@@ -358,6 +423,15 @@ static func span(
 				and profile.has("amplitude") and is_finite(float(profile.from))
 				and is_finite(float(profile.to)) and is_finite(float(profile.amplitude))
 				and float(profile.amplitude) >= 0.0, "invalid balanced quintic profile")
+			"balanced_quintic_relief": assert(profile.has("from") and profile.has("to")
+				and profile.has("amplitude") and profile.has("relief_amplitude")
+				and profile.has("relief_fraction") and is_finite(float(profile.from))
+				and is_finite(float(profile.to)) and is_finite(float(profile.amplitude))
+				and is_finite(float(profile.relief_amplitude))
+				and is_finite(float(profile.relief_fraction)) and float(profile.amplitude) >= 0.0
+				and float(profile.relief_amplitude) >= 0.0
+				and float(profile.relief_fraction) > 0.0 and float(profile.relief_fraction) <= 1.0,
+				"invalid balanced quintic relief profile")
 			"compact_pulse":
 				assert(profile.has("amplitude") and is_finite(float(profile.amplitude)),
 					"invalid compact pulse profile")

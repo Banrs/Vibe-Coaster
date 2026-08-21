@@ -584,10 +584,10 @@ static func _add_camelback(
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
 		0.0, 0.0, 0.0, "rise")
-	# Keep the balanced C2 crest shaping, but hold its brief centre near -2.46 g. The former
-	# -2.90 g notch sustained more than the unchanged 0.5 s negative-normal envelope permits.
+	# Retain the full balanced crest's outer lift while independently relieving its brief centre;
+	# both perturbations have zero area and first moment, so no connector span is introduced.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.0),
+		Motion.balanced_quintic_relief(negative_g, negative_g * 0.88, 1.44, 0.8, 0.5),
 		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")

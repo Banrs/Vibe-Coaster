@@ -570,8 +570,9 @@ static func _add_camelback(
 	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
-	# This is the last CI point that keeps the balanced-release return on its healthy root family.
-	var pullup_s := 2.560
+	# At the same 3.60 s fall, CI measured 4.364 m more prominence here than at the 2.660 s
+	# endpoint; reuse that measured shorter point without changing either load endpoint.
+	var pullup_s := 2.51015538415414
 	var unload_s := 3.0634503655
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
@@ -584,10 +585,10 @@ static func _add_camelback(
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
 		0.0, 0.0, 0.0, "rise")
-	# Keep the original brief -2.90 g centre and the crest's total duration and mean load by
-	# centering the balanced notch in a 2.8 s window without publishing connector spans.
+	# Keep the balanced C2 crest shaping, but hold its brief centre near -2.46 g. The former
+	# -2.90 g notch sustained more than the unchanged 0.5 s negative-normal envelope permits.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.440, 2.8 / crest_s),
+		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.0),
 		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")

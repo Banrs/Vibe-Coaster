@@ -36,15 +36,9 @@ static func quintic(from: float, to: float) -> Dictionary:
 
 
 ## C2 quintic transition plus a zero-area, zero-first-moment center offset.
-static func balanced_quintic(
-	from: float, to: float, depth: float, notch_fraction: float = 1.0
-) -> Dictionary:
-	assert(is_finite(notch_fraction) and notch_fraction > 0.0 and notch_fraction <= 1.0,
-		"balanced quintic notch fraction must be in (0, 1]")
+static func balanced_quintic(from: float, to: float, depth: float) -> Dictionary:
 	var profile := {"kind": "balanced_quintic", "from": from, "to": to,
 		"amplitude": depth * 3100.0 / 1099.0}
-	if notch_fraction != 1.0:
-		profile["notch_fraction"] = notch_fraction
 	profile.make_read_only()
 	return profile
 
@@ -82,23 +76,6 @@ static func plateau_bank_balance(from_bank_rad: float, to_bank_rad: float) -> Di
 	var profile := {"kind": "plateau_bank_balance", "from": from_bank_rad, "to": to_bank_rad}
 	profile.make_read_only()
 	return profile
-
-
-static func _balanced_quintic_perturbation(u: float, amplitude: float) -> Vector3:
-	var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
-	var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
-	var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
-	var pulse := 4.0 * h * (1.0 - h)
-	var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
-	var pulse_second := 4.0 * (
-		d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
-	var balance := 4199.0 / 3100.0
-	return Vector3(
-		amplitude * pulse * (1.0 - balance * pulse),
-		amplitude * pulse_derivative * (1.0 - 2.0 * balance * pulse),
-		amplitude * (pulse_second * (1.0 - 2.0 * balance * pulse)
-			- 2.0 * balance * pulse_derivative * pulse_derivative)
-	)
 
 
 ## A normalized piecewise profile keeps a reviewed transition continuous without publishing
@@ -142,24 +119,12 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 			var balance := 4199.0 / 3100.0
 			var scale: float = profile.amplitude
 			var delta: float = profile.to - profile.from
-			if not profile.has("notch_fraction"):
-				return Vector3(
-					profile.from + delta * h + scale * pulse * (1.0 - balance * pulse),
-					delta * dh + scale * pulse_derivative * (1.0 - 2.0 * balance * pulse),
-					delta * d2h + scale * (pulse_second * (1.0 - 2.0 * balance * pulse)
-						- 2.0 * balance * pulse_derivative * pulse_derivative)
-				)
-			var notch_fraction: float = profile.notch_fraction
-			var window_start := 0.5 * (1.0 - notch_fraction)
-			var window_end := 0.5 * (1.0 + notch_fraction)
-			var baseline := Vector3(profile.from + delta * h, delta * dh, delta * d2h)
-			if u <= window_start or u >= window_end:
-				return baseline
-			var local_u := (u - window_start) / notch_fraction
-			var perturbation := _balanced_quintic_perturbation(local_u, scale)
-			return Vector3(baseline.x + perturbation.x,
-				baseline.y + perturbation.y / notch_fraction,
-				baseline.z + perturbation.z / (notch_fraction * notch_fraction))
+			return Vector3(
+				profile.from + delta * h + scale * pulse * (1.0 - balance * pulse),
+				delta * dh + scale * pulse_derivative * (1.0 - 2.0 * balance * pulse),
+				delta * d2h + scale * (pulse_second * (1.0 - 2.0 * balance * pulse)
+					- 2.0 * balance * pulse_derivative * pulse_derivative)
+			)
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
@@ -285,18 +250,8 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 			var pulse := 4.0 * h * (1.0 - h)
 			var balance := 4199.0 / 3100.0
 			var delta: float = profile.to - profile.from
-			if not profile.has("notch_fraction"):
-				return Vector3(profile.from + delta * h
-					+ profile.amplitude * pulse * (1.0 - balance * pulse), 0.0, 0.0).x
-			var notch_fraction: float = profile.notch_fraction
-			var window_start := 0.5 * (1.0 - notch_fraction)
-			var window_end := 0.5 * (1.0 + notch_fraction)
-			var baseline: float = float(profile.from) + delta * h
-			if u <= window_start or u >= window_end:
-				return Vector3(baseline, 0.0, 0.0).x
-			var local_u := (u - window_start) / notch_fraction
-			var perturbation := _balanced_quintic_perturbation(local_u, profile.amplitude)
-			return Vector3(baseline + perturbation.x, 0.0, 0.0).x
+			return Vector3(profile.from + delta * h
+				+ profile.amplitude * pulse * (1.0 - balance * pulse), 0.0, 0.0).x
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var scale: float = 4.0 * profile.amplitude
@@ -402,12 +357,7 @@ static func span(
 			"balanced_quintic": assert(profile.has("from") and profile.has("to")
 				and profile.has("amplitude") and is_finite(float(profile.from))
 				and is_finite(float(profile.to)) and is_finite(float(profile.amplitude))
-				and float(profile.amplitude) >= 0.0
-				and (not profile.has("notch_fraction")
-					or (is_finite(float(profile.notch_fraction))
-						and float(profile.notch_fraction) > 0.0
-						and float(profile.notch_fraction) <= 1.0)),
-				"invalid balanced quintic profile")
+				and float(profile.amplitude) >= 0.0, "invalid balanced quintic profile")
 			"compact_pulse":
 				assert(profile.has("amplitude") and is_finite(float(profile.amplitude)),
 					"invalid compact pulse profile")

@@ -196,14 +196,9 @@ func _test_camelback_is_planar_and_continuous() -> void:
 			"camelback roll rate is zero: %s" % str(span.span_id))
 	var crest_profile: Dictionary = spans[2].normal_g
 	_expect(crest_profile.get("kind") == "balanced_quintic",
-		"camelback crest uses one centered balanced quintic profile")
-	var crest_s := 3.62587650 * 1.06
-	var notch_fraction := float(crest_profile.get("notch_fraction", -1.0))
-	_expect(absf(notch_fraction * float(spans[2].duration_s) - 2.8) <= 0.000001
-		and absf(float(spans[2].duration_s) - crest_s) <= 0.000001,
-		"camelback crest keeps a 2.8 s notch inside its unchanged total duration")
+		"camelback crest uses one balanced C2 profile")
 	var crest_center_g: float = Motion.profile_sample(crest_profile, 0.5).x
-	_expect(crest_center_g >= -2.95 and crest_center_g <= -2.85,
+	_expect(crest_center_g >= -2.50 and crest_center_g <= -2.40,
 		"camelback keeps its authored intense brief negative crest center: %.3f g" % crest_center_g)
 	var transition_audit := GeometryMetrics.transition_audit(spans)
 	_expect(transition_audit.ok, "camelback transition audit is clean: %s"

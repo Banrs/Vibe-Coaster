@@ -530,6 +530,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	var candidate_start := start
 	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
 	var record_release_length_m := NAN
+	var camelback_length_m := NAN
 	var camelback_prominence_m := NAN
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
@@ -555,6 +556,9 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 						RECORD_RELEASE_SPAN_PREFIX),
 					"camelback_prominence_m": _role_prominence_m(
 						prefix_route, candidate_prefix, CAMELBACK_SPAN_PREFIX)}
+				if diagnostics is Dictionary:
+					prefix_result["camelback_length_m"] = _role_arc_m(
+						prefix_route, candidate_prefix, CAMELBACK_SPAN_PREFIX)
 			prefix_cache[prefix_key] = prefix_result
 		if not prefix_result.get("ok", false):
 			var prefix_failed := RideProgram._failure("return candidate prefix failed integration", "return",
@@ -564,6 +568,8 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 		candidate_start = prefix_result.candidate_start
 		initial_bank_rad = float(prefix_result.initial_bank_rad)
 		record_release_length_m = float(prefix_result.record_release_length_m)
+		if diagnostics is Dictionary:
+			camelback_length_m = float(prefix_result.get("camelback_length_m", NAN))
 		camelback_prominence_m = float(prefix_result.camelback_prominence_m)
 		spans = _return_spans(parameters, hand, initial_bank_rad, targets)
 	var route := Motion.integrate(candidate_start, spans, settings)
@@ -576,7 +582,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 		route, layout, spans, record_release_length_m, camelback_prominence_m)
 	if diagnostics is Dictionary:
 		result["return_role_lengths_m"] = _return_role_lengths_m(
-			route, spans, record_release_length_m)
+			route, spans, record_release_length_m, camelback_length_m)
 	result["scaled"] = []
 	for index in RETURN_RESIDUAL_IDS.size():
 		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
@@ -611,7 +617,7 @@ static func _record_solver_diagnostic(diagnostics: Variant, solved: Dictionary) 
 
 
 static func _return_role_lengths_m(
-	route: Dictionary, spans: Array, record_release_length_m: float
+	route: Dictionary, spans: Array, record_release_length_m: float, camelback_length_m: float
 ) -> Dictionary:
 	var lengths := {
 		"return-turn-a": _role_arc_m(route, spans, RETURN_TURN_A_SPAN_PREFIX),
@@ -621,6 +627,8 @@ static func _return_role_lengths_m(
 	}
 	if is_finite(record_release_length_m):
 		lengths["record-release-turn"] = record_release_length_m
+	if is_finite(camelback_length_m):
+		lengths["camelback"] = camelback_length_m
 	return lengths
 
 

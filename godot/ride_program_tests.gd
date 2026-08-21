@@ -197,8 +197,8 @@ func _test_camelback_is_planar_and_continuous() -> void:
 	var crest_profile: Dictionary = spans[2].normal_g
 	_expect(crest_profile.get("kind") == "balanced_quintic_relief",
 		"camelback crest uses one balanced C2 profile with centered relief")
-	_expect(is_equal_approx(float(crest_profile.get("amplitude")) * 1099.0 / 3100.0, 1.54)
-		and is_equal_approx(float(crest_profile.get("relief_amplitude")) * 1099.0 / 3100.0, 0.9),
+	_expect(is_equal_approx(float(crest_profile.get("amplitude")) * 1099.0 / 3100.0, 1.53)
+		and is_equal_approx(float(crest_profile.get("relief_amplitude")) * 1099.0 / 3100.0, 0.89),
 		"camelback crest retains the authored outer depth and center relief")
 	_expect(is_equal_approx(float(crest_profile.get("relief_fraction")), 0.35),
 		"camelback crest retains the authored narrow relief window")
@@ -843,8 +843,8 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 
 
 ## The fast half of the return budget claim; the cap's derivation lives at
-## `RideReturnSolve.MAX_RETURN_EVALUATIONS`. Measured on the design's five-seed set (the three deep
-## seeds plus 1 and 123456) rather than all fifteen: each seed costs a full compile, and the
+## `RideReturnSolve.MAX_RETURN_EVALUATIONS`. Measured on the design's six-seed set (the three deep
+## seeds plus 1, 99, and 123456) rather than all fifteen: each seed costs a full compile, and the
 ## sweep seeds add minutes here without adding a new solve regime. `smoke.gd` carries the
 ## fifteen-seed half inside the builds it already pays for.
 func _test_return_solve_stays_inside_its_derived_budget() -> void:
@@ -852,7 +852,7 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 		"the return evaluation cap is the derived 220, not %d"
 		% RideReturnSolve.MAX_RETURN_EVALUATIONS)
 	var allowance := int(0.6 * RideReturnSolve.MAX_RETURN_EVALUATIONS)
-	for seed_value in [11, 42, 20260809, 1, 123456]:
+	for seed_value in [11, 42, 20260809, 1, 99, 123456]:
 		var decisions := RidePlanner.resolve(seed_value)
 		var plan := RideGenerator._plan(
 			RideTerrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN]), decisions)

@@ -2,6 +2,7 @@ class_name BoundedSolver
 extends RefCounted
 
 const CONVERGENCE_TOLERANCE := 0.02
+const POLISH_RESIDUAL_THRESHOLD := 0.05
 
 static func solve(residual: Callable, lower: Array, upper: Array, initial: Array,
 		max_evaluations: int = 80) -> Dictionary:
@@ -57,7 +58,21 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 				return _result(false, "invalid_residual", _to_x(z, lower, widths), values, evaluation_count[0], iterations, conditioning)
 			for row_index in range(values.size()):
 				jacobian[row_index][column] = (sampled.values[row_index] - values[row_index]) / delta
-		var solved := _lm_step(jacobian, values, damping)
+		var normal: Array = []
+		var gradient: Array[float] = []
+		for i in range(n):
+			var row: Array[float] = []
+			for j in range(n):
+				var sum := 0.0
+				for k in range(values.size()):
+					sum += jacobian[k][i] * jacobian[k][j]
+				row.append(sum + (damping if i == j else 0.0))
+			normal.append(row)
+			var component := 0.0
+			for k in range(values.size()):
+				component -= jacobian[k][i] * values[k]
+			gradient.append(component)
+		var solved := linear_solve(normal, gradient)
 		if not solved.ok:
 			return _result(false, "numerical_failure", _to_x(z, lower, widths), values, evaluation_count[0], iterations, INF)
 		conditioning = solved.conditioning
@@ -79,6 +94,10 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 			return _result(false, "invalid_residual", _to_x(z, lower, widths), values, evaluation_count[0], iterations, conditioning)
 		var trial_sse := _sse(trial.values)
 		if is_finite(trial_sse) and trial_sse < sse:
+			var previous_values := values
+			var accepted_step := []
+			for i in range(n):
+				accepted_step.append(float(candidate[i]) - float(z[i]))
 			z = candidate
 			values = trial.values
 			sse = trial_sse
@@ -86,44 +105,39 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 			radius = min(radius * 1.5, 1.0)
 			if _max_abs(values) <= CONVERGENCE_TOLERANCE:
 				return _result(true, "converged", _to_x(z, lower, widths), values, evaluation_count[0], iterations, conditioning)
-			# At the budget tail, reuse the Jacobian already paid for when a complete replacement and
-			# its trial would consume the remaining slots. Each chord iteration still costs one.
-			if evaluation_count[0] < max_evaluations \
+			# Near a root, reuse the accepted step as a secant direction before paying for another
+			# complete Jacobian. Every polish trial still consumes the caller's unchanged budget.
+			if _max_abs(values) <= POLISH_RESIDUAL_THRESHOLD \
+					and evaluation_count[0] < max_evaluations \
 					and evaluation_count[0] + n + 1 >= max_evaluations:
-				while evaluation_count[0] < max_evaluations:
-					var polish_solved := _lm_step(jacobian, values, damping)
-					if not polish_solved.ok:
-						break
-					conditioning = polish_solved.conditioning
-					var polish_step: Array = polish_solved.x
-					var polish_norm := sqrt(_sse(polish_step))
-					if polish_norm > radius:
-						for i in range(n):
-							polish_step[i] *= radius / polish_norm
+				var numerator := 0.0
+				var denominator := 0.0
+				for row_index in range(values.size()):
+					var residual_delta: float = values[row_index] - previous_values[row_index]
+					numerator -= values[row_index] * residual_delta
+					denominator += residual_delta * residual_delta
+				if denominator > 0.0:
+					var fraction := clampf(numerator / denominator, 0.0, 1.0)
 					var polished := z.duplicate()
 					for i in range(n):
-						polished[i] = clampf(polished[i] + polish_step[i], 0.0, 1.0)
-					if polished == z:
-						break
-					var polish := _evaluate(
-						residual, polished, lower, widths, cache, evaluation_count, max_evaluations)
-					if not polish.ok:
-						return _result(false, polish.status, _to_x(z, lower, widths), values,
-							evaluation_count[0], iterations, conditioning)
-					if polish.values.size() != values.size():
-						return _result(false, "invalid_residual", _to_x(z, lower, widths), values,
-							evaluation_count[0], iterations, conditioning)
-					var polish_sse := _sse(polish.values)
-					if not is_finite(polish_sse) or polish_sse >= sse:
-						break
-					z = polished
-					values = polish.values
-					sse = polish_sse
-					damping = max(damping * 0.3, 1e-12)
-					radius = min(radius * 1.5, 1.0)
-					if _max_abs(values) <= CONVERGENCE_TOLERANCE:
-						return _result(true, "converged", _to_x(z, lower, widths), values,
-							evaluation_count[0], iterations, conditioning)
+						polished[i] = clampf(polished[i] + fraction * accepted_step[i], 0.0, 1.0)
+					if fraction > 0.0 and polished != z:
+						var polish := _evaluate(
+							residual, polished, lower, widths, cache, evaluation_count, max_evaluations)
+						if not polish.ok:
+							return _result(false, polish.status, _to_x(z, lower, widths), values,
+								evaluation_count[0], iterations, conditioning)
+						if polish.values.size() != values.size():
+							return _result(false, "invalid_residual", _to_x(z, lower, widths), values,
+								evaluation_count[0], iterations, conditioning)
+						var polish_sse := _sse(polish.values)
+						if is_finite(polish_sse) and polish_sse < sse:
+							z = polished
+							values = polish.values
+							sse = polish_sse
+							if _max_abs(values) <= CONVERGENCE_TOLERANCE:
+								return _result(true, "converged", _to_x(z, lower, widths), values,
+									evaluation_count[0], iterations, conditioning)
 		else:
 			damping = min(damping * 10.0, 1e12)
 			radius = max(radius * 0.5, 1e-8)
@@ -131,27 +145,6 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 				status = "stalled"
 				break
 	return _result(false, status, _to_x(z, lower, widths), values, evaluation_count[0], iterations, conditioning)
-
-
-static func _lm_step(jacobian: Array, values: Array, damping: float) -> Dictionary:
-	var n: int = jacobian[0].size()
-	var normal: Array = []
-	var gradient: Array[float] = []
-	for i in range(n):
-		var row: Array[float] = []
-		for j in range(n):
-			var sum := 0.0
-			for k in range(values.size()):
-				sum += jacobian[k][i] * jacobian[k][j]
-			row.append(sum + (damping if i == j else 0.0))
-		normal.append(row)
-		var component := 0.0
-		for k in range(values.size()):
-			component -= jacobian[k][i] * values[k]
-		gradient.append(component)
-	return linear_solve(normal, gradient)
-
-
 static func _evaluate(residual: Callable, z: Array, lower: Array, widths: Array, cache: Dictionary,
 		count: Array, budget: int) -> Dictionary:
 	var key := PackedFloat64Array(z).to_byte_array().hex_encode()

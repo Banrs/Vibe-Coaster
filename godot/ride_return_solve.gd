@@ -10,7 +10,7 @@ const BoundedSolver := preload("res://bounded_solver.gd")
 const RidePlanner := preload("res://ride_planner.gd")
 
 const MAX_CAPTURE_EVALUATIONS := 40
-# The bounded LM path supports at most 18 complete 11-probe-plus-trial iterations under the 219
+# The bounded LM path supports at most 16 complete 12-probe-plus-trial iterations under the 219
 # solver budget. The 220 cap is finite and derived from that fixed iteration allowance, not an
 # open-ended retry.
 const MAX_RETURN_EVALUATIONS := 220
@@ -19,6 +19,7 @@ const RETURN_SCALAR_IDS := [
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
 	"height_b_recovery_duration_s", "height_a_peak_g", "height_a_unload_duration_s",
 	"height_a_airtime_duration_s", "record_release_core_duration_s",
+	"camelback_fall_duration_s",
 ]
 const RETURN_SCALAR_BOUNDS := [
 	# The continuous return ramps spread the turn over 1.6-1.75 s, so the previous compact-pulse
@@ -60,11 +61,14 @@ const RETURN_SCALAR_BOUNDS := [
 	# and interior nominal core fit the 340-390 m material band while leaving the macro duration enough
 	# authority to move the downstream station-local closure.
 	[2.0, 2.6],
+	# The fall is the camelback's authored prominence authority. Its narrow duration band lets the
+	# solve choose a compliant valley without changing the crest force profile.
+	[3.4, 3.8],
 ]
-# Seven entries for eleven controls, on purpose: this is the CI-measured continuation anchor for
+# Seven entries for twelve controls, on purpose: this is the CI-measured continuation anchor for
 # the structurally role-gated return. `_solve_return` still appends each story's certified
-# height-a draw, authored height-a transition durations, and nominal release duration. The authored
-# release bank is fixed outside the solve.
+# height-a draw, authored height-a transition durations, nominal release duration, and camelback
+# fall duration. The authored release bank is fixed outside the solve.
 const RETURN_SEED := [1.29783417083128, 1.75278505041637, 0.92815830881482,
 	1.23323464577337, 5.16453223713761, 0.77597055608471, 3.9642570818138]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
@@ -72,6 +76,7 @@ const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 0.72865206901364
 const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.73015276312264
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
 const RECORD_RELEASE_CORE_DURATION_S := 2.29
+const CAMELBACK_FALL_DURATION_S := 3.60
 const RECORD_RELEASE_BANK_RAD := 60.0 * PI / 180.0
 ## The one owner of the route-length band: the generator writes it into the plan and the program
 ## validator checks the plan against this same constant.
@@ -331,11 +336,13 @@ static func _solve_return(
 		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
 		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
 		initial.append(RECORD_RELEASE_CORE_DURATION_S)
+		initial.append(CAMELBACK_FALL_DURATION_S)
 	elif initial.size() == 8:
 		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
 		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
 		initial.append(RECORD_RELEASE_CORE_DURATION_S)
-	elif initial.size() == 9 or initial.size() == 10:
+		initial.append(CAMELBACK_FALL_DURATION_S)
+	elif initial.size() >= 9 and initial.size() <= 11:
 		return RideProgram._failure("ambiguous legacy return seed", "return")
 	elif initial.size() != RETURN_SCALAR_IDS.size():
 		return RideProgram._failure("return seed has invalid control count", "return")
@@ -389,8 +396,11 @@ static func _solve_return(
 	var verification_integrations := 0
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+		var fall_index := RETURN_SCALAR_IDS.find("camelback_fall_duration_s")
 		var record_duration_s := float(parameters[record_index])
-		var prefix_key := "%.6f:%.12f" % [RideProgram.PRODUCTION_STEP_S, record_duration_s]
+		var fall_duration_s := float(parameters[fall_index])
+		var prefix_key := "%.6f:%.12f:%.12f" % [
+			RideProgram.PRODUCTION_STEP_S, record_duration_s, fall_duration_s]
 		if not prefix_cache.has(prefix_key):
 			return RideProgram._failure("return production verification lacks accepted prefix cache",
 				"return", {"evaluation_count": cache.size()})
@@ -398,8 +408,8 @@ static func _solve_return(
 		if not prefix_result.get("ok", false):
 			return RideProgram._failure("return production verification has no accepted prefix",
 				"return", {"evaluation_count": cache.size()})
-		var accepted_prefix := _prefix_with_record_release_parameters(
-			prefix_spans, record_duration_s, hand)
+		var accepted_prefix := _prefix_with_solved_parameters(
+			prefix_spans, record_duration_s, fall_duration_s, hand)
 		if accepted_prefix.size() != prefix_spans.size():
 			return RideProgram._failure("return production verification prefix shape mismatches",
 				"return", {"evaluation_count": cache.size()})
@@ -517,14 +527,17 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	var camelback_prominence_m := NAN
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+		var fall_index := RETURN_SCALAR_IDS.find("camelback_fall_duration_s")
 		var record_duration_s := float(parameters[record_index])
-		var prefix_key := "%.6f:%.12f" % [float(settings.step_s), record_duration_s]
+		var fall_duration_s := float(parameters[fall_index])
+		var prefix_key := "%.6f:%.12f:%.12f" % [
+			float(settings.step_s), record_duration_s, fall_duration_s]
 		var prefix_result: Dictionary
 		if prefix_cache.has(prefix_key):
 			prefix_result = prefix_cache[prefix_key]
 		else:
-			var candidate_prefix := _prefix_with_record_release_parameters(
-				prefix_spans, record_duration_s, hand)
+			var candidate_prefix := _prefix_with_solved_parameters(
+				prefix_spans, record_duration_s, fall_duration_s, hand)
 			var prefix_route := Motion.integrate(start, candidate_prefix, settings)
 			if not prefix_route.get("ok", false):
 				prefix_result = {"ok": false, "errors": prefix_route.get("errors", [])}
@@ -562,15 +575,18 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	return result
 
 
-static func _prefix_with_record_release_parameters(
-	prefix_spans: Array, duration_s: float, hand: float
+static func _prefix_with_solved_parameters(
+	prefix_spans: Array, record_duration_s: float, fall_duration_s: float, hand: float
 ) -> Array:
 	var result := prefix_spans.duplicate()
-	RideProgram._apply_record_release_parameters(result, duration_s, hand)
+	RideProgram._apply_record_release_parameters(result, record_duration_s, hand)
+	RideProgram._apply_camelback_fall_duration(result, fall_duration_s)
+	var has_release := false
+	var has_fall := false
 	for span: Dictionary in result:
-		if str(span.get("span_id", "")) == "record-release-turn/core":
-			return result
-	return []
+		has_release = has_release or str(span.get("span_id", "")) == "record-release-turn/core"
+		has_fall = has_fall or str(span.get("span_id", "")) == "camelback/fall"
+	return result if has_release and has_fall else []
 
 
 ## One role's built arc, read over exactly the window `route_contract.gd:_validate_role_lengths`
@@ -605,7 +621,6 @@ static func _role_prominence_m(route: Dictionary, spans: Array, prefix: String) 
 	var last: int = route.span_index.rfind(last_span)
 	if first_span < 0 or first < 0 or last < first:
 		return NAN
-	last = mini(last + 1, route.position_m.size() - 1)
 	var maximum_y := -INF
 	for index in range(first, last + 1):
 		maximum_y = maxf(maximum_y, float(route.position_m[index].y))

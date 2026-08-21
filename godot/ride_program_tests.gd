@@ -311,6 +311,7 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 		"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
 		"height_b_recovery_duration_s", "height_a_peak_g", "height_a_unload_duration_s",
 		"height_a_airtime_duration_s", "record_release_core_duration_s",
+		"camelback_fall_duration_s",
 	]
 	var existing_residuals := [
 		"station_forward_m", "cross_track_m", "height_m", "tangent_right", "tangent_up",
@@ -323,9 +324,9 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 		and roles[release_index + 1] == "camelback"
 		and controls == existing_controls
 		and residuals == existing_residuals
-		and controls.size() == 11 and residuals.size() == 12
+		and controls.size() == 12 and residuals.size() == 12
 		and scales.size() == residuals.size() and tolerances.size() == residuals.size(),
-		"the return keeps eleven controls, adds the declared prominence contract, and leaves the fixed-bank release outside its solve metadata: %s / %s / %s"
+		"the return pairs twelve physical controls with twelve contract residuals and leaves the fixed-bank release outside its solve metadata: %s / %s / %s"
 		% [str(roles), str(controls), str(residuals)])
 	var fixture_layout := RideProgram._layout_from_plan(_plan(_layout()))
 	_expect(fixture_layout.get("terrain", {}).get("kind", "") == "synthetic"
@@ -344,8 +345,9 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 			RideReturnSolve.RETURN_HEIGHT_A_UNLOAD_DURATION_S),
 		"the seven-value seed receives the authored height-a transition durations")
 	_expect(RideReturnSolve.RETURN_SEED.size() == 7
-		and RideReturnSolve.RETURN_SCALAR_BOUNDS.size() == 11,
-		"the seven-value continuation seed expands to the restored 11-control solve")
+		and RideReturnSolve.RETURN_SCALAR_BOUNDS.size() == 12
+		and RideReturnSolve.CAMELBACK_FALL_DURATION_S == 3.60,
+		"the seven-value continuation seed expands with the authored camelback fall control")
 
 
 func _test_record_release_turn_has_roll_headroom() -> void:
@@ -369,25 +371,28 @@ func _test_record_release_parameters_are_applied_exactly() -> void:
 	var metadata: Array = []
 	var propulsion := PackedInt32Array()
 	RideProgram._add_record_release_turn(spans, metadata, propulsion)
+	RideProgram._add_camelback(spans, metadata, propulsion)
 	var parameters := RideReturnSolve.RETURN_SEED.duplicate()
 	parameters.append(RideReturnSolve.RETURN_HEIGHT_A_PEAK_G)
 	parameters.append(RideReturnSolve.RETURN_HEIGHT_A_UNLOAD_DURATION_S)
 	parameters.append(RideReturnSolve.RETURN_HEIGHT_A_AIRTIME_DURATION_S)
 	parameters.append(2.41)
-	RideProgram._set_record_release_parameters(spans, parameters, -1.0)
+	parameters.append(3.57)
+	RideProgram._set_return_prefix_parameters(spans, parameters, -1.0)
 	var bank_rad := -RideReturnSolve.RECORD_RELEASE_BANK_RAD
 	var roll_in := RideReturnSolve._roll_ramp([0.8], 0.0, bank_rad)
 	var roll_out := RideReturnSolve._roll_ramp([0.8], bank_rad, 0.0)
-	_expect(spans.size() == 3
+	_expect(spans.size() == 8
 		and is_equal_approx(float(spans[0].duration_s), 0.8)
 		and is_equal_approx(float(spans[1].duration_s), 2.41)
 		and is_equal_approx(float(spans[2].duration_s), 0.8)
+		and is_equal_approx(float(spans[6].duration_s), 3.57)
 		and var_to_bytes(spans[0].normal_g) == var_to_bytes(Motion.plateau_bank_balance(0.0, bank_rad))
 		and var_to_bytes(spans[0].roll_rate_rad_s) == var_to_bytes(roll_in.roll[0])
 		and is_equal_approx(Motion.profile_sample(spans[1].normal_g, 0.5).x, 1.0 / cos(bank_rad))
 		and var_to_bytes(spans[2].normal_g) == var_to_bytes(Motion.plateau_bank_balance(bank_rad, 0.0))
 		and var_to_bytes(spans[2].roll_rate_rad_s) == var_to_bytes(roll_out.roll[0]),
-		"accepted release duration and fixed signed bank replace the complete three-span schedule exactly")
+		"accepted release and camelback durations replace the complete prefix schedule exactly")
 
 
 func _test_candidate_prefix_parameters_are_signed_and_distinct() -> void:
@@ -395,11 +400,14 @@ func _test_candidate_prefix_parameters_are_signed_and_distinct() -> void:
 	var metadata: Array = []
 	var propulsion := PackedInt32Array()
 	RideProgram._add_record_release_turn(spans, metadata, propulsion)
-	var left := RideReturnSolve._prefix_with_record_release_parameters(spans, 2.17, -1.0)
-	var right := RideReturnSolve._prefix_with_record_release_parameters(spans, 2.43, 1.0)
-	_expect(left.size() == 3 and right.size() == 3
+	RideProgram._add_camelback(spans, metadata, propulsion)
+	var left := RideReturnSolve._prefix_with_solved_parameters(spans, 2.17, 3.52, -1.0)
+	var right := RideReturnSolve._prefix_with_solved_parameters(spans, 2.43, 3.68, 1.0)
+	_expect(left.size() == 8 and right.size() == 8
 		and is_equal_approx(float(left[1].duration_s), 2.17)
 		and is_equal_approx(float(right[1].duration_s), 2.43)
+		and is_equal_approx(float(left[6].duration_s), 3.52)
+		and is_equal_approx(float(right[6].duration_s), 3.68)
 		and var_to_bytes(left[0].normal_g)
 			== var_to_bytes(Motion.plateau_bank_balance(0.0, -RideReturnSolve.RECORD_RELEASE_BANK_RAD))
 		and var_to_bytes(right[0].normal_g)
@@ -409,7 +417,7 @@ func _test_candidate_prefix_parameters_are_signed_and_distinct() -> void:
 		and var_to_bytes(right[2].normal_g)
 			== var_to_bytes(Motion.plateau_bank_balance(RideReturnSolve.RECORD_RELEASE_BANK_RAD, 0.0))
 		and var_to_bytes(left[0].normal_g) != var_to_bytes(right[0].normal_g),
-		"candidate prefixes vary only by accepted duration while preserving fixed signed bank")
+		"candidate prefixes apply both accepted durations while preserving fixed signed bank")
 
 
 func _test_material_terrain_heightfield_inputs_are_validated() -> void:
@@ -461,16 +469,20 @@ func _test_return_aim_margins_exceed_solver_slack() -> void:
 	var release_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[8])
 	var turn_a_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[9])
 	var height_a_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[10])
+	var prominence_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[11])
 	_expect(RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M > route_slack_m
 		and RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M > release_slack_m
 		and RideReturnSolve.RETURN_TURN_A_AIM_MARGIN_M > turn_a_slack_m
-		and RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M > height_a_slack_m,
-		"return aim margins exceed convergence slack: %.3f/%.3f/%.3f/%.3f m vs %.3f/%.3f/%.3f/%.3f m"
+		and RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M > height_a_slack_m
+		and RideReturnSolve.CAMELBACK_PROMINENCE_AIM_MARGIN_M > prominence_slack_m,
+		"return aim margins exceed convergence slack: %.3f/%.3f/%.3f/%.3f/%.3f m vs %.3f/%.3f/%.3f/%.3f/%.3f m"
 		% [RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M,
 			RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M,
 			RideReturnSolve.RETURN_TURN_A_AIM_MARGIN_M,
 			RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M,
-			route_slack_m, release_slack_m, turn_a_slack_m, height_a_slack_m])
+			RideReturnSolve.CAMELBACK_PROMINENCE_AIM_MARGIN_M,
+			route_slack_m, release_slack_m, turn_a_slack_m, height_a_slack_m,
+			prominence_slack_m])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:
@@ -801,6 +813,7 @@ func _return_production_observations_match(actual: Variant, expected: Variant) -
 		["route_total_length_m", 5], ["speed_mps", 6],
 		["turn_b_length_m", 7], ["record_release_length_m", 8],
 		["turn_a_length_m", 9], ["height_a_length_m", 10],
+		["camelback_prominence_m", 11],
 	]:
 		var field: String = field_and_index[0]
 		var tolerance_index: int = field_and_index[1]

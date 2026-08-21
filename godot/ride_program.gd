@@ -179,7 +179,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		return_hand, RideReturnSolve.RETURN_SEED, targets, variable_prefix_spans)
 	if not solved_return.ok:
 		return solved_return
-	_set_record_release_parameters(spans, solved_return.parameters, return_hand)
+	_set_return_prefix_parameters(spans, solved_return.parameters, return_hand)
 	var return_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
 	if not return_prefix.get("ok", false):
 		return _failure("upstream return handoff failed integration", "return")
@@ -524,12 +524,15 @@ static func _add_record_release_turn(
 		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-out")
 
 
-static func _set_record_release_parameters(spans: Array, parameters: Array, hand: float = 1.0) -> void:
-	var control_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_core_duration_s")
-	if control_index < 0 or control_index >= parameters.size():
+static func _set_return_prefix_parameters(
+	spans: Array, parameters: Array, hand: float = 1.0
+) -> void:
+	var release_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+	var fall_index := RideReturnSolve.RETURN_SCALAR_IDS.find("camelback_fall_duration_s")
+	if mini(release_index, fall_index) < 0 or maxi(release_index, fall_index) >= parameters.size():
 		return
-	_apply_record_release_parameters(spans, float(parameters[control_index]),
-		hand)
+	_apply_record_release_parameters(spans, float(parameters[release_index]), hand)
+	_apply_camelback_fall_duration(spans, float(parameters[fall_index]))
 
 
 static func _apply_record_release_parameters(
@@ -562,6 +565,17 @@ static func _apply_record_release_parameters(
 			continue
 		spans[index] = Motion.span(str(span.span_id), duration_s, str(span.mode), normal,
 			span.lateral_g, span.drive_g, roll_rate, str(span.get("transition_id", "")))
+
+
+static func _apply_camelback_fall_duration(spans: Array, duration_s: float) -> void:
+	for index in spans.size():
+		var span: Dictionary = spans[index]
+		if str(span.get("span_id", "")) != "camelback/fall":
+			continue
+		spans[index] = Motion.span(str(span.span_id), duration_s, str(span.mode), span.normal_g,
+			span.lateral_g, span.drive_g, span.roll_rate_rad_s,
+			str(span.get("transition_id", "")))
+		return
 
 
 static func _add_camelback(

@@ -98,20 +98,25 @@ const RETURN_HEIGHT_A_AIM_MARGIN_M := 3.0
 ## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, tightening this
 ## role band by the same structural margin as the route-length aim.
 const RECORD_RELEASE_LENGTH_AIM_MARGIN_M := 3.0
+## The public contract rejects below 245 m. A 5 cm interior aim exceeds the solver's
+## 0.02 * 1 m convergence slack, so a converged root remains strictly inside that same band.
+const CAMELBACK_PROMINENCE_AIM_MARGIN_M := 0.05
 ## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
 ## exactly 0.0 against it, so fixed-layout fixtures keep their undeclared role-band rows inert in
-## the eleven-residual solve.
+## the return solve.
 const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
 	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
 	"record_release_length_band_m", "turn_a_length_band_m", "height_a_length_band_m",
+	"camelback_prominence_band_m",
 ]
 const RETURN_RESIDUAL_SCALES := [
-	5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0, 125.0,
+	5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0, 125.0, 1.0,
 ]
 const RETURN_FINE_TOLERANCES := [
 	0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.075, 0.075, 0.075,
+	0.01,
 ]
 ## The `return-turn-b` role, by the same span-id prefix `RideProgram.material_role_spans` owns it
 ## with. Named here rather than re-derived so the residual and the route contract cannot drift
@@ -120,6 +125,7 @@ const RETURN_TURN_B_SPAN_PREFIX := "raceway/turn-b/"
 const RECORD_RELEASE_SPAN_PREFIX := "record-release-turn/"
 const RETURN_TURN_A_SPAN_PREFIX := "raceway/turn-a/"
 const RETURN_HEIGHT_A_SPAN_PREFIX := "raceway/height-a/"
+const CAMELBACK_SPAN_PREFIX := "camelback/"
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
 ## A normal-g span whose ends differ by no more than this is authored as a constant profile. It
 ## is an absolute tolerance well inside the 1e-6 seam gate, so no pair can be flattened here and
@@ -436,6 +442,7 @@ static func _solve_return(
 				["route_total_length_m", 5], ["speed_mps", 6],
 				["turn_b_length_m", 7], ["record_release_length_m", 8],
 				["turn_a_length_m", 9], ["height_a_length_m", 10],
+				["camelback_prominence_m", 11],
 			]:
 				var field: String = field_and_index[0]
 				var tolerance_index: int = field_and_index[1]
@@ -507,6 +514,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	var candidate_start := start
 	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
 	var record_release_length_m := NAN
+	var camelback_prominence_m := NAN
 	if not prefix_spans.is_empty():
 		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
 		var record_duration_s := float(parameters[record_index])
@@ -525,7 +533,9 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 				prefix_result = {"ok": true, "candidate_start": prefix_start,
 					"initial_bank_rad": _capture_residuals(prefix_start, layout)[4],
 					"record_release_length_m": _role_arc_m(prefix_route, candidate_prefix,
-						RECORD_RELEASE_SPAN_PREFIX)}
+						RECORD_RELEASE_SPAN_PREFIX),
+					"camelback_prominence_m": _role_prominence_m(
+						prefix_route, candidate_prefix, CAMELBACK_SPAN_PREFIX)}
 			prefix_cache[prefix_key] = prefix_result
 		if not prefix_result.get("ok", false):
 			var prefix_failed := RideProgram._failure("return candidate prefix failed integration", "return",
@@ -535,6 +545,7 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 		candidate_start = prefix_result.candidate_start
 		initial_bank_rad = float(prefix_result.initial_bank_rad)
 		record_release_length_m = float(prefix_result.record_release_length_m)
+		camelback_prominence_m = float(prefix_result.camelback_prominence_m)
 		spans = _return_spans(parameters, hand, initial_bank_rad, targets)
 	var route := Motion.integrate(candidate_start, spans, settings)
 	if not route.get("ok", false):
@@ -542,7 +553,8 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 			{"evaluation_count": cache.size() + 1})
 		cache[key] = failed
 		return failed
-	var result := _return_observation(route, layout, spans, record_release_length_m)
+	var result := _return_observation(
+		route, layout, spans, record_release_length_m, camelback_prominence_m)
 	result["scaled"] = []
 	for index in RETURN_RESIDUAL_IDS.size():
 		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
@@ -580,9 +592,29 @@ static func _role_arc_m(route: Dictionary, spans: Array, prefix: String) -> floa
 		- float(route.distance_m[first])
 
 
+## The same inclusive role window and endpoint reference as `RouteContract._prominence_m`.
+static func _role_prominence_m(route: Dictionary, spans: Array, prefix: String) -> float:
+	var first_span := -1
+	var last_span := -1
+	for index in spans.size():
+		if str(spans[index].span_id).begins_with(prefix):
+			if first_span < 0:
+				first_span = index
+			last_span = index
+	var first: int = route.span_index.find(first_span)
+	var last: int = route.span_index.rfind(last_span)
+	if first_span < 0 or first < 0 or last < first:
+		return NAN
+	last = mini(last + 1, route.position_m.size() - 1)
+	var maximum_y := -INF
+	for index in range(first, last + 1):
+		maximum_y = maxf(maximum_y, float(route.position_m[index].y))
+	return maximum_y - maxf(float(route.position_m[first].y), float(route.position_m[last].y))
+
+
 static func _return_observation(
 	route: Dictionary, layout: Dictionary, spans: Array,
-	record_release_length_m: float = NAN
+	record_release_length_m: float = NAN, camelback_prominence_m: float = NAN
 ) -> Dictionary:
 	var state := RideProgram._last_state(route)
 	var station_forward: Vector3 = layout.station_tangent.normalized()
@@ -605,8 +637,14 @@ static func _return_observation(
 	var height_a_length_m := _role_arc_m(route, spans, RETURN_HEIGHT_A_SPAN_PREFIX)
 	var record_release_band: Vector2 = layout.get(
 		"record_release_length_m", RETURN_UNBOUNDED_BAND_M)
+	var camelback_prominence_band: Vector2 = layout.get(
+		"camelback_prominence_m", RETURN_UNBOUNDED_BAND_M)
 	if not is_finite(record_release_length_m):
 		record_release_length_m = _role_arc_m(route, spans, RECORD_RELEASE_SPAN_PREFIX)
+	if not is_finite(camelback_prominence_m):
+		camelback_prominence_m = _role_prominence_m(route, spans, CAMELBACK_SPAN_PREFIX)
+	var constrain_camelback := camelback_prominence_band != RETURN_UNBOUNDED_BAND_M \
+		and is_finite(camelback_prominence_m)
 	var half_width: float = layout.get("capture_half_width_m", CAPTURE_HALF_WIDTH_M)
 	var half_height: float = layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)
 	var residuals := [
@@ -632,6 +670,10 @@ static func _return_observation(
 		RideProgram._band_residual(height_a_length_m, Vector2(
 			height_a_band.x + RETURN_HEIGHT_A_AIM_MARGIN_M,
 			height_a_band.y - RETURN_HEIGHT_A_AIM_MARGIN_M)),
+		0.0 if not constrain_camelback else RideProgram._band_residual(
+			camelback_prominence_m, Vector2(
+				camelback_prominence_band.x + CAMELBACK_PROMINENCE_AIM_MARGIN_M,
+				camelback_prominence_band.y - CAMELBACK_PROMINENCE_AIM_MARGIN_M)),
 	]
 	var margins := {
 		"corridor_forward_low_m": forward + approach,
@@ -646,6 +688,11 @@ static func _return_observation(
 		"route_length_low_m": total_length_m - route_length_band.x,
 		"route_length_high_m": route_length_band.y - total_length_m,
 	}
+	if constrain_camelback:
+		margins["camelback_prominence_low_m"] = \
+			camelback_prominence_m - camelback_prominence_band.x
+		margins["camelback_prominence_high_m"] = \
+			camelback_prominence_band.y - camelback_prominence_m
 	return {"ok": true, "residuals": residuals, "margins": margins,
 		"observation": {"station_forward_m": forward, "height_m": capture[1],
 			"cross_track_m": capture[0], "yaw_rad": capture[2], "pitch_rad": capture[3],
@@ -655,6 +702,7 @@ static func _return_observation(
 			"record_release_length_m": record_release_length_m,
 			"turn_a_length_m": turn_a_length_m,
 			"height_a_length_m": height_a_length_m,
+			"camelback_prominence_m": camelback_prominence_m,
 			"route_total_length_m": total_length_m}}
 
 

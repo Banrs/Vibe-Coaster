@@ -573,7 +573,7 @@ static func _add_camelback(
 	# This is the last CI point that keeps the balanced-release return on its healthy root family.
 	var pullup_s := 2.560
 	var unload_s := 3.0634503655
-	var crest_s := 3.62587650 * 1.0605
+	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
@@ -1132,6 +1132,7 @@ static func _return_terrace_planning_is_valid(
 static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 	var station: Dictionary = plan.station
 	var corridor: Dictionary = plan.corridor
+	var planning: Dictionary = plan.terrain_frame.planning
 	var approach_length: float = corridor.approach_length_m
 	return {
 		"station_position_m": station.position_m,
@@ -1142,6 +1143,8 @@ static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 		"capture_half_width_m": corridor.half_width_m,
 		"capture_half_height_m": corridor.half_height_m,
 		"route_length_m": plan.route_length_m,
+		# Root selection consumes the same authored band the public terrain proof validates.
+		"camelback_prominence_m": planning.scale.camel_prominence_m,
 		# The return solve observes the four role bands its own candidate integration owns outright;
 		# each is handed the plan's declared band rather than a copy of it. A plan that declares no
 		# such role hands back the unbounded band and the residual it feeds is inert.

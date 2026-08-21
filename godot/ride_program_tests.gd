@@ -202,8 +202,6 @@ func _test_camelback_is_planar_and_continuous() -> void:
 		"camelback crest retains the authored outer depth and center relief")
 	_expect(is_equal_approx(float(crest_profile.get("relief_fraction")), 0.35),
 		"camelback crest retains the authored narrow relief window")
-	_expect(is_equal_approx(float(spans[2].get("duration_s")), 3.62587650 * 1.0605),
-		"camelback crest retains the authored prominence duration")
 	var crest_center_g: float = Motion.profile_sample(crest_profile, 0.5).x
 	_expect(crest_center_g >= -2.15 and crest_center_g <= -2.05,
 		"camelback keeps its authored intense brief negative crest center: %.3f g" % crest_center_g)
@@ -318,21 +316,22 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 		"station_forward_m", "cross_track_m", "height_m", "tangent_right", "tangent_up",
 		"route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
 		"record_release_length_band_m", "turn_a_length_band_m", "height_a_length_band_m",
+		"camelback_prominence_band_m",
 	]
 	_expect(release_index > 0 and release_index + 1 < roles.size()
 		and roles[release_index - 1] == "tunnel-lsm3"
 		and roles[release_index + 1] == "camelback"
 		and controls == existing_controls
 		and residuals == existing_residuals
-		and controls.size() == 11 and residuals.size() == 11
-		and controls.size() == residuals.size()
-		and scales.size() == controls.size() and tolerances.size() == controls.size(),
-		"the return keeps the existing 11x11 solve and fixed-bank release outside its solve metadata: %s / %s / %s"
+		and controls.size() == 11 and residuals.size() == 12
+		and scales.size() == residuals.size() and tolerances.size() == residuals.size(),
+		"the return keeps eleven controls, adds the declared prominence contract, and leaves the fixed-bank release outside its solve metadata: %s / %s / %s"
 		% [str(roles), str(controls), str(residuals)])
 	var fixture_layout := RideProgram._layout_from_plan(_plan(_layout()))
 	_expect(fixture_layout.get("terrain", {}).get("kind", "") == "synthetic"
-		and not fixture_layout.has("camelback_apex_agl_band_m"),
-		"return layout receives terrain without spending a solve residual on camelback AGL")
+		and not fixture_layout.has("camelback_apex_agl_band_m")
+		and fixture_layout.get("camelback_prominence_m") == Vector2(245.0, 255.0),
+		"return layout receives the declared prominence band without spending a residual on AGL")
 	var return_spans := RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED)
 	var height_a_airtime := return_spans.filter(func(span: Dictionary) -> bool:
 		return str(span.span_id) == "raceway/height-a/airtime")

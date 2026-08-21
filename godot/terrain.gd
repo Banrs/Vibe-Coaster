@@ -75,7 +75,7 @@ static func _return_terrace_height(terrain: Dictionary, point_m: Vector2) -> flo
 
 static func _return_terrace_profile01(x: float) -> float:
 	var cubic_smoothstep := _smoothstep01(x)
-	return cubic_smoothstep * cubic_smoothstep
+	return cubic_smoothstep * cubic_smoothstep * cubic_smoothstep
 
 
 static func _smoothstep01(x: float) -> float:

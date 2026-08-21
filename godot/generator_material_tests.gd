@@ -804,7 +804,8 @@ func _temporary_return_terrace_clearance_diagnostic(route: Dictionary) -> void:
 		var cubic := profile_input * profile_input * (3.0 - 2.0 * profile_input)
 		var original_contribution_m := float(terrace.elevation_m) * cubic
 		var squared_contribution_m := float(terrace.elevation_m) * cubic * cubic
-		var predicted_clearance_m := base_clearance_m - squared_contribution_m
+		var cubed_contribution_m := squared_contribution_m * cubic
+		var predicted_clearance_m := base_clearance_m - cubed_contribution_m
 		if predicted_clearance_m < worst_clearance_m:
 			worst_clearance_m = predicted_clearance_m
 			var gesture_index := int(route.gesture_indices[index])
@@ -813,8 +814,9 @@ func _temporary_return_terrace_clearance_diagnostic(route: Dictionary) -> void:
 				window_id = str(route.gesture_windows[gesture_index].get("window_id", "unknown"))
 			worst = {"sample": index, "window": window_id, "base_clearance_m": base_clearance_m,
 				"r2": r2, "x": profile_input, "original_cubic_m": original_contribution_m,
-				"squared_m": squared_contribution_m, "predicted_clearance_m": predicted_clearance_m}
-	print("[TEMP CI-32442427378] worst squared return-terrace clearance: %s" % str(worst))
+				"squared_m": squared_contribution_m, "cubed_m": cubed_contribution_m,
+				"predicted_clearance_m": predicted_clearance_m}
+	print("[TEMP CI-32445278007] worst cubed return-terrace clearance: %s" % str(worst))
 
 func _camelback_geometry_is_material(route: Dictionary) -> bool:
 	var camel := _window(route, "marquee-camelback")

@@ -9,6 +9,7 @@ func _initialize() -> void:
 	_test_well_conditioned_root_converges()
 	_test_malformed_inputs_are_rejected()
 	_test_budget_is_hard()
+	_test_near_root_secant_polish_uses_the_remaining_budget()
 	_test_repeated_results_are_byte_identical()
 	for error in _errors:
 		printerr(error)
@@ -53,6 +54,15 @@ func _test_budget_is_hard() -> void:
 		"budget exhaustion never exceeds the requested evaluation count")
 
 
+func _test_near_root_secant_polish_uses_the_remaining_budget() -> void:
+	var result := BoundedSolver.solve(
+		_nearby_diagonal_root, [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], 5)
+	_expect(result.get("ok", false) and result.get("status", "") == "converged",
+		"an accepted near-root step is polished before a fresh Jacobian exhausts the budget")
+	_expect(result.get("evaluations", 0) == 5 and _max_abs(result.get("residuals", [])) <= 0.02,
+		"the secant polish converges inside the unchanged hard evaluation budget")
+
+
 func _test_repeated_results_are_byte_identical() -> void:
 	var first := BoundedSolver.solve(_root, [-3.0, -3.0], [3.0, 3.0], [0.0, 0.0])
 	var second := BoundedSolver.solve(_root, [-3.0, -3.0], [3.0, 3.0], [0.0, 0.0])
@@ -64,6 +74,10 @@ func _test_repeated_results_are_byte_identical() -> void:
 
 func _root(x: Array) -> Array:
 	return [float(x[0]) - 1.25, float(x[1]) + 0.75]
+
+
+func _nearby_diagonal_root(x: Array) -> Array:
+	return [float(x[0]) - 0.205, float(x[1]) - 0.205]
 
 
 func _malformed_residual(_x: Array) -> String:

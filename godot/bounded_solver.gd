@@ -1,5 +1,9 @@
 class_name BoundedSolver
 extends RefCounted
+
+const CONVERGENCE_TOLERANCE := 0.02
+const POLISH_RESIDUAL_THRESHOLD := 0.05
+
 static func solve(residual: Callable, lower: Array, upper: Array, initial: Array,
 		max_evaluations: int = 80) -> Dictionary:
 	var n := lower.size()
@@ -26,7 +30,7 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 	var sse := _sse(values)
 	if not is_finite(sse):
 		return _result(false, "invalid_residual", _to_x(z, lower, widths), values, evaluation_count[0], 0, INF)
-	if _max_abs(values) <= 0.02:
+	if _max_abs(values) <= CONVERGENCE_TOLERANCE:
 		# Converged at the initial point: no Jacobian was formed, so conditioning is unmeasured
 		# (INF, like every other unmeasured exit), not a fabricated 1.0.
 		return _result(true, "converged", _to_x(z, lower, widths), values, evaluation_count[0], 0, INF)
@@ -90,13 +94,49 @@ static func solve(residual: Callable, lower: Array, upper: Array, initial: Array
 			return _result(false, "invalid_residual", _to_x(z, lower, widths), values, evaluation_count[0], iterations, conditioning)
 		var trial_sse := _sse(trial.values)
 		if is_finite(trial_sse) and trial_sse < sse:
+			var previous_values := values
+			var accepted_step := []
+			for i in range(n):
+				accepted_step.append(float(candidate[i]) - float(z[i]))
 			z = candidate
 			values = trial.values
 			sse = trial_sse
 			damping = max(damping * 0.3, 1e-12)
 			radius = min(radius * 1.5, 1.0)
-			if _max_abs(values) <= 0.02:
+			if _max_abs(values) <= CONVERGENCE_TOLERANCE:
 				return _result(true, "converged", _to_x(z, lower, widths), values, evaluation_count[0], iterations, conditioning)
+			# Near a root, reuse the accepted step as a secant direction before paying for another
+			# complete Jacobian. Every polish trial still consumes the caller's unchanged budget.
+			if _max_abs(values) <= POLISH_RESIDUAL_THRESHOLD \
+					and evaluation_count[0] < max_evaluations:
+				var numerator := 0.0
+				var denominator := 0.0
+				for row_index in range(values.size()):
+					var residual_delta: float = values[row_index] - previous_values[row_index]
+					numerator -= values[row_index] * residual_delta
+					denominator += residual_delta * residual_delta
+				if denominator > 0.0:
+					var fraction := clampf(numerator / denominator, 0.0, 1.0)
+					var polished := z.duplicate()
+					for i in range(n):
+						polished[i] = clampf(polished[i] + fraction * accepted_step[i], 0.0, 1.0)
+					if fraction > 0.0 and polished != z:
+						var polish := _evaluate(
+							residual, polished, lower, widths, cache, evaluation_count, max_evaluations)
+						if not polish.ok:
+							return _result(false, polish.status, _to_x(z, lower, widths), values,
+								evaluation_count[0], iterations, conditioning)
+						if polish.values.size() != values.size():
+							return _result(false, "invalid_residual", _to_x(z, lower, widths), values,
+								evaluation_count[0], iterations, conditioning)
+						var polish_sse := _sse(polish.values)
+						if is_finite(polish_sse) and polish_sse < sse:
+							z = polished
+							values = polish.values
+							sse = polish_sse
+							if _max_abs(values) <= CONVERGENCE_TOLERANCE:
+								return _result(true, "converged", _to_x(z, lower, widths), values,
+									evaluation_count[0], iterations, conditioning)
 		else:
 			damping = min(damping * 10.0, 1e12)
 			radius = max(radius * 0.5, 1e-8)

@@ -56,6 +56,58 @@ func _test_c2_profiles() -> void:
 		"balanced notch has an exact C2 exit jet")
 	_expect_close(Motion.profile_sample(notch, 0.5).x, 3.5,
 		"balanced notch reaches its authored center load")
+	var balanced_transition := Motion.balanced_quintic(-1.5, -1.3, 1.4)
+	_expect_vector(Motion.profile_sample(balanced_transition, 0.0), Vector3(-1.5, 0.0, 0.0),
+		"balanced quintic has an exact C2 entry jet")
+	_expect_vector(Motion.profile_sample(balanced_transition, 1.0), Vector3(-1.3, 0.0, 0.0),
+		"balanced quintic has an exact C2 exit jet")
+	_expect_close(Motion.profile_sample(balanced_transition, 0.5).x, -2.8,
+		"balanced quintic reaches its authored center offset")
+	var relieved_transition := Motion.balanced_quintic_relief(-1.5, -1.3, 1.44, 0.8, 0.5)
+	_expect_vector(Motion.profile_sample(relieved_transition, 0.0), Vector3(-1.5, 0.0, 0.0),
+		"balanced relief has an exact C2 entry jet")
+	_expect_vector(Motion.profile_sample(relieved_transition, 1.0), Vector3(-1.3, 0.0, 0.0),
+		"balanced relief has an exact C2 exit jet")
+	_expect_close(Motion.profile_sample(relieved_transition, 0.5).x, -2.04,
+		"balanced relief raises the authored center by its relief height")
+	var full_transition := Motion.balanced_quintic(-1.5, -1.3, 1.44)
+	_expect_vector(Motion.profile_sample(relieved_transition, 0.25),
+		Motion.profile_sample(full_transition, 0.25),
+		"balanced relief has an exact C2 entry-window seam")
+	_expect_vector(Motion.profile_sample(relieved_transition, 0.75),
+		Motion.profile_sample(full_transition, 0.75),
+		"balanced relief has an exact C2 exit-window seam")
+	for probe_u in [0.0, 0.19, 0.25, 0.37, 0.5, 0.63, 0.75, 0.81, 1.0]:
+		_expect(Motion._profile_value(relieved_transition, relieved_transition.kind, probe_u) \
+			== Motion.profile_sample(relieved_transition, probe_u).x,
+			"balanced relief hot value matches the analytic sample at u=%.2f" % probe_u)
+	var perturbation_area := 0.0
+	var perturbation_first_moment := 0.0
+	var relieved_area := 0.0
+	var relieved_first_moment := 0.0
+	var intervals := 4096
+	for index in range(intervals + 1):
+		var u := float(index) / float(intervals)
+		var weight := 1.0 if index == 0 or index == intervals else (2.0 if index % 2 == 0 else 4.0)
+		var delta := Motion.profile_sample(balanced_transition, u).x \
+			- Motion.profile_sample(Motion.quintic(-1.5, -1.3), u).x
+		perturbation_area += weight * delta
+		perturbation_first_moment += weight * u * delta
+		var relieved_delta := Motion.profile_sample(relieved_transition, u).x \
+			- Motion.profile_sample(Motion.quintic(-1.5, -1.3), u).x
+		relieved_area += weight * relieved_delta
+		relieved_first_moment += weight * u * relieved_delta
+	perturbation_area /= 3.0 * float(intervals)
+	perturbation_first_moment /= 3.0 * float(intervals)
+	relieved_area /= 3.0 * float(intervals)
+	relieved_first_moment /= 3.0 * float(intervals)
+	_expect_close(perturbation_area, 0.0,
+		"balanced quintic perturbation has zero area")
+	_expect_close(perturbation_first_moment, 0.0,
+		"balanced quintic perturbation has zero first moment")
+	_expect_close(relieved_area, 0.0, "balanced relief perturbation has zero area")
+	_expect_close(relieved_first_moment, 0.0,
+		"balanced relief perturbation has zero first moment")
 	var plateau := Motion.plateau_pulse(2.0)
 	_expect_vector(Motion.profile_sample(plateau, 0.0), Vector3.ZERO,
 		"plateau pulse has a zero C2 entry jet")
@@ -70,9 +122,24 @@ func _test_c2_profiles() -> void:
 		"bank balance ends at the exact banked level-load jet")
 	_expect_close(Motion.profile_sample(bank, 0.5).x, 1.0 / cos(deg_to_rad(30.0)),
 		"bank balance follows the integrated compact-roll angle")
+	var plateau_bank := Motion.plateau_bank_balance(0.0, deg_to_rad(60.0))
+	_expect_vector(Motion.profile_sample(plateau_bank, 0.0), Vector3(1.0, 0.0, 0.0),
+		"plateau bank balance starts at the exact level-load jet")
+	_expect_vector(Motion.profile_sample(plateau_bank, 1.0), Vector3(2.0, 0.0, 0.0),
+		"plateau bank balance ends at the exact banked level-load jet")
+	_expect_close(Motion.profile_sample(plateau_bank, 0.5).x, 1.0 / cos(deg_to_rad(30.0)),
+		"plateau bank balance follows the exact plateau-pulse bank fraction")
+	var probe_u := 1.0 / 6.0
+	var probe_h := 0.001
+	var numerical_derivative := (Motion.profile_sample(plateau_bank, probe_u + probe_h).x
+		- Motion.profile_sample(plateau_bank, probe_u - probe_h).x) / (2.0 * probe_h)
+	_expect_close(Motion.profile_sample(plateau_bank, probe_u).y, numerical_derivative,
+		"plateau bank balance derivative follows its sampled load", 0.001)
 	var span_record := Motion.span("immutable", 1.0, "moving", held, held, held, held)
 	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only()
-		and notch.is_read_only() and plateau.is_read_only() and bank.is_read_only(),
+		and notch.is_read_only() and balanced_transition.is_read_only() and relieved_transition.is_read_only()
+		and plateau.is_read_only() and bank.is_read_only()
+		and plateau_bank.is_read_only(),
 		"profile records are immutable")
 	_expect(span_record.is_read_only(), "span records are immutable")
 
@@ -88,6 +155,9 @@ func _test_profile_peak_abs_derivative_estimate() -> void:
 		10.699182439179779, "positive compact pulse reports its exact analytic peak derivative")
 	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(-3.0)),
 		10.699182439179779, "negative compact pulse has the same absolute peak derivative")
+	_expect(Motion.profile_peak_abs_derivative_estimate(
+		Motion.plateau_bank_balance(0.0, deg_to_rad(60.0))) > 0.0,
+		"plateau bank balance reports a nonzero peak derivative")
 
 
 func _test_resistance_law() -> void:

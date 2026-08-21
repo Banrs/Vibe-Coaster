@@ -245,13 +245,14 @@ func _test_determinism() -> void:
 func _test_counterpart_comparison_labels() -> void:
 	var points := _line(1200)
 	var route := _route(points, [
-		_role("marquee-camelback", "rise", 0, 0, 399),
-		_role("marquee-camelback", "crest", 0, 400, 799),
-		_role("marquee-camelback", "fall", 0, 800, 1199),
+		_role("record-release-turn", "record-release-turn", 0, 0, 199),
+		_role("marquee-camelback", "rise", 0, 200, 533),
+		_role("marquee-camelback", "crest", 0, 534, 866),
+		_role("marquee-camelback", "fall", 0, 867, 1199),
 	])
 	var result := Metrics.counterpart_comparison(route, 0.0)
 	_expect(result.schema_version == Metrics.COUNTERPART_SCHEMA, "the comparison declares its schema")
-	_expect(result.mapping.mapped_window_count == 3, "every compiled window is bridged")
+	_expect(result.mapping.mapped_window_count == 4, "every compiled window is bridged")
 	_expect(result.mapping.unmapped_windows.is_empty(), "no compiled window is left unmapped")
 	_expect(result.mapping.material_roles_without_window.size() == 17,
 		"the eighteen non-gap roles minus the one present role are reported missing, got %d"
@@ -259,7 +260,7 @@ func _test_counterpart_comparison_labels() -> void:
 	var gap_roles := []
 	for gap: Dictionary in result.evidence_gaps:
 		gap_roles.append(str(gap.role_id))
-	_expect(gap_roles == ["act-one-wave", "clifftop-outward-rim"],
+	_expect(gap_roles == ["act-one-wave", "clifftop-outward-rim", "record-release-turn"],
 		"the counterpart evidence gaps are carried through verbatim, got %s" % str(gap_roles))
 	var camelback := []
 	for row: Dictionary in result.rows:

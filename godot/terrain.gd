@@ -50,7 +50,32 @@ static func height(terrain: Dictionary, x: float, z: float) -> float:
 		_value_noise(x / 71.0, z / 71.0, terrain.noise_seed + 1)
 		+ 0.4 * _value_noise(x / 23.0, z / 23.0, terrain.noise_seed + 2)
 	)
-	return apron + face + detail
+	return apron + face + detail + _return_terrace_height(terrain, Vector2(x, z))
+
+
+## Optional authored return terrace: one compact, deterministic elliptical bump over the existing
+## heightfield. It is deliberately local; all other terrain remains the original analytic field.
+static func _return_terrace_height(terrain: Dictionary, point_m: Vector2) -> float:
+	var terrace_value: Variant = terrain.get("return_terrace")
+	if not terrace_value is Dictionary:
+		return 0.0
+	var terrace: Dictionary = terrace_value
+	var center_m: Vector2 = terrace.center_m
+	var along: Vector2 = terrace.along
+	var cross := Vector2(-along.y, along.x)
+	var delta := point_m - center_m
+	var along_distance := delta.dot(along)
+	var cross_distance := delta.dot(cross)
+	var r2 := (along_distance / float(terrace.half_length_m)) ** 2 \
+		+ (cross_distance / float(terrace.half_width_m)) ** 2
+	if r2 >= 1.0:
+		return 0.0
+	return float(terrace.elevation_m) * _return_terrace_profile01(1.0 - r2)
+
+
+static func _return_terrace_profile01(x: float) -> float:
+	var cubic_smoothstep := _smoothstep01(x)
+	return cubic_smoothstep * cubic_smoothstep * cubic_smoothstep * cubic_smoothstep
 
 
 static func _smoothstep01(x: float) -> float:

@@ -24,8 +24,8 @@ validation are the product; visuals are a deliberately generic inspection layer.
 >
 > **Measured state, 2026-08-16.** The prefix closure solves four controls against **five**
 > residuals (the fifth is the `outward-dive` arc against its declared role band) and the return
-> solves **eight** controls against **eight** residuals (the eighth control is the height-a peak;
-> the eighth residual is `return-turn-b` band interiority). Composing the two role-band residuals
+> solves **eleven** controls against **eleven** residuals (the authored 60° record-release bank is
+> fixed outside the solve). Composing the current role-band residuals
 > is what first made the act-one optional swap build end to end on all four gated seeds, with the
 > canonical fleet bit-identical on every published channel — record at §8 of
 > `docs/superpowers/specs/2026-08-16-return-height-authority-design.md`. Issue 24 stays open: one
@@ -48,10 +48,10 @@ godot --headless --path godot --script res://smoke.gd
 ```
 
 Smoke alone does not run most of the test suites: CI additionally executes every script in
-`.github/focused-tests.txt` (sixteen focused suites — motion, route-sampling, bounded-solver,
+`.github/focused-tests.txt` (seventeen focused suites — motion, route-sampling, bounded-solver,
 route-contract, ride-program, generator-material, terrain-story, geometry-metrics, ride-planner,
-ride-config, dense-output, element-contract, element-contract-integration, and three fidelity
-suites). `camelback_geometry_tests.gd` is the deliberately red VC-016 production gate; it is
+ride-config, dense-output, element-contract, element-contract-integration, geometry-audit, and
+three fidelity suites). `camelback_geometry_tests.gd` is the deliberately red VC-016 production gate; it is
 run by hand, not by the manifest, until the planar camelback lands. When your change touches
 one of those areas, run the matching focused suite(s) locally too:
 
@@ -69,7 +69,7 @@ local timings.
   dict.
 - `godot/generator.gd` — the `material-v1` facade: seed → accepted terrain-relative plan →
   compiled program → one accepted production integration → published route. The seeded RNG is
-  consumed by `Terrain.generate()` and then `_plan()`; the plan contains twenty ordered roles and
+  consumed by `Terrain.generate()` and then `_plan()`; the plan contains twenty-one ordered roles and
   a 7.8–8.2 km route band.
 - `godot/ride_planner.gd` — the decision layer: named decision streams (FNV-1a over the stream
   name plus the seed, so streams are independent), the story grammar as data, and the certified
@@ -160,10 +160,10 @@ positions stay raw for physics, verification, and generated-channel measurement.
 - Envelope (~2041, anti-G-suit credit; duration-stretched ASTM F2291 curves, never flat
   tables): +8.0/−3.0 Gz · ±4.7 Gy · +8.0/−6.0 Gx · 25 g/s onset · 120°/s roll. The limit at
   duration t is `stretch × F2291_limit(t)` per axis — see `verify.gd` constants.
-- Material story, twenty ordered roles with seeded terrain-relative placement, plus per-seed
+- Material story, twenty-one ordered roles with seeded terrain-relative placement, plus per-seed
   target draws made through `ride_planner.gd`'s named decision streams. Today only the
-  return-side draw set is certified (turn-a transfer bank bias, height-a peak g, the unload
-  scales); act-one permutation and the opener/act-one geometry draws were refused by
+  return-side draw set is certified (height-a peak g and the unload scales); act-one permutation
+  and the opener/act-one geometry draws were refused by
   measurement and stay blocked until the prefix closure solve lands — see `docs/ISSUES.md`
   issue 24. The story itself:
   station → 3.9 g-peak air-launch (band-gated) + unpowered coast over the opener crest → three-role opener
@@ -195,7 +195,7 @@ positions stay raw for physics, verification, and generated-channel measurement.
   sections, no flat grades between elements (design intent — reviewed, not yet mechanically
   enforced by any validator); elapsed average speed is reported, never
   targeted — pacing is organic. Length 7.8–8.2 km. The unpowered return is authored in normal-g
-  and bank/roll functions; a bounded eight-control solve targets the derived capture-entry
+  and bank/roll functions; a bounded eleven-control solve targets the derived capture-entry
   corridor, the 7.8–8.2 km route band, and the 70–80 m/s passive entry-speed band (widened
   from 70–77 on 2026-08-15 — the measured cost of closing the ~340 km/h record inside
   8.2 km without a mid-course brake; see

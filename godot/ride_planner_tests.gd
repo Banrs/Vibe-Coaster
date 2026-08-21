@@ -9,6 +9,8 @@ const RidePlanner := preload("res://ride_planner.gd")
 const RideProgram := preload("res://ride_program.gd")
 const RouteContract := preload("res://route_contract.gd")
 const RideVerify := preload("res://verify.gd")
+## TEMPORARY CI-32442427378 DIAGNOSTIC dependency: remove with the diagnostic helpers below.
+const Terrain := preload("res://terrain.gd")
 
 const FEASIBILITY_SEEDS := [11, 20260809]
 const ROUTE_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
@@ -77,7 +79,7 @@ func _test_stream_seeds_are_stable_integers() -> void:
 
 func _test_grammar_legality() -> void:
 	var canonical := RidePlanner.canonical_role_ids()
-	_expect(canonical.size() == 20, "the canonical grammar authors twenty roles")
+	_expect(canonical.size() == 21, "the canonical grammar authors twenty-one roles")
 	_expect(RidePlanner.is_legal_sequence(canonical),
 		"the canonical sequence is grammar-legal")
 	_expect(RidePlanner.is_legal_sequence(RidePlanner.resolve(42).sequence),
@@ -98,8 +100,8 @@ func _test_grammar_legality() -> void:
 	_expect(not RidePlanner.is_legal_sequence(spine_moved),
 		"permuting the opener spine is illegal")
 	var return_moved: Array = canonical.duplicate()
-	return_moved[15] = canonical[17]
-	return_moved[17] = canonical[15]
+	return_moved[16] = canonical[18]
+	return_moved[18] = canonical[16]
 	_expect(not RidePlanner.is_legal_sequence(return_moved),
 		"permuting the return cell is illegal at this checkpoint")
 	var dropped_optional: Array = canonical.duplicate()
@@ -209,6 +211,7 @@ func _check_extreme(seed_value: int, key: String, value: float) -> void:
 	RideVerify.validate_self_clearance(route, issues)
 	var analysis: Dictionary = RideVerify.analyze(route, RouteContract.ROW_OFFSETS)
 	RideVerify.validate_loads(analysis, issues)
+	_temporary_print_endpoint_diagnostic(label, route, analysis, issues)
 	_expect(issues.is_empty(), "%s validates: %s" % [label, str(issues)])
 	_expect_range("%s route length" % label, float(route.length),
 		ROUTE_LENGTH_BAND_M, "m")
@@ -221,6 +224,121 @@ func _check_extreme(seed_value: int, key: String, value: float) -> void:
 	_expect(int(stats.get("accepted_integrations", -1)) == 1 \
 		and int(stats.get("repair_count", -1)) == 0,
 		"%s integrates once without repair" % label)
+
+
+## TEMPORARY CI-32442427378 DIAGNOSTIC: remove after the power4 clearance experiment.
+## One compact line per existing endpoint route; test code only, no production diagnostics.
+func _temporary_print_endpoint_diagnostic(
+	label: String, route: Dictionary, analysis: Dictionary, issues: PackedStringArray
+) -> void:
+	var rows: Array = analysis.get("rows", [])
+	var row0: Dictionary = rows[0] if not rows.is_empty() else {}
+	var worst: Dictionary = _temporary_worst_power4_clearance(route)
+	var negative_source: Dictionary = _temporary_worst_negative_half_second(route)
+	print("[TEMP CI-32442427378 endpoint] ", JSON.stringify({
+		"label": label,
+		"row0_positive": row0.get("positive_envelope", {}),
+		"row0_negative": row0.get("negative_envelope", {}),
+		"row0_lateral": row0.get("lateral_envelope", {}),
+		"row0_longitudinal_positive": row0.get("longitudinal_positive_envelope", {}),
+		"row0_longitudinal_negative": row0.get("longitudinal_negative_envelope", {}),
+		"combined_usage": row0.get("combined_usage", NAN),
+		"issues": Array(issues),
+		"negative_half_second_source": negative_source,
+		"worst_clearance": worst,
+	}))
+
+
+## TEMPORARY CI-32442427378 DIAGNOSTIC: remove with the endpoint print above.
+func _temporary_worst_power4_clearance(route: Dictionary) -> Dictionary:
+	var terrain_value: Variant = route.get("terrain")
+	if not terrain_value is Dictionary:
+		return {}
+	var terrain: Dictionary = terrain_value.duplicate(true)
+	var terrace_value: Variant = terrain.get("return_terrace")
+	if not terrace_value is Dictionary:
+		return {}
+	var terrace: Dictionary = terrace_value
+	terrain.erase("return_terrace")
+	var positions: PackedVector3Array = route.get("positions", PackedVector3Array())
+	var ups: PackedVector3Array = route.get("ups", PackedVector3Array())
+	var tunnels: Array = route.get("tunnel_ranges", [])
+	var gesture_indices: PackedInt32Array = route.get("gesture_indices", PackedInt32Array())
+	var gesture_windows: Array = route.get("gesture_windows", [])
+	var center: Vector2 = terrace.get("center_m", Vector2.ZERO)
+	var along: Vector2 = terrace.get("along", Vector2.RIGHT)
+	var cross: Vector2 = Vector2(-along.y, along.x)
+	var worst_clearance_m := INF
+	var worst: Dictionary = {}
+	for index in positions.size():
+		var in_tunnel := false
+		for tunnel in tunnels:
+			if index >= tunnel.x and index <= tunnel.y:
+				in_tunnel = true
+				break
+		if in_tunnel:
+			continue
+		var rail: Vector3 = positions[index] - ups[index] * 1.55
+		var base_clearance_m := rail.y - Terrain.height(terrain, rail.x, rail.z)
+		var point := Vector2(rail.x, rail.z)
+		var delta: Vector2 = point - center
+		var along_distance: float = delta.dot(along)
+		var cross_distance: float = delta.dot(cross)
+		var r2: float = (along_distance / float(terrace.half_length_m)) ** 2 \
+			+ (cross_distance / float(terrace.half_width_m)) ** 2
+		var u := clampf(1.0 - r2, 0.0, 1.0)
+		var cubic := u * u * (3.0 - 2.0 * u)
+		var contribution_m := float(terrace.elevation_m) * cubic * cubic * cubic * cubic
+		var final_clearance_m := base_clearance_m - contribution_m
+		if final_clearance_m < worst_clearance_m:
+			worst_clearance_m = final_clearance_m
+			var gesture_index := int(gesture_indices[index])
+			var window_id := "unknown"
+			if gesture_index >= 0 and gesture_index < gesture_windows.size():
+				window_id = str(gesture_windows[gesture_index].get("window_id", "unknown"))
+			worst = {"sample": index, "window": window_id, "base_clearance_m": base_clearance_m,
+				"r2": r2, "u": u, "power4_contribution_m": contribution_m,
+				"final_clearance_m": final_clearance_m}
+	return worst
+
+
+## TEMPORARY CI-32442427378 DIAGNOSTIC: locate the measured 0.5 s -Gz window.
+func _temporary_worst_negative_half_second(route: Dictionary) -> Dictionary:
+	var native := PackedFloat32Array()
+	var times: PackedFloat32Array = route.get("times", PackedFloat32Array())
+	var distances: PackedFloat32Array = route.get("distances", PackedFloat32Array())
+	var speeds: PackedFloat32Array = route.get("speeds", PackedFloat32Array())
+	native.resize(times.size())
+	for index in times.size():
+		var forces: Dictionary = RideVerify.row_forces_at(
+			route, distances[index], speeds[index], 0.0, index)
+		native[index] = float(forces.get("normal", NAN))
+	var filtered: PackedFloat32Array = RideVerify.filter(RideVerify.resample(times, native))
+	var window_samples := roundi(0.5 * RideVerify.SAMPLE_HZ) + 1
+	var rolling_sum := 0.0
+	var minimum_mean := INF
+	var minimum_start := -1
+	for index in filtered.size():
+		rolling_sum += filtered[index]
+		if index >= window_samples:
+			rolling_sum -= filtered[index - window_samples]
+		if index >= window_samples - 1:
+			var mean: float = rolling_sum / window_samples
+			if mean < minimum_mean:
+				minimum_mean = mean
+				minimum_start = index - window_samples + 1
+	var midpoint_s := (minimum_start + 0.5 * (window_samples - 1)) / RideVerify.SAMPLE_HZ
+	var native_index := 0
+	while native_index + 1 < times.size() and times[native_index + 1] < midpoint_s:
+		native_index += 1
+	var gesture_index := int(route.gesture_indices[native_index])
+	var window_id := "unknown"
+	if gesture_index >= 0 and gesture_index < route.gesture_windows.size():
+		window_id = str(route.gesture_windows[gesture_index].get("window_id", "unknown"))
+	return {"held_g": minimum_mean, "start_s": minimum_start / RideVerify.SAMPLE_HZ,
+		"end_s": (minimum_start + window_samples - 1) / RideVerify.SAMPLE_HZ,
+		"midpoint_native_sample": native_index,
+		"span_index": int(route.span_indices[native_index]), "window": window_id}
 
 
 func _expect_range(label: String, value: float, band: Vector2, unit: String) -> void:

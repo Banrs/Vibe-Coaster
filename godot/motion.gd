@@ -35,6 +35,26 @@ static func quintic(from: float, to: float) -> Dictionary:
 	return profile
 
 
+## C2 quintic transition plus a zero-area, zero-first-moment center offset.
+static func balanced_quintic(from: float, to: float, depth: float) -> Dictionary:
+	var profile := {"kind": "balanced_quintic", "from": from, "to": to,
+		"amplitude": depth * 3100.0 / 1099.0}
+	profile.make_read_only()
+	return profile
+
+
+## Balanced quintic with a centered, independently balanced positive relief.
+static func balanced_quintic_relief(
+	from: float, to: float, depth: float, relief_height: float, relief_fraction: float
+) -> Dictionary:
+	var profile := {"kind": "balanced_quintic_relief", "from": from, "to": to,
+		"amplitude": depth * 3100.0 / 1099.0,
+		"relief_amplitude": relief_height * 3100.0 / 1099.0,
+		"relief_fraction": relief_fraction}
+	profile.make_read_only()
+	return profile
+
+
 static func compact_pulse(amplitude: float) -> Dictionary:
 	var profile := {"kind": "compact_pulse", "amplitude": amplitude}
 	profile.make_read_only()
@@ -63,6 +83,32 @@ static func bank_balance(from_bank_rad: float, to_bank_rad: float) -> Dictionary
 	return profile
 
 
+## Proper normal load for a bank transition driven by plateau-pulse roll.
+static func plateau_bank_balance(from_bank_rad: float, to_bank_rad: float) -> Dictionary:
+	var profile := {"kind": "plateau_bank_balance", "from": from_bank_rad, "to": to_bank_rad}
+	profile.make_read_only()
+	return profile
+
+
+## A normalized piecewise profile keeps a reviewed transition continuous without publishing
+## sub-semantic connector spans. Segment durations are in the same units as the parent span.
+static func staged(profiles: Array, durations: Array) -> Dictionary:
+	assert(not profiles.is_empty() and profiles.size() == durations.size(),
+		"staged profile segments must have matching non-empty arrays")
+	var total := 0.0
+	var segments := []
+	for index in profiles.size():
+		var duration := float(durations[index])
+		assert(duration > 0.0 and profiles[index] is Dictionary,
+			"staged profile segments must be finite profiles with positive durations")
+		total += duration
+		segments.append({"profile": profiles[index], "duration_s": duration})
+	assert(is_finite(total) and total > 0.0, "staged profile duration must be positive")
+	var profile := {"kind": "staged", "segments": segments, "duration_s": total}
+	profile.make_read_only()
+	return profile
+
+
 ## Returns value, first derivative with respect to normalized profile time, and second derivative.
 static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 	match profile.get("kind", ""):
@@ -74,6 +120,61 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
 			var delta: float = profile.to - profile.from
 			return Vector3(profile.from + delta * h, delta * dh, delta * d2h)
+		"balanced_quintic":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
+			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
+			var pulse := 4.0 * h * (1.0 - h)
+			var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
+			var pulse_second := 4.0 * (
+				d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
+			var balance := 4199.0 / 3100.0
+			var scale: float = profile.amplitude
+			var delta: float = profile.to - profile.from
+			return Vector3(
+				profile.from + delta * h + scale * pulse * (1.0 - balance * pulse),
+				delta * dh + scale * pulse_derivative * (1.0 - 2.0 * balance * pulse),
+				delta * d2h + scale * (pulse_second * (1.0 - 2.0 * balance * pulse)
+					- 2.0 * balance * pulse_derivative * pulse_derivative)
+			)
+		"balanced_quintic_relief":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
+			var d2h := 60.0 * u - 180.0 * u ** 2 + 120.0 * u ** 3
+			var pulse := 4.0 * h * (1.0 - h)
+			var pulse_derivative := 4.0 * dh * (1.0 - 2.0 * h)
+			var pulse_second := 4.0 * (
+				d2h * (1.0 - 2.0 * h) - 2.0 * dh * dh)
+			var balance := 4199.0 / 3100.0
+			var delta: float = profile.to - profile.from
+			var value: float = profile.from + delta * h \
+				+ profile.amplitude * pulse * (1.0 - balance * pulse)
+			var first: float = delta * dh \
+				+ profile.amplitude * pulse_derivative * (1.0 - 2.0 * balance * pulse)
+			var second: float = delta * d2h + profile.amplitude * (
+				pulse_second * (1.0 - 2.0 * balance * pulse)
+				- 2.0 * balance * pulse_derivative * pulse_derivative)
+			var width: float = profile.relief_fraction
+			var window_start := (1.0 - width) * 0.5
+			if u >= window_start and u <= window_start + width:
+				var local_u := (u - window_start) / width
+				var local_h := 10.0 * local_u ** 3 - 15.0 * local_u ** 4 + 6.0 * local_u ** 5
+				var local_dh := 30.0 * local_u ** 2 - 60.0 * local_u ** 3 \
+					+ 30.0 * local_u ** 4
+				var local_d2h := 60.0 * local_u - 180.0 * local_u ** 2 \
+					+ 120.0 * local_u ** 3
+				var local_pulse := 4.0 * local_h * (1.0 - local_h)
+				var local_pulse_derivative := 4.0 * local_dh * (1.0 - 2.0 * local_h)
+				var local_pulse_second := 4.0 * (
+					local_d2h * (1.0 - 2.0 * local_h) - 2.0 * local_dh * local_dh)
+				value -= profile.relief_amplitude * local_pulse * (1.0 - balance * local_pulse)
+				first -= profile.relief_amplitude * local_pulse_derivative \
+					* (1.0 - 2.0 * balance * local_pulse) / width
+				second -= profile.relief_amplitude * (
+					local_pulse_second * (1.0 - 2.0 * balance * local_pulse)
+					- 2.0 * balance * local_pulse_derivative * local_pulse_derivative) \
+					/ (width * width)
+			return Vector3(value, first, second)
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var dh := 30.0 * u ** 2 - 60.0 * u ** 3 + 30.0 * u ** 4
@@ -131,6 +232,42 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 			return Vector3(secant, secant * tangent * bank_derivative,
 				secant * ((tangent * tangent + secant * secant)
 					* bank_derivative * bank_derivative + tangent * bank_second))
+		"plateau_bank_balance":
+			var edge_u := minf(u, 1.0 - u)
+			var bank_delta: float = profile.to - profile.from
+			var bank: float = float(profile.from) \
+				+ bank_delta * _plateau_pulse_integral(u) / PLATEAU_PULSE_AREA
+			var pulse := 1.0
+			var pulse_derivative := 0.0
+			if edge_u < 1.0 / 3.0:
+				var shoulder_u := edge_u * 3.0
+				var h := 10.0 * shoulder_u ** 3 - 15.0 * shoulder_u ** 4 \
+					+ 6.0 * shoulder_u ** 5
+				var dh := 30.0 * shoulder_u ** 2 - 60.0 * shoulder_u ** 3 \
+					+ 30.0 * shoulder_u ** 4
+				pulse = h
+				pulse_derivative = dh * 3.0
+			var direction := 1.0 if u <= 0.5 else -1.0
+			pulse_derivative *= direction
+			var bank_derivative := bank_delta * pulse / PLATEAU_PULSE_AREA
+			var bank_second := bank_delta * pulse_derivative / PLATEAU_PULSE_AREA
+			var secant := 1.0 / cos(bank)
+			var tangent := tan(bank)
+			return Vector3(secant, secant * tangent * bank_derivative,
+				secant * ((tangent * tangent + secant * secant)
+					* bank_derivative * bank_derivative + tangent * bank_second))
+		"staged":
+			var elapsed := 0.0
+			var total := float(profile.duration_s)
+			for index in profile.segments.size():
+				var segment: Dictionary = profile.segments[index]
+				var fraction := float(segment.duration_s) / total
+				var end := elapsed + fraction
+				if u <= end or index == profile.segments.size() - 1:
+					var local_u := clampf((u - elapsed) / fraction, 0.0, 1.0)
+					var sample := profile_sample(segment.profile, local_u)
+					return Vector3(sample.x, sample.y / fraction, sample.z / (fraction * fraction))
+				elapsed = end
 	assert(false, "invalid motion profile")
 	return Vector3.ZERO
 
@@ -158,6 +295,28 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var delta: float = profile.to - profile.from
 			return Vector3(profile.from + delta * h, 0.0, 0.0).x
+		"balanced_quintic":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var pulse := 4.0 * h * (1.0 - h)
+			var balance := 4199.0 / 3100.0
+			var delta: float = profile.to - profile.from
+			return Vector3(profile.from + delta * h
+				+ profile.amplitude * pulse * (1.0 - balance * pulse), 0.0, 0.0).x
+		"balanced_quintic_relief":
+			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
+			var pulse := 4.0 * h * (1.0 - h)
+			var balance := 4199.0 / 3100.0
+			var delta: float = profile.to - profile.from
+			var value: float = profile.from + delta * h \
+				+ profile.amplitude * pulse * (1.0 - balance * pulse)
+			var width: float = profile.relief_fraction
+			var window_start := (1.0 - width) * 0.5
+			if u >= window_start and u <= window_start + width:
+				var local_u := (u - window_start) / width
+				var local_h := 10.0 * local_u ** 3 - 15.0 * local_u ** 4 + 6.0 * local_u ** 5
+				var local_pulse := 4.0 * local_h * (1.0 - local_h)
+				value -= profile.relief_amplitude * local_pulse * (1.0 - balance * local_pulse)
+			return Vector3(value, 0.0, 0.0).x
 		"compact_pulse":
 			var h := 10.0 * u ** 3 - 15.0 * u ** 4 + 6.0 * u ** 5
 			var scale: float = 4.0 * profile.amplitude
@@ -182,6 +341,13 @@ static func _profile_value(profile: Dictionary, kind: Variant, u: float) -> floa
 			var bank_delta: float = profile.to - profile.from
 			var bank: float = profile.from + bank_delta * fraction
 			return Vector3(1.0 / cos(bank), 0.0, 0.0).x
+		"plateau_bank_balance":
+			var bank_delta: float = profile.to - profile.from
+			var bank: float = float(profile.from) \
+				+ bank_delta * _plateau_pulse_integral(u) / PLATEAU_PULSE_AREA
+			return Vector3(1.0 / cos(bank), 0.0, 0.0).x
+		"staged":
+			return profile_sample(profile, u).x
 	assert(false, "invalid motion profile")
 	return Vector3.ZERO.x
 
@@ -192,6 +358,11 @@ static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 			return 0.0
 		"quintic":
 			return 1.875 * absf(float(profile.to) - float(profile.from))
+		"balanced_quintic", "balanced_quintic_relief":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
 		"compact_pulse":
 			return 3.5663941463932597 * absf(float(profile.amplitude))
 		"balanced_notch":
@@ -202,6 +373,16 @@ static func profile_peak_abs_derivative_estimate(profile: Dictionary) -> float:
 		"plateau_pulse":
 			return 5.625 * absf(float(profile.amplitude))
 		"bank_balance":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
+		"plateau_bank_balance":
+			var peak := 0.0
+			for index in 257:
+				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
+			return peak
+		"staged":
 			var peak := 0.0
 			for index in 257:
 				peak = maxf(peak, absf(profile_sample(profile, float(index) / 256.0).y))
@@ -228,7 +409,8 @@ static func span(
 	normal_g: Dictionary,
 	lateral_g: Dictionary,
 	drive_g: Dictionary,
-	roll_rate_rad_s: Dictionary
+	roll_rate_rad_s: Dictionary,
+	transition_id: String = ""
 ) -> Dictionary:
 	assert(is_finite(duration_s) and duration_s > 0.0, "span duration must be positive and finite")
 	assert(mode == "moving" or mode == "station", "invalid span mode")
@@ -237,6 +419,19 @@ static func span(
 		match profile.kind:
 			"constant": assert(profile.has("value"), "invalid constant profile")
 			"quintic": assert(profile.has("from") and profile.has("to"), "invalid quintic profile")
+			"balanced_quintic": assert(profile.has("from") and profile.has("to")
+				and profile.has("amplitude") and is_finite(float(profile.from))
+				and is_finite(float(profile.to)) and is_finite(float(profile.amplitude))
+				and float(profile.amplitude) >= 0.0, "invalid balanced quintic profile")
+			"balanced_quintic_relief": assert(profile.has("from") and profile.has("to")
+				and profile.has("amplitude") and profile.has("relief_amplitude")
+				and profile.has("relief_fraction") and is_finite(float(profile.from))
+				and is_finite(float(profile.to)) and is_finite(float(profile.amplitude))
+				and is_finite(float(profile.relief_amplitude))
+				and is_finite(float(profile.relief_fraction)) and float(profile.amplitude) >= 0.0
+				and float(profile.relief_amplitude) >= 0.0
+				and float(profile.relief_fraction) > 0.0 and float(profile.relief_fraction) <= 1.0,
+				"invalid balanced quintic relief profile")
 			"compact_pulse":
 				assert(profile.has("amplitude") and is_finite(float(profile.amplitude)),
 					"invalid compact pulse profile")
@@ -248,6 +443,13 @@ static func span(
 			"bank_balance": assert(profile.has("from") and profile.has("to")
 				and absf(float(profile.from)) < PI * 0.5
 				and absf(float(profile.to)) < PI * 0.5, "invalid bank balance profile")
+			"plateau_bank_balance": assert(profile.has("from") and profile.has("to")
+				and absf(float(profile.from)) < PI * 0.5
+				and absf(float(profile.to)) < PI * 0.5, "invalid plateau bank balance profile")
+			"staged": assert(profile.has("segments") and profile.has("duration_s")
+				and profile.segments is Array and not profile.segments.is_empty()
+				and is_finite(float(profile.duration_s)) and float(profile.duration_s) > 0.0,
+				"invalid staged profile")
 			_: assert(false, "invalid span profile kind")
 	var record := {
 		"span_id": span_id,
@@ -257,6 +459,7 @@ static func span(
 		"lateral_g": lateral_g,
 		"drive_g": drive_g,
 		"roll_rate_rad_s": roll_rate_rad_s,
+		"transition_id": transition_id,
 	}
 	record.make_read_only()
 	return record
@@ -430,6 +633,16 @@ static func _compact_pulse_integral(u: float) -> float:
 	return 10.0 * u ** 4 - 12.0 * u ** 5 + 4.0 * u ** 6 \
 		- (400.0 / 7.0) * u ** 7 + 150.0 * u ** 8 \
 		- (460.0 / 3.0) * u ** 9 + 72.0 * u ** 10 - (144.0 / 11.0) * u ** 11
+
+
+static func _plateau_pulse_integral(u: float) -> float:
+	var edge_u := minf(u, 1.0 - u)
+	if edge_u < 1.0 / 3.0:
+		var shoulder_u := edge_u * 3.0
+		var shoulder_area := 2.5 * shoulder_u ** 4 - 3.0 * shoulder_u ** 5 \
+			+ shoulder_u ** 6
+		return shoulder_area / 3.0 if u <= 0.5 else PLATEAU_PULSE_AREA - shoulder_area / 3.0
+	return u - 1.0 / 6.0
 
 
 static func _empty_trajectory() -> Dictionary:

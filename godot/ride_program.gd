@@ -5,6 +5,7 @@ const Motion := preload("res://motion.gd")
 const RidePlanner := preload("res://ride_planner.gd")
 const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
 const RideReturnSolve := preload("res://ride_return_solve.gd")
+const RideTerrain := preload("res://terrain.gd")
 
 const GENERATOR_VERSION := "time-domain-v1"
 const ROLLING_MPS2 := 0.08
@@ -13,6 +14,10 @@ const COMPACT_PULSE_AREA := Motion.COMPACT_PULSE_AREA
 const COARSE_STEP_S := 0.05
 const FINE_STEP_S := 0.025
 const PRODUCTION_STEP_S := 0.01
+const RETURN_TERRACE_TARGET_AGL_M := 155.0
+const RETURN_TERRACE_HALF_LENGTH_M := 240.0
+const RETURN_TERRACE_HALF_WIDTH_M := 140.0
+const RETURN_TERRACE_MAX_ELEVATION_M := 160.0
 ## The two authored opener/act-one force literals the prefix-closure refusal evidence named
 ## (`ride_planner.gd`, the measured 2026-08-15 table): before the closure solve, +-0.005 on either
 ## moved the dive chord by over 100 m and the prefix could not be placed. They are recipe defaults
@@ -26,17 +31,18 @@ const MATERIAL_ROLE_IDS := [
 	"station-launch", "opener-twisted-drop", "opener-teardrop", "opener-release",
 	"act-one-immelmann", "act-one-cutback", "act-one-loop", "act-one-airtime",
 	"act-one-wave", "climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
-	"outward-dive", "tunnel-lsm3", "camelback", "return-turn-a", "return-height-a",
+	"outward-dive", "tunnel-lsm3", "record-release-turn", "camelback", "return-turn-a", "return-height-a",
 	"return-turn-b", "return-height-b", "terminal-capture-brakes",
 ]
 ## Nominal role lengths, keyed by role id: a plan authors the roles its drawn sequence declares,
-## so the nominal a role is checked against cannot be an index into one fixed twenty-list.
+## so the nominal a role is checked against cannot be an index into one fixed role list.
 const ROLE_NOMINAL_LENGTH_M := {
 	"station-launch": 180.0, "opener-twisted-drop": 620.0, "opener-teardrop": 650.0,
 	"opener-release": 330.0, "act-one-immelmann": 430.0, "act-one-cutback": 310.0,
 	"act-one-loop": 360.0, "act-one-airtime": 260.0, "act-one-wave": 240.0,
 	"climb-lsm2": 600.0, "clifftop-slow-crest": 50.0, "clifftop-outward-rim": 90.0,
-	"outward-dive": 420.0, "tunnel-lsm3": 180.0, "camelback": 1000.0,
+	"outward-dive": 420.0, "tunnel-lsm3": 180.0, "record-release-turn": 365.0,
+	"camelback": 1000.0,
 	"return-turn-a": 480.0, "return-height-a": 420.0, "return-turn-b": 500.0,
 	"return-height-b": 520.0, "terminal-capture-brakes": 230.0,
 }
@@ -132,10 +138,11 @@ static func terrain_story_capability(station_side: int, story: Dictionary = {},
 
 
 static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
-	var plan_check := _validate_plan(plan)
+	var resolved_plan: Dictionary = plan.duplicate(true)
+	var plan_check := _validate_plan(resolved_plan, false)
 	if not plan_check.ok:
 		return plan_check
-	var layout := _layout_from_plan(plan)
+	var layout := _layout_from_plan(resolved_plan)
 	var station_error := _validate_station_layout(layout, initial_state)
 	if not station_error.is_empty():
 		return _failure(station_error, "input")
@@ -145,26 +152,44 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 	var propulsion := PackedInt32Array()
 	# Canonical +Z maps outward for station_side=+1 and inward for -1. Mirror the
 	# authored lateral forces so the shared story always approaches the escarpment.
-	var hand := -float(plan.decisions.station_side)
-	var story := _story_from_plan(plan)
+	var hand := -float(resolved_plan.decisions.station_side)
+	var story := _story_from_plan(resolved_plan)
 	var targets: Dictionary = story.targets
 	# The production span program is built from the plan's own accepted closure controls, so the
 	# ride that gets built and the footprint the generator placed are the same prefix.
 	_add_story_prefix(spans, metadata, gestures, propulsion, hand, story,
-		_prefix_controls_from_plan(plan))
+		_prefix_controls_from_plan(resolved_plan))
+	var fixed_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
+	if not fixed_prefix.get("ok", false):
+		return _failure("upstream return handoff failed integration", "return")
+	var fixed_prefix_state := _last_state(fixed_prefix)
+	var variable_prefix_start := spans.size()
+	var return_hand := -hand
 
-	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
-	_add_camelback(spans, metadata, propulsion, hand)
+	_begin_gesture(gestures, "record-release-turn", spans.size(), "record-release-turn")
+	_add_record_release_turn(spans, metadata, propulsion, return_hand)
 	_end_gesture(gestures, metadata, spans.size() - 1)
 
+	_begin_gesture(gestures, "marquee-camelback", spans.size(), "hill")
+	_add_camelback(spans, metadata, propulsion)
+	_end_gesture(gestures, metadata, spans.size() - 1)
+
+	var variable_prefix_spans: Array = spans.slice(variable_prefix_start)
+	var solved_return := RideReturnSolve._solve_return(fixed_prefix_state, layout,
+		return_hand, RideReturnSolve.RETURN_SEED, targets, variable_prefix_spans)
+	if not solved_return.ok:
+		return solved_return
+	_set_return_prefix_parameters(spans, solved_return.parameters, return_hand)
 	var return_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
 	if not return_prefix.get("ok", false):
 		return _failure("upstream return handoff failed integration", "return")
-	var return_hand := -hand
-	var solved_return := RideReturnSolve._solve_return(_last_state(return_prefix), layout,
-		return_hand, RideReturnSolve.RETURN_SEED, targets)
-	if not solved_return.ok:
-		return solved_return
+	var terrace_result := _stamp_return_terrace(resolved_plan, return_prefix, gestures)
+	if not terrace_result.get("ok", false):
+		return terrace_result
+	resolved_plan = terrace_result.plan
+	var public_plan_check := _validate_plan(resolved_plan)
+	if not public_plan_check.ok:
+		return public_plan_check
 	var settings := _settings(PRODUCTION_STEP_S)
 	_begin_gesture(gestures, "raceway-return", spans.size())
 	_add_raceway(spans, metadata, propulsion, solved_return.parameters, return_hand,
@@ -226,7 +251,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		"ok": true,
 		"errors": PackedStringArray(),
 		"generator_version": GENERATOR_VERSION,
-		"plan": plan.duplicate(true),
+		"plan": resolved_plan,
 		"spans": spans,
 		"span_metadata": metadata,
 		"gesture_spans": gestures,
@@ -268,6 +293,73 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		},
 		"settings": _settings(PRODUCTION_STEP_S),
 	}
+
+
+static func _stamp_return_terrace(
+	plan: Dictionary, route: Dictionary, gestures: Array
+) -> Dictionary:
+	if str(plan.terrain.get("kind", "")) != "material":
+		return {"ok": true, "plan": plan}
+	var camelback_first_span := -1
+	var camelback_last_span := -1
+	for gesture_value in gestures:
+		var gesture: Dictionary = gesture_value
+		if str(gesture.get("story_slot_id", "")) == "marquee-camelback":
+			camelback_first_span = int(gesture.get("first_span", -1))
+			camelback_last_span = int(gesture.get("last_span", -1))
+			break
+	var positions: Variant = route.get("position_m")
+	var tangents: Variant = route.get("tangent")
+	var span_indices: Variant = route.get("span_index")
+	if camelback_first_span < 0 or camelback_last_span < camelback_first_span \
+			or not positions is PackedVector3Array \
+			or not tangents is PackedVector3Array \
+			or not span_indices is PackedInt32Array \
+			or positions.is_empty() or positions.size() != tangents.size() \
+			or positions.size() != span_indices.size():
+		return _failure("accepted return prefix omitted its camelback samples", "return")
+	var maximum_index := -1
+	var maximum_world_y := -INF
+	for sample_index in positions.size():
+		var span_index: int = int(span_indices[sample_index])
+		if span_index < camelback_first_span or span_index > camelback_last_span:
+			continue
+		var position: Vector3 = positions[sample_index]
+		if not position.is_finite():
+			return _failure("accepted return prefix produced a non-finite camelback sample", "return")
+		if position.y > maximum_world_y:
+			maximum_index = sample_index
+			maximum_world_y = position.y
+	if maximum_index < 0:
+		return _failure("accepted return prefix omitted its camelback apex", "return")
+	var apex: Vector3 = positions[maximum_index]
+	var apex_tangent: Vector3 = tangents[maximum_index]
+	var horizontal_tangent := Vector2(apex_tangent.x, apex_tangent.z)
+	if not apex_tangent.is_finite() or horizontal_tangent.length_squared() <= 0.000001:
+		return _failure("accepted camelback apex has no finite horizontal tangent", "return")
+	horizontal_tangent = horizontal_tangent.normalized()
+	var base_terrain: Dictionary = plan.terrain.duplicate(true)
+	base_terrain.erase("return_terrace")
+	var base_height_m := RideTerrain.height(base_terrain, apex.x, apex.z)
+	var elevation_m := apex.y - RETURN_TERRACE_TARGET_AGL_M - base_height_m
+	if not is_finite(base_height_m) or not is_finite(elevation_m) \
+			or elevation_m <= 0.0 or elevation_m > RETURN_TERRACE_MAX_ELEVATION_M:
+		return _failure("return terrace elevation is not finite, positive, or reasonable", "return",
+			{"observed": {"accepted_apex_world_m": apex, "base_terrain_height_m": base_height_m,
+				"target_agl_m": RETURN_TERRACE_TARGET_AGL_M, "elevation_m": elevation_m}})
+	var terrace := {"center_m": Vector2(apex.x, apex.z), "along": horizontal_tangent,
+		"half_length_m": RETURN_TERRACE_HALF_LENGTH_M,
+		"half_width_m": RETURN_TERRACE_HALF_WIDTH_M, "elevation_m": elevation_m}
+	var resolved_plan: Dictionary = plan.duplicate(true)
+	var stamped_terrain: Dictionary = base_terrain.duplicate(true)
+	stamped_terrain["return_terrace"] = terrace
+	resolved_plan["terrain"] = stamped_terrain
+	var planning: Dictionary = resolved_plan.terrain_frame.planning
+	planning["return_terrace"] = {"accepted_apex_world_m": apex,
+		"base_terrain_height_m": base_height_m, "target_agl_m": RETURN_TERRACE_TARGET_AGL_M,
+		"elevation_m": elevation_m, "half_length_m": RETURN_TERRACE_HALF_LENGTH_M,
+		"half_width_m": RETURN_TERRACE_HALF_WIDTH_M, "along": horizontal_tangent}
+	return {"ok": true, "plan": resolved_plan}
 
 
 static func _add_story_prefix(
@@ -412,42 +504,109 @@ static func _add_story_prefix(
 
 
 
-static func _add_camelback(
-	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float
+static func _add_record_release_turn(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float = 1.0,
+	core_duration_s: float = RideReturnSolve.RECORD_RELEASE_CORE_DURATION_S
 ) -> void:
-	var turn := -0.25001368 * hand
+	var bank_rad := hand * RideReturnSolve.RECORD_RELEASE_BANK_RAD
+	var banked_normal := 1.0 / cos(bank_rad)
+	var shoulder_s := 0.8
+	var roll_in := RideReturnSolve._roll_ramp([shoulder_s], 0.0, bank_rad)
+	var roll_out := RideReturnSolve._roll_ramp([shoulder_s], bank_rad, 0.0)
+	_add(spans, metadata, propulsion, "record-release-turn/roll-in", shoulder_s, "moving",
+		Motion.plateau_bank_balance(0.0, bank_rad), 0.0, 0.0, roll_in.roll[0],
+		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-in")
+	_add(spans, metadata, propulsion, "record-release-turn/core", core_duration_s, "moving",
+		banked_normal, 0.0, 0.0, 0.0,
+		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-core")
+	_add(spans, metadata, propulsion, "record-release-turn/roll-out", shoulder_s, "moving",
+		Motion.plateau_bank_balance(bank_rad, 0.0), 0.0, 0.0, roll_out.roll[0],
+		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-out")
+
+
+static func _set_return_prefix_parameters(
+	spans: Array, parameters: Array, hand: float = 1.0
+) -> void:
+	var release_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+	var fall_index := RideReturnSolve.RETURN_SCALAR_IDS.find("camelback_fall_duration_s")
+	if mini(release_index, fall_index) < 0 or maxi(release_index, fall_index) >= parameters.size():
+		return
+	_apply_record_release_parameters(spans, float(parameters[release_index]), hand)
+	_apply_camelback_fall_duration(spans, float(parameters[fall_index]))
+
+
+static func _apply_record_release_parameters(
+	spans: Array, core_duration_s: float, hand: float
+) -> void:
+	var bank_rad := hand * RideReturnSolve.RECORD_RELEASE_BANK_RAD
+	var banked_normal := 1.0 / cos(bank_rad)
+	var shoulder_s := 0.8
+	var roll_in := RideReturnSolve._roll_ramp([shoulder_s], 0.0, bank_rad)
+	var roll_out := RideReturnSolve._roll_ramp([shoulder_s], bank_rad, 0.0)
+	for index in spans.size():
+		var span: Dictionary = spans[index]
+		var span_id := str(span.get("span_id", ""))
+		var duration_s := float(span.get("duration_s", 0.0))
+		var normal: Dictionary = span.normal_g
+		var roll_rate: Dictionary = span.roll_rate_rad_s
+		if span_id == "record-release-turn/roll-in":
+			duration_s = shoulder_s
+			normal = Motion.plateau_bank_balance(0.0, bank_rad)
+			roll_rate = roll_in.roll[0]
+		elif span_id == "record-release-turn/core":
+			duration_s = core_duration_s
+			normal = Motion.constant(banked_normal)
+			roll_rate = Motion.constant(0.0)
+		elif span_id == "record-release-turn/roll-out":
+			duration_s = shoulder_s
+			normal = Motion.plateau_bank_balance(bank_rad, 0.0)
+			roll_rate = roll_out.roll[0]
+		else:
+			continue
+		spans[index] = Motion.span(str(span.span_id), duration_s, str(span.mode), normal,
+			span.lateral_g, span.drive_g, roll_rate, str(span.get("transition_id", "")))
+
+
+static func _apply_camelback_fall_duration(spans: Array, duration_s: float) -> void:
+	for index in spans.size():
+		var span: Dictionary = spans[index]
+		if str(span.get("span_id", "")) != "camelback/fall":
+			continue
+		spans[index] = Motion.span(str(span.span_id), duration_s, str(span.mode), span.normal_g,
+			span.lateral_g, span.drive_g, span.roll_rate_rad_s,
+			str(span.get("transition_id", "")))
+		return
+
+
+static func _add_camelback(
+	spans: Array, metadata: Array, propulsion: PackedInt32Array
+) -> void:
 	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
-	var pullout_hold_s := 0.01
-	var pullup_s := 1.87949032 * 1.33555111055541
-	var unload_s := 3.01169597 * 1.15 - 0.4
+	# This is the last CI point that keeps the balanced-release return on its healthy root family.
+	var pullup_s := 2.560
+	var unload_s := 3.0634503655
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
-	var fall_s := 3.40
-	var bank := -deg_to_rad(18.0) * hand
+	var fall_s := 3.60
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",
-		Motion.quintic(1.0, positive_g), Motion.compact_pulse(turn), 0.0,
-		Motion.compact_pulse(bank / (pullup_s * COMPACT_PULSE_AREA)), "rise")
-	_add(spans, metadata, propulsion, "camelback/rise-hold", 0.4, "moving",
-		positive_g, Motion.compact_pulse(turn), 0.0, 0.0, "rise")
+		Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
-		Motion.compact_pulse(turn), 0.0,
-		Motion.compact_pulse(-bank / (unload_s * COMPACT_PULSE_AREA)), "rise")
+		0.0, 0.0, 0.0, "rise")
+	# Retain the full balanced crest's outer lift while independently relieving its brief centre;
+	# both perturbations have zero area and first moment, so no connector span is introduced.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		negative_g, Motion.compact_pulse(-turn), 0.0,
-		Motion.compact_pulse(-bank / (crest_s * COMPACT_PULSE_AREA)), "crest")
+		Motion.balanced_quintic_relief(negative_g, negative_g * 0.88, 1.53, 0.89, 0.35),
+		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
-		Motion.quintic(negative_g, pullout_g), Motion.compact_pulse(-turn), 0.0,
-		Motion.compact_pulse(bank / (fall_s * COMPACT_PULSE_AREA)), "fall")
-	_add(spans, metadata, propulsion, "camelback/pullout-hold", pullout_hold_s, "moving",
-		pullout_g, 0.0, 0.0, 0.0, "exit")
+		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")
 	_add(spans, metadata, propulsion, "camelback/pullout-release",
-		1.58 - pullout_hold_s, "moving",
+		1.58, "moving",
 		Motion.quintic(pullout_g, 1.0), 0.0, 0.0, 0.0, "exit")
 
 
@@ -483,20 +642,21 @@ static func _add_opener(
 		Motion.quintic(-0.58313246, 4.99988044),
 		Motion.quintic(drop_lateral_g * hand, 0.0), 0.0, 0.0,
 		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-in", unbank_ramp_s, "moving",
-		Motion.quintic(4.99988044, normal_mid_g), 0.0, 0.0,
-		Motion.quintic(0.0, -unbank_peak_rad_s * hand),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-recover", normal_recovery_s, "moving",
-		Motion.quintic(normal_mid_g, 1.0), 0.0, 0.0,
-		Motion.constant(-unbank_peak_rad_s * hand),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-hold",
-		unbank_hold_s - normal_recovery_s, "moving",
-		1.0, 0.0, 0.0, Motion.constant(-unbank_peak_rad_s * hand),
-		"twisted-drop", 0, 2.0, "twisted_drop")
-	_add(spans, metadata, propulsion, "drop/unbank-out", unbank_ramp_s, "moving",
-		1.0, 0.0, 0.0, Motion.quintic(-unbank_peak_rad_s * hand, 0.0),
+	_add(spans, metadata, propulsion, "drop/unbank",
+		2.0 * unbank_ramp_s + unbank_hold_s, "moving",
+		Motion.staged([
+			Motion.quintic(4.99988044, normal_mid_g), Motion.quintic(normal_mid_g, 1.0),
+			Motion.constant(1.0), Motion.constant(1.0)],
+			[unbank_ramp_s, normal_recovery_s, unbank_hold_s - normal_recovery_s,
+				unbank_ramp_s]),
+		0.0, 0.0,
+		Motion.staged([
+			Motion.quintic(0.0, -unbank_peak_rad_s * hand),
+			Motion.constant(-unbank_peak_rad_s * hand),
+			Motion.constant(-unbank_peak_rad_s * hand),
+			Motion.quintic(-unbank_peak_rad_s * hand, 0.0)],
+			[unbank_ramp_s, normal_recovery_s, unbank_hold_s - normal_recovery_s,
+				unbank_ramp_s]),
 		"twisted-drop", 0, 2.0, "twisted_drop")
 
 	var teardrop_shoulder_s := 1.9827842973471
@@ -767,26 +927,30 @@ static func _story_from_plan(plan: Dictionary) -> Dictionary:
 		"targets": targets if targets is Dictionary else {}}
 
 
-static func _validate_plan(plan: Dictionary) -> Dictionary:
+static func _validate_plan(plan: Dictionary, require_return_terrace: bool = true) -> Dictionary:
 	var expected := ["schema_version", "preset_id", "decisions", "terrain_frame", "station",
-		"corridor", "route_length_m", "roles"]
+		"corridor", "route_length_m", "roles", "terrain"]
 	var keys: Array = plan.keys()
 	keys.sort()
 	var sorted_expected := expected.duplicate()
 	sorted_expected.sort()
 	if keys != sorted_expected or plan.get("schema_version") != 1 \
 			or plan.get("preset_id") != "material-v1":
-		return _failure("material-v1 plan must have exactly the reviewed eight fields", "plan")
+		return _failure("material-v1 plan must have exactly the reviewed nine fields", "plan")
 	var decisions: Variant = plan.get("decisions")
 	var terrain_frame: Variant = plan.get("terrain_frame")
+	var terrain_value: Variant = plan.get("terrain")
 	if not decisions is Dictionary or int(decisions.get("station_side", 0)) not in [-1, 1] \
 			or not terrain_frame is Dictionary or not terrain_frame.get("inward") is Vector3 \
 			or not terrain_frame.get("along") is Vector3 or not terrain_frame.get("up") is Vector3 \
 			or not terrain_frame.get("right") is Vector3 \
-			or not terrain_frame.get("planning") is Dictionary:
-		return _failure("material-v1 decisions or terrain frame is incomplete", "plan")
+			or not terrain_frame.get("planning") is Dictionary \
+			or not terrain_value is Dictionary \
+			or str(terrain_value.get("kind", "")) not in ["material", "synthetic"]:
+		return _failure("material-v1 decisions, terrain frame, or terrain stamp is incomplete", "plan")
+	var plan_terrain: Dictionary = terrain_value
 	var planning: Dictionary = terrain_frame.planning
-	# The prefix integration count is a constant of the path that produced the plan, not a budget:
+	# The planning integration count is a constant of the path that produced the plan, not a budget:
 	# one for a fixture built from a single capability, two for production (preflight + closure).
 	if str(planning.get("capability_id", "")).is_empty() \
 			or int(planning.get("planning_integrations", 0)) not in [1, 2] \
@@ -817,6 +981,34 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 	if not RidePlanner.is_legal_sequence(sequence):
 		return _failure("material-v1 role sequence is not grammar-legal", "plan",
 			{"observed": {"sequence": sequence}})
+	var camelback_apex_agl_band: Variant = null
+	for role: Dictionary in roles:
+		if str(role.get("id", "")) != "camelback":
+			continue
+		var geometry: Variant = role.get("geometry", {})
+		if geometry is Dictionary:
+			camelback_apex_agl_band = geometry.get("apex_agl_m")
+		break
+	if not camelback_apex_agl_band is Vector2 \
+			or not camelback_apex_agl_band.is_finite() \
+			or camelback_apex_agl_band.x <= 0.0 \
+			or camelback_apex_agl_band.y <= camelback_apex_agl_band.x \
+			or camelback_apex_agl_band != Vector2(140.0, 170.0):
+		return _failure("material-v1 camelback apex AGL intent is missing or invalid", "plan")
+	if str(plan_terrain.get("kind", "")) == "material" \
+			and not _material_terrain_heightfield_is_valid(plan_terrain):
+		return _failure("material-v1 terrain heightfield inputs are missing or invalid", "plan")
+	if str(plan_terrain.get("kind", "")) == "material" \
+			and require_return_terrace and not plan_terrain.has("return_terrace"):
+		return _failure("material-v1 material terrain is missing its return terrace", "plan")
+	if plan_terrain.has("return_terrace") \
+			and not _return_terrace_is_valid(plan_terrain.get("return_terrace")):
+		return _failure("material-v1 return terrace is missing or invalid", "plan")
+	if str(plan_terrain.get("kind", "")) == "material" \
+			and plan_terrain.has("return_terrace") \
+			and not _return_terrace_planning_is_valid(planning.get("return_terrace"),
+				plan_terrain):
+		return _failure("material-v1 return terrace planning evidence is missing or invalid", "plan")
 	var minimum_sum := 0.0
 	var maximum_sum := 0.0
 	var allocations := {}
@@ -870,23 +1062,110 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 	return {"ok": true, "allocations": allocations}
 
 
+static func _material_terrain_heightfield_is_valid(terrain: Dictionary) -> bool:
+	var edge_normal: Variant = terrain.get("edge_normal")
+	if not edge_normal is Vector2 or not edge_normal.is_finite() \
+			or edge_normal.length_squared() <= 0.0:
+		return false
+	for field in ["edge_offset", "wobble_amplitude", "wobble_wavelength", "apron_height",
+			"apron_width", "face_height", "face_width", "detail_amplitude"]:
+		var value: Variant = terrain.get(field)
+		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)):
+			return false
+	for field in ["wobble_wavelength", "apron_width", "face_width"]:
+		if float(terrain[field]) <= 0.0:
+			return false
+	return typeof(terrain.get("noise_seed")) == TYPE_INT
+
+
+static func _return_terrace_is_valid(terrace_value: Variant) -> bool:
+	if not terrace_value is Dictionary:
+		return false
+	var terrace: Dictionary = terrace_value
+	var center_value: Variant = terrace.get("center_m")
+	var along_value: Variant = terrace.get("along")
+	if not center_value is Vector2 or not center_value.is_finite() \
+			or not along_value is Vector2 or not along_value.is_finite():
+		return false
+	var along: Vector2 = along_value
+	if along.length_squared() < 0.99 or along.length_squared() > 1.01:
+		return false
+	for field in ["half_length_m", "half_width_m", "elevation_m"]:
+		var value: Variant = terrace.get(field)
+		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)) \
+				or float(value) <= 0.0:
+			return false
+	return float(terrace.half_length_m) == 240.0 \
+		and float(terrace.half_width_m) == 140.0 \
+		and float(terrace.elevation_m) <= 160.0
+
+
+static func _return_terrace_planning_is_valid(
+	evidence_value: Variant, terrain: Dictionary
+) -> bool:
+	if not evidence_value is Dictionary:
+		return false
+	var terrace_value: Variant = terrain.get("return_terrace")
+	if not terrace_value is Dictionary:
+		return false
+	var evidence: Dictionary = evidence_value
+	var terrace: Dictionary = terrace_value
+	var apex_value: Variant = evidence.get("accepted_apex_world_m")
+	var evidence_along_value: Variant = evidence.get("along")
+	if not apex_value is Vector3 or not apex_value.is_finite():
+		return false
+	if not evidence_along_value is Vector2 or not evidence_along_value.is_finite():
+		return false
+	var evidence_along: Vector2 = evidence_along_value
+	var apex: Vector3 = apex_value
+	var terrace_center: Vector2 = terrace.center_m
+	var terrace_along: Vector2 = terrace.along
+	if evidence_along.length_squared() < 0.99 or evidence_along.length_squared() > 1.01 \
+			or evidence_along.distance_to(terrace_along) > 0.000001 \
+			or terrace_center.distance_to(Vector2(apex.x, apex.z)) > 0.000001:
+		return false
+	for field in ["base_terrain_height_m", "target_agl_m", "elevation_m",
+			"half_length_m", "half_width_m"]:
+		var value: Variant = evidence.get(field)
+		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)):
+			return false
+	var observed_agl_m: float = apex.y \
+		- (float(evidence.base_terrain_height_m) + float(terrace.elevation_m))
+	var base_terrain: Dictionary = terrain.duplicate(true)
+	base_terrain.erase("return_terrace")
+	var recomputed_base_height_m := RideTerrain.height(base_terrain, apex.x, apex.z)
+	return absf(float(evidence.target_agl_m) - 155.0) <= 0.000001 \
+		and absf(float(evidence.elevation_m) - float(terrace.elevation_m)) <= 0.000001 \
+		and absf(float(evidence.half_length_m) - float(terrace.half_length_m)) <= 0.000001 \
+		and absf(float(evidence.half_width_m) - float(terrace.half_width_m)) <= 0.000001 \
+		and is_finite(recomputed_base_height_m) \
+		and absf(recomputed_base_height_m - float(evidence.base_terrain_height_m)) <= 0.000001 \
+		and absf(observed_agl_m - float(evidence.target_agl_m)) <= 0.000001
+
+
 static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 	var station: Dictionary = plan.station
 	var corridor: Dictionary = plan.corridor
+	var planning: Dictionary = plan.terrain_frame.planning
 	var approach_length: float = corridor.approach_length_m
 	return {
 		"station_position_m": station.position_m,
 		"station_tangent": station.tangent,
 		"station_up": station.up,
 		"station_side": int(plan.decisions.station_side),
+		"terrain": plan.get("terrain", {}),
 		"capture_half_width_m": corridor.half_width_m,
 		"capture_half_height_m": corridor.half_height_m,
 		"route_length_m": plan.route_length_m,
-		# The one role band the return solve observes directly: `return-turn-b` is the role its own
-		# geometry owns outright, so the solve is handed the plan's declared band rather than a copy
-		# of it. A plan that declares no such role hands back the unbounded band and the residual
-		# it feeds is inert.
+		# Root selection consumes the same authored band the public terrain proof validates.
+		"camelback_prominence_m": planning.scale.camel_prominence_m,
+		# The return solve observes the four role bands its own candidate integration owns outright;
+		# each is handed the plan's declared band rather than a copy of it. A plan that declares no
+		# such role hands back the unbounded band and the residual it feeds is inert.
 		"turn_b_length_m": _role_length_band(plan, "return-turn-b"),
+		"record_release_length_m": _role_length_band(plan, "record-release-turn"),
+		"turn_a_length_m": _role_length_band(plan, "return-turn-a"),
+		"height_a_length_m": _role_length_band(plan, "return-height-a"),
 		"reserved_corridor": {
 			"approach_start_m": station.position_m - station.tangent * approach_length,
 			"station_position_m": station.position_m,
@@ -1008,6 +1287,7 @@ static func material_role_spans(spans: Array, sequence: Array = MATERIAL_ROLE_ID
 		"clifftop-outward-rim": ["rim/outward-"],
 		"outward-dive": ["dive/"],
 		"tunnel-lsm3": ["tunnel/"],
+		"record-release-turn": ["record-release-turn/"],
 		"camelback": ["camelback/"],
 		"return-turn-a": ["raceway/turn-a/"],
 		"return-height-a": ["raceway/height-a/"],
@@ -1134,16 +1414,17 @@ static func _add(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array, span_id: String,
 	duration_s: float, mode: String, normal: Variant, lateral: Variant, drive: Variant,
 	roll: Variant, role: String, propulsion_id: int = 0, minimum_speed_mps: float = 2.0,
-	diagnostic_kind: String = ""
+	diagnostic_kind: String = "", transition_id: String = ""
 ) -> void:
 	var normal_profile: Dictionary = normal if normal is Dictionary else Motion.constant(float(normal))
 	var lateral_profile: Dictionary = lateral if lateral is Dictionary else Motion.constant(float(lateral))
 	var drive_profile: Dictionary = drive if drive is Dictionary else Motion.constant(float(drive))
 	var roll_profile: Dictionary = roll if roll is Dictionary else Motion.constant(float(roll))
+	var owned_transition := transition_id if not transition_id.is_empty() else diagnostic_kind
 	spans.append(Motion.span(span_id, duration_s, mode, normal_profile, lateral_profile,
-		drive_profile, roll_profile))
+		drive_profile, roll_profile, owned_transition))
 	metadata.append({"span_id": span_id, "role_id": role,
 		"propulsion_id": propulsion_id,
 		"minimum_speed_mps": minimum_speed_mps,
-		"diagnostic_kind": diagnostic_kind})
+		"diagnostic_kind": diagnostic_kind, "transition_id": owned_transition})
 	propulsion.append(propulsion_id)

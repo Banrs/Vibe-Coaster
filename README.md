@@ -20,7 +20,7 @@ inspection layer (placeholder train, simple track and pillars).
   100–110 m Immelmann (a fictional tallest-inversion record; its real counterpart claim is
   Tormenta's "highest Immelmann" — see `docs/RESEARCH.md`), a helical-leg vertical loop, a
   cutback, 7.8–8.2 km of track.
-- Falcon's Flight's skeleton expressed as twenty ordered material roles — twisted side-drop
+- Falcon's Flight's skeleton expressed as twenty-one ordered material roles — twisted side-drop
   into one flowing low act, a boosted-then-coasting decelerating cliff climb, one crest hold with an
   outward-banked rim turn, a monotonic 90° dive into the tunnel launch and camelback, and a
   force-authored return home with two overbanked turns and two height/airtime beats — with
@@ -68,7 +68,7 @@ godot --headless --path godot --script res://smoke.gd
 
 The smoke gate self-tests the verification toolkit against synthetic signals, runs two of the
 three fidelity suites (`fidelity_tests.gd`, `fidelity_artifact_tests.gd` — the overlay suite
-and the other thirteen focused suites run via `.github/focused-tests.txt` in CI), and builds
+and the other fourteen focused suites run via `.github/focused-tests.txt` in CI), and builds
 multiple seeds twice — identical output, all checks green, on CI's ubuntu baseline as the
 performance floor. It also asserts the record band (top speed 93.9–95.6 m/s), the entry-launch
 peak (3.7–4.1 g), and fleet diversity: floors on how far the fleet's lengths and durations must

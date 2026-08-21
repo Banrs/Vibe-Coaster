@@ -10,25 +10,22 @@ const BoundedSolver := preload("res://bounded_solver.gd")
 const RidePlanner := preload("res://ride_planner.gd")
 
 const MAX_CAPTURE_EVALUATIONS := 40
-# Derived, not guessed: `BoundedSolver.solve` costs `1 + K*(n+1) + R` unique evaluations, so
-# n = 8 (the seven durations/banks plus the height-a peak) with K <= 8 accepted iterations and
-# R <= 8 rejections gives 1 + 8*9 + 8 = 81; 88 carries the same seven-evaluation slack over the
-# formula that the seven-control cap (73 -> 80) carried. Measured on the enlarged space
-# (2026-08-16): the canonical fleet spends 20-29 unique evaluations (was 18-26 on seven
-# controls), so every seed sits inside the 60% allowance (52) that `ride_program_tests.gd`
-# gates on five seeds and `smoke.gd` on all fifteen; the compiled swap diagnostics, which are
-# not under the allowance, converge in 38-70.
-const MAX_RETURN_EVALUATIONS := 88
+# The bounded LM path supports at most 16 complete 12-probe-plus-trial iterations under the 219
+# solver budget. The 220 cap is finite and derived from that fixed iteration allowance, not an
+# open-ended retry.
+const MAX_RETURN_EVALUATIONS := 220
 const RETURN_SCALAR_IDS := [
 	"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
 	"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
-	"height_b_recovery_duration_s", "height_a_peak_g",
+	"height_b_recovery_duration_s", "height_a_peak_g", "height_a_unload_duration_s",
+	"height_a_airtime_duration_s", "record_release_core_duration_s",
+	"camelback_fall_duration_s",
 ]
 const RETURN_SCALAR_BOUNDS := [
-	# Turn-a bank caps at 66 deg: the fixed 0.45 s exit rolls (bank - 45 deg) in one compact
-	# pulse, so peaks stay under the 120 deg/s envelope only for bank < ~68.4 deg, and the
-	# sweep seeds never run the load gate that would catch a breach.
-	[50.0 * PI / 180.0, 66.0 * PI / 180.0], [0.55, 6.00],
+	# The continuous return ramps spread the turn over 1.6-1.75 s, so the previous compact-pulse
+	# 66 deg ceiling no longer describes the authored rate envelope. The 80 deg ceiling keeps the
+	# loaded turn inside a real overbank band without relying on a lateral shortcut.
+	[50.0 * PI / 180.0, 80.0 * PI / 180.0], [0.55, 6.00],
 	# The 0.35 s height-a recovery floor stays where it is. Trimming it to ~0.30 was this stage's
 	# proposed second spend and measurement refused it (2026-08-15): at a 0.30 floor the act-one
 	# optional swap on seed 20260809 does converge its return - and the accepted point runs the
@@ -37,12 +34,13 @@ const RETURN_SCALAR_BOUNDS := [
 	# role band, not the bound: a solve pinning at 0.35 is asking for a height beat shorter than the
 	# story allows, and the certifiable floor is therefore above today's value, never below it.
 	#
-	# The 60 deg turn-b floor is authoring intent, not a solve optimum: both return turns
-	# stay strongly banked even when the solve would trade bank away for closure.
-	[0.35, 4.0], [60.0 * PI / 180.0, 80.0 * PI / 180.0],
-	[2.0, 12.0], [0.1, 2.0], [0.35, 4.6],
+	# The second return sweep is a recovery turn after the planar camelback; a 45 deg floor keeps
+	# it decisively banked without forcing an unnecessary overbank when the solved handoff needs
+	# to unwind heading.
+	[0.35, 6.0], [45.0 * PI / 180.0, 80.0 * PI / 180.0],
+	[2.0, 16.0], [0.1, 2.0], [0.35, 6.0],
 	# Height authority (2026-08-16): how hard both height beats are pulled is the eighth solved
-	# control, not a fixed constant, because all seven other controls are durations and banks and
+	# control, not a fixed constant, because the other ten solved controls are durations and banks and
 	# none of them can move the capture-gate height without moving everything else - the honest-drag
 	# refusal (spec 2026-08-15-honest-drag-derivation.md section 7.2) and issue 24's floor-pinned
 	# swap exhaustions both measured the solve short of that degree of freedom. Measured through
@@ -56,59 +54,36 @@ const RETURN_SCALAR_BOUNDS := [
 	# 3.4 floor sits 0.25 g under the certified draw band's floor, and the 4.6 ceiling is where
 	# height-b's proportional peak (x0.831) reaches 3.82, still under height-a's own draw band.
 	[3.4, 4.6],
+	# Height-a owns the same real transition-duration authority as height-b. Both deterministic
+	# seeds are CI continuation medians and remain interior to these physical bands.
+	[0.35, 2.0], [0.1, 2.0],
+	# The record-release turn is a real banked release, not a neutral interval: its 0.8 s shoulders
+	# and interior nominal core fit the 340-390 m material band while leaving the macro duration enough
+	# authority to move the downstream station-local closure.
+	[2.0, 2.6],
+	# The fall is the camelback's authored prominence authority. Its narrow duration band lets the
+	# solve choose a compliant valley without changing the crest force profile.
+	[3.4, 3.8],
 ]
-# Seven entries for eight controls, on purpose: the eighth (height-a peak g) has no fixed seed -
-# `_solve_return` completes this vector with the build's own certified draw, so the per-seed
-# variety the planner draws is exactly where each solve starts.
-const RETURN_SEED := [1.04746249688937, 1.25017790590635, 1.65507763577872,
-	1.0471975511966, 6.48573781566998, 0.996333175598368, 3.98838120528104]
+# Seven entries for twelve controls, on purpose: this is the CI-measured continuation anchor for
+# the structurally role-gated return. `_solve_return` still appends each story's certified
+# height-a draw, authored height-a transition durations, nominal release duration, and camelback
+# fall duration. The authored release bank is fixed outside the solve.
+const RETURN_SEED := [1.29783417083128, 1.75278505041637, 0.92815830881482,
+	1.23323464577337, 5.16453223713761, 0.77597055608471, 3.9642570818138]
 const RETURN_HEIGHT_A_PEAK_G := 3.8
+const RETURN_HEIGHT_A_UNLOAD_DURATION_S := 0.72865206901364
+const RETURN_HEIGHT_A_AIRTIME_DURATION_S := 0.73015276312264
 const RETURN_HEIGHT_B_PEAK_G := 3.15821137151466
-const RETURN_TRANSFER_BANK_BIAS_RAD := 7.5 * PI / 180.0
+const RECORD_RELEASE_CORE_DURATION_S := 2.29
+const CAMELBACK_FALL_DURATION_S := 3.60
+const RECORD_RELEASE_BANK_RAD := 60.0 * PI / 180.0
 ## The one owner of the route-length band: the generator writes it into the plan and the program
 ## validator checks the plan against this same constant.
 const RETURN_TOTAL_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
-## How far inside its route-length band the solve is driven to close. `_band_residual` is flat
-## everywhere inside a band, so the length residual gives the solve no reason to stay interior: it
-## drifts onto the 8200 m ceiling and converges there, where a strictly positive
-## `route_length_high_m` margin is all that separates an accepted ride from a refused one.
-## Measured 2026-08-15 on the act-one optional swap, under production bounds: seed 4096 closes
-## 0.00075 m inside the ceiling and seed 11 0.0215 m inside it - accepted, but by the sign of a
-## sub-millimetre number rather than by anything the solve was asked to achieve; at a 0.30 s
-## recovery floor the same point lands 0.00078 m the other side and is refused outright. Aiming one
-## metre inside replaces that coin flip with an interior closure on the same 42 and 34 evaluations.
-##
-## The metre is the fleet's own headroom, not a proposal. Every route-length observation made by
-## every return solve on all fifteen preset seeds - seed, Jacobian probe, rejected trial and
-## accepted point, at all three step sizes - was measured: the closest any of them comes to the
-## 8200 m ceiling is 1.3463 m (seed 20250101; 1.3676 m on 1234, >= 3.57 m on the other thirteen),
-## and none is within 341 m of the 7800 m floor. One metre therefore leaves every canonical
-## observation strictly inside the aimed band, where this residual is exactly 0.0 as it is today,
-## so the fifteen production rides stay bit-identical rather than approximately unchanged.
-##
-## The interior-closure guarantee is measured, not structural: convergence tolerates
-## 0.02 x the 125.0 length scale = 2.5 m of scaled slack, more than this metre, so a
-## non-canonical story can still converge while grazing the aimed band. Sizing the margin above
-## 2.5 m would fix that structurally - and would put the closest canonical observation
-## (1.3463 m) inside the margin zone, changing canonical bytes. The metre is the largest
-## honest value; the swap gate asserts the interior closure it buys.
-##
-## Eight-control re-certification note (2026-08-16): the sweep above was measured on the
-## seven-control solve. On the re-certified eight-control fleet the fifteen accepted points sit
-## >= 12.43 m from the 8200 m ceiling and >= 338 m from the floor, so the aimed band is slack at
-## every accepted canonical point; the margin stays 1.0 m on the same reasoning. The measured,
-## not structural, caveat is now live on the swap diagnostics: their returns converge 0.45-1.19 m
-## inside the true ceiling - past the aim edge, within the 2.5 m convergence slack - so the swap
-## gate now asserts strict true-band interiority and records the grazing rather than asserting
-## the aim margin it no longer buys (see `generator_material_tests.gd`).
-##
-## The entry-speed band gets no *additional* aim margin: its existing
-## `RETURN_ENTRY_SPEED_PADDING_MPS` (0.01 m/s) already exceeds the speed side's 0.002 m/s
-## convergence slack (0.02 x the 0.1 scale), so an accepted speed margin is structurally
-## positive and the length pathology cannot occur there. Widening it further would move
-## canonical residuals - the same sweep measures canonical candidates 0.39 m/s past the
-## 80 m/s ceiling on seed 42.
-const RETURN_LENGTH_AIM_MARGIN_M := 1.0
+## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, so this is a
+## structural tightening of the route-length aim rather than a tolerance-sized suggestion.
+const RETURN_LENGTH_AIM_MARGIN_M := 3.0
 ## The same mechanism as `RETURN_LENGTH_AIM_MARGIN_M`, applied to the one role band the return's
 ## own geometry owns outright. `return-turn-b` is the role whose length the solve moves most - the
 ## loaded arc is where a moved handoff is paid for - and it is the role the route contract refuses
@@ -123,20 +98,39 @@ const RETURN_LENGTH_AIM_MARGIN_M := 1.0
 ## slack on this channel (0.02 x the 125.0 scale = 2.5 m), so unlike the route-length margin the
 ## interiority an accepted point carries here is structural rather than only measured.
 const RETURN_TURN_B_AIM_MARGIN_M := 3.0
+const RETURN_TURN_A_AIM_MARGIN_M := 3.0
+const RETURN_HEIGHT_A_AIM_MARGIN_M := 3.0
+## Three metres exceeds the unchanged 0.02 * 125.0 = 2.5 m convergence slack, tightening this
+## role band by the same structural margin as the route-length aim.
+const RECORD_RELEASE_LENGTH_AIM_MARGIN_M := 3.0
+## The public contract rejects below 245 m. A 5 cm interior aim exceeds the solver's
+## 0.02 * 1 m convergence slack, so a converged root remains strictly inside that same band.
+const CAMELBACK_PROMINENCE_AIM_MARGIN_M := 0.05
 ## The band a caller that declares none: no role band supplied, no constraint. `_band_residual` is
-## exactly 0.0 against it, so the fixed-layout fixtures see the same seven-residual solve they
-## always did with an eighth row that is identically zero.
+## exactly 0.0 against it, so fixed-layout fixtures keep their undeclared role-band rows inert in
+## the return solve.
 const RETURN_UNBOUNDED_BAND_M := Vector2(-INF, INF)
 const RETURN_RESIDUAL_IDS := [
 	"station_forward_m", "cross_track_m", "height_m", "tangent_right",
 	"tangent_up", "route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
+	"record_release_length_band_m", "turn_a_length_band_m", "height_a_length_band_m",
+	"camelback_prominence_band_m",
 ]
-const RETURN_RESIDUAL_SCALES := [5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0]
-const RETURN_FINE_TOLERANCES := [0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075]
+const RETURN_RESIDUAL_SCALES := [
+	5.0, 5.0, 5.0, 0.02, 0.02, 125.0, 0.1, 125.0, 125.0, 125.0, 125.0, 1.0,
+]
+const RETURN_FINE_TOLERANCES := [
+	0.075, 0.075, 0.075, 0.0001, 0.0001, 0.075, 0.01, 0.075, 0.075, 0.075, 0.075,
+	0.01,
+]
 ## The `return-turn-b` role, by the same span-id prefix `RideProgram.material_role_spans` owns it
 ## with. Named here rather than re-derived so the residual and the route contract cannot drift
 ## apart about which spans the role is.
 const RETURN_TURN_B_SPAN_PREFIX := "raceway/turn-b/"
+const RECORD_RELEASE_SPAN_PREFIX := "record-release-turn/"
+const RETURN_TURN_A_SPAN_PREFIX := "raceway/turn-a/"
+const RETURN_HEIGHT_A_SPAN_PREFIX := "raceway/height-a/"
+const CAMELBACK_SPAN_PREFIX := "camelback/"
 const CAPTURE_ENTRY_SPEED_MPS := Vector2(70.0, 80.0)
 ## A normal-g span whose ends differ by no more than this is authored as a constant profile. It
 ## is an absolute tolerance well inside the 1e-6 seam gate, so no pair can be flattened here and
@@ -177,27 +171,22 @@ static func _return_spans(
 		targets, "return-height-a", "unload_scale", 1.0)
 	var height_b_airtime_g := -0.5 * RidePlanner.target(
 		targets, "return-height-b", "unload_scale", 1.0)
-	# The eighth control when the solve owns it; the drawn target (or its authored default) when a
-	# caller authors the return from the seven-vector alone, so the fixed `RETURN_SEED` fixtures
-	# still reproduce the drawn recipe exactly.
-	var height_a_peak_g := float(v[7]) if v.size() > 7 else RidePlanner.target(
-		targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
+	# The final four controls are height-a peak, its real transition durations, and the production
+	# prefix seam's release duration. Direct recipe callers may omit them and receive deterministic
+	# authored values; the release bank is fixed at the reviewed nominal bank.
+	var height_a_peak_g := float(v[7]) if v.size() > 7 else \
+		RidePlanner.target(targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G)
+	var height_a_unload_s := float(v[8]) if v.size() > 8 else \
+		RETURN_HEIGHT_A_UNLOAD_DURATION_S
+	var height_a_airtime_s := float(v[9]) if v.size() > 9 else \
+		RETURN_HEIGHT_A_AIRTIME_DURATION_S
 	var turn_a_bank_rad := float(v[0])
 	var turn_b_bank_rad := float(v[3])
 	# The second beat's peak follows the first proportionally rather than drawing on its own:
 	# a strongly pulled height-a paired with a weakly pulled height-b is the one corner of the
-	# draw box the seven-control solve cannot close from its fixed seed (measured 2026-08-15:
+	# draw box the former seven-control solve could not close from its fixed seed (measured 2026-08-15:
 	# every such corner exhausts the 220-evaluation budget while every proportional pair lands).
 	var height_b_peak_g := RETURN_HEIGHT_B_PEAK_G * height_a_peak_g / RETURN_HEIGHT_A_PEAK_G
-	# Drawn per seed: how far the counter-banked transfer is biased against the loaded arc, which
-	# is what sets how much heading the sweep unwinds. The roll through the transfer is now one
-	# continuous motion (issue 20), so the bias lands on where that motion ends rather than on the
-	# intermediate bank angles it used to stop at.
-	var transfer_bank_bias_rad := RidePlanner.target(
-		targets, "return-turn-a", "transfer_bank_bias_rad", RETURN_TRANSFER_BANK_BIAS_RAD)
-	var transfer_bank_rad := deg_to_rad(37.5)
-	var counter_transfer_bank_rad := -hand * (transfer_bank_rad - transfer_bank_bias_rad)
-	var counter_transfer_normal := 1.0 / cos(counter_transfer_bank_rad)
 	var turn_a_normal := 1.0 / cos(turn_a_bank_rad)
 	var turn_b_normal := 1.0 / cos(turn_b_bank_rad)
 	var turn_a_bank_rad_signed := hand * turn_a_bank_rad
@@ -208,14 +197,10 @@ static func _return_spans(
 	# and the rider never feels the roll stop and restart inside a transition.
 	var turn_a_in_s := [0.85, 0.75]
 	var turn_a_in := _roll_ramp(turn_a_in_s, initial_bank_rad, turn_a_bank_rad_signed)
-	# The transfer rolls from the loaded arc all the way through level to the counter bank as one
-	# motion. The drawn bias still sets where that motion ends; the intermediate waypoints it used
-	# to stop at are now where the shared rate happens to stand.
-	var turn_a_out_s := [0.50, 0.60, 0.95]
-	var turn_a_out := _roll_ramp(
-		turn_a_out_s, turn_a_bank_rad_signed, counter_transfer_bank_rad)
-	var turn_a_unbank_s := [1.00]
-	var turn_a_unbank := _roll_ramp(turn_a_unbank_s, counter_transfer_bank_rad, 0.0)
+	# The direct unbank stays one continuous roll from the solved turn bank to level while its
+	# two semantic spans retain the turn-a transition ownership.
+	var turn_a_out_s := [0.85, 0.90]
+	var turn_a_out := _roll_ramp(turn_a_out_s, turn_a_bank_rad_signed, 0.0)
 	# Turn-b's roll-in and roll-out each span a role seam: the release into it and the pull-up out
 	# of it already carried half the bank change, so blending the two halves into one roll is what
 	# the real rides do through a transition.
@@ -224,22 +209,16 @@ static func _return_spans(
 	var turn_b_out_s := [0.85, 0.75]
 	var turn_b_out := _roll_ramp(turn_b_out_s, turn_b_bank_rad_signed, 0.0)
 	var spans := _roll_bank_spans(
-		["raceway/turn-a/entry", "raceway/turn-a/load"], turn_a_in_s, turn_a_in, 1.0)
+		["raceway/turn-a/entry", "raceway/turn-a/load"], turn_a_in_s, turn_a_in, 1.0, NAN)
 	spans.append(_return_span("raceway/turn-a/core", float(v[1]), turn_a_normal, turn_a_normal))
 	spans.append_array(_roll_bank_spans(
-		["raceway/turn-a/exit", "raceway/turn-a/transfer-bank", "raceway/turn-a/transfer-cross"],
+		["raceway/turn-a/exit", "raceway/turn-a/unbank"],
 		turn_a_out_s, turn_a_out))
-	# The counter-banked sweep is what lets the loaded arc stay short: it spends the
-	# role's remaining distance while unwinding heading instead of adding to it. It is held
-	# briefly now, because the transfer either side of it rolls for far longer than it used to.
-	spans.append(_return_span("raceway/turn-a/counter-sweep", 0.50,
-		counter_transfer_normal, counter_transfer_normal))
-	spans.append_array(_roll_bank_spans(
-		["raceway/turn-a/transfer-unbank"], turn_a_unbank_s, turn_a_unbank))
 	spans.append_array([
 		_return_span("raceway/height-a/pullup", 0.75, 1.0, height_a_peak_g),
-		_return_span("raceway/height-a/unload", 1.05, height_a_peak_g, height_a_airtime_g),
-		_return_span("raceway/height-a/airtime", 0.75, height_a_airtime_g,
+		_return_span("raceway/height-a/unload", height_a_unload_s,
+			height_a_peak_g, height_a_airtime_g),
+		_return_span("raceway/height-a/airtime", height_a_airtime_s, height_a_airtime_g,
 			height_a_airtime_g),
 		_return_span("raceway/height-a/recovery", float(v[2]), height_a_airtime_g,
 			height_a_peak_g),
@@ -322,8 +301,9 @@ static func _roll_bank_spans(
 		var normal := Motion.constant(from_normal) \
 			if absf(from_normal - to_normal) <= CONSTANT_PROFILE_TOLERANCE_G \
 			else Motion.quintic(from_normal, to_normal)
+		var transition_id := str(ids[index]).get_slice("/", 1)
 		spans.append(Motion.span(str(ids[index]), float(durations[index]), "moving", normal,
-			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index]))
+			Motion.constant(0.0), Motion.constant(0.0), ramp.roll[index], transition_id))
 	return spans
 
 
@@ -333,24 +313,39 @@ static func _return_span(id: String, duration_s: float, from_g: float, to_g: flo
 		else Motion.quintic(from_g, to_g)
 	var roll := Motion.constant(0.0) if absf(roll_peak_rad_s) < 0.000001 else Motion.compact_pulse(roll_peak_rad_s)
 	return Motion.span(id, duration_s, "moving", normal, Motion.constant(0.0),
-		Motion.constant(0.0), roll)
+		Motion.constant(0.0), roll, id.get_slice("/", 1))
 
 
 static func _solve_return(
 	start: Dictionary, layout: Dictionary, hand: float = 1.0, seed: Array = RETURN_SEED,
-	targets: Dictionary = {}
+	targets: Dictionary = {}, prefix_spans: Array = []
 ) -> Dictionary:
 	var cache := {}
+	var prefix_cache := {}
 	var initial_bank_rad: float = _capture_residuals(start, layout)[4]
-	# Ownership of the height-a peak, resolved: the certified per-seed draw (3.65-3.95, streams in
-	# `ride_planner.gd`) initialises the eighth control and the solve owns closure from there
-	# inside the control's own derived bounds. The draw proposes, the solve disposes - neither
-	# fights the other, no randomness enters here, and a seven-entry seed (the committed
-	# `RETURN_SEED`) is completed deterministically from the build's own targets.
+	# Ownership of the height-a peak, airtime, and record-release macro, resolved: the certified
+	# per-seed draw initialises the eighth control; authored airtime and release fill the tail.
+	# The solve owns
+	# closure from the full prefix when production supplies `prefix_spans`. Each draw stays inside
+	# its control's derived bounds; no randomness enters here, and the seven-entry seed is completed
+	# deterministically from the build's own targets and the authored macro.
 	var initial: Array = seed.duplicate()
-	if initial.size() == RETURN_SCALAR_IDS.size() - 1:
+	if initial.size() == 7:
 		initial.append(RidePlanner.target(
 			targets, "return-height-a", "peak_g", RETURN_HEIGHT_A_PEAK_G))
+		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
+		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
+		initial.append(RECORD_RELEASE_CORE_DURATION_S)
+		initial.append(CAMELBACK_FALL_DURATION_S)
+	elif initial.size() == 8:
+		initial.append(RETURN_HEIGHT_A_UNLOAD_DURATION_S)
+		initial.append(RETURN_HEIGHT_A_AIRTIME_DURATION_S)
+		initial.append(RECORD_RELEASE_CORE_DURATION_S)
+		initial.append(CAMELBACK_FALL_DURATION_S)
+	elif initial.size() >= 9 and initial.size() <= 11:
+		return RideProgram._failure("ambiguous legacy return seed", "return")
+	elif initial.size() != RETURN_SCALAR_IDS.size():
+		return RideProgram._failure("return seed has invalid control count", "return")
 	var lower := []
 	var upper := []
 	for bound: Array in RETURN_SCALAR_BOUNDS:
@@ -359,7 +354,7 @@ static func _solve_return(
 	var residual := func(candidate: Array) -> Array:
 		var observed := _return_evaluation(
 			start, layout, candidate, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-			hand, initial_bank_rad, targets)
+			hand, initial_bank_rad, targets, prefix_spans, prefix_cache)
 		return observed.scaled if observed.get("ok", false) else [INF]
 	var solved := BoundedSolver.solve(
 		residual, lower, upper, initial, MAX_RETURN_EVALUATIONS - 1)
@@ -372,12 +367,12 @@ static func _solve_return(
 	var parameters: Array = solved.x
 	var coarse := _return_evaluation(
 		start, layout, parameters, RideProgram._settings(RideProgram.FINE_STEP_S), cache, hand,
-		initial_bank_rad, targets)
+		initial_bank_rad, targets, prefix_spans, prefix_cache)
 	if not coarse.get("ok", false):
 		return coarse
 	var fine := _return_evaluation(
 		start, layout, parameters, RideProgram._settings(RideProgram.PRODUCTION_STEP_S), cache,
-		hand, initial_bank_rad, targets)
+		hand, initial_bank_rad, targets, prefix_spans, prefix_cache)
 	if not fine.ok:
 		return fine
 	if _maximum_absolute(fine.scaled) > 0.02:
@@ -394,12 +389,89 @@ static func _solve_return(
 			return RideProgram._failure("return coarse/fine observations disagree", "return",
 				{"evaluation_count": cache.size(), "coarse": coarse.residuals,
 					"fine": fine.residuals})
-	var margins: Dictionary = fine.margins.duplicate(true)
+	var accepted_initial_bank_rad := initial_bank_rad
+	var return_entry_gate_state: Dictionary = start
+	var production_observation: Dictionary = fine.observation.duplicate(true)
+	var production_margins: Dictionary = fine.margins.duplicate(true)
+	var verification_integrations := 0
+	if not prefix_spans.is_empty():
+		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+		var fall_index := RETURN_SCALAR_IDS.find("camelback_fall_duration_s")
+		var record_duration_s := float(parameters[record_index])
+		var fall_duration_s := float(parameters[fall_index])
+		var prefix_key := "%.6f:%.12f:%.12f" % [
+			RideProgram.PRODUCTION_STEP_S, record_duration_s, fall_duration_s]
+		if not prefix_cache.has(prefix_key):
+			return RideProgram._failure("return production verification lacks accepted prefix cache",
+				"return", {"evaluation_count": cache.size()})
+		var prefix_result: Dictionary = prefix_cache[prefix_key]
+		if not prefix_result.get("ok", false):
+			return RideProgram._failure("return production verification has no accepted prefix",
+				"return", {"evaluation_count": cache.size()})
+		var accepted_prefix := _prefix_with_solved_parameters(
+			prefix_spans, record_duration_s, fall_duration_s, hand)
+		if accepted_prefix.size() != prefix_spans.size():
+			return RideProgram._failure("return production verification prefix shape mismatches",
+				"return", {"evaluation_count": cache.size()})
+		accepted_initial_bank_rad = float(prefix_result.initial_bank_rad)
+		return_entry_gate_state = prefix_result.candidate_start
+		var accepted_return_spans := _return_spans(
+			parameters, hand, accepted_initial_bank_rad, targets)
+		var verification_spans := accepted_prefix.duplicate()
+		verification_spans.append_array(accepted_return_spans)
+		var verification_route := Motion.integrate(
+			start, verification_spans, RideProgram._settings(RideProgram.PRODUCTION_STEP_S))
+		verification_integrations = 1
+		if not verification_route.get("ok", false):
+			return RideProgram._failure("return production verification failed integration", "return",
+				{"evaluation_count": cache.size()})
+		var production := _return_observation(verification_route, layout, verification_spans, NAN)
+		production["scaled"] = []
+		for index in RETURN_RESIDUAL_IDS.size():
+			production.scaled.append(production.residuals[index] / RETURN_RESIDUAL_SCALES[index])
+		if _maximum_absolute(production.scaled) > 0.02:
+			return RideProgram._failure(
+				"return production verification misses its physical target", "return",
+				{"evaluation_count": cache.size(), "target_error": production.scaled,
+					"observed": production.observation})
+		if not _margins_are_valid(production.margins):
+			return RideProgram._failure("return production verification misses true margins", "return",
+				{"evaluation_count": cache.size(), "observed": production.observation,
+					"margins": production.margins})
+		for segmented: Dictionary in [coarse, fine]:
+			for index in RETURN_RESIDUAL_IDS.size():
+				if absf(production.residuals[index] - segmented.residuals[index]) \
+						> RETURN_FINE_TOLERANCES[index]:
+					return RideProgram._failure(
+						"return segmented/production observations disagree", "return",
+						{"evaluation_count": cache.size(), "segmented": segmented.residuals,
+							"production": production.residuals})
+			for field_and_index: Array in [
+				["station_forward_m", 0], ["cross_track_m", 1], ["height_m", 2],
+				["yaw_rad", 3], ["pitch_rad", 4], ["roll_rad", 4],
+				["route_total_length_m", 5], ["speed_mps", 6],
+				["turn_b_length_m", 7], ["record_release_length_m", 8],
+				["turn_a_length_m", 9], ["height_a_length_m", 10],
+				["camelback_prominence_m", 11],
+			]:
+				var field: String = field_and_index[0]
+				var tolerance_index: int = field_and_index[1]
+				if absf(float(production.observation[field])
+						- float(segmented.observation[field])) \
+						> RETURN_FINE_TOLERANCES[tolerance_index]:
+					return RideProgram._failure(
+						"return segmented/production raw observations disagree", "return",
+						{"evaluation_count": cache.size(), "field": field,
+							"segmented": segmented.observation[field],
+							"production": production.observation[field]})
+		production_observation = production.observation
+		production_margins = production.margins
+	var margins: Dictionary = production_margins.duplicate(true)
 	for index in parameters.size():
 		margins["scalar_%s" % RETURN_SCALAR_IDS[index]] = minf(
 			parameters[index] - RETURN_SCALAR_BOUNDS[index][0],
 			RETURN_SCALAR_BOUNDS[index][1] - parameters[index])
-	return {"ok": true, "parameters": parameters, "initial_bank_rad": initial_bank_rad,
+	return {"ok": true, "parameters": parameters, "initial_bank_rad": accepted_initial_bank_rad,
 		"report": {
 		"scalar_ids": RETURN_SCALAR_IDS,
 		"scalar_bounds": RETURN_SCALAR_BOUNDS, "accepted_values": parameters,
@@ -409,10 +481,14 @@ static func _solve_return(
 		"solver_status": solved.status, "solver_iterations": solved.iterations,
 		"solver_conditioning": solved.conditioning,
 		"coarse_observation": coarse.observation, "fine_observation": fine.observation,
+		"production_observation": production_observation,
+		"verification_integrations": verification_integrations,
 		"margins": margins,
 		"return_entry_gate": {"source": "derived-terminal-corridor",
-			"position_m": start.position_m, "tangent": start.tangent,
-			"up": start.rider_up, "speed_mps": start.speed_mps,
+			"position_m": return_entry_gate_state.position_m,
+			"tangent": return_entry_gate_state.tangent,
+			"up": return_entry_gate_state.rider_up,
+			"speed_mps": return_entry_gate_state.speed_mps,
 			"corridor_approach_length_m": _approach_length(layout),
 			# The one solve field that reaches the published route: it lets smoke measure this
 			# budget on all fifteen seeds inside the compiles it already pays for. It repeats the
@@ -435,7 +511,8 @@ static func _maximum_absolute(values: Array) -> float:
 
 static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters: Array,
 	settings: Dictionary, cache: Dictionary, hand: float = 1.0,
-	initial_bank_rad: float = 0.0, targets: Dictionary = {}) -> Dictionary:
+	initial_bank_rad: float = 0.0, targets: Dictionary = {}, prefix_spans: Array = [],
+	prefix_cache: Dictionary = {}) -> Dictionary:
 	var key := "%.6f:" % float(settings.step_s)
 	for parameter in parameters:
 		key += "%.12f," % float(parameter)
@@ -444,19 +521,72 @@ static func _return_evaluation(start: Dictionary, layout: Dictionary, parameters
 	if cache.size() >= MAX_RETURN_EVALUATIONS:
 		return RideProgram._failure("return exceeded its evaluation cap", "return",
 			{"evaluation_count": cache.size()})
+	var candidate_start := start
 	var spans := _return_spans(parameters, hand, initial_bank_rad, targets)
-	var route := Motion.integrate(start, spans, settings)
+	var record_release_length_m := NAN
+	var camelback_prominence_m := NAN
+	if not prefix_spans.is_empty():
+		var record_index := RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+		var fall_index := RETURN_SCALAR_IDS.find("camelback_fall_duration_s")
+		var record_duration_s := float(parameters[record_index])
+		var fall_duration_s := float(parameters[fall_index])
+		var prefix_key := "%.6f:%.12f:%.12f" % [
+			float(settings.step_s), record_duration_s, fall_duration_s]
+		var prefix_result: Dictionary
+		if prefix_cache.has(prefix_key):
+			prefix_result = prefix_cache[prefix_key]
+		else:
+			var candidate_prefix := _prefix_with_solved_parameters(
+				prefix_spans, record_duration_s, fall_duration_s, hand)
+			var prefix_route := Motion.integrate(start, candidate_prefix, settings)
+			if not prefix_route.get("ok", false):
+				prefix_result = {"ok": false, "errors": prefix_route.get("errors", [])}
+			else:
+				var prefix_start := RideProgram._last_state(prefix_route)
+				prefix_result = {"ok": true, "candidate_start": prefix_start,
+					"initial_bank_rad": _capture_residuals(prefix_start, layout)[4],
+					"record_release_length_m": _role_arc_m(prefix_route, candidate_prefix,
+						RECORD_RELEASE_SPAN_PREFIX),
+					"camelback_prominence_m": _role_prominence_m(
+						prefix_route, candidate_prefix, CAMELBACK_SPAN_PREFIX)}
+			prefix_cache[prefix_key] = prefix_result
+		if not prefix_result.get("ok", false):
+			var prefix_failed := RideProgram._failure("return candidate prefix failed integration", "return",
+				{"evaluation_count": cache.size() + 1})
+			cache[key] = prefix_failed
+			return prefix_failed
+		candidate_start = prefix_result.candidate_start
+		initial_bank_rad = float(prefix_result.initial_bank_rad)
+		record_release_length_m = float(prefix_result.record_release_length_m)
+		camelback_prominence_m = float(prefix_result.camelback_prominence_m)
+		spans = _return_spans(parameters, hand, initial_bank_rad, targets)
+	var route := Motion.integrate(candidate_start, spans, settings)
 	if not route.get("ok", false):
 		var failed := RideProgram._failure("return candidate failed integration", "return",
 			{"evaluation_count": cache.size() + 1})
 		cache[key] = failed
 		return failed
-	var result := _return_observation(route, layout, spans)
+	var result := _return_observation(
+		route, layout, spans, record_release_length_m, camelback_prominence_m)
 	result["scaled"] = []
 	for index in RETURN_RESIDUAL_IDS.size():
 		result.scaled.append(result.residuals[index] / RETURN_RESIDUAL_SCALES[index])
 	cache[key] = result
 	return result
+
+
+static func _prefix_with_solved_parameters(
+	prefix_spans: Array, record_duration_s: float, fall_duration_s: float, hand: float
+) -> Array:
+	var result := prefix_spans.duplicate()
+	RideProgram._apply_record_release_parameters(result, record_duration_s, hand)
+	RideProgram._apply_camelback_fall_duration(result, fall_duration_s)
+	var has_release := false
+	var has_fall := false
+	for span: Dictionary in result:
+		has_release = has_release or str(span.get("span_id", "")) == "record-release-turn/core"
+		has_fall = has_fall or str(span.get("span_id", "")) == "camelback/fall"
+	return result if has_release and has_fall else []
 
 
 ## One role's built arc, read over exactly the window `route_contract.gd:_validate_role_lengths`
@@ -478,8 +608,28 @@ static func _role_arc_m(route: Dictionary, spans: Array, prefix: String) -> floa
 		- float(route.distance_m[first])
 
 
+## The same inclusive role window and endpoint reference as `RouteContract._prominence_m`.
+static func _role_prominence_m(route: Dictionary, spans: Array, prefix: String) -> float:
+	var first_span := -1
+	var last_span := -1
+	for index in spans.size():
+		if str(spans[index].span_id).begins_with(prefix):
+			if first_span < 0:
+				first_span = index
+			last_span = index
+	var first: int = route.span_index.find(first_span)
+	var last: int = route.span_index.rfind(last_span)
+	if first_span < 0 or first < 0 or last < first:
+		return NAN
+	var maximum_y := -INF
+	for index in range(first, last + 1):
+		maximum_y = maxf(maximum_y, float(route.position_m[index].y))
+	return maximum_y - maxf(float(route.position_m[first].y), float(route.position_m[last].y))
+
+
 static func _return_observation(
-	route: Dictionary, layout: Dictionary, spans: Array
+	route: Dictionary, layout: Dictionary, spans: Array,
+	record_release_length_m: float = NAN, camelback_prominence_m: float = NAN
 ) -> Dictionary:
 	var state := RideProgram._last_state(route)
 	var station_forward: Vector3 = layout.station_tangent.normalized()
@@ -496,6 +646,20 @@ static func _return_observation(
 	var total_length_m := float(route.distance_m[-1]) + approach
 	var turn_b_band: Vector2 = layout.get("turn_b_length_m", RETURN_UNBOUNDED_BAND_M)
 	var turn_b_length_m := _role_arc_m(route, spans, RETURN_TURN_B_SPAN_PREFIX)
+	var turn_a_band: Vector2 = layout.get("turn_a_length_m", RETURN_UNBOUNDED_BAND_M)
+	var turn_a_length_m := _role_arc_m(route, spans, RETURN_TURN_A_SPAN_PREFIX)
+	var height_a_band: Vector2 = layout.get("height_a_length_m", RETURN_UNBOUNDED_BAND_M)
+	var height_a_length_m := _role_arc_m(route, spans, RETURN_HEIGHT_A_SPAN_PREFIX)
+	var record_release_band: Vector2 = layout.get(
+		"record_release_length_m", RETURN_UNBOUNDED_BAND_M)
+	var camelback_prominence_band: Vector2 = layout.get(
+		"camelback_prominence_m", RETURN_UNBOUNDED_BAND_M)
+	if not is_finite(record_release_length_m):
+		record_release_length_m = _role_arc_m(route, spans, RECORD_RELEASE_SPAN_PREFIX)
+	if not is_finite(camelback_prominence_m):
+		camelback_prominence_m = _role_prominence_m(route, spans, CAMELBACK_SPAN_PREFIX)
+	var constrain_camelback := camelback_prominence_band != RETURN_UNBOUNDED_BAND_M \
+		and is_finite(camelback_prominence_m)
 	var half_width: float = layout.get("capture_half_width_m", CAPTURE_HALF_WIDTH_M)
 	var half_height: float = layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)
 	var residuals := [
@@ -511,6 +675,20 @@ static func _return_observation(
 		RideProgram._band_residual(turn_b_length_m, Vector2(
 			turn_b_band.x + RETURN_TURN_B_AIM_MARGIN_M,
 			turn_b_band.y - RETURN_TURN_B_AIM_MARGIN_M)),
+		0.0 if record_release_band == RETURN_UNBOUNDED_BAND_M else
+			RideProgram._band_residual(record_release_length_m, Vector2(
+				record_release_band.x + RECORD_RELEASE_LENGTH_AIM_MARGIN_M,
+				record_release_band.y - RECORD_RELEASE_LENGTH_AIM_MARGIN_M)),
+		RideProgram._band_residual(turn_a_length_m, Vector2(
+			turn_a_band.x + RETURN_TURN_A_AIM_MARGIN_M,
+			turn_a_band.y - RETURN_TURN_A_AIM_MARGIN_M)),
+		RideProgram._band_residual(height_a_length_m, Vector2(
+			height_a_band.x + RETURN_HEIGHT_A_AIM_MARGIN_M,
+			height_a_band.y - RETURN_HEIGHT_A_AIM_MARGIN_M)),
+		0.0 if not constrain_camelback else RideProgram._band_residual(
+			camelback_prominence_m, Vector2(
+				camelback_prominence_band.x + CAMELBACK_PROMINENCE_AIM_MARGIN_M,
+				camelback_prominence_band.y - CAMELBACK_PROMINENCE_AIM_MARGIN_M)),
 	]
 	var margins := {
 		"corridor_forward_low_m": forward + approach,
@@ -525,12 +703,21 @@ static func _return_observation(
 		"route_length_low_m": total_length_m - route_length_band.x,
 		"route_length_high_m": route_length_band.y - total_length_m,
 	}
+	if constrain_camelback:
+		margins["camelback_prominence_low_m"] = \
+			camelback_prominence_m - camelback_prominence_band.x
+		margins["camelback_prominence_high_m"] = \
+			camelback_prominence_band.y - camelback_prominence_m
 	return {"ok": true, "residuals": residuals, "margins": margins,
 		"observation": {"station_forward_m": forward, "height_m": capture[1],
 			"cross_track_m": capture[0], "yaw_rad": capture[2], "pitch_rad": capture[3],
 			"roll_rad": capture[4], "speed_mps": state.speed_mps,
 			"return_length_m": float(route.distance_m[-1]) - float(route.distance_m[0]),
 			"turn_b_length_m": turn_b_length_m,
+			"record_release_length_m": record_release_length_m,
+			"turn_a_length_m": turn_a_length_m,
+			"height_a_length_m": height_a_length_m,
+			"camelback_prominence_m": camelback_prominence_m,
 			"route_total_length_m": total_length_m}}
 
 

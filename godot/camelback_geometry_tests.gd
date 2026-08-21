@@ -77,7 +77,7 @@ func _test_camelback_recipe_contains_no_semantic_micro_hold() -> void:
 	var spans: Array = []
 	var metadata: Array = []
 	var propulsion := PackedInt32Array()
-	RideProgram._add_camelback(spans, metadata, propulsion, 1.0)
+	RideProgram._add_camelback(spans, metadata, propulsion)
 	var ids := []
 	for span_value in spans:
 		if span_value is Dictionary:

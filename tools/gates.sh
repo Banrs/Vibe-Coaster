@@ -3,9 +3,9 @@
 # tools/gates.sh — parallel gate runner for Vibe-Coaster.
 #
 # Runs the same battery CI runs (see .github/workflows/*.yml and
-# .github/focused-tests.txt): the import gate, the 12 focused test suites,
+# .github/focused-tests.txt): the import gate, the 17 focused test suites,
 # and smoke.gd. The import gate is serial (it mutates the .godot import
-# cache and must land before anything else runs). The 12 focused suites and
+# cache and must land before anything else runs). The 17 focused suites and
 # smoke.gd are then run concurrently across a bounded worker pool.
 #
 # Usage:

@@ -314,14 +314,14 @@ func _test_return_terrace_heightfield() -> void:
 	var shoulder_r2 := 0.75
 	var shoulder_point := center + Vector2(240.0 * sqrt(shoulder_r2), 0.0)
 	var shoulder_input := 1.0 - shoulder_r2
-	var shoulder_weight := shoulder_input ** 3.0 \
-		* (shoulder_input * (shoulder_input * 6.0 - 15.0) + 10.0)
+	var cubic_smoothstep := shoulder_input * shoulder_input \
+		* (3.0 - 2.0 * shoulder_input)
+	var shoulder_weight := cubic_smoothstep * cubic_smoothstep
 	var shoulder_height := RideTerrain.height(stamped, shoulder_point.x, shoulder_point.y) \
 		- RideTerrain.height(base, shoulder_point.x, shoulder_point.y)
 	_expect(absf(shoulder_height - 80.0 * shoulder_weight) <= 0.000001
-		and shoulder_height < 80.0 * (shoulder_input * shoulder_input
-			* (3.0 - 2.0 * shoulder_input)),
-		"return terrace uses a lower C2 smootherstep shoulder at known r2=%.2f" % shoulder_r2)
+		and shoulder_height < 80.0 * cubic_smoothstep,
+		"return terrace uses pointwise-lower cubic-smoothstep-squared at known r2=%.2f" % shoulder_r2)
 	var offsets := [0.0, 60.0, 120.0, 180.0, 220.0, 239.0]
 	var previous_bump := INF
 	for offset in offsets:
@@ -339,10 +339,10 @@ func _test_return_terrace_heightfield() -> void:
 		- RideTerrain.height(base, boundary_x - 2.0 * inner_step, center.y)
 	var inner_first_difference := inner_near / inner_step
 	var inner_second_difference := (inner_far - 2.0 * inner_near) / (inner_step * inner_step)
-	_expect(absf(inner_first_difference) <= 0.0001 and absf(inner_second_difference) <= 0.001
+	_expect(absf(inner_first_difference) <= 0.0001 and absf(inner_second_difference) <= 0.0001
 		and RideTerrain.height(stamped, boundary_x + inner_step, center.y)
 			== RideTerrain.height(base, boundary_x + inner_step, center.y),
-		"return terrace shoulder is C2 at its near-boundary support transition")
+		"return terrace cubic-smoothstep-squared shoulder is C2 at its near-boundary support transition")
 
 
 func _test_return_terrace_tracks_actual_camelback_apex(route: Dictionary) -> void:

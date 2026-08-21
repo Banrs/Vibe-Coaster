@@ -259,6 +259,9 @@ func _temporary_worst_power4_clearance(route: Dictionary) -> Dictionary:
 	var tunnels: Array = route.get("tunnel_ranges", [])
 	var gesture_indices: PackedInt32Array = route.get("gesture_indices", PackedInt32Array())
 	var gesture_windows: Array = route.get("gesture_windows", [])
+	var center: Vector2 = terrace.get("center_m", Vector2.ZERO)
+	var along: Vector2 = terrace.get("along", Vector2.RIGHT)
+	var cross: Vector2 = Vector2(-along.y, along.x)
 	var worst_clearance_m := INF
 	var worst: Dictionary = {}
 	for index in positions.size():
@@ -272,11 +275,10 @@ func _temporary_worst_power4_clearance(route: Dictionary) -> Dictionary:
 		var rail: Vector3 = positions[index] - ups[index] * 1.55
 		var base_clearance_m := rail.y - Terrain.height(terrain, rail.x, rail.z)
 		var point := Vector2(rail.x, rail.z)
-		var delta := point - terrace.center_m
-		var cross := Vector2(-terrace.along.y, terrace.along.x)
-		var along_distance := delta.dot(terrace.along)
-		var cross_distance := delta.dot(cross)
-		var r2 := (along_distance / float(terrace.half_length_m)) ** 2 \
+		var delta: Vector2 = point - center
+		var along_distance: float = delta.dot(along)
+		var cross_distance: float = delta.dot(cross)
+		var r2: float = (along_distance / float(terrace.half_length_m)) ** 2 \
 			+ (cross_distance / float(terrace.half_width_m)) ** 2
 		var u := clampf(1.0 - r2, 0.0, 1.0)
 		var cubic := u * u * (3.0 - 2.0 * u)

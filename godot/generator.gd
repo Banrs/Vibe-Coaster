@@ -334,6 +334,7 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 			"entry_speed_mps": RideReturnSolve.CAPTURE_ENTRY_SPEED_MPS},
 		"route_length_m": RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M,
 		"roles": roles,
+		"terrain": terrain.duplicate(true),
 	}
 
 

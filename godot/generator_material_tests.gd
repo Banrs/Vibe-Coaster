@@ -426,8 +426,11 @@ func _check_story_plan_contract(route: Dictionary) -> void:
 	var fields: Array = plan.keys()
 	fields.sort()
 	_expect(fields == ["corridor", "decisions", "preset_id", "roles", "route_length_m",
-		"schema_version", "station", "terrain_frame"],
-		"the material-v1 plan has exactly the reviewed eight top-level fields")
+		"schema_version", "station", "terrain", "terrain_frame"],
+		"the material-v1 plan has exactly the reviewed nine top-level fields")
+	_expect(plan.get("terrain", {}).get("kind", "") == "material"
+		and var_to_bytes(plan.get("terrain", {})) == var_to_bytes(route.get("terrain", {})),
+		"the reviewed material plan carries the complete terrain used by the route")
 	var role_ids := PackedStringArray()
 	for role in plan.get("roles", []):
 		role_ids.append(str(role.get("id", "")))

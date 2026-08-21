@@ -173,7 +173,7 @@ static func compile(plan: Dictionary, initial_state: Dictionary) -> Dictionary:
 		return_hand, RideReturnSolve.RETURN_SEED, targets, variable_prefix_spans)
 	if not solved_return.ok:
 		return solved_return
-	_set_record_release_duration(spans, solved_return.parameters)
+	_set_record_release_parameters(spans, solved_return.parameters, return_hand)
 	var return_prefix := Motion.integrate(initial_state, spans, _settings(PRODUCTION_STEP_S))
 	if not return_prefix.get("ok", false):
 		return _failure("upstream return handoff failed integration", "return")
@@ -428,7 +428,7 @@ static func _add_record_release_turn(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float = 1.0,
 	core_duration_s: float = RideReturnSolve.RECORD_RELEASE_CORE_DURATION_S
 ) -> void:
-	var bank_rad := hand * deg_to_rad(60.0)
+	var bank_rad := hand * RideReturnSolve.RECORD_RELEASE_BANK_RAD
 	var banked_normal := 1.0 / cos(bank_rad)
 	var shoulder_s := 0.8
 	var roll_in := RideReturnSolve._roll_ramp([shoulder_s], 0.0, bank_rad)
@@ -444,18 +444,45 @@ static func _add_record_release_turn(
 		"record-release-turn", 0, 2.0, "record-release-turn", "record-release-roll-out")
 
 
-static func _set_record_release_duration(spans: Array, parameters: Array) -> void:
+static func _set_record_release_parameters(spans: Array, parameters: Array, hand: float = 1.0) -> void:
 	var control_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_core_duration_s")
-	if control_index < 0 or control_index >= parameters.size():
+	var bank_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_bank_rad")
+	if control_index < 0 or bank_index < 0 or control_index >= parameters.size() \
+			or bank_index >= parameters.size():
 		return
+	_apply_record_release_parameters(spans, float(parameters[control_index]),
+		hand * absf(float(parameters[bank_index])))
+
+
+static func _apply_record_release_parameters(
+	spans: Array, core_duration_s: float, bank_rad: float
+) -> void:
+	var banked_normal := 1.0 / cos(bank_rad)
+	var shoulder_s := 0.8
+	var roll_in := RideReturnSolve._roll_ramp([shoulder_s], 0.0, bank_rad)
+	var roll_out := RideReturnSolve._roll_ramp([shoulder_s], bank_rad, 0.0)
 	for index in spans.size():
 		var span: Dictionary = spans[index]
-		if str(span.get("span_id", "")) != "record-release-turn/core":
+		var span_id := str(span.get("span_id", ""))
+		var duration_s := float(span.get("duration_s", 0.0))
+		var normal: Dictionary = span.normal_g
+		var roll_rate: Dictionary = span.roll_rate_rad_s
+		if span_id == "record-release-turn/roll-in":
+			duration_s = shoulder_s
+			normal = Motion.plateau_bank_balance(0.0, bank_rad)
+			roll_rate = roll_in.roll[0]
+		elif span_id == "record-release-turn/core":
+			duration_s = core_duration_s
+			normal = Motion.constant(banked_normal)
+			roll_rate = Motion.constant(0.0)
+		elif span_id == "record-release-turn/roll-out":
+			duration_s = shoulder_s
+			normal = Motion.plateau_bank_balance(bank_rad, 0.0)
+			roll_rate = roll_out.roll[0]
+		else:
 			continue
-		spans[index] = Motion.span(str(span.span_id), float(parameters[control_index]),
-			str(span.mode), span.normal_g, span.lateral_g, span.drive_g, span.roll_rate_rad_s,
-			str(span.get("transition_id", "")))
-		return
+		spans[index] = Motion.span(str(span.span_id), duration_s, str(span.mode), normal,
+			span.lateral_g, span.drive_g, roll_rate, str(span.get("transition_id", "")))
 
 
 static func _add_camelback(
@@ -807,22 +834,26 @@ static func _story_from_plan(plan: Dictionary) -> Dictionary:
 
 static func _validate_plan(plan: Dictionary) -> Dictionary:
 	var expected := ["schema_version", "preset_id", "decisions", "terrain_frame", "station",
-		"corridor", "route_length_m", "roles"]
+		"corridor", "route_length_m", "roles", "terrain"]
 	var keys: Array = plan.keys()
 	keys.sort()
 	var sorted_expected := expected.duplicate()
 	sorted_expected.sort()
 	if keys != sorted_expected or plan.get("schema_version") != 1 \
 			or plan.get("preset_id") != "material-v1":
-		return _failure("material-v1 plan must have exactly the reviewed eight fields", "plan")
+		return _failure("material-v1 plan must have exactly the reviewed nine fields", "plan")
 	var decisions: Variant = plan.get("decisions")
 	var terrain_frame: Variant = plan.get("terrain_frame")
+	var terrain_value: Variant = plan.get("terrain")
 	if not decisions is Dictionary or int(decisions.get("station_side", 0)) not in [-1, 1] \
 			or not terrain_frame is Dictionary or not terrain_frame.get("inward") is Vector3 \
 			or not terrain_frame.get("along") is Vector3 or not terrain_frame.get("up") is Vector3 \
 			or not terrain_frame.get("right") is Vector3 \
-			or not terrain_frame.get("planning") is Dictionary:
-		return _failure("material-v1 decisions or terrain frame is incomplete", "plan")
+			or not terrain_frame.get("planning") is Dictionary \
+			or not terrain_value is Dictionary \
+			or str(terrain_value.get("kind", "")) not in ["material", "synthetic"]:
+		return _failure("material-v1 decisions, terrain frame, or terrain stamp is incomplete", "plan")
+	var terrain: Dictionary = terrain_value
 	var planning: Dictionary = terrain_frame.planning
 	# The prefix integration count is a constant of the path that produced the plan, not a budget:
 	# one for a fixture built from a single capability, two for production (preflight + closure).
@@ -855,6 +886,23 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 	if not RidePlanner.is_legal_sequence(sequence):
 		return _failure("material-v1 role sequence is not grammar-legal", "plan",
 			{"observed": {"sequence": sequence}})
+	var camelback_apex_agl_band: Variant = null
+	for role: Dictionary in roles:
+		if str(role.get("id", "")) != "camelback":
+			continue
+		var geometry: Variant = role.get("geometry", {})
+		if geometry is Dictionary:
+			camelback_apex_agl_band = geometry.get("apex_agl_m")
+		break
+	if not camelback_apex_agl_band is Vector2 \
+			or not camelback_apex_agl_band.is_finite() \
+			or camelback_apex_agl_band.x <= 0.0 \
+			or camelback_apex_agl_band.y <= camelback_apex_agl_band.x \
+			or camelback_apex_agl_band != Vector2(140.0, 170.0):
+		return _failure("material-v1 camelback apex AGL intent is missing or invalid", "plan")
+	if str(terrain.get("kind", "")) == "material" \
+			and not _material_terrain_heightfield_is_valid(terrain):
+		return _failure("material-v1 terrain heightfield inputs are missing or invalid", "plan")
 	var minimum_sum := 0.0
 	var maximum_sum := 0.0
 	var allocations := {}
@@ -908,15 +956,40 @@ static func _validate_plan(plan: Dictionary) -> Dictionary:
 	return {"ok": true, "allocations": allocations}
 
 
+static func _material_terrain_heightfield_is_valid(terrain: Dictionary) -> bool:
+	var edge_normal: Variant = terrain.get("edge_normal")
+	if not edge_normal is Vector2 or not edge_normal.is_finite() \
+			or edge_normal.length_squared() <= 0.0:
+		return false
+	for field in ["edge_offset", "wobble_amplitude", "wobble_wavelength", "apron_height",
+			"apron_width", "face_height", "face_width", "detail_amplitude"]:
+		var value: Variant = terrain.get(field)
+		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)):
+			return false
+	for field in ["wobble_wavelength", "apron_width", "face_width"]:
+		if float(terrain[field]) <= 0.0:
+			return false
+	return typeof(terrain.get("noise_seed")) == TYPE_INT
+
+
 static func _layout_from_plan(plan: Dictionary) -> Dictionary:
 	var station: Dictionary = plan.station
 	var corridor: Dictionary = plan.corridor
 	var approach_length: float = corridor.approach_length_m
+	var camelback_apex_agl_band := RideReturnSolve.RETURN_UNBOUNDED_BAND_M
+	for role: Variant in plan.get("roles", []):
+		if role is Dictionary and str(role.get("id", "")) == "camelback":
+			var geometry: Variant = role.get("geometry", {})
+			if geometry is Dictionary and geometry.get("apex_agl_m") is Vector2:
+				camelback_apex_agl_band = geometry.apex_agl_m
+			break
 	return {
 		"station_position_m": station.position_m,
 		"station_tangent": station.tangent,
 		"station_up": station.up,
 		"station_side": int(plan.decisions.station_side),
+		"terrain": plan.get("terrain", {}),
+		"camelback_apex_agl_band_m": camelback_apex_agl_band,
 		"capture_half_width_m": corridor.half_width_m,
 		"capture_half_height_m": corridor.half_height_m,
 		"route_length_m": plan.route_length_m,

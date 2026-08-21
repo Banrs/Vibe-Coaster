@@ -65,6 +65,11 @@ func _initialize() -> void:
 	_test_first_return_turn_unbanks_directly()
 	_test_record_release_turn_is_declared_macro_authority()
 	_test_record_release_turn_has_roll_headroom()
+	_test_record_release_parameters_are_applied_exactly()
+	_test_candidate_prefix_parameters_are_signed_and_distinct()
+	_test_synthetic_camelback_target_is_inert()
+	_test_material_terrain_heightfield_inputs_are_validated()
+	_test_camelback_apex_agl_band_is_required()
 	_test_return_aim_margins_exceed_solver_slack()
 	_test_camelback_is_planar_and_continuous()
 	_test_return_flow_classifier_rejects_neutral_interval()
@@ -289,18 +294,32 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 	var release_index := roles.find("record-release-turn")
 	var controls := RideReturnSolve.RETURN_SCALAR_IDS
 	var residuals := RideReturnSolve.RETURN_RESIDUAL_IDS
+	var existing_controls := [
+		"turn_a_bank_rad", "turn_a_core_duration_s", "height_a_recovery_duration_s",
+		"turn_b_bank_rad", "turn_b_core_duration_s", "height_b_airtime_duration_s",
+		"height_b_recovery_duration_s", "height_a_peak_g", "height_a_unload_duration_s",
+		"height_a_airtime_duration_s", "record_release_core_duration_s",
+	]
+	var existing_residuals := [
+		"station_forward_m", "cross_track_m", "height_m", "tangent_right", "tangent_up",
+		"route_length_band_m", "entry_speed_band_mps", "turn_b_length_band_m",
+		"record_release_length_band_m", "turn_a_length_band_m", "height_a_length_band_m",
+	]
 	_expect(release_index > 0 and release_index + 1 < roles.size()
 		and roles[release_index - 1] == "tunnel-lsm3"
 		and roles[release_index + 1] == "camelback"
-		and controls.slice(-4) == ["height_a_peak_g", "height_a_unload_duration_s",
-			"height_a_airtime_duration_s", "record_release_core_duration_s"]
-		and controls.has("record_release_core_duration_s")
-		and residuals.has("turn_a_length_band_m")
-		and residuals.has("height_a_length_band_m")
-		and residuals.has("record_release_length_band_m")
+		and controls.slice(0, 11) == existing_controls
+		and controls[-1] == "record_release_bank_rad"
+		and residuals.slice(0, 11) == existing_residuals
+		and residuals[-1] == "camelback_apex_agl_band_m"
+		and controls.size() == 12 and residuals.size() == 12
 		and controls.size() == residuals.size(),
-		"the record release is ordered with a square role-gated solve: %s / %s / %s"
+		"the record release appends bank and camelback AGL without moving existing indices: %s / %s / %s"
 		% [str(roles), str(controls), str(residuals)])
+	var fixture_layout := RideProgram._layout_from_plan(_plan(_layout()))
+	_expect(fixture_layout.get("terrain", {}).get("kind", "") == "synthetic"
+		and fixture_layout.get("camelback_apex_agl_band_m") == Vector2(140.0, 170.0),
+		"return layout receives terrain and the existing camelback apex AGL intent")
 	var return_spans := RideReturnSolve._return_spans(RideReturnSolve.RETURN_SEED)
 	var height_a_airtime := return_spans.filter(func(span: Dictionary) -> bool:
 		return str(span.span_id) == "raceway/height-a/airtime")
@@ -312,6 +331,11 @@ func _test_record_release_turn_is_declared_macro_authority() -> void:
 		and is_equal_approx(float(height_a_unload[0].duration_s),
 			RideReturnSolve.RETURN_HEIGHT_A_UNLOAD_DURATION_S),
 		"the seven-value seed receives the authored height-a transition durations")
+	_expect(RideReturnSolve.RETURN_SEED.size() == 7
+		and RideReturnSolve.RETURN_SCALAR_BOUNDS.size() == 12
+		and is_equal_approx(float(RideReturnSolve.RETURN_SCALAR_BOUNDS[-1][0]), deg_to_rad(55.0))
+		and is_equal_approx(float(RideReturnSolve.RETURN_SCALAR_BOUNDS[-1][1]), deg_to_rad(65.0)),
+		"the seven-value continuation seed has an explicit bank fallback in the appended slot")
 
 
 func _test_record_release_turn_has_roll_headroom() -> void:
@@ -330,21 +354,129 @@ func _test_record_release_turn_has_roll_headroom() -> void:
 		% [str([spans[0].duration_s, spans[2].duration_s]), peak_roll_dps])
 
 
+func _test_record_release_parameters_are_applied_exactly() -> void:
+	var spans: Array = []
+	var metadata: Array = []
+	var propulsion := PackedInt32Array()
+	RideProgram._add_record_release_turn(spans, metadata, propulsion)
+	var parameters := RideReturnSolve.RETURN_SEED.duplicate()
+	parameters.append(RideReturnSolve.RETURN_HEIGHT_A_PEAK_G)
+	parameters.append(RideReturnSolve.RETURN_HEIGHT_A_UNLOAD_DURATION_S)
+	parameters.append(RideReturnSolve.RETURN_HEIGHT_A_AIRTIME_DURATION_S)
+	parameters.append(2.41)
+	parameters.append(deg_to_rad(64.0))
+	RideProgram._set_record_release_parameters(spans, parameters, -1.0)
+	var bank_rad := -deg_to_rad(64.0)
+	var roll_in := RideReturnSolve._roll_ramp([0.8], 0.0, bank_rad)
+	var roll_out := RideReturnSolve._roll_ramp([0.8], bank_rad, 0.0)
+	_expect(spans.size() == 3
+		and is_equal_approx(float(spans[0].duration_s), 0.8)
+		and is_equal_approx(float(spans[1].duration_s), 2.41)
+		and is_equal_approx(float(spans[2].duration_s), 0.8)
+		and var_to_bytes(spans[0].normal_g) == var_to_bytes(Motion.plateau_bank_balance(0.0, bank_rad))
+		and var_to_bytes(spans[0].roll_rate_rad_s) == var_to_bytes(roll_in.roll[0])
+		and is_equal_approx(Motion.profile_sample(spans[1].normal_g, 0.5).x, 1.0 / cos(bank_rad))
+		and var_to_bytes(spans[2].normal_g) == var_to_bytes(Motion.plateau_bank_balance(bank_rad, 0.0))
+		and var_to_bytes(spans[2].roll_rate_rad_s) == var_to_bytes(roll_out.roll[0]),
+		"accepted release duration and signed bank replace the complete three-span schedule exactly")
+
+
+func _test_candidate_prefix_parameters_are_signed_and_distinct() -> void:
+	var spans: Array = []
+	var metadata: Array = []
+	var propulsion := PackedInt32Array()
+	RideProgram._add_record_release_turn(spans, metadata, propulsion)
+	var left := RideReturnSolve._prefix_with_record_release_parameters(
+		spans, 2.17, -deg_to_rad(55.0))
+	var right := RideReturnSolve._prefix_with_record_release_parameters(
+		spans, 2.43, deg_to_rad(65.0))
+	_expect(left.size() == 3 and right.size() == 3
+		and is_equal_approx(float(left[1].duration_s), 2.17)
+		and is_equal_approx(float(right[1].duration_s), 2.43)
+		and var_to_bytes(left[0].normal_g)
+			== var_to_bytes(Motion.plateau_bank_balance(0.0, -deg_to_rad(55.0)))
+		and var_to_bytes(right[0].normal_g)
+			== var_to_bytes(Motion.plateau_bank_balance(0.0, deg_to_rad(65.0)))
+		and var_to_bytes(left[2].normal_g)
+			== var_to_bytes(Motion.plateau_bank_balance(-deg_to_rad(55.0), 0.0))
+		and var_to_bytes(right[2].normal_g)
+			== var_to_bytes(Motion.plateau_bank_balance(deg_to_rad(65.0), 0.0)),
+		"candidate prefixes preserve both signed bank and accepted release duration")
+
+
+func _test_synthetic_camelback_target_is_inert() -> void:
+	var route := {"position_m": PackedVector3Array([
+		Vector3(0.0, 140.0, 0.0), Vector3(10.0, 180.0, 0.0)]),
+		"span_index": PackedInt32Array([0, 0])}
+	var spans := [{"span_id": "camelback/pull-up"}]
+	var apex_agl := RideReturnSolve._camelback_apex_agl_m(route, spans, {"kind": "synthetic"})
+	_expect(not is_finite(apex_agl),
+		"synthetic camelback fixtures leave the terrain-relative target inert")
+
+
+func _test_material_terrain_heightfield_inputs_are_validated() -> void:
+	var valid := _plan(_layout())
+	valid.terrain = _material_terrain_fixture()
+	var accepted := RideProgram._validate_plan(valid)
+	_expect(accepted.get("ok", false),
+		"a material plan with every Terrain.height input finite is accepted")
+	var missing := valid.duplicate(true)
+	missing.terrain.erase("face_width")
+	var missing_result := RideProgram._validate_plan(missing)
+	_expect(not missing_result.get("ok", true),
+		"a material plan missing a Terrain.height input is rejected")
+	var invalid := valid.duplicate(true)
+	invalid.terrain.wobble_wavelength = NAN
+	var invalid_result := RideProgram._validate_plan(invalid)
+	_expect(not invalid_result.get("ok", true),
+		"a material plan with a nonfinite Terrain.height input is rejected")
+	_expect(RideProgram._validate_plan(_plan(_layout())).get("ok", false),
+		"an incomplete synthetic terrain fixture remains accepted")
+
+
+func _test_camelback_apex_agl_band_is_required() -> void:
+	var valid := _plan(_layout())
+	valid.terrain = _material_terrain_fixture()
+	_expect(RideProgram._validate_plan(valid).get("ok", false),
+		"the material plan accepts the existing 140-170 m camelback AGL intent")
+	for malformed: Dictionary in [
+		{"label": "missing"},
+		{"label": "unordered", "band": Vector2(170.0, 140.0)},
+		{"label": "nonfinite", "band": Vector2(NAN, 170.0)},
+		{"label": "wrong", "band": Vector2(139.0, 170.0)},
+	]:
+		var plan := valid.duplicate(true)
+		for role: Dictionary in plan.roles:
+			if str(role.get("id", "")) != "camelback":
+				continue
+			if malformed.has("band"):
+				role.geometry.apex_agl_m = malformed.band
+			else:
+				role.geometry.erase("apex_agl_m")
+		var result := RideProgram._validate_plan(plan)
+		_expect(not result.get("ok", true),
+			"a material plan with a %s camelback AGL band is rejected" % malformed.label)
+
+
 func _test_return_aim_margins_exceed_solver_slack() -> void:
 	var route_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[5])
 	var release_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[8])
 	var turn_a_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[9])
 	var height_a_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[10])
+	var camelback_apex_slack_m := 0.02 * float(RideReturnSolve.RETURN_RESIDUAL_SCALES[11])
 	_expect(RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M > route_slack_m
 		and RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M > release_slack_m
 		and RideReturnSolve.RETURN_TURN_A_AIM_MARGIN_M > turn_a_slack_m
-		and RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M > height_a_slack_m,
-		"return aim margins exceed convergence slack: %.3f/%.3f/%.3f/%.3f m vs %.3f/%.3f/%.3f/%.3f m"
+		and RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M > height_a_slack_m
+		and RideReturnSolve.CAMELBACK_APEX_AGL_AIM_MARGIN_M > camelback_apex_slack_m,
+		"return aim margins exceed convergence slack: %.3f/%.3f/%.3f/%.3f/%.3f m vs %.3f/%.3f/%.3f/%.3f/%.3f m"
 		% [RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M,
 			RideReturnSolve.RECORD_RELEASE_LENGTH_AIM_MARGIN_M,
 			RideReturnSolve.RETURN_TURN_A_AIM_MARGIN_M,
 			RideReturnSolve.RETURN_HEIGHT_A_AIM_MARGIN_M,
-			route_slack_m, release_slack_m, turn_a_slack_m, height_a_slack_m])
+			RideReturnSolve.CAMELBACK_APEX_AGL_AIM_MARGIN_M,
+			route_slack_m, release_slack_m, turn_a_slack_m, height_a_slack_m,
+			camelback_apex_slack_m])
 
 
 func _test_return_flow_classifier_rejects_neutral_interval() -> void:
@@ -671,6 +803,7 @@ func _return_production_observations_match(actual: Variant, expected: Variant) -
 		["route_total_length_m", 5], ["speed_mps", 6],
 		["turn_b_length_m", 7], ["record_release_length_m", 8],
 		["turn_a_length_m", 9], ["height_a_length_m", 10],
+		["camelback_apex_agl_m", 11],
 	]:
 		var field: String = field_and_index[0]
 		var tolerance_index: int = field_and_index[1]
@@ -742,6 +875,9 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 			and report.get("max_unique_evaluations") == RideReturnSolve.MAX_RETURN_EVALUATIONS,
 			"seed %d spends %d return evaluations, over the %d fleet allowance"
 			% [seed_value, evaluations, allowance])
+		_expect(report.get("accepted_values", []).size() == RideReturnSolve.RETURN_SCALAR_IDS.size(),
+			"seed %d expands the seven-entry continuation seed to all twelve accepted controls"
+			% seed_value)
 		_expect_return_closes_interior(seed_value, report)
 		_expect_compiled_prefix_matches_plan(seed_value, plan, compiled)
 
@@ -793,6 +929,26 @@ func _expect_compiled_prefix_matches_plan(
 		matches = matches and absf(float(built[index]) - float(accepted[index])) <= 0.000000001
 	_expect(matches, "seed %d builds its prefix from the accepted closure %s, not %s"
 		% [seed_value, str(accepted), str(built)])
+	var duration_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_core_duration_s")
+	var bank_index := RideReturnSolve.RETURN_SCALAR_IDS.find("record_release_bank_rad")
+	var expected_bank := float(plan.decisions.station_side) * absf(float(
+		compiled.return_plan.accepted_values[bank_index]))
+	var release_spans := compiled.spans.filter(func(span: Dictionary) -> bool:
+		return str(span.span_id).begins_with("record-release-turn/"))
+	var roll_in := RideReturnSolve._roll_ramp([0.8], 0.0, expected_bank)
+	var roll_out := RideReturnSolve._roll_ramp([0.8], expected_bank, 0.0)
+	_expect(release_spans.size() == 3
+		and is_equal_approx(float(release_spans[0].duration_s), 0.8)
+		and is_equal_approx(float(release_spans[1].duration_s), float(
+			compiled.return_plan.accepted_values[duration_index]))
+		and is_equal_approx(float(release_spans[2].duration_s), 0.8)
+		and var_to_bytes(release_spans[0].normal_g)
+			== var_to_bytes(Motion.plateau_bank_balance(0.0, expected_bank))
+		and var_to_bytes(release_spans[0].roll_rate_rad_s) == var_to_bytes(roll_in.roll[0])
+		and var_to_bytes(release_spans[2].normal_g)
+			== var_to_bytes(Motion.plateau_bank_balance(expected_bank, 0.0))
+		and var_to_bytes(release_spans[2].roll_rate_rad_s) == var_to_bytes(roll_out.roll[0]),
+		"seed %d compiles the accepted release duration and signed bank into its prefix" % seed_value)
 
 
 func _test_untargeted_prefix_capability_is_unchanged() -> void:
@@ -1051,7 +1207,15 @@ func _plan(layout: Dictionary) -> Dictionary:
 			"half_height_m": float(layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)),
 			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"route_length_m": Vector2(7800.0, 8200.0),
-		"roles": RideGenerator._material_roles()}
+		"roles": RideGenerator._material_roles(),
+		"terrain": {"kind": "synthetic"}}
+
+
+func _material_terrain_fixture() -> Dictionary:
+	return {"kind": "material", "edge_normal": Vector2.RIGHT, "edge_offset": 0.0,
+		"wobble_amplitude": 1.0, "wobble_wavelength": 100.0, "apron_height": 50.0,
+		"apron_width": 250.0, "face_height": 225.0, "face_width": 50.0,
+		"detail_amplitude": 2.0, "noise_seed": 1}
 
 
 func _layout() -> Dictionary:

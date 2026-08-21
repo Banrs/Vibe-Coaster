@@ -576,8 +576,9 @@ static func _add_camelback(
 	var crest_s := 3.62587650 * 1.06
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
-	# camelback entry speed rather than the crest being scaled.
-	var fall_s := 3.60
+	# camelback entry speed. The extra 0.05 s restores the unchanged prominence band after the
+	# crest notch is brought inside its held-load envelope; the accepted-apex terrace owns AGL.
+	var fall_s := 3.65
 	_add(spans, metadata, propulsion, "camelback/pull-up",
 		pullup_s, "moving",
 		Motion.quintic(1.0, positive_g), 0.0, 0.0, 0.0, "rise")

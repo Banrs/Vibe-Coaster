@@ -62,6 +62,10 @@ func _test_near_root_secant_polish_uses_the_remaining_budget() -> void:
 	_expect(result.get("evaluations", 0) == 5 and result.get("residuals", []).size() == 2
 		and _max_abs(result.get("residuals", [])) <= 0.02,
 		"the secant polish converges inside the unchanged hard evaluation budget")
+	var exact_fit := BoundedSolver.solve(
+		_nearby_diagonal_root, [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], 7)
+	_expect(exact_fit.get("ok", false) and exact_fit.get("evaluations", 0) == 5,
+		"near-root polish reserves an exactly full final Jacobian budget")
 	var headroom := BoundedSolver.solve(
 		_nearby_diagonal_root, [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], 80)
 	_expect(headroom.get("ok", false) and headroom.get("status", "") == "converged"

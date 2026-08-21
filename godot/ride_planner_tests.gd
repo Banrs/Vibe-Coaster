@@ -9,6 +9,8 @@ const RidePlanner := preload("res://ride_planner.gd")
 const RideProgram := preload("res://ride_program.gd")
 const RouteContract := preload("res://route_contract.gd")
 const RideVerify := preload("res://verify.gd")
+## TEMPORARY CI-32442427378 DIAGNOSTIC dependency: remove with the diagnostic helpers below.
+const Terrain := preload("res://terrain.gd")
 
 const FEASIBILITY_SEEDS := [11, 20260809]
 const ROUTE_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
@@ -209,6 +211,7 @@ func _check_extreme(seed_value: int, key: String, value: float) -> void:
 	RideVerify.validate_self_clearance(route, issues)
 	var analysis: Dictionary = RideVerify.analyze(route, RouteContract.ROW_OFFSETS)
 	RideVerify.validate_loads(analysis, issues)
+	_temporary_print_endpoint_diagnostic(label, route, analysis, issues)
 	_expect(issues.is_empty(), "%s validates: %s" % [label, str(issues)])
 	_expect_range("%s route length" % label, float(route.length),
 		ROUTE_LENGTH_BAND_M, "m")
@@ -221,6 +224,74 @@ func _check_extreme(seed_value: int, key: String, value: float) -> void:
 	_expect(int(stats.get("accepted_integrations", -1)) == 1 \
 		and int(stats.get("repair_count", -1)) == 0,
 		"%s integrates once without repair" % label)
+
+
+## TEMPORARY CI-32442427378 DIAGNOSTIC: remove after the power4 clearance experiment.
+## One compact line per existing endpoint route; test code only, no production diagnostics.
+func _temporary_print_endpoint_diagnostic(
+	label: String, route: Dictionary, analysis: Dictionary, issues: PackedStringArray
+) -> void:
+	var rows: Array = analysis.get("rows", [])
+	var row0: Dictionary = rows[0] if not rows.is_empty() else {}
+	var worst: Dictionary = _temporary_worst_power4_clearance(route)
+	print("[TEMP CI-32442427378 endpoint] label=%s row0_positive=%s row0_negative=%s "
+		+ "row0_lateral=%s row0_longitudinal_positive=%s row0_longitudinal_negative=%s "
+		+ "combined_usage=%s issues=%s worst_clearance=%s" % [
+			label, str(row0.positive_envelope), str(row0.negative_envelope),
+			str(row0.lateral_envelope), str(row0.longitudinal_positive_envelope),
+			str(row0.longitudinal_negative_envelope), str(row0.combined_usage),
+			str(issues), str(worst)])
+
+
+## TEMPORARY CI-32442427378 DIAGNOSTIC: remove with the endpoint print above.
+func _temporary_worst_power4_clearance(route: Dictionary) -> Dictionary:
+	var terrain_value: Variant = route.get("terrain")
+	if not terrain_value is Dictionary:
+		return {}
+	var terrain: Dictionary = terrain_value.duplicate(true)
+	var terrace_value: Variant = terrain.get("return_terrace")
+	if not terrace_value is Dictionary:
+		return {}
+	var terrace: Dictionary = terrace_value
+	terrain.erase("return_terrace")
+	var positions: PackedVector3Array = route.get("positions", PackedVector3Array())
+	var ups: PackedVector3Array = route.get("ups", PackedVector3Array())
+	var tunnels: Array = route.get("tunnel_ranges", [])
+	var gesture_indices: PackedInt32Array = route.get("gesture_indices", PackedInt32Array())
+	var gesture_windows: Array = route.get("gesture_windows", [])
+	var worst_clearance_m := INF
+	var worst: Dictionary = {}
+	for index in positions.size():
+		var in_tunnel := false
+		for tunnel in tunnels:
+			if index >= tunnel.x and index <= tunnel.y:
+				in_tunnel = true
+				break
+		if in_tunnel:
+			continue
+		var rail: Vector3 = positions[index] - ups[index] * 1.55
+		var base_clearance_m := rail.y - Terrain.height(terrain, rail.x, rail.z)
+		var point := Vector2(rail.x, rail.z)
+		var delta := point - terrace.center_m
+		var cross := Vector2(-terrace.along.y, terrace.along.x)
+		var along_distance := delta.dot(terrace.along)
+		var cross_distance := delta.dot(cross)
+		var r2 := (along_distance / float(terrace.half_length_m)) ** 2 \
+			+ (cross_distance / float(terrace.half_width_m)) ** 2
+		var u := clampf(1.0 - r2, 0.0, 1.0)
+		var cubic := u * u * (3.0 - 2.0 * u)
+		var contribution_m := float(terrace.elevation_m) * cubic * cubic * cubic * cubic
+		var final_clearance_m := base_clearance_m - contribution_m
+		if final_clearance_m < worst_clearance_m:
+			worst_clearance_m = final_clearance_m
+			var gesture_index := int(gesture_indices[index])
+			var window_id := "unknown"
+			if gesture_index >= 0 and gesture_index < gesture_windows.size():
+				window_id = str(gesture_windows[gesture_index].get("window_id", "unknown"))
+			worst = {"sample": index, "window": window_id, "base_clearance_m": base_clearance_m,
+				"r2": r2, "u": u, "power4_contribution_m": contribution_m,
+				"final_clearance_m": final_clearance_m}
+	return worst
 
 
 func _expect_range(label: String, value: float, band: Vector2, unit: String) -> void:

@@ -9,7 +9,8 @@ func _initialize() -> void:
 	_test_well_conditioned_root_converges()
 	_test_malformed_inputs_are_rejected()
 	_test_budget_is_hard()
-	_test_near_root_secant_polish_uses_the_remaining_budget()
+	_test_near_root_chord_polish_uses_the_remaining_budget()
+	_test_twelve_variable_tail_reuses_the_paid_jacobian()
 	_test_repeated_results_are_byte_identical()
 	for error in _errors:
 		printerr(error)
@@ -54,14 +55,14 @@ func _test_budget_is_hard() -> void:
 		"budget exhaustion never exceeds the requested evaluation count")
 
 
-func _test_near_root_secant_polish_uses_the_remaining_budget() -> void:
+func _test_near_root_chord_polish_uses_the_remaining_budget() -> void:
 	var result := BoundedSolver.solve(
 		_nearby_diagonal_root, [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], 5)
 	_expect(result.get("ok", false) and result.get("status", "") == "converged",
 		"an accepted near-root step is polished before a fresh Jacobian exhausts the budget")
 	_expect(result.get("evaluations", 0) == 5 and result.get("residuals", []).size() == 2
 		and _max_abs(result.get("residuals", [])) <= 0.02,
-		"the secant polish converges inside the unchanged hard evaluation budget")
+		"the reused-Jacobian polish converges inside the unchanged hard evaluation budget")
 	var exact_fit := BoundedSolver.solve(
 		_nearby_diagonal_root, [0.0, 0.0], [1.0, 1.0], [0.0, 0.0], 7)
 	_expect(exact_fit.get("ok", false) and exact_fit.get("evaluations", 0) == 5,
@@ -76,6 +77,23 @@ func _test_near_root_secant_polish_uses_the_remaining_budget() -> void:
 		and absf(float(headroom.x[0]) - 0.205) <= 0.0001
 		and absf(float(headroom.x[1]) - 0.205) <= 0.0001,
 		"the polish stays dormant when a complete Jacobian and trial still fit the budget")
+
+
+func _test_twelve_variable_tail_reuses_the_paid_jacobian() -> void:
+	var lower := []
+	var upper := []
+	var initial := []
+	for _index in range(12):
+		lower.append(0.0)
+		upper.append(1.0)
+		initial.append(0.0)
+	var result := BoundedSolver.solve(_twelve_variable_root, lower, upper, initial, 27)
+	_expect(result.get("ok", false) and result.get("status", "") == "converged"
+		and result.get("evaluations", 0) == 16,
+		"a twelve-control tail preserves trials instead of spending its last slot on a Jacobian")
+	_expect(result.get("residuals", []).size() == 12
+		and _max_abs(result.get("residuals", [])) <= 0.02,
+		"the reused twelve-column Jacobian reaches the unchanged convergence tolerance")
 
 
 func _test_repeated_results_are_byte_identical() -> void:
@@ -93,6 +111,13 @@ func _root(x: Array) -> Array:
 
 func _nearby_diagonal_root(x: Array) -> Array:
 	return [float(x[0]) - 0.205, float(x[1]) - 0.205]
+
+
+func _twelve_variable_root(x: Array) -> Array:
+	var residuals: Array[float] = []
+	for value in x:
+		residuals.append(float(value) - 0.28)
+	return residuals
 
 
 func _malformed_residual(_x: Array) -> String:

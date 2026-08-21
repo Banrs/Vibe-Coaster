@@ -567,13 +567,15 @@ static func _apply_record_release_parameters(
 static func _add_camelback(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array
 ) -> void:
-	var positive_g := 4.70068864065765
+	var positive_g := 4.60068864065765
 	var negative_g := -1.55352865073772
 	var pullout_g := 5.2662035249371
 	# This is the last CI point that keeps the balanced-release return on its healthy root family.
 	var pullup_s := 2.560
 	var unload_s := 3.0634503655
 	var crest_s := 3.62587650 * 1.06
+	var crest_notch_s := 2.8
+	var crest_shoulder_s := 0.5 * (crest_s - crest_notch_s)
 	# The fall is what makes the marquee stand ~250 m above its valley: at the record entry
 	# speed the same normal-g ramp descends less per second, so the fall lengthens with the
 	# camelback entry speed rather than the crest being scaled.
@@ -584,11 +586,15 @@ static func _add_camelback(
 	_add(spans, metadata, propulsion, "camelback/unload",
 		unload_s, "moving", Motion.quintic(positive_g, negative_g),
 		0.0, 0.0, 0.0, "rise")
-	# Keep the zero-area, zero-first-moment crest shaping that preserves the downstream handoff,
-	# but hold its brief centre near -2.46 g. The former -2.90 g notch sustained more than the
-	# unchanged 0.5 s negative-normal envelope permits after the verification filter.
+	# Keep the original brief -2.90 g centre and the crest's total duration and mean load. Equal
+	# endpoint-matched C2 shoulders compress the balanced notch itself below the unchanged 0.5 s
+	# held-load envelope without publishing connector spans or softening the peak.
 	_add(spans, metadata, propulsion, "camelback/crest", crest_s, "moving",
-		Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.0),
+		Motion.staged([
+			Motion.constant(negative_g),
+			Motion.balanced_quintic(negative_g, negative_g * 0.88, 1.440),
+			Motion.constant(negative_g * 0.88),
+		], [crest_shoulder_s, crest_notch_s, crest_shoulder_s]),
 		0.0, 0.0, 0.0, "crest")
 	_add(spans, metadata, propulsion, "camelback/fall", fall_s, "moving",
 		Motion.quintic(negative_g * 0.88, pullout_g), 0.0, 0.0, 0.0, "fall")

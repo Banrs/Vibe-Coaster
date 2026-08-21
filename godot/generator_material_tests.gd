@@ -101,9 +101,10 @@ func _check_preset_fleet_contract() -> void:
 			and stats.get("planning_integrations", -1) == 2 \
 			and stats.get("repair_count", -1) == 0 and length_m >= 7800.0 and length_m <= 8200.0
 			and story is Dictionary,
-			"preset seed %d public generation observed ok=%s integrations=%d repairs=%d length=%.3f m story=%s"
+			"preset seed %d public generation observed ok=%s integrations=%d repairs=%d length=%.3f m story=%s failure=%s errors=%s"
 			% [seed, str(route.get("ok", false)), int(stats.get("accepted_integrations", -1)),
-				int(stats.get("repair_count", -1)), length_m, str(story is Dictionary)])
+				int(stats.get("repair_count", -1)), length_m, str(story is Dictionary),
+				str(route.get("failure", {})), str(route.get("errors", []))])
 		if story is Dictionary:
 			_check_dive_commits_at_the_rim(seed, route)
 

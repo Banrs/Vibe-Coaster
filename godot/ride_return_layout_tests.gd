@@ -54,6 +54,7 @@ func _initialize() -> void:
 	_test_the_control_box_speed_is_not_optimistic()
 	_test_the_heading_box_is_built_at_the_handover_pitch()
 	_test_every_accepted_assignment_builds()
+	_test_every_accepted_layout_builds_across_the_start_sweep()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -380,6 +381,34 @@ func _test_every_accepted_assignment_builds() -> void:
 			state = built.end_state
 
 
+## The same contract across the start frames the prefix can hand over, because an accepted layout
+## is not a claim about one pose. A start that no legal chain closes from is a refusal, not a
+## failure - but a stage that refused everything would satisfy that vacuously, so the sweep also
+## requires the measured number of closures. Of the eight frames below, four lay out; the other
+## four are refused by name at the macro stage.
+func _test_every_accepted_layout_builds_across_the_start_sweep() -> void:
+	var plan := _plan()
+	var laid_out := 0
+	for heading: float in [300.0, 330.0]:
+		for speed: float in [70.0, 82.0]:
+			for lift: float in [-30.0, 30.0]:
+				var label := "heading %.0f speed %.0f lift %.0f" % [heading, speed, lift]
+				var state := _seed_start(plan, RETURN_ROLE_IDS, heading, speed,
+					SOLVE_NUDGE_M + Vector3(0.0, lift, 0.0))
+				var result := Layout.build(state, plan, RETURN_ROLE_IDS)
+				if not result.ok:
+					continue
+				laid_out += 1
+				for assignment: Dictionary in result.assignments:
+					var built := Elements.build(state, assignment, _settings())
+					if not _expect(built.ok, "the swept assignment builds: %s %s %s"
+							% [assignment.role_id, label, str(built.errors)]):
+						break
+					state = built.end_state
+	_expect(laid_out >= 4, "the start sweep closes the frames it closed when measured, got %d"
+		% laid_out)
+
+
 func _settings() -> Dictionary:
 	return {"step_s": 0.01, "gravity_mps2": Vector3.DOWN * 9.80665,
 		"rolling_mps2": RideProgram.ROLLING_MPS2, "aero_per_m": RideProgram.AERO_PER_M}
@@ -390,24 +419,26 @@ func _settings() -> Dictionary:
 ## a single shared frame cannot serve every plan-view topology, and height is no more shareable
 ## than plan view, because the elevation a role may be assigned is bounded by the crest its family
 ## has to stand inside it - and the solve still has to absorb the nudge.
-func _seed_start(plan: Dictionary, order: Array) -> Dictionary:
-	var start := _start(BASE_START_M, START_HEADING_DEG)
+func _seed_start(plan: Dictionary, order: Array, heading_deg: float = START_HEADING_DEG,
+		speed_mps: float = START_SPEED_MPS,
+		nudge_m: Vector3 = SOLVE_NUDGE_M) -> Dictionary:
+	var start := _start(BASE_START_M, heading_deg, START_PITCH_DEG, speed_mps)
 	for _pass in 2:
 		var context: Dictionary = Layout._context(start, plan, order)
 		var chain: Dictionary = Layout._chain(context, context.nominal)
 		start = _start(start.position_m + context.gate_position - chain.end_position,
-			START_HEADING_DEG)
-	return _start(start.position_m + SOLVE_NUDGE_M, START_HEADING_DEG)
+			heading_deg, START_PITCH_DEG, speed_mps)
+	return _start(start.position_m + nudge_m, heading_deg, START_PITCH_DEG, speed_mps)
 
 
-func _start(position: Vector3, heading_deg: float,
-		pitch_deg: float = START_PITCH_DEG) -> Dictionary:
+func _start(position: Vector3, heading_deg: float, pitch_deg: float = START_PITCH_DEG,
+		speed_mps: float = START_SPEED_MPS) -> Dictionary:
 	var heading := deg_to_rad(heading_deg)
 	var pitch := deg_to_rad(pitch_deg)
 	var tangent := Vector3(cos(heading) * cos(pitch), sin(pitch), sin(heading) * cos(pitch))
 	return {"position_m": position, "tangent": tangent,
 		"rider_up": Vector3.UP.slide(tangent).normalized(),
-		"speed_mps": START_SPEED_MPS, "distance_m": PREFIX_DISTANCE_M}
+		"speed_mps": speed_mps, "distance_m": PREFIX_DISTANCE_M}
 
 
 func _plan() -> Dictionary:

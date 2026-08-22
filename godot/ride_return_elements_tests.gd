@@ -33,6 +33,15 @@ const ELEVATION_PROBES := [[290.0, 80.0, 0.0], [290.0, 70.0, 0.0], [450.0, 80.0,
 ## the chain's 24-interval Simpson quadrature against the integrator's own pitch tracking, and the
 ## sum is three orders inside the 5 m residual scale the macro stage converges its chain at.
 const HEADING_CHAIN_TOLERANCE_M := 0.05
+## The corners the macro corridor is measured at: the top of each declared height band, where a
+## corridor that modelled a net-elevation ramp instead of the family's crest disagrees most,
+## because that disagreement is the beat's own prominence and prominence scales with arc.
+const CORRIDOR_PROBES := [[590.0, 70.0, -6.0], [590.0, 80.0, 0.0], [480.0, 70.0, 0.0]]
+## What the corridor's crest and the built crest may stand apart by. The corridor traces the knots
+## the local solve starts from and the build traces the knots it converged to, so what is left is
+## that convergence read as a height: measured at 0.30 m over the corners above, against
+## prominences of 0.8-63 m.
+const CORRIDOR_PROMINENCE_TOLERANCE_M := 0.5
 
 var _t := TestUtil.new()
 
@@ -54,6 +63,7 @@ func _initialize() -> void:
 	_test_height_is_vertical_plane_at_70_and_80_mps()
 	_test_height_has_one_pitch_zero_apex_and_monotone_phases()
 	_test_the_elevation_window_is_what_the_family_crests_through()
+	_test_the_macro_corridor_is_the_crest_the_beat_stands()
 	_test_the_elevation_window_follows_the_drawn_unload()
 	_test_prominence_is_measured_from_the_frame_the_beat_was_handed()
 	_test_a_hump_the_counterpart_would_not_call_a_beat_is_refused()
@@ -404,6 +414,35 @@ func _test_the_elevation_window_is_what_the_family_crests_through() -> void:
 					% [elevation, label], 0.1)
 
 
+## The corridor the macro stage publishes is the shape this family builds on. Both stages trace one
+## crest - the same staged curvature through the same knots - so the corridor stands the prominence
+## the beat stands and the built centreline never leaves it. A corridor that modelled a
+## net-elevation ramp instead would disagree by that whole prominence, and the disagreement grows
+## with arc, so an accepted layout would carry an assignment the build refuses with no retry behind
+## it.
+func _test_the_macro_corridor_is_the_crest_the_beat_stands() -> void:
+	for probe: Array in CORRIDOR_PROBES:
+		var length := float(probe[0])
+		var speed := float(probe[1])
+		var pitch_deg := float(probe[2])
+		var start := _state(speed, pitch_deg)
+		var window := Elements.elevation_bound_m(length, speed, deg_to_rad(pitch_deg))
+		for fraction: float in [0.1, 0.5, 0.9]:
+			var elevation := lerpf(window.x, window.y, fraction)
+			var assignment := _height_assignment_of(start, length, elevation)
+			var built := Elements.build(start, assignment, _settings())
+			var label := "%.1f m over %.0f m at %.0f m/s from %.0f deg" \
+				% [elevation, length, speed, pitch_deg]
+			if not _expect_built(built, "the beat builds on its macro corridor at %s" % label):
+				continue
+			_t.expect_min(built.margins.corridor_offset_m, 0.0,
+				"the built centreline stays inside its macro corridor at %s" % label)
+			_t.expect_close(_prominence(assignment.corridor.centerline_m),
+				float(built.observation.prominence_m),
+				"the macro corridor stands the prominence the beat stands at %s" % label,
+				CORRIDOR_PROMINENCE_TOLERANCE_M)
+
+
 ## The crest a beat is authored to hold is a drawn value, so the window the macro stage reads is a
 ## function of it: a shallower unload curves the crest less and moves the elevation the family can
 ## crest through. The bound and the build are handed the same draw, and every elevation the window
@@ -649,6 +688,14 @@ func _macro_centerline(start: Dictionary, length_m: float,
 			* sqrt(maxf(1.0 - sin_pitch * sin_pitch, 0.0)) + Vector3.UP * sin_pitch)
 		line.append(position)
 	return line
+
+
+## The design's own prominence, read off a polyline: the apex above the higher of its endpoints.
+func _prominence(line: PackedVector3Array) -> float:
+	var apex := -INF
+	for point: Vector3 in line:
+		apex = maxf(apex, point.y)
+	return apex - maxf(line[0].y, line[-1].y)
 
 
 func _entry_pitch(start: Dictionary) -> float:

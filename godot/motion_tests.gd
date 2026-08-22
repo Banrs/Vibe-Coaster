@@ -401,7 +401,9 @@ func _test_spatial_straight_ends_at_exact_length() -> void:
 		"gravity_mps2": Vector3.ZERO, "rolling_mps2": 0.0, "aero_per_m": 0.0})
 	_expect(route.get("ok", false), "spatial straight integrates")
 	_expect_close(route.distance_m[-1], 100.0, "spatial span ends at its exact length", 0.000001)
-	_expect(route.position_m[-1].distance_to(Vector3(100.0, 0.0, 0.0)) <= 0.0001,
+	# Positions are published as Float32, so 250 accumulated steps out to 100 m carry about
+	# 2.4e-4 m of representation error. The equivalent 2.5 s time span lands on the same value.
+	_expect(route.position_m[-1].distance_to(Vector3(100.0, 0.0, 0.0)) <= 0.0005,
 		"spatial straight endpoint follows its tangent")
 	_expect_close(route.time_s[-1], 2.5, "spatial elapsed time is an integration result", 0.000001)
 

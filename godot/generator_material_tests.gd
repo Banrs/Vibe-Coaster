@@ -325,6 +325,13 @@ static func _role_band(plan: Dictionary, role_id: String) -> Vector2:
 	return Vector2(NAN, NAN)
 
 
+static func _role_geometry(plan: Dictionary, role_id: String) -> Dictionary:
+	for role in plan.roles:
+		if str(role.id) == role_id:
+			return role.get("geometry", {})
+	return {}
+
+
 ## The act-one order this gate uses, assembled from the grammar's own cells: the pool with its two
 ## optional members exchanged. Never a typed-out role list, so the order stays legal by
 ## construction and follows the grammar if the pool ever changes. Both indices are read before
@@ -344,7 +351,7 @@ func _act_one_optional_swap() -> Array:
 	sequence.append(RidePlanner.ACT_ONE_ANCHOR)
 	sequence.append_array(pool)
 	sequence.append_array(RidePlanner.SPINE_TAIL)
-	sequence.append_array(RidePlanner.RETURN_CELL)
+	sequence.append_array(RidePlanner.RETURN_ROLES)
 	sequence.append_array(RidePlanner.SPINE_CLOSE)
 	return sequence
 
@@ -450,6 +457,15 @@ func _check_story_plan_contract(route: Dictionary) -> void:
 			_expect(proof is Dictionary and proof.get("ok", false)
 				and float(proof.get("minimum_margin", -INF)) >= 0.0,
 				"%s terrain proof has a nonnegative native margin" % role_id)
+	# The return roles declare order-neutral geometry intent from the same reviewed planarity
+	# vocabulary as camelback and record-release-turn: whichever position the layout puts a role
+	# in, its family's plane intent does not change with it.
+	for role_id in ["return-turn-a", "return-turn-b"]:
+		_expect(_role_geometry(plan, role_id).get("planarity", "") == "horizontal-turn",
+			"%s declares horizontal-turn geometry intent" % role_id)
+	for role_id in ["return-height-a", "return-height-b"]:
+		_expect(_role_geometry(plan, role_id).get("planarity", "") == "vertical-plane",
+			"%s declares vertical-plane geometry intent" % role_id)
 
 func _story_windows_are_complete(route: Dictionary) -> bool:
 	var windows: Array = route.get("gesture_windows", [])

@@ -8,20 +8,25 @@ const Elements := preload("res://ride_return_elements.gd")
 const Layout := preload("res://ride_return_layout.gd")
 const Motion := preload("res://motion.gd")
 
-## The handover pitches each family absorbs, up to the layout's 35 deg ceiling. Two cases are
-## physical refusals rather than contract cases, and each has its own test below: levelling out of
-## a climb is a pushover, which no overbanked turn can hold the rider down the bank through, and
-## pulling out of a 35 deg dive inside a height beat's declared arc costs more than the held normal
-## limit at these speeds.
-const ENTRY_PITCH_DEG := [-35.0, -20.0, -6.0, 0.0]
-const HEIGHT_ENTRY_PITCH_DEG := [-20.0, -6.0, 0.0, 20.0]
+## The handover pitches the turn family absorbs, up to the layout's 35 deg ceiling and including
+## the camelback's own 33.6 deg exit. Levelling out of a climb is the family's one physical
+## refusal - a pushover cannot press the rider down the bank - and it has its own test below.
+const ENTRY_PITCH_DEG := [-35.0, -33.6, -20.0, -6.0, 0.0]
+## The handovers the height family absorbs. It is a narrower set than the turn's: a beat entered
+## nose-down has to get its apex back above the frame it was handed, and past about -10 deg it
+## cannot inside its declared arc at return speeds. Those are refusals with no window at all - the
+## test below measures them - not elevations that build badly.
+const HEIGHT_ENTRY_PITCH_DEG := [-10.0, -6.0, 0.0, 20.0]
+const HEIGHT_REFUSED_PITCH_DEG := [-35.0, -20.0]
 const TURN_LENGTH_BAND_EDGES_M := [420.0, 620.0, 430.0, 570.0]
 const HEIGHT_LENGTH_M := 380.0
-## The declared return height band edges, at both ends of the entry-speed band and at two handover
-## pitches. The macro stage builds its elevation box at the shortest allocable arc and at the
-## fastest role entry, so those are the corners the contract has to hold at.
+## The declared return height band edges, at both ends of the entry-speed band and at every
+## handover the family accepts, climbing included. The macro stage builds its elevation box at the
+## shortest allocable arc and at the fastest role entry, so those are the corners the contract has
+## to hold at.
 const ELEVATION_PROBES := [[290.0, 80.0, 0.0], [290.0, 70.0, 0.0], [450.0, 80.0, 0.0],
-	[450.0, 70.0, 0.0], [290.0, 80.0, -6.0], [450.0, 70.0, -20.0]]
+	[450.0, 70.0, 0.0], [290.0, 80.0, -6.0], [450.0, 70.0, -10.0], [290.0, 70.0, 20.0],
+	[380.0, 80.0, 20.0], [450.0, 70.0, 20.0]]
 ## What the macro chain and the build may differ by. Both trace the same profiles; what is left is
 ## the chain's 24-interval Simpson quadrature against the integrator's own pitch tracking, and the
 ## sum is three orders inside the 5 m residual scale the macro stage converges its chain at.
@@ -38,15 +43,17 @@ func _initialize() -> void:
 	_test_the_pitch_level_out_is_one_shared_profile()
 	_test_turn_lateral_points_inward_at_every_sample()
 	_test_a_climb_the_counter_lateral_band_cannot_hold_is_refused_by_name()
-	_test_a_dive_too_steep_to_pull_out_of_is_refused_by_name()
+	_test_a_descending_handover_the_beat_cannot_crest_over_is_refused_by_name()
 	_test_the_bank_ceiling_is_the_roll_the_envelope_allows()
-	_test_the_macro_heading_bound_consumes_the_bank_ceiling()
+	_test_the_macro_heading_bound_is_buildable_at_the_handover_pitch()
 	_test_the_heading_profile_is_one_shared_profile()
 	_test_the_roll_ceiling_covers_the_exit_shoulder()
 	_test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame()
 	_test_height_is_vertical_plane_at_70_and_80_mps()
 	_test_height_has_one_pitch_zero_apex_and_monotone_phases()
 	_test_the_elevation_window_is_what_the_family_crests_through()
+	_test_the_elevation_window_follows_the_drawn_unload()
+	_test_prominence_is_measured_from_the_frame_the_beat_was_handed()
 	_test_a_hump_the_counterpart_would_not_call_a_beat_is_refused()
 	_test_element_seams_meet_the_c4_contract()
 	_test_impossible_corridor_returns_one_structured_failure()
@@ -242,28 +249,50 @@ func _test_the_bank_ceiling_is_the_roll_the_envelope_allows() -> void:
 		"a long enough shoulder reaches the counterpart's geometric ceiling")
 
 
-## What the macro stage may assign is what a family can build: the heading at the bound is
-## buildable at the top of the entry-speed band, at every declared turn-length band edge.
-func _test_the_macro_heading_bound_consumes_the_bank_ceiling() -> void:
-	var bank := Elements.max_bank_rad(420.0, 80.0)
-	_t.expect_close(Layout.heading_bound_rad(420.0, 80.0),
-		Elements.LOADED_ARC_FRACTION * 420.0 * Motion.G0
-			* (sin(bank) - Elements.COUNTER_LATERAL_TARGET_G) / (cos(bank) * 6400.0),
-		"the macro bound is the counter-lateral identity at the family's bank ceiling",
-		0.000000000001)
-	_t.expect(Layout.heading_bound_rad(420.0, 80.0) < Layout.heading_bound_rad(420.0, 70.0),
+## What the macro stage may assign is what a family can build, and the macro stage may sit a
+## control on its bound: the heading at the bound builds at every declared turn-length band edge,
+## at both ends of the entry-speed band, and at every handover pitch the family absorbs. The bound
+## is a function of that handover, not of arc and speed alone - the level bound is a different
+## number, and assigning it under a pitched handover is a build the family refuses.
+func _test_the_macro_heading_bound_is_buildable_at_the_handover_pitch() -> void:
+	for pitch_deg: float in ENTRY_PITCH_DEG:
+		for speed: float in [70.0, 80.0]:
+			for length: float in TURN_LENGTH_BAND_EDGES_M:
+				_expect_bound_builds(length, speed, pitch_deg)
+	_t.expect(Elements.heading_bound_rad(420.0, 80.0, 0.0)
+		< Elements.heading_bound_rad(420.0, 70.0, 0.0),
 		"the macro heading bound falls as entry speed rises")
-	for length: float in TURN_LENGTH_BAND_EDGES_M:
-		var start := _state(80.0)
-		var heading := Layout.heading_bound_rad(length, 80.0)
-		var built := Elements.build(start, _turn_assignment(heading, start, length,
-			Vector2(length - 10.0, length + 10.0)), _settings())
-		if not _expect_built(built, "the heading at the bound builds over %.0f m" % length):
-			continue
-		_t.expect_close(built.observation.heading_change_rad, heading,
-			"the turn delivers the bound's heading over %.0f m" % length, 0.001)
-		_t.expect_range(absf(float(built.observation.core_lateral_g)), 0.2, 0.6,
-			"the bound's turn still holds the counter-lateral band over %.0f m" % length)
+	_t.expect(Elements.heading_bound_rad(420.0, 80.0, 0.0)
+		< Elements.heading_bound_rad(620.0, 80.0, 0.0),
+		"the macro heading bound rises with the arc it is given")
+	var start := _state(70.0, -33.6)
+	var level := Elements.heading_bound_rad(420.0, 70.0, 0.0)
+	_t.expect(Elements.heading_bound_rad(420.0, 70.0, deg_to_rad(-33.6)) < level,
+		"the camelback handover buys less heading than the level bound admits")
+	_t.expect(not Elements.build(start, _turn_assignment(level, start, 420.0,
+		Vector2(410.0, 430.0)), _settings()).ok,
+		"the level bound is not a heading the camelback handover can build")
+
+
+## One corner of the macro control box: the bound is buildable at its own edge, or it is zero and
+## the macro stage has no heading to assign there at all.
+func _expect_bound_builds(length_m: float, speed_mps: float, pitch_deg: float) -> void:
+	var start := _state(speed_mps, pitch_deg)
+	var bound := Elements.heading_bound_rad(length_m, speed_mps, _entry_pitch(start))
+	var label := "%.0f m at %.0f m/s from %.1f deg" % [length_m, speed_mps, pitch_deg]
+	if bound <= 0.0:
+		_t.expect(not Elements.build(start, _turn_assignment(0.40, start, length_m,
+			Vector2(length_m - 10.0, length_m + 10.0)), _settings()).ok,
+			"a zero bound is a handover this family refuses over %s" % label)
+		return
+	var built := Elements.build(start, _turn_assignment(bound, start, length_m,
+		Vector2(length_m - 10.0, length_m + 10.0)), _settings())
+	if not _expect_built(built, "the heading at the bound builds over %s" % label):
+		return
+	_t.expect_close(built.observation.heading_change_rad, bound,
+		"the turn delivers the bound's heading over %s" % label, 0.001)
+	_t.expect_range(absf(float(built.observation.core_lateral_g)), 0.2, 0.6,
+		"the bound's turn still holds the counter-lateral band over %s" % label)
 
 
 func _test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame() -> void:
@@ -289,27 +318,6 @@ func _test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame() -> void
 				"the beat delivers its assigned elevation from %s" % label, 5.0)
 
 
-## Pulling out of a 35 deg dive and still cresting costs more than the held normal limit inside a
-## height beat's declared arc at return speeds: at 380 m the pull-up peaks at 4.5-5.1 g against a
-## 4.0 g held ceiling, and an elevation shallow enough to stay inside the ceiling never lifts the
-## track pitch above zero, so there is no crest to measure. The family publishes no window at all
-## there, so no macro stage can assign one; an assignment made anyway is refused by name. The turn
-## family absorbs that handover.
-func _test_a_dive_too_steep_to_pull_out_of_is_refused_by_name() -> void:
-	for speed: float in [70.0, 80.0]:
-		var start := _state(speed, -35.0)
-		var window := Elements.elevation_bound_m(HEIGHT_LENGTH_M, speed, deg_to_rad(-35.0))
-		_t.expect(window.x > window.y,
-			"the family publishes no crest window from a 35 deg dive at %.0f m/s" % speed)
-		var built := Elements.build(start,
-			_height_assignment_of(start, HEIGHT_LENGTH_M, -8.0), _settings())
-		_t.expect(not built.ok,
-			"a height beat handed a 35 deg dive at %.0f m/s is refused" % speed)
-		_t.expect(_t.contains(built.errors, "normal_positive_g")
-			or _t.contains(built.errors, "height_solve"),
-			"the refusal names the load it could not pull out inside: %s" % str(built.errors))
-
-
 ## The macro chain traces the same centreline the family builds. Heading is delivered against
 ## `sec(theta)`, so the plateau's own fraction is the level case only, and a chain that used it
 ## under the handover pitch drifted metres from the built path while still agreeing at both ends.
@@ -329,27 +337,32 @@ func _test_the_heading_profile_is_one_shared_profile() -> void:
 			"the macro chain lands where the turn builds from %.0f deg" % pitch_deg)
 
 
-## The roll-rate ceiling governs the larger of the two twist pairs, not the entry one. A climbing
-## handover signs the frame's bank drift against the bank, so the exit shoulder rolls through
-## `|phi| + |drift|` and the ceiling is taken against that. The turn itself is refused - a pushover
-## cannot press the rider down the bank - but its measured roll still has to be legal.
+## The published bank ceiling is a contract the bracket cannot break, not a margin measured
+## afterward: it bounds the bank the rider measures - commanded twist plus the frame's own drift -
+## and it is taken at the fastest speed the role reaches, because that is the speed the exit
+## shoulder rolls at. A descending role therefore carries a lower ceiling than its entry speed
+## alone would give it, and both shoulders stay inside the roll envelope either way.
 func _test_the_roll_ceiling_covers_the_exit_shoulder() -> void:
 	var length: float = TURN_LENGTH_BAND_EDGES_M[0]
-	for pitch_deg: float in [10.0, 20.0]:
+	for pitch_deg: float in [-33.6, -20.0, 0.0, 10.0, 20.0]:
 		var start := _state(80.0, pitch_deg)
-		var built := Elements.build(start, _turn_assignment(
-			Layout.heading_bound_rad(length, 80.0), start, length,
+		var built := Elements.build(start, _turn_assignment(0.40, start, length,
 			Vector2(length - 10.0, length + 10.0)), _settings())
 		var observation: Dictionary = built.observation
 		if not _t.expect(not observation.is_empty(),
-				"the climbing turn is measured from %.0f deg: %s" % [pitch_deg, built.errors]):
+				"the turn is measured from %.1f deg: %s" % [pitch_deg, built.errors]):
 			continue
 		_t.expect_max(rad_to_deg(float(observation.peak_roll_rate_rad_s)),
 			RideVerify.ROLL_RATE_LIMIT,
-			"the roll stays inside the envelope from %.0f deg" % pitch_deg)
-		_t.expect(float(observation.bank_ceiling_rad) < Elements.max_bank_rad(length, 80.0),
-			"the ceiling gives up the drift that leans against the bank from %.0f deg"
-				% pitch_deg)
+			"the roll stays inside the envelope from %.1f deg" % pitch_deg)
+		_t.expect_max(absf(float(observation.peak_bank_rad)),
+			float(observation.bank_ceiling_rad),
+			"the measured bank stays inside the published ceiling from %.1f deg" % pitch_deg)
+		if pitch_deg < 0.0:
+			_t.expect(float(observation.bank_ceiling_rad)
+				< Elements.max_bank_rad(length, 80.0),
+				"a descending role's ceiling is taken at the speed it leaves at, not the speed"
+					+ " it entered at, from %.1f deg" % pitch_deg)
 
 
 ## What the macro stage may assign is what this family can build: every net elevation inside the
@@ -387,6 +400,73 @@ func _test_the_elevation_window_is_what_the_family_crests_through() -> void:
 			_t.expect_close(built.observation.elevation_change_m, elevation,
 				"the beat delivers the elevation the window admits at %.1f m over %s"
 					% [elevation, label], 0.1)
+
+
+## The crest a beat is authored to hold is a drawn value, so the window the macro stage reads is a
+## function of it: a shallower unload curves the crest less and moves the elevation the family can
+## crest through. The bound and the build are handed the same draw, and every elevation the window
+## admits under it builds and reaches it.
+func _test_the_elevation_window_follows_the_drawn_unload() -> void:
+	var default_window := Elements.elevation_bound_m(HEIGHT_LENGTH_M, 75.0, 0.0)
+	var drawn := -0.30
+	var window := Elements.elevation_bound_m(HEIGHT_LENGTH_M, 75.0, 0.0, drawn)
+	_t.expect(window.x < window.y, "the family publishes a window for the drawn unload")
+	_t.expect(absf(window.x - default_window.x) > 0.1
+		or absf(window.y - default_window.y) > 0.1,
+		"the drawn unload moves the window the macro stage reads")
+	for fraction: float in [0.02, 0.5, 0.98]:
+		var start := _state(75.0)
+		var elevation := lerpf(window.x, window.y, fraction)
+		var assignment := _height_assignment_of(start, HEIGHT_LENGTH_M, elevation)
+		assignment.unload_g = drawn
+		assignment.corridor = {"centerline_m": PackedVector3Array(),
+			"length_band_m": assignment.corridor.length_band_m}
+		var built := Elements.build(start, assignment, _settings())
+		if not _expect_built(built,
+				"%.1f m inside the drawn window builds" % elevation):
+			continue
+		_t.expect_close(built.observation.crest_normal_g, drawn,
+			"the beat holds the unload it was drawn at %.1f m" % elevation, 0.01)
+
+
+## Prominence is the design's own `y_apex - max(y_entry, y_exit)`, measured from the frame the beat
+## was handed. The two readings only differ on a descending handover, where the beat gives up
+## height before it climbs, and taking the later climb start as the entry is the looser of the two.
+## The published value is the stricter one, and it is what the macro window is built from.
+func _test_prominence_is_measured_from_the_frame_the_beat_was_handed() -> void:
+	for pitch_deg: float in HEIGHT_ENTRY_PITCH_DEG:
+		var start := _state(75.0, pitch_deg)
+		var built := Elements.build(start, _height_assignment_from(start, 0.5), _settings())
+		if not _expect_built(built, "the beat builds from %.0f deg" % pitch_deg):
+			continue
+		var route: Dictionary = built.trajectory
+		_t.expect_close(built.observation.prominence_m,
+			float(built.observation.apex_height_m) - maxf(float(route.position_m[0].y),
+				float(route.position_m[-1].y)),
+			"prominence is the apex above the higher endpoint from %.0f deg" % pitch_deg,
+			0.000001)
+
+
+## A handover the beat cannot crest back over is refused where the macro stage reads it, not at
+## the build: pulling out of a 35 deg dive and still cresting costs more than the held normal
+## limit inside a height beat's declared arc at return speeds, and from 20 deg the beat gives up
+## more height to the pull-out than its arc can win back. The family publishes no window at all
+## there, so no macro stage can assign one; an assignment made anyway is refused by name. The turn
+## family absorbs those handovers.
+func _test_a_descending_handover_the_beat_cannot_crest_over_is_refused_by_name() -> void:
+	for pitch_deg: float in HEIGHT_REFUSED_PITCH_DEG:
+		for speed: float in [70.0, 80.0]:
+			var start := _state(speed, pitch_deg)
+			var label := "%.0f deg at %.0f m/s" % [pitch_deg, speed]
+			_t.expect(Elements.elevation_bound_m(HEIGHT_LENGTH_M, speed,
+				deg_to_rad(pitch_deg)).x > Elements.elevation_bound_m(HEIGHT_LENGTH_M, speed,
+				deg_to_rad(pitch_deg)).y,
+				"the family publishes no crest window from %s" % label)
+			var built := Elements.build(start,
+				_height_assignment_of(start, HEIGHT_LENGTH_M, -8.0), _settings())
+			_t.expect(not built.ok, "a height beat handed %s is refused" % label)
+			_t.expect(not built.errors.is_empty(),
+				"the refusal from %s names the contract it missed" % label)
 
 
 ## A crest that stands centimetres above its endpoints satisfies every curvature condition a beat
@@ -436,6 +516,14 @@ func _test_element_seams_meet_the_c4_contract() -> void:
 	_t.expect_max(seam.twist_slope_rad_m, 0.000001, "seam twist slope agrees")
 	_t.expect_max(seam.twist_acceleration_rad_m2, 0.000001,
 		"seam twist acceleration agrees")
+	# The coarse sanity value decides nothing, but it has to read the seam rather than a step
+	# spacing that changed under it. A spatial span truncates its last step onto its declared
+	# length, so a difference taken across that boundary reads 1.339 m^-2 on this very seam -
+	# six orders above the float32 quantisation of a third difference at this spacing, and above
+	# any disagreement it could ever be asked to flag. Differenced on the arriving element's own
+	# full steps it reads 1.0e-4, against analytic jets that are exactly zero either side.
+	_t.expect_max(seam.finite_difference_x3_m2, 0.001,
+		"the coarse finite difference reads the seam, not a step-spacing change")
 
 
 func _test_impossible_corridor_returns_one_structured_failure() -> void:

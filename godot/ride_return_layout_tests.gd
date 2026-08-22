@@ -52,6 +52,7 @@ func _initialize() -> void:
 	_test_a_signless_turn_is_refused()
 	_test_corridor_publishes_only_derived_bounds()
 	_test_the_control_box_speed_is_not_optimistic()
+	_test_the_heading_box_is_built_at_the_handover_pitch()
 	_test_every_accepted_assignment_builds()
 	for error in _errors:
 		printerr(error)
@@ -129,14 +130,9 @@ func _test_heading_bound_rejects_an_infeasible_turn() -> void:
 	_expect(float(refusal.get("shortfall_rad", -1.0)) > 0.0
 		and float(refusal.get("bound_rad", -1.0)) > 0.0,
 		"the refusal names the bound and the shortfall it missed by")
-	var bank := Elements.max_bank_rad(420.0, 82.0)
-	var bound := Layout.heading_bound_rad(420.0, 82.0)
-	_expect(absf(bound - Elements.LOADED_ARC_FRACTION * 420.0 * 9.80665
-		* (sin(bank) - Elements.COUNTER_LATERAL_TARGET_G) / (cos(bank) * 6724.0))
-		<= 0.000001,
-		"the heading bound is the counter-lateral identity at the family's bank ceiling")
-	_expect(Layout.heading_bound_rad(620.0, 82.0) > bound
-		and Layout.heading_bound_rad(420.0, 70.0) > bound,
+	var bound := Elements.heading_bound_rad(420.0, 82.0, 0.0)
+	_expect(Elements.heading_bound_rad(620.0, 82.0, 0.0) > bound
+		and Elements.heading_bound_rad(420.0, 70.0, 0.0) > bound,
 		"the bound loosens with allocated arc and tightens with entry speed")
 
 
@@ -339,6 +335,31 @@ func _test_the_control_box_speed_is_not_optimistic() -> void:
 		<= 0.000001, "the accepted layout publishes the speed its heading box was built at")
 
 
+## The other half of the same contract: the box is built at the handover pitch as well as at the
+## chain's speed. Only the first role can be handed a pitched frame - every family exits level -
+## and the turn family's bound is a strong function of it, in neither one direction nor by a small
+## amount, so a box built at the level bound admits a heading the first role is then refused for
+## with no retry behind it. The camelback's own 33.6 deg exit is the handover this stage is
+## entered on.
+func _test_the_heading_box_is_built_at_the_handover_pitch() -> void:
+	var plan := _plan()
+	var context: Dictionary = Layout._context(
+		_start(BASE_START_M, START_HEADING_DEG, -33.6), plan, RETURN_ROLE_IDS)
+	if not _expect(context.ok, "the steep handover lays out a context: %s" % str(context.errors)):
+		return
+	var speed := float(context.speed_ceiling_mps)
+	var handover := Elements.heading_bound_rad(BANDS[0].x, speed, deg_to_rad(-33.6))
+	var level := Elements.heading_bound_rad(BANDS[0].x, speed, 0.0)
+	_expect(absf(handover - level) > 0.01,
+		"the camelback handover is a materially different bound from the level one")
+	_expect(absf(float(context.upper[0]) - handover) <= 0.000001
+		and absf(float(context.lower[0]) + handover) <= 0.000001,
+		"the first turn's box is the bound at the pitch it is handed")
+	_expect(absf(float(context.upper[2]) - Elements.heading_bound_rad(BANDS[2].x, speed, 0.0))
+		<= 0.000001,
+		"a later turn's box is the level bound, because every family exits level")
+
+
 ## The contract between the two stages: an accepted layout is a set of assignments the element
 ## families build. Every legal order is laid out and then chained through the real builders, each
 ## element entered on the last one's integrated end state, so an assignment that only the macro
@@ -379,9 +400,10 @@ func _seed_start(plan: Dictionary, order: Array) -> Dictionary:
 	return _start(start.position_m + SOLVE_NUDGE_M, START_HEADING_DEG)
 
 
-func _start(position: Vector3, heading_deg: float) -> Dictionary:
+func _start(position: Vector3, heading_deg: float,
+		pitch_deg: float = START_PITCH_DEG) -> Dictionary:
 	var heading := deg_to_rad(heading_deg)
-	var pitch := deg_to_rad(START_PITCH_DEG)
+	var pitch := deg_to_rad(pitch_deg)
 	var tangent := Vector3(cos(heading) * cos(pitch), sin(pitch), sin(heading) * cos(pitch))
 	return {"position_m": position, "tangent": tangent,
 		"rider_up": Vector3.UP.slide(tangent).normalized(),

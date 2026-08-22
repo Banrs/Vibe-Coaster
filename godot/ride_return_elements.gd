@@ -53,12 +53,12 @@ const HEIGHT_FAMILY := "return_height"
 ## - each pair of twist stages carries the same peak roll rate - `0.35 phi` over `0.35` of the
 ##   shoulder has the slope `phi` over the whole shoulder has - so the peak is exactly
 ##   `1.875 v max(|phi|, |phi - phi_exit|) / shoulder`, where `phi_exit` cancels the frame's own
-##   bank drift. The drift sits on the bank's own side for every level or descending handover,
-##   which makes `max_bank_rad` below the exact ceiling there; a climbing handover reverses it, so
-##   `_solve_turn` takes the same ceiling against `|phi| + |phi_exit|` instead of assuming the
-##   entry pair is the larger. The macro heading bound consumes the level-handover value, which is
-##   the only one it can reach: a climbing entry is refused by the counter-lateral band below
-##   before its roll ever matters; and
+##   bank drift. Bounding the whole of that with one number is what `max_bank_rad` is for: it is a
+##   ceiling on the bank the rider measures, `phi` plus the drift, taken at the fastest speed the
+##   role reaches. `_solve_turn` brackets the commanded `phi` a further `|drift|` below it, so the
+##   entry pair rolls through at most `ceiling - |drift|` and the exit pair through at most
+##   `ceiling`, whichever side the drift falls on. The macro heading bound consumes the same
+##   ceiling at the same handover pitch; and
 ## - the shoulder never carries outward lateral. Sharing one quintic between curvature and twist
 ##   does: with `c = v^2 kappa / g0` and bank `phi`, `l = c h cos(phi h) - sin(phi h)` is outward
 ##   for small `h` whenever `c > phi` in radians, which the counter-lateral identity reaches at

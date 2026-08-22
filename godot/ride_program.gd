@@ -931,6 +931,16 @@ static func _band_residual(value: float, band: Vector2) -> float:
 	return minf(0.0, value - band.x) + maxf(0.0, value - band.y)
 
 
+## Shared coarse/fine per-residual agreement check: element-wise |a[i] - b[i]| <= tolerances[i].
+static func _observations_agree(a: Array, b: Array, tolerances: Array) -> bool:
+	if a.size() != b.size():
+		return false
+	for index in tolerances.size():
+		if absf(float(a[index]) - float(b[index])) > float(tolerances[index]):
+			return false
+	return true
+
+
 static func _last_state(route: Dictionary) -> Dictionary:
 	return {
 		"position_m": route.position_m[-1],

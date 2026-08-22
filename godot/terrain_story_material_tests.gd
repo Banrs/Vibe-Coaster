@@ -24,20 +24,18 @@ const ZONE_APRON := 1
 const ZONE_FACE := 2
 const ZONE_PLATEAU := 3
 
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 
 func _initialize() -> void:
 	var route := RideGenerator.build(SEED)
 	if not route.get("ok", false):
-		_expect(false, "seed 42 must build through RideGenerator.build before terrain story checks: %s" \
+		_t.expect(false, "seed 42 must build through RideGenerator.build before terrain story checks: %s" \
 			% str(route.get("errors", [])))
 	else:
 		_check_public_terrain_story(route)
 	_check_terrain_story_plan_contract(route)
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 func _check_public_terrain_story(route: Dictionary) -> void:
@@ -50,57 +48,57 @@ func _check_public_terrain_story(route: Dictionary) -> void:
 	var tunnel := _window(route, "tunnel-lsm3")
 	if terrain.is_empty() or station.is_empty() or opener.is_empty() or climb.is_empty() \
 			or rim.is_empty() or dive.is_empty() or tunnel.is_empty():
-		_expect(false, "seed 42 must publish terrain and all terrain-story semantic windows")
+		_t.expect(false, "seed 42 must publish terrain and all terrain-story semantic windows")
 		return
 
-	_expect(_window_is_plain_with_clearance(route, terrain, station),
+	_t.expect(_window_is_plain_with_clearance(route, terrain, station),
 		"station-launch lower spine must stay on plain with 4..36 m rendered clearance")
-	_expect(_window_is_plain_and_exposed(route, terrain, opener),
+	_t.expect(_window_is_plain_and_exposed(route, terrain, opener),
 		"opener lower spine must stay on plain with at least 2 m rendered clearance")
 	var entry_position: Vector3 = route.positions[int(dive.first)]
 	var tunnel_exit_position: Vector3 = route.positions[int(tunnel.last)]
 	var terrain_chord := Vector3(tunnel_exit_position.x - entry_position.x, 0.0,
 		tunnel_exit_position.z - entry_position.z).normalized()
 	var outward := -Vector3(terrain.edge_normal.x, 0.0, terrain.edge_normal.y).normalized()
-	_expect(terrain_chord.dot(outward) >= 0.75,
+	_t.expect(terrain_chord.dot(outward) >= 0.75,
 		"cliff-dive and tunnel horizontal chord must progress predominantly outward")
-	_expect(_climb_crosses_the_escarpment(route, terrain, climb),
+	_t.expect(_climb_crosses_the_escarpment(route, terrain, climb),
 		"escarpment-climb must progress plain/apron -> face -> plateau without lower-spine intersection")
-	_expect(_rim_hugs_the_plateau_edge(route, terrain, rim),
+	_t.expect(_rim_hugs_the_plateau_edge(route, terrain, rim),
 		"clifftop-suspense lower spine must stay 8..30 m above plateau or edge terrain")
-	_expect(_dive_crosses_outward_monotonically(route, terrain, dive),
+	_t.expect(_dive_crosses_outward_monotonically(route, terrain, dive),
 		"cliff-dive terrain zones must progress from plateau through face to apron/plain without intersection")
 	var maximum_dive_rise_m := _maximum_adjacent_height_rise_m(route, dive)
-	_expect(is_finite(maximum_dive_rise_m) and maximum_dive_rise_m <= MAXIMUM_DIVE_RISE_M,
+	_t.expect(is_finite(maximum_dive_rise_m) and maximum_dive_rise_m <= MAXIMUM_DIVE_RISE_M,
 		"cliff-dive maximum adjacent centerline rise observed %.5f m; required <= %.3f m" % [
 			maximum_dive_rise_m, MAXIMUM_DIVE_RISE_M,
 		])
-	_expect(_tunnel_uses_the_face_to_plain_corridor(route, terrain, tunnel),
+	_t.expect(_tunnel_uses_the_face_to_plain_corridor(route, terrain, tunnel),
 		"tunnel-lsm3 must run monotonically outward from apron to its plain-side portal")
 	var maximum_tunnel_plateau_excess_m := _maximum_plateau_excess_m(
 		route, terrain, tunnel)
-	_expect(is_finite(maximum_tunnel_plateau_excess_m) \
+	_t.expect(is_finite(maximum_tunnel_plateau_excess_m) \
 			and maximum_tunnel_plateau_excess_m < 0.0,
 		"tunnel-lsm3 lower-spine maximum plateau-height excess observed %.3f m; required < 0.000 m" \
 			% maximum_tunnel_plateau_excess_m)
 	var stats: Dictionary = route.get("generation_stats", {})
-	_expect(stats.get("accepted_integrations", -1) == 1 \
+	_t.expect(stats.get("accepted_integrations", -1) == 1 \
 			and stats.get("planning_integrations", -1) == 2 \
 			and stats.get("repair_count", -1) == 0,
 		"terrain placement must report two planning integrations, one accepted integration, and zero repairs")
-	_expect(float(terrain.relief) >= TERRAIN_RELIEF_MINIMUM_M \
+	_t.expect(float(terrain.relief) >= TERRAIN_RELIEF_MINIMUM_M \
 			and float(terrain.relief) <= TERRAIN_RELIEF_MAXIMUM_M,
 		"terrain relief stays in the 270..285 m support band")
 	var route_envelope := float(route.bounds.size.y)
-	_expect(route_envelope >= ROUTE_VERTICAL_ENVELOPE_MINIMUM_M \
+	_t.expect(route_envelope >= ROUTE_VERTICAL_ENVELOPE_MINIMUM_M \
 			and route_envelope <= ROUTE_VERTICAL_ENVELOPE_MAXIMUM_M,
 		"native route vertical envelope observed %.3f m; required 270..285 m" % route_envelope)
 	var dive_drop := _window_drop_m(route, dive)
-	_expect(dive_drop >= DIVE_DROP_MINIMUM_M and dive_drop <= DIVE_DROP_MAXIMUM_M,
+	_t.expect(dive_drop >= DIVE_DROP_MINIMUM_M and dive_drop <= DIVE_DROP_MAXIMUM_M,
 		"native cliff-dive loss observed %.3f m; required 240..250 m" % dive_drop)
 	var camel := _window(route, "marquee-camelback")
 	var camel_prominence := _window_prominence_m(route, camel)
-	_expect(camel_prominence >= CAMEL_PROMINENCE_MINIMUM_M \
+	_t.expect(camel_prominence >= CAMEL_PROMINENCE_MINIMUM_M \
 			and camel_prominence <= CAMEL_PROMINENCE_MAXIMUM_M,
 		"native camelback prominence observed %.3f m; required 245..255 m" % camel_prominence)
 
@@ -217,12 +215,12 @@ func _plateau_elevation_m(terrain: Dictionary, corridor_position: Vector3) -> fl
 
 func _check_terrain_story_plan_contract(route: Dictionary) -> void:
 	var story: Dictionary = route.get("terrain_story_plan", {})
-	_expect(not story.is_empty(),
+	_t.expect(not story.is_empty(),
 		"the public route must publish its resolved terrain-story plan")
-	_expect(story.get("integration_frame", "") == "planned-world",
+	_t.expect(story.get("integration_frame", "") == "planned-world",
 		"the accepted trajectory must be integrated directly in its planned world frame")
 	var planning: Dictionary = story.get("planning", {})
-	_expect(planning.get("capability_id", "") != "" \
+	_t.expect(planning.get("capability_id", "") != "" \
 			and planning.get("planning_integrations", -1) == 2,
 		"the plan publishes its two deterministic prefix integrations: the frame preflight "
 		+ "and the accepted closure")
@@ -230,38 +228,38 @@ func _check_terrain_story_plan_contract(route: Dictionary) -> void:
 			"dive_entry_edge_m", "dive_exit_edge_m", "tunnel_exit_edge_m",
 			"station_lower_spine_agl_m", "summit_lower_spine_agl_m",
 			"station_opener_maximum_edge_m", "sampled_station_opener_points"]:
-		_expect(planning.has(key), "terrain-story planning report publishes %s" % key)
-	_expect(float(planning.get("station_opener_maximum_edge_m", INF)) < 0.0 \
+		_t.expect(planning.has(key), "terrain-story planning report publishes %s" % key)
+	_t.expect(float(planning.get("station_opener_maximum_edge_m", INF)) < 0.0 \
 			and int(planning.get("sampled_station_opener_points", 0)) > 1,
 		"planned sampled station/opener lower spine remains on the plain")
 	var terrain: Dictionary = route.get("terrain", {})
 	if not terrain.is_empty():
 		var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
-		_expect(float(planning.get("dive_entry_edge_m", -INF)) >= shelf_m + 12.0,
+		_t.expect(float(planning.get("dive_entry_edge_m", -INF)) >= shelf_m + 12.0,
 			"planned role-13 entry stays at least 12 m behind the shelf edge")
-		_expect(float(planning.get("dive_exit_edge_m", -INF)) \
+		_t.expect(float(planning.get("dive_exit_edge_m", -INF)) \
 				>= 0.20 * float(terrain.apron_width) \
 				and float(planning.get("dive_exit_edge_m", INF)) \
 				<= 0.55 * float(terrain.apron_width),
 			"native role-13 exit stays elevated in the middle apron")
-		_expect(float(planning.get("tunnel_exit_edge_m", INF)) <= -8.0,
+		_t.expect(float(planning.get("tunnel_exit_edge_m", INF)) <= -8.0,
 			"the graded tunnel exits across the apron boundary onto the plain")
 	var plan: Dictionary = story.get("plan", {})
 	var decisions: Dictionary = plan.get("decisions", {})
-	_expect(not decisions.has("station_inset_m"),
+	_t.expect(not decisions.has("station_inset_m"),
 		"the material plan has no random fixed station inset")
 	var frame: Dictionary = plan.get("terrain_frame", {})
 	var station: Dictionary = plan.get("station", {})
 	if frame.get("right") is Vector3 and station.get("tangent") is Vector3 \
 			and station.get("up") is Vector3:
-		_expect(frame.right.is_equal_approx(station.tangent.cross(station.up).normalized()),
+		_t.expect(frame.right.is_equal_approx(station.tangent.cross(station.up).normalized()),
 			"terrain right uses the canonical T cross U handedness")
 	var source := FileAccess.get_file_as_string("res://generator.gd")
-	_expect(not source.contains("_canonical_layout") and not source.contains("_place_trajectory"),
+	_t.expect(not source.contains("_canonical_layout") and not source.contains("_place_trajectory"),
 		"production must not fit an accepted trajectory to terrain after integration")
-	_expect(source.contains("RideProgram.terrain_story_capability"),
+	_t.expect(source.contains("RideProgram.terrain_story_capability"),
 		"generator resolves station pose from the route owner's fixed-prefix capability")
-	_expect(not source.contains("candidates") and not source.contains("sort_custom")
+	_t.expect(not source.contains("candidates") and not source.contains("sort_custom")
 			and not source.contains("TERRAIN_PLACEMENT_STEP_M"),
 		"placement is closed-form: no candidate list, no grid step, no scored search")
 
@@ -345,7 +343,3 @@ func _role(route: Dictionary, story_id: String, role_id: String) -> Dictionary:
 			return role
 	return {}
 
-
-func _expect(condition: bool, message: String) -> void:
-	if not condition:
-		_errors.append(message)

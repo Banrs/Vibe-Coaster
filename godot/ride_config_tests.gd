@@ -18,7 +18,7 @@ const ROUTE_LENGTH_BAND_M := Vector2(7800.0, 8200.0)
 ## hashed payload, or to the preset base moves this, and that must be a deliberate edit.
 const EMPTY_CONFIG_HASH := "cc0fa4bc5c663ffd5a26af2dee7e0d4831f39a10c08091c6a0ebe69f3c5ab928"
 
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 
 func _initialize() -> void:
@@ -33,9 +33,7 @@ func _initialize() -> void:
 	_test_intensity_maps_onto_the_certified_thirds()
 	_test_configured_build_pins_reports_and_repeats()
 	_test_empty_config_is_the_preset_fast_path()
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 func _test_registry_declares_the_version_one_contract() -> void:
@@ -44,23 +42,23 @@ func _test_registry_declares_the_version_one_contract() -> void:
 		keys.append(str(entry.key))
 		for field in ["type", "unit", "scope", "scopes", "form", "operator", "domain", "owner",
 				"feasibility_phase"]:
-			_expect(entry.has(field) and str(entry[field]) != "",
+			_t.expect(entry.has(field) and str(entry[field]) != "",
 				"registry entry %s declares %s" % [entry.key, field])
-	_expect(keys == ["preset", "seed", "slot.intensity"],
+	_t.expect(keys == ["preset", "seed", "slot.intensity"],
 		"version 1 registers exactly preset, seed and slot.intensity; observed %s" % str(keys))
 	var refused: Array = []
 	for entry: Dictionary in RideConfig.unregistered():
 		refused.append(str(entry.key))
-		_expect(str(entry.get("reason", "")).length() > 80 \
+		_t.expect(str(entry.get("reason", "")).length() > 80 \
 			and not str(entry.get("blocked_by", "")).is_empty() \
 			and not str(entry.get("evidence", "")).is_empty(),
 			"unregistered key %s records its measured reason, blocker and evidence" % entry.key)
 	for key in ["slot.recipe", "slot.enabled", "ride.duration_s", "ride.peak_speed_mps",
 			"slot.structure_height_m", "slot.airtime_character", "sequence.order"]:
-		_expect(refused.has(key), "the registry records why '%s' is unregistered" % key)
+		_t.expect(refused.has(key), "the registry records why '%s' is unregistered" % key)
 	for scope in RideConfig.INTENSITY_SCOPES:
 		for key: String in RideConfig.INTENSITY_PINNED_KEYS[scope]:
-			_expect(RideConfig.certified_range(scope, key) != Vector2.ZERO,
+			_t.expect(RideConfig.certified_range(scope, key) != Vector2.ZERO,
 				"intensity scope %s/%s names a range the planner actually certifies"
 					% [scope, key])
 
@@ -71,20 +69,20 @@ func _test_normalization_is_deterministic() -> void:
 	]}}
 	var first := RideConfig.normalize(document, ["return-height-b/slot.intensity=high"])
 	var repeat := RideConfig.normalize(document, ["return-height-b/slot.intensity=high"])
-	_expect(first.ok and repeat.ok, "a legal document normalizes: %s"
+	_t.expect(first.ok and repeat.ok, "a legal document normalizes: %s"
 		% str(RideConfig.error_messages(first.errors)))
-	_expect(var_to_bytes(first.resolved) == var_to_bytes(repeat.resolved),
+	_t.expect(var_to_bytes(first.resolved) == var_to_bytes(repeat.resolved),
 		"normalization of one document is bit-identical when repeated")
-	_expect(var_to_bytes(first.report) == var_to_bytes(repeat.report),
+	_t.expect(var_to_bytes(first.report) == var_to_bytes(repeat.report),
 		"the resolution report of one document is bit-identical when repeated")
 	var empty := RideConfig.normalize({})
-	_expect(empty.ok and int(empty.resolved.seed) == PRESET_SEED \
+	_t.expect(empty.ok and int(empty.resolved.seed) == PRESET_SEED \
 		and str(empty.resolved.preset) == RideConfig.PRESET_ID,
 		"an empty document inherits the preset base whole")
-	_expect(str(empty.resolved.config_hash) == EMPTY_CONFIG_HASH,
+	_t.expect(str(empty.resolved.config_hash) == EMPTY_CONFIG_HASH,
 		"the canonical preset hash is the recorded value, observed %s"
 			% str(empty.resolved.config_hash))
-	_expect(empty.report.preferences.is_empty(),
+	_t.expect(empty.report.preferences.is_empty(),
 		"an unconfigured document reports no preferences")
 
 
@@ -95,23 +93,23 @@ func _test_overlay_precedence_and_cli_order() -> void:
 	]}}
 	var result := RideConfig.normalize(file_config, ["seed=7", "seed=8",
 		"float_a@return-height-a/slot.intensity=high"])
-	_expect(result.ok, "the layered document normalizes: %s"
+	_t.expect(result.ok, "the layered document normalizes: %s"
 		% str(RideConfig.error_messages(result.errors)))
-	_expect(int(result.resolved.seed) == 8,
+	_t.expect(int(result.resolved.seed) == 8,
 		"the last CLI override wins in argument order, observed %d" % int(result.resolved.seed))
-	_expect(str(result.resolved.sources.seed.label) == "cli[1]",
+	_t.expect(str(result.resolved.sources.seed.label) == "cli[1]",
 		"the effective seed retains the layer that supplied it, observed %s"
 			% str(result.resolved.sources.seed.label))
-	_expect(str(result.resolved.preset) == RideConfig.PRESET_ID \
+	_t.expect(str(result.resolved.preset) == RideConfig.PRESET_ID \
 		and str(result.resolved.sources.preset.label) == "preset",
 		"an omitted field inherits the preset layer below")
 	var preferred: Array = result.resolved.constraints.preferred
-	_expect(preferred.size() == 1, "one ID over two layers stays one effective constraint")
+	_t.expect(preferred.size() == 1, "one ID over two layers stays one effective constraint")
 	if preferred.size() == 1:
 		var record: Dictionary = preferred[0]
-		_expect(str(record.choice) == "high" and str(record.source_layer) == "cli",
+		_t.expect(str(record.choice) == "high" and str(record.source_layer) == "cli",
 			"a later layer replaces the same ID when scope and key are unchanged")
-		_expect(int(record.source_argument) == 2 and int(record.source_position) == 0,
+		_t.expect(int(record.source_argument) == 2 and int(record.source_position) == 0,
 			"the effective record retains its source layer and list position")
 	var ordered := RideConfig.normalize({"constraints": {"preferred": [
 		{"id": "float_b", "scope": "return-height-b", "key": "slot.intensity",
@@ -119,12 +117,12 @@ func _test_overlay_precedence_and_cli_order() -> void:
 		{"id": "float_a", "scope": "return-height-a", "key": "slot.intensity",
 			"choice": "low"},
 	]}}, ["float_a@return-height-a/slot.intensity=high"])
-	_expect(ordered.ok, "the ordering document normalizes: %s"
+	_t.expect(ordered.ok, "the ordering document normalizes: %s"
 		% str(RideConfig.error_messages(ordered.errors)))
 	var ids: Array = []
 	for record: Dictionary in ordered.resolved.constraints.preferred:
 		ids.append(str(record.id))
-	_expect(ids == ["float_a", "float_b"],
+	_t.expect(ids == ["float_a", "float_b"],
 		"preferences order by source layer first and list position second, observed %s"
 			% str(ids))
 
@@ -214,7 +212,7 @@ func _test_infeasible_values_are_rejected_with_scope_range_and_conflict() -> voi
 		"the preset rejection names the catalogued domain")
 	_expect_error(RideConfig.normalize({"seed": 42.5}), "infeasible_value",
 		"a fractional seed is rejected")
-	_expect(RideConfig.normalize({"seed": 42.0}).ok,
+	_t.expect(RideConfig.normalize({"seed": 42.0}).ok,
 		"an integral seed survives a JSON round-trip that made it a float")
 	_expect_error(RideConfig.normalize({"ride_config_version": 2}), "infeasible_value",
 		"a future document version is rejected rather than guessed at")
@@ -235,9 +233,9 @@ func _test_infeasible_values_are_rejected_with_scope_range_and_conflict() -> voi
 func _test_hash_is_source_independent_and_value_sensitive() -> void:
 	var from_file := RideConfig.normalize({"seed": 7})
 	var from_cli := RideConfig.normalize({}, ["seed=7"])
-	_expect(str(from_file.resolved.config_hash) == str(from_cli.resolved.config_hash),
+	_t.expect(str(from_file.resolved.config_hash) == str(from_cli.resolved.config_hash),
 		"the canonical hash covers effective values, not the layer they came from")
-	_expect(var_to_bytes(from_file.resolved.sources) != var_to_bytes(from_cli.resolved.sources),
+	_t.expect(var_to_bytes(from_file.resolved.sources) != var_to_bytes(from_cli.resolved.sources),
 		"provenance still records which layer supplied the value")
 	var low := RideConfig.normalize({"constraints": {"preferred": [
 		{"id": "float_a", "scope": "return-height-a", "key": "slot.intensity",
@@ -247,10 +245,10 @@ func _test_hash_is_source_independent_and_value_sensitive() -> void:
 		{"id": "float_a", "scope": "return-height-a", "key": "slot.intensity",
 			"choice": "high"},
 	]}})
-	_expect(low.ok and high.ok, "both intensity documents normalize")
-	_expect(str(low.resolved.config_hash) != str(high.resolved.config_hash),
+	_t.expect(low.ok and high.ok, "both intensity documents normalize")
+	_t.expect(str(low.resolved.config_hash) != str(high.resolved.config_hash),
 		"a different catalogued choice hashes differently")
-	_expect(str(low.resolved.config_hash) != EMPTY_CONFIG_HASH,
+	_t.expect(str(low.resolved.config_hash) != EMPTY_CONFIG_HASH,
 		"a configured document hashes differently from the bare preset")
 	var both_in_file := RideConfig.normalize({"constraints": {"preferred": [
 		{"id": "float_a", "scope": "return-height-a", "key": "slot.intensity",
@@ -262,8 +260,8 @@ func _test_hash_is_source_independent_and_value_sensitive() -> void:
 		{"id": "float_a", "scope": "return-height-a", "key": "slot.intensity",
 			"choice": "low"},
 	]}}, ["float_b@return-height-b/slot.intensity=high"])
-	_expect(both_in_file.ok and split_over_layers.ok, "both layered documents normalize")
-	_expect(str(both_in_file.resolved.config_hash) == str(split_over_layers.resolved.config_hash),
+	_t.expect(both_in_file.ok and split_over_layers.ok, "both layered documents normalize")
+	_t.expect(str(both_in_file.resolved.config_hash) == str(split_over_layers.resolved.config_hash),
 		"the same effective constraint set hashes the same whichever layer supplied each record")
 
 
@@ -273,11 +271,11 @@ func _test_intensity_maps_onto_the_certified_thirds() -> void:
 			var result := RideConfig.normalize({"constraints": {"preferred": [
 				{"id": "float", "scope": scope, "key": "slot.intensity", "choice": choice},
 			]}})
-			_expect(result.ok, "%s at %s normalizes: %s"
+			_t.expect(result.ok, "%s at %s normalizes: %s"
 				% [choice, scope, str(RideConfig.error_messages(result.errors))])
 			var pins: Array = RideConfig.planner_pins(result.resolved)
 			var expected: Array = RideConfig.INTENSITY_PINNED_KEYS[scope]
-			_expect(pins.size() == expected.size(),
+			_t.expect(pins.size() == expected.size(),
 				"%s at %s pins %d certified draw(s)" % [choice, scope, expected.size()])
 			var index := RideConfig.INTENSITY_CHOICES.find(choice)
 			for pin: Dictionary in pins:
@@ -285,72 +283,72 @@ func _test_intensity_maps_onto_the_certified_thirds() -> void:
 				var third_low := lerpf(band.x, band.y, float(index) / 3.0)
 				var third_high := lerpf(band.x, band.y, float(index + 1) / 3.0)
 				var value := float(pin.value)
-				_expect(value > third_low and value < third_high,
+				_t.expect(value > third_low and value < third_high,
 					"%s pins %s/%s to %.6f, inside the %s third %.6f..%.6f"
 						% [choice, scope, pin.key, value, choice, third_low, third_high])
-				_expect(value >= band.x and value <= band.y,
+				_t.expect(value >= band.x and value <= band.y,
 					"%s pins %s/%s inside the certified range %.6f..%.6f"
 						% [choice, scope, pin.key, band.x, band.y])
-				_expect(str(pin.stream) == RidePlanner.TARGET_STREAM_PREFIX + scope,
+				_t.expect(str(pin.stream) == RidePlanner.TARGET_STREAM_PREFIX + scope,
 					"the pin names the decision stream it replaces")
 
 
 func _test_configured_build_pins_reports_and_repeats() -> void:
 	var high := _intensity_config("high", "high")
 	var built := RideGenerator.build_config(high)
-	_expect(built.ok, "a configured build succeeds: %s"
+	_t.expect(built.ok, "a configured build succeeds: %s"
 		% str(RideConfig.error_messages(built.errors)))
 	if not built.ok:
 		return
-	_expect(int(built.route.seed) == CONFIGURED_SEED, "the build uses the resolved seed")
+	_t.expect(int(built.route.seed) == CONFIGURED_SEED, "the build uses the resolved seed")
 	var targets: Dictionary = built.plan.decisions.targets
 	var pins: Array = RideConfig.planner_pins(built.resolved_config)
-	_expect(pins.size() == 3, "the two height slots pin three certified draws")
+	_t.expect(pins.size() == 3, "the two height slots pin three certified draws")
 	for pin: Dictionary in pins:
 		var resolved_value := float(targets[pin.role_id][pin.key])
 		var band := RideConfig.certified_range(str(pin.role_id), str(pin.key))
-		_expect(is_equal_approx(resolved_value, float(pin.value)),
+		_t.expect(is_equal_approx(resolved_value, float(pin.value)),
 			"%s/%s resolves to the pinned %.6f, observed %.6f"
 				% [pin.role_id, pin.key, float(pin.value), resolved_value])
-		_expect(resolved_value >= band.x and resolved_value <= band.y,
+		_t.expect(resolved_value >= band.x and resolved_value <= band.y,
 			"%s/%s resolves inside its certified range" % [pin.role_id, pin.key])
 	var pinned_count := 0
 	for draw: Dictionary in built.plan.decisions.draws:
-		_expect(draw.has("stream") and draw.has("pinned_by_config"),
+		_t.expect(draw.has("stream") and draw.has("pinned_by_config"),
 			"a configured plan records {stream, pinned_by_config} for every draw")
 		if bool(draw.get("pinned_by_config", false)):
 			pinned_count += 1
-	_expect(pinned_count == 3, "exactly the pinned draws are marked, observed %d" % pinned_count)
+	_t.expect(pinned_count == 3, "exactly the pinned draws are marked, observed %d" % pinned_count)
 	for entry: Dictionary in built.report.preferences:
-		_expect(str(entry.status) == "achieved" and float(entry.delta) == 0.0 \
+		_t.expect(str(entry.status) == "achieved" and float(entry.delta) == 0.0 \
 			and str(entry.achieved) == str(entry.request),
 			"preference %s reports request, achieved, delta, status and reason: %s"
 				% [entry.id, str(entry)])
 	var repeat := RideGenerator.build_config(high)
-	_expect(repeat.ok and var_to_bytes(repeat.route) == var_to_bytes(built.route),
+	_t.expect(repeat.ok and var_to_bytes(repeat.route) == var_to_bytes(built.route),
 		"the same configuration and seed build a bit-identical ride")
 	_certify(built, "high/high")
 	var floated := RideGenerator.build_config(_intensity_config("low", "low"))
-	_expect(floated.ok, "the low-intensity configuration builds: %s"
+	_t.expect(floated.ok, "the low-intensity configuration builds: %s"
 		% str(RideConfig.error_messages(floated.errors)))
 	if floated.ok:
 		var low_peak := float(floated.plan.decisions.targets["return-height-a"].peak_g)
 		var high_peak := float(built.plan.decisions.targets["return-height-a"].peak_g)
-		_expect(low_peak < high_peak,
+		_t.expect(low_peak < high_peak,
 			"low pulls the return height beats less hard than high (%.4f vs %.4f)"
 				% [low_peak, high_peak])
-		_expect(var_to_bytes(floated.route) != var_to_bytes(built.route),
+		_t.expect(var_to_bytes(floated.route) != var_to_bytes(built.route),
 			"the intensity choice reaches the published ride")
 		_certify(floated, "low/low")
 	# The two height slots are separately effective: a mixed document must float height-b
 	# differently from height-a rather than quietly coupling them.
 	var mixed := RideGenerator.build_config(_intensity_config("low", "high"))
-	_expect(mixed.ok, "a mixed-intensity configuration builds: %s"
+	_t.expect(mixed.ok, "a mixed-intensity configuration builds: %s"
 		% str(RideConfig.error_messages(mixed.errors)))
 	if mixed.ok:
 		var targets_a := float(mixed.plan.decisions.targets["return-height-a"].unload_scale)
 		var targets_b := float(mixed.plan.decisions.targets["return-height-b"].unload_scale)
-		_expect(targets_a < targets_b,
+		_t.expect(targets_a < targets_b,
 			"each height slot takes its own catalogued choice (%.5f vs %.5f)"
 				% [targets_a, targets_b])
 
@@ -358,17 +356,17 @@ func _test_configured_build_pins_reports_and_repeats() -> void:
 func _test_empty_config_is_the_preset_fast_path() -> void:
 	var preset := RideGenerator.build(PRESET_SEED)
 	var configured := RideGenerator.build_config({})
-	_expect(configured.ok, "the empty configuration builds: %s"
+	_t.expect(configured.ok, "the empty configuration builds: %s"
 		% str(RideConfig.error_messages(configured.errors)))
 	if not configured.ok:
 		return
-	_expect(var_to_bytes(configured.route) == var_to_bytes(preset),
+	_t.expect(var_to_bytes(configured.route) == var_to_bytes(preset),
 		"build_config({}) publishes exactly the route build(%d) does" % PRESET_SEED)
 	for draw: Dictionary in configured.plan.decisions.draws:
-		_expect(not draw.has("pinned_by_config"),
+		_t.expect(not draw.has("pinned_by_config"),
 			"an unconfigured build publishes the draws it always did, with no added field")
 	var rejected := RideGenerator.build_config({"preset": "nope"})
-	_expect(not rejected.ok and rejected.route.is_empty() and not rejected.errors.is_empty(),
+	_t.expect(not rejected.ok and rejected.route.is_empty() and not rejected.errors.is_empty(),
 		"an invalid configuration is rejected before anything is generated")
 
 
@@ -393,9 +391,9 @@ func _certify(built: Dictionary, label: String) -> void:
 	RideVerify.validate_self_clearance(route, issues)
 	var analysis: Dictionary = RideVerify.analyze(route, RouteContract.ROW_OFFSETS)
 	RideVerify.validate_loads(analysis, issues)
-	_expect(issues.is_empty(), "intensity %s on seed %d validates: %s"
+	_t.expect(issues.is_empty(), "intensity %s on seed %d validates: %s"
 		% [label, CONFIGURED_SEED, str(issues)])
-	_expect(float(route.length) >= ROUTE_LENGTH_BAND_M.x \
+	_t.expect(float(route.length) >= ROUTE_LENGTH_BAND_M.x \
 		and float(route.length) <= ROUTE_LENGTH_BAND_M.y,
 		"intensity %s keeps the route inside %.0f..%.0f m, observed %.2f"
 			% [label, ROUTE_LENGTH_BAND_M.x, ROUTE_LENGTH_BAND_M.y, float(route.length)])
@@ -403,12 +401,12 @@ func _certify(built: Dictionary, label: String) -> void:
 
 func _expect_error(result: Dictionary, code: String, message: String) -> void:
 	if result.ok:
-		_errors.append("%s (accepted instead)" % message)
+		_t.expect(false, "%s (accepted instead)" % message)
 		return
 	for record: Dictionary in result.errors:
 		if str(record.get("code", "")) == code:
 			return
-	_errors.append("%s; expected code '%s', observed %s"
+	_t.expect(false, "%s; expected code '%s', observed %s"
 		% [message, code, str(RideConfig.error_messages(result.errors))])
 
 
@@ -416,9 +414,5 @@ func _expect_message(result: Dictionary, fragment: String, message: String) -> v
 	for text in RideConfig.error_messages(result.errors):
 		if text.contains(fragment):
 			return
-	_errors.append("%s; no error mentioned '%s'" % [message, fragment])
+	_t.expect(false, "%s; no error mentioned '%s'" % [message, fragment])
 
-
-func _expect(condition: bool, message: String) -> void:
-	if not condition:
-		_errors.append(message)

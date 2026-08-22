@@ -49,45 +49,42 @@ const REFUSAL_DELTA := 0.005
 ## on the fleet: 0.9964-1.0003 s against a 1.00 s seed, so this holds the closure to what it does.
 const DIVE_APPROACH_LENGTHENING_TOLERANCE_S := 0.01
 
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 func _initialize() -> void:
 	var route := RideGenerator.build(42)
 	var built_ok: bool = not route.is_empty() and route.get("ok", true) \
 		and route.get("errors", []).is_empty()
-	_expect(built_ok, "seed 42 generates successfully: errors=%s failure=%s" % [
+	_t.expect(built_ok, "seed 42 generates successfully: errors=%s failure=%s" % [
 		str(route.get("errors", [])), str(route.get("failure", {}))])
 	if not built_ok:
-		for error in _errors: printerr(error)
-		quit(1)
+		_t.finish(self)
 		return
-	_expect(route.get("generator_version", "") == "time-domain-v1",
+	_t.expect(route.get("generator_version", "") == "time-domain-v1",
 		"the public route identifies the time-domain generator")
-	_expect(_story_windows_are_complete(route),
+	_t.expect(_story_windows_are_complete(route),
 		"ten stable, ordered, non-empty story windows are public")
-	_expect(_diagnostic_windows_are_stable(route),
+	_t.expect(_diagnostic_windows_are_stable(route),
 		"diagnostic windows have unique stable IDs and distinguish repeated roles")
-	_expect(_propulsion_and_work_are_honest(route),
+	_t.expect(_propulsion_and_work_are_honest(route),
 		"propulsion IDs are exactly 1/2/3 and generation integrates once without repair")
 	_check_story_plan_contract(route)
 	_check_route_scale_and_flow(route)
 	_check_climb_contract(route)
 	_check_clifftop_contract(route)
-	_expect(_dive_is_physical(route),
+	_t.expect(_dive_is_physical(route),
 		"the full cliff dive is sample-monotonic within 5 cm and steep while its literal core stays unloaded")
-	_expect(_lsm3_feeds_camelback(route),
+	_t.expect(_lsm3_feeds_camelback(route),
 		"LSM3 reaches the 340 km/h class and directly feeds the marquee camelback")
 	_check_native_verifier_contract(route)
-	_expect(_camelback_geometry_is_material(route),
+	_t.expect(_camelback_geometry_is_material(route),
 		"the camelback has material rise-apex-fall geometry")
 	_check_station_launch_contract(route)
 	_check_opener_contract(route)
 	_check_act_one_contract(route)
 	_check_preset_fleet_contract()
 	_check_closure_places_the_refused_stories()
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 func _check_preset_fleet_contract() -> void:
@@ -96,7 +93,7 @@ func _check_preset_fleet_contract() -> void:
 		var stats: Dictionary = route.get("generation_stats", {})
 		var length_m := float(route.get("length", NAN))
 		var story: Variant = route.get("terrain_story_plan")
-		_expect(route.get("ok", false) and stats.get("accepted_integrations", -1) == 1
+		_t.expect(route.get("ok", false) and stats.get("accepted_integrations", -1) == 1
 			and stats.get("planning_integrations", -1) == 2 \
 			and stats.get("repair_count", -1) == 0 and length_m >= 7800.0 and length_m <= 8200.0
 			and story is Dictionary,
@@ -127,7 +124,7 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 	var closure: Dictionary = planning.get("closure", {})
 	var controls: Array = closure.get("accepted_values", [])
 	if terrain.is_empty() or controls.size() != 4:
-		_expect(false, "seed %d publishes a measurable dive placement" % seed_value)
+		_t.expect(false, "seed %d publishes a measurable dive placement" % seed_value)
 		return
 	var rim_m := float(planning.get("dive_entry_edge_m", NAN)) \
 		- float(terrain.apron_width) - float(terrain.face_width)
@@ -138,18 +135,18 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 	# top is `minf(apron ceiling, rim + 5 m)` and the fleet clears it by 0.36 m, so a seed that
 	# lands above the window is usually one whose dive-exit apron fraction moved, not one whose
 	# plateau clearance did - and a rim distance alone cannot tell those two apart.
-	_expect(rim_m >= window.x and rim_m <= window.y,
+	_t.expect(rim_m >= window.x and rim_m <= window.y,
 		"seed %d starts its dive %.3f m behind the rim at apron fraction %.4f; the fleet aims %.1f-%.1f m"
 		% [seed_value, rim_m, float(planning.get("dive_exit_apron_fraction", NAN)),
 			window.x, window.y])
 	# Indexed by position, so the identity of position 3 is asserted rather than assumed: a reorder
 	# of the control vector would otherwise silently gate a different span's duration.
-	_expect(str(RidePrefixSolve.PREFIX_CONTROL_IDS[3]) == "dive_approach_s",
+	_t.expect(str(RidePrefixSolve.PREFIX_CONTROL_IDS[3]) == "dive_approach_s",
 		"the fourth prefix control is still dive_approach_s, not %s"
 		% str(RidePrefixSolve.PREFIX_CONTROL_IDS[3]))
 	var approach_s := float(controls[3])
 	var authored_s := float(RidePrefixSolve.PREFIX_SEED[3])
-	_expect(approach_s <= authored_s + DIVE_APPROACH_LENGTHENING_TOLERANCE_S,
+	_t.expect(approach_s <= authored_s + DIVE_APPROACH_LENGTHENING_TOLERANCE_S,
 		"seed %d holds %.4f s of banked pre-commit approach against its %.2f s authored beat"
 		% [seed_value, approach_s, authored_s])
 
@@ -279,32 +276,32 @@ func _check_swap_builds_end_to_end(seed_value: int, sequence: Array) -> void:
 	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
 	var plan: Dictionary = RideGenerator._plan(terrain, decisions)
 	if plan.has("ok") and not plan.ok:
-		_expect(false, "seed %d act-one optional swap plans: %s"
+		_t.expect(false, "seed %d act-one optional swap plans: %s"
 			% [seed_value, str(plan.get("errors", []))])
 		return
 	var compiled := RideProgram.compile(plan, RideGenerator._initial_state(plan.station))
 	if not compiled.get("ok", false):
-		_expect(false, "seed %d act-one optional swap closes its return: %s"
+		_t.expect(false, "seed %d act-one optional swap closes its return: %s"
 			% [seed_value, str(compiled.get("failure", {}))])
 		return
 	var return_plan: Dictionary = compiled.return_plan
 	var margins: Dictionary = return_plan.get("margins", {})
-	_expect(str(return_plan.get("solver_status", "")) == "converged",
+	_t.expect(str(return_plan.get("solver_status", "")) == "converged",
 		"seed %d act-one optional swap converges its return: %s"
 		% [seed_value, str(return_plan.get("solver_status", "missing"))])
-	_expect(float(margins.get("route_length_low_m", NAN)) > 0.0
+	_t.expect(float(margins.get("route_length_low_m", NAN)) > 0.0
 		and float(margins.get("route_length_high_m", NAN)) > 0.0,
 		"seed %d act-one optional swap closes %.6f m below and %.6f m above its route-length band"
 		% [seed_value, float(margins.get("route_length_low_m", NAN)),
 			float(margins.get("route_length_high_m", NAN))])
-	_expect(float(margins.get("scalar_height_a_recovery_duration_s", NAN)) > 0.0,
+	_t.expect(float(margins.get("scalar_height_a_recovery_duration_s", NAN)) > 0.0,
 		"seed %d act-one optional swap holds the recovery off its floor by %.6f s"
 		% [seed_value, float(margins.get("scalar_height_a_recovery_duration_s", NAN))])
 	# The turn-b residual reports its own observation, so the interiority the eighth residual buys
 	# is asserted on the number the solve saw, against the plan's own declared band.
 	var turn_b_band: Vector2 = _role_band(plan, "return-turn-b")
 	var turn_b_m := float(return_plan.get("fine_observation", {}).get("turn_b_length_m", NAN))
-	_expect(turn_b_m > turn_b_band.x and turn_b_m < turn_b_band.y,
+	_t.expect(turn_b_m > turn_b_band.x and turn_b_m < turn_b_band.y,
 		"seed %d act-one optional swap builds return-turn-b at %.3f m inside %s"
 		% [seed_value, turn_b_m, str(turn_b_band)])
 	# The whole point of the stage: the story that has never built, built. A fresh `resolve` -
@@ -313,7 +310,7 @@ func _check_swap_builds_end_to_end(seed_value: int, sequence: Array) -> void:
 	var rebuilt := RidePlanner.resolve(seed_value)
 	rebuilt["sequence"] = sequence
 	var route := RideGenerator.build_with_decisions(seed_value, rebuilt)
-	_expect(route.get("ok", false) and route.get("errors", []).is_empty(),
+	_t.expect(route.get("ok", false) and route.get("errors", []).is_empty(),
 		"seed %d act-one optional swap builds end to end: errors=%s failure=%s"
 		% [seed_value, str(route.get("errors", [])), str(route.get("failure", {}))])
 
@@ -369,20 +366,20 @@ func _check_refused_story_places(
 			role[key] = targets[role_id][key]
 		decisions.targets[role_id] = role
 	if not RidePlanner.is_legal_sequence(decisions.sequence):
-		_expect(false, "%s declares a grammar-legal sequence: %s" % [context, str(
+		_t.expect(false, "%s declares a grammar-legal sequence: %s" % [context, str(
 			decisions.sequence)])
 		return
 	var terrain: Dictionary = Terrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN])
 	var plan: Dictionary = RideGenerator._plan(terrain, decisions)
 	if plan.has("ok") and not plan.ok:
-		_expect(false, "%s closes and places: errors=%s failure=%s" % [context,
+		_t.expect(false, "%s closes and places: errors=%s failure=%s" % [context,
 			str(plan.get("errors", [])), str(plan.get("failure", {}))])
 		return
 	var planning: Dictionary = plan.terrain_frame.planning
 	var closure: Dictionary = planning.closure
 	var fine: Array = closure.get("fine_observation", [])
 	if fine.size() != RidePrefixSolve.PREFIX_RESIDUAL_IDS.size():
-		_expect(false, "%s publishes a measured closure: %s" % [context, str(closure)])
+		_t.expect(false, "%s publishes a measured closure: %s" % [context, str(closure)])
 		return
 	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
 	for entry: Array in [
@@ -397,7 +394,7 @@ func _check_refused_story_places(
 				RideGenerator.PREFIX_MARGIN_RECORD_MPS]]:
 		var band: Vector2 = entry[2]
 		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
-		_expect(is_finite(margin) and margin >= float(entry[3]),
+		_t.expect(is_finite(margin) and margin >= float(entry[3]),
 			"%s %s sits %.4f inside %s; the fleet requires %.4f"
 			% [context, entry[0], margin, str(band), float(entry[3])])
 	# The bar here is the derived cap itself, not `PREFIX_EVALUATION_ALLOWANCE`. That fraction is a
@@ -407,7 +404,7 @@ func _check_refused_story_places(
 	# dive-arc residual live, they converge in 29-99 of the 105, and holding them to 60% of the cap
 	# would be asking a non-canonical story to be as cheap as a canonical one.
 	var evaluations := int(closure.get("unique_evaluations", -1))
-	_expect(str(closure.get("solver_status", "")) == "converged" and evaluations >= 1
+	_t.expect(str(closure.get("solver_status", "")) == "converged" and evaluations >= 1
 		and evaluations <= int(closure.get("max_unique_evaluations", 0)),
 		"%s converges in %d %s evaluations" % [context, evaluations,
 			str(closure.get("solver_status", "missing"))])
@@ -415,31 +412,31 @@ func _check_refused_story_places(
 
 func _check_story_plan_contract(route: Dictionary) -> void:
 	var story: Variant = route.get("terrain_story_plan")
-	_expect(story is Dictionary, "the public route publishes its terrain story plan")
+	_t.expect(story is Dictionary, "the public route publishes its terrain story plan")
 	if not story is Dictionary:
 		return
 	var plan: Variant = story.get("plan")
-	_expect(plan is Dictionary, "terrain_story_plan contains the accepted sparse input plan")
+	_t.expect(plan is Dictionary, "terrain_story_plan contains the accepted sparse input plan")
 	if not plan is Dictionary:
 		return
 	var fields: Array = plan.keys()
 	fields.sort()
-	_expect(fields == ["corridor", "decisions", "preset_id", "roles", "route_length_m",
+	_t.expect(fields == ["corridor", "decisions", "preset_id", "roles", "route_length_m",
 		"schema_version", "station", "terrain_frame"],
 		"the material-v1 plan has exactly the reviewed eight top-level fields")
 	var role_ids := PackedStringArray()
 	for role in plan.get("roles", []):
 		role_ids.append(str(role.get("id", "")))
-	_expect(Array(role_ids) == MATERIAL_ROLE_IDS,
+	_t.expect(Array(role_ids) == MATERIAL_ROLE_IDS,
 		"the sparse plan preserves all twenty semantic roles in reviewed order")
 	var allocations: Variant = story.get("role_allocations_m")
-	_expect(allocations is Dictionary and allocations.size() == MATERIAL_ROLE_IDS.size(),
+	_t.expect(allocations is Dictionary and allocations.size() == MATERIAL_ROLE_IDS.size(),
 		"the single route-length allocation publishes one finite length per role")
 	var gate: Variant = story.get("return_entry_gate")
-	_expect(gate is Dictionary and gate.get("source") == "derived-terminal-corridor",
+	_t.expect(gate is Dictionary and gate.get("source") == "derived-terminal-corridor",
 		"the return entry gate is derived once from the terminal corridor")
 	var proofs: Variant = story.get("terrain_proofs")
-	_expect(proofs is Dictionary and proofs.has("clifftop-outward-rim")
+	_t.expect(proofs is Dictionary and proofs.has("clifftop-outward-rim")
 		and proofs.has("outward-dive") and proofs.has("tunnel-lsm3") \
 		and proofs.has("camelback") and proofs.has("native-scale"),
 		"rim, dive, tunnel, camelback, and route scale publish native proofs atomically")
@@ -447,7 +444,7 @@ func _check_story_plan_contract(route: Dictionary) -> void:
 		for role_id in ["clifftop-outward-rim", "outward-dive", "tunnel-lsm3",
 				"camelback", "native-scale"]:
 			var proof: Variant = proofs.get(role_id)
-			_expect(proof is Dictionary and proof.get("ok", false)
+			_t.expect(proof is Dictionary and proof.get("ok", false)
 				and float(proof.get("minimum_margin", -INF)) >= 0.0,
 				"%s terrain proof has a nonnegative native margin" % role_id)
 
@@ -522,7 +519,7 @@ func _check_route_scale_and_flow(route: Dictionary) -> void:
 		var story_id := str(band[0])
 		var window := _window(route, story_id)
 		if window.is_empty():
-			_expect(false, "%s public window is missing" % story_id)
+			_t.expect(false, "%s public window is missing" % story_id)
 			continue
 		var length_m: float = float(route.distances[int(window.last)]) \
 			- float(route.distances[int(window.first)])
@@ -550,7 +547,7 @@ func _check_route_scale_and_flow(route: Dictionary) -> void:
 func _check_climb_contract(route: Dictionary) -> void:
 	var climb := _window(route, "escarpment-climb")
 	if climb.is_empty():
-		_expect(false, "escarpment climb exposes contiguous lsm2 and upper-decay ownership")
+		_t.expect(false, "escarpment climb exposes contiguous lsm2 and upper-decay ownership")
 		return
 	var first := int(climb.first); var last := int(climb.last)
 	var total_m: float = float(route.distances[last]) - float(route.distances[first])
@@ -569,7 +566,7 @@ func _check_climb_contract(route: Dictionary) -> void:
 			powered_last = index
 	var powered_share := powered_m / total_m if total_m > 0.0 else 0.0
 	var upper_share := (float(route.distances[last]) - float(route.distances[powered_last])) / total_m if powered_last >= 0 and total_m > 0.0 else 0.0
-	_expect(seen_zone and contiguous, "LSM2 is one contiguous declared propulsion zone")
+	_t.expect(seen_zone and contiguous, "LSM2 is one contiguous declared propulsion zone")
 	_expect_range("LSM2 powered climb distance share", powered_share, 0.65, 0.80, "ratio")
 	_expect_range("unpowered upper-climb distance share", upper_share, 0.20, 0.35, "ratio")
 	_expect_range("escarpment net rise", route.positions[last].y - route.positions[first].y,
@@ -579,7 +576,7 @@ func _check_climb_contract(route: Dictionary) -> void:
 func _check_clifftop_contract(route: Dictionary) -> void:
 	var summit := _window(route, "clifftop-suspense")
 	if summit.is_empty():
-		_expect(false, "clifftop-suspense public window is missing")
+		_t.expect(false, "clifftop-suspense public window is missing")
 		return
 	var first := int(summit.first); var last := int(summit.last)
 	var minimum_speed := INF; var maximum_speed := -INF; var peak_normal := -INF
@@ -610,7 +607,7 @@ func _check_clifftop_contract(route: Dictionary) -> void:
 	_expect_range("clifftop peak proper normal", peak_normal, 1.15, 1.80, "g")
 	_expect_max("clifftop peak absolute lateral", maximum_lateral, 0.35, "g")
 	_expect_min("clifftop native vertical variation", vertical_variation, 3.0, "m")
-	_expect(_all_propulsion_zero(route, first, last), "clifftop has no positive-drive ownership")
+	_t.expect(_all_propulsion_zero(route, first, last), "clifftop has no positive-drive ownership")
 	_expect_min("clifftop exit upright", route.ups[last].dot(Vector3.UP), 0.99, "ratio")
 func _check_no_neutral_filler(route: Dictionary) -> void:
 	var count: int = route.distances.size(); var segment_first := 0
@@ -631,7 +628,7 @@ func _check_neutral_segment(route: Dictionary, segment_first: int, segment_last:
 		var activity := _native_activity(route, start, finish)
 		var graded: bool = activity.vertical_m >= 5.0
 		var force_shaped: bool = activity.curvature_gs >= 0.25
-		_expect(graded or force_shaped,
+		_t.expect(graded or force_shaped,
 			"native %.0f..%.0f m window is neutral: heading %.2f deg, vertical %.2f m, bank %s, load %.3f g*s" % [
 				float(route.distances[start]), float(route.distances[finish]), activity.heading_deg,
 				activity.vertical_m, str(activity.bank_active), activity.load_gs])
@@ -711,7 +708,7 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 	RideVerify.validate_structure(route, issues)
 	RideVerify.validate_seams(route, issues)
 	RideVerify.validate_clearance(route, route.terrain, issues)
-	_expect(issues.is_empty(),
+	_t.expect(issues.is_empty(),
 		"the independent verifier consumes the native public route: %s" % str(issues))
 
 	var speed_miss := route.duplicate(true)
@@ -721,7 +718,7 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 	speed_miss.minimum_speeds = minimum_speeds
 	issues.clear()
 	RideVerify.validate_structure(speed_miss, issues)
-	_expect(issues.has("invalid or stalled speed at sample %d" % sample),
+	_t.expect(issues.has("invalid or stalled speed at sample %d" % sample),
 		"the verifier reads the public per-sample minimum speed")
 
 	var seam_miss := route.duplicate(true)
@@ -730,7 +727,7 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 		if seam_miss.span_indices[index] != seam_miss.span_indices[index - 1]:
 			seam = index
 			break
-	_expect(seam >= 0, "the public route exposes a testable native span seam")
+	_t.expect(seam >= 0, "the public route exposes a testable native span seam")
 	if seam < 0:
 		return
 	var curvatures: PackedVector3Array = seam_miss.curvatures
@@ -738,7 +735,7 @@ func _check_native_verifier_contract(route: Dictionary) -> void:
 	seam_miss.curvatures = curvatures
 	issues.clear()
 	RideVerify.validate_seams(seam_miss, issues)
-	_expect(str(issues).contains("sample %d" % seam),
+	_t.expect(str(issues).contains("sample %d" % seam),
 		"the verifier checks geometry at native span boundaries")
 
 func _camelback_geometry_is_material(route: Dictionary) -> bool:
@@ -762,16 +759,16 @@ func _camelback_geometry_is_material(route: Dictionary) -> bool:
 func _check_station_launch_contract(route: Dictionary) -> void:
 	var launch := _window(route, "station-launch")
 	if launch.is_empty():
-		_expect(false, "station-launch public window is missing"); return
+		_t.expect(false, "station-launch public window is missing"); return
 	var roles: Array = launch.get("role_windows", [])
-	_expect(roles.size() == 1, "station-launch has %d roles; required 1" % roles.size())
+	_t.expect(roles.size() == 1, "station-launch has %d roles; required 1" % roles.size())
 	if roles.size() == 1:
 		var role: Dictionary = roles[0]
-		_expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] == [
+		_t.expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] == [
 			"launch", "launch", "station-launch/launch/00-launch"],
 			"station-launch role identity observed %s; required launch/launch/station-launch/launch/00-launch" %
 				str([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")]))
-		_expect(int(role.first) == int(launch.first) and int(role.last) == int(launch.last) \
+		_t.expect(int(role.first) == int(launch.first) and int(role.last) == int(launch.last) \
 			and int(role.first_span) == int(launch.first_span) \
 			and int(role.last_span) == int(launch.last_span),
 			"station-launch role must contiguously own the whole window")
@@ -793,7 +790,7 @@ func _check_station_launch_contract(route: Dictionary) -> void:
 		minimum_up_dot = minf(minimum_up_dot, route.ups[index].dot(Vector3.UP))
 		if bad_id < 0 and int(route.propulsion_ids[index]) != 1:
 			bad_id = index
-	_expect(bad_id < 0, "station-launch sample %d uses propulsion ID %d; required ID 1" % [
+	_t.expect(bad_id < 0, "station-launch sample %d uses propulsion ID %d; required ID 1" % [
 		bad_id, int(route.propulsion_ids[bad_id]) if bad_id >= 0 else 1])
 	_expect_range("station-launch peak authored drive", peak_drive, 3.7, 4.1, "g")
 	_expect_min("station-launch minimum drive", minimum_drive, 0.0, "g")
@@ -809,29 +806,29 @@ func _check_station_launch_contract(route: Dictionary) -> void:
 func _check_opener_contract(route: Dictionary) -> void:
 	var whole := _window(route, "opener")
 	if whole.is_empty():
-		_expect(false, "opener public window is missing"); return
+		_t.expect(false, "opener public window is missing"); return
 	var roles: Array = whole.get("role_windows", [])
 	var expected := [
 		["twisted-drop", "twisted_drop", "opener/twisted-drop/00-twisted_drop"],
 		["teardrop", "overbank", "opener/teardrop/00-overbank"],
 		["release", "hill", "opener/release/00-hill"],
 	]
-	_expect(roles.size() == expected.size(), "opener has %d roles; required %d" % [
+	_t.expect(roles.size() == expected.size(), "opener has %d roles; required %d" % [
 		roles.size(), expected.size()])
 	if roles.size() != expected.size():
 		return
 	var next_sample := int(whole.first); var next_span := int(whole.first_span)
 	for index in roles.size():
 		var role: Dictionary = roles[index]
-		_expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] \
+		_t.expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] \
 			== expected[index], "opener role %d identity observed %s; required %s" % [
 			index, str([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")]),
 			str(expected[index])])
-		_expect(int(role.first) == next_sample and int(role.first_span) == next_span,
+		_t.expect(int(role.first) == next_sample and int(role.first_span) == next_span,
 			"opener role %d starts sample/span %d/%d; required %d/%d" % [index,
 				int(role.first), int(role.first_span), next_sample, next_span])
 		next_sample = int(role.last) + 1; next_span = int(role.last_span) + 1
-	_expect(next_sample == int(whole.last) + 1 and next_span == int(whole.last_span) + 1,
+	_t.expect(next_sample == int(whole.last) + 1 and next_span == int(whole.last_span) + 1,
 		"opener roles do not contiguously cover the whole window")
 	var first := int(whole.first); var last := int(whole.last)
 	var drop: Dictionary = roles[0]
@@ -865,12 +862,12 @@ func _check_opener_contract(route: Dictionary) -> void:
 				energy - previous_energy - maxf(0.5, interval_work * 0.001))
 			previous_energy = energy
 			resistance_work += interval_work
-	_expect(_all_propulsion_zero(route, first, last), "opener propulsion IDs must all be 0")
+	_t.expect(_all_propulsion_zero(route, first, last), "opener propulsion IDs must all be 0")
 	_expect_max("opener absolute drive", peak_drive, 0.000001, "g")
 	_expect_range("twisted-drop prominence", _prominence(route, drop), 70.0, 115.0, "m")
 	_expect_min("twisted-drop apex-to-nadir drop",
 		route.positions[apex].y - route.positions[nadir].y, 70.0, "m")
-	_expect(non_descent < 0, "twisted-drop apex-to-nadir descent stops being strict at sample %d" % non_descent)
+	_t.expect(non_descent < 0, "twisted-drop apex-to-nadir descent stops being strict at sample %d" % non_descent)
 	_expect_min("twisted-drop lateral range", _turn_measure(route, drop).y, 5.0, "m")
 	_expect_min("opener minimum rider-up dot world-up", _minimum_up_dot(route, first, last), 0.15, "ratio")
 	_expect_range("opener unwrapped heading excursion", _turn_measure(route, whole).x, 60.0, 160.0, "deg")
@@ -882,7 +879,7 @@ func _check_opener_contract(route: Dictionary) -> void:
 	_expect_max("opener sampled normal/lateral/drive onset magnitude",
 		_sampled_peak_vector_onset(route, first, last), 25.01, "g/s")
 	var analytic_onset: Variant = whole.get("peak_profile_normal_onset_estimate_gps")
-	_expect(typeof(analytic_onset) == TYPE_FLOAT and is_finite(float(analytic_onset)),
+	_t.expect(typeof(analytic_onset) == TYPE_FLOAT and is_finite(float(analytic_onset)),
 		"opener exposes a finite normal-onset estimate; observed %s" % str(analytic_onset))
 	if typeof(analytic_onset) == TYPE_FLOAT:
 		_expect_max("opener profile normal-onset estimate", float(analytic_onset), 25.01, "g/s")
@@ -906,7 +903,7 @@ func _check_opener_contract(route: Dictionary) -> void:
 func _check_act_one_contract(route: Dictionary) -> void:
 	var whole := _window(route, "act-one")
 	if whole.is_empty():
-		_expect(false, "act-one public window is missing"); return
+		_t.expect(false, "act-one public window is missing"); return
 	var roles: Array = whole.get("role_windows", [])
 	var expected := [
 		["giant-inversion", "immelmann", "act-one/giant-inversion/00-immelmann"],
@@ -915,21 +912,21 @@ func _check_act_one_contract(route: Dictionary) -> void:
 		["airtime-hills", "hill", "act-one/airtime-hills/00-hill"],
 		["wave-turn", "wave_turn", "act-one/wave-turn/00-wave_turn"],
 	]
-	_expect(roles.size() == expected.size(), "act-one has %d roles; required %d" % [
+	_t.expect(roles.size() == expected.size(), "act-one has %d roles; required %d" % [
 		roles.size(), expected.size()])
 	if roles.size() != expected.size():
 		return
 	var next_sample := int(whole.first); var next_span := int(whole.first_span)
 	for index in roles.size():
 		var role: Dictionary = roles[index]; var identity: Array = expected[index]
-		_expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] == identity,
+		_t.expect([role.get("id"), role.get("diagnostic_kind"), role.get("window_id")] == identity,
 			"act-one role %d identity observed %s; required %s" % [index, str([
 				role.get("id"), role.get("diagnostic_kind"), role.get("window_id")]), str(identity)])
-		_expect(int(role.first) == next_sample and int(role.first_span) == next_span,
+		_t.expect(int(role.first) == next_sample and int(role.first_span) == next_span,
 			"act-one role %d starts sample/span %d/%d; required %d/%d" % [index,
 				int(role.first), int(role.first_span), next_sample, next_span])
 		next_sample = int(role.last) + 1; next_span = int(role.last_span) + 1
-	_expect(next_sample == int(whole.last) + 1 and next_span == int(whole.last_span) + 1,
+	_t.expect(next_sample == int(whole.last) + 1 and next_span == int(whole.last_span) + 1,
 		"act-one roles end sample/span %d/%d; whole ends %d/%d" % [next_sample - 1,
 			next_span - 1, int(whole.last), int(whole.last_span)])
 	var first := int(whole.first); var last := int(whole.last)
@@ -946,7 +943,7 @@ func _check_act_one_contract(route: Dictionary) -> void:
 		peak_drive = maxf(peak_drive, absf(float(route.drive_g[index])))
 		if bad_propulsion_sample < 0 and int(route.propulsion_ids[index]) != 0:
 			bad_propulsion_sample = index; bad_propulsion_id = int(route.propulsion_ids[index])
-	_expect(bad_propulsion_sample < 0, "act-one sample %d propulsion ID %d; required 0" % [
+	_t.expect(bad_propulsion_sample < 0, "act-one sample %d propulsion ID %d; required 0" % [
 		bad_propulsion_sample, bad_propulsion_id])
 	_expect_max("act-one absolute drive", peak_drive, 0.000001, "g")
 	_expect_min("act-one minimum normal", minimum_normal, -1.0, "g")
@@ -960,7 +957,7 @@ func _check_act_one_contract(route: Dictionary) -> void:
 			/ (float(route.times[index]) - float(route.times[index - 1])))
 	_expect_max("act-one sampled normal onset including its entry boundary", maximum_onset, 25.01, "g/s")
 	var analytic_onset: Variant = whole.get("peak_profile_normal_onset_estimate_gps")
-	_expect(typeof(analytic_onset) == TYPE_FLOAT and is_finite(float(analytic_onset)),
+	_t.expect(typeof(analytic_onset) == TYPE_FLOAT and is_finite(float(analytic_onset)),
 		"act-one exposes a finite normal-onset estimate; observed %s" % str(analytic_onset))
 	if typeof(analytic_onset) == TYPE_FLOAT:
 		_expect_max("act-one profile normal-onset estimate", float(analytic_onset), 25.01, "g/s")
@@ -1052,16 +1049,16 @@ func _turn_measure(route: Dictionary, window: Dictionary) -> Vector2:
 	return Vector2(rad_to_deg(heading_range.y - heading_range.x), lateral.y - lateral.x)
 
 func _expect_range(label: String, value: float, minimum: float, maximum: float, unit: String) -> void:
-	_expect(value >= minimum and value <= maximum,
+	_t.expect(value >= minimum and value <= maximum,
 		"%s observed %.3f %s; required %.3f..%.3f %s" % [
 			label, value, unit, minimum, maximum, unit])
 
 func _expect_min(label: String, value: float, minimum: float, unit: String) -> void:
-	_expect(value >= minimum, "%s observed %.3f %s; required >= %.3f %s" % [
+	_t.expect(value >= minimum, "%s observed %.3f %s; required >= %.3f %s" % [
 		label, value, unit, minimum, unit])
 
 func _expect_max(label: String, value: float, maximum: float, unit: String) -> void:
-	_expect(value <= maximum, "%s observed %.3f %s; required <= %.3f %s" % [
+	_t.expect(value <= maximum, "%s observed %.3f %s; required <= %.3f %s" % [
 		label, value, unit, maximum, unit])
 
 func _maximum_height(route: Dictionary, first: int, last: int) -> float:
@@ -1099,6 +1096,3 @@ func _all_propulsion_zero(route: Dictionary, first: int, last: int) -> bool:
 			return false
 	return true
 
-func _expect(condition: bool, message: String) -> void:
-	if not condition:
-		_errors.append(message)

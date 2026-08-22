@@ -52,7 +52,7 @@ const PREFIX_CAPABILITY_DIGEST := {
 	-1: "7c7c20d8539f3924916218e7ccc5ea03344f766c910c4ba2d1fb2d18b48fe3b6",
 	1: "076e644f7863687173f17913d473e78828b481fca6b1cee1b12ca049faa5167a",
 }
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 
 func _initialize() -> void:
@@ -74,9 +74,7 @@ func _initialize() -> void:
 	_test_infeasible_prefix_closure_is_structured()
 	_test_prefix_closure_solve_accepts_non_axis_aligned_outward_local()
 	_test_prefix_closure_solve_converges_on_a_drawn_story()
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 func _test_sustained_brake_closes_without_padding() -> void:
@@ -99,23 +97,23 @@ func _test_sustained_brake_closes_without_padding() -> void:
 				"capture_length_m": 80.0, "brake_length_m": 150.0,
 				"entry_speed_mps": Vector2(70.0, 80.0)}}
 		var solved := RideReturnSolve._solve_brakes(start, layout)
-		if not _expect(solved.get("ok", false),
+		if not _t.expect(solved.get("ok", false),
 				"the %s brake owner consumes its full distance: %s" % [fixture.id, str(solved)]):
 			continue
 		var repeated := RideReturnSolve._solve_brakes(start, layout)
-		_expect(var_to_bytes(solved) == var_to_bytes(repeated),
+		_t.expect(var_to_bytes(solved) == var_to_bytes(repeated),
 			"the %s brake solve is byte-identical" % fixture.id)
 		var parts := _terminal_program_parts(solved.get("spans", []))
-		if not _expect(parts.ok,
+		if not _t.expect(parts.ok,
 				"the %s terminal has one active moving brake phase followed by station mode"
 				% fixture.id):
 			continue
-		_expect(RideProgram._validate_control_seams(solved.spans).is_empty(),
+		_t.expect(RideProgram._validate_control_seams(solved.spans).is_empty(),
 			"the %s brake and station seams are C2" % fixture.id)
 		var full := Motion.integrate(start, solved.spans, RideProgram._settings(0.01))
 		var production := _independent_brake_observation(
 			start, parts.moving_spans, 0.0, 0.01)
-		if not _expect(full.get("ok", false) and production.ok,
+		if not _t.expect(full.get("ok", false) and production.ok,
 				"the %s terminal independently integrates" % fixture.id):
 			continue
 		var station_distance: float = full.distance_m[-1] - production.moving_distance_m
@@ -125,17 +123,17 @@ func _test_sustained_brake_closes_without_padding() -> void:
 		var moving_target: float = projected_remaining_m - station_distance
 		production = _independent_brake_observation(
 			start, parts.moving_spans, moving_target, 0.01)
-		_expect(absf(production.moving_boundary_speed_mps - 2.0) <= 0.0001,
+		_t.expect(absf(production.moving_boundary_speed_mps - 2.0) <= 0.0001,
 			"the %s native moving handoff reaches 2 m/s" % fixture.id)
-		_expect(full.position_m[-1].distance_to(layout.station_position_m) <= 0.05
+		_t.expect(full.position_m[-1].distance_to(layout.station_position_m) <= 0.05
 			and absf(float(full.speed_mps[-1]) - 1.0) <= 0.001,
 			"the %s terminal reaches station at 1 m/s" % fixture.id)
 		var values: Variant = report.get("accepted_values")
-		_expect(report.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
+		_t.expect(report.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
 			and parts.hold_duration_s >= 0.5 and parts.hold_duration_s <= 5.0
 			and parts.peak_g >= 0.0 and parts.peak_g <= 3.6,
 			"the %s authored hold and peak satisfy the literal recipe bounds" % fixture.id)
-		_expect(values is Array and values.size() == 2
+		_t.expect(values is Array and values.size() == 2
 			and absf(float(values[0]) - parts.hold_duration_s) <= 0.000001
 			and absf(float(values[1]) - parts.peak_g) <= 0.000001
 			and absf(float(report.get("active_duration_s", -1.0))
@@ -146,24 +144,24 @@ func _test_sustained_brake_closes_without_padding() -> void:
 				[0.05, "coarse_observation"], [0.025, "fine_observation"]]:
 			var measured := _independent_brake_observation(
 				start, parts.moving_spans, moving_target, float(step_and_field[0]))
-			_expect(measured.ok and _residuals_are_within(
+			_t.expect(measured.ok and _residuals_are_within(
 					measured.get("residuals", []), [0.05, 0.0001]),
 				"the %s %s independently satisfies both brake residuals"
 				% [fixture.id, step_and_field[1]])
-			_expect(_brake_report_observation_is_valid(
+			_t.expect(_brake_report_observation_is_valid(
 					report.get(step_and_field[1], {}), report),
 				"the %s %s publishes finite self-consistent brake residuals"
 				% [fixture.id, step_and_field[1]])
-		_expect(absf(float(report.get("station_distance_m", INF)) - station_distance) <= 0.001
+		_t.expect(absf(float(report.get("station_distance_m", INF)) - station_distance) <= 0.001
 			and absf(float(report.get("remaining_distance_m", INF)) - fixture.remaining_m) <= 0.001
 			and absf(float(report.get("distance_residual_m", INF))) <= 0.05,
 			"the %s report accounts for moving, creep, and remaining distance" % fixture.id)
-		_expect(int(report.get("unique_evaluations", -1)) >= 1
+		_t.expect(int(report.get("unique_evaluations", -1)) >= 1
 			and int(report.get("unique_evaluations", 25)) <= 24
 			and report.get("max_unique_evaluations") == 24
 			and _conditioning_matches_accepted_point(report, "accepted_values"),
 			"the %s brake publishes its bounded solve diagnostics" % fixture.id)
-	_expect(accepted_holds.size() == 2 and accepted_holds[1] >= accepted_holds[0] + 0.3,
+	_t.expect(accepted_holds.size() == 2 and accepted_holds[1] >= accepted_holds[0] + 0.3,
 		"additional distance alone materially lengthens the accepted brake hold")
 
 
@@ -175,7 +173,7 @@ func _test_material_return_recipe() -> void:
 	RideProgram._begin_gesture(gestures, "raceway-return", 0)
 	RideProgram._add_raceway(spans, metadata, propulsion)
 	RideProgram._end_gesture(gestures, metadata, spans.size() - 1)
-	_expect(not spans.is_empty() and metadata.size() == spans.size()
+	_t.expect(not spans.is_empty() and metadata.size() == spans.size()
 		and propulsion.size() == spans.size(),
 		"every return span has semantic and propulsion ownership")
 	var route := Motion.integrate({
@@ -184,14 +182,14 @@ func _test_material_return_recipe() -> void:
 		"distance_m": 0.0,
 		"time_s": 0.0,
 	}, spans, RideProgram._settings(0.01))
-	if not _expect(route.get("ok", false),
+	if not _t.expect(route.get("ok", false),
 			"the public return recipe integrates from a finite level upright moving state"):
 		return
 	var role_ids := []
 	var roles: Array = gestures[0].role_windows
 	for role: Dictionary in roles:
 		role_ids.append(role.id)
-	_expect(role_ids == ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"],
+	_t.expect(role_ids == ["turn-a", "height-airtime-a", "turn-b", "height-airtime-b"],
 		"the return exposes exactly four ordered nonempty semantic roles")
 	var contiguous := roles.size() == 4 and int(roles[0].first_span) == 0 \
 		and int(roles[-1].last_span) == spans.size() - 1
@@ -200,7 +198,7 @@ func _test_material_return_recipe() -> void:
 			== int(roles[index].first_span)
 	for role: Dictionary in roles:
 		contiguous = contiguous and int(role.first_span) <= int(role.last_span)
-	_expect(contiguous,
+	_t.expect(contiguous,
 		"the four physical return roles contiguously own the complete recipe")
 
 
@@ -215,34 +213,34 @@ func _test_return_flow_classifier_rejects_neutral_interval() -> void:
 	}, neutral, RideProgram._settings(0.01))
 	var observed := _return_flow_observation(route,
 		[{"first_span": 0, "last_span": 0}], Vector2i(0, route.time_s.size() - 1), Vector3.UP)
-	_expect(route.get("ok", false) and not observed.ok and observed.dead_flat_s > 0.25,
+	_t.expect(route.get("ok", false) and not observed.ok and observed.dead_flat_s > 0.25,
 		"the trajectory classifier rejects a synthetic 0.30 s neutral filler")
 
 
 func _test_terrain_story_capability_is_finite_and_handed() -> void:
 	var left := RideProgram.terrain_story_capability(-1)
 	var right := RideProgram.terrain_story_capability(1)
-	_expect(left.get("ok", false) and right.get("ok", false)
+	_t.expect(left.get("ok", false) and right.get("ok", false)
 		and left.get("planning_integrations") == 1 and right.get("planning_integrations") == 1,
 		"each handed terrain capability uses one finite planning integration")
 	if not left.get("ok", false) or not right.get("ok", false):
 		return
 	var a: Dictionary = left.role_13_entry
 	var b: Dictionary = right.role_13_entry
-	_expect(a.offset_m is Vector3 and b.offset_m is Vector3
+	_t.expect(a.offset_m is Vector3 and b.offset_m is Vector3
 		and a.offset_m.is_finite() and b.offset_m.is_finite()
 		and a.tangent.is_finite() and b.tangent.is_finite()
 		and a.rider_up.is_finite() and b.rider_up.is_finite()
 		and _positive_finite(a.speed_mps) and _positive_finite(b.speed_mps),
 		"the capability publishes a finite role-13 station-local handoff")
-	_expect(absf(a.offset_m.x - b.offset_m.x) <= 0.05
+	_t.expect(absf(a.offset_m.x - b.offset_m.x) <= 0.05
 		and absf(a.offset_m.y - b.offset_m.y) <= 0.05
 		and absf(a.offset_m.z + b.offset_m.z) <= 0.05
 		and absf(a.speed_mps - b.speed_mps) <= 0.01,
 		"station handedness mirrors world placement without changing canonical scalar capability")
 	var left_footprint: Variant = left.get("dive_footprint")
 	var right_footprint: Variant = right.get("dive_footprint")
-	_expect(left_footprint is Dictionary and right_footprint is Dictionary
+	_t.expect(left_footprint is Dictionary and right_footprint is Dictionary
 		and _positive_finite(left_footprint.get("outward_delta_m"))
 		and _positive_finite(right_footprint.get("outward_delta_m"))
 		and left_footprint.get("dive_exit_offset_m") is Vector3
@@ -263,7 +261,7 @@ func _test_terrain_story_capability_is_finite_and_handed() -> void:
 		and absf(float(left_footprint.outward_delta_m)
 			- float(right_footprint.outward_delta_m)) <= 0.05,
 		"the native dive/tunnel footprint is finite, outward, and hand-invariant")
-	_expect(right.scale == {"route_vertical_envelope_m": Vector2(290.0, 305.0),
+	_t.expect(right.scale == {"route_vertical_envelope_m": Vector2(290.0, 305.0),
 		"dive_drop_m": Vector2(240.0, 250.0),
 		"camel_prominence_m": Vector2(245.0, 255.0)},
 		"the planning capability publishes the reviewed near-future vertical bands")
@@ -271,17 +269,17 @@ func _test_terrain_story_capability_is_finite_and_handed() -> void:
 
 func _test_preset_return_gate_contract() -> void:
 	var compiled := _compile(_layout())
-	if not _expect(compiled.get("ok", false),
+	if not _t.expect(compiled.get("ok", false),
 			"the preset return closes: %s" % str(compiled.get("failure", {}))):
 		return
 	var trajectory := _integrated_trajectory(compiled, _layout())
 	var gesture := _compiled_gesture(compiled, "raceway-return")
 	var bounds := _owned_span_bounds(trajectory.span_index, gesture.first_span, gesture.last_span)
-	_expect(trajectory.get("ok", false) and bounds.x >= 0
+	_t.expect(trajectory.get("ok", false) and bounds.x >= 0
 		and trajectory.distance_m[bounds.y] - trajectory.distance_m[bounds.x] <= 2500.0,
 		"the preset return fits its physical length budget")
 	var report: Dictionary = compiled.get("return_plan", {})
-	_expect(_return_trajectory_is_material(trajectory, gesture.role_windows, _layout()),
+	_t.expect(_return_trajectory_is_material(trajectory, gesture.role_windows, _layout()),
 		"the accepted preset return satisfies the role-level physical contract")
 	var accepted_parameters: Variant = report.get("accepted_values")
 	var scalar_bounds: Variant = report.get("scalar_bounds")
@@ -294,7 +292,7 @@ func _test_preset_return_gate_contract() -> void:
 				and scalar_bounds[index] is Array and scalar_bounds[index].size() == 2 \
 				and float(accepted_parameters[index]) >= float(scalar_bounds[index][0]) \
 				and float(accepted_parameters[index]) <= float(scalar_bounds[index][1])
-	_expect(parameters_are_bounded,
+	_t.expect(parameters_are_bounded,
 		"every accepted return calibration remains inside its published finite bound")
 	var rotated_layout := _layout()
 	var rotation := Basis(Vector3.UP, deg_to_rad(53.0))
@@ -303,13 +301,13 @@ func _test_preset_return_gate_contract() -> void:
 	var rotated := _compile(rotated_layout)
 	var base_observation: Variant = report.get("fine_observation")
 	var rotated_observation: Variant = rotated.get("return_plan", {}).get("fine_observation")
-	_expect(rotated.get("ok", false)
+	_t.expect(rotated.get("ok", false)
 		and _return_observations_are_equivalent(base_observation, rotated_observation),
 		"the accepted return is rigid-frame equivariant in station-local physical space")
 	var impossible := _layout()
 	impossible.reserved_corridor.minimum_length_m = 100.0
 	var rejected := _compile(impossible)
-	_expect(not rejected.get("ok", true) and rejected.get("failure", {}).get("stage") == "plan",
+	_t.expect(not rejected.get("ok", true) and rejected.get("failure", {}).get("stage") == "plan",
 		"an infeasible reserved corridor is rejected structurally")
 
 
@@ -333,45 +331,45 @@ func _station_local_observation(state: Dictionary, layout: Dictionary) -> Array:
 
 func _test_station_local_program_compiles() -> void:
 	var compiled := _compile(_layout())
-	if not _expect(compiled.get("ok", false),
+	if not _t.expect(compiled.get("ok", false),
 			"the explicit station-local return fixture compiles: %s" % str(compiled.get("errors", []))):
 		return
-	_expect(_near_future_story_is_physical(compiled, _layout()),
+	_t.expect(_near_future_story_is_physical(compiled, _layout()),
 		"the raw trajectory carries the reviewed near-future signature scale and continuous flow")
-	_expect(not compiled.get("spans", []).is_empty(), "the compiled program contains motion spans")
-	_expect(compiled.get("capture_plan", {}).get("unique_evaluations", 41) <= 40,
+	_t.expect(not compiled.get("spans", []).is_empty(), "the compiled program contains motion spans")
+	_t.expect(compiled.get("capture_plan", {}).get("unique_evaluations", 41) <= 40,
 		"the accepted capture stays within its public evaluation budget")
-	_expect(_return_and_terminal_drive_is_nonpositive(compiled),
+	_t.expect(_return_and_terminal_drive_is_nonpositive(compiled),
 		"every global-return, capture, brake, and station drive profile is nonpositive")
-	_expect(_return_is_passive_and_material(compiled, _layout()),
+	_t.expect(_return_is_passive_and_material(compiled, _layout()),
 		"the integrated return meets every public materiality and passivity threshold")
-	_expect(_compiled_return_flow_is_continuous(compiled, _layout()),
+	_t.expect(_compiled_return_flow_is_continuous(compiled, _layout()),
 		"the uninterrupted return has no dead-flat or low-activity filler")
 	var return_plan: Dictionary = compiled.get("return_plan", {})
-	_expect(return_plan.get("positive_drive_allowed", true) == false
+	_t.expect(return_plan.get("positive_drive_allowed", true) == false
 		and return_plan.get("accepted_values", []) is Array
 		and not return_plan.get("accepted_values", []).is_empty(),
 		"the passive return publishes the calibration that satisfied its physical target")
-	_expect(_capture_plan_is_bounded(compiled),
+	_t.expect(_capture_plan_is_bounded(compiled),
 		"the solved station capture publishes evidence within 40 coarse evaluations")
-	_expect(_conditioning_matches_accepted_point(
+	_t.expect(_conditioning_matches_accepted_point(
 		compiled.get("capture_plan", {}), "coefficients"),
 		"capture conditioning is tied to the accepted coefficient vector")
-	_expect(_capture_margin_contract_is_complete(compiled),
+	_t.expect(_capture_margin_contract_is_complete(compiled),
 		"accepted capture evidence validates every required finite nonnegative margin")
-	_expect(_capture_corridor_is_longitudinally_bounded(compiled, _layout()),
+	_t.expect(_capture_corridor_is_longitudinally_bounded(compiled, _layout()),
 		"capture samples and margins stay between the reserved approach start and station")
-	_expect(_terminal_contract_is_fixed(compiled, _layout()),
+	_t.expect(_terminal_contract_is_fixed(compiled, _layout()),
 		"the integrated endpoint satisfies the requested station frame and terminal speed")
-	_expect(not _contains_fallback_or_repair_field(compiled),
+	_t.expect(not _contains_fallback_or_repair_field(compiled),
 		"the compiled program contains no fallback or repair field")
 	var repeated := _compile(_layout())
-	_expect(var_to_bytes(compiled) == var_to_bytes(repeated),
+	_t.expect(var_to_bytes(compiled) == var_to_bytes(repeated),
 		"the same public compile request produces a byte-identical deterministic result")
 	var brake: Dictionary = compiled.get("brake_plan", {})
-	_expect(brake.get("positive_drive_allowed", true) == false,
+	_t.expect(brake.get("positive_drive_allowed", true) == false,
 		"the brake plan forbids positive drive")
-	_expect(brake.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
+	_t.expect(brake.get("parameter_bounds") == [[0.5, 5.0], [0.0, 3.6]]
 		and float(brake.get("hold_duration_s", -1.0)) >= 0.5
 		and float(brake.get("hold_duration_s", 6.0)) <= 5.0
 		and float(brake.get("brake_peak_g", -1.0)) >= 0.0
@@ -391,18 +389,18 @@ func _test_station_local_program_compiles() -> void:
 			var brake_bounds := _owned_span_bounds(trajectory.span_index, span_index, span_index)
 			observed_brake_entry_speed = trajectory.speed_mps[brake_bounds.x]
 			break
-	_expect(_positive_finite(observed_brake_entry_speed)
+	_t.expect(_positive_finite(observed_brake_entry_speed)
 		and _positive_finite(brake.get("brake_entry_speed_mps"))
 		and absf(float(brake.get("brake_entry_speed_mps", INF))
 			- observed_brake_entry_speed) <= 0.000001,
 		"the public brake begins at its independently observed production state")
-	_expect(_brake_spans_have_no_positive_drive(compiled),
+	_t.expect(_brake_spans_have_no_positive_drive(compiled),
 		"the authored capture and brake spans contain no positive drive")
-	_expect(absf(float(brake.get("terminal_creep_speed_mps", -1.0)) - 1.0) <= 0.000001,
+	_t.expect(absf(float(brake.get("terminal_creep_speed_mps", -1.0)) - 1.0) <= 0.000001,
 		"the brake plan declares the one metre-per-second terminal target")
 	var terminal: Dictionary = compiled.get("spans", [])[-1]
-	_expect(terminal.get("mode", "") == "station", "the compiled program ends in station mode")
-	_expect(_structural_terminal(terminal), "the compiled program ends on structural controls")
+	_t.expect(terminal.get("mode", "") == "station", "the compiled program ends in station mode")
+	_t.expect(_structural_terminal(terminal), "the compiled program ends on structural controls")
 
 
 func _test_capture_accepts_varied_station_frames() -> void:
@@ -420,12 +418,12 @@ func _test_capture_accepts_varied_station_frames() -> void:
 	for fixture: Dictionary in fixtures:
 		var solved: Dictionary = RideReturnSolve._solve_capture(
 			fixture.state, fixture.layout, settings)
-		if not _expect(solved.get("ok", false),
+		if not _t.expect(solved.get("ok", false),
 				"capture accepts the %s fixture: %s" % [fixture.id, str(solved)]):
 			continue
-		_expect(int(solved.get("unique_evaluations", 41)) <= 40,
+		_t.expect(int(solved.get("unique_evaluations", 41)) <= 40,
 			"capture solves within 40 evaluations for %s" % fixture.id)
-		_expect(maxf(absf(float(solved.coefficients[0])),
+		_t.expect(maxf(absf(float(solved.coefficients[0])),
 			absf(float(solved.coefficients[1]))) > 0.75,
 			"the short %s capture exercises restored lateral authority" % fixture.id)
 		for step_and_field in [[0.05, "residuals"], [0.025, "fine_residuals"], [0.01, ""]]:
@@ -434,12 +432,12 @@ func _test_capture_accepts_varied_station_frames() -> void:
 			var field := str(step_and_field[1])
 			var limits := CAPTURE_COARSE_RESIDUAL_LIMITS \
 				if is_equal_approx(float(step_and_field[0]), 0.05) else CAPTURE_RESIDUAL_LIMITS
-			_expect(measured.get("ok", false) and _residuals_are_within(
+			_t.expect(measured.get("ok", false) and _residuals_are_within(
 					measured.get("residuals", []), limits),
 				"accepted %s capture independently satisfies five axes at %.3f s: %s"
 				% [fixture.id, step_and_field[0], str(measured)])
 			if not field.is_empty():
-				_expect(_residual_vectors_near(
+				_t.expect(_residual_vectors_near(
 					solved.get(field, []), measured.get("residuals", []), 0.0000001),
 					"reported %s match independently derived %s geometry"
 					% [field, fixture.id])
@@ -557,7 +555,7 @@ func _test_nonfinite_capture_margin_is_rejected() -> void:
 ## sweep seeds add minutes here without adding a new solve regime. `smoke.gd` carries the
 ## fifteen-seed half inside the builds it already pays for.
 func _test_return_solve_stays_inside_its_derived_budget() -> void:
-	_expect(RideReturnSolve.MAX_RETURN_EVALUATIONS == 88,
+	_t.expect(RideReturnSolve.MAX_RETURN_EVALUATIONS == 88,
 		"the return evaluation cap is the derived 88, not %d"
 		% RideReturnSolve.MAX_RETURN_EVALUATIONS)
 	var allowance := int(0.6 * RideReturnSolve.MAX_RETURN_EVALUATIONS)
@@ -565,10 +563,10 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 		var decisions := RidePlanner.resolve(seed_value)
 		var plan := RideGenerator._plan(
 			RideTerrain.generate(decisions.streams[RidePlanner.STREAM_TERRAIN]), decisions)
-		if not _expect(not plan.has("ok") or plan.ok, "seed %d plans" % seed_value):
+		if not _t.expect(not plan.has("ok") or plan.ok, "seed %d plans" % seed_value):
 			continue
 		var compiled := RideProgram.compile(plan, RideGenerator._initial_state(plan.station))
-		if not _expect(compiled.get("ok", false),
+		if not _t.expect(compiled.get("ok", false),
 				"seed %d compiles: %s" % [seed_value, str(compiled.get("failure", {}))]):
 			continue
 		var report: Dictionary = compiled.get("return_plan", {})
@@ -576,7 +574,7 @@ func _test_return_solve_stays_inside_its_derived_budget() -> void:
 		print("return solve seed %d: %d evaluations, %d iterations, status %s" % [seed_value,
 			evaluations, int(report.get("solver_iterations", -1)),
 			str(report.get("solver_status", "missing"))])
-		_expect(evaluations >= 1 and evaluations <= allowance
+		_t.expect(evaluations >= 1 and evaluations <= allowance
 			and report.get("max_unique_evaluations") == RideReturnSolve.MAX_RETURN_EVALUATIONS,
 			"seed %d spends %d return evaluations, over the %d fleet allowance"
 			% [seed_value, evaluations, allowance])
@@ -594,11 +592,11 @@ func _expect_return_closes_interior(seed_value: int, report: Dictionary) -> void
 	var high := float(margins.get("route_length_high_m", NAN))
 	var low := float(margins.get("route_length_low_m", NAN))
 	var aim := RideReturnSolve.RETURN_LENGTH_AIM_MARGIN_M
-	_expect(low >= aim and high >= aim,
+	_t.expect(low >= aim and high >= aim,
 		"seed %d closes %.4f m above and %.4f m below its route-length band; the aim is %.2f m"
 		% [seed_value, low, high, aim])
 	var total := float(report.get("fine_observation", {}).get("route_total_length_m", NAN))
-	_expect(absf(high + total - RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y) <= 0.000001,
+	_t.expect(absf(high + total - RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y) <= 0.000001,
 		"seed %d still measures its accepted %.4f m against the outer %.1f m ceiling"
 		% [seed_value, total, RideReturnSolve.RETURN_TOTAL_LENGTH_BAND_M.y])
 
@@ -621,7 +619,7 @@ func _expect_compiled_prefix_matches_plan(
 	var matches := built.size() == accepted.size()
 	for index in mini(built.size(), accepted.size()):
 		matches = matches and absf(float(built[index]) - float(accepted[index])) <= 0.000000001
-	_expect(matches, "seed %d builds its prefix from the accepted closure %s, not %s"
+	_t.expect(matches, "seed %d builds its prefix from the accepted closure %s, not %s"
 		% [seed_value, str(accepted), str(built)])
 
 
@@ -630,21 +628,21 @@ func _test_untargeted_prefix_capability_is_unchanged() -> void:
 		var context := HashingContext.new()
 		context.start(HashingContext.HASH_SHA256)
 		context.update(var_to_bytes(RideProgram.terrain_story_capability(side)))
-		_expect(context.finish().hex_encode() == PREFIX_CAPABILITY_DIGEST[side],
+		_t.expect(context.finish().hex_encode() == PREFIX_CAPABILITY_DIGEST[side],
 			"the untargeted station_side %d capability still hashes to its pinned digest" % side)
 
 
 func _test_prefix_closure_solve_targets_todays_geometry() -> void:
 	var untargeted := RideProgram.terrain_story_capability(1)
-	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+	if not _t.expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
 		return
 	var target := _closure_target(untargeted, 1, PREFIX_RECORD_AIM_BAND_MPS)
 	var solved := RideProgram.terrain_story_capability(1, {}, target)
-	if not _expect(solved.get("ok", false),
+	if not _t.expect(solved.get("ok", false),
 			"the prefix closes on today's own geometry: %s" % str(solved.get("failure", {}))):
 		return
 	_expect_closure_report(solved.get("closure_plan", {}), "today's geometry")
-	_expect(absf(float(solved.dive_footprint.outward_delta_m)
+	_t.expect(absf(float(solved.dive_footprint.outward_delta_m)
 			- float(untargeted.dive_footprint.outward_delta_m))
 			<= float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[0]),
 		"closing on today's own bands leaves the published footprint where it was")
@@ -652,14 +650,14 @@ func _test_prefix_closure_solve_targets_todays_geometry() -> void:
 
 func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
 	var untargeted := RideProgram.terrain_story_capability(1)
-	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+	if not _t.expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
 		return
 	var target := _closure_target(untargeted, 1, PREFIX_DISPLACED_RECORD_BAND_MPS,
 		PREFIX_DISPLACED_SPAN_AIM_TOLERANCE_M, PREFIX_DISPLACED_SUMMIT_AIM_TOLERANCE_M)
 	var solved := {}
 	for side in [-1, 1]:
 		solved[side] = RideProgram.terrain_story_capability(side, {}, target)
-		_expect(solved[side].get("ok", false),
+		_t.expect(solved[side].get("ok", false),
 			"station_side %d closes its prefix on a displaced record band: %s"
 			% [side, str(solved[side].get("failure", {}))])
 	if not solved[-1].get("ok", false) or not solved[1].get("ok", false):
@@ -672,11 +670,11 @@ func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
 		and right.size() == RidePrefixSolve.PREFIX_CONTROL_IDS.size()
 	for index in mini(left.size(), right.size()):
 		identical = identical and absf(float(left[index]) - float(right[index])) <= 0.000000001
-	_expect(identical, "both hands solve to one control vector to 1e-9: %s against %s"
+	_t.expect(identical, "both hands solve to one control vector to 1e-9: %s against %s"
 		% [str(left), str(right)])
 	var a: Dictionary = solved[-1].role_13_entry
 	var b: Dictionary = solved[1].role_13_entry
-	_expect(absf(a.offset_m.x - b.offset_m.x) <= 0.05
+	_t.expect(absf(a.offset_m.x - b.offset_m.x) <= 0.05
 		and absf(a.offset_m.y - b.offset_m.y) <= 0.05
 		and absf(a.offset_m.z + b.offset_m.z) <= 0.05
 		and absf(float(solved[-1].dive_footprint.outward_delta_m)
@@ -685,7 +683,7 @@ func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
 	var fine: Array = report.get("fine_observation", [])
 	var record_mps: float = float(fine[3]) \
 		if fine.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size() else NAN
-	_expect(int(report.get("unique_evaluations", 0)) > 1
+	_t.expect(int(report.get("unique_evaluations", 0)) > 1
 		and record_mps >= PREFIX_DISPLACED_RECORD_BAND_MPS.x
 			- float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[3])
 		and record_mps <= PREFIX_DISPLACED_RECORD_BAND_MPS.y
@@ -695,23 +693,23 @@ func _test_prefix_closure_solve_moves_the_record_handoff() -> void:
 
 func _test_infeasible_prefix_closure_is_structured() -> void:
 	var untargeted := RideProgram.terrain_story_capability(1)
-	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+	if not _t.expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
 		return
 	var target := _closure_target(untargeted, 1, PREFIX_RECORD_AIM_BAND_MPS)
 	target["summit_rise_m"] = Vector2(600.0, 620.0)
 	var refused := RideProgram.terrain_story_capability(1, {}, target)
-	_expect(not refused.get("ok", true),
+	_t.expect(not refused.get("ok", true),
 		"a summit rise no climb can reach refuses the prefix instead of approximating it")
 	var failure: Dictionary = refused.get("failure", {})
-	_expect(failure.get("stage", "") == "prefix-closure",
+	_t.expect(failure.get("stage", "") == "prefix-closure",
 		"the refusal names the prefix-closure stage: %s" % str(failure))
-	_expect(failure.has("accepted_values") and failure.has("target_error")
+	_t.expect(failure.has("accepted_values") and failure.has("target_error")
 		and failure.has("margins") and failure.has("solver_status"),
 		"the refusal carries its accepted values, residuals and margins: %s" % str(failure))
-	_expect(int(failure.get("evaluation_count", -1)) >= 1
+	_t.expect(int(failure.get("evaluation_count", -1)) >= 1
 		and int(failure.get("evaluation_count", -1)) <= RidePrefixSolve.MAX_PREFIX_EVALUATIONS,
 		"the refusal spends no more than the derived evaluation cap")
-	_expect(not _contains_fallback_or_repair_field(refused),
+	_t.expect(not _contains_fallback_or_repair_field(refused),
 		"the refused prefix offers no fallback or repair field")
 
 
@@ -722,12 +720,12 @@ func _test_infeasible_prefix_closure_is_structured() -> void:
 ## so the normalization path is actually exercised.
 func _test_prefix_closure_solve_accepts_non_axis_aligned_outward_local() -> void:
 	var untargeted := RideProgram.terrain_story_capability(1)
-	if not _expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
+	if not _t.expect(untargeted.get("ok", false), "the untargeted prefix capability builds"):
 		return
 	var raw_axis := Vector2(sin(deg_to_rad(30.0)), cos(deg_to_rad(30.0))) * 1.7
 	var target := _closure_target_on_axis(untargeted, raw_axis, PREFIX_RECORD_AIM_BAND_MPS)
 	var solved := RideProgram.terrain_story_capability(1, {}, target)
-	if not _expect(solved.get("ok", false),
+	if not _t.expect(solved.get("ok", false),
 			"the prefix closes on a rotated, non-unit outward_local axis: %s"
 			% str(solved.get("failure", {}))):
 		return
@@ -742,11 +740,11 @@ func _test_prefix_closure_solve_converges_on_a_drawn_story() -> void:
 	var decisions := RidePlanner.resolve(42)
 	var story := {"sequence": decisions.sequence, "targets": decisions.targets}
 	var untargeted := RideProgram.terrain_story_capability(1, story)
-	if not _expect(untargeted.get("ok", false), "the seed 42 drawn-story prefix capability builds"):
+	if not _t.expect(untargeted.get("ok", false), "the seed 42 drawn-story prefix capability builds"):
 		return
 	var target := _closure_target(untargeted, 1, PREFIX_RECORD_AIM_BAND_MPS)
 	var solved := RideProgram.terrain_story_capability(1, story, target)
-	if not _expect(solved.get("ok", false),
+	if not _t.expect(solved.get("ok", false),
 			"the seed 42 drawn story closes within the same budget: %s"
 			% str(solved.get("failure", {}))):
 		return
@@ -805,7 +803,7 @@ func _closure_target_on_axis(capability: Dictionary, raw_axis: Vector2, record_b
 
 
 func _expect_closure_report(report: Dictionary, label: String) -> void:
-	_expect(RidePrefixSolve.MAX_PREFIX_EVALUATIONS == 105,
+	_t.expect(RidePrefixSolve.MAX_PREFIX_EVALUATIONS == 105,
 		"the prefix evaluation cap is the derived 105, not %d"
 		% RidePrefixSolve.MAX_PREFIX_EVALUATIONS)
 	var evaluations := int(report.get("unique_evaluations", -1))
@@ -813,7 +811,7 @@ func _expect_closure_report(report: Dictionary, label: String) -> void:
 	print("prefix closure (%s): %d evaluations, status %s, controls %s, fine %s" % [label,
 		evaluations, str(report.get("solver_status", "missing")),
 		str(report.get("accepted_values", [])), str(report.get("fine_observation", []))])
-	_expect(report.get("solver_status", "") == "converged" and evaluations >= 1
+	_t.expect(report.get("solver_status", "") == "converged" and evaluations >= 1
 		and evaluations <= allowance
 		and report.get("max_unique_evaluations") == RidePrefixSolve.MAX_PREFIX_EVALUATIONS,
 		"the %s closure converges in %d evaluations, over the %d fleet allowance"
@@ -824,7 +822,7 @@ func _expect_closure_report(report: Dictionary, label: String) -> void:
 		var bound: Array = RidePrefixSolve.PREFIX_CONTROL_BOUNDS[index]
 		inside = inside and float(values[index]) >= float(bound[0]) \
 			and float(values[index]) <= float(bound[1])
-	_expect(inside, "every %s control stays inside its declared bounds: %s" % [label, str(values)])
+	_t.expect(inside, "every %s control stays inside its declared bounds: %s" % [label, str(values)])
 	var coarse: Array = report.get("coarse_observation", [])
 	var fine: Array = report.get("fine_observation", [])
 	var agrees := coarse.size() == RidePrefixSolve.PREFIX_RESIDUAL_IDS.size() \
@@ -832,7 +830,7 @@ func _expect_closure_report(report: Dictionary, label: String) -> void:
 	for index in mini(coarse.size(), fine.size()):
 		agrees = agrees and absf(float(coarse[index]) - float(fine[index])) \
 			<= float(RidePrefixSolve.PREFIX_FINE_TOLERANCES[index])
-	_expect(agrees, "the %s closure reproduces at the production step: %s against %s"
+	_t.expect(agrees, "the %s closure reproduces at the production step: %s against %s"
 		% [label, str(coarse), str(fine)])
 
 
@@ -896,18 +894,18 @@ func _expect_capture_failure(
 	compiled: Dictionary, minimum_evaluations: int, maximum_evaluations: int, message: String,
 	require_conditioning: bool = false
 ) -> void:
-	_expect(not compiled.get("ok", true), message)
+	_t.expect(not compiled.get("ok", true), message)
 	var failure: Dictionary = compiled.get("failure", {})
-	_expect(failure.get("stage", "") == "capture", "%s at the capture stage" % message)
-	_expect(not str(failure.get("reason", "")).is_empty() and not compiled.get("errors", []).is_empty(),
+	_t.expect(failure.get("stage", "") == "capture", "%s at the capture stage" % message)
+	_t.expect(not str(failure.get("reason", "")).is_empty() and not compiled.get("errors", []).is_empty(),
 		"%s with both machine-readable stage data and public errors" % message)
 	var count := int(failure.get("evaluation_count", -1))
-	_expect(count >= minimum_evaluations and count <= maximum_evaluations,
+	_t.expect(count >= minimum_evaluations and count <= maximum_evaluations,
 		"%s with a bounded nonnegative evaluation count" % message)
-	_expect(not compiled.has("spans") and not failure.has("route") and not failure.has("candidate"),
+	_t.expect(not compiled.has("spans") and not failure.has("route") and not failure.has("candidate"),
 		"%s without exposing or accepting a fallback candidate" % message)
 	if require_conditioning:
-		_expect(_valid_conditioning(failure.get("conditioning")),
+		_t.expect(_valid_conditioning(failure.get("conditioning")),
 			"%s with conditioning from the evaluated point" % message)
 
 
@@ -1583,19 +1581,19 @@ func _test_material_role_span_ownership_is_total() -> void:
 	var orphan := RideProgram.material_role_spans([
 		{"span_id": "launch/ramp"}, {"span_id": "mystery/thing"},
 	])
-	_expect(not orphan.get("ok", true),
+	_t.expect(not orphan.get("ok", true),
 		"a span owned by no material role fails role-span ownership")
-	_expect(_reports(orphan, "mystery/thing"),
+	_t.expect(_reports(orphan, "mystery/thing"),
 		"the ownership failure names the unowned span: %s" % str(orphan.get("errors", [])))
 	var incomplete := RideProgram.material_role_spans([{"span_id": "launch/ramp"}])
-	_expect(not incomplete.get("ok", true),
+	_t.expect(not incomplete.get("ok", true),
 		"a program that authors only one role fails role-span ownership")
-	_expect(_reports(incomplete, "return-turn-a"),
+	_t.expect(_reports(incomplete, "return-turn-a"),
 		"the ownership failure names an unauthored role: %s" % str(incomplete.get("errors", [])))
 	var split := RideProgram.material_role_spans([
 		{"span_id": "launch/ramp"}, {"span_id": "drop/core"}, {"span_id": "launch/core"},
 	])
-	_expect(not split.get("ok", true),
+	_t.expect(not split.get("ok", true),
 		"a material role split into non-contiguous span blocks fails role-span ownership")
 
 
@@ -1624,8 +1622,3 @@ func _contains_fallback_or_repair_field(value: Variant) -> bool:
 				return true
 	return false
 
-
-func _expect(condition: bool, message: String) -> bool:
-	if not condition:
-		_errors.append(message)
-	return condition

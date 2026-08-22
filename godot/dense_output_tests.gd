@@ -2,29 +2,27 @@ extends SceneTree
 
 const Motion := preload("res://motion.gd")
 
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 
 func _initialize() -> void:
 	_test_exact_straight_dense_output_is_consistent()
 	_test_independent_speed_channel_corruption_is_detected()
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 func _test_exact_straight_dense_output_is_consistent() -> void:
 	var route := _straight_route()
-	if not _expect(route.get("ok", false), "straight dense-output fixture integrates"):
+	if not _t.expect(route.get("ok", false), "straight dense-output fixture integrates"):
 		return
 	var defect := float(Motion._measure_dense_defect(route))
-	_expect(is_finite(defect) and defect <= 0.00001,
+	_t.expect(is_finite(defect) and defect <= 0.00001,
 		"an exact straight trajectory has negligible dense-output defect, got %.9f" % defect)
 
 
 func _test_independent_speed_channel_corruption_is_detected() -> void:
 	var route := _straight_route()
-	if not _expect(route.get("ok", false), "corruption fixture integrates before mutation"):
+	if not _t.expect(route.get("ok", false), "corruption fixture integrates before mutation"):
 		return
 	var baseline := float(Motion._measure_dense_defect(route))
 	var corrupted := route.duplicate(true)
@@ -33,7 +31,7 @@ func _test_independent_speed_channel_corruption_is_detected() -> void:
 	speeds[middle] += 5.0
 	corrupted.speed_mps = speeds
 	var defect := float(Motion._measure_dense_defect(corrupted))
-	_expect(defect >= baseline + 0.5,
+	_t.expect(defect >= baseline + 0.5,
 		"dense measurement detects a 5 m/s channel corruption independently of position; "
 		+ "baseline %.9f, corrupted %.9f" % [baseline, defect])
 
@@ -63,8 +61,3 @@ func _straight_route() -> Dictionary:
 		}
 	)
 
-
-func _expect(condition: bool, message: String) -> bool:
-	if not condition:
-		_errors.append(message)
-	return condition

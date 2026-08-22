@@ -11,7 +11,7 @@ const Metrics := preload("res://geometry_metrics.gd")
 const Reference := preload("res://geometry_reference.gd")
 const CanonicalData := preload("res://canonical_data.gd")
 
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 
 func _initialize() -> void:
@@ -32,9 +32,7 @@ func _initialize() -> void:
 	_test_manifest_isolates_an_absent_file()
 	_test_manifest_structural_rejection()
 	_test_composite_is_deterministic()
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -48,14 +46,14 @@ func _test_planar_circle_is_planar() -> void:
 	var route := _route(points, [_role("marquee-camelback", "crest", 0, 0, points.size() - 1)])
 	var result := Metrics.element_planarity(route)
 	var element: Dictionary = result.elements[0]
-	_expect(element.status == "measured", "a circle is measurable")
-	_expect(absf(float(element.rms_out_of_plane_m)) < 1e-4,
+	_t.expect(element.status == "measured", "a circle is measurable")
+	_t.expect(absf(float(element.rms_out_of_plane_m)) < 1e-4,
 		"a planar circle has ~0 out-of-plane RMS, got %s" % str(element.rms_out_of_plane_m))
-	_expect(element.planarity_class == "planar",
+	_t.expect(element.planarity_class == "planar",
 		"a planar circle classifies as planar, got %s" % str(element.planarity_class))
-	_expect(absf(float(element.vertical_plane_tilt_deg)) < 0.05,
+	_t.expect(absf(float(element.vertical_plane_tilt_deg)) < 0.05,
 		"a vertical circle has ~0 tilt off vertical, got %s" % str(element.vertical_plane_tilt_deg))
-	_expect(element.tilt_is_meaningful, "a planar element's tilt is meaningful")
+	_t.expect(element.tilt_is_meaningful, "a planar element's tilt is meaningful")
 
 
 func _test_tilted_ellipse_reports_its_tilt() -> void:
@@ -65,9 +63,9 @@ func _test_tilted_ellipse_reports_its_tilt() -> void:
 		var points := _circle(60.0, 2.0, deg_to_rad(expected), 120)
 		var route := _route(points, [_role("marquee-camelback", "crest", 0, 0, points.size() - 1)])
 		var element: Dictionary = Metrics.element_planarity(route).elements[0]
-		_expect(absf(float(element.rms_out_of_plane_m)) < 1e-3,
+		_t.expect(absf(float(element.rms_out_of_plane_m)) < 1e-3,
 			"a tilted ellipse is still planar, got RMS %s" % str(element.rms_out_of_plane_m))
-		_expect(absf(float(element.vertical_plane_tilt_deg) - expected) < 0.05,
+		_t.expect(absf(float(element.vertical_plane_tilt_deg) - expected) < 0.05,
 			"a %s degree tilt is reported as %s" % [expected, str(element.vertical_plane_tilt_deg)])
 
 
@@ -80,10 +78,10 @@ func _test_helix_is_reported_not_judged() -> void:
 		points.append(Vector3(cos(angle) * 40.0, sin(angle) * 40.0 + 50.0, float(index) * 1.0))
 	var route := _route(points, [_role("act-one", "giant-inversion", 1, 0, points.size() - 1)])
 	var element: Dictionary = Metrics.element_planarity(route).elements[0]
-	_expect(element.planarity_class == "three-dimensional",
+	_t.expect(element.planarity_class == "three-dimensional",
 		"a helix is three-dimensional, got %s" % str(element.planarity_class))
-	_expect(not element.tilt_is_meaningful, "a three-dimensional element withdraws its tilt claim")
-	_expect(Metrics.element_planarity(route).worst_vertical_tilts.is_empty(),
+	_t.expect(not element.tilt_is_meaningful, "a three-dimensional element withdraws its tilt claim")
+	_t.expect(Metrics.element_planarity(route).worst_vertical_tilts.is_empty(),
 		"a three-dimensional element never enters the worst-tilt ranking")
 
 
@@ -102,16 +100,16 @@ func _test_stepped_roll_reports_the_seam_jump() -> void:
 		_role("opener", "twisted-drop", 0, 0, 199), _role("opener", "teardrop", 0, 200, 399),
 	], rolls)
 	var result := Metrics.seam_roll_continuity(route)
-	_expect(result.seam_count == 1, "two role windows make one seam, got %d" % int(result.seam_count))
+	_t.expect(result.seam_count == 1, "two role windows make one seam, got %d" % int(result.seam_count))
 	var seam: Dictionary = result.seams[0]
-	_expect(absf(float(seam.roll_rate_jump_dps) + 60.0) < 1e-3,
+	_t.expect(absf(float(seam.roll_rate_jump_dps) + 60.0) < 1e-3,
 		"the seam jump is -60 deg/s, got %s" % str(seam.roll_rate_jump_dps))
-	_expect(seam.boundary_sample == 200, "the seam is at the first sample of the later role")
-	_expect(seam.gesture_boundary == false, "roles inside one gesture are not a gesture seam")
-	_expect(float(seam.roll_acceleration_across_dps2) < -700.0,
+	_t.expect(seam.boundary_sample == 200, "the seam is at the first sample of the later role")
+	_t.expect(seam.gesture_boundary == false, "roles inside one gesture are not a gesture seam")
+	_t.expect(float(seam.roll_acceleration_across_dps2) < -700.0,
 		"a step across one sample is a huge roll acceleration, got %s"
 			% str(seam.roll_acceleration_across_dps2))
-	_expect(result.worst_roll_rate_jumps.size() == 1
+	_t.expect(result.worst_roll_rate_jumps.size() == 1
 		and str(result.worst_roll_rate_jumps[0].window_id) == "opener/teardrop/00",
 		"the worst-offender list names the window entered at the seam")
 
@@ -122,7 +120,7 @@ func _test_stepped_roll_reports_the_seam_jump() -> void:
 		_role("opener", "twisted-drop", 0, 0, 199), _role("opener", "teardrop", 0, 200, 399),
 	], smooth)
 	var clean: Dictionary = Metrics.seam_roll_continuity(continuous).seams[0]
-	_expect(absf(float(clean.roll_rate_jump_dps)) < 1e-6,
+	_t.expect(absf(float(clean.roll_rate_jump_dps)) < 1e-6,
 		"a continuous roll crosses the seam with no jump, got %s" % str(clean.roll_rate_jump_dps))
 
 
@@ -139,13 +137,13 @@ func _test_roll_profile_counts_the_steps() -> void:
 		banks[index] = 55.0
 	var route := _route(points, [_role("opener", "twisted-drop", 0, 0, 599)], rolls, banks)
 	var profile: Dictionary = Metrics.seam_roll_continuity(route).role_roll_profiles[0]
-	_expect(profile.roll_segment_count == 2,
+	_t.expect(profile.roll_segment_count == 2,
 		"roll -> flat -> roll is two segments, got %d" % int(profile.roll_segment_count))
-	_expect(absf(float(profile.flat_roll_share) - 1.0 / 3.0) < 0.01,
+	_t.expect(absf(float(profile.flat_roll_share) - 1.0 / 3.0) < 0.01,
 		"a third of the window is flat, got %s" % str(profile.flat_roll_share))
-	_expect(absf(float(profile.banked_flat_roll_share) - 1.0 / 3.0) < 0.01,
+	_t.expect(absf(float(profile.banked_flat_roll_share) - 1.0 / 3.0) < 0.01,
 		"the flat third is banked throughout, got %s" % str(profile.banked_flat_roll_share))
-	_expect(absf(float(profile.roll_rate_peak_dps) - 45.0) < 1e-3, "the peak roll rate is 45 deg/s")
+	_t.expect(absf(float(profile.roll_rate_peak_dps) - 45.0) < 1e-3, "the peak roll rate is 45 deg/s")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -160,16 +158,16 @@ func _test_shape_ratios_measure_the_silhouette() -> void:
 		points.append(Vector3(float(index), sin(fraction * PI) * 40.0, 0.0))
 	var route := _route(points, [_role("raceway-return", "height-airtime-a", 0, 0, 200)])
 	var element: Dictionary = Metrics.shape_ratios(route).elements[0]
-	_expect(absf(float(element.height_extent_m) - 40.0) < 0.01,
+	_t.expect(absf(float(element.height_extent_m) - 40.0) < 0.01,
 		"the hill is 40 m tall, got %s" % str(element.height_extent_m))
-	_expect(absf(float(element.plan_along_m) - 200.0) < 0.01,
+	_t.expect(absf(float(element.plan_along_m) - 200.0) < 0.01,
 		"the hill is 200 m long in plan, got %s" % str(element.plan_along_m))
-	_expect(absf(float(element.plan_across_m)) < 1e-6, "a straight hill has no plan width")
-	_expect(float(element.track_length_m) > 200.0,
+	_t.expect(absf(float(element.plan_across_m)) < 1e-6, "a straight hill has no plan width")
+	_t.expect(float(element.track_length_m) > 200.0,
 		"the swept length exceeds the plan length, got %s" % str(element.track_length_m))
-	_expect(absf(float(element.total_heading_change_deg)) < 1e-3,
+	_t.expect(absf(float(element.total_heading_change_deg)) < 1e-3,
 		"a straight hill turns through no heading, got %s" % str(element.total_heading_change_deg))
-	_expect(float(element.entry_pitch_deg) > 20.0 and float(element.exit_pitch_deg) < -20.0,
+	_t.expect(float(element.entry_pitch_deg) > 20.0 and float(element.exit_pitch_deg) < -20.0,
 		"the hill pitches up on entry and down on exit")
 
 	# A quarter turn must report ~90 degrees of accumulated heading.
@@ -179,7 +177,7 @@ func _test_shape_ratios_measure_the_silhouette() -> void:
 		turn.append(Vector3(sin(angle) * 100.0, 0.0, 100.0 - cos(angle) * 100.0))
 	var turn_route := _route(turn, [_role("raceway-return", "turn-a", 0, 0, 90)])
 	var turn_element: Dictionary = Metrics.shape_ratios(turn_route).elements[0]
-	_expect(absf(absf(float(turn_element.total_heading_change_deg)) - 90.0) < 1.5,
+	_t.expect(absf(absf(float(turn_element.total_heading_change_deg)) - 90.0) < 1.5,
 		"a quarter turn accumulates ~90 degrees, got %s"
 			% str(turn_element.total_heading_change_deg))
 
@@ -192,22 +190,22 @@ func _test_element_geometry_resolution() -> void:
 		_role("marquee-camelback", "fall", 0, 200, 299),
 	])
 	var by_window := Metrics.element_geometry(route, "marquee-camelback/crest/00")
-	_expect(by_window.status == "resolved" and by_window.matched_by == "window_id"
+	_t.expect(by_window.status == "resolved" and by_window.matched_by == "window_id"
 		and by_window.first == 100 and by_window.last == 199,
 		"a compiled window id resolves to exactly its span")
 	var by_role := Metrics.element_geometry(route, "camelback")
-	_expect(by_role.status == "resolved" and by_role.matched_by == "material_role"
+	_t.expect(by_role.status == "resolved" and by_role.matched_by == "material_role"
 		and by_role.first == 0 and by_role.last == 299
 		and by_role.window_ids.size() == 3,
 		"a material role resolves to the union of its compiled windows")
-	_expect(Metrics.element_geometry(route, "nonexistent").status == "no-generated-element",
+	_t.expect(Metrics.element_geometry(route, "nonexistent").status == "no-generated-element",
 		"an unknown element id is reported, never guessed")
 
 
 func _test_missing_fields_are_reported() -> void:
 	var result := Metrics.seam_roll_continuity({"positions": PackedVector3Array()})
-	_expect(result.status == "route-unavailable", "an incomplete route is declared unavailable")
-	_expect(result.missing_fields.size() > 1, "every missing field is named")
+	_t.expect(result.status == "route-unavailable", "an incomplete route is declared unavailable")
+	_t.expect(result.missing_fields.size() > 1, "every missing field is named")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -227,14 +225,14 @@ func _test_determinism() -> void:
 	var second := CanonicalData.canonical_json(Metrics.measure(_route(points, [
 		_role("opener", "twisted-drop", 0, 0, 54), _role("opener", "teardrop", 0, 55, 110),
 	], rolls)))
-	_expect(not first.is_empty(), "the pack is canonical-JSON admissible (no INF, no NaN)")
-	_expect(first == second, "the same input measures identically twice")
-	_expect(not Metrics.markdown(Metrics.measure(route), {}).is_empty(),
+	_t.expect(not first.is_empty(), "the pack is canonical-JSON admissible (no INF, no NaN)")
+	_t.expect(first == second, "the same input measures identically twice")
+	_t.expect(not Metrics.markdown(Metrics.measure(route), {}).is_empty(),
 		"the Markdown renders without a reference manifest")
-	_expect(Metrics.markdown(Metrics.measure(route), {})
+	_t.expect(Metrics.markdown(Metrics.measure(route), {})
 		== Metrics.markdown(Metrics.measure(route), {}),
 		"the Markdown is byte-identical across runs")
-	_expect(Metrics.markdown(Metrics.measure(route), {}).contains("Declared gap"),
+	_t.expect(Metrics.markdown(Metrics.measure(route), {}).contains("Declared gap"),
 		"an absent reference manifest is declared, not silently omitted")
 
 
@@ -250,30 +248,30 @@ func _test_counterpart_comparison_labels() -> void:
 		_role("marquee-camelback", "fall", 0, 800, 1199),
 	])
 	var result := Metrics.counterpart_comparison(route, 0.0)
-	_expect(result.schema_version == Metrics.COUNTERPART_SCHEMA, "the comparison declares its schema")
-	_expect(result.mapping.mapped_window_count == 3, "every compiled window is bridged")
-	_expect(result.mapping.unmapped_windows.is_empty(), "no compiled window is left unmapped")
-	_expect(result.mapping.material_roles_without_window.size() == 17,
+	_t.expect(result.schema_version == Metrics.COUNTERPART_SCHEMA, "the comparison declares its schema")
+	_t.expect(result.mapping.mapped_window_count == 3, "every compiled window is bridged")
+	_t.expect(result.mapping.unmapped_windows.is_empty(), "no compiled window is left unmapped")
+	_t.expect(result.mapping.material_roles_without_window.size() == 17,
 		"the eighteen non-gap roles minus the one present role are reported missing, got %d"
 			% result.mapping.material_roles_without_window.size())
 	var gap_roles := []
 	for gap: Dictionary in result.evidence_gaps:
 		gap_roles.append(str(gap.role_id))
-	_expect(gap_roles == ["act-one-wave", "clifftop-outward-rim"],
+	_t.expect(gap_roles == ["act-one-wave", "clifftop-outward-rim"],
 		"the counterpart evidence gaps are carried through verbatim, got %s" % str(gap_roles))
 	var camelback := []
 	for row: Dictionary in result.rows:
 		if row.role_id == "camelback":
 			camelback.append(row)
-	_expect(not camelback.is_empty(), "the camelback role produces comparison rows")
+	_t.expect(not camelback.is_empty(), "the camelback role produces comparison rows")
 	for row: Dictionary in camelback:
-		_expect(row.status in ["within", "under", "over", "unmapped", "no-adopted-target"],
+		_t.expect(row.status in ["within", "under", "over", "unmapped", "no-adopted-target"],
 			"every row carries a label, got %s" % str(row.status))
-		_expect(row.window_ids.size() == 3, "the camelback row names its three compiled windows")
-	_expect(CanonicalData.canonical_json(result) == CanonicalData.canonical_json(
+		_t.expect(row.window_ids.size() == 3, "the camelback row names its three compiled windows")
+	_t.expect(CanonicalData.canonical_json(result) == CanonicalData.canonical_json(
 		Metrics.counterpart_comparison(route, 0.0)),
 		"the counterpart comparison is deterministic")
-	_expect(not Metrics.counterpart_markdown([result]).is_empty(), "the fleet Markdown renders")
+	_t.expect(not Metrics.counterpart_markdown([result]).is_empty(), "the fleet Markdown renders")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -285,12 +283,12 @@ func _test_manifest_accepts_a_valid_entry() -> void:
 	var digest := _write_png(image_path, 64, 48)
 	var manifest := _manifest([_entry("camelback", "geometry-reference-valid.png", digest)])
 	var result := Reference.build(_bytes(manifest), "user://")
-	_expect(result.status == "ok", "a valid manifest is accepted: %s" % str(result.get("errors")))
-	_expect(result.entry_count == 1 and result.available_count == 1, "the entry resolves")
+	_t.expect(result.status == "ok", "a valid manifest is accepted: %s" % str(result.get("errors")))
+	_t.expect(result.entry_count == 1 and result.available_count == 1, "the entry resolves")
 	var entry: Dictionary = result.entries[0]
-	_expect(entry.status == "available" and entry.observed_sha256 == digest,
+	_t.expect(entry.status == "available" and entry.observed_sha256 == digest,
 		"the entry is accepted by content, got %s" % str(entry.status))
-	_expect(entry.width == 64 and entry.height == 48, "the reference image dimensions are recorded")
+	_t.expect(entry.width == 64 and entry.height == 48, "the reference image dimensions are recorded")
 
 
 func _test_manifest_rejects_a_bad_digest() -> void:
@@ -299,10 +297,10 @@ func _test_manifest_rejects_a_bad_digest() -> void:
 	var wrong := "0".repeat(64)
 	var manifest := _manifest([_entry("camelback", "geometry-reference-baddigest.png", wrong)])
 	var result := Reference.build(_bytes(manifest), "user://")
-	_expect(result.status == "ok", "a wrong digest is an entry finding, not a manifest failure")
-	_expect(result.entries[0].status == "digest-mismatch",
+	_t.expect(result.status == "ok", "a wrong digest is an entry finding, not a manifest failure")
+	_t.expect(result.entries[0].status == "digest-mismatch",
 		"a wrong digest is rejected, got %s" % str(result.entries[0].status))
-	_expect(result.available_count == 0, "a rejected entry is not available for compositing")
+	_t.expect(result.available_count == 0, "a rejected entry is not available for compositing")
 
 
 func _test_manifest_isolates_an_absent_file() -> void:
@@ -313,13 +311,13 @@ func _test_manifest_isolates_an_absent_file() -> void:
 		_entry("outward-dive", "geometry-reference-absent.png", "a".repeat(64)),
 	])
 	var result := Reference.build(_bytes(manifest), "user://")
-	_expect(result.status == "ok", "one absent file does not reject the manifest")
-	_expect(result.available_count == 1, "the present entry survives its neighbour's absence")
+	_t.expect(result.status == "ok", "one absent file does not reject the manifest")
+	_t.expect(result.available_count == 1, "the present entry survives its neighbour's absence")
 	var by_element := {}
 	for entry: Dictionary in result.entries:
 		by_element[entry.element_id] = entry
-	_expect(by_element["camelback"].status == "available", "the present entry is available")
-	_expect(by_element["outward-dive"].status == "file-missing",
+	_t.expect(by_element["camelback"].status == "available", "the present entry is available")
+	_t.expect(by_element["outward-dive"].status == "file-missing",
 		"the absent entry is isolated, got %s" % str(by_element["outward-dive"].status))
 
 
@@ -331,17 +329,17 @@ func _test_manifest_structural_rejection() -> void:
 	]
 	for case in cases:
 		var errors := Reference.validate(case[0])
-		_expect(not errors.is_empty(), "a malformed manifest is rejected: %s" % str(case[1]))
+		_t.expect(not errors.is_empty(), "a malformed manifest is rejected: %s" % str(case[1]))
 	var manifest := _manifest([_entry("camelback", "frame.png", "not-hex")])
-	_expect(not Reference.validate(manifest).is_empty(), "a non-hex digest is rejected")
+	_t.expect(not Reference.validate(manifest).is_empty(), "a non-hex digest is rejected")
 	var escaping := _manifest([_entry("camelback", "../../etc/passwd", "b".repeat(64))])
-	_expect(not Reference.validate(escaping).is_empty(), "an escaping image path is rejected")
+	_t.expect(not Reference.validate(escaping).is_empty(), "an escaping image path is rejected")
 	var undated := _manifest([_entry("camelback", "frame.png", "c".repeat(64))])
 	undated.entries[0].provenance.erase("timestamp_s")
 	undated.entries[0].provenance.erase("description")
-	_expect(not Reference.validate(undated).is_empty(),
+	_t.expect(not Reference.validate(undated).is_empty(),
 		"an entry with neither a timestamp nor a description is rejected")
-	_expect(Reference.build(PackedByteArray([1, 2, 3]), "user://").status == "invalid-manifest",
+	_t.expect(Reference.build(PackedByteArray([1, 2, 3]), "user://").status == "invalid-manifest",
 		"non-JSON manifest bytes are rejected")
 
 
@@ -358,16 +356,16 @@ func _test_composite_is_deterministic() -> void:
 		{"planarity_class": "planar", "rms_out_of_plane_m": 0.4,
 			"vertical_plane_tilt_deg": 8.75},
 		{"source_id": "youtube.falcon.forward.cuurkqyn4zs", "acquisition": "thumbnail-fallback"})
-	_expect(lines.size() >= 4, "the footer carries the element's shape numbers")
-	_expect(str(lines[1]).contains("251.4"), "the footer prints the measured height")
+	_t.expect(lines.size() >= 4, "the footer carries the element's shape numbers")
+	_t.expect(str(lines[1]).contains("251.4"), "the footer prints the measured height")
 	var first := Reference.composite(reference, generated, lines)
 	var second := Reference.composite(reference, generated, lines)
-	_expect(first.get_size() == Vector2i(
+	_t.expect(first.get_size() == Vector2i(
 		Reference.PANE_SIZE.x * 2 + Reference.DIVIDER,
 		Reference.PANE_SIZE.y + Reference.FOOTER_HEIGHT),
 		"the composite is two panes plus a footer")
-	_expect(first.get_data() == second.get_data(), "the composite is byte-identical across runs")
-	_expect(Reference.composite(null, generated, lines).get_data() != first.get_data(),
+	_t.expect(first.get_data() == second.get_data(), "the composite is byte-identical across runs")
+	_t.expect(Reference.composite(null, generated, lines).get_data() != first.get_data(),
 		"a missing reference pane still composites, without inventing imagery")
 
 
@@ -535,17 +533,17 @@ func _test_near_vertical_tangents_do_not_invent_heading() -> void:
 		Vector3(1.0, 0.0, 0.0),
 	])
 	var headings := Metrics._plan_headings_deg(tangents, 0, tangents.size() - 1)
-	_expect(headings.size() == tangents.size(), "one heading per sample")
+	_t.expect(headings.size() == tangents.size(), "one heading per sample")
 	var accumulated := 0.0
 	for index in range(1, headings.size()):
 		accumulated += absf(rad_to_deg(angle_difference(
 			deg_to_rad(headings[index - 1]), deg_to_rad(headings[index]))))
-	_expect(accumulated < 0.001,
+	_t.expect(accumulated < 0.001,
 		"a vertical dive with no plan turn accumulates no heading change, got %.6f" % accumulated)
 	var leading := PackedVector3Array([
 		Vector3(0.00001, -1.0, 0.0).normalized(), Vector3(0.0, -0.7, 0.7141).normalized()])
 	var led := Metrics._plan_headings_deg(leading, 0, 1)
-	_expect(absf(led[0] - led[1]) < 0.001,
+	_t.expect(absf(led[0] - led[1]) < 0.001,
 		"a window that opens near-vertical takes the first measurable heading")
 
 
@@ -555,11 +553,7 @@ func _test_degenerate_window_is_unavailable_not_planar() -> void:
 	for index in 8:
 		positions.append(Vector3(100.0, 20.0, -5.0) + Vector3.ONE * 0.0001 * float(index % 2))
 	var planarity := Metrics.planarity_of({"positions": positions}, 0, positions.size() - 1)
-	_expect(planarity.status == "degenerate-extent" and planarity.planarity_class == "unavailable"
+	_t.expect(planarity.status == "degenerate-extent" and planarity.planarity_class == "unavailable"
 		and planarity.vertical_plane_tilt_deg == null and not planarity.tilt_is_meaningful,
 		"a degenerate window is reported unavailable, got %s" % str(planarity))
 
-
-func _expect(condition: bool, message: String) -> void:
-	if not condition:
-		_errors.append(message)

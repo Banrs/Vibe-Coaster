@@ -7,10 +7,9 @@ const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 3
 
 
 func _initialize() -> void:
-	var errors := run()
-	for error in errors:
-		printerr(error)
-	quit(0 if errors.is_empty() else 1)
+	var _t := TestUtil.new()
+	_t.errors = run()
+	_t.finish(self)
 
 
 static func run() -> PackedStringArray:

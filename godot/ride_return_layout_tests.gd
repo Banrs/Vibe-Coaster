@@ -27,9 +27,12 @@ const START_PITCH_DEG := -6.0
 const START_SPEED_MPS := 82.0
 const PREFIX_DISTANCE_M := 5900.0
 ## A start the nominal chain lands on the gate from, then displaced so the bounded solve has real
-## work to do rather than confirming its own starting point.
+## work to do rather than confirming its own starting point. The vertical displacement is signed
+## the way the contract can absorb it: the nominal split hands both height beats half the whole
+## drop, which clamps them to the floor of the crest window their family publishes, so a start that
+## demanded even more descent would be asking for an assignment no legal chain can make.
 const BASE_START_M := Vector3(-788.0, 80.0, 1200.0)
-const SOLVE_NUDGE_M := Vector3(45.0, 12.0, -30.0)
+const SOLVE_NUDGE_M := Vector3(45.0, -12.0, -30.0)
 
 var _errors := PackedStringArray()
 
@@ -49,6 +52,7 @@ func _initialize() -> void:
 	_test_a_signless_turn_is_refused()
 	_test_corridor_publishes_only_derived_bounds()
 	_test_the_control_box_speed_is_not_optimistic()
+	_test_every_accepted_assignment_builds()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -335,16 +339,43 @@ func _test_the_control_box_speed_is_not_optimistic() -> void:
 		<= 0.000001, "the accepted layout publishes the speed its heading box was built at")
 
 
+## The contract between the two stages: an accepted layout is a set of assignments the element
+## families build. Every legal order is laid out and then chained through the real builders, each
+## element entered on the last one's integrated end state, so an assignment that only the macro
+## geometry believes in is a failure here rather than a refusal with no retry behind it.
+func _test_every_accepted_assignment_builds() -> void:
+	var plan := _plan()
+	for order: Array in _permutations(RETURN_ROLE_IDS):
+		var label := str(order)
+		var state := _seed_start(plan, order)
+		var result := Layout.build(state, plan, order)
+		if not _expect(result.ok, "return order lays out: %s %s" % [label, str(result.errors)]):
+			continue
+		for assignment: Dictionary in result.assignments:
+			var built := Elements.build(state, assignment, _settings())
+			if not _expect(built.ok, "the accepted assignment builds: %s %s %s"
+					% [assignment.role_id, label, str(built.errors)]):
+				break
+			state = built.end_state
+
+
+func _settings() -> Dictionary:
+	return {"step_s": 0.01, "gravity_mps2": Vector3.DOWN * 9.80665,
+		"rolling_mps2": RideProgram.ROLLING_MPS2, "aero_per_m": RideProgram.AERO_PER_M}
+
+
 ## The synthetic start for an order is where that order's nominal chain lands on the gate,
 ## displaced by a fixed nudge. Each order therefore gets a frame it can physically close from -
-## a single shared frame cannot serve every plan-view topology - and the solve still has to work.
+## a single shared frame cannot serve every plan-view topology, and height is no more shareable
+## than plan view, because the elevation a role may be assigned is bounded by the crest its family
+## has to stand inside it - and the solve still has to absorb the nudge.
 func _seed_start(plan: Dictionary, order: Array) -> Dictionary:
 	var start := _start(BASE_START_M, START_HEADING_DEG)
 	for _pass in 2:
 		var context: Dictionary = Layout._context(start, plan, order)
 		var chain: Dictionary = Layout._chain(context, context.nominal)
-		var offset: Vector3 = context.gate_position - chain.end_position
-		start = _start(start.position_m + Vector3(offset.x, 0.0, offset.z), START_HEADING_DEG)
+		start = _start(start.position_m + context.gate_position - chain.end_position,
+			START_HEADING_DEG)
 	return _start(start.position_m + SOLVE_NUDGE_M, START_HEADING_DEG)
 
 

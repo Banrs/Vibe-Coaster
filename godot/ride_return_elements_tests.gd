@@ -17,7 +17,11 @@ const ENTRY_PITCH_DEG := [-35.0, -20.0, -6.0, 0.0]
 const HEIGHT_ENTRY_PITCH_DEG := [-20.0, -6.0, 0.0, 20.0]
 const TURN_LENGTH_BAND_EDGES_M := [420.0, 620.0, 430.0, 570.0]
 const HEIGHT_LENGTH_M := 380.0
-
+## The declared return height band edges, at both ends of the entry-speed band and at two handover
+## pitches. The macro stage builds its elevation box at the shortest allocable arc and at the
+## fastest role entry, so those are the corners the contract has to hold at.
+const ELEVATION_PROBES := [[290.0, 80.0, 0.0], [290.0, 70.0, 0.0], [450.0, 80.0, 0.0],
+	[450.0, 70.0, 0.0], [290.0, 80.0, -6.0], [450.0, 70.0, -20.0]]
 var _t := TestUtil.new()
 
 
@@ -35,6 +39,8 @@ func _initialize() -> void:
 	_test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame()
 	_test_height_is_vertical_plane_at_70_and_80_mps()
 	_test_height_has_one_pitch_zero_apex_and_monotone_phases()
+	_test_the_elevation_window_is_what_the_family_crests_through()
+	_test_a_hump_the_counterpart_would_not_call_a_beat_is_refused()
 	_test_element_seams_meet_the_c4_contract()
 	_test_impossible_corridor_returns_one_structured_failure()
 	_t.finish(self)
@@ -106,7 +112,7 @@ func _test_turn_lateral_lands_inside_the_counter_lateral_band() -> void:
 ## tangent at either end of the entry-speed band, whatever shape the local solve chose.
 func _test_height_is_vertical_plane_at_70_and_80_mps() -> void:
 	for speed in [70.0, 80.0]:
-		var built := Elements.build(_state(speed), _height_assignment(-8.0), _settings())
+		var built := Elements.build(_state(speed), _height_assignment(0.35), _settings())
 		if not _expect_built(built, "height builds at %.0f m/s" % speed):
 			continue
 		_t.expect_max(built.observation.out_of_plane_m, 0.001,
@@ -118,7 +124,7 @@ func _test_height_is_vertical_plane_at_70_and_80_mps() -> void:
 
 
 func _test_height_has_one_pitch_zero_apex_and_monotone_phases() -> void:
-	var built := Elements.build(_state(75.0), _height_assignment(-8.0), _settings())
+	var built := Elements.build(_state(75.0), _height_assignment(0.35), _settings())
 	if not _expect_built(built, "height builds at 75 m/s"):
 		return
 	var observation: Dictionary = built.observation
@@ -128,7 +134,8 @@ func _test_height_has_one_pitch_zero_apex_and_monotone_phases() -> void:
 		"the apex is a downward pitch crossing")
 	_t.expect(observation.monotone_phases, "the beat climbs to its apex and descends after it")
 	_t.expect_min(observation.prominence_m, 3.0, "the apex stands above both endpoints")
-	_t.expect_close(observation.elevation_change_m, -8.0,
+	_t.expect_close(observation.elevation_change_m,
+		float(_height_assignment(0.35).elevation_change_m),
 		"the beat delivers its assigned elevation change", 0.1)
 	_t.expect_close(observation.exit_pitch_rad, 0.0, "the beat exits level", 0.0004)
 	_t.expect_close(observation.crest_normal_g, -0.45,
@@ -256,7 +263,7 @@ func _test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame() -> void
 	for pitch_deg: float in HEIGHT_ENTRY_PITCH_DEG:
 		for speed: float in [70.0, 80.0]:
 			var start := _state(speed, pitch_deg)
-			var assignment := _height_assignment_from(start, -8.0)
+			var assignment := _height_assignment_from(start, 0.35)
 			var built := Elements.build(start, assignment, _settings())
 			var label := "%.0f deg at %.0f m/s" % [pitch_deg, speed]
 			if not _expect_built(built, "the height beat absorbs %s" % label):
@@ -278,17 +285,78 @@ func _test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame() -> void
 ## Pulling out of a 35 deg dive and still cresting costs more than the held normal limit inside a
 ## height beat's declared arc at return speeds: at 380 m the pull-up peaks at 4.5-5.1 g against a
 ## 4.0 g held ceiling, and an elevation shallow enough to stay inside the ceiling never lifts the
-## track pitch above zero, so there is no crest to measure. The turn family absorbs that handover;
-## this one names what it missed.
+## track pitch above zero, so there is no crest to measure. The family publishes no window at all
+## there, so no macro stage can assign one; an assignment made anyway is refused by name. The turn
+## family absorbs that handover.
 func _test_a_dive_too_steep_to_pull_out_of_is_refused_by_name() -> void:
 	for speed: float in [70.0, 80.0]:
 		var start := _state(speed, -35.0)
-		var built := Elements.build(start, _height_assignment_from(start, -8.0), _settings())
+		var window := Elements.elevation_bound_m(HEIGHT_LENGTH_M, speed, deg_to_rad(-35.0))
+		_t.expect(window.x > window.y,
+			"the family publishes no crest window from a 35 deg dive at %.0f m/s" % speed)
+		var built := Elements.build(start,
+			_height_assignment_of(start, HEIGHT_LENGTH_M, -8.0), _settings())
 		_t.expect(not built.ok,
 			"a height beat handed a 35 deg dive at %.0f m/s is refused" % speed)
 		_t.expect(_t.contains(built.errors, "normal_positive_g")
 			or _t.contains(built.errors, "height_solve"),
 			"the refusal names the load it could not pull out inside: %s" % str(built.errors))
+
+
+## What the macro stage may assign is what this family can build: every net elevation inside the
+## published window crests, stands the counterpart prominence above its endpoints and stays inside
+## the load envelope - at the declared role lengths, entry speeds and handover pitches.
+func _test_the_elevation_window_is_what_the_family_crests_through() -> void:
+	for probe: Array in ELEVATION_PROBES:
+		var length := float(probe[0])
+		var speed := float(probe[1])
+		var pitch_deg := float(probe[2])
+		var window := Elements.elevation_bound_m(length, speed, deg_to_rad(pitch_deg))
+		var label := "%.0f m at %.0f m/s from %.0f deg" % [length, speed, pitch_deg]
+		if not _t.expect(window.x < window.y, "the family publishes a window for %s" % label):
+			continue
+		# The window edges are where a margin is exactly zero, and two independent numerical
+		# readings of the same physics do not agree on a zero-margin point: the bound's analytic
+		# profile and the production integration were measured 7e-4 g of normal load and 1.3e-2 m
+		# of prominence apart there. The buildable claim is therefore made just inside them.
+		for fraction: float in [0.02, 0.5, 0.98]:
+			var start := _state(speed, pitch_deg)
+			var elevation := lerpf(window.x, window.y, fraction)
+			var assignment := _height_assignment_of(start, length, elevation)
+			# What this test measures is the elevation contract, so it publishes no corridor
+			# centreline: the macro corridor is a stated stand-in that models net elevation
+			# rather than the crest, and the fixtures that carry one measure it.
+			assignment.corridor = {"centerline_m": PackedVector3Array(),
+				"length_band_m": assignment.corridor.length_band_m}
+			var built := Elements.build(start, assignment, _settings())
+			if not _expect_built(built,
+					"%.1f m inside the window builds over %s" % [elevation, label]):
+				continue
+			_t.expect_min(built.observation.prominence_m, Elements.PROMINENCE_FLOOR_M,
+				"the beat stands its counterpart prominence at %.1f m over %s"
+					% [elevation, label])
+			_t.expect_close(built.observation.elevation_change_m, elevation,
+				"the beat delivers the elevation the window admits at %.1f m over %s"
+					% [elevation, label], 0.1)
+
+
+## A crest that stands centimetres above its endpoints satisfies every curvature condition a beat
+## has - crest unload is `v^2 kappa / g0 + cos(theta)`, which a hill of any height reaches - and is
+## still not a height beat. The measured case is one the macro stage used to assign: -23.64 m over
+## 358 m at 78.2 m/s builds a 9.5 cm hump at exactly the authored unload.
+func _test_a_hump_the_counterpart_would_not_call_a_beat_is_refused() -> void:
+	var start := _state(78.2)
+	var built := Elements.build(start, _height_assignment_of(start, 358.0, -23.64),
+		_settings())
+	_t.expect(not built.ok, "a hump below the counterpart prominence is not a height beat")
+	_t.expect(_t.contains(built.errors, "prominence_m"),
+		"the refusal names the prominence it missed: %s" % str(built.errors))
+	_t.expect_close(built.observation.crest_normal_g, -0.45,
+		"the hump reaches the authored unload, which is why the crest g cannot refuse it", 0.01)
+	_t.expect(float(built.observation.prominence_m) < Elements.PROMINENCE_FLOOR_M,
+		"the hump stands below the counterpart floor")
+	_t.expect(-23.64 < Elements.elevation_bound_m(358.0, 78.2, 0.0).x,
+		"the macro stage's own window would never have assigned it")
 
 
 ## The seam evidence splits by order: position, tangent and the world curvature vector are
@@ -300,7 +368,7 @@ func _test_element_seams_meet_the_c4_contract() -> void:
 	if not _expect_built(turn, "seam turn builds"):
 		return
 	var height := Elements.build(turn.end_state,
-		_height_assignment_from(turn.end_state, -8.0), _settings())
+		_height_assignment_from(turn.end_state, 0.35), _settings())
 	if not _expect_built(height, "seam height builds"):
 		return
 	var seam := Elements.seam_residuals(turn, height)
@@ -373,44 +441,42 @@ func _turn_assignment(heading_change_rad: float, start: Dictionary = {},
 	}, length_band_m)
 
 
-func _height_assignment(extra_elevation_m: float) -> Dictionary:
-	return _height_assignment_from(_state(75.0), extra_elevation_m)
+func _height_assignment(fraction: float) -> Dictionary:
+	return _height_assignment_from(_state(75.0), fraction)
 
 
-## A macro assignment for one height beat, published the way the layout publishes one: the
-## corridor is the macro chain's own vertical-plane trace, and the net elevation is read off the
-## same model.
-func _height_assignment_from(start: Dictionary, extra_elevation_m: float) -> Dictionary:
-	var elevation := _height_elevation_m(start, HEIGHT_LENGTH_M, extra_elevation_m)
+## A macro assignment for one height beat, published the way the layout publishes one: the net
+## elevation is read off the family's own crest window - `fraction` places it inside that window,
+## and an assignment outside it is one the macro stage may not make - and the corridor is the
+## macro chain's own trace of it.
+func _height_assignment_from(start: Dictionary, fraction: float) -> Dictionary:
+	return _height_assignment_at(start, HEIGHT_LENGTH_M, fraction)
+
+
+func _height_assignment_at(start: Dictionary, length_m: float, fraction: float) -> Dictionary:
+	var window := Elements.elevation_bound_m(length_m, float(start.speed_mps),
+		_entry_pitch(start))
+	return _height_assignment_of(start, length_m, lerpf(window.x, window.y, fraction))
+
+
+func _height_assignment_of(start: Dictionary, length_m: float,
+		elevation_m: float) -> Dictionary:
 	return {
 		"role_id": "return-height-a", "family": "return_height",
 		"entry_frame": _frame(start.position_m, start.tangent, start.rider_up),
-		"target_length_m": HEIGHT_LENGTH_M, "terrain_intent": {}, "curvature_sign": 0.0,
-		"heading_change_rad": 0.0, "elevation_change_m": elevation, "unload_g": -0.45,
-		"corridor": {"centerline_m": _macro_centerline(start, elevation),
-			"length_band_m": Vector2(340.0, 420.0)},
+		"target_length_m": length_m, "terrain_intent": {}, "curvature_sign": 0.0,
+		"heading_change_rad": 0.0, "elevation_change_m": elevation_m, "unload_g": -0.45,
+		"corridor": {"centerline_m": _macro_centerline(start, length_m, elevation_m),
+			"length_band_m": Vector2(length_m - 40.0, length_m + 40.0)},
 	}
-
-
-## The elevation a macro chain assigns a height beat: half the height it would spend levelling out
-## of the pitch it was handed, plus the height the beat itself is asked to add or give up. The
-## halving is what leaves the beat a crest: an assignment that spends the whole level-out drop
-## never lifts the track pitch above zero, and one that spends none of it asks the beat to climb
-## out of its own handover, which is a length request rather than a height one.
-func _height_elevation_m(start: Dictionary, length_m: float, extra_m: float) -> float:
-	var pitch := asin(clampf((start.tangent as Vector3).normalized().y, -1.0, 1.0))
-	var total := 0.0
-	for index in 401:
-		var weight := (0.5 if index == 0 or index == 400 else 1.0) / 400.0
-		total += weight * sin(Elements.level_out_pitch_rad(pitch, float(index) / 400.0))
-	return 0.5 * length_m * total + extra_m
 
 
 ## The macro chain's own trace of that assignment: one vertical plane, the shared level-out plus
 ## the chain's symmetric elevation bump, integrated the way `RideReturnLayout` integrates it.
-func _macro_centerline(start: Dictionary, elevation_m: float) -> PackedVector3Array:
-	var pitch := asin(clampf((start.tangent as Vector3).normalized().y, -1.0, 1.0))
-	var bump := 2.0 * elevation_m / HEIGHT_LENGTH_M - sin(pitch)
+func _macro_centerline(start: Dictionary, length_m: float,
+		elevation_m: float) -> PackedVector3Array:
+	var pitch := _entry_pitch(start)
+	var bump := 2.0 * elevation_m / length_m - sin(pitch)
 	var tangent: Vector3 = (start.tangent as Vector3).normalized()
 	var forward := (tangent - Vector3.UP * tangent.dot(Vector3.UP)).normalized()
 	var position: Vector3 = start.position_m
@@ -418,10 +484,14 @@ func _macro_centerline(start: Dictionary, elevation_m: float) -> PackedVector3Ar
 	var samples := 24
 	for index in samples:
 		var sin_pitch := Layout._sin_pitch(pitch, bump, (float(index) + 0.5) / samples)
-		position += (HEIGHT_LENGTH_M / samples) * (forward
+		position += (length_m / samples) * (forward
 			* sqrt(maxf(1.0 - sin_pitch * sin_pitch, 0.0)) + Vector3.UP * sin_pitch)
 		line.append(position)
 	return line
+
+
+func _entry_pitch(start: Dictionary) -> float:
+	return asin(clampf((start.tangent as Vector3).normalized().y, -1.0, 1.0))
 
 
 func _frame(position: Vector3, tangent: Vector3, rider_up: Vector3) -> Dictionary:

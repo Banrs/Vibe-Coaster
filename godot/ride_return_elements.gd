@@ -120,12 +120,20 @@ const BOUND_CREST_PASSES := 3
 const BOUND_BISECTIONS := 16
 const TURN_BOUND_SAMPLES := 384
 ## What a bound's analytic profile and the production integration of the same assignment were
-## measured to disagree by at each published edge: 1.4e-3 g of load and 7.7e-3 m of prominence,
-## rounded up. A bound published at its own zero-margin point is a bound whose edge does not build,
-## so every window and ceiling below holds this much margin on the trace and is buildable at its
-## edge - the macro stage may sit a control on its bound, and there is no retry behind it.
+## measured to disagree by at each published edge. A bound published at its own zero-margin point
+## is a bound whose edge does not build, so every window and ceiling below holds this much margin
+## on the trace - the macro stage may sit a control on its bound, and there is no retry behind it.
+##
+## The prominence figure is not quadrature. An accepted build sits anywhere inside the height
+## solve's own converged residuals - 0.1 m of net elevation against the 5 m scale, and 0.01 g of
+## crest unload against the 0.5 g scale - and at a window edge with positive net elevation both
+## spend straight out of prominence, which is measured from the exit there: the shallower crest
+## flattens the apex over the crest arc while the elevation residual moves the exit under it. The
+## crest term dominates and grows with arc, so it was measured over the whole declared span of
+## both role bands (290-590 m x 70-80 m/s x -10 to +20 deg of handover): the worst edge
+## disagreement is 0.084 m, and every one of those 144 published edges builds with this margin.
 const BOUND_AGREEMENT_G := 0.002
-const BOUND_AGREEMENT_M := 0.01
+const BOUND_AGREEMENT_M := 0.11
 ## Curvature bounds for the height solve, stated as loads rather than as radii: no stage's own
 ## `v^2 kappa / g0` may pass the 4.0 g held normal limit the macro stage also reasons against, and
 ## none may unload past -1.0 g, which is twice the deepest authored airtime. Both signs are open on

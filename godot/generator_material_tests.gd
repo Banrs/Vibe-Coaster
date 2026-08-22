@@ -5,6 +5,7 @@ const RidePlanner := preload("res://ride_planner.gd")
 const RidePrefixSolve := preload("res://ride_prefix_solve.gd")
 const RideProgram := preload("res://ride_program.gd")
 const RideReturnSolve := preload("res://ride_return_solve.gd")
+const RouteContract := preload("res://route_contract.gd")
 const RideVerify := preload("res://verify.gd")
 const Terrain := preload("res://terrain.gd")
 const G0 := 9.80665
@@ -128,7 +129,7 @@ func _check_dive_commits_at_the_rim(seed_value: int, route: Dictionary) -> void:
 		return
 	var rim_m := float(planning.get("dive_entry_edge_m", NAN)) \
 		- float(terrain.apron_width) - float(terrain.face_width)
-	var floor_m := RideGenerator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x \
+	var floor_m := RouteContract.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x \
 		+ RideGenerator.DIVE_ENTRY_EDGE_MARGIN_M
 	var window := RideGenerator.DIVE_ENTRY_RIM_AIM_M + Vector2.ONE * floor_m
 	# The apron term is named in the message because it is the likely first failure: the window's

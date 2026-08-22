@@ -1,10 +1,10 @@
 extends SceneTree
 
 const RideGenerator := preload("res://generator.gd")
+const RouteContract := preload("res://route_contract.gd")
 const RideTerrain := preload("res://terrain.gd")
 
 const SEED := 42
-const LOWER_SPINE_SURFACE_OFFSET_M := 1.79
 const MINIMUM_EXPOSED_SPINE_CLEARANCE_M := 2.0
 const STORY_CLEARANCE_MINIMUM_M := 8.0
 const STORY_CLEARANCE_MAXIMUM_M := 36.0
@@ -326,5 +326,5 @@ func _lower_spine_clearance_m(route: Dictionary, terrain: Dictionary, index: int
 
 func _lower_spine(route: Dictionary, index: int) -> Vector3:
 	# Main.build_rail_mesh renders the central spine at -1.55 m with 0.24 m tube radius.
-	return route.positions[index] - route.ups[index] * LOWER_SPINE_SURFACE_OFFSET_M
+	return route.positions[index] - route.ups[index] * RouteContract.LOWER_SPINE_SURFACE_OFFSET_M
 

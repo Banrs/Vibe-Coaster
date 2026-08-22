@@ -415,28 +415,16 @@ func _route(
 	var ups := PackedVector3Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
-	var normal := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
 	tangents.resize(count)
 	ups.resize(count)
 	distances.resize(count)
 	times.resize(count)
-	speeds.resize(count)
-	normal.resize(count)
-	lateral.resize(count)
-	longitudinal.resize(count)
 	var travelled := 0.0
 	for index in count:
 		if index > 0:
 			travelled += points[index].distance_to(points[index - 1])
 		distances[index] = travelled
 		times[index] = travelled / speed
-		speeds[index] = speed
-		normal[index] = 1.0
-		lateral[index] = 0.0
-		longitudinal[index] = 0.0
 		var forward: Vector3 = (
 			points[mini(index + 1, count - 1)] - points[maxi(index - 1, 0)]
 		)
@@ -455,26 +443,15 @@ func _route(
 	if bank_degrees.size() != count:
 		bank_degrees = PackedFloat32Array()
 		bank_degrees.resize(count)
-	return {
-		"seed": 4242, "positions": points, "tangents": tangents, "ups": ups,
-		"banks": bank_degrees, "roll_rates": roll_rates, "times": times, "distances": distances,
-		"speeds": speeds, "normal_g": normal, "lateral_g": lateral,
-		"longitudinal_g": longitudinal, "length": travelled,
-		"duration": times[count - 1],
-		"gesture_windows": _gestures(roles),
-	}
-
-
-func _gestures(roles: Array) -> Array:
-	var gestures := []
-	for role: Dictionary in roles:
-		var story: String = role.story_slot_id
-		if gestures.is_empty() or str(gestures[-1].story_slot_id) != story:
-			gestures.append({"story_slot_id": story, "first": role.first, "last": role.last,
-				"role_windows": []})
-		gestures[-1].role_windows.append(role)
-		gestures[-1].last = role.last
-	return gestures
+	var fixture := RouteFixture.new().seed(4242).length(travelled).duration(times[count - 1])
+	fixture.points(points).tangents(tangents).ups(ups).banks(bank_degrees)
+	fixture.channel("roll_rates", roll_rates).distances(distances).times(times)
+	fixture.speeds(RouteFixture.flat_float(speed, count))
+	fixture.channel("normal_g", RouteFixture.flat_float(1.0, count))
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, count))
+	fixture.gesture_windows(RouteFixture.group_roles(roles))
+	return fixture.build()
 
 
 # ---------------------------------------------------------------------------------------------

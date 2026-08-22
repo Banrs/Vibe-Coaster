@@ -333,18 +333,20 @@ func _measurement() -> Dictionary:
 
 
 func _route() -> Dictionary:
-	return {"times": PackedFloat32Array([19.5, 20.0, 20.5, 21.0]),
-		"length": 50.0, "distances": PackedFloat32Array([0.0, 20.0, 30.0, 40.0]),
-		"speeds": PackedFloat32Array([20.0, 20.0, 20.0, 20.0]),
-		"tangents": PackedVector3Array([Vector3.RIGHT, Vector3.RIGHT,
-			Vector3.RIGHT, Vector3.RIGHT]),
-		"ups": PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP, Vector3.UP]),
-		"curvatures": PackedVector3Array([Vector3.UP * 0.01, Vector3.UP * 0.02,
-			Vector3.UP * 0.03, Vector3.UP * 0.04]),
-		"roll_rates": PackedFloat32Array([0.0, 0.0, 0.0, 0.0]),
-		"normal_g": PackedFloat32Array([1.0, 4.0, -2.0, 1.0]),
-		"lateral_g": PackedFloat32Array([0.0, -0.25, 0.5, 0.0]),
-		"longitudinal_g": PackedFloat32Array([0.0, 0.125, -0.75, 0.0])}
+	var fixture := RouteFixture.new().length(50.0)
+	fixture.times(PackedFloat32Array([19.5, 20.0, 20.5, 21.0]))
+	fixture.distances(PackedFloat32Array([0.0, 20.0, 30.0, 40.0]))
+	fixture.speeds(PackedFloat32Array([20.0, 20.0, 20.0, 20.0]))
+	fixture.tangents(PackedVector3Array([Vector3.RIGHT, Vector3.RIGHT,
+		Vector3.RIGHT, Vector3.RIGHT]))
+	fixture.ups(PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP, Vector3.UP]))
+	fixture.curvatures(PackedVector3Array([Vector3.UP * 0.01, Vector3.UP * 0.02,
+		Vector3.UP * 0.03, Vector3.UP * 0.04]))
+	fixture.channel("roll_rates", PackedFloat32Array([0.0, 0.0, 0.0, 0.0]))
+	fixture.channel("normal_g", PackedFloat32Array([1.0, 4.0, -2.0, 1.0]))
+	fixture.channel("lateral_g", PackedFloat32Array([0.0, -0.25, 0.5, 0.0]))
+	fixture.channel("longitudinal_g", PackedFloat32Array([0.0, 0.125, -0.75, 0.0]))
+	return fixture.build()
 
 
 func _build(

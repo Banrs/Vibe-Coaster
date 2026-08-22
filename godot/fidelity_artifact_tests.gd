@@ -1676,15 +1676,28 @@ static func _pack_routes() -> Dictionary:
 
 
 static func _pack_route(seed_value: int) -> Dictionary:
-	var route := {
-		"seed": seed_value, "length": 200.0, "duration": 20.0,
-		"positions": PackedVector3Array(), "tangents": PackedVector3Array(),
-		"ups": PackedVector3Array(), "rights": PackedVector3Array(),
-		"curvatures": PackedVector3Array(), "banks": PackedFloat32Array(),
-		"speeds": PackedFloat32Array(), "normal_g": PackedFloat32Array(),
-		"lateral_g": PackedFloat32Array(), "longitudinal_g": PackedFloat32Array(),
-		"roll_rates": PackedFloat32Array(), "distances": PackedFloat32Array(),
-		"times": PackedFloat32Array(), "span_indices": PackedInt32Array(),
+	const COUNT := 41
+	var positions := PackedVector3Array()
+	var distances := PackedFloat32Array()
+	var times := PackedFloat32Array()
+	var span_indices := PackedInt32Array()
+	for index in COUNT:
+		positions.append(Vector3(index * 5.0, 30.0, 0.0))
+		distances.append(index * 5.0)
+		times.append(index * 0.5)
+		span_indices.append(0 if index < 20 else 1)
+	var fixture := RouteFixture.new().seed(seed_value).length(200.0).duration(20.0)
+	fixture.points(positions).distances(distances).times(times).span_indices(span_indices)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, COUNT))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, COUNT))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.BACK, COUNT))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, COUNT))
+	fixture.banks(RouteFixture.flat_float(0.0, COUNT)).speeds(RouteFixture.flat_float(10.0, COUNT))
+	fixture.channel("normal_g", RouteFixture.flat_float(1.0, COUNT))
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, COUNT))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, COUNT))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, COUNT))
+	fixture.extra({
 		"terrain": {
 			"relief": 1.0, "face_height": 0.0, "apron_height": 0.0,
 			"edge_normal": Vector2(0.0, -1.0), "edge_offset": 0.0, "apron_width": 1.0,
@@ -1716,23 +1729,8 @@ static func _pack_route(seed_value: int) -> Dictionary:
 				"start_time_s": 10.0, "end_time_s": 20.0,
 			}],
 		}],
-	}
-	for index in 41:
-		route.positions.append(Vector3(index * 5.0, 30.0, 0.0))
-		route.tangents.append(Vector3.RIGHT)
-		route.ups.append(Vector3.UP)
-		route.rights.append(Vector3.BACK)
-		route.curvatures.append(Vector3.ZERO)
-		route.banks.append(0.0)
-		route.speeds.append(10.0)
-		route.normal_g.append(1.0)
-		route.lateral_g.append(0.0)
-		route.longitudinal_g.append(0.0)
-		route.roll_rates.append(0.0)
-		route.distances.append(index * 5.0)
-		route.times.append(index * 0.5)
-		route.span_indices.append(0 if index < 20 else 1)
-	return route
+	})
+	return fixture.build()
 
 
 static func _overlay_fixture(count: int) -> Dictionary:

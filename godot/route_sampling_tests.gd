@@ -71,16 +71,13 @@ func _curved_route() -> Dictionary:
 	var tangent_1 := Vector3.FORWARD
 	var up_0 := Vector3.UP
 	var up_1 := Vector3.UP
-	return {
-		"length": 10.0,
-		"duration": 1.0,
-		"times": PackedFloat32Array([0.0, 1.0]),
-		"distances": PackedFloat32Array([0.0, 10.0]),
-		"positions": PackedVector3Array([Vector3.ZERO, Vector3(10.0, 0.0, 0.0)]),
-		"tangents": PackedVector3Array([tangent_0, tangent_1]),
-		"ups": PackedVector3Array([up_0, up_1]),
-		"rights": PackedVector3Array([
-			tangent_0.cross(up_0).normalized(),
-			tangent_1.cross(up_1).normalized(),
-		]),
-	}
+	var fixture := RouteFixture.new().length(10.0).duration(1.0)
+	fixture.times(PackedFloat32Array([0.0, 1.0])).distances(PackedFloat32Array([0.0, 10.0]))
+	fixture.points(PackedVector3Array([Vector3.ZERO, Vector3(10.0, 0.0, 0.0)]))
+	fixture.tangents(PackedVector3Array([tangent_0, tangent_1]))
+	fixture.ups(PackedVector3Array([up_0, up_1]))
+	fixture.rights(PackedVector3Array([
+		tangent_0.cross(up_0).normalized(),
+		tangent_1.cross(up_1).normalized(),
+	]))
+	return fixture.build()

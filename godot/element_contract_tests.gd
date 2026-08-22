@@ -101,12 +101,9 @@ func _hill_route(
 			up = Vector3.FORWARD - tangent * tangent.dot(Vector3.FORWARD)
 		ups.append(up.normalized())
 		banks.append(exit_bank_deg if index == COUNT - 1 else 0.0)
-	return {
-		"positions": positions,
-		"tangents": tangents,
-		"ups": ups,
-		"banks": banks,
-	}
+	var fixture := RouteFixture.new().points(positions).tangents(tangents)
+	fixture.ups(ups).banks(banks)
+	return fixture.build()
 
 
 func _hill_intent() -> Dictionary:

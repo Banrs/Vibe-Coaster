@@ -1349,89 +1349,56 @@ static func _expect_invalid_comparison(
 
 static func _measurement_route() -> Dictionary:
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var banks := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
-	var normal := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	var roll_rates := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
 	for i in 41:
 		var height := float(mini(i, 20 - i)) if i <= 20 else 0.0
 		positions.append(Vector3(i, height, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		banks.append(0.0)
-		speeds.append(10.0)
-		normal.append(1.0)
-		lateral.append(0.0)
-		longitudinal.append(0.0)
-		roll_rates.append(0.0)
 		distances.append(float(i))
 		times.append(i * 0.1)
-	return {
-		"seed": 7,
-		"length": 40.0,
-		"duration": 4.0,
-		"positions": positions,
-		"tangents": tangents,
-		"ups": ups,
-		"rights": rights,
-		"curvatures": curvatures,
-		"banks": banks,
-		"speeds": speeds,
-		"normal_g": normal,
-		"lateral_g": lateral,
-		"longitudinal_g": longitudinal,
-		"roll_rates": roll_rates,
-		"distances": distances,
-		"times": times,
-		"span_indices": _span_indices(41, [20, 30]),
-		"gesture_windows": [
-			_gesture_window("act1.hill", "core", "hill", "Hill", 0, 19),
-			_gesture_window("act1.transfer", "whole", "transfer", "Transfer", 20, 29),
-			_gesture_window("return.capture", "whole", "capture", "Capture", 30, 40),
-		],
-	}
+	var fixture := RouteFixture.new().seed(7).length(40.0).duration(4.0)
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, 41))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, 41))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, 41))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, 41))
+	fixture.banks(RouteFixture.flat_float(0.0, 41)).speeds(RouteFixture.flat_float(10.0, 41))
+	fixture.channel("normal_g", RouteFixture.flat_float(1.0, 41))
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, 41))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, 41))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, 41))
+	fixture.span_indices(RouteFixture.span_indices_for(41, [20, 30]))
+	fixture.gesture_windows([
+		_gesture_window("act1.hill", "core", "hill", "Hill", 0, 19),
+		_gesture_window("act1.transfer", "whole", "transfer", "Transfer", 20, 29),
+		_gesture_window("return.capture", "whole", "capture", "Capture", 30, 40),
+	])
+	return fixture.build()
 
 
 static func _irregular_pacing_route() -> Dictionary:
-	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var banks := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
-	var speeds := PackedFloat32Array([10.0, 60.0, 60.0, 60.0, 10.0])
-	var normal := PackedFloat32Array([1.0, 2.0, 2.0, 2.0, 1.0])
-	var lateral := PackedFloat32Array([0.0, 0.5, 0.5, 0.5, 0.0])
-	var longitudinal := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
-	var roll_rates := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
 	var distances := PackedFloat32Array([0.0, 2.0, 5.0, 11.0, 13.0])
 	var times := PackedFloat32Array([0.0, 0.2, 0.5, 1.1, 1.3])
+	var positions := PackedVector3Array()
 	for index in times.size():
 		positions.append(Vector3(distances[index], 5.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-	return {
-		"seed": 8, "length": 13.0, "duration": 1.3,
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": banks, "speeds": speeds,
-		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
-		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"span_indices": _span_indices(times.size(), []),
-		"gesture_windows": [_gesture_window(
-			"act1.pacing", "whole", "pacing", "Pacing", 0, times.size() - 1)],
-	}
+	var count := times.size()
+	var fixture := RouteFixture.new().seed(8).length(13.0).duration(1.3)
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, count))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, count))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, count))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, count))
+	fixture.banks(PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0]))
+	fixture.speeds(PackedFloat32Array([10.0, 60.0, 60.0, 60.0, 10.0]))
+	fixture.channel("normal_g", PackedFloat32Array([1.0, 2.0, 2.0, 2.0, 1.0]))
+	fixture.channel("lateral_g", PackedFloat32Array([0.0, 0.5, 0.5, 0.5, 0.0]))
+	fixture.channel("longitudinal_g", PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0]))
+	fixture.channel("roll_rates", PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0]))
+	fixture.span_indices(RouteFixture.span_indices_for(count, []))
+	fixture.gesture_windows([_gesture_window(
+		"act1.pacing", "whole", "pacing", "Pacing", 0, count - 1)])
+	return fixture.build()
 
 
 static func _moving_window_route(extra_preceding_knot: bool) -> Dictionary:
@@ -1441,44 +1408,32 @@ static func _moving_window_route(extra_preceding_knot: bool) -> Dictionary:
 		times.insert(1, 0.0015)
 		normal.insert(1, 2.75)
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var banks := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	var roll_rates := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	for index in times.size():
 		var distance := times[index] * 10.0
 		positions.append(Vector3(distance, 5.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		banks.append(0.0)
-		speeds.append(10.0)
-		lateral.append(0.0)
-		longitudinal.append(0.0)
-		roll_rates.append(0.0)
 		distances.append(distance)
 	var selected_first := 2 if extra_preceding_knot else 1
 	var selected_last := selected_first + 3
-	return {
-		"seed": 9, "length": distances[-1], "duration": times[-1],
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": banks, "speeds": speeds,
-		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
-		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"span_indices": _span_indices(times.size(), [selected_first, selected_last + 1]),
-		"gesture_windows": [
-			_gesture_window("act1.before", "whole", "before", "Before", 0, selected_first - 1),
-			_gesture_window("act1.selected", "core", "selected", "Selected", selected_first, selected_last),
-			_gesture_window("act1.after", "whole", "after", "After", selected_last + 1, times.size() - 1),
-		],
-	}
+	var count := times.size()
+	var fixture := RouteFixture.new().seed(9).length(distances[-1]).duration(times[-1])
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, count))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, count))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, count))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, count))
+	fixture.banks(RouteFixture.flat_float(0.0, count)).speeds(RouteFixture.flat_float(10.0, count))
+	fixture.channel("normal_g", normal)
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, count))
+	fixture.span_indices(RouteFixture.span_indices_for(count, [selected_first, selected_last + 1]))
+	fixture.gesture_windows([
+		_gesture_window("act1.before", "whole", "before", "Before", 0, selected_first - 1),
+		_gesture_window("act1.selected", "core", "selected", "Selected", selected_first, selected_last),
+		_gesture_window("act1.after", "whole", "after", "After", selected_last + 1, count - 1),
+	])
+	return fixture.build()
 
 
 static func _row_pulse_route() -> Dictionary:
@@ -1503,7 +1458,7 @@ static func _transition_route(seam_seconds: float) -> Dictionary:
 			route.normal_g[index] = 3.0
 		elif index > seam and index <= seam + 50:
 			route.normal_g[index] = -1.0
-	route.span_indices = _span_indices(route.times.size(), [seam])
+	route.span_indices = RouteFixture.span_indices_for(route.times.size(), [seam])
 	route.gesture_windows = [
 		_gesture_window("act1.before", "whole", "before", "Before", 0, seam - 1),
 		_gesture_window("act1.after", "whole", "after", "After", seam, route.times.size() - 1),
@@ -1512,76 +1467,56 @@ static func _transition_route(seam_seconds: float) -> Dictionary:
 
 
 static func _uniform_route(seconds: float) -> Dictionary:
-	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var scalar := PackedFloat32Array()
 	var count := roundi(seconds * 100.0) + 1
+	var positions := PackedVector3Array()
+	var distances := PackedFloat32Array()
+	var times := PackedFloat32Array()
 	for index in count:
 		var time := index * 0.01
 		positions.append(Vector3(time * 10.0, 5.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		scalar.append(0.0)
-	var normal := PackedFloat32Array(scalar)
-	normal.fill(1.0)
-	var speeds := PackedFloat32Array(scalar)
-	speeds.fill(10.0)
-	var distances := PackedFloat32Array(scalar)
-	for index in count:
-		distances[index] = index * 0.1
-	return {
-		"seed": 10, "length": distances[-1], "duration": seconds,
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": PackedFloat32Array(scalar), "speeds": speeds,
-		"normal_g": normal, "lateral_g": PackedFloat32Array(scalar), "longitudinal_g": PackedFloat32Array(scalar),
-		"roll_rates": PackedFloat32Array(scalar), "distances": distances,
-		"times": _times_100hz(count), "span_indices": _span_indices(count, []),
-		"gesture_windows": [_gesture_window(
-			"whole.route", "whole", "route", "Route", 0, count - 1)],
-	}
+		distances.append(index * 0.1)
+		times.append(time)
+	var fixture := RouteFixture.new().seed(10).length(distances[-1]).duration(seconds)
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, count))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, count))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, count))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, count))
+	fixture.banks(RouteFixture.flat_float(0.0, count)).speeds(RouteFixture.flat_float(10.0, count))
+	fixture.channel("normal_g", RouteFixture.flat_float(1.0, count))
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, count))
+	fixture.span_indices(RouteFixture.span_indices_for(count, []))
+	fixture.gesture_windows([_gesture_window(
+		"whole.route", "whole", "route", "Route", 0, count - 1)])
+	return fixture.build()
 
 
 static func _analytic_straight_route(speed: float, seconds: float, sample_hz: float) -> Dictionary:
 	var count := roundi(seconds * sample_hz) + 1
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var scalars := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
 	for index in count:
 		var time := index / sample_hz
 		positions.append(Vector3(speed * time, 0.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		scalars.append(0.0)
 		distances.append(speed * time)
 		times.append(time)
-	var normal := PackedFloat32Array(scalars)
-	normal.fill(1.0)
-	var speeds := PackedFloat32Array(scalars)
-	speeds.fill(speed)
-	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, scalars, scalars, scalars, speeds, distances, times, [])
+	var zero := RouteFixture.flat_float(0.0, count)
+	return _analytic_route(positions, RouteFixture.flat_vector3(Vector3.RIGHT, count),
+		RouteFixture.flat_vector3(Vector3.UP, count), RouteFixture.flat_vector3(Vector3.FORWARD, count),
+		RouteFixture.flat_vector3(Vector3.ZERO, count), RouteFixture.flat_float(1.0, count),
+		zero, zero, zero, RouteFixture.flat_float(speed, count), distances, times, [])
 
 
 static func _analytic_circle_route(speed: float, radius: float, seconds: float, sample_hz: float) -> Dictionary:
 	var count := roundi(seconds * sample_hz) + 1
 	var positions := PackedVector3Array()
 	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
 	var rights := PackedVector3Array()
 	var curvatures := PackedVector3Array()
 	var lateral := PackedFloat32Array()
-	var scalars := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
 	for index in count:
@@ -1590,48 +1525,34 @@ static func _analytic_circle_route(speed: float, radius: float, seconds: float, 
 		var inward := Vector3(-cos(angle), 0.0, -sin(angle))
 		positions.append(Vector3(radius * (cos(angle) - 1.0), 0.0, radius * sin(angle)))
 		tangents.append(Vector3(-sin(angle), 0.0, cos(angle)))
-		ups.append(Vector3.UP)
 		rights.append(inward)
 		curvatures.append(inward / radius)
 		lateral.append(speed * speed / radius / 9.80665)
-		scalars.append(0.0)
 		distances.append(speed * time)
 		times.append(time)
-	var normal := PackedFloat32Array(scalars)
-	normal.fill(1.0)
-	var speeds := PackedFloat32Array(scalars)
-	speeds.fill(speed)
-	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, scalars, scalars, speeds, distances, times, [])
+	var zero := RouteFixture.flat_float(0.0, count)
+	return _analytic_route(positions, tangents, RouteFixture.flat_vector3(Vector3.UP, count),
+		rights, curvatures, RouteFixture.flat_float(1.0, count), lateral, zero, zero,
+		RouteFixture.flat_float(speed, count), distances, times, [])
 
 
 static func _nonuniform_quadratic_route() -> Dictionary:
 	var times := PackedFloat32Array([0.0, 0.07, 0.21, 0.5, 0.9, 1.4])
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var normal := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	var roll_rates := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	for time in times:
 		var distance := 5.0 * time + time * time
 		positions.append(Vector3(distance, 0.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		normal.append(1.0)
-		lateral.append(0.0)
-		longitudinal.append(2.0 / 9.80665)
-		roll_rates.append(0.0)
-		# Deliberately inconsistent: acceleration must come from raw position/time, not this channel.
-		speeds.append(5.0)
 		distances.append(distance)
-	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, longitudinal, roll_rates, speeds, distances, times, [])
+	var count := times.size()
+	# Deliberately inconsistent: acceleration must come from raw position/time, not the speed
+	# channel, so speed stays a flat 5 m/s regardless of the quadratic position/time relation.
+	return _analytic_route(positions, RouteFixture.flat_vector3(Vector3.RIGHT, count),
+		RouteFixture.flat_vector3(Vector3.UP, count), RouteFixture.flat_vector3(Vector3.FORWARD, count),
+		RouteFixture.flat_vector3(Vector3.ZERO, count), RouteFixture.flat_float(1.0, count),
+		RouteFixture.flat_float(0.0, count), RouteFixture.flat_float(2.0 / 9.80665, count),
+		RouteFixture.flat_float(0.0, count), RouteFixture.flat_float(5.0, count),
+		distances, times, [])
 
 
 static func _curvature_direction_seam_route() -> Dictionary:
@@ -1639,6 +1560,7 @@ static func _curvature_direction_seam_route() -> Dictionary:
 	const RADIUS := 50.0
 	const SAMPLE_HZ := 100.0
 	const SEAM := 100
+	const COUNT := 201
 	var positions := PackedVector3Array()
 	var tangents := PackedVector3Array()
 	var ups := PackedVector3Array()
@@ -1646,12 +1568,10 @@ static func _curvature_direction_seam_route() -> Dictionary:
 	var curvatures := PackedVector3Array()
 	var normal := PackedFloat32Array()
 	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
 	var roll_rates := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
-	for index in 201:
+	for index in COUNT:
 		var angle := (index - SEAM) * SPEED / SAMPLE_HZ / RADIUS
 		if index <= SEAM:
 			var horizontal_inward := Vector3(-cos(angle), 0.0, -sin(angle))
@@ -1671,13 +1591,12 @@ static func _curvature_direction_seam_route() -> Dictionary:
 			curvatures.append(vertical_inward / RADIUS)
 			normal.append(SPEED * SPEED / RADIUS / 9.80665 + vertical_inward.y)
 			lateral.append(0.0)
-		longitudinal.append(0.0)
 		roll_rates.append(index * 0.5)
-		speeds.append(SPEED)
 		distances.append(index * SPEED / SAMPLE_HZ)
 		times.append(index / SAMPLE_HZ)
 	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral,
-		longitudinal, roll_rates, speeds, distances, times, [SEAM])
+		RouteFixture.flat_float(0.0, COUNT), roll_rates, RouteFixture.flat_float(SPEED, COUNT),
+		distances, times, [SEAM])
 
 
 static func _analytic_route(
@@ -1687,35 +1606,15 @@ static func _analytic_route(
 	speeds: PackedFloat32Array, distances: PackedFloat32Array, times: PackedFloat32Array,
 	span_starts: Array
 ) -> Dictionary:
-	var banks := PackedFloat32Array()
-	banks.resize(times.size())
-	banks.fill(0.0)
-	return {
-		"seed": 500, "length": distances[-1], "duration": times[-1],
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": banks, "speeds": speeds,
-		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
-		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"span_indices": _span_indices(times.size(), span_starts), "gesture_windows": [],
-	}
-
-
-static func _times_100hz(count: int) -> PackedFloat32Array:
-	var times := PackedFloat32Array()
-	for index in count:
-		times.append(index * 0.01)
-	return times
-
-
-static func _span_indices(count: int, span_starts: Array) -> PackedInt32Array:
-	var owners := PackedInt32Array()
-	owners.resize(count)
-	var span_index := 0
-	for sample_index in count:
-		if span_index < span_starts.size() and sample_index == int(span_starts[span_index]):
-			span_index += 1
-		owners[sample_index] = span_index
-	return owners
+	var fixture := RouteFixture.new().seed(500).length(distances[-1]).duration(times[-1])
+	fixture.points(positions).tangents(tangents).ups(ups).rights(rights).curvatures(curvatures)
+	fixture.banks(RouteFixture.flat_float(0.0, times.size())).speeds(speeds)
+	fixture.channel("normal_g", normal).channel("lateral_g", lateral)
+	fixture.channel("longitudinal_g", longitudinal).channel("roll_rates", roll_rates)
+	fixture.distances(distances).times(times)
+	fixture.span_indices(RouteFixture.span_indices_for(times.size(), span_starts))
+	fixture.gesture_windows([])
+	return fixture.build()
 
 
 static func _gesture_window(

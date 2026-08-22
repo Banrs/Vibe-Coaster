@@ -3,7 +3,7 @@ extends SceneTree
 const FIDELITY_PATH := "res://fidelity.gd"
 const REFERENCES_PATH := "res://fidelity_references.gd"
 const GENERATOR_PATH := "res://generator.gd"
-const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+const CANONICAL_FLEET := RideFidelity.CANONICAL_FLEET
 
 
 func _initialize() -> void:

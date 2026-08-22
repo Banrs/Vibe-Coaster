@@ -15,6 +15,10 @@ const METRICS := [
 ]
 const HOLD_SECONDS := [0.2, 0.5, 0.8, 1.0, 1.1, 1.4, 2.0, 2.4, 2.78, 3.0, 4.0, 6.8, 12.0]
 const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+## The three seeds the smoke gate verifies deeply and the audit reviews element by element.
+const DEEP_SEEDS := [11, 42, 20260809]
+## The pinned pre-foundation legacy commit the audit baseline measures (plan Task 1, Step 0).
+const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
 const ROW_BEAT_REDUCERS := ["minimum", "maximum", "median", "time_weighted_mean"]
 const SEED_REDUCERS := ["minimum", "maximum", "median"]
 const ROW_OFFSET_TOLERANCE := 0.000001

@@ -9,7 +9,7 @@ const RouteContract := preload("res://route_contract.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
 
-const DEEP_SEEDS := [11, 42, 20260809]
+const DEEP_SEEDS := RideFidelity.DEEP_SEEDS
 const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 ## The fleet must not be one ride fifteen times. Measured spread on 2026-08-16 with the landed

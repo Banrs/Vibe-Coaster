@@ -41,7 +41,7 @@ const _OVERLAY_TARGET_COLOR := Color(0.95, 0.75, 0.35)
 const _OVERLAY_GENERATED_COLOR := Color(0.95, 0.55, 0.95)
 const _OVERLAY_MARKER_COLOR := Color(0.75, 0.62, 0.25)
 
-const _DEEP_SEEDS := [11, 42, 20260809]
+const _DEEP_SEEDS := _FIDELITY.DEEP_SEEDS
 const _COMPARISON_KEYS := ["fleet", "findings", "observed_only", "evidence_gaps", "recommendation"]
 const _PAIR_STEMS := ["artifact", "diagnostic", "metadata_artifact", "metadata_diagnostic", "review"]
 const _CHECKLIST_SPECS := [

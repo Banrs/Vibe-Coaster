@@ -606,13 +606,6 @@ static func _hold_window_samples(seconds: float) -> int:
 	return ceili(seconds * Verify.SAMPLE_HZ - 1e-9) + 1
 
 
-## One filtered band per native semantic role window, in compiled route order.
-static func element_bands(route: Dictionary, row_offset: float = 0.0) -> Array:
-	return _bands_for_row(
-		route, _beat_definitions(route), row_offset, _row_series(route, row_offset), false
-	)
-
-
 ## JSON-safe measurements for one generated route. The route is only read; all row force series
 ## and shifted beat windows are derived locally and discarded after this call.
 static func measure_route(route: Dictionary, row_offsets: Array) -> Dictionary:

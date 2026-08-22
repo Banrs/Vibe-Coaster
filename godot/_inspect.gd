@@ -173,9 +173,9 @@ func _write_geometry_pack(
 			errors.append("artifact_write: seed %d geometry pack is not canonical JSON data"
 				% seed_value)
 			continue
-		_write_geometry_file(root, "%s/geometry-metrics.json" % stem, "geometry-metrics",
+		Artifacts.write_recorded(root, "%s/geometry-metrics.json" % stem, "geometry-metrics",
 			json, seed_value, records, errors)
-		_write_geometry_file(root, "%s/geometry-metrics.md" % stem, "geometry-metrics",
+		Artifacts.write_recorded(root, "%s/geometry-metrics.md" % stem, "geometry-metrics",
 			GeometryMetrics.markdown(pack, reference), seed_value, records, errors)
 		comparisons.append(GeometryMetrics.counterpart_comparison(route))
 		if seed_value == GEOMETRY_OVERLAY_SEED:
@@ -190,33 +190,13 @@ func _write_geometry_pack(
 	if fleet_json.is_empty():
 		errors.append("artifact_write: the counterpart comparison is not canonical JSON data")
 		return {"errors": errors, "records": records, "comparisons": comparisons}
-	_write_geometry_file(root, "review/counterpart-comparison.json", "counterpart-comparison",
+	Artifacts.write_recorded(root, "review/counterpart-comparison.json", "counterpart-comparison",
 		fleet_json, null, records, errors)
-	_write_geometry_file(root, "review/counterpart-comparison.md", "counterpart-comparison",
+	Artifacts.write_recorded(root, "review/counterpart-comparison.md", "counterpart-comparison",
 		GeometryMetrics.counterpart_markdown(comparisons), null, records, errors)
 	return {"errors": errors, "records": records, "comparisons": comparisons}
 
 
-## One checked write plus its manifest record, in the shape `write_pack` records its own files.
-static func _write_geometry_file(
-	root: String, path: String, artifact_kind: String, content: Variant, seed_value: Variant,
-	records: Array, errors: PackedStringArray
-) -> void:
-	var absolute := "%s/%s" % [root, path]
-	var made := DirAccess.make_dir_recursive_absolute(absolute.get_base_dir())
-	if made != OK and made != ERR_ALREADY_EXISTS:
-		errors.append("artifact_write: cannot create '%s' (%s)"
-			% [absolute.get_base_dir(), error_string(made)])
-		return
-	var failures := (
-		Artifacts.save_png_checked(content, absolute) if content is Image
-		else Artifacts.write_text_checked(absolute, content)
-	)
-	if failures.is_empty():
-		records.append({
-			"path": path, "artifact_kind": artifact_kind, "seed": seed_value, "beat_id": null,
-		})
-	errors.append_array(failures)
 
 
 ## Side-by-side composites: the local reference frame against the generated element side view.
@@ -244,7 +224,7 @@ func _write_geometry_overlays(
 		var composite := GeometryReference.composite(image, generated,
 			GeometryReference.footer_lines(str(entry.element_id), geometry.shape,
 				geometry.planarity, entry))
-		_write_geometry_file(root, "review/overlays/geometry/%s.png"
+		Artifacts.write_recorded(root, "review/overlays/geometry/%s.png"
 			% str(entry.element_id).replace("/", "__"), "geometry-overlay", composite,
 			GEOMETRY_OVERLAY_SEED, records, errors)
 

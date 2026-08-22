@@ -24,7 +24,6 @@ static func run() -> PackedStringArray:
 	_test_exact_duration_hold(fidelity, errors)
 	_test_time_weighted_pacing(fidelity, errors)
 	_test_non_grid_measurement(fidelity, errors)
-	_test_row_windows(fidelity, errors)
 	_test_transition_windows(fidelity, errors)
 	_test_straight_reconstruction(fidelity, errors)
 	_test_constant_radius_reconstruction(fidelity, errors)
@@ -135,15 +134,6 @@ static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArr
 	_expect(errors, not held_values.has("1.00"), "an unavailable hold never emits a numeric sentinel")
 	var unavailable: Dictionary = held_values.get("_unavailable", {}).get("1.00", {})
 	_expect(errors, unavailable.get("status", "") == "unavailable" and unavailable.get("reason", "") == "insufficient_duration", "an unavailable hold reports its physical-duration gap")
-	var selected_band := {}
-	for band in fidelity.element_bands(route):
-		if band.story_slot_id == "act1.selected" and band.window_role == "core":
-			selected_band = band
-	if selected_band.is_empty():
-		errors.append("non-grid element bands retain the selected beat")
-	else:
-		var arbitrary_hold: float = fidelity.held(selected_band.normal, 1.0, 0.804)
-		_expect(errors, is_finite(arbitrary_hold) and arbitrary_hold < 2.0, "production's anchored force grid supports an arbitrary 0.804-second hold")
 	var irregular_route := _moving_window_route(true)
 	var irregular_before := irregular_route.duplicate(true)
 	var irregular: Dictionary = fidelity.measure_route(irregular_route, [0.0])
@@ -152,17 +142,6 @@ static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArr
 		var irregular_held: Dictionary = irregular.beats[1].rows[0].loads.get("normal_held_positive", {})
 		_expect_close(errors, float(irregular_held.get("0.80", -INF)), float(held_values.get("0.80", -INF)), "a collinear native knot outside the selected window leaves the held result unchanged")
 
-
-static func _test_row_windows(fidelity: Script, errors: PackedStringArray) -> void:
-	var bands: Array = fidelity.element_bands(_measurement_route(), 2.0)
-	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row begins at the shifted first-element start")
-	_expect_close(errors, bands[0].window_end_distance, 21.0, "rear row ends at the shifted semantic-window end")
-	_expect(errors, bands[-1].window_end_distance <= 40.0, "terminal row window clips instead of wrapping closure data")
-	var attributed := 0
-	for band in fidelity.element_bands(_row_pulse_route(), 2.0):
-		if _array_peak(band.normal) > 1.5:
-			attributed += 1
-	_expect(errors, attributed == 1, "rear-row force pulse is attributed once across shifted element windows")
 
 
 static func _test_transition_windows(fidelity: Script, errors: PackedStringArray) -> void:

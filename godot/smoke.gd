@@ -322,21 +322,10 @@ func _validate_prefix_closure(
 	if terrain.is_empty() or fine.size() != PrefixSolve.PREFIX_RESIDUAL_IDS.size():
 		issues.append("the plan publishes no measurable prefix closure")
 		return
-	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
-	var measured := [
-		["dive-entry edge", float(planning.get("dive_entry_edge_m", NAN)) - shelf_m,
-			Generator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, Generator.DIVE_ENTRY_EDGE_MARGIN_M],
-		["dive-exit apron fraction", float(planning.get("dive_exit_apron_fraction", NAN)),
-			Generator.DIVE_EXIT_APRON_BAND, Generator.DIVE_EXIT_APRON_MARGIN],
-		["summit track AGL", float(planning.get("summit_track_agl_m", NAN)),
-			Generator.SUMMIT_TRACK_AGL_BAND_M, Generator.PREFIX_MARGIN_SUMMIT_M],
-		["record exit speed", float(fine[3]), Generator.RECORD_EXIT_SPEED_BAND_MPS,
-			Generator.PREFIX_MARGIN_RECORD_MPS],
-	]
 	var report := PackedStringArray()
-	for entry: Array in measured:
+	for entry: Array in Generator.prefix_closure_margins(planning, terrain, fine):
+		var margin := float(entry[1])
 		var band: Vector2 = entry[2]
-		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
 		report.append("%s %+.4f" % [entry[0], margin])
 		if not is_finite(margin) or margin < float(entry[3]):
 			issues.append("%s sits only %.4f inside %s; the fleet requires %.4f"

@@ -381,19 +381,9 @@ func _check_refused_story_places(
 	if fine.size() != RidePrefixSolve.PREFIX_RESIDUAL_IDS.size():
 		_t.expect(false, "%s publishes a measured closure: %s" % [context, str(closure)])
 		return
-	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
-	for entry: Array in [
-			["dive-entry edge", float(planning.dive_entry_edge_m) - shelf_m,
-				RideGenerator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M,
-				RideGenerator.DIVE_ENTRY_EDGE_MARGIN_M],
-			["dive-exit apron fraction", float(planning.dive_exit_apron_fraction),
-				RideGenerator.DIVE_EXIT_APRON_BAND, RideGenerator.DIVE_EXIT_APRON_MARGIN],
-			["summit track AGL", float(planning.summit_track_agl_m),
-				RideGenerator.SUMMIT_TRACK_AGL_BAND_M, RideGenerator.PREFIX_MARGIN_SUMMIT_M],
-			["record exit speed", float(fine[3]), RideGenerator.RECORD_EXIT_SPEED_BAND_MPS,
-				RideGenerator.PREFIX_MARGIN_RECORD_MPS]]:
+	for entry: Array in RideGenerator.prefix_closure_margins(planning, terrain, fine):
+		var margin := float(entry[1])
 		var band: Vector2 = entry[2]
-		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
 		_t.expect(is_finite(margin) and margin >= float(entry[3]),
 			"%s %s sits %.4f inside %s; the fleet requires %.4f"
 			% [context, entry[0], margin, str(band), float(entry[3])])

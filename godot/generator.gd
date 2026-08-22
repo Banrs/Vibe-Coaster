@@ -701,6 +701,28 @@ static func _dive_placement_observation(
 	}
 
 
+## The prefix closure's four measured margins against the design's aim bands: dive-entry edge,
+## dive-exit apron fraction, summit track AGL, and the fine solve's record exit speed. `fine` is
+## `closure.fine_observation`; callers own the residual-count check before calling this. Returns
+## `[label, margin, band, required]` rows in this fixed order.
+static func prefix_closure_margins(planning: Dictionary, terrain: Dictionary, fine: Array) -> Array:
+	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
+	var rows := []
+	for entry: Array in [
+			["dive-entry edge", float(planning.get("dive_entry_edge_m", NAN)) - shelf_m,
+				DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, DIVE_ENTRY_EDGE_MARGIN_M],
+			["dive-exit apron fraction", float(planning.get("dive_exit_apron_fraction", NAN)),
+				DIVE_EXIT_APRON_BAND, DIVE_EXIT_APRON_MARGIN],
+			["summit track AGL", float(planning.get("summit_track_agl_m", NAN)),
+				SUMMIT_TRACK_AGL_BAND_M, PREFIX_MARGIN_SUMMIT_M],
+			["record exit speed", float(fine[3]), RECORD_EXIT_SPEED_BAND_MPS,
+				PREFIX_MARGIN_RECORD_MPS]]:
+		var band: Vector2 = entry[2]
+		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
+		rows.append([entry[0], margin, band, entry[3]])
+	return rows
+
+
 ## The declared roles of one plan, in the planner's drawn order. Role identity, length band and
 ## terrain intents come from the one table below; the per-seed resolved targets stay in
 ## `plan.decisions.targets` with their draw provenance, so the declared role bands remain a

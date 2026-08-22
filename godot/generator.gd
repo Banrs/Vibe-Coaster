@@ -28,6 +28,21 @@ const RECORD_EXIT_SPEED_BAND_MPS := Vector2(93.9, 95.6)
 ## The margins the fifteen-seed fleet gate certifies. Placement builds its aim bands from these,
 ## so an accepted plan carries the margin by construction rather than hoping for it; `smoke.gd`
 ## measures what each seed actually achieved and fails on a miss.
+## The prefix-closure margins the whole fleet must carry, and the fraction of the closure's own
+## derived cap it must converge inside — all four margins and the allowance are `generator.gd`'s
+## constants, read here rather than copied, since the closure aims at the same numbers. This is the
+## fifteen-seed half of the prefix convergence claim `ride_program_tests.gd` makes on the canonical
+## and seed-42 stories. The closure aims inside every margin and the closed-form placement lands
+## inside them by construction; measuring them on all fifteen seeds is what turns the aim into a
+## gate. Measured on the grid-search placement this replaced: four seeds missed the dive-entry
+## margin, nine the apron margin, and seven sat exactly on the summit band's floor. Read the summit
+## margin as one-sided: `generator.gd` floors the station at the inner band's 17.99 m (the 40%
+## interior of the 15.01-24.95 band) and every other clearance term can only raise it, so the low
+## side carries 2.98 m by construction and only the high side can ever approach this gate. The
+## fleet's tightest summit margin (+2.96 m, seed 77777) is therefore high-side evidence alone, not
+## a two-sided measurement of the 1.5 m floor. The dive-entry margin reads the other way round
+## since the rim aim landed: it is the *low* side that binds now (+4.30 m worst, seed 1234), which
+## is the measurement of issue 22 — the dive starts at the rim end of its band on every seed.
 const DIVE_ENTRY_EDGE_MARGIN_M := 3.0
 const DIVE_EXIT_APRON_MARGIN := 0.05
 ## The other two fleet margins and the closure's evaluation allowance. Unlike the two above,
@@ -728,9 +743,9 @@ static func prefix_closure_margins(planning: Dictionary, terrain: Dictionary, fi
 ## terrain intents come from the one table below; the per-seed resolved targets stay in
 ## `plan.decisions.targets` with their draw provenance, so the declared role bands remain a
 ## claim about the built ride rather than a mixture of bands and drawn scalars.
-static func _material_roles(sequence: Array = []) -> Array:
+static func _material_roles(sequence: Array) -> Array:
 	var roles: Array = []
-	for role_id in (sequence if not sequence.is_empty() else RidePlanner.canonical_role_ids()):
+	for role_id in sequence:
 		roles.append(_material_role(str(role_id)))
 	return roles
 

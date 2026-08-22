@@ -533,10 +533,9 @@ static func _add_opener(
 ## and leaves at level 1.0 g so the order itself never breaks a control seam.
 static func _add_story_act_one(
 	spans: Array, metadata: Array, propulsion: PackedInt32Array, hand: float,
-	targets: Dictionary = {}, order: Array = []
+	targets: Dictionary, order: Array
 ) -> void:
-	var authored: Array = order if not order.is_empty() \
-		else RidePlanner.act_one_order(RidePlanner.canonical_role_ids())
+	var authored: Array = order
 	for role_id in authored:
 		match str(role_id):
 			"act-one-immelmann":
@@ -976,7 +975,7 @@ static func _add_record(
 ## `ElementContract` intent. The current slice adopts none; the camelback is the first planned
 ## promotion after its geometry is rewritten.
 static func material_element_intents(sequence: Array = MATERIAL_ROLE_IDS) -> Dictionary:
-	var role_ids: Array = sequence if not sequence.is_empty() else MATERIAL_ROLE_IDS
+	var role_ids: Array = sequence
 	var records := {}
 	for role_value in role_ids:
 		var role_id := str(role_value)
@@ -992,7 +991,7 @@ static func material_element_intents(sequence: Array = MATERIAL_ROLE_IDS) -> Dic
 ## and contiguous: an unowned span, a split role or an unauthored role is a hard failure, never
 ## a silent Vector2i(-1, -1).
 static func material_role_spans(spans: Array, sequence: Array = MATERIAL_ROLE_IDS) -> Dictionary:
-	var role_ids: Array = sequence if not sequence.is_empty() else MATERIAL_ROLE_IDS
+	var role_ids: Array = sequence
 	var prefixes := {
 		"station-launch": ["launch/"],
 		"opener-twisted-drop": ["drop/"],
@@ -1140,10 +1139,7 @@ static func _add(
 	var lateral_profile: Dictionary = lateral if lateral is Dictionary else Motion.constant(float(lateral))
 	var drive_profile: Dictionary = drive if drive is Dictionary else Motion.constant(float(drive))
 	var roll_profile: Dictionary = roll if roll is Dictionary else Motion.constant(float(roll))
-	spans.append(Motion.span(span_id, duration_s, mode, normal_profile, lateral_profile,
-		drive_profile, roll_profile))
-	metadata.append({"span_id": span_id, "role_id": role,
-		"propulsion_id": propulsion_id,
-		"minimum_speed_mps": minimum_speed_mps,
-		"diagnostic_kind": diagnostic_kind})
-	propulsion.append(propulsion_id)
+	var motion_span := Motion.span(span_id, duration_s, mode, normal_profile, lateral_profile,
+		drive_profile, roll_profile)
+	_add_record(spans, metadata, propulsion, motion_span, role, propulsion_id,
+		minimum_speed_mps, diagnostic_kind)

@@ -23,21 +23,6 @@ const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## `ride_program_tests.gd` gates five seeds fast; every seed of the fifteen must stay inside
 ## this fraction of it, measured here because the compile is already paid.
 const RETURN_EVALUATION_ALLOWANCE := 0.6
-## The prefix-closure margins the whole fleet must carry, and the fraction of the closure's own
-## derived cap it must converge inside — all four margins and the allowance are `generator.gd`'s
-## constants, read here rather than copied, since the closure aims at the same numbers. This is the
-## fifteen-seed half of the prefix convergence claim `ride_program_tests.gd` makes on the canonical
-## and seed-42 stories. The closure aims inside every margin and the closed-form placement lands
-## inside them by construction; measuring them on all fifteen seeds is what turns the aim into a
-## gate. Measured on the grid-search placement this replaced: four seeds missed the dive-entry
-## margin, nine the apron margin, and seven sat exactly on the summit band's floor. Read the summit
-## margin as one-sided: `generator.gd` floors the station at the inner band's 17.99 m (the 40%
-## interior of the 15.01-24.95 band) and every other clearance term can only raise it, so the low
-## side carries 2.98 m by construction and only the high side can ever approach this gate. The
-## fleet's tightest summit margin (+2.96 m, seed 77777) is therefore high-side evidence alone, not
-## a two-sided measurement of the 1.5 m floor. The dive-entry margin reads the other way round
-## since the rim aim landed: it is the *low* side that binds now (+4.30 m worst, seed 1234), which
-## is the measurement of issue 22 — the dive starts at the rim end of its band on every seed.
 ## The viewer's POV camera bounds. Measured on seed 42 (2026-08-15): the camera stays within
 ## 6.3° of the tangent, the look direction stays 84.5° clear of the pose up axis, and the rumble
 ## moves the eye 4.41 mm between 60 fps frames at top speed. The cone and clearance are the

@@ -874,7 +874,7 @@ func _plan(layout: Dictionary) -> Dictionary:
 			"half_height_m": float(layout.get("capture_half_height_m", CAPTURE_HALF_HEIGHT_M)),
 			"entry_speed_mps": Vector2(70.0, 80.0)},
 		"route_length_m": Vector2(7800.0, 8200.0),
-		"roles": RideGenerator._material_roles()}
+		"roles": RideGenerator._material_roles(RidePlanner.canonical_role_ids())}
 
 
 func _layout() -> Dictionary:

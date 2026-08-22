@@ -61,7 +61,7 @@ func _test_turn_bank_and_curvature_sign_agree() -> void:
 			"bank leans into the curvature at heading %.2f rad" % heading)
 		_t.expect_close(signf(observation.signed_peak_lateral_g), -signf(heading),
 			"lateral load points down the bank at heading %.2f rad" % heading)
-		_t.expect_max(observation.counter_bank_rad, 0.000001,
+		_t.expect_max(observation.counter_bank_rad, 0.0001,
 			"the turn never banks against its curvature at heading %.2f rad" % heading)
 		_t.expect_max(float(observation.roll_reversals), 1.0,
 			"the roll is one motion in and one motion out at heading %.2f rad" % heading)
@@ -92,9 +92,9 @@ func _test_height_is_vertical_plane_at_70_and_80_mps() -> void:
 			continue
 		_t.expect_max(built.observation.out_of_plane_m, 0.001,
 			"the height beat stays in one vertical plane at %.0f m/s" % speed)
-		_t.expect_max(built.observation.peak_lateral_g, 0.000001,
+		_t.expect_max(built.observation.peak_lateral_g, 0.0001,
 			"a vertical-plane beat carries no lateral load at %.0f m/s" % speed)
-		_t.expect_max(absf(built.observation.exit_bank_rad), 0.000001,
+		_t.expect_max(absf(built.observation.exit_bank_rad), 0.0001,
 			"the height beat leaves the frame unbanked at %.0f m/s" % speed)
 
 

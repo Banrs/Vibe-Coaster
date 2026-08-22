@@ -16,3 +16,4 @@ res://dense_output_tests.gd
 res://element_contract_tests.gd
 res://element_contract_integration_tests.gd
 res://geometry_audit_tests.gd
+res://ride_terminal_tests.gd

@@ -399,13 +399,13 @@ func _test_spatial_straight_ends_at_exact_length() -> void:
 		Motion.constant(0.0))
 	var route := Motion.integrate(state, [span], {"step_s": 0.01,
 		"gravity_mps2": Vector3.ZERO, "rolling_mps2": 0.0, "aero_per_m": 0.0})
-	_expect(route.get("ok", false), "spatial straight integrates")
-	_expect_close(route.distance_m[-1], 100.0, "spatial span ends at its exact length", 0.000001)
+	_t.expect(route.get("ok", false), "spatial straight integrates")
+	_t.expect_close(route.distance_m[-1], 100.0, "spatial span ends at its exact length", 0.000001)
 	# Positions are published as Float32, so 250 accumulated steps out to 100 m carry about
 	# 2.4e-4 m of representation error. The equivalent 2.5 s time span lands on the same value.
-	_expect(route.position_m[-1].distance_to(Vector3(100.0, 0.0, 0.0)) <= 0.0005,
+	_t.expect(route.position_m[-1].distance_to(Vector3(100.0, 0.0, 0.0)) <= 0.0005,
 		"spatial straight endpoint follows its tangent")
-	_expect_close(route.time_s[-1], 2.5, "spatial elapsed time is an integration result", 0.000001)
+	_t.expect_close(route.time_s[-1], 2.5, "spatial elapsed time is an integration result", 0.000001)
 
 
 func _test_spatial_quarter_circle_matches_curvature() -> void:
@@ -419,11 +419,11 @@ func _test_spatial_quarter_circle_matches_curvature() -> void:
 			"rolling_mps2": 0.0, "aero_per_m": 0.0})
 	if not _expect_route(route, "spatial quarter circle integrates"):
 		return
-	_expect(route.position_m[-1].distance_to(Vector3(radius, 0.0, radius)) <= 0.02,
+	_t.expect(route.position_m[-1].distance_to(Vector3(radius, 0.0, radius)) <= 0.02,
 		"constant spatial curvature makes a quarter circle")
-	_expect(route.tangent[-1].distance_to(Vector3.BACK) <= 0.0002,
+	_t.expect(route.tangent[-1].distance_to(Vector3.BACK) <= 0.0002,
 		"quarter circle turns its tangent by ninety degrees")
-	_expect_close(route.curvature_m_inv[-1], 1.0 / radius,
+	_t.expect_close(route.curvature_m_inv[-1], 1.0 / radius,
 		"published curvature is the authored spatial curvature", 0.000001)
 
 
@@ -437,15 +437,15 @@ func _test_spatial_twist_uses_actual_distance() -> void:
 	if not _expect_route(slow, "slow spatial twist integrates") \
 			or not _expect_route(fast, "fast spatial twist integrates"):
 		return
-	_expect_vector(slow.rider_up[-1], Vector3.BACK,
+	_t.expect_vector(slow.rider_up[-1], Vector3.BACK,
 		"a quarter twist over arc length rolls rider-up onto the right axis", 0.0001)
-	_expect_vector(fast.rider_up[-1], Vector3.BACK,
+	_t.expect_vector(fast.rider_up[-1], Vector3.BACK,
 		"tripling speed does not change the twist angle", 0.0001)
-	_expect_close(fast.time_s[-1], slow.time_s[-1] / 3.0,
+	_t.expect_close(fast.time_s[-1], slow.time_s[-1] / 3.0,
 		"the same span at triple speed takes a third of the time", 0.000001)
-	_expect_close(_peak_abs(slow.roll_rate_rad_s), 20.0 * 1.875 * PI * 0.5 / length_m,
+	_t.expect_close(_peak_abs(slow.roll_rate_rad_s), 20.0 * 1.875 * PI * 0.5 / length_m,
 		"roll rate is speed times the analytic quintic twist slope", 0.0005)
-	_expect_close(_peak_abs(fast.roll_rate_rad_s), 3.0 * _peak_abs(slow.roll_rate_rad_s),
+	_t.expect_close(_peak_abs(fast.roll_rate_rad_s), 3.0 * _peak_abs(slow.roll_rate_rad_s),
 		"roll rate scales with speed at the same spatial twist slope", 0.0005)
 
 
@@ -483,15 +483,15 @@ func _test_spatial_force_projection_matches_curvature() -> void:
 			- (squared * curvature.dot(stage_right) - perpendicular.dot(stage_right)) / Motion.G0))
 		worst_curvature = maxf(worst_curvature,
 			route.curvature_vector_m_inv[index].distance_to(curvature))
-	_expect(worst_normal <= 0.0005,
+	_t.expect(worst_normal <= 0.0005,
 		"published normal g is the rider-up projection of the spatial curvature: %.9f"
 			% worst_normal)
-	_expect(worst_lateral <= 0.0005,
+	_t.expect(worst_lateral <= 0.0005,
 		"published lateral g is the rider-right projection of the spatial curvature: %.9f"
 			% worst_lateral)
-	_expect(worst_curvature <= 0.000001,
+	_t.expect(worst_curvature <= 0.000001,
 		"published curvature is the authored world pitch/yaw vector: %.9f" % worst_curvature)
-	_expect(route.tangent[-1].y < tangent.y,
+	_t.expect(route.tangent[-1].y < tangent.y,
 		"negative pitch curvature pitches the tangent downward")
 
 
@@ -511,11 +511,11 @@ func _test_spatial_step_halving_converges() -> void:
 		return
 	var coarse_error: float = coarse.tangent[-1].distance_to(exact)
 	var fine_error: float = fine.tangent[-1].distance_to(exact)
-	_expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
+	_t.expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
 		"spatial step halving demonstrates fourth-order convergence: %.9f then %.9f"
 			% [coarse_error, fine_error])
-	_expect(fine_error <= 0.0001, "fine spatial result has bounded absolute error")
-	_expect_close(coarse.distance_m[-1], theta * radius,
+	_t.expect(fine_error <= 0.0001, "fine spatial result has bounded absolute error")
+	_t.expect_close(coarse.distance_m[-1], theta * radius,
 		"a coarse spatial span still ends at its exact length", 0.000001)
 	_expect_unit_frame(fine.tangent[-1], fine.rider_up[-1],
 		"projected spatial RK4 leaves a unit orthogonal frame")

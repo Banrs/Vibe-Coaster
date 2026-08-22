@@ -10,6 +10,14 @@ const Elements := preload("res://ride_return_elements.gd")
 const RETURN_ROLE_IDS := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
 const ASSIGNMENT_KEYS := ["role_id", "family", "entry_frame", "exit_frame", "target_length_m",
 	"corridor", "terrain_intent", "curvature_sign", "heading_change_rad", "elevation_change_m"]
+## A height beat also carries the crest it is authored to hold, because that value is a per-seed
+## draw and it is what its family's elevation window is a function of. A turn has no crest, so it
+## publishes no such key.
+const HEIGHT_ASSIGNMENT_KEYS := ["role_id", "family", "entry_frame", "exit_frame",
+	"target_length_m", "corridor", "terrain_intent", "curvature_sign", "heading_change_rad",
+	"elevation_change_m", "unload_g"]
+## The shallow end of the planner's own unload draw: -0.45 g scaled by 0.95.
+const DRAWN_UNLOAD_G := -0.4275
 const FRAME_KEYS := ["position_m", "tangent", "rider_up"]
 const CORRIDOR_KEYS := ["centerline_m", "length_band_m"]
 const NOMINALS := [480.0, 420.0, 500.0, 520.0]
@@ -55,6 +63,7 @@ func _initialize() -> void:
 	_test_the_heading_box_is_built_at_the_handover_pitch()
 	_test_every_accepted_assignment_builds()
 	_test_every_accepted_layout_builds_across_the_start_sweep()
+	_test_the_elevation_box_is_built_at_the_drawn_unload()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -160,7 +169,8 @@ func _test_all_return_orders_close_synthetic_frames() -> void:
 			total += float(assignment.target_length_m)
 			_expect(assignment.is_read_only(),
 				"the accepted assignment is immutable: %s" % label)
-			_expect(assignment.keys() == ASSIGNMENT_KEYS,
+			_expect(assignment.keys() == (ASSIGNMENT_KEYS
+				if str(assignment.family) == "return_turn" else HEIGHT_ASSIGNMENT_KEYS),
 				"the assignment publishes exactly the declared keys: %s" % label)
 			_expect(assignment.role_id == order[index],
 				"assignments keep the planner order: %s" % label)
@@ -379,6 +389,44 @@ func _test_every_accepted_assignment_builds() -> void:
 					% [assignment.role_id, label, str(built.errors)]):
 				break
 			state = built.end_state
+
+
+## The crest a height beat holds is a per-seed draw, so the window its family publishes is a
+## function of that draw and the box this stage bounds the elevation control by has to be that
+## window. Over the planner's own 0.95-1.05 range the window moves by up to 7.9 m at the longest
+## declared arc - larger than the 5 m vertical residual scale the macro chain converges at - so a
+## stage that bounded the control at one crest and handed the element another would assign
+## elevations the family refuses, with no retry behind it.
+func _test_the_elevation_box_is_built_at_the_drawn_unload() -> void:
+	var plan := _plan()
+	for role: Dictionary in plan.roles:
+		if str(role.recipe_id) == "return_height":
+			role["unload_g"] = DRAWN_UNLOAD_G
+	var start := _seed_start(plan, RETURN_ROLE_IDS)
+	var context: Dictionary = Layout._context(start, plan, RETURN_ROLE_IDS)
+	if not _expect(context.ok, "the drawn plan lays out a context: %s" % str(context.errors)):
+		return
+	var speed := float(context.speed_ceiling_mps)
+	var drawn := Elements.elevation_bound_m(BANDS[1].x, speed, 0.0, DRAWN_UNLOAD_G)
+	var default_window := Elements.elevation_bound_m(BANDS[1].x, speed, 0.0)
+	_expect(absf(drawn.y - default_window.y) > 0.1 or absf(drawn.x - default_window.x) > 0.1,
+		"the draw moves the window the box is cut from")
+	_expect(absf(float(context.lower[1]) - drawn.x) <= 0.000001
+		and absf(float(context.upper[1]) - drawn.y) <= 0.000001,
+		"the height box is the window the drawn crest publishes")
+	var result := Layout.build(start, plan, RETURN_ROLE_IDS)
+	if not _expect(result.ok, "the drawn plan lays out: %s" % str(result.errors)):
+		return
+	var state := start
+	for assignment: Dictionary in result.assignments:
+		if str(assignment.family) == "return_height":
+			_expect(absf(float(assignment.unload_g) - DRAWN_UNLOAD_G) <= 0.000001,
+				"the assignment carries the crest its box was cut at: %s" % assignment.role_id)
+		var built := Elements.build(state, assignment, _settings())
+		if not _expect(built.ok, "the drawn assignment builds: %s %s"
+				% [assignment.role_id, str(built.errors)]):
+			break
+		state = built.end_state
 
 
 ## The same contract across the start frames the prefix can hand over, because an accepted layout

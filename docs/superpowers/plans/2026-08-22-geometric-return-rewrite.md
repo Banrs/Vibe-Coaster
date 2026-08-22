@@ -953,7 +953,10 @@ Commit accepted corrections, push, and require a fresh complete CI run.
 - Modify: `godot/fidelity_artifact_tests.gd`
 - Modify: `godot/fidelity_artifacts.gd`
 - Modify: `docs/ISSUES.md`
-- Modify: `CLAUDE.md`
+- Modify: `CLAUDE.md` — including its focused-suite count and enumeration, which still say sixteen
+  while the manifest has grown by `ride_return_layout_tests.gd`, `geometry_audit_tests.gd`,
+  `ride_terminal_tests.gd`, and (Task 6) `camelback_geometry_tests.gd`. The count is only correct
+  once every task has landed, so it is a cutover-time edit, not a per-task one.
 - Modify: `README.md` only if its solver description is stale.
 
 **Interfaces:**

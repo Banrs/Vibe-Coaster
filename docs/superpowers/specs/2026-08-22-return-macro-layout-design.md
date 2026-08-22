@@ -315,11 +315,11 @@ bisected inside the existing `[0, 3.6] g` bound, and it needs two things stated:
 - **Evaluation cap 32.** The one-dimensional bracket must be allowed to converge on the widened
   70–80 m/s entry band without a retry path; 32 unique evaluations is the cap.
 - **`F(peak)` is defined on integration failure.** Above the bracket's operating point the train
-  stops before the span ends and the integration terminates early — at 3.6 g it stops in about 90 m
-  of the 147 m moving span. That is not an error case to abort on: the residual is then the
-  **stopping shortfall**, returned as a positive value (metres of span left unused, or the
-  equivalent signed speed deficit), so the function stays monotone and the bracket stays valid
-  across the whole `[0, 3.6]` range.
+  stops before the span ends and the integration terminates early — at 3.6 g it stops in 77.7 m
+  (70 m/s entry) to 98.4 m (80 m/s entry) of the 131.2938 m moving span. That is not an error case
+  to abort on: the residual is then the **stopping shortfall**, returned as a negative value
+  (metres achieved less metres declared), which is the sign that keeps the function monotone
+  decreasing through its root and the bracket valid across the whole `[0, 3.6]` range.
 
 The operating point is well inside the bound. The reserved 150 m brake length carries the station
 creep, and the reused `_coast_distance(2.0, 1.0)` measures that creep at 18.7062 m, so the moving

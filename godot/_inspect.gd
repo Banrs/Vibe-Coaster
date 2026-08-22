@@ -29,10 +29,8 @@ const References := preload("res://fidelity_references.gd")
 const RouteContract := preload("res://route_contract.gd")
 const Verify := preload("res://verify.gd")
 
-const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
-const DEEP_REVIEW_SEEDS := [11, 42, 20260809]
-## The pinned pre-foundation legacy commit this baseline measures (plan Task 1, Step 0).
-const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
+const AUDIT_SEEDS := Fidelity.CANONICAL_FLEET
+const DEEP_REVIEW_SEEDS := Fidelity.DEEP_SEEDS
 const OVERLAY_MANIFEST_PATH := "res://../docs/evidence/fidelity/rfdb-local-overlay-manifest.json"
 ## Optional local photographic reference for element geometry (issue 24). The media itself is
 ## personal-use, gitignored and acquired outside the engine by tools/fetch-reference-media.sh;
@@ -77,7 +75,7 @@ func _audit() -> int:
 		for error in overlays.get("errors", ["overlay manifest is invalid"]):
 			_operational.append(str(error))
 		return _fail()
-	var report := _artifact_report(audit, References.CATALOG, LEGACY_BASE_COMMIT, overlays)
+	var report := _artifact_report(audit, References.CATALOG, Fidelity.LEGACY_BASE_COMMIT, overlays)
 	if report.get("schema_version") != "ride-fidelity-audit@1":
 		for error in report.get("errors", ["artifact_report: the audit report was not built"]):
 			_operational.append(str(error))

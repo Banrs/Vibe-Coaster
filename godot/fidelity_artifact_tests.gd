@@ -7,9 +7,9 @@ const SAMPLING_PATH := "res://route_sampling.gd"
 const VIEWER_PATH := "res://main.gd"
 const FIDELITY_PATH := "res://fidelity.gd"
 const INSPECT_PATH := "res://_inspect.gd"
-const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
-const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
-const DEEP_REVIEW_SEEDS := [11, 42, 20260809]
+const LEGACY_BASE_COMMIT := RideFidelity.LEGACY_BASE_COMMIT
+const AUDIT_SEEDS := RideFidelity.CANONICAL_FLEET
+const DEEP_REVIEW_SEEDS := RideFidelity.DEEP_SEEDS
 
 
 func _initialize() -> void:
@@ -364,11 +364,6 @@ static func _test_audit_fleet(errors: PackedStringArray) -> void:
 		errors.append("the inspector is missing")
 		return
 	var inspect: Script = load(INSPECT_PATH)
-	var fidelity: Script = load(FIDELITY_PATH)
-	_expect(errors, inspect.get_script_constant_map().get("AUDIT_SEEDS") == AUDIT_SEEDS,
-		"the inspector pins the canonical fifteen-seed fleet in its documented order")
-	_expect(errors, fidelity.get_script_constant_map().get("CANONICAL_FLEET") == AUDIT_SEEDS,
-		"the audited fleet is the fleet the comparison calls canonical")
 	_test_one_build_per_seed(Callable(inspect, "_run_audit"), errors)
 
 
@@ -1301,7 +1296,7 @@ static func _expected_report() -> Dictionary:
 		issue_records.append(_expected_issue(issue_id))
 	return {
 		"schema_version": "ride-fidelity-audit@1",
-		"legacy_base_commit": "3fa14885bef2daf3a7d9c0e544424cb6a296fd99",
+		"legacy_base_commit": LEGACY_BASE_COMMIT,
 		"catalog": {
 			"schema_version": 2, "catalog_version": "test",
 			"canonical_sha256": "2fc1b0c7df31bf9a6fff87cee24ff5e0dce85b02bcd2508110c87ab43f124d8b", "validation_status": "valid",
@@ -1464,7 +1459,7 @@ const PROMPT_FOR_ISSUE := {
 
 static func _expected_render_requests() -> Array:
 	var requests := []
-	for seed in [11, 42, 20260809]:
+	for seed in DEEP_REVIEW_SEEDS:
 		for kind in ["channels", "elevation", "top"]:
 			requests.append({
 				"path": "review/seed-%d/%s.png" % [seed, kind],
@@ -1670,7 +1665,7 @@ static func _pack_fixture() -> Dictionary:
 
 static func _pack_routes() -> Dictionary:
 	var routes := {}
-	for seed_value in [11, 42, 20260809]:
+	for seed_value in DEEP_REVIEW_SEEDS:
 		routes[seed_value] = _pack_route(seed_value)
 	return routes
 

@@ -31,10 +31,7 @@ const MATERIAL_ROLE_IDS := [
 	"return-turn-b", "return-height-b", "terminal-capture-brakes",
 ]
 
-const PRESET_SEEDS := [
-	11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456,
-	20250101,
-]
+const PRESET_SEEDS := RideFidelity.CANONICAL_FLEET
 
 ## The stage-4 refusal seeds: the three deep seeds smoke gates on loads, plus 4096, one of the two
 ## seeds whose canonical closure spends the most evaluations (6 of 31). Fixed, never sampled.

@@ -20,13 +20,15 @@ const HEIGHT_ENTRY_PITCH_DEG := [-10.0, -6.0, 0.0, 20.0]
 const HEIGHT_REFUSED_PITCH_DEG := [-35.0, -20.0]
 const TURN_LENGTH_BAND_EDGES_M := [420.0, 620.0, 430.0, 570.0]
 const HEIGHT_LENGTH_M := 380.0
-## The declared return height band edges, at both ends of the entry-speed band and at every
-## handover the family accepts, climbing included. The macro stage builds its elevation box at the
-## shortest allocable arc and at the fastest role entry, so those are the corners the contract has
-## to hold at.
+## The declared return height band edges - 290-480 m for the first beat and 450-590 m for the
+## second - at both ends of the entry-speed band and at every handover the family accepts,
+## climbing included. The macro stage builds its elevation box at the shortest allocable arc and
+## at the fastest role entry, but water-filling can hand a role any length inside its band, so the
+## whole span of both bands is a corner the contract has to hold at.
 const ELEVATION_PROBES := [[290.0, 80.0, 0.0], [290.0, 70.0, 0.0], [450.0, 80.0, 0.0],
 	[450.0, 70.0, 0.0], [290.0, 80.0, -6.0], [450.0, 70.0, -10.0], [290.0, 70.0, 20.0],
-	[380.0, 80.0, 20.0], [450.0, 70.0, 20.0]]
+	[380.0, 80.0, 20.0], [450.0, 70.0, 20.0], [590.0, 70.0, -6.0], [590.0, 75.0, -6.0],
+	[590.0, 80.0, 0.0]]
 ## What the macro chain and the build may differ by. Both trace the same profiles; what is left is
 ## the chain's 24-interval Simpson quadrature against the integrator's own pitch tracking, and the
 ## sum is three orders inside the 5 m residual scale the macro stage converges its chain at.
@@ -377,11 +379,11 @@ func _test_the_elevation_window_is_what_the_family_crests_through() -> void:
 		var label := "%.0f m at %.0f m/s from %.0f deg" % [length, speed, pitch_deg]
 		if not _t.expect(window.x < window.y, "the family publishes a window for %s" % label):
 			continue
-		# The window edges are where a margin is exactly zero, and two independent numerical
-		# readings of the same physics do not agree on a zero-margin point: the bound's analytic
-		# profile and the production integration were measured 7e-4 g of normal load and 1.3e-2 m
-		# of prominence apart there. The buildable claim is therefore made just inside them.
-		for fraction: float in [0.02, 0.5, 0.98]:
+		# The edges themselves, not a point just inside them: `BOUND_AGREEMENT_M` exists so that a
+		# macro control sitting exactly on its bound still builds, and there is no retry behind a
+		# bound. A claim made only near an edge would leave the edge itself untested, which is
+		# precisely the region the macro stage clamps its controls into.
+		for fraction: float in [0.0, 0.5, 1.0]:
 			var start := _state(speed, pitch_deg)
 			var elevation := lerpf(window.x, window.y, fraction)
 			var assignment := _height_assignment_of(start, length, elevation)
@@ -414,7 +416,7 @@ func _test_the_elevation_window_follows_the_drawn_unload() -> void:
 	_t.expect(absf(window.x - default_window.x) > 0.1
 		or absf(window.y - default_window.y) > 0.1,
 		"the drawn unload moves the window the macro stage reads")
-	for fraction: float in [0.02, 0.5, 0.98]:
+	for fraction: float in [0.0, 0.5, 1.0]:
 		var start := _state(75.0)
 		var elevation := lerpf(window.x, window.y, fraction)
 		var assignment := _height_assignment_of(start, HEIGHT_LENGTH_M, elevation)

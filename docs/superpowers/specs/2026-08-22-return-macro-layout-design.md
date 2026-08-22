@@ -321,11 +321,17 @@ bisected inside the existing `[0, 3.6] g` bound, and it needs two things stated:
   equivalent signed speed deficit), so the function stays monotone and the bracket stays valid
   across the whole `[0, 3.6]` range.
 
-The operating point is well inside the bound: closing 80 m/s over the 147 m moving span needs a mean
-of 2.19 g, and the shouldered profile peaks at roughly 2.0–2.6 g across the entry band against the
-3.6 g bound. That is deliberately above real magnetic practice — measured eddy-current brake runs sit
-at 1.0–1.5 g — because this is a **held friction/hydraulic deceleration profile**, whose retardation
-does not decay with speed the way an eddy-current brake's does. The profile is honest about what it
+The operating point is well inside the bound. The reserved 150 m brake length carries the station
+creep, and the reused `_coast_distance(2.0, 1.0)` measures that creep at 18.7062 m, so the moving
+span is 131.2938 m: closing 80 m/s over it needs a mean of 2.485 g, and the built shouldered profile
+peaks at a measured 2.18 g (70 m/s entry) to 2.85 g (80 m/s entry) across the entry band — 0.75 g
+inside the 3.6 g bound, and milder than the 0.6-second time-shouldered profile it replaces. The 20 m
+engage shoulder is what keeps that honest: a quintic rise to 2.85 g over 20 m at 80 m/s is ~21 g/s
+of onset against the envelope's 25 g/s, so `BRAKE_SHOULDER_LENGTH_M` must not be shortened without
+re-measuring onset. Those peaks sit deliberately above real magnetic practice — measured
+eddy-current brake runs sit at 1.0–1.5 g — because this is a **held friction/hydraulic
+deceleration profile**, whose retardation does not decay with speed the way an eddy-current
+brake's does. The profile is honest about what it
 models; it is not an eddy-current brake wearing a larger number.
 
 ### `RouteContract`

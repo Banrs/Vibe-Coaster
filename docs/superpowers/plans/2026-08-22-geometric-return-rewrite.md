@@ -499,6 +499,30 @@ Require a written PASS/FAIL on: exactly five bounded controls (four role control
 
 ### Task 4: Local Spatial Return Elements
 
+> **Status — measured once the two local families were building.**
+>
+> **The height family's handover band is a story-generality cost, and Task 7 must not discover it
+> at the cutover.** The family publishes an empty elevation window for any handover steeper than
+> about −12° to −15°: measured empty at −15° for 290 m and 380 m at both ends of the entry-speed
+> band and for 480 m at 80 m/s, and empty everywhere at −35°. The refusal is physical for the
+> authored shape rather than a scan artifact — the pull-up stage spends 0.2 of the arc ramping from
+> zero curvature under the 4 g knot ceiling, so the beat cannot bring its apex back above the frame
+> it was handed, and `y_apex − max(y_entry, y_exit)` goes negative. On the layout suite's own
+> fixture that costs order generality directly: from the camelback's own −33.6° handover **1 of 24**
+> role orders lays out (12 refused `elevation_bound`, 7 `macro_solve_unconverged`, 4
+> `heading_request`), from −20° **12 of 24**, and from −6° all **24 of 24**. Task 2's order-generic
+> grammar and `docs/ISSUES.md` issue 24 both depend on that band. Note also that the four-stage arc
+> split `[0.2, 0.3, 0.3, 0.2]` is an authored choice, not a physical constant — spec §8 names
+> crest-unload length as a legitimate local unknown a height beat may vary, and this implementation
+> does not vary it — so part of the refused band is shape rather than physics.
+>
+> **Correction to commit `08b0b49`'s message.** It quoted an earlier review's 112–117% / 23–32%
+> figures rather than the measurement. Measured: at a −33.6° handover the level heading bound
+> over-admits by 128.1% at 420 m / 70 m/s, 134.4% at 430 m / 70 m/s, 9.0% at 420 m / 80 m/s and
+> 20.3% at 430 m / 80 m/s; at −20° / 80 m/s it *under*-admits, by 19.1% at 420 m and 13.4% at
+> 430 m. The dependence is not one-signed, which is exactly why the control box is built at the
+> handover pitch rather than at the level bound.
+
 **Files:**
 
 - Create: `godot/ride_return_elements_tests.gd`

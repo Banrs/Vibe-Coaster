@@ -77,7 +77,10 @@ const LOADED_ARC_FRACTION := 1.0 - SHOULDER_FRACTION - LEAD_FRACTION
 const QUINTIC_PEAK_SLOPE := 1.875
 ## Arc fractions of the height beat's four curvature stages: pull-up, into the crest, out of the
 ## crest, pullout. Half-arc and whole-arc boundaries both fall on a stage edge, which is what lets
-## the nominal below be a closed-form linear solve instead of another iteration.
+## the nominal below be a closed-form linear solve instead of another iteration. It is an authored
+## split, not a physical constant, and it is what makes the family's handover band as narrow as it
+## is: the design names crest-unload length as a local unknown a height beat may vary, and this
+## implementation does not vary it.
 const HEIGHT_FRACTIONS := [0.2, 0.3, 0.3, 0.2]
 
 ## The Falcon's Flight counterpart the return turn reproduces: 77 deg of bank held at 2.39 g,
@@ -293,6 +296,14 @@ static func build(start: Dictionary, assignment: Dictionary, settings: Dictionar
 ## reaches, not the speed it was handed: a descending role leaves faster than it entered, and its
 ## exit shoulder rolls at that speed. The macro heading bound consumes this same ceiling, so no
 ## layout may assign a heading this family would have to break the roll envelope to deliver.
+##
+## Name the headroom rather than leave it implicit: this is a measured margin, and the short end of
+## the declared turn band sits on it. Built at the published heading bound, 420 m at 70 m/s and
+## level, the peak roll reads 119.81 deg/s against the 120 deg/s limit - 0.19 deg/s of slack, with
+## the measured bank at 1.3401 rad under a 1.3439 rad ceiling. The same corner at 80 m/s reads
+## 119.68 deg/s, 430 m reads 117.20 and 620 m reads 81.32, so only the shortest arcs are close.
+## Any later change to the sampling or the shoulder shape spends that slack first, and there is no
+## retry behind a bound.
 static func max_bank_rad(length_m: float, speed_mps: float) -> float:
 	return minf(TURN_BANK_CEILING_RAD, deg_to_rad(RideVerify.ROLL_RATE_LIMIT)
 		* SHOULDER_FRACTION * length_m / (QUINTIC_PEAK_SLOPE * speed_mps))

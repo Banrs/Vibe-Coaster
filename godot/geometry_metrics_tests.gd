@@ -394,6 +394,7 @@ func _line(count: int) -> PackedVector3Array:
 	return points
 
 
+## Factory for role fixtures; distinct from RouteContract.role (search) — kept local.
 func _role(story: String, role: String, occurrence: int, first: int, last: int) -> Dictionary:
 	return {
 		"story_slot_id": story, "id": role, "occurrence": occurrence,

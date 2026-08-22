@@ -28,12 +28,30 @@ func expect_range(value: float, low: float, high: float, message: String) -> boo
 		"%s: expected within [%.9f, %.9f], got %.9f" % [message, low, high, value])
 
 
+func expect_range_unit(label: String, value: float, minimum: float, maximum: float, unit: String) -> bool:
+	return expect(value >= minimum and value <= maximum,
+		"%s observed %.3f %s; required %.3f..%.3f %s" % [label, value, unit, minimum, maximum, unit])
+
+
+func expect_range_band(label: String, value: float, band: Vector2, unit: String) -> bool:
+	return expect(value >= band.x and value <= band.y,
+		"%s observed %.3f %s; required %.3f..%.3f %s" % [label, value, unit, band.x, band.y, unit])
+
+
 func expect_min(value: float, minimum: float, message: String) -> bool:
 	return expect(value >= minimum, "%s: expected >= %.9f, got %.9f" % [message, minimum, value])
 
 
+func expect_min_unit(label: String, value: float, minimum: float, unit: String) -> bool:
+	return expect(value >= minimum, "%s observed %.3f %s; required >= %.3f %s" % [label, value, unit, minimum, unit])
+
+
 func expect_max(value: float, maximum: float, message: String) -> bool:
 	return expect(value <= maximum, "%s: expected <= %.9f, got %.9f" % [message, maximum, value])
+
+
+func expect_max_unit(label: String, value: float, maximum: float, unit: String) -> bool:
+	return expect(value <= maximum, "%s observed %.3f %s; required <= %.3f %s" % [label, value, unit, maximum, unit])
 
 
 func contains(list: Variant, item: Variant) -> bool:

@@ -208,21 +208,15 @@ func _check_extreme(seed_value: int, key: String, value: float) -> void:
 	var analysis: Dictionary = RideVerify.analyze(route, RouteContract.ROW_OFFSETS)
 	RideVerify.validate_loads(analysis, issues)
 	_t.expect(issues.is_empty(), "%s validates: %s" % [label, str(issues)])
-	_expect_range("%s route length" % label, float(route.length),
+	_t.expect_range_band("%s route length" % label, float(route.length),
 		ROUTE_LENGTH_BAND_M, "m")
-	_expect_range("%s top speed" % label, float(analysis.top_speed),
+	_t.expect_range_band("%s top speed" % label, float(analysis.top_speed),
 		RideGenerator.RECORD_EXIT_SPEED_BAND_MPS, "m/s")
 	var prominence := float(route.terrain_story_plan.terrain_proofs.camelback.prominence_m)
-	_expect_range("%s camelback prominence" % label, prominence,
+	_t.expect_range_band("%s camelback prominence" % label, prominence,
 		CAMEL_PROMINENCE_BAND_M, "m")
 	var stats: Dictionary = route.get("generation_stats", {})
 	_t.expect(int(stats.get("accepted_integrations", -1)) == 1 \
 		and int(stats.get("repair_count", -1)) == 0,
 		"%s integrates once without repair" % label)
-
-
-func _expect_range(label: String, value: float, band: Vector2, unit: String) -> void:
-	_t.expect(value >= band.x and value <= band.y,
-		"%s observed %.3f %s; required %.3f..%.3f %s" % [label, value, unit, band.x, band.y,
-			unit])
 

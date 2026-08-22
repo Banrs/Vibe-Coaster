@@ -165,6 +165,21 @@ static func build(
 	}
 
 
+static func window(route: Dictionary, story_id: String) -> Dictionary:
+	for window in route.get("gesture_windows", []):
+		if window.get("story_slot_id", "") == story_id:
+			return window
+	return {}
+
+
+static func role(route: Dictionary, story_id: String, role_id: String) -> Dictionary:
+	var window_data := window(route, story_id)
+	for role_item in window_data.get("role_windows", []):
+		if role_item.get("id", "") == role_id:
+			return role_item
+	return {}
+
+
 static func _validate(
 	terrain: Dictionary,
 	initial_state: Dictionary,

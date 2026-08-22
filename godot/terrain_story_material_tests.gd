@@ -40,12 +40,12 @@ func _initialize() -> void:
 
 func _check_public_terrain_story(route: Dictionary) -> void:
 	var terrain: Dictionary = route.get("terrain", {})
-	var station := _window(route, "station-launch")
-	var opener := _window(route, "opener")
-	var climb := _window(route, "escarpment-climb")
-	var rim := _role(route, "clifftop-suspense", "outward-rim")
-	var dive := _window(route, "cliff-dive")
-	var tunnel := _window(route, "tunnel-lsm3")
+	var station := RouteContract.window(route, "station-launch")
+	var opener := RouteContract.window(route, "opener")
+	var climb := RouteContract.window(route, "escarpment-climb")
+	var rim := RouteContract.role(route, "clifftop-suspense", "outward-rim")
+	var dive := RouteContract.window(route, "cliff-dive")
+	var tunnel := RouteContract.window(route, "tunnel-lsm3")
 	if terrain.is_empty() or station.is_empty() or opener.is_empty() or climb.is_empty() \
 			or rim.is_empty() or dive.is_empty() or tunnel.is_empty():
 		_t.expect(false, "seed 42 must publish terrain and all terrain-story semantic windows")
@@ -96,7 +96,7 @@ func _check_public_terrain_story(route: Dictionary) -> void:
 	var dive_drop := _window_drop_m(route, dive)
 	_t.expect(dive_drop >= DIVE_DROP_MINIMUM_M and dive_drop <= DIVE_DROP_MAXIMUM_M,
 		"native cliff-dive loss observed %.3f m; required 240..250 m" % dive_drop)
-	var camel := _window(route, "marquee-camelback")
+	var camel := RouteContract.window(route, "marquee-camelback")
 	var camel_prominence := _window_prominence_m(route, camel)
 	_t.expect(camel_prominence >= CAMEL_PROMINENCE_MINIMUM_M \
 			and camel_prominence <= CAMEL_PROMINENCE_MAXIMUM_M,
@@ -327,19 +327,4 @@ func _lower_spine_clearance_m(route: Dictionary, terrain: Dictionary, index: int
 func _lower_spine(route: Dictionary, index: int) -> Vector3:
 	# Main.build_rail_mesh renders the central spine at -1.55 m with 0.24 m tube radius.
 	return route.positions[index] - route.ups[index] * LOWER_SPINE_SURFACE_OFFSET_M
-
-
-func _window(route: Dictionary, story_id: String) -> Dictionary:
-	for window in route.get("gesture_windows", []):
-		if window.get("story_slot_id", "") == story_id:
-			return window
-	return {}
-
-
-func _role(route: Dictionary, story_id: String, role_id: String) -> Dictionary:
-	var window := _window(route, story_id)
-	for role in window.get("role_windows", []):
-		if role.get("id", "") == role_id:
-			return role
-	return {}
 

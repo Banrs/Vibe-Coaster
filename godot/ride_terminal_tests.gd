@@ -4,7 +4,11 @@ extends SceneTree
 ## "Capture and brakes"): capture carries no steering controls, the brake's only solved scalar is
 ## the peak brake g and it always spends its 32-evaluation budget, the moving boundary lands on
 ## 2.0 m/s, the built path never authors positive drive, and the station pose it reaches is inside
-## the millimetre bound its boundary residual implies - it is not exact.
+## a millimetre bound - it is not exact.
+##
+## The boundary and pose bounds below are measured worsts plus headroom, deliberately independent of
+## `Terminal.BRAKE_SPEED_TOLERANCE_MPS`: that constant is the build's own acceptance gate, and if a
+## later change widens it, these assertions must go red rather than relax with it.
 
 const Terminal := preload("res://ride_terminal.gd")
 const RideProgram := preload("res://ride_program.gd")
@@ -12,12 +16,21 @@ const RideProgram := preload("res://ride_program.gd")
 const ENTRY_SPEEDS_MPS := [70.0, 75.0, 80.0]
 const SWEEP_SPEED_COUNT := 61
 const ROTATION_ANGLE_RAD := 0.6435011088 # atan2(3, 4): an arbitrary, non-axis-aligned yaw.
-## Spending the whole evaluation budget is only worth it if the budget buys the best candidate the
-## bracket holds. 79.5 m/s is where that showed: halving reaches 2.84e-7 m/s of boundary residual
-## there on this fixture, where a down-weighted false-position step on the same budget stalled at
-## 1.109e-4 m/s. Pin the reachable value so an interpolated step cannot come back unmeasured.
+## Measured worsts over `SWEEP_SPEED_COUNT` speeds of the 70-80 m/s band at the 0.01 s fixture step:
+## boundary residual 1.026889e-4 m/s and station position error 1.449585 mm, both at 73.6667 m/s.
+## The bounds carry ~1.2x and ~1.1x headroom over those.
+const MEASURED_RESIDUAL_BOUND_MPS := 0.00012
+const MEASURED_POSE_BOUND_M := 0.0016
+## 79.5 m/s is where halving visibly beat the alternative: it reaches 2.873e-7 m/s of boundary
+## residual on this fixture, where a down-weighted false-position step on the same budget stalled at
+## 1.109e-4 m/s. Read the pin for exactly that much and no more - the value itself is a grid-phase
+## artifact of this fixture and this Motion build, not a convergence quality. At 79.5 m/s the
+## achievable residual runs 5.65e-8 / 3.94e-7 / 1.27e-6 / 1.089e-4 m/s at 1e-9 / 3.2e-9 / 1e-8 /
+## 3.2e-8 g below the feasibility root, so any change to Motion's stepping will move it by orders of
+## magnitude. 1e-5 is loose enough to survive that and still an order of magnitude under the
+## interpolated step it refuses.
 const PINNED_SPEED_MPS := 79.5
-const PINNED_RESIDUAL_MPS := 0.000001
+const PINNED_RESIDUAL_MPS := 0.00001
 
 var _t := TestUtil.new()
 
@@ -41,8 +54,8 @@ func _test_terminal_builds_across_entry_band() -> void:
 
 
 ## The boundary claim is a band claim: every entry speed the corridor declares must land on the
-## moving boundary inside the solve tolerance, spend exactly the declared budget, and hand the
-## station a pose inside the bound that boundary residual implies.
+## moving boundary inside the measured bound, spend exactly the declared budget, and hand the
+## station a pose inside the measured pose bound.
 func _test_terminal_holds_its_boundary_across_the_entry_band() -> void:
 	for index in SWEEP_SPEED_COUNT:
 		var speed: float = 70.0 + index * (10.0 / float(SWEEP_SPEED_COUNT - 1))
@@ -51,12 +64,12 @@ func _test_terminal_holds_its_boundary_across_the_entry_band() -> void:
 			continue
 		var report: Dictionary = built.report
 		_t.expect_max(absf(float(report.moving_boundary_speed_mps)
-				- Terminal.MOVING_BOUNDARY_SPEED_MPS), Terminal.BRAKE_SPEED_TOLERANCE_MPS,
+				- Terminal.MOVING_BOUNDARY_SPEED_MPS), MEASURED_RESIDUAL_BOUND_MPS,
 			"brake converges on the moving boundary at %.2f m/s" % speed)
 		_t.expect(report.unique_evaluations == Terminal.MAX_BRAKE_EVALUATIONS,
 			"brake spends its whole evaluation budget at %.2f m/s" % speed)
-		_t.expect_max(float(built.margins.station_position_error_m), _station_pose_bound_m(report),
-			"terminal reaches the station inside its derived pose bound at %.2f m/s" % speed)
+		_t.expect_max(float(built.margins.station_position_error_m), MEASURED_POSE_BOUND_M,
+			"terminal reaches the station inside its measured pose bound at %.2f m/s" % speed)
 
 
 ## The bracket's best candidate, not merely a candidate inside tolerance.
@@ -132,7 +145,7 @@ func _expect_valid_build(built: Dictionary, layout: Dictionary, label: String) -
 		"capture has no visible steering solve: %s" % label)
 	_t.expect_close(report.moving_boundary_speed_mps, Terminal.MOVING_BOUNDARY_SPEED_MPS,
 		"spatial brake reaches the moving boundary speed: %s" % label,
-		Terminal.BRAKE_SPEED_TOLERANCE_MPS)
+		MEASURED_RESIDUAL_BOUND_MPS)
 	_t.expect(report.unique_evaluations == Terminal.MAX_BRAKE_EVALUATIONS,
 		"one-dimensional brake spends exactly its budget: %s" % label)
 	_t.expect(report.brake_peak_g >= 0.0 and report.brake_peak_g <= 3.6,
@@ -141,19 +154,11 @@ func _expect_valid_build(built: Dictionary, layout: Dictionary, label: String) -
 	for drive in trajectory.drive_g:
 		_t.expect(float(drive) <= 0.0000001, "terminal never authors positive drive: %s" % label)
 	_t.expect_vector(trajectory.position_m[-1], layout.station_position_m,
-		"terminal reaches the station position: %s" % label, _station_pose_bound_m(report))
+		"terminal reaches the station position: %s" % label, MEASURED_POSE_BOUND_M)
 	_t.expect_vector(trajectory.tangent[-1], layout.station_tangent.normalized(),
 		"terminal reaches the exact station tangent: %s" % label, 0.000001)
 	_t.expect_vector(trajectory.rider_up[-1], layout.station_up.normalized(),
 		"terminal reaches the exact station up: %s" % label, 0.000001)
-
-
-## The station pose is not exact. The brake hands the creep a boundary speed carrying up to
-## `BRAKE_SPEED_TOLERANCE_MPS` of residual and the creep then runs for a fixed duration, so the
-## residual arrives at the station as `residual * station_creep_duration_s` of along-track position
-## error - 3.1182 mm at the tolerance. Measured worst over this sweep: 1.4496 mm, at 73.67 m/s.
-func _station_pose_bound_m(report: Dictionary) -> float:
-	return Terminal.BRAKE_SPEED_TOLERANCE_MPS * float(report.station_creep_duration_s)
 
 
 func _expect_rejected(built: Dictionary, message: String) -> void:

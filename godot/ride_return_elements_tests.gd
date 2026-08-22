@@ -8,11 +8,15 @@ const Elements := preload("res://ride_return_elements.gd")
 const Layout := preload("res://ride_return_layout.gd")
 const Motion := preload("res://motion.gd")
 
-## The handover pitches every family must absorb, up to the layout's 35 deg ceiling. A climbing
-## entry is a separate case: levelling out of a climb is a pushover, and the turn family's
-## refusal of one is its own test below.
+## The handover pitches each family absorbs, up to the layout's 35 deg ceiling. Two cases are
+## physical refusals rather than contract cases, and each has its own test below: levelling out of
+## a climb is a pushover, which no overbanked turn can hold the rider down the bank through, and
+## pulling out of a 35 deg dive inside a height beat's declared arc costs more than the held normal
+## limit at these speeds.
 const ENTRY_PITCH_DEG := [-35.0, -20.0, -6.0, 0.0]
+const HEIGHT_ENTRY_PITCH_DEG := [-20.0, -6.0, 0.0, 20.0]
 const TURN_LENGTH_BAND_EDGES_M := [420.0, 620.0, 430.0, 570.0]
+const HEIGHT_LENGTH_M := 380.0
 
 var _t := TestUtil.new()
 
@@ -25,6 +29,7 @@ func _initialize() -> void:
 	_test_the_pitch_level_out_is_one_shared_profile()
 	_test_turn_lateral_points_inward_at_every_sample()
 	_test_a_climb_the_counter_lateral_band_cannot_hold_is_refused_by_name()
+	_test_a_dive_too_steep_to_pull_out_of_is_refused_by_name()
 	_test_the_bank_ceiling_is_the_roll_the_envelope_allows()
 	_test_the_macro_heading_bound_consumes_the_bank_ceiling()
 	_test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame()
@@ -190,7 +195,7 @@ func _test_turn_lateral_points_inward_at_every_sample() -> void:
 		var built := Elements.build(start, assignment, _settings())
 		if not _expect_built(built, "the fast turn builds at heading %.2f rad" % heading):
 			continue
-		_t.expect_min(built.observation.inward_lateral_g, 0.0,
+		_t.expect_min(built.observation.inward_lateral_g, -Elements.LATERAL_SIGN_TOLERANCE_G,
 			"no sample carries outward lateral at heading %.2f rad" % heading)
 		_t.expect_range(absf(float(built.observation.core_lateral_g)), 0.2, 0.6,
 			"the held core sits inside the counter-lateral band at heading %.2f rad" % heading)
@@ -248,11 +253,11 @@ func _test_the_macro_heading_bound_consumes_the_bank_ceiling() -> void:
 
 
 func _test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame() -> void:
-	for pitch_deg: float in ENTRY_PITCH_DEG:
+	for pitch_deg: float in HEIGHT_ENTRY_PITCH_DEG:
 		for speed: float in [70.0, 80.0]:
 			var start := _state(speed, pitch_deg)
-			var built := Elements.build(start, _height_assignment_from(start, -8.0),
-				_settings())
+			var assignment := _height_assignment_from(start, -8.0)
+			var built := Elements.build(start, assignment, _settings())
 			var label := "%.0f deg at %.0f m/s" % [pitch_deg, speed]
 			if not _expect_built(built, "the height beat absorbs %s" % label):
 				continue
@@ -265,8 +270,25 @@ func _test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame() -> void
 				"the beat hands over a level frame from %s" % label, 0.0004)
 			_t.expect_close(observation.exit_bank_rad, 0.0,
 				"the beat hands over an unbanked frame from %s" % label, 0.0001)
-			_t.expect_close(observation.elevation_change_m, -8.0,
+			_t.expect_close(observation.elevation_change_m,
+				float(assignment.elevation_change_m),
 				"the beat delivers its assigned elevation from %s" % label, 5.0)
+
+
+## Pulling out of a 35 deg dive and still cresting costs more than the held normal limit inside a
+## height beat's declared arc at return speeds: at 380 m the pull-up peaks at 4.5-5.1 g against a
+## 4.0 g held ceiling, and an elevation shallow enough to stay inside the ceiling never lifts the
+## track pitch above zero, so there is no crest to measure. The turn family absorbs that handover;
+## this one names what it missed.
+func _test_a_dive_too_steep_to_pull_out_of_is_refused_by_name() -> void:
+	for speed: float in [70.0, 80.0]:
+		var start := _state(speed, -35.0)
+		var built := Elements.build(start, _height_assignment_from(start, -8.0), _settings())
+		_t.expect(not built.ok,
+			"a height beat handed a 35 deg dive at %.0f m/s is refused" % speed)
+		_t.expect(_t.contains(built.errors, "normal_positive_g")
+			or _t.contains(built.errors, "height_solve"),
+			"the refusal names the load it could not pull out inside: %s" % str(built.errors))
 
 
 ## The seam evidence splits by order: position, tangent and the world curvature vector are
@@ -351,18 +373,55 @@ func _turn_assignment(heading_change_rad: float, start: Dictionary = {},
 	}, length_band_m)
 
 
-func _height_assignment(elevation_change_m: float) -> Dictionary:
-	return _height_assignment_from(_state(75.0), elevation_change_m)
+func _height_assignment(extra_elevation_m: float) -> Dictionary:
+	return _height_assignment_from(_state(75.0), extra_elevation_m)
 
 
-func _height_assignment_from(start: Dictionary, elevation_change_m: float) -> Dictionary:
-	return _with_corridor({
+## A macro assignment for one height beat, published the way the layout publishes one: the
+## corridor is the macro chain's own vertical-plane trace, and the net elevation is read off the
+## same model.
+func _height_assignment_from(start: Dictionary, extra_elevation_m: float) -> Dictionary:
+	var elevation := _height_elevation_m(start, HEIGHT_LENGTH_M, extra_elevation_m)
+	return {
 		"role_id": "return-height-a", "family": "return_height",
 		"entry_frame": _frame(start.position_m, start.tangent, start.rider_up),
-		"target_length_m": 380.0, "terrain_intent": {}, "curvature_sign": 0.0,
-		"heading_change_rad": 0.0, "elevation_change_m": elevation_change_m,
-		"unload_g": -0.45,
-	}, Vector2(340.0, 420.0))
+		"target_length_m": HEIGHT_LENGTH_M, "terrain_intent": {}, "curvature_sign": 0.0,
+		"heading_change_rad": 0.0, "elevation_change_m": elevation, "unload_g": -0.45,
+		"corridor": {"centerline_m": _macro_centerline(start, elevation),
+			"length_band_m": Vector2(340.0, 420.0)},
+	}
+
+
+## The elevation a macro chain assigns a height beat: half the height it would spend levelling out
+## of the pitch it was handed, plus the height the beat itself is asked to add or give up. The
+## halving is what leaves the beat a crest: an assignment that spends the whole level-out drop
+## never lifts the track pitch above zero, and one that spends none of it asks the beat to climb
+## out of its own handover, which is a length request rather than a height one.
+func _height_elevation_m(start: Dictionary, length_m: float, extra_m: float) -> float:
+	var pitch := asin(clampf((start.tangent as Vector3).normalized().y, -1.0, 1.0))
+	var total := 0.0
+	for index in 401:
+		var weight := (0.5 if index == 0 or index == 400 else 1.0) / 400.0
+		total += weight * sin(Elements.level_out_pitch_rad(pitch, float(index) / 400.0))
+	return 0.5 * length_m * total + extra_m
+
+
+## The macro chain's own trace of that assignment: one vertical plane, the shared level-out plus
+## the chain's symmetric elevation bump, integrated the way `RideReturnLayout` integrates it.
+func _macro_centerline(start: Dictionary, elevation_m: float) -> PackedVector3Array:
+	var pitch := asin(clampf((start.tangent as Vector3).normalized().y, -1.0, 1.0))
+	var bump := 2.0 * elevation_m / HEIGHT_LENGTH_M - sin(pitch)
+	var tangent: Vector3 = (start.tangent as Vector3).normalized()
+	var forward := (tangent - Vector3.UP * tangent.dot(Vector3.UP)).normalized()
+	var position: Vector3 = start.position_m
+	var line := PackedVector3Array([position])
+	var samples := 24
+	for index in samples:
+		var sin_pitch := Layout._sin_pitch(pitch, bump, (float(index) + 0.5) / samples)
+		position += (HEIGHT_LENGTH_M / samples) * (forward
+			* sqrt(maxf(1.0 - sin_pitch * sin_pitch, 0.0)) + Vector3.UP * sin_pitch)
+		line.append(position)
+	return line
 
 
 func _frame(position: Vector3, tangent: Vector3, rider_up: Vector3) -> Dictionary:

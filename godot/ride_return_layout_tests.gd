@@ -5,6 +5,7 @@ extends SceneTree
 ## downstream failure feedback, the passive energy bound, and terrain clearance.
 
 const Layout := preload("res://ride_return_layout.gd")
+const Elements := preload("res://ride_return_elements.gd")
 
 const RETURN_ROLE_IDS := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
 const ASSIGNMENT_KEYS := ["role_id", "family", "entry_frame", "exit_frame", "target_length_m",
@@ -17,7 +18,11 @@ const BANDS := [Vector2(420.0, 620.0), Vector2(290.0, 480.0),
 const WEIGHTS := [1.0, 1.0, 1.0, 1.0]
 const STATION_POSITION_M := Vector3(0.0, 30.0, 0.0)
 const APPROACH_LENGTH_M := 230.0
-const START_HEADING_DEG := 250.0
+## The heading the synthetic chain has to unwind. It is a request the contract admits: the turn
+## family's bank ceiling is the roll the envelope allows across its shoulder, so at 82 m/s the two
+## turns' shortest allocable arcs carry about 1.01 rad between them, and a request past that is
+## refused at the macro stage rather than handed to a local solve.
+const START_HEADING_DEG := 330.0
 const START_PITCH_DEG := -6.0
 const START_SPEED_MPS := 82.0
 const PREFIX_DISTANCE_M := 5900.0
@@ -120,9 +125,12 @@ func _test_heading_bound_rejects_an_infeasible_turn() -> void:
 	_expect(float(refusal.get("shortfall_rad", -1.0)) > 0.0
 		and float(refusal.get("bound_rad", -1.0)) > 0.0,
 		"the refusal names the bound and the shortfall it missed by")
+	var bank := Elements.max_bank_rad(420.0, 82.0)
 	var bound := Layout.heading_bound_rad(420.0, 82.0)
-	_expect(absf(bound - 0.8 * 420.0 * 9.80665 * tan(Layout.TURN_BANK_CEILING_RAD) / 6724.0)
-		<= 0.000001, "the heading bound is the declared loaded-arc contract")
+	_expect(absf(bound - Elements.LOADED_ARC_FRACTION * 420.0 * 9.80665
+		* (sin(bank) - Elements.COUNTER_LATERAL_TARGET_G) / (cos(bank) * 6724.0))
+		<= 0.000001,
+		"the heading bound is the counter-lateral identity at the family's bank ceiling")
 	_expect(Layout.heading_bound_rad(620.0, 82.0) > bound
 		and Layout.heading_bound_rad(420.0, 70.0) > bound,
 		"the bound loosens with allocated arc and tightens with entry speed")
@@ -227,18 +235,19 @@ func _test_terrain_margins_refuse_a_buried_chain() -> void:
 ## exactly the arc the feasibility bound reserves, and the profile delivers the whole commanded
 ## heading change monotonically, with no jump or reversal at either shoulder knot.
 func _test_heading_shoulders_deliver_the_whole_turn() -> void:
-	_expect(absf(1.0 - Layout.SHOULDER_FRACTION - Layout.LOADED_ARC_FRACTION) <= 0.000000000001,
+	_expect(absf(1.0 - Elements.SHOULDER_FRACTION - Elements.LEAD_FRACTION
+		- Elements.LOADED_ARC_FRACTION) <= 0.000000000001,
 		"the chain's shoulders reserve exactly the arc the heading bound calls unloaded")
-	_expect(absf(Layout._heading_fraction(0.0)) <= 0.000000000001,
+	_expect(absf(Elements.plateau_fraction(0.0)) <= 0.000000000001,
 		"no heading is delivered before the turn starts")
-	_expect(absf(Layout._heading_fraction(1.0) - 1.0) <= 0.000000000001,
+	_expect(absf(Elements.plateau_fraction(1.0) - 1.0) <= 0.000000000001,
 		"the whole commanded heading change is delivered by the end of the turn")
 	var samples := 4001
 	var previous := 0.0
 	var largest_step := 0.0
 	var deepest_reversal := 0.0
 	for index in samples:
-		var fraction := Layout._heading_fraction(float(index) / float(samples - 1))
+		var fraction := Elements.plateau_fraction(float(index) / float(samples - 1))
 		deepest_reversal = maxf(deepest_reversal, previous - fraction)
 		largest_step = maxf(largest_step, fraction - previous)
 		previous = fraction

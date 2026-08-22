@@ -8,16 +8,23 @@ extends RefCounted
 ## assignment - no route total, no station pose, no neighbouring role's length.
 ##
 ## Curvature basis (design 2026-08-22 section 3): world-referenced pitch/yaw, so `kappa_pitch < 0`
-## at a crest and `d(psi)/ds = kappa_yaw / cos(theta)` with `psi` measured about world-up in the
-## same sense `RideReturnLayout` uses. Because the basis is referenced to world-up rather than to
-## rider-up, twist changes how the geometry is felt without tilting the planned turn plane, which
-## is why the turn's centreline is a function of arc length alone.
+## at a crest. Reading `Motion._stage_commands` and `_rk4_derivative` back into the frame ODE with
+## `t = cos(theta) f + sin(theta) e_y` gives `d(theta)/ds = kappa_pitch` and
+## `d(psi)/ds = kappa_yaw / cos(theta)`, so the `1 / cos(theta)` factor is the production
+## integrator's, not the specification's prose. Because the basis is referenced to world-up rather
+## than to rider-up, twist changes how the geometry is felt without tilting the planned turn plane,
+## which is why the centreline of both families is a function of arc length alone.
+##
+## Both families are handed the pitch the previous element left them - up to the macro stage's
+## 35 deg handover ceiling - and both hand the next stage a level, unbanked frame. Pitch is levelled
+## through `level_out_pitch_rad`, the one profile the macro elevation model also evaluates; roll is
+## closed by cancelling the frame's own geometric drift rather than by another solved scalar.
 ##
 ## Two families:
 ##
-## - `return_turn` traces one semantic span of yaw curvature - a quintic shoulder, a loaded core,
-##   a quintic shoulder at 20/60/20 of the allocated arc. The two shoulders integrate to one
-##   whole, so the peak needs no solve: `kappa_peak = heading_change_rad / (0.8 target_length_m)`.
+## - `return_turn` traces one semantic span of yaw curvature over a shouldered plateau. The bank
+##   leads the curvature into and out of that plateau, because a shoulder that rolls and turns in
+##   step carries the rider outward through the roll-in - the opposite of what this family is for.
 ##   Its one solved scalar is peak bank, and it is solved to the counter-lateral band rather than
 ##   to balance: `CLAUDE.md` names two overbanked turns on the return, so a laterally neutral turn
 ##   is a contract failure here.
@@ -36,11 +43,29 @@ const BoundedSolver := preload("res://bounded_solver.gd")
 const TURN_FAMILY := "return_turn"
 const HEIGHT_FAMILY := "return_height"
 
-## The shoulder each turn reserves at both ends, matching `RideReturnLayout.SHOULDER_FRACTION`:
-## the macro heading bound and this family must reserve the same arc or the frame the layout
-## assigns is not one this family can reach.
+## The shoulder each role reserves at both ends, and the lead the twist takes inside it. The bank
+## reaches `TWIST_LEAD_FRACTION` of its peak over the first `TWIST_LEAD_FRACTION` of the shoulder,
+## where no curvature is commanded at all, and the curvature ramp then has the whole remaining
+## shoulder. Two consequences are load-bearing:
+##
+## - the peak roll rate is `1.875 phi v / shoulder` in both twist stages, so `max_bank_rad` below
+##   is the exact roll-rate ceiling rather than an estimate of one; and
+## - the shoulder never carries outward lateral. Sharing one quintic between curvature and twist
+##   does: with `c = v^2 kappa / g0` and bank `phi`, `l = c h cos(phi h) - sin(phi h)` is outward
+##   for small `h` whenever `c > phi` in radians, which the counter-lateral identity reaches at
+##   about 67.6 deg and which peaks at +0.26 g of outward lateral at the 77 deg ceiling. Leading
+##   the bank replaces that with `c h <= tan(phi (p + (1 - p) h))`; `p = 0.25` still leaves
+##   +0.004 g near `h = 0.5` at the ceiling, and `p = 0.35` clears it by more than a fifth at
+##   every `h`.
 const SHOULDER_FRACTION := 0.2
-const LOADED_ARC_FRACTION := 1.0 - SHOULDER_FRACTION
+const TWIST_LEAD_FRACTION := 0.35
+const LEAD_FRACTION := SHOULDER_FRACTION * TWIST_LEAD_FRACTION
+## The fraction of the allocated arc that carries loaded curvature once both shoulders and both
+## leads are reserved. The macro heading bound reserves the same arc, so the frame the layout
+## assigns is a frame this family can reach.
+const LOADED_ARC_FRACTION := 1.0 - SHOULDER_FRACTION - LEAD_FRACTION
+## Peak of `d(h)/du` for the quintic shoulder `h = 10u^3 - 15u^4 + 6u^5`: `30/16`.
+const QUINTIC_PEAK_SLOPE := 1.875
 ## Arc fractions of the height beat's four curvature stages: pull-up, into the crest, out of the
 ## crest, pullout. Half-arc and whole-arc boundaries both fall on a stage edge, which is what lets
 ## the nominal below be a closed-form linear solve instead of another iteration.
@@ -53,10 +78,14 @@ const HEIGHT_FRACTIONS := [0.2, 0.3, 0.3, 0.2]
 const COUNTER_LATERAL_BAND_G := Vector2(0.2, 0.6)
 const COUNTER_LATERAL_TARGET_G := 0.47
 const COUNTER_LATERAL_TOLERANCE_G := 0.001
-## The same 77 deg. It is not a free choice: the macro heading bound admits
-## `v^2 kappa / g0 <= tan(66 deg) = 2.246`, and reaching -0.47 g of counter-lateral at bank `phi`
-## needs `v^2 kappa / g0 <= (sin(phi) - 0.47) / cos(phi)`, which equals 2.242 at 77 deg. Any lower
-## ceiling would refuse turns the layout is entitled to assign.
+## Noise floor for the pointwise inward-lateral check. Lateral is identically zero at both
+## endpoints, where the frame carries neither bank nor curvature, so what the pointwise minimum
+## finds there is the frame's own float32 quantisation - measured at or below 6e-6 g across the
+## whole handover-pitch range. The outward shoulder transient this check exists to refuse is
+## +0.26 g, three orders above it and above the band floor.
+const LATERAL_SIGN_TOLERANCE_G := 0.0001
+## The same 77 deg, as the family's geometric ceiling. `max_bank_rad` takes the roll-rate ceiling
+## below it whenever the shoulder is too short to roll that far inside the envelope.
 const TURN_BANK_CEILING_RAD := 77.0 * PI / 180.0
 
 ## The return height beat's authored airtime value, `-0.45 g` - the same value the story's first
@@ -64,9 +93,11 @@ const TURN_BANK_CEILING_RAD := 77.0 * PI / 180.0
 ## own drawn `unload_g` overrides it.
 const DEFAULT_UNLOAD_G := -0.45
 const UNLOAD_TOLERANCE_G := 0.01
-## Curvature bounds for the height solve, stated as loads rather than as radii: the pull-up and
-## pullout may not ask for more than the 4.0 g held normal limit the macro stage also reasons
-## against, and the crest may not unload past -1.0 g, which is twice the deepest authored airtime.
+## Curvature bounds for the height solve, stated as loads rather than as radii: no stage may ask
+## for more than the 4.0 g held normal limit the macro stage also reasons against, and none may
+## unload past -1.0 g, which is twice the deepest authored airtime. Both signs are open on the
+## first stage because a beat handed a climbing entry pitches down into its crest, exactly as one
+## handed a descending entry pitches up.
 const NORMAL_CEILING_G := 4.0
 const AIRTIME_FLOOR_G := -1.0
 
@@ -75,13 +106,17 @@ const AIRTIME_FLOOR_G := -1.0
 const POSITION_TOLERANCE_M := 0.001
 const TANGENT_TOLERANCE := 0.0001
 const CURVATURE_TOLERANCE_M_INV := 0.00001
-const TWIST_TOLERANCE_RAD := 0.000001
 
-## Endpoint tolerances the local residuals are converged against.
+## Endpoint tolerances the local residuals are converged against. Exit pitch is the height solve's
+## converged residual - 0.02 scaled against the 0.02 rad scale - and the turn delivers it by
+## construction; bank is the seam frame tolerance.
 const PITCH_TOLERANCE_RAD := 0.0004
-const ELEVATION_TOLERANCE_M := 0.1
-const HEADING_TOLERANCE_RAD := 0.001
 const BANK_TOLERANCE_RAD := 0.0001
+const HEADING_TOLERANCE_RAD := 0.001
+## Net elevation is compared against the macro stage's own vertical residual scale: the assignment
+## is a target read off a nominal chain, not a solved endpoint, and 5 m is the scale that chain is
+## converged at.
+const ELEVATION_TOLERANCE_M := 5.0
 ## A distance span ends on its declared length to a part in 1e-6 of a metre, so the allocated arc
 ## is a construction result rather than a solved one; this only guards against a builder that
 ## stopped emitting one of its stages.
@@ -93,9 +128,9 @@ const HEIGHT_RESIDUAL_SCALES := [0.02, 5.0, 0.5]
 ## Corridor compliance. Task 3 publishes a nominal centreline and a length band but no half-width,
 ## and the nominal models a role's net heading and net elevation rather than the crest a height
 ## beat rises through, so the two centrelines differ by the beat's prominence by construction.
-## Five percent of the allocated arc is the stated stand-in that admits that difference at the
+## This fraction of the allocated arc is the stated stand-in: it admits that difference at the
 ## declared role lengths while still refusing a centreline that has left its corridor. It is not a
-## derived half-width, and it is the first thing to replace when the layout publishes one.
+## derived half-width, and Task 6 must replace it with the one the layout derives.
 const CORRIDOR_TOLERANCE_FRACTION := 0.05
 ## Zero yaw curvature makes a height beat planar by construction, so what the planarity
 ## measurement can find is float32 position quantisation: one ulp at these coordinates is about
@@ -105,11 +140,13 @@ const PLANARITY_TOLERANCE_FRACTION := 0.00001
 
 ## `BoundedSolver.solve` costs `1 + K(n + 1) + R` unique evaluations. The height beat's three
 ## controls with K <= 8 accepted iterations and R <= 8 rejections give 1 + 8*4 + 8 = 41. The turn's
-## one control is a monotone bracket - lateral load falls strictly as bank rises - so it uses the
-## same 32-evaluation cap the terminal's one-dimensional brake bracket declares; it converges in
-## about eleven.
+## one control is a monotone bracket - core lateral load falls strictly as bank rises - so it uses
+## the same 32-evaluation cap the terminal's one-dimensional brake bracket declares.
 const MAX_HEIGHT_EVALUATIONS := 41
 const MAX_TURN_EVALUATIONS := 32
+## Simpson intervals for the two profile quadratures below. They integrate commanded analytic
+## profiles, never a trajectory, so this is a quadrature count and not an evaluation count.
+const PROFILE_QUADRATURE_INTERVALS := 64
 
 
 ## The assignment's target centreline: the same integrator with gravity and resistance removed.
@@ -130,7 +167,7 @@ static func preview(assignment: Dictionary, step_m: float = 1.0) -> Dictionary:
 	var spans: Array = []
 	if str(assignment.family) == TURN_FAMILY:
 		controls = [0.0]
-		spans = _turn_spans(assignment, _turn_curvature(assignment), 0.0)
+		spans = _turn_spans(assignment, _turn_geometry(assignment), 0.0)
 	else:
 		# The nominal crest sits at the middle of the allocated arc: the third geometric statement
 		# that replaces the build's unload target, which no speed-free trace can measure.
@@ -190,11 +227,53 @@ static func build(start: Dictionary, assignment: Dictionary, settings: Dictionar
 		"evaluation_count": evaluations[0], "errors": errors}
 
 
+## The bank ceiling for one role: the geometric counterpart ceiling, or the roll the envelope
+## allows across the shoulder that has to establish it, whichever is lower. A quintic shoulder's
+## peak slope is 1.875, so rolling to `phi` over `SHOULDER_FRACTION * L` at `v` peaks at
+## `1.875 phi v / (SHOULDER_FRACTION L)`, and holding that at or below the envelope's roll-rate
+## limit is the inequality below. The macro heading bound consumes this ceiling through the
+## counter-lateral identity, so no layout may assign a heading this family would have to break
+## the roll envelope to deliver.
+static func max_bank_rad(length_m: float, speed_mps: float) -> float:
+	return minf(TURN_BANK_CEILING_RAD, deg_to_rad(RideVerify.ROLL_RATE_LIMIT)
+		* SHOULDER_FRACTION * length_m / (QUINTIC_PEAK_SLOPE * speed_mps))
+
+
+## The fraction of a shouldered-plateau channel delivered by arc `u`: the normalized integral of
+## the commanded shape, so it starts and ends with zero value, slope and acceleration. One shape
+## serves the turn's heading, both families' pitch level-out, and the macro chain that models them.
+static func plateau_fraction(u: float) -> float:
+	var c := clampf(u, 0.0, 1.0)
+	var width := SHOULDER_FRACTION - LEAD_FRACTION
+	var area := LOADED_ARC_FRACTION
+	if c <= LEAD_FRACTION:
+		area = 0.0
+	elif c <= SHOULDER_FRACTION:
+		area = width * _quintic_integral((c - LEAD_FRACTION) / width)
+	elif c <= 1.0 - SHOULDER_FRACTION:
+		area = 0.5 * width + c - SHOULDER_FRACTION
+	elif c <= 1.0 - LEAD_FRACTION:
+		var x := (c - (1.0 - SHOULDER_FRACTION)) / width
+		area = 0.5 * width + 1.0 - 2.0 * SHOULDER_FRACTION + width * (x - _quintic_integral(x))
+	return area / LOADED_ARC_FRACTION
+
+
+## Track pitch over one role: the entry pitch decays to exactly zero and stays there, through the
+## same shouldered plateau of pitch curvature the heading uses. This is the single definition of
+## that ramp - `RideReturnLayout` evaluates it as its macro elevation model, and the spans below
+## command the curvature whose integral it is - so a role's assigned elevation and the elevation
+## it is built at cannot come from two different shapes.
+static func level_out_pitch_rad(entry_pitch_rad: float, u: float) -> float:
+	return entry_pitch_rad * (1.0 - plateau_fraction(u))
+
+
 ## The seam evidence, split by the order at which each part is measurable: position, tangent and
 ## the world curvature vector are compared directly from both integrated routes, while the third
 ## and fourth position derivatives come from each side's published analytic jets. Differencing
 ## float32 positions at production spacing measures rounding at those orders, so the finite
-## difference below is published as a coarse sanity value and decides nothing.
+## difference below is published as a coarse sanity value and decides nothing. Roll is compared as
+## measured bank, not as commanded twist: twist is each element's own gauge relative to its
+## transported frame, and two elements that agree on rider-up may hold different twist values.
 static func seam_residuals(previous: Dictionary, next: Dictionary) -> Dictionary:
 	var exit_jets: Dictionary = previous.observation.exit_jets
 	var entry_jets: Dictionary = next.observation.entry_jets
@@ -208,7 +287,7 @@ static func seam_residuals(previous: Dictionary, next: Dictionary) -> Dictionary
 		"curvature_slope_m2": exit_jets.curvature_slope.distance_to(entry_jets.curvature_slope),
 		"curvature_acceleration_m3": exit_jets.curvature_acceleration.distance_to(
 			entry_jets.curvature_acceleration),
-		"twist_rad": absf(float(exit_jets.twist) - float(entry_jets.twist)),
+		"bank_rad": absf(float(exit_jets.bank) - float(entry_jets.bank)),
 		"twist_slope_rad_m": absf(float(exit_jets.twist_slope)
 			- float(entry_jets.twist_slope)),
 		"twist_acceleration_rad_m2": absf(float(exit_jets.twist_acceleration)
@@ -221,32 +300,73 @@ static func seam_residuals(previous: Dictionary, next: Dictionary) -> Dictionary
 			<= CURVATURE_TOLERANCE_M_INV \
 		and maxf(residuals.curvature_slope_m2, residuals.curvature_acceleration_m3) \
 			<= CURVATURE_TOLERANCE_M_INV \
-		and maxf(residuals.twist_rad, maxf(residuals.twist_slope_rad_m,
-			residuals.twist_acceleration_rad_m2)) <= TWIST_TOLERANCE_RAD
+		and residuals.bank_rad <= BANK_TOLERANCE_RAD \
+		and maxf(residuals.twist_slope_rad_m, residuals.twist_acceleration_rad_m2) \
+			<= BANK_TOLERANCE_RAD
 	return residuals
 
 
-## `kappa_peak = heading_change_rad / (0.8 target_length_m)`: the two quintic shoulders each carry
-## half their arc's turning, so the loaded fraction of the allocated arc is 0.8 and no solve is
-## needed to place the peak.
-static func _turn_curvature(assignment: Dictionary) -> float:
-	return float(assignment.heading_change_rad) \
-		/ (LOADED_ARC_FRACTION * float(assignment.target_length_m))
+## Everything about a turn that follows from the assignment alone: the two commanded curvature
+## peaks and the bank the frame will drift by. All three are closed form.
+##
+## `d(psi)/ds = kappa_yaw / cos(theta)` is the integrator's own identity, so a heading change of
+## `delta_psi` needs `integral of kappa_yaw sec(theta) ds = delta_psi`. Commanding the plateau
+## shape and normalizing its peak by `J = integral of plateau(u) sec(theta(u)) du` delivers that
+## exactly, for any entry pitch and with no extra solve; the `sec(theta)` factor rides on the
+## heading-rate shape rather than on the commanded curvature, which keeps the curvature channel
+## inside the integrator's own profile vocabulary.
+##
+## The bank drift is the same integral against `tan`. With zero commanded twist the rider frame is
+## transported with no rotation about the tangent, while the world level frame rotates about it at
+## `-d(psi)/ds sin(theta)`, so measured bank accumulates `integral of d(psi)/ds sin(theta) ds`.
+## Ending the twist at minus that closes the frame analytically instead of with a second solved
+## scalar.
+static func _turn_geometry(assignment: Dictionary) -> Dictionary:
+	var length := float(assignment.target_length_m)
+	var heading := float(assignment.heading_change_rad)
+	var entry_pitch := _pitch((assignment.entry_frame.tangent as Vector3).normalized())
+	var secant := 0.0
+	var tangent_moment := 0.0
+	for index in PROFILE_QUADRATURE_INTERVALS + 1:
+		var u := float(index) / PROFILE_QUADRATURE_INTERVALS
+		var weight := 1.0 if index == 0 or index == PROFILE_QUADRATURE_INTERVALS \
+			else (4.0 if index % 2 == 1 else 2.0)
+		var shape := weight * _plateau(u) / (3.0 * PROFILE_QUADRATURE_INTERVALS)
+		var pitch := level_out_pitch_rad(entry_pitch, u)
+		secant += shape / cos(pitch)
+		tangent_moment += shape * tan(pitch)
+	return {"entry_pitch_rad": entry_pitch,
+		"yaw_peak_m_inv": heading / (length * secant),
+		"pitch_peak_m_inv": -entry_pitch / (LOADED_ARC_FRACTION * length),
+		"bank_drift_rad": heading * tangent_moment / secant}
 
 
-static func _turn_spans(assignment: Dictionary, curvature_m_inv: float,
-		bank_rad: float) -> Array:
+## One turn: five stages of one motion. The two leads carry bank alone, the two shoulders ramp
+## curvature under a bank that is already leaning, and the core holds all three. Every knot joins
+## two quintics whose value, spatial slope and spatial acceleration agree, so no stage restarts a
+## pulse or pauses one.
+static func _turn_spans(assignment: Dictionary, geometry: Dictionary, bank_rad: float) -> Array:
 	var role_id := str(assignment.role_id)
 	var length := float(assignment.target_length_m)
-	var shoulder := SHOULDER_FRACTION * length
+	var lead := LEAD_FRACTION * length
+	var shoulder := (SHOULDER_FRACTION - LEAD_FRACTION) * length
+	var pitch := float(geometry.pitch_peak_m_inv)
+	var yaw := float(geometry.yaw_peak_m_inv)
+	var exit_bank := -float(geometry.bank_drift_rad)
+	var entry_lead := TWIST_LEAD_FRACTION * bank_rad
+	var exit_lead := exit_bank + TWIST_LEAD_FRACTION * (bank_rad - exit_bank)
 	var zero := Motion.constant(0.0)
 	return [
-		Motion.spatial_span("%s/roll-in" % role_id, shoulder, zero,
-			Motion.quintic(0.0, curvature_m_inv), zero, Motion.quintic(0.0, bank_rad)),
-		Motion.spatial_span("%s/core" % role_id, length - 2.0 * shoulder, zero,
-			Motion.constant(curvature_m_inv), zero, Motion.constant(bank_rad)),
-		Motion.spatial_span("%s/roll-out" % role_id, shoulder, zero,
-			Motion.quintic(curvature_m_inv, 0.0), zero, Motion.quintic(bank_rad, 0.0)),
+		Motion.spatial_span("%s/roll-in" % role_id, lead, zero, zero, zero,
+			Motion.quintic(0.0, entry_lead)),
+		Motion.spatial_span("%s/entry" % role_id, shoulder, Motion.quintic(0.0, pitch),
+			Motion.quintic(0.0, yaw), zero, Motion.quintic(entry_lead, bank_rad)),
+		Motion.spatial_span("%s/core" % role_id, length - 2.0 * (lead + shoulder),
+			Motion.constant(pitch), Motion.constant(yaw), zero, Motion.constant(bank_rad)),
+		Motion.spatial_span("%s/exit" % role_id, shoulder, Motion.quintic(pitch, 0.0),
+			Motion.quintic(yaw, 0.0), zero, Motion.quintic(bank_rad, exit_lead)),
+		Motion.spatial_span("%s/roll-out" % role_id, lead, zero, zero, zero,
+			Motion.quintic(exit_lead, exit_bank)),
 	]
 
 
@@ -264,31 +384,36 @@ static func _height_spans(assignment: Dictionary, knots: Array) -> Array:
 	return spans
 
 
-## Peak bank against the counter-lateral band, bracketed rather than optimised: for a level turn
-## `l = (v^2 kappa / g0) cos(phi) - sin(phi)` falls strictly as bank rises, so the bracket over
-## [0, ceiling] has one root and no warm start. The bank is signed with the curvature; a bank on
-## the other side is never tried, so closure can never buy itself one.
+## Peak bank against the counter-lateral band, bracketed rather than optimised: with
+## `B = v^2 kappa_pitch / g0 + cos(theta)` the held core carries `l = c cos(phi) - B sin(phi)`,
+## which falls strictly as bank rises for any B above zero, so the bracket over
+## `[0, max_bank_rad]` has one root and needs no warm start. The band is measured on the held core
+## rather than on the largest sample: a role that is still levelling out of a steep entry carries
+## its deepest lateral where it is banked under pitch curvature, and that sample is not the shape
+## this family is authored to hold. The bank is signed with the curvature; a bank on the other side
+## is never tried, so closure can never buy itself one.
 static func _solve_turn(start: Dictionary, assignment: Dictionary, settings: Dictionary,
 		evaluations: Array) -> Dictionary:
-	var curvature := _turn_curvature(assignment)
+	var geometry := _turn_geometry(assignment)
+	var curvature := float(geometry.yaw_peak_m_inv)
 	var direction := signf(curvature)
 	if direction == 0.0:
 		return {"ok": false, "errors": [{"code": "degenerate_turn",
 			"role_id": assignment.role_id}]}
+	var length := float(assignment.target_length_m)
 	var low := 0.0
-	var high := TURN_BANK_CEILING_RAD
+	var high := max_bank_rad(length, float(start.speed_mps))
 	var bank := 0.0
 	var route := {}
-	var lateral := 0.0
 	var spans: Array = []
 	for _iteration in MAX_TURN_EVALUATIONS:
 		bank = 0.5 * (low + high)
-		spans = _turn_spans(assignment, curvature, direction * bank)
+		spans = _turn_spans(assignment, geometry, direction * bank)
 		route = _integrate(start, spans, settings, evaluations)
 		if not route.ok:
 			return {"ok": false, "errors": [{"code": "turn_integration",
 				"role_id": assignment.role_id, "detail": str(route.errors)}]}
-		lateral = -direction * _peak_signed(route.lateral_g)
+		var lateral := -direction * _core_peak_signed(route, length)
 		if absf(lateral - COUNTER_LATERAL_TARGET_G) <= COUNTER_LATERAL_TOLERANCE_G:
 			break
 		if lateral < COUNTER_LATERAL_TARGET_G:
@@ -297,6 +422,7 @@ static func _solve_turn(start: Dictionary, assignment: Dictionary, settings: Dic
 			high = bank
 	return {"ok": true, "errors": [], "route": route, "spans": spans,
 		"controls": [direction * bank], "curvature_m_inv": curvature,
+		"bank_ceiling_rad": max_bank_rad(length, float(start.speed_mps)),
 		"balanced_bank_rad": direction * atan(float(start.speed_mps)
 			* float(start.speed_mps) * absf(curvature) / Motion.G0)}
 
@@ -316,7 +442,7 @@ static func _solve_height(start: Dictionary, assignment: Dictionary, settings: D
 	var nominal := _height_nominal(entry_pitch, length, elevation, [0.0, 1.0, 0.0], crest)
 	var ceiling := NORMAL_CEILING_G * Motion.G0 / (speed * speed)
 	var floor_curvature := (AIRTIME_FLOOR_G - 1.0) * Motion.G0 / (speed * speed)
-	var lower := [0.0, floor_curvature, 0.0]
+	var lower := [floor_curvature, floor_curvature, 0.0]
 	var upper := [ceiling, 0.0, ceiling]
 	var residual := func(x: Array) -> Array:
 		var probe := _integrate(start, _height_spans(assignment, x), settings, evaluations)
@@ -422,6 +548,7 @@ static func _observe(assignment: Dictionary, solved: Dictionary,
 	var minimum_speed := INF
 	var counter_bank := 0.0
 	var peak_bank := 0.0
+	var inward_lateral := INF
 	var roll_reversals := 0
 	var roll_sign := 0.0
 	var direction := signf(float(solved.get("curvature_m_inv", 0.0)))
@@ -431,6 +558,7 @@ static func _observe(assignment: Dictionary, solved: Dictionary,
 		peak_lateral = maxf(peak_lateral, absf(float(route.lateral_g[index])))
 		peak_roll = maxf(peak_roll, absf(float(route.roll_rate_rad_s[index])))
 		minimum_speed = minf(minimum_speed, float(route.speed_mps[index]))
+		inward_lateral = minf(inward_lateral, -direction * float(route.lateral_g[index]))
 		var bank := _bank(route.tangent[index], route.rider_up[index])
 		if absf(bank) > absf(peak_bank):
 			peak_bank = bank
@@ -466,7 +594,11 @@ static func _observe(assignment: Dictionary, solved: Dictionary,
 	}
 	if is_turn:
 		observation.balanced_bank_rad = float(solved.balanced_bank_rad)
+		observation.bank_ceiling_rad = float(solved.bank_ceiling_rad)
 		observation.curvature_peak_m_inv = float(solved.curvature_m_inv)
+		observation.core_lateral_g = _core_peak_signed(route,
+			float(assignment.target_length_m))
+		observation.inward_lateral_g = inward_lateral
 	else:
 		observation.merge(_apex(route, entry_tangent))
 		observation.crest_normal_g = minimum_normal
@@ -474,16 +606,21 @@ static func _observe(assignment: Dictionary, solved: Dictionary,
 	return observation
 
 
-## The crest contract: the one downward `theta = 0` crossing, its prominence above both endpoints,
-## and whether the beat climbs before it and descends after it. Both endpoints are level by
-## contract, so pitch is read through a deadband of the same tolerance the exit pitch is converged
-## against: a pitch excursion smaller than that is the endpoint's own float32 noise, not a crest.
+## The crest contract, restated from the pitch-zero crossing so that a beat handed a descending
+## entry is measured rather than refused: the beat may lose height while it is still nose-down,
+## and its apex is the one downward `theta = 0` crossing strictly inside the role. Height must be
+## monotone from where the climb starts - the upward crossing, or the entry when the beat is handed
+## a level or climbing frame - to that apex, and monotone the other way after it. Prominence is
+## published against the assignment's entry height; the crest rise that has to be positive is
+## measured from where the climb started, because a beat entered at -35 deg necessarily gives up
+## height before it can gain any.
 static func _apex(route: Dictionary, entry_tangent: Vector3) -> Dictionary:
 	var count: int = route.time_s.size()
+	var climb_start := _climb_start(route)
 	var crossings := 0
 	var apex := -1
 	var state := 0.0
-	var rising := 0
+	var rising := climb_start
 	for index in count:
 		var pitch_sin := float(route.tangent[index].y)
 		if absf(pitch_sin) <= PITCH_TOLERANCE_RAD:
@@ -492,22 +629,20 @@ static func _apex(route: Dictionary, entry_tangent: Vector3) -> Dictionary:
 		if state > 0.0 and current < 0.0:
 			crossings += 1
 			apex = _nearest_level(route, rising, index)
-		elif state < 0.0 and current > 0.0:
-			crossings += 1
 		if current > 0.0:
 			rising = index
 		state = current
 	var normal := (entry_tangent.cross(Vector3.UP)).normalized()
 	var out_of_plane := 0.0
-	var monotone := apex >= 0
+	var monotone := apex > 0 and apex < count - 1
 	for index in count:
 		out_of_plane = maxf(out_of_plane,
 			absf((route.position_m[index] - route.position_m[0]).dot(normal)))
 		var climbed := float(route.tangent[index].y)
-		if index < apex:
-			monotone = monotone and climbed >= -PITCH_TOLERANCE_RAD
-		elif index > apex:
+		if index < climb_start or index > apex:
 			monotone = monotone and climbed <= PITCH_TOLERANCE_RAD
+		elif index < apex:
+			monotone = monotone and climbed >= -PITCH_TOLERANCE_RAD
 	var apex_height: float = route.position_m[apex].y if apex >= 0 else route.position_m[0].y
 	var apex_rate := 0.0
 	var apex_distance := 0.0
@@ -517,8 +652,21 @@ static func _apex(route: Dictionary, entry_tangent: Vector3) -> Dictionary:
 		apex_distance = float(route.distance_m[apex]) - float(route.distance_m[0])
 	return {"pitch_zero_crossings": crossings, "apex_distance_m": apex_distance,
 		"apex_height_m": apex_height, "apex_pitch_rate_m_inv": apex_rate,
-		"prominence_m": apex_height - maxf(route.position_m[0].y, route.position_m[-1].y),
+		"prominence_m": apex_height - route.position_m[0].y,
+		"crest_rise_m": apex_height - maxf(route.position_m[climb_start].y,
+			route.position_m[-1].y),
 		"monotone_phases": monotone, "out_of_plane_m": out_of_plane}
+
+
+## Where the beat starts climbing: the entry when it is handed a level or climbing frame, the
+## upward pitch-zero crossing when it is handed a descending one.
+static func _climb_start(route: Dictionary) -> int:
+	if float(route.tangent[0].y) >= -PITCH_TOLERANCE_RAD:
+		return 0
+	for index in route.time_s.size():
+		if float(route.tangent[index].y) >= -PITCH_TOLERANCE_RAD:
+			return index
+	return route.time_s.size() - 1
 
 
 ## The sample closest to level between the last climbing sample and the first descending one:
@@ -532,60 +680,69 @@ static func _nearest_level(route: Dictionary, from_index: int, to_index: int) ->
 
 
 ## Every contract this element must prove, as a slack: a negative or non-finite value refuses the
-## element and names itself. Load slacks are taken against the briefest-duration envelope
-## ceilings, which is the conservative reading; `RideVerify`'s duration-dependent curves remain
-## the authority over the assembled route.
+## element and names itself. Load slacks are taken against the duration-dependent envelope at the
+## element's own integrated duration, which is the conservative reading of a curve whose brief
+## ceilings are its most permissive points; `RideVerify`'s held-curve measurement over the
+## assembled route remains the authority.
 static func _margins(assignment: Dictionary, observation: Dictionary) -> Dictionary:
 	var band: Vector2 = assignment.corridor.length_band_m
 	var arc: float = observation.arc_length_m
+	var duration: float = observation.duration_s
 	var margins := {
 		"length_band_m": minf(arc - band.x, band.y - arc),
 		"target_length_m": LENGTH_TOLERANCE_M
 			- absf(arc - float(assignment.target_length_m)),
 		"corridor_offset_m": CORRIDOR_TOLERANCE_FRACTION * float(assignment.target_length_m)
 			- float(observation.corridor_offset_m),
-		"normal_positive_g": RideVerify.BRIEF_POSITIVE - float(observation.peak_normal_g),
-		"normal_negative_g": RideVerify.BRIEF_NEGATIVE + float(observation.minimum_normal_g),
-		"lateral_g": RideVerify.BRIEF_LATERAL - float(observation.peak_lateral_g),
+		"normal_positive_g": RideVerify.limit_at(RideVerify.POSITIVE_LIMIT, duration)
+			- float(observation.peak_normal_g),
+		"normal_negative_g": RideVerify.limit_at(RideVerify.NEGATIVE_LIMIT, duration)
+			+ float(observation.minimum_normal_g),
+		"lateral_g": RideVerify.limit_at(RideVerify.LATERAL_LIMIT, duration)
+			- float(observation.peak_lateral_g),
 		"roll_rate_deg_s": RideVerify.ROLL_RATE_LIMIT
 			- rad_to_deg(float(observation.peak_roll_rate_rad_s)),
+		"exit_pitch_rad": PITCH_TOLERANCE_RAD - absf(float(observation.exit_pitch_rad)),
+		"exit_bank_rad": BANK_TOLERANCE_RAD - absf(float(observation.exit_bank_rad)),
+		"elevation_change_m": ELEVATION_TOLERANCE_M - absf(
+			float(observation.elevation_change_m) - float(assignment.elevation_change_m)),
 		"entry_curvature_m_inv": CURVATURE_TOLERANCE_M_INV
 			- float(observation.entry_jets.curvature.length()),
 		"exit_curvature_m_inv": CURVATURE_TOLERANCE_M_INV
 			- float(observation.exit_jets.curvature.length()),
 	}
 	if str(assignment.family) == TURN_FAMILY:
-		var lateral := absf(float(observation.signed_peak_lateral_g))
+		var lateral := absf(float(observation.core_lateral_g))
 		var direction := signf(float(assignment.heading_change_rad))
 		margins.heading_change_rad = HEADING_TOLERANCE_RAD - absf(
 			float(observation.heading_change_rad) - float(assignment.heading_change_rad))
 		margins.counter_lateral_low_g = lateral - COUNTER_LATERAL_BAND_G.x
 		margins.counter_lateral_high_g = COUNTER_LATERAL_BAND_G.y - lateral
-		margins.counter_lateral_sign = -direction * float(observation.signed_peak_lateral_g)
+		margins.counter_lateral_inward_g = float(observation.inward_lateral_g) \
+			+ LATERAL_SIGN_TOLERANCE_G
 		margins.bank_sign_rad = direction * float(observation.peak_bank_rad)
-		margins.bank_ceiling_rad = TURN_BANK_CEILING_RAD - absf(float(observation.peak_bank_rad))
+		margins.bank_ceiling_rad = float(observation.bank_ceiling_rad) \
+			- absf(float(observation.peak_bank_rad))
 		margins.counter_bank_rad = BANK_TOLERANCE_RAD - float(observation.counter_bank_rad)
 	else:
-		margins.exit_pitch_rad = PITCH_TOLERANCE_RAD - absf(float(observation.exit_pitch_rad))
-		margins.elevation_change_m = ELEVATION_TOLERANCE_M - absf(
-			float(observation.elevation_change_m) - float(assignment.elevation_change_m))
 		margins.crest_unload_g = UNLOAD_TOLERANCE_G - absf(
 			float(observation.crest_normal_g) - float(observation.unload_g))
 		margins.apex_pitch_rate_m_inv = -float(observation.apex_pitch_rate_m_inv)
-		margins.prominence_m = float(observation.prominence_m)
+		margins.crest_rise_m = float(observation.crest_rise_m)
+		margins.pitch_zero_crossings = 0.0 if observation.pitch_zero_crossings == 1 else -1.0
 		margins.monotone_phases = 0.0 if observation.monotone_phases else -1.0
 		margins.out_of_plane_m = PLANARITY_TOLERANCE_FRACTION * arc \
 			- float(observation.out_of_plane_m)
 	return margins
 
 
-## The analytic curvature and twist jets at one element boundary, resolved in the boundary's own
-## pitch/yaw basis. The world jets are `x'' = kappa`, `x''' = d(kappa)/ds` and
-## `x'''' = d2(kappa)/ds2`, and the arc-length derivatives of the basis vectors are each
-## proportional to `kappa` itself - `d(yaw_normal)/ds` follows from `d(t)/ds = kappa` - so at a
-## boundary where `kappa` and its slope vanish the basis terms vanish with them and the world jets
-## reduce to the commanded component derivatives. That precondition is measured, not assumed: the
-## published `curvature` length is a refusing margin above.
+## The analytic curvature jets at one element boundary, resolved in the boundary's own pitch/yaw
+## basis, plus the measured bank and the commanded twist rates. The world jets are `x'' = kappa`,
+## `x''' = d(kappa)/ds` and `x'''' = d2(kappa)/ds2`, and the arc-length derivatives of the basis
+## vectors are each proportional to `kappa` itself - `d(yaw_normal)/ds` follows from
+## `d(t)/ds = kappa` - so at a boundary where `kappa` and its slope vanish the basis terms vanish
+## with them and the world jets reduce to the commanded component derivatives. That precondition is
+## measured, not assumed: the published `curvature` length is a refusing margin above.
 static func _jets(span: Dictionary, route: Dictionary, index: int, u: float) -> Dictionary:
 	var tangent: Vector3 = route.tangent[index]
 	var yaw_normal := tangent.cross(Vector3.UP).normalized()
@@ -600,7 +757,7 @@ static func _jets(span: Dictionary, route: Dictionary, index: int, u: float) -> 
 		"curvature_slope": (pitch.y * pitch_normal + yaw.y * yaw_normal) / length,
 		"curvature_acceleration": (pitch.z * pitch_normal + yaw.z * yaw_normal)
 			/ (length * length),
-		"twist": twist.x, "twist_slope": twist.y / length,
+		"bank": _bank(tangent, route.rider_up[index]), "twist_slope": twist.y / length,
 		"twist_acceleration": twist.z / (length * length),
 	}
 
@@ -718,3 +875,41 @@ static func _peak_signed(channel: PackedFloat64Array) -> float:
 		if absf(float(value)) > absf(peak):
 			peak = float(value)
 	return peak
+
+
+## The deepest lateral the turn holds through its loaded core - the samples between the two
+## shoulders. The shoulders carry their own transient shape, and the band is a contract on the
+## held value; the pointwise inward margin is what governs everything outside the core.
+static func _core_peak_signed(route: Dictionary, length_m: float) -> float:
+	var peak := 0.0
+	for index in route.time_s.size():
+		var u := (float(route.distance_m[index]) - float(route.distance_m[0])) / length_m
+		if u < SHOULDER_FRACTION or u > 1.0 - SHOULDER_FRACTION:
+			continue
+		if absf(float(route.lateral_g[index])) > absf(peak):
+			peak = float(route.lateral_g[index])
+	return peak
+
+
+## The commanded shouldered plateau, peak 1: zero through each lead, one quintic shoulder either
+## side, flat across the core.
+static func _plateau(u: float) -> float:
+	var c := clampf(u, 0.0, 1.0)
+	var width := SHOULDER_FRACTION - LEAD_FRACTION
+	if c <= LEAD_FRACTION or c >= 1.0 - LEAD_FRACTION:
+		return 0.0
+	if c < SHOULDER_FRACTION:
+		return _quintic((c - LEAD_FRACTION) / width)
+	if c <= 1.0 - SHOULDER_FRACTION:
+		return 1.0
+	return 1.0 - _quintic((c - (1.0 - SHOULDER_FRACTION)) / width)
+
+
+static func _quintic(u: float) -> float:
+	var c := clampf(u, 0.0, 1.0)
+	return c * c * c * (10.0 + c * (-15.0 + 6.0 * c))
+
+
+static func _quintic_integral(u: float) -> float:
+	var c := clampf(u, 0.0, 1.0)
+	return c * c * c * c * (2.5 + c * (-3.0 + c))

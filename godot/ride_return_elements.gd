@@ -111,20 +111,37 @@ const UNLOAD_TOLERANCE_G := 0.01
 ## endpoints sit below the ends of that window, so this is a floor on the published prominence
 ## rather than a target for it, and geometry is never scaled off the counterpart.
 const PROMINENCE_FLOOR_M := 0.7458
-## The elevation bound's quadrature: steps per curvature stage - which is also the sample count of
-## the scan that finds the deepest crest - corrections of the crest knot, and bisections of each
-## window edge. Nothing here integrates a trajectory: these are counts on a commanded analytic
-## profile, evaluated once per role by the macro stage and never inside a solve.
+## The bounds' quadrature: steps per curvature stage - which is also the sample count of the scan
+## that finds the deepest crest, and of the turn bound's own trace - corrections of the crest knot,
+## and bisections of each window edge. Nothing here integrates a trajectory: these are counts on a
+## commanded analytic profile, evaluated once per role by the macro stage and never inside a solve.
 const BOUND_SAMPLES := 24
 const BOUND_CREST_PASSES := 3
 const BOUND_BISECTIONS := 16
-## Curvature bounds for the height solve, stated as loads rather than as radii: no stage may ask
-## for more than the 4.0 g held normal limit the macro stage also reasons against, and none may
-## unload past -1.0 g, which is twice the deepest authored airtime. Both signs are open on the
-## first stage because a beat handed a climbing entry pitches down into its crest, exactly as one
-## handed a descending entry pitches up.
+const TURN_BOUND_SAMPLES := 384
+## What a bound's analytic profile and the production integration of the same assignment were
+## measured to disagree by at each published edge: 1.4e-3 g of load and 7.7e-3 m of prominence,
+## rounded up. A bound published at its own zero-margin point is a bound whose edge does not build,
+## so every window and ceiling below holds this much margin on the trace and is buildable at its
+## edge - the macro stage may sit a control on its bound, and there is no retry behind it.
+const BOUND_AGREEMENT_G := 0.002
+const BOUND_AGREEMENT_M := 0.01
+## Curvature bounds for the height solve, stated as loads rather than as radii: no stage's own
+## `v^2 kappa / g0` may pass the 4.0 g held normal limit the macro stage also reasons against, and
+## none may unload past -1.0 g, which is twice the deepest authored airtime. Both signs are open on
+## the first stage because a beat handed a climbing entry pitches down into its crest, exactly as
+## one handed a descending entry pitches up. These bound curvature, not the peak normal load: with
+## the `cos(theta)` term an accepted build reaches 5.157 g of peak normal at 290 m and 80 m/s from
+## a -20 deg handover, which is inside the duration envelope at its ~3.6 s and refused by the
+## `normal_positive_g` margin rather than by these.
 const NORMAL_CEILING_G := 4.0
 const AIRTIME_FLOOR_G := -1.0
+## How far inside those bounds a traced knot must sit before the elevation window admits it. The
+## three-control height solve converges in 6 evaluations against its 41-evaluation cap where its
+## controls have room and needs 27-42 where one of them is pinned, so a window edge that pins a
+## control is an edge that does not build. Measured: 0.02 g leaves every published edge converging
+## in 6.
+const KNOT_INTERIOR_G := 0.02
 
 ## Seam tolerances (design 2026-08-22 section 4), to be confirmed by measurement once the first
 ## fleet is green.
@@ -166,7 +183,8 @@ const PLANARITY_TOLERANCE_FRACTION := 0.00001
 ## `BoundedSolver.solve` costs `1 + K(n + 1) + R` unique evaluations. The height beat's three
 ## controls with K <= 8 accepted iterations and R <= 8 rejections give 1 + 8*4 + 8 = 41. The turn's
 ## one control is a monotone bracket - core lateral load falls strictly as bank rises - so it uses
-## the same 32-evaluation cap the terminal's one-dimensional brake bracket declares.
+## the same 32-evaluation cap the terminal's one-dimensional brake bracket declares: one unbanked
+## integration that settles the bank ceiling, then 31 bisections of the bracket it opens.
 const MAX_HEIGHT_EVALUATIONS := 41
 const MAX_TURN_EVALUATIONS := 32
 
@@ -189,7 +207,7 @@ static func preview(assignment: Dictionary, step_m: float = 1.0) -> Dictionary:
 	var spans: Array = []
 	if str(assignment.family) == TURN_FAMILY:
 		controls = [0.0]
-		spans = _turn_spans(assignment, _turn_geometry(assignment), 0.0)
+		spans = _turn_spans(assignment, _turn_geometry(assignment, _pitch(tangent)), 0.0)
 	else:
 		# The nominal crest sits at the middle of the allocated arc: the third geometric statement
 		# that replaces the build's unload target, which no speed-free trace can measure.
@@ -249,16 +267,172 @@ static func build(start: Dictionary, assignment: Dictionary, settings: Dictionar
 		"evaluation_count": evaluations[0], "errors": errors}
 
 
-## The bank ceiling for one role: the geometric counterpart ceiling, or the roll the envelope
-## allows across the shoulder that has to establish it, whichever is lower. A quintic shoulder's
-## peak slope is 1.875, so rolling to `phi` over `SHOULDER_FRACTION * L` at `v` peaks at
-## `1.875 phi v / (SHOULDER_FRACTION L)`, and holding that at or below the envelope's roll-rate
-## limit is the inequality below. The macro heading bound consumes this ceiling through the
-## counter-lateral identity, so no layout may assign a heading this family would have to break
-## the roll envelope to deliver.
+## The ceiling on the bank one role's rider measures: the geometric counterpart ceiling, or the
+## roll the envelope allows across the shoulder that has to establish it, whichever is lower. A
+## quintic shoulder's peak slope is 1.875, so rolling through `phi` over `SHOULDER_FRACTION * L`
+## at `v` peaks at `1.875 phi v / (SHOULDER_FRACTION L)`, and holding that at or below the
+## envelope's roll-rate limit is the inequality below. `speed_mps` is the fastest speed the role
+## reaches, not the speed it was handed: a descending role leaves faster than it entered, and its
+## exit shoulder rolls at that speed. The macro heading bound consumes this same ceiling, so no
+## layout may assign a heading this family would have to break the roll envelope to deliver.
 static func max_bank_rad(length_m: float, speed_mps: float) -> float:
 	return minf(TURN_BANK_CEILING_RAD, deg_to_rad(RideVerify.ROLL_RATE_LIMIT)
 		* SHOULDER_FRACTION * length_m / (QUINTIC_PEAK_SLOPE * speed_mps))
+
+
+static func _speed_ceiling(speeds: PackedFloat64Array) -> float:
+	var ceiling := 0.0
+	for speed in speeds:
+		ceiling = maxf(ceiling, float(speed))
+	return ceiling
+
+
+## The heading a turn can be assigned and still press the rider down the bank at every sample: the
+## family's counterpart to `elevation_bound_m`, published so no layout may assign a heading this
+## family then refuses. It is a function of the handover pitch, not only of arc and entry speed,
+## and the dependence is neither small nor one-signed: a descending role gains speed, so `v^2
+## kappa / g0` rises across a core the bank is held constant through, while the frame's own bank
+## drift leans against that bank exactly where the speed is highest - the turn goes from
+## overbanked to underbanked before its exit shoulder. Against that, the same descent pitches the
+## track up, and `v^2 kappa_pitch / g0` adds to the load the bank resolves, which on a short arc
+## buys more heading than a level handover does.
+##
+## No closed form survives all of that, so the ceiling is bisected over the family's own analytic
+## profile - the same trace `elevation_bound_m` uses, and no integration. For a candidate heading
+## the core's counter-lateral condition fixes the bank in closed form at every core sample, the
+## smallest of those is the bank the build's bracket converges to, and the candidate is held only
+## if that bank is inside `max_bank_rad` and no sample carries outward lateral.
+static func heading_bound_rad(length_m: float, speed_mps: float,
+		entry_pitch_rad: float) -> float:
+	var trace := _turn_trace(length_m, speed_mps, entry_pitch_rad)
+	var ceiling := max_bank_rad(length_m, float(trace.speed_ceiling_mps))
+	var low := 0.0
+	var high := PI
+	if _turn_holds(trace, ceiling, high):
+		return high
+	for _iteration in BOUND_BISECTIONS:
+		var heading := 0.5 * (low + high)
+		if _turn_holds(trace, ceiling, heading):
+			low = heading
+		else:
+			high = heading
+	return low if low > 0.0 and _turn_holds(trace, ceiling, low) else 0.0
+
+
+## One candidate heading against the family's own contract, on the commanded profile. With
+## `l = c cos(bank) - B sin(bank)`, `B = v^2 kappa_pitch / g0 + cos(theta)` and `c = v^2 kappa_yaw
+## / g0`, the inward lateral at bank `beta` is `R sin(beta - delta)` for `R = hypot(B, c)` and
+## `delta = atan2(c, B)`, so the bank that holds the counterpart's 0.47 g at one core sample is
+## exact. The core's own samples do not agree on it - speed and pitch both move across the core -
+## and the build's bracket converges on the largest core lateral, which is the smallest of those
+## banks.
+static func _turn_holds(trace: Dictionary, ceiling_rad: float, heading_rad: float) -> bool:
+	# `_solve_turn` brackets the commanded twist below the measured ceiling by the drift the frame
+	# adds to it, so that is the bracket this candidate has to fit inside as well.
+	var ceiling := ceiling_rad - absf(heading_rad * float(trace.drift))
+	var bank := INF
+	for sample: Array in trace.samples:
+		if float(sample[0]) < SHOULDER_FRACTION or float(sample[0]) > 1.0 - SHOULDER_FRACTION:
+			continue
+		var lateral := heading_rad * float(sample[3])
+		var radius := sqrt(float(sample[4]) * float(sample[4]) + lateral * lateral)
+		if radius <= COUNTER_LATERAL_TARGET_G:
+			return false
+		bank = minf(bank, asin(COUNTER_LATERAL_TARGET_G / radius)
+			+ atan2(lateral, float(sample[4])) - heading_rad * float(sample[2]))
+	if not (bank > 0.0) or bank > ceiling:
+		return false
+	for sample: Array in trace.samples:
+		if float(sample[3]) <= 0.0:
+			continue
+		var angle := float(sample[1]) * bank + heading_rad * float(sample[2])
+		if float(sample[4]) * sin(angle) - heading_rad * float(sample[3]) * cos(angle) \
+				< BOUND_AGREEMENT_G:
+			return false
+	return true
+
+
+## The turn profile the ceiling is measured on: `[u, twist fraction, bank drift per rad of
+## heading, c per rad of heading, B]` at each sample, plus the fastest speed the role reaches,
+## which is the speed `max_bank_rad` is taken at on both sides. Track pitch is the shared
+## level-out, speed follows the same arc-length energy equation the production integrator does,
+## and the bank is the
+## commanded twist plus the frame's own geometric drift - with zero commanded twist a transported
+## frame keeps its roll while the world level frame rotates about the tangent at
+## `-d(psi)/ds sin(theta)`, which is the drift `_turn_geometry` cancels at the exit and which no
+## measurement of the commanded twist alone would see.
+static func _turn_trace(length_m: float, speed_mps: float,
+		entry_pitch_rad: float) -> Dictionary:
+	var secant := LOADED_ARC_FRACTION
+	var drift := 0.0
+	if not is_zero_approx(entry_pitch_rad):
+		var gudermannian := _inverse_gudermannian(entry_pitch_rad)
+		secant = LOADED_ARC_FRACTION * gudermannian / entry_pitch_rad
+		drift = -log(cos(entry_pitch_rad)) / gudermannian
+	var pitch_peak := -entry_pitch_rad / (LOADED_ARC_FRACTION * length_m)
+	var energy := 0.5 * speed_mps * speed_mps
+	var step := length_m / TURN_BOUND_SAMPLES
+	var accumulated := 0.0
+	var ceiling := speed_mps
+	var trace: Array = []
+	for index in TURN_BOUND_SAMPLES + 1:
+		var u := float(index) / TURN_BOUND_SAMPLES
+		var shape := _turn_shape(u)
+		var squared := 2.0 * maxf(energy, 1.0)
+		ceiling = maxf(ceiling, sqrt(squared))
+		trace.append([u, _twist_fraction(u), accumulated - _exit_fraction(u) * drift,
+			squared * shape / (Motion.G0 * length_m * secant),
+			squared * pitch_peak * shape / Motion.G0
+				+ cos(level_out_pitch_rad(entry_pitch_rad, u))])
+		if index < TURN_BOUND_SAMPLES:
+			var midpoint := u + 0.5 / TURN_BOUND_SAMPLES
+			var pitch := level_out_pitch_rad(entry_pitch_rad, midpoint)
+			accumulated += _turn_shape(midpoint) * tan(pitch) \
+				/ (secant * TURN_BOUND_SAMPLES)
+			energy += step * (-Motion.G0 * sin(pitch) - RideProgram.ROLLING_MPS2
+				- 2.0 * RideProgram.AERO_PER_M * energy)
+	return {"samples": trace, "drift": drift, "speed_ceiling_mps": ceiling}
+
+
+## The commanded curvature shape: zero through each lead, one quintic shoulder either side, flat
+## across the core. `plateau_fraction` is its normalized integral.
+static func _turn_shape(u: float) -> float:
+	var width := SHOULDER_FRACTION - LEAD_FRACTION
+	if u <= LEAD_FRACTION or u >= 1.0 - LEAD_FRACTION:
+		return 0.0
+	if u < SHOULDER_FRACTION:
+		return _quintic((u - LEAD_FRACTION) / width)
+	if u <= 1.0 - SHOULDER_FRACTION:
+		return 1.0
+	return _quintic((1.0 - LEAD_FRACTION - u) / width)
+
+
+## The commanded twist as `twist = _twist_fraction(u) phi + _exit_fraction(u) phi_exit`: the two
+## coefficients of the five stages `_turn_spans` emits, so the bound reads the bank the build
+## commands rather than a second description of it.
+static func _twist_fraction(u: float) -> float:
+	var width := SHOULDER_FRACTION - LEAD_FRACTION
+	if u <= LEAD_FRACTION:
+		return TWIST_LEAD_FRACTION * _quintic(u / LEAD_FRACTION)
+	if u < SHOULDER_FRACTION:
+		return TWIST_LEAD_FRACTION + (1.0 - TWIST_LEAD_FRACTION) \
+			* _quintic((u - LEAD_FRACTION) / width)
+	if u <= 1.0 - SHOULDER_FRACTION:
+		return 1.0
+	if u <= 1.0 - LEAD_FRACTION:
+		return 1.0 - (1.0 - TWIST_LEAD_FRACTION) \
+			* _quintic((u - 1.0 + SHOULDER_FRACTION) / width)
+	return TWIST_LEAD_FRACTION * (1.0 - _quintic((u - 1.0 + LEAD_FRACTION) / LEAD_FRACTION))
+
+
+static func _exit_fraction(u: float) -> float:
+	var width := SHOULDER_FRACTION - LEAD_FRACTION
+	if u <= 1.0 - SHOULDER_FRACTION:
+		return 0.0
+	if u <= 1.0 - LEAD_FRACTION:
+		return (1.0 - TWIST_LEAD_FRACTION) * _quintic((u - 1.0 + SHOULDER_FRACTION) / width)
+	return 1.0 - TWIST_LEAD_FRACTION + TWIST_LEAD_FRACTION \
+		* _quintic((u - 1.0 + LEAD_FRACTION) / LEAD_FRACTION)
 
 
 ## The fraction of a shouldered-plateau channel delivered by arc `u`: the normalized integral of
@@ -306,29 +480,30 @@ static func heading_fraction(entry_pitch_rad: float, u: float) -> float:
 
 
 ## The net elevation a height beat can be assigned and still be one: the family's counterpart to
-## `max_bank_rad`, published so no layout may assign an elevation this family then refuses. The
-## height solve's own bounds fix the pull-up knot's range, the exit-pitch condition fixes the
+## `heading_bound_rad`, published so no layout may assign an elevation this family then refuses.
+## The height solve's own bounds fix the pull-up knot's range, the exit-pitch condition fixes the
 ## pullout knot from it, and the crest is pinned by the authored unload, so the whole profile -
-## and with it the net elevation, the crest prominence and the peak normal load - is a function of
-## that one knot. The window is the elevation either side of the deepest crest at which the
-## prominence floor or the load envelope is first missed. A handover this family cannot crest out
-## of publishes an inverted, empty window rather than a bound. The crest here is the family's own
-## `DEFAULT_UNLOAD_G`; a role that publishes a drawn unload must pass it to both this and `build`.
-static func elevation_bound_m(length_m: float, speed_mps: float,
-		entry_pitch_rad: float) -> Vector2:
-	var box := _height_knot_box(length_m, speed_mps, entry_pitch_rad)
-	var deepest := box.x
+## and with it the net elevation, the crest prominence, the peak normal load and the room the
+## solve's three controls have - is a function of that one knot. The window is the elevation
+## either side of the deepest crest at which the prominence floor, the load envelope or the
+## solve's own bounds are first missed. A handover this family cannot crest out of publishes an
+## inverted, empty window rather than a bound.
+static func elevation_bound_m(length_m: float, speed_mps: float, entry_pitch_rad: float,
+		unload_g: float = DEFAULT_UNLOAD_G) -> Vector2:
+	var box := _knot_bounds(speed_mps)
+	var deepest := INF
 	var prominence := -INF
 	for index in BOUND_SAMPLES + 1:
 		var knot := lerpf(box.x, box.y, float(index) / BOUND_SAMPLES)
-		var traced := _height_profile(length_m, speed_mps, entry_pitch_rad, knot)
-		if float(traced.prominence_m) > prominence and float(traced.load_slack_g) >= 0.0:
+		var traced := _height_profile(length_m, speed_mps, entry_pitch_rad, knot, unload_g)
+		if _height_crests(traced) and float(traced.prominence_m) > prominence:
 			prominence = float(traced.prominence_m)
 			deepest = knot
-	if prominence < PROMINENCE_FLOOR_M:
+	if not is_finite(deepest):
 		return Vector2(INF, -INF)
-	return Vector2(_height_edge(length_m, speed_mps, entry_pitch_rad, box.x, deepest),
-		_height_edge(length_m, speed_mps, entry_pitch_rad, box.y, deepest))
+	return Vector2(
+		_height_edge(length_m, speed_mps, entry_pitch_rad, unload_g, box.x, deepest),
+		_height_edge(length_m, speed_mps, entry_pitch_rad, unload_g, box.y, deepest))
 
 
 ## The seam evidence, split by the order at which each part is measurable: position, tangent and
@@ -356,7 +531,7 @@ static func seam_residuals(previous: Dictionary, next: Dictionary) -> Dictionary
 			- float(entry_jets.twist_slope)),
 		"twist_acceleration_rad_m2": absf(float(exit_jets.twist_acceleration)
 			- float(entry_jets.twist_acceleration)),
-		"finite_difference_x3_m2": _finite_difference(previous.trajectory, next.trajectory),
+		"finite_difference_x3_m2": _finite_difference(next.trajectory),
 	}
 	residuals.ok = residuals.position_m <= POSITION_TOLERANCE_M \
 		and residuals.tangent <= TANGENT_TOLERANCE \
@@ -386,10 +561,15 @@ static func seam_residuals(previous: Dictionary, next: Dictionary) -> Dictionary
 ## frame rotates about it at `-d(psi)/ds sin(theta)`, so measured bank accumulates
 ## `integral of d(psi)/ds sin(theta) ds` - `-ln(cos(theta0))` against `G(theta0)`. Ending the twist
 ## at minus that closes the frame analytically instead of with a second solved scalar.
-static func _turn_geometry(assignment: Dictionary) -> Dictionary:
+##
+## The entry pitch is the caller's, not the assignment's: `build` reads it from the integrated
+## state it is entered on and `preview` from the frame the assignment publishes, so the pitch this
+## geometry levels out of is always the pitch the element is actually handed. Reading the
+## assignment inside a build would command the wrong level-out whenever a macro-nominal frame and
+## the accepted end state before it differ, and only the exit-pitch margin would catch it.
+static func _turn_geometry(assignment: Dictionary, entry_pitch: float) -> Dictionary:
 	var length := float(assignment.target_length_m)
 	var heading := float(assignment.heading_change_rad)
-	var entry_pitch := _pitch((assignment.entry_frame.tangent as Vector3).normalized())
 	var secant := LOADED_ARC_FRACTION
 	var drift := 0.0
 	if not is_zero_approx(entry_pitch):
@@ -455,24 +635,34 @@ static func _height_spans(assignment: Dictionary, knots: Array) -> Array:
 ## is never tried, so closure can never buy itself one.
 static func _solve_turn(start: Dictionary, assignment: Dictionary, settings: Dictionary,
 		evaluations: Array) -> Dictionary:
-	var geometry := _turn_geometry(assignment)
+	var geometry := _turn_geometry(assignment,
+		_pitch((start.tangent as Vector3).normalized()))
 	var curvature := float(geometry.yaw_peak_m_inv)
 	var direction := signf(curvature)
 	if direction == 0.0:
 		return {"ok": false, "errors": [{"code": "degenerate_turn",
 			"role_id": assignment.role_id}]}
 	var length := float(assignment.target_length_m)
-	# The roll-rate ceiling governs the larger of the two twist pairs. The exit pair rolls through
-	# `|phi - phi_exit|`, so a bank drift that leans against the bank - a climbing handover - buys
-	# its own reduction here rather than being assumed away.
-	var ceiling := maxf(0.0, max_bank_rad(length, float(start.speed_mps))
-		- maxf(0.0, direction * float(geometry.bank_drift_rad)))
+	# Bank never moves the centreline, so the speed history is the same at every candidate: one
+	# unbanked integration settles the ceiling before the bracket opens, and the fastest sample of
+	# it - the exit of a descending role, the entry of a climbing one - is the speed both twist
+	# pairs are held against. The published ceiling bounds the bank the rider measures; the bracket
+	# gives up the drift the frame adds to the commanded twist, so the entry pair rolls through at
+	# most `ceiling - |drift|` and the exit pair through at most `ceiling`, both at or under the
+	# envelope's roll rate at the fastest sample. That is what makes `bank_ceiling_rad` and
+	# `roll_rate_deg_s` contracts the bracket cannot break rather than margins measured afterward.
+	var unbanked := _integrate(start, _turn_spans(assignment, geometry, 0.0), settings,
+		evaluations)
+	if not unbanked.ok:
+		return {"ok": false, "errors": [{"code": "turn_integration",
+			"role_id": assignment.role_id, "detail": str(unbanked.errors)}]}
+	var ceiling := max_bank_rad(length, _speed_ceiling(unbanked.speed_mps))
 	var low := 0.0
-	var high := ceiling
+	var high := maxf(0.0, ceiling - absf(float(geometry.bank_drift_rad)))
 	var bank := 0.0
 	var route := {}
 	var spans: Array = []
-	for _iteration in MAX_TURN_EVALUATIONS:
+	for _iteration in MAX_TURN_EVALUATIONS - 1:
 		bank = 0.5 * (low + high)
 		spans = _turn_spans(assignment, geometry, direction * bank)
 		route = _integrate(start, spans, settings, evaluations)
@@ -506,10 +696,9 @@ static func _solve_height(start: Dictionary, assignment: Dictionary, settings: D
 	var unload := float(assignment.get("unload_g", DEFAULT_UNLOAD_G))
 	var crest := _crest_curvature_m_inv(unload, speed)
 	var nominal := _height_nominal(entry_pitch, length, elevation, [0.0, 1.0, 0.0], crest)
-	var ceiling := NORMAL_CEILING_G * Motion.G0 / (speed * speed)
-	var floor_curvature := (AIRTIME_FLOOR_G - 1.0) * Motion.G0 / (speed * speed)
-	var lower := [floor_curvature, floor_curvature, 0.0]
-	var upper := [ceiling, 0.0, ceiling]
+	var box := _knot_bounds(speed)
+	var lower := [box.x, box.x, 0.0]
+	var upper := [box.y, 0.0, box.y]
 	var residual := func(x: Array) -> Array:
 		var probe := _integrate(start, _height_spans(assignment, x), settings, evaluations)
 		if not probe.ok:
@@ -612,27 +801,31 @@ static func _height_knots(length_m: float, entry_pitch_rad: float, pull_up_m_inv
 ## speed there is not the entry speed. The crest knot is therefore corrected from the traced
 ## minimum - `dn = v^2 dkappa / g0` makes that exact to first order - until the two agree.
 static func _height_profile(length_m: float, speed_mps: float, entry_pitch_rad: float,
-		pull_up_m_inv: float) -> Dictionary:
-	var crest := _crest_curvature_m_inv(DEFAULT_UNLOAD_G, speed_mps)
+		pull_up_m_inv: float, unload_g: float) -> Dictionary:
+	var crest := _crest_curvature_m_inv(unload_g, speed_mps)
 	var traced := _height_trace(length_m, speed_mps, entry_pitch_rad, pull_up_m_inv, crest)
 	for _pass in BOUND_CREST_PASSES:
-		crest += (DEFAULT_UNLOAD_G - float(traced.minimum_normal_g)) * Motion.G0 \
+		crest += (unload_g - float(traced.minimum_normal_g)) * Motion.G0 \
 			/ float(traced.minimum_speed_squared)
 		traced = _height_trace(length_m, speed_mps, entry_pitch_rad, pull_up_m_inv, crest)
+	traced.knot_slack_g = _knot_slack(_knot_bounds(speed_mps), traced.knots) \
+		* speed_mps * speed_mps / Motion.G0
 	return traced
 
 
-## The pull-up knot's own range: the height solve's bounds on it, narrowed to where the pullout
-## knot the exit-pitch condition implies stays inside the solve's bounds as well.
-static func _height_knot_box(length_m: float, speed_mps: float,
-		entry_pitch_rad: float) -> Vector2:
-	var area := _pitch_area(1.0)
+## The height solve's own curvature bounds at one entry speed, and the room a traced profile's
+## knots keep inside them. `NORMAL_CEILING_G` and `AIRTIME_FLOOR_G` are the two, stated as loads;
+## the crest knot is bounded above by zero and the pullout below by it, so a knot's slack is its
+## distance to whichever of those it is nearest.
+static func _knot_bounds(speed_mps: float) -> Vector2:
 	var scale := Motion.G0 / (speed_mps * speed_mps)
-	var reach := (-entry_pitch_rad / length_m - float(area[1])
-		* _crest_curvature_m_inv(DEFAULT_UNLOAD_G, speed_mps)) / float(area[0])
-	return Vector2(maxf((AIRTIME_FLOOR_G - 1.0) * scale,
-			reach - NORMAL_CEILING_G * scale * float(area[2]) / float(area[0])),
-		minf(NORMAL_CEILING_G * scale, reach))
+	return Vector2((AIRTIME_FLOOR_G - 1.0) * scale, NORMAL_CEILING_G * scale)
+
+
+static func _knot_slack(bounds: Vector2, knots: Array) -> float:
+	return minf(minf(float(knots[1]) - bounds.x, bounds.y - float(knots[1])),
+		minf(minf(float(knots[2]) - bounds.x, -float(knots[2])),
+			minf(float(knots[3]), bounds.y - float(knots[3]))))
 
 
 ## One candidate height profile, traced from the family's own commanded curvature: track pitch is
@@ -647,8 +840,6 @@ static func _height_trace(length_m: float, speed_mps: float, entry_pitch_rad: fl
 	var height := 0.0
 	var energy := 0.5 * speed_mps * speed_mps
 	var apex_height := INF
-	var climb_height := 0.0
-	var climbing := pitch >= 0.0
 	var peak_normal := -INF
 	var minimum_normal := INF
 	var minimum_squared := 2.0 * energy
@@ -674,35 +865,38 @@ static func _height_trace(length_m: float, speed_mps: float, entry_pitch_rad: fl
 			if normal < minimum_normal:
 				minimum_normal = normal
 				minimum_squared = squared
-			if not climbing and next >= 0.0:
-				climbing = true
-				climb_height = height
 			if is_inf(apex_height) and pitch > 0.0 and next <= 0.0:
 				apex_height = height
 			pitch = next
-	return {"elevation_m": height, "minimum_normal_g": minimum_normal,
+	return {"elevation_m": height, "minimum_normal_g": minimum_normal, "knots": knots,
 		"minimum_speed_squared": minimum_squared,
-		"prominence_m": -INF if is_inf(apex_height) \
-			else apex_height - maxf(climb_height, height),
+		"prominence_m": -INF if is_inf(apex_height) else apex_height - maxf(0.0, height),
 		"load_slack_g": RideVerify.limit_at(RideVerify.POSITIVE_LIMIT, duration) - peak_normal}
 
 
 ## One edge of the window: bisect the pull-up knot between the deepest crest and a knot outside
 ## the contract, and publish the net elevation of the last knot still inside it.
 static func _height_edge(length_m: float, speed_mps: float, entry_pitch_rad: float,
-		outside: float, inside: float) -> float:
+		unload_g: float, outside: float, inside: float) -> float:
 	for _iteration in BOUND_BISECTIONS:
 		var knot := 0.5 * (outside + inside)
-		if _height_crests(_height_profile(length_m, speed_mps, entry_pitch_rad, knot)):
+		if _height_crests(_height_profile(length_m, speed_mps, entry_pitch_rad, knot,
+				unload_g)):
 			inside = knot
 		else:
 			outside = knot
-	return float(_height_profile(length_m, speed_mps, entry_pitch_rad, inside).elevation_m)
+	return float(_height_profile(length_m, speed_mps, entry_pitch_rad, inside,
+		unload_g).elevation_m)
 
 
+## What a traced profile has to hold before the window admits its elevation: the counterpart
+## prominence, the load envelope, and room for the solve's own three controls - each with the
+## margin the trace and the production integration were measured to disagree by, so the edge the
+## macro stage may sit a control on is an edge that builds.
 static func _height_crests(traced: Dictionary) -> bool:
-	return float(traced.prominence_m) >= PROMINENCE_FLOOR_M \
-		and float(traced.load_slack_g) >= 0.0
+	return float(traced.prominence_m) >= PROMINENCE_FLOOR_M + BOUND_AGREEMENT_M \
+		and float(traced.load_slack_g) >= BOUND_AGREEMENT_G \
+		and float(traced.knot_slack_g) >= KNOT_INTERIOR_G
 
 
 static func _height_curvature(knots: Array, stage: int, u: float) -> float:
@@ -797,14 +991,16 @@ static func _observe(assignment: Dictionary, solved: Dictionary,
 	return observation
 
 
-## The crest contract, restated from the pitch-zero crossing so that a beat handed a descending
-## entry is measured rather than refused: the beat may lose height while it is still nose-down,
-## and its apex is the one downward `theta = 0` crossing strictly inside the role. Height must be
-## monotone from where the climb starts - the upward crossing, or the entry when the beat is handed
-## a level or climbing frame - to that apex, and monotone the other way after it. Prominence is the
-## design's `y_apex - max(y_entry, y_exit)` with the entry taken where the climb starts, because a
-## beat entered at -35 deg necessarily gives up height before it can gain any; it carries the
-## counterpart floor above as a refusing margin, so a hump is not a height beat.
+## The crest contract, measured from the pitch-zero crossing: the apex is the one downward
+## `theta = 0` crossing strictly inside the role, height is monotone up to it and monotone down
+## after it. A beat handed a descending frame is measured rather than refused outright - it may
+## lose height while it is still nose-down, so the monotone climb is required only from where the
+## climb starts - but prominence is the design's own `y_apex - max(y_entry, y_exit)`, measured
+## from the entry the design names and not from that later climb start. That is the stricter
+## reading of the two, and it is the acceptance formula: a beat that never gets its apex back
+## above the frame it was handed does not stand above its own endpoints, whatever it does in
+## between. `elevation_bound_m` publishes the same measurement, so a handover this family cannot
+## crest back over publishes no window at all rather than refusing every elevation inside one.
 static func _apex(route: Dictionary, entry_tangent: Vector3) -> Dictionary:
 	var count: int = route.time_s.size()
 	var climb_start := _climb_start(route)
@@ -843,7 +1039,7 @@ static func _apex(route: Dictionary, entry_tangent: Vector3) -> Dictionary:
 		apex_distance = float(route.distance_m[apex]) - float(route.distance_m[0])
 	return {"pitch_zero_crossings": crossings, "apex_distance_m": apex_distance,
 		"apex_height_m": apex_height, "apex_pitch_rate_m_inv": apex_rate,
-		"prominence_m": apex_height - maxf(route.position_m[climb_start].y,
+		"prominence_m": apex_height - maxf(route.position_m[0].y,
 			route.position_m[-1].y),
 		"monotone_phases": monotone, "out_of_plane_m": out_of_plane}
 
@@ -952,18 +1148,22 @@ static func _jets(span: Dictionary, route: Dictionary, index: int, u: float) -> 
 	}
 
 
-## The coarse sanity value the spec demotes finite differencing to: a third difference of the
-## published float32 positions across the seam. It is diagnostic only and carries no threshold.
-static func _finite_difference(previous: Dictionary, next: Dictionary) -> float:
-	var count: int = previous.position_m.size()
-	if count < 3 or next.position_m.size() < 2:
+## The coarse sanity value the spec demotes finite differencing to: the integrated path's own
+## reading of `|x'''|` at the seam, to be compared with the analytic jets published either side of
+## it. It is diagnostic only, carries no threshold and vetoes nothing.
+##
+## It is differenced on one route's own spacing, and that is the whole reason it can read anything.
+## A spatial span's last step is truncated to end exactly on its declared length, so the interval
+## before a seam is a fraction of the one before that - 0.470 m against 0.722 m on the measured
+## turn/height seam - and a third difference taken across that change reads the spacing, not the
+## geometry: 1.339 against 1.013e-4 on the same seam. The four samples below all sit on full steps
+## of the arriving element, the first of which is the seam point itself.
+static func _finite_difference(next: Dictionary) -> float:
+	if next.position_m.size() < 4:
 		return 0.0
-	var a: Vector3 = previous.position_m[count - 3]
-	var b: Vector3 = previous.position_m[count - 2]
-	var c: Vector3 = previous.position_m[count - 1]
-	var d: Vector3 = next.position_m[1]
 	var h: float = maxf(float(next.distance_m[1]) - float(next.distance_m[0]), 0.000001)
-	return (d - 3.0 * c + 3.0 * b - a).length() / (h * h * h)
+	return (next.position_m[3] - 3.0 * next.position_m[2] + 3.0 * next.position_m[1]
+		- next.position_m[0]).length() / (h * h * h)
 
 
 ## The greatest distance from any integrated sample to the assigned corridor polyline.

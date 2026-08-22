@@ -105,25 +105,6 @@ static func build(start: Dictionary, plan: Dictionary, ordered_roles: Array) -> 
 	})
 
 
-## The macro feasibility contract on a turn's heading change: its allocated arc, its entry speed
-## and the bank the family can actually reach bound it, checked here rather than handed to a local
-## solve that would have to break the bank, roll or force envelope to deliver it. The ceiling is
-## the family's `max_bank_rad` - the roll the envelope allows across that arc at that speed, or the
-## counterpart's 77 deg, whichever is lower - and the heading it buys follows from the same
-## counter-lateral identity the family solves to: holding `-0.47 g` down the bank at `phi` needs
-## `v^2 kappa / g0 = (sin(phi) - 0.47) / cos(phi)`. A 180 deg reversal is refused by this bound,
-## which is why no reversal topology exists.
-##
-## Speed is the role's own worst case rather than a fixed 80 m/s: the return only sheds speed at
-## the gate, but a descending role enters faster than the state handed over, and a bound built
-## under the speed the chain reaches would admit a heading the accepted chain is then refused for.
-static func heading_bound_rad(length_m: float, speed_mps: float) -> float:
-	var bank := RideReturnElements.max_bank_rad(length_m, speed_mps)
-	return RideReturnElements.LOADED_ARC_FRACTION * length_m * Motion.G0 \
-		* (sin(bank) - RideReturnElements.COUNTER_LATERAL_TARGET_G) \
-		/ (cos(bank) * speed_mps * speed_mps)
-
-
 static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) -> Dictionary:
 	var errors: Array = []
 	var station: Variant = plan.get("station")
@@ -229,16 +210,25 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 	for index in order.size():
 		var band: Vector2 = length_bands[index]
 		var box := Vector2.ZERO
+		# Every family exits level by contract, so a role's entry pitch is the handover for the
+		# first role and exactly zero for every later one, whatever the controls do. Both families
+		# publish a bound that depends on it: a descending handover gains speed under a held bank,
+		# and pulls out of its dive under one, so neither ceiling is the level one.
+		var entry_pitch := 0.0 if index > 0 \
+			else asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0))
 		if families[index] == TURN_FAMILY:
-			var bound := heading_bound_rad(band.x, float(context.speed_ceiling_mps))
+			var bound := RideReturnElements.heading_bound_rad(band.x,
+				float(context.speed_ceiling_mps), entry_pitch)
+			if bound <= 0.0:
+				return {"ok": false, "errors": [{"code": "heading_bound",
+					"role_id": order[index], "length_m": band.x,
+					"entry_speed_mps": context.speed_ceiling_mps,
+					"entry_pitch_rad": entry_pitch}]}
 			heading_budget += bound
 			box = Vector2(-bound, bound)
 		else:
-			# Every family exits level by contract, so a role's entry pitch is the handover for
-			# the first role and exactly zero for every later one, whatever the controls do.
 			box = RideReturnElements.elevation_bound_m(band.x,
-				float(context.speed_ceiling_mps),
-				0.0 if index > 0 else asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0)))
+				float(context.speed_ceiling_mps), entry_pitch)
 			if box.x >= box.y:
 				return {"ok": false, "errors": [{"code": "elevation_bound",
 					"role_id": order[index], "length_m": band.x,
@@ -367,7 +357,8 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 					"window_m": window, "elevation_change_m": elevation,
 					"shortfall_m": maxf(window.x - elevation, elevation - window.y)})
 			continue
-		var bound := heading_bound_rad(role.length_m, role.entry_speed_mps)
+		var bound := RideReturnElements.heading_bound_rad(role.length_m, role.entry_speed_mps,
+			asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0)))
 		if absf(role.heading_change_rad) > bound:
 			errors.append({"code": "heading_bound", "role_id": context.order[index],
 				"bound_rad": bound, "shortfall_rad": absf(role.heading_change_rad) - bound})
@@ -426,8 +417,10 @@ static func _report(context: Dictionary, chain: Dictionary, solved: Dictionary) 
 		var role: Dictionary = chain.roles[index]
 		entry_speeds[context.order[index]] = role.entry_speed_mps
 		if context.families[index] == TURN_FAMILY:
-			heading_bounds[context.order[index]] = heading_bound_rad(role.length_m,
-				role.entry_speed_mps) - absf(role.heading_change_rad)
+			heading_bounds[context.order[index]] = RideReturnElements.heading_bound_rad(
+				role.length_m, role.entry_speed_mps,
+				asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0))
+			) - absf(role.heading_change_rad)
 	return {"status": str(solved.status), "evaluations": int(solved.evaluations),
 		"gate_offset_m": chain.end_position - context.gate_position,
 		"iterations": int(solved.iterations), "max_evaluations": RideReturnSolve.MAX_RETURN_EVALUATIONS,

@@ -28,7 +28,7 @@ const HEIGHT_LENGTH_M := 380.0
 const ELEVATION_PROBES := [[290.0, 80.0, 0.0], [290.0, 70.0, 0.0], [450.0, 80.0, 0.0],
 	[450.0, 70.0, 0.0], [290.0, 80.0, -6.0], [450.0, 70.0, -10.0], [290.0, 70.0, 20.0],
 	[380.0, 80.0, 20.0], [450.0, 70.0, 20.0], [590.0, 70.0, -6.0], [590.0, 75.0, -6.0],
-	[590.0, 80.0, 0.0]]
+	[590.0, 80.0, 0.0], [590.0, 70.0, 10.0]]
 ## What the macro chain and the build may differ by. Both trace the same profiles; what is left is
 ## the chain's 24-interval Simpson quadrature against the integrator's own pitch tracking, and the
 ## sum is three orders inside the 5 m residual scale the macro stage converges its chain at.

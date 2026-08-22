@@ -4,7 +4,7 @@
 
 **Goal:** Replace the globally coupled return/capture solve with order-generic macro geometry and local, distance-domain FVD elements that close the canonical fleet honestly within every existing contract.
 
-**Architecture:** `Motion` gains one physically equivalent arc-length integration path for spatial curvature and twist profiles. A pure four-variable return layout solve allocates length and endpoint frames; local turn/height builders realize one assignment at a time; a neutral capture and one-dimensional spatial brake replace the visible five-axis terminal correction. `RideProgram` orchestrates these owners and deletes `ride_return_solve.gd` in the production cutover.
+**Architecture:** `Motion` gains one physically equivalent arc-length integration path for spatial curvature and twist profiles. A pure return layout solve with five bounded controls allocates length and endpoint frames; local turn/height builders realize one assignment at a time; a neutral capture and one-dimensional spatial brake replace the visible five-axis terminal correction. `RideProgram` orchestrates these owners and deletes `ride_return_solve.gd` in the production cutover.
 
 **Tech Stack:** Godot 4.7.1, typed GDScript, existing RK4/FVD kernel and bounded linear algebra, GitHub Actions, GitHub CLI, PowerShell.
 
@@ -15,18 +15,19 @@
 - Read the spec completely before editing and treat it as authoritative over this plan if wording differs.
 - Fable is the primary coordinator in Claude Code. Use Haiku for bounded repository discovery and CI-log extraction, Sonnet for most TDD implementation and routine review, and Opus for FVD mathematics, macro-layout architecture, and final acceptance review.
 - Agent routing is advisory, not a repository dependency. The committed code and tests must not mention any model, agent, or execution product.
-- Apply all four global `AGENTS.md` rules on every task: Think Before Coding, Simplicity First, Surgical Changes, and Goal-Driven Execution.
+- Apply all four global `CLAUDE.md` rules on every task: Think Before Coding, Simplicity First, Surgical Changes, and Goal-Driven Execution.
 - “Surgical” constrains scope, not legacy-line preservation. Rewrite any affected implementation when the verified result is materially smaller or clearer.
-- No local Godot execution. Every RED/GREEN observation comes from the PR's GitHub Actions CI.
+- Use local Godot (`D:\Games\Godot_v4.7.1-stable_win64.exe`, or the `GODOT` environment variable) freely to iterate: run the editor import and any focused suite before pushing. GitHub Actions CI on the PR is the RED/GREEN verdict — a local run is a fast check, never the evidence a step is complete.
 - Preserve the untracked `HANDOFF_NEXT_AGENT.md` and unrelated changes in the main checkout.
 - Do not alter the existing 7.8–8.2 km route band, role-length bands, force envelopes, convergence tolerances, terrain intent, or existing solver caps to make the rewrite pass.
 - The return has no positive drive or midcourse brake. Gravity plus the existing rolling/aerodynamic resistance law owns passive speed.
 - `Motion` integration is the sole centreline authority. Macro geometry and element previews are targets; integrated mismatch rejects the candidate.
 - No seed-specific branch, warm start, retry, fallback topology, tolerance, or evaluation budget. Seed 4096 is one fleet member.
 - Planner order is resolved once on `story.return`. Local failure never changes that order.
-- Prefer closed form, bounded water-filling, or one-dimensional solving. The only multi-variable solve added by this plan is the four-scalar macro geometry solve.
+- Prefer closed form, bounded water-filling, or one-dimensional solving. The only multi-variable solve added by this plan is the macro geometry solve: five bounded controls against four residuals (spec §7.4).
 - Spatial profiles use actual integrated arc length. Time profiles remain for launches and station motion.
 - Do not invent an average-G acceptance threshold. The final force summary is evidence only.
+- Honest physics is inherited, not validated. The frozen `AERO_PER_M = 7.5e-5` (`CdA ~ 1.73 m^2` for a 12 t train, ~2.8x under-damped against `docs/superpowers/specs/2026-08-15-honest-drag-derivation.md`) is the sole reason the return arrives at 70–80 m/s and needs a ~2.2 g mean brake inside 150 m. This rewrite inherits that terminal condition. No commit message, comment, report, or review may describe a green fleet here as validating that drag constant.
 - Commit each RED test separately, then commit its GREEN implementation. The final PR may be squash-merged after review.
 - After every push, identify the new CI run from the current branch rather than reusing an older run ID:
 
@@ -47,16 +48,21 @@ gh run view $run --log-failed
 
 ## File Structure
 
+New test suites use the shared `TestUtil` (`godot/test_util.gd`) assertion helpers and `RouteFixture`
+(`godot/route_fixture.gd`) synthetic-route builders, which exist by the time this plan runs. The
+test-local constructors written out in the tasks below are the fixtures those helpers do not cover;
+keep them local rather than promoting them.
+
 - Modify `godot/motion.gd`: add distance-domain RK4 spans whose curvature and twist remain physically coupled to speed and proper force.
 - Modify `godot/motion_tests.gd`: exact-length, curvature, twist, force-projection, seam, and step-halving tests.
 - Modify `godot/ride_planner.gd`: legal return permutations and one named-stream order decision.
 - Modify `godot/ride_planner_tests.gd`: all 24 permutations, stream independence, determinism, and malformed-order rejection.
 - Modify `godot/generator.gd`: publish order-neutral return role geometry/terrain contracts.
 - Modify `godot/generator_material_tests.gd`: plan schema and no-rescue assertions.
-- Create `godot/ride_return_layout.gd`: terminal gate, bounded length allocation, four-scalar macro solve, terrain/energy margins, and immutable assignments.
+- Create `godot/ride_return_layout.gd`: terminal gate, bounded length allocation, five-control macro solve, terrain/energy margins, and immutable assignments.
 - Create `godot/ride_return_layout_tests.gd`: allocation, all-order synthetic closure, infeasibility, determinism, and zero-feedback tests.
 - Create `godot/ride_return_elements.gd`: spatial preview plus concrete overbanked-turn and vertical-height builders.
-- Create `godot/ride_return_elements_tests.gd`: preview/integration agreement, speed invariance, force balance, planarity, C4, and structured local failure.
+- Create `godot/ride_return_elements_tests.gd`: preview/integration agreement, speed invariance, counter-lateral band, planarity, C4, and structured local failure.
 - Create `godot/ride_terminal.gd`: neutral capture, one-dimensional spatial brake solve, and station creep.
 - Create `godot/ride_terminal_tests.gd`: straight-frame capture, exact distance/speed, force limits, budget, and malformed-corridor tests.
 - Rewrite `godot/ride_program.gd` at the prefix/return/terminal seam: fixed prefix, one layout call, order-generic local build loop, and terminal build.
@@ -322,7 +328,7 @@ Expected: all 24 grammar fixtures pass; production bytes remain unchanged.
 
 - [ ] **Step 5: Apply the four-rule review**
 
-Fable records PASS/FAIL for all four `AGENTS.md` rules. In particular, reject a generic permutation framework outside the four return roles and reject any lookup keyed by seed.
+Fable records PASS/FAIL for all four global `CLAUDE.md` rules. In particular, reject a generic permutation framework outside the four return roles and reject any lookup keyed by seed.
 
 ---
 
@@ -342,7 +348,8 @@ Fable records PASS/FAIL for all four `AGENTS.md` rules. In particular, reject a 
 - Each assignment has exact keys: `role_id`, `family`, `entry_frame`, `exit_frame`, `target_length_m`, `corridor`, `terrain_intent`, `curvature_sign`, `heading_change_rad`, and `elevation_change_m`.
 - `entry_frame`, `exit_frame`, and `terminal_gate` are dictionaries with finite `position_m: Vector3`, unit `tangent: Vector3`, and unit orthogonal `rider_up: Vector3`.
 - `curvature_sign`, `heading_change_rad`, `elevation_change_m`, and `target_length_m` are finite floats; turn signs are exactly `-1.0` or `1.0`, while height roles publish `0.0` curvature sign.
-- Uses at most four semantic controls: signed heading change for turn A/B and signed net elevation for height A/B. Controls are addressed by role ID, never list index.
+- Uses exactly five bounded controls: signed heading change for turn A/B, signed net elevation for height A/B, and the bounded return total length `S_return`. Role controls are addressed by role ID, never list index.
+- Publishes the per-turn heading feasibility bound and its margin; a turn whose requested heading exceeds the bound is rejected here, not downstream.
 
 - [ ] **Step 1: Add focused RED tests and manifest entry**
 
@@ -354,6 +361,7 @@ The test entry point must run:
 _test_bounded_allocation_hits_exact_sum()
 _test_bounded_allocation_rejects_impossible_sum()
 _test_terminal_gate_comes_from_station_corridor()
+_test_heading_bound_rejects_an_infeasible_turn()
 _test_all_return_orders_close_synthetic_frames()
 _test_layout_is_byte_deterministic()
 _test_local_failure_feedback_cannot_change_layout()
@@ -409,7 +417,7 @@ sum L_i(lambda) = total_m
 
 Reject non-finite/nonpositive weights and infeasible totals before bisection. Stop when the sum error is at most `1e-6 m`; return the remaining distance as a signed diagnostic, not a relaxed tolerance.
 
-- [ ] **Step 4: Implement the terminal gate and four-control macro solve**
+- [ ] **Step 4: Implement the terminal gate and five-control macro solve**
 
 The terminal gate is fixed:
 
@@ -427,7 +435,40 @@ forward position
 terminal yaw
 ```
 
-Do not add total length, role length, speed, bank, or local timing residuals; those are allocated facts or separate feasibility margins. Set the new layout evaluation cap below `MAX_RETURN_EVALUATIONS = 220`; use `80` because the solve has four probes per iteration and no retry path.
+against five bounded controls:
+
+```text
+delta_psi_a, delta_psi_b        signed heading change, turn A and turn B
+delta_h_a,   delta_h_b          signed net elevation, height A and height B
+S_return                        bounded return total length
+```
+
+The four role controls alone are rank-deficient against those residuals, which is why `S_return` is a control and not a pre-chosen number: terminal yaw fixes only `psi_a + psi_b`, leaving cross-track and forward both driven by `psi_a` alone, and the two elevations enter only the vertical residual. `S_return` is bounded by the 7.8–8.2 km route band once the prefix is accepted — it is a band, not a fixed number — and each evaluation water-fills the Step 3 allocation to the currently proposed `S_return`, so allocation stays a deterministic function of the control vector rather than a separate stage. Solve with the existing `BoundedSolver` damped bounded least-squares, regularised toward the nominal control vector; the two elevation controls split the vertical residual by their nominal weights so their mutual degeneracy resolves deterministically.
+
+Do not add total length, role length, speed, bank, or local timing residuals; those are allocated facts or separate feasibility margins.
+
+**Gate pitch and roll are not residuals.** They are closed by construction: the height family's exit-frame contract ends at zero pitch and the turn family's ends at zero bank, so whichever role is last hands the gate a level, unbanked frame. Do not add gate pitch/roll residuals to re-derive what the element contracts already guarantee.
+
+Declare the residual scales explicitly so the shared convergence language means one thing:
+
+```text
+cross    5 m
+vertical 5 m
+forward  5 m
+yaw      0.02 rad
+```
+
+A scaled residual of 0.02 is therefore 0.1 m of position error and 0.0004 rad of yaw error at the gate.
+
+Enforce the per-turn heading feasibility bound before accepting any candidate:
+
+```text
+|delta_psi| <= 0.8 L g0 tan(phi_max) / v^2
+```
+
+`L` is the allocated role length, `v` the entry speed, and `phi_max` the family bank ceiling; `0.8` is the loaded fraction of the arc once both quintic shoulders are reserved. At the declared role bands and the 70–80 m/s entry band this admits roughly 75–111° for turn A and 77–102° for turn B. A 180° reversal (dogbone) is refused by this bound — it would need 3.3–6.2 g of normal load against a 4.0 g held limit — so do not implement a reversal topology or any special case that reaches one.
+
+The layout evaluation cap follows the repository's own derivation `1 + K(n + 1) + R`. With `n = 5` the Jacobian costs six probes per iteration, so reuse the existing `MAX_RETURN_EVALUATIONS = 88`; introduce no new cap and move no existing one.
 
 The macro energy bound evaluates:
 
@@ -452,7 +493,7 @@ Expected: all 24 synthetic orders produce ordered assignments with positive marg
 
 - [ ] **Step 6: Opus architecture gate**
 
-Require a written PASS/FAIL on: exactly four semantic controls, no force-profile/timing controls, no seed/order branches, no retry, no role-band residual, and no second centreline authority. Commit only corrections that reduce or clarify this boundary.
+Require a written PASS/FAIL on: exactly five bounded controls (four role controls plus `S_return`) against four residuals, no force-profile/timing/bank controls, no gate pitch or roll residual, no seed/order branches, no retry, no role-band residual, and no second centreline authority. Commit only corrections that reduce or clarify this boundary.
 
 ---
 
@@ -479,10 +520,10 @@ Add `res://ride_return_elements_tests.gd` after the layout suite. Test these cas
 ```gdscript
 _test_turn_preview_matches_integrated_geometry_at_70_and_80_mps()
 _test_turn_bank_and_curvature_sign_agree()
-_test_turn_has_no_restart_or_large_counter_bank()
+_test_turn_lateral_lands_inside_the_counter_lateral_band()
 _test_height_is_vertical_plane_at_70_and_80_mps()
 _test_height_has_one_pitch_zero_apex_and_monotone_phases()
-_test_element_seams_are_direct_c4()
+_test_element_seams_meet_the_c4_contract()
 _test_impossible_corridor_returns_one_structured_failure()
 ```
 
@@ -543,14 +584,17 @@ kappa_peak = heading_change_rad / (0.8 target_length_m)
 
 Because yaw curvature is defined against world-up before projection into the rolling rider frame,
 twist changes rider loads without tilting the planned centreline out of its horizontal turn plane. Use
-the actual integrated speed history to solve only peak twist/bank for force balance:
+the actual integrated speed history to solve only peak twist/bank, and solve it **to the counter-lateral band, not to balance**:
 
 ```text
 f = v^2 kappa - g_perp
-balanced when max_abs(f dot rider_right / g0) is inside the existing lateral-G contract
+l = (f dot rider_right) / g0
+accept when 0.2 <= |l_peak| <= 0.6 and l is signed down the bank (toward the turn centre)
 ```
 
-The twist profile is one continuous quintic-in/hold/quintic-out narrative. It must start/end with zero twist rate and acceleration. Reject a bank sign that disagrees with signed horizontal curvature; do not flip it to rescue closure.
+`CLAUDE.md` names two overbanked turns on the return, so a laterally neutral turn is a contract failure here, not a success. The band is the measured Falcon counterpart: 77° of bank at `n = 2.39 g`, whose balanced bank would be 65.8°, gives `l = (n cos(phi) - 1) / sin(phi) ~ -0.47 g`. Lateral of the opposite sign — outward, an underbank — is rejected outright.
+
+The twist profile is one continuous quintic-in/hold/quintic-out narrative. It must start/end with zero twist rate and acceleration, so the exit frame is unbanked as the layout's terminal contract assumes. Reject a bank sign that disagrees with signed horizontal curvature; do not flip it to rescue closure.
 
 - [ ] **Step 4: Implement the vertical-height family**
 
@@ -566,9 +610,17 @@ prominence = y_apex - max(y_entry, y_exit)
 
 Use one staged spatial-curvature profile with analytically matched value/first/second derivatives. No internal semantic span, pulse restart, neutral pause, or micro-hold is allowed.
 
-- [ ] **Step 5: Implement direct seam and corridor evidence**
+- [ ] **Step 5: Implement seam and corridor evidence at the order each is measurable**
 
-Measure integrated `x^(j)(s)` for `j = 0..4` at element boundaries. Curvature-component derivatives are construction evidence only; direct world-space derivatives decide acceptance. Publish all margins in the returned result and reject any negative/non-finite value.
+Do not finite-difference positions for the high orders. Published positions are float32 `Vector3`; at the production spacing `h ~ 0.75 m` a fourth-order difference of position produces roughly `3e-3 m^-3` of quantisation noise against a `2.25e-6 m^-3` signal, so an FD-based C4 seam check would measure rounding with a threshold attached.
+
+Split the evidence by order:
+
+- Compare `x^(0..2)` — position, tangent, and world-space curvature vector — **directly** from the integrated route on both sides of the seam. Starting tolerances, to be confirmed by measurement once the fleet is green: position `1e-3 m`, tangent `1e-4` (unit-vector distance), curvature `1e-5 m^-1`.
+- Compute `x^(3)` and `x^(4)` **analytically** from each side's commanded curvature jets through the frame ODE: with arc length as the parameter, `x' = t`, `x'' = kappa`, `x''' = kappa'`, `x'''' = kappa''`, where `kappa'` and `kappa''` are world-space derivatives and therefore include the derivatives of the evolving pitch/yaw basis, not only the commanded component slopes. The seam requires the two published analytic jets to agree.
+- Keep a finite difference of the higher orders as a **coarse sanity check only**: it may flag an order-of-magnitude disagreement between the analytic jets and the integrated path, and it carries no tight tolerance and no veto.
+
+Publish all margins in the returned result and reject any negative/non-finite value.
 
 - [ ] **Step 6: Push GREEN and run two-stage review**
 
@@ -601,7 +653,8 @@ Have Opus review the physics and Sonnet review code size/ownership. Reject looku
 - Returns: `ok`, `spans`, `trajectory`, `report`, `margins`, and `errors`.
 - Capture is a zero-curvature, zero-twist, zero-drive spatial span of `corridor.capture_length_m`.
 - Brake moving distance is `corridor.brake_length_m - station_creep_distance_m` and is exact by spatial construction.
-- Only solved brake control: peak negative `drive_g`; endpoint residual: moving-boundary speed minus `2.0 m/s`.
+- Only solved brake control: peak negative `drive_g`; endpoint residual: moving-boundary speed minus `2.0 m/s`, with the stopping shortfall standing in for that residual when the train stops early.
+- Brake evaluation cap: 32 unique evaluations.
 
 - [ ] **Step 1: Add RED terminal tests**
 
@@ -615,8 +668,8 @@ for speed in [70.0, 75.0, 80.0]:
 		"capture has no visible steering solve")
 	_expect(absf(built.report.moving_boundary_speed_mps - 2.0) <= 0.0001,
 		"spatial brake reaches the moving boundary speed")
-	_expect(built.report.unique_evaluations <= 24,
-		"one-dimensional brake stays inside the existing cap")
+	_expect(built.report.unique_evaluations <= 32,
+		"one-dimensional brake stays inside its cap")
 ```
 
 Also require exact station pose, no positive drive, peak brake no greater than the existing 3.6 g cap, and structured rejection outside the 70–80 m/s/corridor partition.
@@ -662,7 +715,11 @@ Build the capture with `Motion.spatial_span(... curvature=0, drive=0, twist=0)`.
 F(peak_brake_g) = integrated_end_speed_mps - 2.0
 ```
 
-Use monotone bounded bisection on `[0.0, 3.6]`, at most 24 unique evaluations. Append the existing physical 2→1 m/s station creep only after the moving brake reaches its exact boundary.
+`F` must be **defined over the whole bracket**, including the upper half where the integration cannot reach the end of the span. Above the operating point the train stops before the span ends — at 3.6 g it stops in about 90 m of the 147 m moving span — and the integrator terminates early. That is not a failure to abort on: return the **stopping shortfall** (the metres of span left unused, expressed as a positive residual) in place of the speed residual. `F` then stays monotone and the bracket stays valid across all of `[0.0, 3.6]`, which is what makes bisection legitimate rather than lucky.
+
+Use monotone bounded bisection on `[0.0, 3.6]`, at most 32 unique evaluations. Append the existing physical 2→1 m/s station creep only after the moving brake reaches its exact boundary.
+
+The operating point sits comfortably inside the bound: shedding 80 m/s over the 147 m moving span needs a mean of 2.19 g, and the shouldered profile peaks at roughly 2.0–2.6 g across the 70–80 m/s entry band against the 3.6 g bound. That is above real magnetic practice — measured eddy-current brake runs sit at 1.0–1.5 g — because this is a held friction/hydraulic deceleration profile, whose retardation does not decay with speed the way an eddy-current brake's does. Say so where the profile is defined; do not describe it as an eddy-current brake.
 
 - [ ] **Step 4: Push GREEN and simplify**
 
@@ -679,7 +736,7 @@ Expected: all terminal fixtures pass without a Jacobian, steering coefficients, 
 
 - [ ] **Step 5: Review against VC-008**
 
-With capture coefficients conceptually zero because none exist, require the route to stay inside the tight pre-capture pose corridor. Opus verifies the brake energy math; Sonnet verifies the rewrite is shorter than the capture/brake portion it will delete.
+With capture coefficients conceptually zero because none exist, require the route to stay inside the pre-capture pose corridor: ±150 m cross, ±75 m height, 8° yaw, 5° pitch, 30° roll. Opus verifies the brake energy math; Sonnet verifies the rewrite is shorter than the capture/brake portion it will delete.
 
 ---
 
@@ -696,7 +753,8 @@ With capture coefficients conceptually zero because none exist, require the rout
 
 - Produces fixed, independently accepted record-release and camelback spans before return layout.
 - Record release owns its 340–390 m role, 55–65° bank intent, and horizontal-turn planarity.
-- Camelback owns its 900–1180 m role, 245–255 m prominence, vertical-plane contract, pitch-zero apex, and 155 m AGL terrace relationship.
+- Camelback owns its 900–1180 m role, 245–255 m prominence, vertical-plane contract, pitch-zero apex, and its declared `apex_agl_m` band of 140–170 m (the repository contract in `generator.gd`; there is no 155 m terrace figure).
+- Camelback rise/fall symmetry is numeric: `|rise arc - fall arc| <= 5 m`.
 - Neither prefix role exposes duration, bank, or fall controls to return layout.
 
 - [ ] **Step 1: Restore the existing RED camelback suite to the manifest**
@@ -713,6 +771,11 @@ exit pitch -0.096 deg
 apex pitch -0.098 deg
 rise/fall arc imbalance 3.666 m
 ```
+
+Two facts about that recipe matter when the GDScript owner is rewritten. Its 3.666 m imbalance is what
+sets the symmetry tolerance at `|rise arc - fall arc| <= 5 m` — the tolerance is measured, not chosen
+round. And its 1178.994 m sits about 1 m under the 1180 m band ceiling, so the rewrite has almost no
+length headroom on this role: a longer camelback fails the band rather than borrowing from it.
 
 Do not restore or run the Python patch script; rewrite the GDScript owner directly with spatial profiles.
 
@@ -875,7 +938,7 @@ If this commit fails macro layout or local element feasibility, fix the owning g
 
 - [ ] **Step 8: Run code-diff and solver-math reviews**
 
-Opus reviews FVD equations, spatial/temporal equivalence, macro controls, local force balance, energy, and terminal braking. Sonnet reviews every changed line against the four `AGENTS.md` rules and reports old/new line counts for the affected return/terminal path. Fable rejects the change if complexity merely moved across files.
+Opus reviews FVD equations, spatial/temporal equivalence, macro controls, local force bands, energy, and terminal braking. Sonnet reviews every changed line against the four global `CLAUDE.md` rules and reports old/new line counts for the affected return/terminal path. Fable rejects the change if complexity merely moved across files.
 
 Commit accepted corrections, push, and require a fresh complete CI run.
 
@@ -962,7 +1025,7 @@ Inspect seeds 42, 11, and 20260809:
 
 - top, elevation, and channel summaries;
 - opener, Immelmann, dive, camelback, return, and station element/POV images;
-- camelback planarity and 155 m AGL terrace relationship;
+- camelback planarity, its 140–170 m `apex_agl_m` band, and its rise/fall symmetry;
 - turn curvature/bank agreement and absence of closure counter-bank;
 - transition continuity and lack of neutral pauses/micro-spans;
 - clearance, terrain proximity, and high-speed optic-flow cues.
@@ -1022,7 +1085,7 @@ If stash application conflicts, stop, report the exact paths, and retain the sta
 
 ## Final Acceptance Checklist
 
-- [ ] No local Godot command was run.
+- [ ] Every RED/GREEN claim is backed by a named CI run, not a local Godot run.
 - [ ] Spatial FVD math and direct C4 evidence received Opus PASS.
 - [ ] All 24 return orders pass pure layout contracts; production order uses only `story.return`.
 - [ ] No local failure can alter layout, order, warm start, tolerance, topology, or budget.

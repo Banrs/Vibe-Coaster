@@ -80,11 +80,46 @@ curvature, and load therefore remain mutually consistent. Unpowered return roles
 gravity and the existing resistance model determine their speed. Braking remains owned by the
 terminal brake stage, not hidden as negative drive inside a return element.
 
-An element authors signed curvature components in its evolving rider-frame normal plane,
-`kappa(s) = kappa_u(s) u + kappa_r(s) r`, so `kappa dot t = 0` by construction. Its speed-aware FVD
-commands are derived from the same equation rather than from a constant-speed approximation:
+An element authors signed curvature components in the **world-referenced pitch/yaw basis**, not in
+the rolling rider frame. At every station of the centreline define
 
 ```text
+yaw_normal   = normalize(t cross e_y)          # horizontal, perpendicular to the tangent
+pitch_normal = yaw_normal cross t              # in the vertical plane containing t
+kappa(s)     = kappa_pitch(s) pitch_normal + kappa_yaw(s) yaw_normal
+```
+
+so `kappa dot t = 0` by construction. This is the basis the production kernel integrates, and it is
+the one authoritative curvature basis for this design: `kappa_pitch` and `kappa_yaw` are the two
+authored geometric channels, while rider-up and twist are a separate channel that decides how that
+one geometry is *felt*. Because the basis is referenced to world-up rather than to rider-up, twist
+changes the rider's load split without tilting the planned turn plane — an element can be rolled to
+any bank and still trace the same horizontal arc.
+
+Sign convention, declared once and used everywhere below: positive `kappa_yaw` turns the tangent
+toward positive horizontal curvature about world-up, and **`kappa_pitch < 0` at a crest** (the
+tangent pitches downward). With track pitch `theta` measured from horizontal, plan-view heading
+follows
+
+```text
+d(theta)/ds = kappa_pitch
+d(psi)/ds   = kappa_yaw / cos(theta)
+```
+
+The `1 / cos(theta)` factor is not decorative: on pitched track a given `kappa_yaw` produces more
+heading change than the flat approximation, and the macro feasibility bound of §7.3 is stated in
+heading, not in yaw curvature. The basis itself is singular where the tangent is vertical
+(`t cross e_y -> 0`). No return or prefix family is permitted to approach that singularity; the
+integrator rejects a span whose tangent is too close to world vertical. The margin is comfortable —
+the steepest prefix pitch handed to this basis is the camelback's ~33.6°, and return families are
+shallower still.
+
+Its speed-aware FVD commands are derived by projecting that world curvature into the rider frame
+rather than from a constant-speed approximation:
+
+```text
+kappa_u = kappa dot u
+kappa_r = kappa dot r
 n = (v^2 kappa_u - g_perp dot u) / g0
 l = (v^2 kappa_r - g_perp dot r) / g0
 omega = v d(phi)/ds
@@ -115,30 +150,54 @@ ultimately samples commands in time.
 
 For a regular centreline parameterized by one common arc-length coordinate, fourth-order geometric
 continuity at an element seam means the integrated position derivatives `x^(j)(s)` agree for
-`j = 0..4`. That direct condition is the acceptance definition. Curvature jets are a construction
-tool, not a substitute definition: when curvature is stored as rider-frame components, world-space
-derivatives must include derivatives of the evolving basis. Matching component values alone is not
-sufficient. The construction and seam checks therefore require:
+`j = 0..4`. That is the physical definition of the obligation. It is not, on its own, a measurable
+acceptance test: published positions are float32 `Vector3`, and at the production sample spacing
+`h ~ 0.75 m` a fourth-order finite difference of position amplifies float32 quantisation to roughly
+`3e-3 m^-3` of noise against a signal of order `2.25e-6 m^-3`. Differencing the route arrays at that
+order measures rounding, not geometry, so a seam check built on it would be noise with a threshold
+attached.
 
-- position and tangent agree;
-- world-space curvature vector agrees;
-- the first and second arc-length derivatives of the world-space curvature vector agree;
+Acceptance therefore splits by order:
+
+- **`x^(0..2)` are compared directly** from the integrated route on both sides of the seam:
+  position, tangent, and the world-space curvature vector. Starting tolerances, to be confirmed by
+  measurement once the first fleet is green: position `1e-3 m`, tangent `1e-4` (unit-vector
+  distance), curvature `1e-5 m^-1`.
+- **`x^(3)` and `x^(4)` are analytic**, derived from each side's commanded curvature jets through
+  the frame ODE rather than by differencing positions. With arc length as the parameter,
+  `x' = t`, `x'' = kappa`, `x''' = kappa'`, and `x'''' = kappa''`, where `kappa'` and `kappa''` are
+  arc-length derivatives of the **world-space** curvature vector and therefore include derivatives
+  of the evolving pitch/yaw basis, not only the commanded component slopes. Matching component
+  values alone is not sufficient. Each element publishes these jets from its own profile definition,
+  and the seam requires the two published jets to agree.
+- **Finite differencing of the higher orders is demoted to a coarse sanity check.** It may flag an
+  order-of-magnitude disagreement between the analytic jets and the integrated path; it never
+  decides acceptance and carries no tight tolerance.
+
+The construction and seam checks therefore require:
+
+- position and tangent agree, measured directly;
+- the world-space curvature vector agrees, measured directly;
+- the first and second arc-length derivatives of the world-space curvature vector agree, computed
+  analytically on both sides;
 - rider-up and the twist angle `phi`, `d(phi)/ds`, and `d^2(phi)/ds^2` agree.
 
 A transition from curvature `kappa_0` to `kappa_1` uses a normalized arc-length shoulder such as
 
 ```text
 h(u) = 10u^3 - 15u^4 + 6u^5,  0 <= u <= 1
-kappa_q(u) = kappa_q0 + (kappa_q1 - kappa_q0) h(u),  q in {u, r}
+kappa_q(u) = kappa_q0 + (kappa_q1 - kappa_q0) h(u),  q in {pitch, yaw}
 d(kappa_q)/ds = (kappa_q1 - kappa_q0) h'(u) / shoulder_length
 d^2(kappa_q)/ds^2 = (kappa_q1 - kappa_q0) h''(u) / shoulder_length^2
 ```
 
-The component profile is evaluated in the evolving normal plane, not by linearly interpolating two
-fixed world vectors. Because `h'` and `h''` vanish at both ends, adjacent constant or straight phases
-can be constructed to match curvature value, spatial slope, and spatial acceleration when the frame
-and twist jets also match. The direct integrated `x^(0..4)` seam check remains authoritative. The same
-endpoint conditions and shoulder-length scaling apply to intentional twist angle.
+The component profile is evaluated against the evolving pitch/yaw basis, not by linearly
+interpolating two fixed world vectors. Because `h'` and `h''` vanish at both ends, adjacent constant
+or straight phases can be constructed to match curvature value, spatial slope, and spatial
+acceleration when the frame and twist jets also match. These same profile derivatives are what feed
+the analytic `x^(3)`/`x^(4)` seam jets above. The direct `x^(0..2)` comparison plus those analytic
+jets remains authoritative. The same endpoint conditions and shoulder-length scaling apply to
+intentional twist angle.
 
 Spatial `phi`, `d(phi)/ds`, and `d^2(phi)/ds^2` continuity becomes time-domain roll-rate and
 roll-acceleration continuity only when speed and tangential acceleration also agree at the seam;
@@ -152,19 +211,48 @@ force or roll pulse, introduce a neutral pause, or create a micro-span. Force on
 the spatial profile is converted through the actual speed history; the chain rule makes onset depend
 on both spatial slope and speed.
 
-Turn banking is force-balanced from the actual local resultant. Define
-`f = v^2 kappa - g_perp`, the proper-force vector required in the rider normal plane. Balanced banking
-requires `f dot r = 0`, `f dot u > 0`, and `n = (f dot u) / g0`; a deliberate nonzero lateral load must
-instead be named and bounded by the element contract. For a level, constant-radius, unaccelerated
-turn, define signed horizontal curvature as
+Turn banking is authored from the actual local resultant, and for the `return_turn` family it is
+authored **overbanked**, not balanced. `CLAUDE.md` names two overbanked turns on the return; that is
+the contract, and a balanced turn would not satisfy it. Define `f = v^2 kappa - g_perp`, the proper
+force required in the rider normal plane. Balanced banking is the reference case
+(`f dot r = 0`, `f dot u > 0`, `n = (f dot u) / g0`), useful as a zero point and as the
+identity the projection tests check — it is not the return's default.
+
+The `return_turn` contract is a named **counter-lateral band**, derived from the measured Falcon's
+Flight counterpart. For a level turn at bank `phi` the two loads are tied by
+
+```text
+n = (v^2 / (R g0)) sin(phi) + cos(phi)
+l = (n cos(phi) - 1) / sin(phi)
+```
+
+Falcon's turn B holds `phi = 77°` at `n = 2.39 g`. Its balanced bank at that speed and radius would
+be `atan(v^2 / (R g0)) = 65.8°`, so the real turn is eleven degrees overbanked, and the identity
+above gives `l ~ -0.47 g`: the rider is pressed down the bank, toward the inside of the turn, not
+held laterally neutral. That measured excess is the shape being reproduced. The band for this family
+is therefore
+
+```text
+0.2 g <= |l_peak| <= 0.6 g,  signed down the bank (toward the turn centre)
+```
+
+Twist is solved so that the integrated lateral load lands **inside** that band, not at zero. Zero
+lateral is a band violation for this family, exactly as an out-of-band value is, and lateral of the
+opposite sign — outward, an underbank — is rejected outright. The bound stays far inside the
+±4.7 Gy envelope, so this band is a shape contract, not a safety one.
+
+Balanced banking remains the default for any element that does not name a band. For a level,
+constant-radius, unaccelerated turn, define signed horizontal curvature as
 `kappa_h = e_y dot (t cross d(t)/ds)`. The review check is the signed relation
-`phi = atan2(v^2 kappa_h, g0)`, with positive bank into positive horizontal curvature. Large
-counter-bank is legal only when a named element explicitly asks for it and its resultant force and
-lateral-G contract remain valid. It is never a closure device.
+`phi = atan2(v^2 kappa_h, g0)` for the balanced reference, with positive bank into positive
+horizontal curvature; the overbanked turn sits beyond that angle, on the same side. Bank on the
+wrong side of the horizontal curvature is rejected. Neither the bank angle nor the counter-lateral
+band is ever a closure device: the macro solve may not spend them to reach the gate.
 
 Height elements are vertical-plane by default. In the plane spanned by a fixed horizontal unit vector
 **h** and world-up **e_y**, write `t = cos(theta) h + sin(theta) e_y`. Then
-`dy/ds = sin(theta)` and `d(theta)/ds = kappa_plane` with the declared sign convention. A crest apex
+`dy/ds = sin(theta)` and `d(theta)/ds = kappa_plane`, where `kappa_plane` is `kappa_pitch` under the
+sign convention declared in §3. A crest apex
 is the downward crossing `theta = 0`, `d(theta)/ds < 0`; climb samples before it must have
 `dy/ds > 0`, and descent samples after it must have `dy/ds < 0`. Prominence is
 `y_apex - max(y_entry, y_exit)`. The existing reviewed plane-fit and out-of-plane tolerances define
@@ -188,7 +276,9 @@ bands, and energy/launch intent. These remain plan facts rather than solver obse
 ### New `ride_return_layout.gd`
 
 Owns only macro return layout. It receives the actual accepted post-camelback state plus immutable
-plan facts and returns ordered assignments. It contains no RNG and authors no force profile.
+plan facts and returns ordered assignments. Its solve is the five bounded controls of §7.4 against
+four station-frame residuals; it owns no force-profile, bank, or timing control. It contains no RNG
+and authors no force profile.
 
 Calling it after prefix integration is deliberate: the true camelback exit frame and speed are then
 known, so the generator does not need another approximate prefix model. It still runs before any
@@ -213,11 +303,30 @@ not solve layout itself.
 
 The capture stage remains an exact numerical closer, but the planned final return assignment must
 already enter the existing reserved corridor with a near-neutral frame. With capture coefficients set
-to zero, the integrated route must remain inside the tight pre-capture pose corridor required by
-VC-008. Any retained correction must remain below the reviewed curvature, torsion, roll, and
-lateral-load visibility thresholds. Capture may correct only sub-tolerance numerical error; it may not
-remain a visible 1.05-second steering element. Brakes retain their physical deceleration and exact
-station contract even if their implementation is rewritten.
+to zero, the integrated route must remain inside the pre-capture pose corridor required by VC-008 —
+±150 m cross, ±75 m height, 8° yaw, 5° pitch, 30° roll. Any retained correction must remain below the
+reviewed curvature, torsion, roll, and lateral-load visibility thresholds. Capture may correct only
+sub-tolerance numerical error; it may not remain a visible 1.05-second steering element.
+
+Brakes retain their physical deceleration and exact station contract even if their implementation is
+rewritten. The brake is a one-dimensional solve on peak brake g against the moving-boundary speed,
+bisected inside the existing `[0, 3.6] g` bound, and it needs two things stated:
+
+- **Evaluation cap 32.** The one-dimensional bracket must be allowed to converge on the widened
+  70–80 m/s entry band without a retry path; 32 unique evaluations is the cap.
+- **`F(peak)` is defined on integration failure.** Above the bracket's operating point the train
+  stops before the span ends and the integration terminates early — at 3.6 g it stops in about 90 m
+  of the 147 m moving span. That is not an error case to abort on: the residual is then the
+  **stopping shortfall**, returned as a positive value (metres of span left unused, or the
+  equivalent signed speed deficit), so the function stays monotone and the bracket stays valid
+  across the whole `[0, 3.6]` range.
+
+The operating point is well inside the bound: closing 80 m/s over the 147 m moving span needs a mean
+of 2.19 g, and the shouldered profile peaks at roughly 2.0–2.6 g across the entry band against the
+3.6 g bound. That is deliberately above real magnetic practice — measured eddy-current brake runs sit
+at 1.0–1.5 g — because this is a **held friction/hydraulic deceleration profile**, whose retardation
+does not decay with speed the way an eddy-current brake's does. The profile is honest about what it
+models; it is not an eddy-current brake wearing a larger number.
 
 ### `RouteContract`
 
@@ -266,7 +375,10 @@ assignments[]               # same order and cardinality as ordered_role_specs
   corridor
   terrain_intent
   curvature_sign            # when meaningful; never inferred later from closure error
+  heading_change_rad
+  elevation_change_m
 terminal_gate
+target_total_length_m       # the accepted S_return, the fifth macro control
 length_budget_margin_m
 terrain_margins
 energy_margins
@@ -285,9 +397,13 @@ the unchanged 70--80 m/s entry-speed band.
 
 ### 7.2 Length allocation
 
-Choose one total target inside the unchanged 7.8--8.2 km band before local element solving. Subtract
-the accepted prefix distance and reserved capture/brake distance. The remainder is the return budget
-`S_return`.
+Subtract the accepted prefix distance and the reserved capture/brake distance from a total route
+length inside the unchanged 7.8--8.2 km band. The remainder is the return budget `S_return`.
+
+`S_return` is a **band, not a number**: the route band gives it a lower and an upper bound once the
+prefix is fixed, and §7.4 makes it the fifth bounded control of the macro solve rather than a value
+chosen once up front. Allocation therefore runs inside each macro evaluation, water-filling role
+targets to whatever `S_return` the solver is currently proposing.
 
 Allocate role targets by projecting their nominal lengths onto the bounded sum:
 
@@ -309,8 +425,29 @@ bands, and deliberate connector allocation where the story declares a terrain ru
 small bounded geometric solve, but that solve cannot see bank-profile knots, G-profile durations,
 camelback timing, or local recovery timing.
 
+#### Heading-change feasibility
+
+A turn's heading change is not free. Its allocated arc, its entry speed, and the maximum bank the
+family will accept bound it, and that bound is a **macro feasibility contract** checked before any
+local element is authored:
+
+```text
+|delta_psi| <= 0.8 L g0 tan(phi_max) / v^2
+```
+
+`L` is the allocated role length, `v` the entry speed, and `phi_max` the family's bank ceiling; the
+`0.8` is the fraction of the allocated arc that carries loaded curvature once the two quintic
+shoulders are reserved. At the declared role-length bands and the 70--80 m/s entry band this admits
+roughly **75--111° for turn A and 77--102° for turn B**. A layout that asks for more is rejected at
+the macro stage, with the shortfall named, rather than handed to a local solve that would have to
+break the bank or force envelope to deliver it.
+
 The layout is not tied to one plan-view template. A turn-height-turn-height order may form an offset
-S, while another legal order or terrain relationship may form a dogbone or terrace path. Those are
+S, while another legal order or terrain relationship may lean the path toward the terrain instead.
+What the contract above **excludes** is a 180° reversal: a dogbone plan-view is not an allowed
+topology here, because reversing heading inside these role lengths at 70--80 m/s needs 3.3--6.2 g of
+normal load against a 4.0 g held limit. It is refused by the bound, not by taste. The allowed
+topologies are those the bound admits. Those are
 outcomes of the same contracts, not seed-named implementations. The planner evaluates declared
 choices by the same feasibility and scoring rules for every seed.
 
@@ -320,8 +457,8 @@ distance, heading change, curvature/radius bounds, elevation change, and the all
 must be mutually feasible before local authoring.
 
 Terrain scoring is role-specific: fast terrain runs receive low-AGL intent and clearance envelopes;
-height/suspense beats may remain exposed; the camelback terrace relationship remains explicit. One
-universal low-AGL rule is not introduced.
+height/suspense beats may remain exposed; the camelback's declared `apex_agl_m` band remains
+explicit. One universal low-AGL rule is not introduced.
 
 Energy feasibility follows the arc-length form of the production speed equation:
 
@@ -340,6 +477,56 @@ If several declared layouts are feasible, choose by a deterministic score made o
 contract margins: clearance, corridor slack, role-length slack, energy slack, and intended terrain
 proximity. Seeded randomness may break a true score tie through an existing named planner stream;
 failure feedback may not alter the choice.
+
+### 7.4 Macro solve dimension
+
+The obvious control set — signed heading change for the two turns and signed net elevation for the
+two heights — is **rank-deficient** against the four station-frame residuals, and saying so is part
+of the design rather than something to discover in CI. The degeneracy is structural: the terminal yaw
+residual fixes only the sum `psi_a + psi_b`, which leaves the cross-track and forward residuals both
+depending on `psi_a` alone; and the two elevation controls enter only the vertical residual, so they
+are indistinguishable from each other in the Jacobian. Four controls, four residuals, rank three.
+
+**Decision: `S_return` is the fifth control.** It is already a bounded quantity — the 7.8--8.2 km
+route band gives it a band once the prefix is accepted — and it is the one variable that moves the
+plan-view chord without touching heading. The macro solve is therefore:
+
+```text
+controls (5, all bounded):  delta_psi_a, delta_psi_b, delta_h_a, delta_h_b, S_return
+residuals (4):              cross-track, vertical, forward, terminal yaw
+```
+
+Each evaluation water-fills the role allocation of §7.2 to the currently proposed `S_return`, so
+length allocation stays a deterministic function of the control vector rather than a separate stage.
+Five bounded controls against four residuals is underdetermined, which is the correct shape here: it
+is solved by the existing damped bounded least-squares `BoundedSolver`, regularised toward the
+nominal control vector so the extra freedom resolves deterministically rather than drifting. The two
+elevation controls split the vertical residual by their nominal weights, which removes their mutual
+degeneracy without inventing a fifth residual.
+
+**Pitch and roll at the terminal gate are deliberately not residuals.** They are closed by
+construction: every height family's exit-frame contract ends at zero pitch, and every turn family's
+exit-frame contract ends at zero bank. Whatever the last return role is, it hands the gate a level,
+unbanked frame because its own contract says so. Adding gate pitch and roll residuals would ask the
+macro solve to re-derive something the element contracts already guarantee, and would reintroduce
+exactly the cross-role coupling this design removes.
+
+Residual scales are declared, not implied, so that the shared convergence language means one thing:
+
+```text
+cross    5 m
+vertical 5 m
+forward  5 m
+yaw      0.02 rad
+```
+
+A "scaled residual at or below 0.02" therefore means 0.1 m of position error and 0.0004 rad of yaw
+error at the gate.
+
+The evaluation cap follows the same derivation the repository already uses for bounded solves,
+`1 + K(n + 1) + R` — one initial evaluation, then per iteration one Jacobian probe per control plus
+the trial step, plus retry evaluations. With `n = 5` the layout solve uses the repository's existing
+`MAX_RETURN_EVALUATIONS = 88`; no new cap is introduced and no existing cap moves.
 
 ## 8. Local element calculation
 
@@ -420,7 +607,8 @@ monolithic behavior.
 
 ## 10. Verification obligations
 
-No local Godot execution is permitted. All executable verification runs through GitHub CI.
+Local Godot may be used freely for iteration. GitHub Actions CI is the RED/GREEN verdict: a claim of
+red or green that is not backed by a CI run is not evidence.
 
 Before production migration, pure tests must establish:
 
@@ -439,7 +627,7 @@ bytes unchanged. It must not select another story, retry with another seed, chan
 widen a tolerance, or invoke a fallback topology.
 
 Integration acceptance retains all existing audit bands, force limits, convergence tolerances,
-solver caps, terrain intent, and no-local-Godot constraints. It requires:
+solver caps, terrain intent, and the CI-is-the-verdict constraint. It requires:
 
 - import/startup budget and the complete focused manifest;
 - six-seed fast return-budget regression;
@@ -453,7 +641,8 @@ solver caps, terrain intent, and no-local-Godot constraints. It requires:
 Visual review must cover plan/elevation/channel summaries and opener, Immelmann, dive, camelback,
 return, and station element/POV shots. The return specifically needs coherent curvature/bank intent,
 continuous transitions, terrain relationship, clearance, and speed cues. Camelback planarity and its
-155 m AGL terrace relationship remain required.
+declared `apex_agl_m` band of 140--170 m remain required, along with its rise/fall symmetry
+tolerance of |rise arc - fall arc| <= 5 m.
 
 Artifact data must also produce sample- and time-weighted normal/resultant-G summaries and compare
 them with the existing envelope and telemetry. No new average-G gate is invented.
@@ -472,7 +661,22 @@ unmerged if the architecture cannot close the canonical fleet honestly within th
 - It does not expand general story randomness until the affected element contracts are certified.
 - It does not merge PR #14 on partial CI or on a seed-specific success.
 
-## 12. Global `AGENTS.md` implementation gate
+### Honest physics is inherited, not validated
+
+One boundary deserves naming because the rewrite will be measured against it. The frozen
+`AERO_PER_M = 7.5e-5` corresponds to `CdA ~ 1.73 m^2` for a 12 t train, roughly 2.8x under-damped
+against the derivation in
+`docs/superpowers/specs/2026-08-15-honest-drag-derivation.md`. That single constant is the sole
+reason the return arrives at the station at 70--80 m/s and therefore the sole reason a ~2.2 g mean
+brake is needed to stop it inside 150 m. Under honest drag the terminal would be slower and the
+brake milder.
+
+The rewrite **inherits** that terminal condition; it does not test it, and a green fleet under this
+design is not evidence that the frozen drag constant is right. Nothing in this design may be
+described, in code comments, reports, or reviews, as validating `AERO_PER_M`. Correcting the drag
+constant is separate work with its own measured consequences, tracked in `docs/ISSUES.md` issue 2.
+
+## 12. Global `CLAUDE.md` implementation gate
 
 The implementation plan and every review must refer back to all four global rules:
 

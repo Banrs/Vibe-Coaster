@@ -1225,14 +1225,6 @@ static func _moving_window_route(extra_preceding_knot: bool) -> Dictionary:
 	return fixture.build()
 
 
-static func _row_pulse_route() -> Dictionary:
-	var route := _measurement_route()
-	# Keep the pulse off a semantic boundary: interpolation and the causal load filter can
-	# legitimately spread a boundary impulse across adjacent physical windows.
-	route.curvatures[11] = Vector3(0.0, 0.5, 0.0)
-	return route
-
-
 static func _transition_route(seam_seconds: float) -> Dictionary:
 	var route := _uniform_route(3.0)
 	var seam := roundi(seam_seconds * 100.0)

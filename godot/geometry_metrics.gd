@@ -23,8 +23,6 @@ extends RefCounted
 const Fidelity := preload("res://fidelity.gd")
 const Artifacts := preload("res://fidelity_artifacts.gd")
 const Counterparts := preload("res://fidelity_counterparts.gd")
-const Verify := preload("res://verify.gd")
-const Sampling := preload("res://route_sampling.gd")
 const Motion := preload("res://motion.gd")
 const ElementContract := preload("res://element_contract.gd")
 const Terrain := preload("res://terrain.gd")
@@ -702,34 +700,21 @@ static func material_role_bands(route: Dictionary, row_offset: float) -> Diction
 		spans[role].last = maxi(int(spans[role].last), int(window.last))
 		spans[role].windows.append(str(window.window_id))
 
-	var native: Dictionary = Fidelity.native_row_series(route, row_offset)
-	var series := {
-		"normal": Verify.filter(Verify.resample(route.times, native.normal_g)),
-		"lateral": Verify.filter(Verify.resample(route.times, native.lateral_g)),
-		"longitudinal": Verify.filter(Verify.resample(route.times, native.longitudinal_g)),
-	}
+	var series: Dictionary = Fidelity.row_series(route, row_offset)
 	var bands := {}
 	for role in order:
 		var span: Dictionary = spans[role]
-		var start_time := _time_at_distance(
-			route, float(route.distances[int(span.first)]) + row_offset)
-		var end_time := _time_at_distance(
-			route, float(route.distances[int(span.last)]) + row_offset)
-		var first := int(ceil(start_time * Verify.SAMPLE_HZ - 1e-9))
-		var last := int(floor(end_time * Verify.SAMPLE_HZ + 1e-9))
-		var count: int = series.normal.size()
-		first = clampi(first, 0, maxi(0, count - 1))
-		last = clampi(last, 0, maxi(0, count - 1))
-		if last - first + 1 < 5:
+		var window: Dictionary = Fidelity.filtered_window(
+			route, int(span.first), int(span.last), row_offset, series)
+		if window.normal.size() < 5:
 			continue
 		bands[role] = {
 			"role_id": role, "window_ids": span.windows,
 			"first_sample": int(span.first), "last_sample": int(span.last),
-			"window_start_s": start_time, "window_end_s": end_time,
-			"seconds": end_time - start_time,
-			"normal": series.normal.slice(first, last + 1),
-			"lateral": series.lateral.slice(first, last + 1),
-			"longitudinal": series.longitudinal.slice(first, last + 1),
+			"window_start_s": window.window_start_s, "window_end_s": window.window_end_s,
+			"seconds": window.seconds,
+			"normal": window.normal, "lateral": window.lateral,
+			"longitudinal": window.longitudinal,
 		}
 	var missing := []
 	for role in Counterparts.bands().keys():
@@ -742,18 +727,6 @@ static func material_role_bands(route: Dictionary, row_offset: float) -> Diction
 		"bands": bands, "mapped_window_count": mapped, "unmapped_windows": unmapped,
 		"roles_without_window": missing,
 	}
-
-
-static func _time_at_distance(route: Dictionary, distance_m: float) -> float:
-	var distances: PackedFloat32Array = route.distances
-	var times: PackedFloat32Array = route.times
-	var clamped := clampf(distance_m, float(distances[0]), float(distances[-1]))
-	var index := Sampling.lower_index(distances, clamped)
-	var low := float(distances[index])
-	var high := float(distances[index + 1])
-	if high <= low:
-		return float(times[index])
-	return lerpf(float(times[index]), float(times[index + 1]), (clamped - low) / (high - low))
 
 
 static func _counterpart_row(role: String, band: Dictionary, axis: Dictionary, entry: Dictionary) -> Dictionary:

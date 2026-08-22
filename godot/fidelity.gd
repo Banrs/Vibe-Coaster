@@ -618,7 +618,7 @@ static func measure_route(route: Dictionary, row_offsets: Array) -> Dictionary:
 	for offset_value in row_offsets:
 		var offset := float(offset_value)
 		var by_id := {}
-		for band in _bands_for_row(route, definitions, offset, _row_series(route, offset), true):
+		for band in _bands_for_row(route, definitions, offset, row_series(route, offset)):
 			by_id[band.beat_id] = band
 		bands_by_row.append(by_id)
 
@@ -955,7 +955,9 @@ static func _beat_definitions(route: Dictionary) -> Array:
 	return beats
 
 
-static func _row_series(route: Dictionary, row_offset: float) -> Dictionary:
+## The four verify-filtered 100 Hz channels for one train row: native row forces -> resample ->
+## 4-pole 5 Hz Butterworth. Built once per row and sliced by `filtered_window()`.
+static func row_series(route: Dictionary, row_offset: float) -> Dictionary:
 	var native := native_row_series(route, row_offset)
 	return {
 		"normal": Verify.filter(Verify.resample(route.times, native.normal_g)),
@@ -1000,38 +1002,48 @@ static func native_row_series(route: Dictionary, row_offset: float) -> Dictionar
 	}
 
 
-static func _bands_for_row(
-	route: Dictionary, beats: Array, row_offset: float, series: Dictionary, include_short: bool
-) -> Array:
-	var normal: PackedFloat32Array = series.normal
-	var lateral: PackedFloat32Array = series.lateral
-	var longitudinal: PackedFloat32Array = series.longitudinal
-	var roll: PackedFloat32Array = series.roll
-	var bands := []
+## The one filtered force window for the route span [first, last], shifted along the train by
+## `row_offset`: distance bounds, time bounds, and each channel of `series` (from `row_series()`,
+## which the caller supplies so a whole route of windows costs one filter pass) interpolated onto a
+## fresh 100 Hz grid anchored at the shifted start. Adjacent windows are half-open — only a window
+## reaching the route end owns its endpoint. Empty channels mean the window carries no sample.
+static func filtered_window(
+	route: Dictionary, first: int, last: int, row_offset: float, series: Dictionary
+) -> Dictionary:
 	var route_start_distance := float(route.distances[0])
 	var route_end_distance := float(route.distances[-1])
-	for beat_index in beats.size():
-		var beat: Dictionary = beats[beat_index]
-		var start_distance: float = route.distances[beat.first]
-		var end_distance: float = route.distances[beat.last]
-		var window_start := clampf(
-			start_distance + row_offset, route_start_distance, route_end_distance
+	var window_start := clampf(
+		float(route.distances[first]) + row_offset, route_start_distance, route_end_distance
+	)
+	var window_end := clampf(
+		float(route.distances[last]) + row_offset, route_start_distance, route_end_distance
+	)
+	var low_time := _value_at_coordinate(route.distances, route.times, window_start)
+	var high_time := _value_at_coordinate(route.distances, route.times, window_end)
+	var include_end := is_equal_approx(window_end, route_end_distance)
+	var window := {
+		"window_start_distance": window_start,
+		"window_end_distance": window_end,
+		"window_start_s": low_time,
+		"window_end_s": high_time,
+		"seconds": high_time - low_time,
+	}
+	for channel in ["normal", "lateral", "longitudinal", "roll"]:
+		window[channel] = _sample_filtered_window(
+			series[channel], low_time, high_time, include_end
 		)
-		var window_end := clampf(
-			end_distance + row_offset, route_start_distance, route_end_distance
-		)
-		var low_time: float = _value_at_coordinate(route.distances, route.times, window_start)
-		var high_time: float = _value_at_coordinate(route.distances, route.times, window_end)
-		if high_time <= low_time:
+	return window
+
+
+static func _bands_for_row(
+	route: Dictionary, beats: Array, row_offset: float, series: Dictionary
+) -> Array:
+	var bands := []
+	for beat: Dictionary in beats:
+		var window := filtered_window(route, int(beat.first), int(beat.last), row_offset, series)
+		if window.normal.is_empty():
 			continue
-		# Adjacent beat windows are half-open; only a route-boundary window owns its endpoint.
-		var include_end := is_equal_approx(window_end, route_end_distance)
-		var band_normal := _sample_filtered_window(normal, low_time, high_time, include_end)
-		if band_normal.size() < 5 and not include_short:
-			continue
-		if band_normal.is_empty():
-			continue
-		bands.append({
+		var band := {
 			"kind": beat.kind,
 			"beat_id": beat.beat_id,
 			"story_slot_id": beat.story_slot_id,
@@ -1042,28 +1054,17 @@ static func _bands_for_row(
 			"start_distance": route.distances[beat.first],
 			"end_distance": route.distances[beat.last],
 			"row_offset": row_offset,
-			"window_start_distance": window_start,
-			"window_end_distance": window_end,
-			"window_start_s": low_time,
-			"window_end_s": high_time,
-			"seconds": high_time - low_time,
-			"normal": band_normal,
-			"lateral": _sample_filtered_window(lateral, low_time, high_time, include_end),
-			"longitudinal": _sample_filtered_window(
-				longitudinal, low_time, high_time, include_end
-			),
-			"roll": _sample_filtered_window(roll, low_time, high_time, include_end),
-		})
+		}
+		band.merge(window)
+		bands.append(band)
 	return bands
 
 
-## Interpolate the globally filtered 100 Hz series onto a fresh grid anchored at the selected
-## physical start. The half-open option gives each adjacent beat seam sample one owner.
 static func _sample_filtered_window(
 	values: PackedFloat32Array, start_s: float, end_s: float, include_end: bool
 ) -> PackedFloat32Array:
 	var output := PackedFloat32Array()
-	if values.is_empty() or end_s < start_s:
+	if values.is_empty() or end_s <= start_s:
 		return output
 	var available_end := (values.size() - 1) / Verify.SAMPLE_HZ
 	var sample_end := minf(end_s, available_end)

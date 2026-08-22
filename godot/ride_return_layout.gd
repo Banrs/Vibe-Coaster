@@ -8,24 +8,19 @@ extends RefCounted
 ##
 ## Curvature basis (design 2026-08-22 section 3): world-referenced pitch/yaw, so track pitch obeys
 ## `d(theta)/ds = kappa_pitch` - `kappa_pitch < 0` at a crest - and plan-view heading obeys
-## `d(psi)/ds = kappa_yaw / cos(theta)`. The nominal chain authors `theta` and `psi` through
-## quintic shoulders whose value, spatial slope and spatial acceleration vanish at both ends, so
-## every role leaves the chain level and unbanked. That is why the gate's pitch and roll are not
-## residuals: the element contracts close them by construction.
+## `d(psi)/ds = kappa_yaw / cos(theta)`. The nominal chain traces `theta` through each family's own
+## profile - the turn's pitch level-out, the height beat's staged crest - and `psi` through their
+## shared heading fraction, the same shouldered plateau weighted by the `sec(theta)` the identity
+## above puts on it. All of them start and end with zero value, spatial slope and spatial
+## acceleration, so every role leaves the chain level and unbanked
+## and no role's traced path drifts off the one it is built on. That is why the gate's
+## pitch and roll are not residuals: the element contracts close them by construction. The shapes
+## and ceilings below are the families' - this stage models what they build, it does not declare a
+## second geometry for them.
 
 const Motion := preload("res://motion.gd")  # `G0` only; this stage never integrates.
 const BoundedSolver := preload("res://bounded_solver.gd")
 
-## The shoulder each role reserves at both of its ends, and the fraction of the allocated arc that
-## therefore carries loaded curvature. One shoulder geometry serves the nominal chain, the heading
-## feasibility bound, and the local turn family, so the frame this stage assigns is a frame that
-## family can reach: two quintic shoulders of `SHOULDER_FRACTION` plus a plateau integrate to
-## `LOADED_ARC_FRACTION`, the 0.8 of the bound.
-const SHOULDER_FRACTION := 0.2
-const LOADED_ARC_FRACTION := 1.0 - SHOULDER_FRACTION
-## The return turn family's bank ceiling: the same 66 deg the existing turn-a bank bound holds,
-## taken for both turns because the conservative ceiling is the one a feasibility bound may use.
-const TURN_BANK_CEILING_RAD := 66.0 * PI / 180.0
 ## The camelback's ~33.6 deg is the steepest pitch the prefix hands over and the return stays
 ## inside it; 35 deg is the ceiling that admits that handover and nothing steeper.
 const PITCH_CEILING_RAD := 35.0 * PI / 180.0
@@ -111,15 +106,6 @@ static func build(start: Dictionary, plan: Dictionary, ordered_roles: Array) -> 
 	})
 
 
-## The macro feasibility contract on a turn's heading change: its allocated arc, its entry speed
-## and the family's bank ceiling bound it, checked here rather than handed to a local solve that
-## would have to break the bank or force envelope to deliver it. A 180 deg reversal is refused by
-## this bound, which is why no reversal topology exists.
-static func heading_bound_rad(length_m: float, speed_mps: float) -> float:
-	return LOADED_ARC_FRACTION * length_m * Motion.G0 * tan(TURN_BANK_CEILING_RAD) \
-		/ (speed_mps * speed_mps)
-
-
 static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) -> Dictionary:
 	var errors: Array = []
 	var station: Variant = plan.get("station")
@@ -147,6 +133,7 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 	var nominal_lengths: Array = []
 	var length_bands: Array = []
 	var terrain_intents: Array = []
+	var unloads: Array = []
 	var control_index := {}
 	var lower: Array = []
 	var upper: Array = []
@@ -165,6 +152,10 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 		order.append(role_id)
 		families.append(family)
 		terrain_intents.append(role.get("terrain", {}))
+		# The crest a height beat is authored to hold is a per-seed draw and the elevation window
+		# its family publishes is a function of it, so the box below is cut at the value the
+		# assignment then carries into the build rather than at the family's own default.
+		unloads.append(float(role.get("unload_g", RideReturnElements.DEFAULT_UNLOAD_G)))
 		length_bands.append(band)
 		nominal_lengths.append(0.5 * (band.x + band.y))
 		control_index[role_id] = control_ids.size()
@@ -191,7 +182,7 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 	control_ids.append("return_total_length_m")
 	nominal.append(0.5 * (budget.x + budget.y))
 	var context := {"ok": true, "errors": errors, "order": order, "families": families,
-		"terrain_intents": terrain_intents,
+		"terrain_intents": terrain_intents, "unloads": unloads,
 		"nominal_lengths": nominal_lengths, "length_bands": length_bands,
 		"length_weights": _ones(order.size()), "control_index": control_index,
 		"control_ids": control_ids, "lower": lower, "upper": upper, "nominal": nominal,
@@ -201,26 +192,56 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 		"start_position": start_position, "start_tangent": tangent, "start_up": start_up,
 		"start_speed_mps": start_speed, "start_psi_rad": psi_start,
 		"speed_ceiling_mps": start_speed, "terrain": plan.get("terrain", {})}
-	# The heading box is a feasibility bound, so it is built at the shortest allocable arc and at
-	# a speed the chain reaches rather than at the speed handed over: a descending role enters
-	# faster than the start, and a box built under that would let the solve walk into a region the
-	# accepted chain is then refused from, with no retry to recover. The nominal chain measures
-	# that speed. It is not an upper bound over the whole control box - the elevation controls can
-	# descend further than the nominal split - so the accepted chain is still re-checked against
-	# each turn's own allocated arc and entry speed, and names the shortfall if it drifts past.
-	for role: Dictionary in _chain(context, nominal).roles:
+	# Both control boxes are feasibility bounds the owning family publishes - the turn's heading
+	# against `max_bank_rad`, the height beat's net elevation against the crest it has to stand -
+	# so they are built at the shortest allocable arc and at a speed the chain reaches rather than
+	# at the speed handed over: a role can be water-filled to its band minimum for a legal total, a
+	# descending role enters faster than the start, and a box built under either would let the
+	# solve walk into a region the accepted chain is then refused from, with no retry to recover.
+	# The nominal chain measures that speed. It is not an upper bound over the whole control box -
+	# the elevation controls can descend further than the nominal split - so the accepted chain is
+	# still re-checked against each role's own allocated arc, entry speed and entry pitch, and
+	# names the shortfall if it drifts past.
+	var nominal_chain := _chain(context, nominal)
+	for role: Dictionary in nominal_chain.roles:
 		context.speed_ceiling_mps = maxf(float(context.speed_ceiling_mps),
 			float(role.entry_speed_mps))
+	# The nominal chain is the centre of every control box and the speed each one is built at, so
+	# a nominal that has already stopped makes no box worth building: the passive energy law is
+	# the refusal that matters, and naming an element bound instead would hide it.
+	if float(nominal_chain.minimum_speed_mps) < MOVING_FLOOR_MPS:
+		return {"ok": false, "errors": [{"code": "energy_moving_floor",
+			"shortfall_mps": MOVING_FLOOR_MPS - float(nominal_chain.minimum_speed_mps)}]}
 	var heading_budget := 0.0
 	for index in order.size():
 		var band: Vector2 = length_bands[index]
-		var bound := 0.5 * band.x * sin(PITCH_CEILING_RAD)
+		var box := Vector2.ZERO
+		# Every family exits level by contract, so a role's entry pitch is the handover for the
+		# first role and exactly zero for every later one, whatever the controls do. Both families
+		# publish a bound that depends on it: a descending handover gains speed under a held bank,
+		# and pulls out of its dive under one, so neither ceiling is the level one.
+		var entry_pitch := 0.0 if index > 0 \
+			else asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0))
 		if families[index] == TURN_FAMILY:
-			bound = heading_bound_rad(band.x, float(context.speed_ceiling_mps))
+			var bound := RideReturnElements.heading_bound_rad(band.x,
+				float(context.speed_ceiling_mps), entry_pitch)
+			if bound <= 0.0:
+				return {"ok": false, "errors": [{"code": "heading_bound",
+					"role_id": order[index], "length_m": band.x,
+					"entry_speed_mps": context.speed_ceiling_mps,
+					"entry_pitch_rad": entry_pitch}]}
 			heading_budget += bound
-		lower.append(-bound)
-		upper.append(bound)
-		nominal[index] = clampf(float(nominal[index]), -bound, bound)
+			box = Vector2(-bound, bound)
+		else:
+			box = RideReturnElements.elevation_bound_m(band.x,
+				float(context.speed_ceiling_mps), entry_pitch, float(unloads[index]))
+			if box.x >= box.y:
+				return {"ok": false, "errors": [{"code": "elevation_bound",
+					"role_id": order[index], "length_m": band.x,
+					"entry_speed_mps": context.speed_ceiling_mps}]}
+		lower.append(box.x)
+		upper.append(box.y)
+		nominal[index] = clampf(float(nominal[index]), box.x, box.y)
 	lower.append(budget.x)
 	upper.append(budget.y)
 	if absf(heading_request) > heading_budget:
@@ -272,22 +293,27 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 		var heading_change := control if is_turn else 0.0
 		var entry_position := position
 		var entry_tangent := tangent
-		var entry_sin_pitch := tangent.dot(Vector3.UP)
-		var bump := 0.0 if is_turn else 2.0 * control / length - entry_sin_pitch
-		var entry_speed := sqrt(2.0 * energy)
+		var entry_pitch := asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0))
+		var entry_speed := sqrt(2.0 * maxf(energy, 0.0))
+		# A turn levels its handover out and holds that; a height beat traces the family's own
+		# staged crest through the knots its local solve starts from. Evaluating the element's
+		# own profile rather than restating it is what makes a role's assigned elevation, its
+		# published corridor and the centreline it is built on one geometry.
+		var knots: Array = [] if is_turn else RideReturnElements.height_knots(length,
+			entry_speed, entry_pitch, control, float(context.unloads[index]))
 		var step := length / CHAIN_SAMPLES_PER_ROLE
 		var centerline := PackedVector3Array([position])
 		var minimum_agl := INF
 		for sample in CHAIN_SAMPLES_PER_ROLE:
 			var u0 := float(sample) / CHAIN_SAMPLES_PER_ROLE
 			var u1 := float(sample + 1) / CHAIN_SAMPLES_PER_ROLE
-			var pitch0 := _sin_pitch(entry_sin_pitch, bump, u0)
-			var pitch1 := _sin_pitch(entry_sin_pitch, bump, u1)
+			var pitch0 := _sin_pitch(entry_pitch, knots, length, u0)
+			var pitch1 := _sin_pitch(entry_pitch, knots, length, u1)
 			position += step / 6.0 * (
-				_tangent(context, psi, heading_change, entry_sin_pitch, bump, u0)
-				+ 4.0 * _tangent(context, psi, heading_change, entry_sin_pitch, bump,
+				_tangent(context, psi, heading_change, entry_pitch, knots, length, u0)
+				+ 4.0 * _tangent(context, psi, heading_change, entry_pitch, knots, length,
 					0.5 * (u0 + u1))
-				+ _tangent(context, psi, heading_change, entry_sin_pitch, bump, u1))
+				+ _tangent(context, psi, heading_change, entry_pitch, knots, length, u1))
 			var rate0 := _energy_rate(pitch0, energy)
 			energy += 0.5 * step * (rate0 + _energy_rate(pitch1, energy + step * rate0))
 			minimum_energy = minf(minimum_energy, energy)
@@ -296,7 +322,7 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 			if not terrain.is_empty():
 				minimum_agl = minf(minimum_agl,
 					position.y - RideTerrain.height(terrain, position.x, position.z))
-		tangent = _tangent(context, psi, heading_change, entry_sin_pitch, bump, 1.0)
+		tangent = _tangent(context, psi, heading_change, entry_pitch, knots, length, 1.0)
 		psi = atan2(tangent.dot(context.right), tangent.dot(context.forward))
 		if not terrain.is_empty():
 			terrain_margins[context.order[index]] = minimum_agl
@@ -333,8 +359,18 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 	for index in context.order.size():
 		var role: Dictionary = chain.roles[index]
 		if context.families[index] != TURN_FAMILY:
+			var window := RideReturnElements.elevation_bound_m(role.length_m,
+				role.entry_speed_mps,
+				asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0)),
+				float(context.unloads[index]))
+			var elevation: float = role.elevation_change_m
+			if elevation < window.x or elevation > window.y:
+				errors.append({"code": "elevation_bound", "role_id": context.order[index],
+					"window_m": window, "elevation_change_m": elevation,
+					"shortfall_m": maxf(window.x - elevation, elevation - window.y)})
 			continue
-		var bound := heading_bound_rad(role.length_m, role.entry_speed_mps)
+		var bound := RideReturnElements.heading_bound_rad(role.length_m, role.entry_speed_mps,
+			asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0)))
 		if absf(role.heading_change_rad) > bound:
 			errors.append({"code": "heading_bound", "role_id": context.order[index],
 				"bound_rad": bound, "shortfall_rad": absf(role.heading_change_rad) - bound})
@@ -358,15 +394,16 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 
 
 ## The corridor publishes only what this stage derives: the nominal centreline a local build is
-## measured against and the band its length must stay inside. A lateral or vertical half-width
-## has no derivation here - the macro chain models net elevation, not a height beat's crest - so
-## none is published until the measurement that consumes it is defined.
+## measured against and the band its length must stay inside. A lateral or vertical half-width has
+## no derivation here, so none is published until the measurement that consumes it is defined. A
+## height beat also carries the crest its own elevation window was cut at, because that draw is
+## what makes the window a bound the family will honour.
 static func _assignments(context: Dictionary, chain: Dictionary) -> Array:
 	var assignments: Array = []
 	for index in context.order.size():
 		var role: Dictionary = chain.roles[index]
 		var is_turn: bool = context.families[index] == TURN_FAMILY
-		assignments.append({
+		var assignment := {
 			"role_id": context.order[index],
 			"family": context.families[index],
 			"entry_frame": _frame(role.entry_position, role.entry_tangent,
@@ -379,7 +416,10 @@ static func _assignments(context: Dictionary, chain: Dictionary) -> Array:
 			"curvature_sign": signf(role.heading_change_rad) if is_turn else 0.0,
 			"heading_change_rad": role.heading_change_rad,
 			"elevation_change_m": role.elevation_change_m,
-		})
+		}
+		if not is_turn:
+			assignment["unload_g"] = context.unloads[index]
+		assignments.append(assignment)
 	return assignments
 
 
@@ -393,8 +433,10 @@ static func _report(context: Dictionary, chain: Dictionary, solved: Dictionary) 
 		var role: Dictionary = chain.roles[index]
 		entry_speeds[context.order[index]] = role.entry_speed_mps
 		if context.families[index] == TURN_FAMILY:
-			heading_bounds[context.order[index]] = heading_bound_rad(role.length_m,
-				role.entry_speed_mps) - absf(role.heading_change_rad)
+			heading_bounds[context.order[index]] = RideReturnElements.heading_bound_rad(
+				role.length_m, role.entry_speed_mps,
+				asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0))
+			) - absf(role.heading_change_rad)
 	return {"status": str(solved.status), "evaluations": int(solved.evaluations),
 		"gate_offset_m": chain.end_position - context.gate_position,
 		"iterations": int(solved.iterations), "max_evaluations": RideReturnSolve.MAX_RETURN_EVALUATIONS,
@@ -425,53 +467,28 @@ static func _refused(errors: Array, report: Dictionary = {}) -> Dictionary:
 
 
 static func _tangent(context: Dictionary, psi: float, heading_change: float,
-		entry_sin_pitch: float, bump: float, u: float) -> Vector3:
-	var sin_pitch := _sin_pitch(entry_sin_pitch, bump, u)
+		entry_pitch_rad: float, knots: Array, length_m: float, u: float) -> Vector3:
+	var sin_pitch := _sin_pitch(entry_pitch_rad, knots, length_m, u)
 	var cos_pitch := sqrt(maxf(1.0 - sin_pitch * sin_pitch, 0.0))
-	var heading := psi + heading_change * _heading_fraction(u)
+	var heading := psi + heading_change * RideReturnElements.heading_fraction(entry_pitch_rad, u)
 	return ((context.forward as Vector3) * cos(heading)
 		+ (context.right as Vector3) * sin(heading)) * cos_pitch + Vector3.UP * sin_pitch
 
 
-## `sin(theta)` over one role: a quintic ramp from the entry pitch to a level exit plus a
-## symmetric quintic bump. Both terms have zero value, slope and curvature at `u = 1`, and each
-## integrates to half its amplitude, so the bump that delivers a net elevation change is closed
-## form rather than another solve.
-static func _sin_pitch(entry_sin_pitch: float, bump: float, u: float) -> float:
-	return clampf(entry_sin_pitch * (1.0 - _quintic(u)) + bump * _bump(u), -1.0, 1.0)
+## `sin(theta)` over one role, from the owning family's own profile: a turn levels its handover out
+## through the shouldered plateau of pitch curvature it commands, and a height beat runs the staged
+## crest its own knots describe. Neither shape is authored here - this stage evaluates the element's
+## definition - so a role's assigned elevation, the corridor it publishes and the centreline the
+## build lands on are one geometry rather than three descriptions of one.
+static func _sin_pitch(entry_pitch_rad: float, knots: Array, length_m: float,
+		u: float) -> float:
+	if knots.is_empty():
+		return sin(RideReturnElements.level_out_pitch_rad(entry_pitch_rad, u))
+	return sin(RideReturnElements.height_pitch_rad(knots, length_m, entry_pitch_rad, u))
 
 
 static func _energy_rate(sin_pitch: float, energy: float) -> float:
 	return -Motion.G0 * sin_pitch - RideProgram.ROLLING_MPS2 - 2.0 * RideProgram.AERO_PER_M * energy
-
-
-static func _quintic(u: float) -> float:
-	var c := clampf(u, 0.0, 1.0)
-	return c * c * c * (10.0 + c * (-15.0 + 6.0 * c))
-
-
-static func _quintic_integral(u: float) -> float:
-	var c := clampf(u, 0.0, 1.0)
-	return c * c * c * c * (2.5 + c * (-3.0 + c))
-
-
-static func _bump(u: float) -> float:
-	return _quintic(2.0 * u) if u <= 0.5 else _quintic(2.0 - 2.0 * u)
-
-
-## The fraction of a role's heading change delivered by arc `u`: the integral of a shouldered
-## plateau, so `kappa_yaw = cos(theta) d(psi)/ds` starts and ends at zero with zero slope.
-static func _heading_fraction(u: float) -> float:
-	var c := clampf(u, 0.0, 1.0)
-	var area := 0.0
-	if c <= SHOULDER_FRACTION:
-		area = SHOULDER_FRACTION * _quintic_integral(c / SHOULDER_FRACTION)
-	elif c <= 1.0 - SHOULDER_FRACTION:
-		area = 0.5 * SHOULDER_FRACTION + c - SHOULDER_FRACTION
-	else:
-		area = 1.0 - 1.5 * SHOULDER_FRACTION \
-			+ SHOULDER_FRACTION * (0.5 - _quintic_integral((1.0 - c) / SHOULDER_FRACTION))
-	return area / LOADED_ARC_FRACTION
 
 
 static func _frame(position: Vector3, tangent: Vector3, up: Vector3) -> Dictionary:

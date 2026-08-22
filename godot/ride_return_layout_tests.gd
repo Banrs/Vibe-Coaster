@@ -5,10 +5,19 @@ extends SceneTree
 ## downstream failure feedback, the passive energy bound, and terrain clearance.
 
 const Layout := preload("res://ride_return_layout.gd")
+const Elements := preload("res://ride_return_elements.gd")
 
 const RETURN_ROLE_IDS := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
 const ASSIGNMENT_KEYS := ["role_id", "family", "entry_frame", "exit_frame", "target_length_m",
 	"corridor", "terrain_intent", "curvature_sign", "heading_change_rad", "elevation_change_m"]
+## A height beat also carries the crest it is authored to hold, because that value is a per-seed
+## draw and it is what its family's elevation window is a function of. A turn has no crest, so it
+## publishes no such key.
+const HEIGHT_ASSIGNMENT_KEYS := ["role_id", "family", "entry_frame", "exit_frame",
+	"target_length_m", "corridor", "terrain_intent", "curvature_sign", "heading_change_rad",
+	"elevation_change_m", "unload_g"]
+## The shallow end of the planner's own unload draw: -0.45 g scaled by 0.95.
+const DRAWN_UNLOAD_G := -0.4275
 const FRAME_KEYS := ["position_m", "tangent", "rider_up"]
 const CORRIDOR_KEYS := ["centerline_m", "length_band_m"]
 const NOMINALS := [480.0, 420.0, 500.0, 520.0]
@@ -17,14 +26,21 @@ const BANDS := [Vector2(420.0, 620.0), Vector2(290.0, 480.0),
 const WEIGHTS := [1.0, 1.0, 1.0, 1.0]
 const STATION_POSITION_M := Vector3(0.0, 30.0, 0.0)
 const APPROACH_LENGTH_M := 230.0
-const START_HEADING_DEG := 250.0
+## The heading the synthetic chain has to unwind. It is a request the contract admits: the turn
+## family's bank ceiling is the roll the envelope allows across its shoulder, so at 82 m/s the two
+## turns' shortest allocable arcs carry about 1.01 rad between them, and a request past that is
+## refused at the macro stage rather than handed to a local solve.
+const START_HEADING_DEG := 330.0
 const START_PITCH_DEG := -6.0
 const START_SPEED_MPS := 82.0
 const PREFIX_DISTANCE_M := 5900.0
 ## A start the nominal chain lands on the gate from, then displaced so the bounded solve has real
-## work to do rather than confirming its own starting point.
+## work to do rather than confirming its own starting point. The vertical displacement is signed
+## the way the contract can absorb it: the nominal split hands both height beats half the whole
+## drop, which clamps them to the floor of the crest window their family publishes, so a start that
+## demanded even more descent would be asking for an assignment no legal chain can make.
 const BASE_START_M := Vector3(-788.0, 80.0, 1200.0)
-const SOLVE_NUDGE_M := Vector3(45.0, 12.0, -30.0)
+const SOLVE_NUDGE_M := Vector3(45.0, -12.0, -30.0)
 
 var _errors := PackedStringArray()
 
@@ -44,6 +60,10 @@ func _initialize() -> void:
 	_test_a_signless_turn_is_refused()
 	_test_corridor_publishes_only_derived_bounds()
 	_test_the_control_box_speed_is_not_optimistic()
+	_test_the_heading_box_is_built_at_the_handover_pitch()
+	_test_every_accepted_assignment_builds()
+	_test_every_accepted_layout_builds_across_the_start_sweep()
+	_test_the_elevation_box_is_built_at_the_drawn_unload()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -120,11 +140,9 @@ func _test_heading_bound_rejects_an_infeasible_turn() -> void:
 	_expect(float(refusal.get("shortfall_rad", -1.0)) > 0.0
 		and float(refusal.get("bound_rad", -1.0)) > 0.0,
 		"the refusal names the bound and the shortfall it missed by")
-	var bound := Layout.heading_bound_rad(420.0, 82.0)
-	_expect(absf(bound - 0.8 * 420.0 * 9.80665 * tan(Layout.TURN_BANK_CEILING_RAD) / 6724.0)
-		<= 0.000001, "the heading bound is the declared loaded-arc contract")
-	_expect(Layout.heading_bound_rad(620.0, 82.0) > bound
-		and Layout.heading_bound_rad(420.0, 70.0) > bound,
+	var bound := Elements.heading_bound_rad(420.0, 82.0, 0.0)
+	_expect(Elements.heading_bound_rad(620.0, 82.0, 0.0) > bound
+		and Elements.heading_bound_rad(420.0, 70.0, 0.0) > bound,
 		"the bound loosens with allocated arc and tightens with entry speed")
 
 
@@ -151,7 +169,8 @@ func _test_all_return_orders_close_synthetic_frames() -> void:
 			total += float(assignment.target_length_m)
 			_expect(assignment.is_read_only(),
 				"the accepted assignment is immutable: %s" % label)
-			_expect(assignment.keys() == ASSIGNMENT_KEYS,
+			_expect(assignment.keys() == (ASSIGNMENT_KEYS
+				if str(assignment.family) == "return_turn" else HEIGHT_ASSIGNMENT_KEYS),
 				"the assignment publishes exactly the declared keys: %s" % label)
 			_expect(assignment.role_id == order[index],
 				"assignments keep the planner order: %s" % label)
@@ -227,18 +246,19 @@ func _test_terrain_margins_refuse_a_buried_chain() -> void:
 ## exactly the arc the feasibility bound reserves, and the profile delivers the whole commanded
 ## heading change monotonically, with no jump or reversal at either shoulder knot.
 func _test_heading_shoulders_deliver_the_whole_turn() -> void:
-	_expect(absf(1.0 - Layout.SHOULDER_FRACTION - Layout.LOADED_ARC_FRACTION) <= 0.000000000001,
+	_expect(absf(1.0 - Elements.SHOULDER_FRACTION - Elements.LEAD_FRACTION
+		- Elements.LOADED_ARC_FRACTION) <= 0.000000000001,
 		"the chain's shoulders reserve exactly the arc the heading bound calls unloaded")
-	_expect(absf(Layout._heading_fraction(0.0)) <= 0.000000000001,
+	_expect(absf(Elements.plateau_fraction(0.0)) <= 0.000000000001,
 		"no heading is delivered before the turn starts")
-	_expect(absf(Layout._heading_fraction(1.0) - 1.0) <= 0.000000000001,
+	_expect(absf(Elements.plateau_fraction(1.0) - 1.0) <= 0.000000000001,
 		"the whole commanded heading change is delivered by the end of the turn")
 	var samples := 4001
 	var previous := 0.0
 	var largest_step := 0.0
 	var deepest_reversal := 0.0
 	for index in samples:
-		var fraction := Layout._heading_fraction(float(index) / float(samples - 1))
+		var fraction := Elements.plateau_fraction(float(index) / float(samples - 1))
 		deepest_reversal = maxf(deepest_reversal, previous - fraction)
 		largest_step = maxf(largest_step, fraction - previous)
 		previous = fraction
@@ -326,26 +346,147 @@ func _test_the_control_box_speed_is_not_optimistic() -> void:
 		<= 0.000001, "the accepted layout publishes the speed its heading box was built at")
 
 
+## The other half of the same contract: the box is built at the handover pitch as well as at the
+## chain's speed. Only the first role can be handed a pitched frame - every family exits level -
+## and the turn family's bound is a strong function of it, in neither one direction nor by a small
+## amount, so a box built at the level bound admits a heading the first role is then refused for
+## with no retry behind it. The camelback's own 33.6 deg exit is the handover this stage is
+## entered on.
+func _test_the_heading_box_is_built_at_the_handover_pitch() -> void:
+	var plan := _plan()
+	var context: Dictionary = Layout._context(
+		_start(BASE_START_M, START_HEADING_DEG, -33.6), plan, RETURN_ROLE_IDS)
+	if not _expect(context.ok, "the steep handover lays out a context: %s" % str(context.errors)):
+		return
+	var speed := float(context.speed_ceiling_mps)
+	var handover := Elements.heading_bound_rad(BANDS[0].x, speed, deg_to_rad(-33.6))
+	var level := Elements.heading_bound_rad(BANDS[0].x, speed, 0.0)
+	_expect(absf(handover - level) > 0.01,
+		"the camelback handover is a materially different bound from the level one")
+	_expect(absf(float(context.upper[0]) - handover) <= 0.000001
+		and absf(float(context.lower[0]) + handover) <= 0.000001,
+		"the first turn's box is the bound at the pitch it is handed")
+	_expect(absf(float(context.upper[2]) - Elements.heading_bound_rad(BANDS[2].x, speed, 0.0))
+		<= 0.000001,
+		"a later turn's box is the level bound, because every family exits level")
+
+
+## The contract between the two stages: an accepted layout is a set of assignments the element
+## families build. Every legal order is laid out and then chained through the real builders, each
+## element entered on the last one's integrated end state, so an assignment that only the macro
+## geometry believes in is a failure here rather than a refusal with no retry behind it.
+func _test_every_accepted_assignment_builds() -> void:
+	var plan := _plan()
+	for order: Array in _permutations(RETURN_ROLE_IDS):
+		var label := str(order)
+		var state := _seed_start(plan, order)
+		var result := Layout.build(state, plan, order)
+		if not _expect(result.ok, "return order lays out: %s %s" % [label, str(result.errors)]):
+			continue
+		for assignment: Dictionary in result.assignments:
+			var built := Elements.build(state, assignment, _settings())
+			if not _expect(built.ok, "the accepted assignment builds: %s %s %s"
+					% [assignment.role_id, label, str(built.errors)]):
+				break
+			state = built.end_state
+
+
+## The crest a height beat holds is a per-seed draw, so the window its family publishes is a
+## function of that draw and the box this stage bounds the elevation control by has to be that
+## window. Over the planner's own 0.95-1.05 range the window moves by up to 7.9 m at the longest
+## declared arc - larger than the 5 m vertical residual scale the macro chain converges at - so a
+## stage that bounded the control at one crest and handed the element another would assign
+## elevations the family refuses, with no retry behind it.
+func _test_the_elevation_box_is_built_at_the_drawn_unload() -> void:
+	var plan := _plan()
+	for role: Dictionary in plan.roles:
+		if str(role.recipe_id) == "return_height":
+			role["unload_g"] = DRAWN_UNLOAD_G
+	var start := _seed_start(plan, RETURN_ROLE_IDS)
+	var context: Dictionary = Layout._context(start, plan, RETURN_ROLE_IDS)
+	if not _expect(context.ok, "the drawn plan lays out a context: %s" % str(context.errors)):
+		return
+	var speed := float(context.speed_ceiling_mps)
+	var drawn := Elements.elevation_bound_m(BANDS[1].x, speed, 0.0, DRAWN_UNLOAD_G)
+	var default_window := Elements.elevation_bound_m(BANDS[1].x, speed, 0.0)
+	_expect(absf(drawn.y - default_window.y) > 0.1 or absf(drawn.x - default_window.x) > 0.1,
+		"the draw moves the window the box is cut from")
+	_expect(absf(float(context.lower[1]) - drawn.x) <= 0.000001
+		and absf(float(context.upper[1]) - drawn.y) <= 0.000001,
+		"the height box is the window the drawn crest publishes")
+	var result := Layout.build(start, plan, RETURN_ROLE_IDS)
+	if not _expect(result.ok, "the drawn plan lays out: %s" % str(result.errors)):
+		return
+	var state := start
+	for assignment: Dictionary in result.assignments:
+		if str(assignment.family) == "return_height":
+			_expect(absf(float(assignment.unload_g) - DRAWN_UNLOAD_G) <= 0.000001,
+				"the assignment carries the crest its box was cut at: %s" % assignment.role_id)
+		var built := Elements.build(state, assignment, _settings())
+		if not _expect(built.ok, "the drawn assignment builds: %s %s"
+				% [assignment.role_id, str(built.errors)]):
+			break
+		state = built.end_state
+
+
+## The same contract across the start frames the prefix can hand over, because an accepted layout
+## is not a claim about one pose. A start that no legal chain closes from is a refusal, not a
+## failure - but a stage that refused everything would satisfy that vacuously, so the sweep also
+## requires the measured number of closures. Of the eight frames below, four lay out; the other
+## four are refused by name at the macro stage.
+func _test_every_accepted_layout_builds_across_the_start_sweep() -> void:
+	var plan := _plan()
+	var laid_out := 0
+	for heading: float in [300.0, 330.0]:
+		for speed: float in [70.0, 82.0]:
+			for lift: float in [-30.0, 30.0]:
+				var label := "heading %.0f speed %.0f lift %.0f" % [heading, speed, lift]
+				var state := _seed_start(plan, RETURN_ROLE_IDS, heading, speed,
+					SOLVE_NUDGE_M + Vector3(0.0, lift, 0.0))
+				var result := Layout.build(state, plan, RETURN_ROLE_IDS)
+				if not result.ok:
+					continue
+				laid_out += 1
+				for assignment: Dictionary in result.assignments:
+					var built := Elements.build(state, assignment, _settings())
+					if not _expect(built.ok, "the swept assignment builds: %s %s %s"
+							% [assignment.role_id, label, str(built.errors)]):
+						break
+					state = built.end_state
+	_expect(laid_out >= 4, "the start sweep closes the frames it closed when measured, got %d"
+		% laid_out)
+
+
+func _settings() -> Dictionary:
+	return {"step_s": 0.01, "gravity_mps2": Vector3.DOWN * 9.80665,
+		"rolling_mps2": RideProgram.ROLLING_MPS2, "aero_per_m": RideProgram.AERO_PER_M}
+
+
 ## The synthetic start for an order is where that order's nominal chain lands on the gate,
 ## displaced by a fixed nudge. Each order therefore gets a frame it can physically close from -
-## a single shared frame cannot serve every plan-view topology - and the solve still has to work.
-func _seed_start(plan: Dictionary, order: Array) -> Dictionary:
-	var start := _start(BASE_START_M, START_HEADING_DEG)
+## a single shared frame cannot serve every plan-view topology, and height is no more shareable
+## than plan view, because the elevation a role may be assigned is bounded by the crest its family
+## has to stand inside it - and the solve still has to absorb the nudge.
+func _seed_start(plan: Dictionary, order: Array, heading_deg: float = START_HEADING_DEG,
+		speed_mps: float = START_SPEED_MPS,
+		nudge_m: Vector3 = SOLVE_NUDGE_M) -> Dictionary:
+	var start := _start(BASE_START_M, heading_deg, START_PITCH_DEG, speed_mps)
 	for _pass in 2:
 		var context: Dictionary = Layout._context(start, plan, order)
 		var chain: Dictionary = Layout._chain(context, context.nominal)
-		var offset: Vector3 = context.gate_position - chain.end_position
-		start = _start(start.position_m + Vector3(offset.x, 0.0, offset.z), START_HEADING_DEG)
-	return _start(start.position_m + SOLVE_NUDGE_M, START_HEADING_DEG)
+		start = _start(start.position_m + context.gate_position - chain.end_position,
+			heading_deg, START_PITCH_DEG, speed_mps)
+	return _start(start.position_m + nudge_m, heading_deg, START_PITCH_DEG, speed_mps)
 
 
-func _start(position: Vector3, heading_deg: float) -> Dictionary:
+func _start(position: Vector3, heading_deg: float, pitch_deg: float = START_PITCH_DEG,
+		speed_mps: float = START_SPEED_MPS) -> Dictionary:
 	var heading := deg_to_rad(heading_deg)
-	var pitch := deg_to_rad(START_PITCH_DEG)
+	var pitch := deg_to_rad(pitch_deg)
 	var tangent := Vector3(cos(heading) * cos(pitch), sin(pitch), sin(heading) * cos(pitch))
 	return {"position_m": position, "tangent": tangent,
 		"rider_up": Vector3.UP.slide(tangent).normalized(),
-		"speed_mps": START_SPEED_MPS, "distance_m": PREFIX_DISTANCE_M}
+		"speed_mps": speed_mps, "distance_m": PREFIX_DISTANCE_M}
 
 
 func _plan() -> Dictionary:

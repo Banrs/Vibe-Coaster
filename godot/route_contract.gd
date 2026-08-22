@@ -654,32 +654,29 @@ static func _terrain_proofs(
 	var dive_intent: Dictionary = _role_terrain_intent(plan, "outward-dive")
 	var cross_to_outward_ratio: float = absf(dive.cross_delta_m) \
 		/ maxf(dive.outward_delta_m, 0.000001)
-	var dive_margin := minf(
+	var dive_margin := INF
+	for term in [
 		_band_margin(dive.outward_delta_m, dive_intent.outward_delta_m),
-		float(dive_intent.maximum_cross_to_outward_ratio) - cross_to_outward_ratio)
-	dive_margin = minf(dive_margin, _band_margin(
-		float(planned.dive_exit_apron_fraction), DIVE_EXIT_APRON_BAND))
-	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
-		- absf(float(planned.dive_exit_edge_m) \
-			- float(planned.dive_exit_apron_fraction) * float(terrain.apron_width)))
-	dive_margin = minf(dive_margin, dive.minimum_agl_m \
-		- float(dive_intent.minimum_centerline_agl_m))
-	dive_margin = minf(dive_margin, minf(dive.minimum_outward_step_m,
-		dive.minimum_height_down_step_m) + 0.05)
-	dive_margin = minf(dive_margin, _band_margin(dive_entry_edge_m,
-		Vector2(shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x,
-			shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.y)))
-	dive_margin = minf(dive_margin, _band_margin(dive_exit_edge_m,
-		DIVE_EXIT_APRON_BAND * float(terrain.apron_width)))
-	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
-		- absf(dive_entry_edge_m - float(planned.dive_entry_edge_m)))
-	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
-		- absf(dive_exit_edge_m - float(planned.dive_exit_edge_m)))
-	dive_margin = minf(dive_margin, TERRAIN_PLACEMENT_TOLERANCE_M \
-		- absf((dive_entry_edge_m - dive_exit_edge_m) \
-			- float(planned.native_dive_edge_span_m)))
-	dive_margin = minf(dive_margin, _band_margin(summit_agl_m, SUMMIT_AGL_BAND_M))
-	dive_margin = minf(dive_margin, _band_margin(dive_drop_m, scale.dive_drop_m))
+		float(dive_intent.maximum_cross_to_outward_ratio) - cross_to_outward_ratio,
+		_band_margin(float(planned.dive_exit_apron_fraction), DIVE_EXIT_APRON_BAND),
+		TERRAIN_PLACEMENT_TOLERANCE_M \
+			- absf(float(planned.dive_exit_edge_m) \
+				- float(planned.dive_exit_apron_fraction) * float(terrain.apron_width)),
+		dive.minimum_agl_m - float(dive_intent.minimum_centerline_agl_m),
+		minf(dive.minimum_outward_step_m, dive.minimum_height_down_step_m) + 0.05,
+		_band_margin(dive_entry_edge_m,
+			Vector2(shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x,
+				shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.y)),
+		_band_margin(dive_exit_edge_m, DIVE_EXIT_APRON_BAND * float(terrain.apron_width)),
+		TERRAIN_PLACEMENT_TOLERANCE_M - absf(dive_entry_edge_m - float(planned.dive_entry_edge_m)),
+		TERRAIN_PLACEMENT_TOLERANCE_M - absf(dive_exit_edge_m - float(planned.dive_exit_edge_m)),
+		TERRAIN_PLACEMENT_TOLERANCE_M \
+			- absf((dive_entry_edge_m - dive_exit_edge_m) \
+				- float(planned.native_dive_edge_span_m)),
+		_band_margin(summit_agl_m, SUMMIT_AGL_BAND_M),
+		_band_margin(dive_drop_m, scale.dive_drop_m),
+	]:
+		dive_margin = minf(dive_margin, term)
 	var shelf_cross := _crossing_index(dive.signed_edge_m,
 		shelf_edge_m)
 	var face_cross := _crossing_index(dive.signed_edge_m, float(terrain.apron_width))
@@ -723,14 +720,12 @@ static func _terrain_proofs(
 	var planned_span_margin_m := TERRAIN_PLACEMENT_TOLERANCE_M \
 		- absf((dive_exit_edge_m - tunnel_exit_edge_m) \
 			- float(planned.native_tunnel_edge_span_m))
-	var tunnel_margin := exit_overshoot_margin_m
-	tunnel_margin = minf(tunnel_margin, tunnel.minimum_outward_step_m)
-	tunnel_margin = minf(tunnel_margin, tunnel.minimum_height_down_step_m)
-	tunnel_margin = minf(tunnel_margin, planned_exit_margin_m)
-	tunnel_margin = minf(tunnel_margin, planned_span_margin_m)
 	var tunnel_drop_m: float = trajectory.position_m[tunnel_bounds.x].y \
 		- trajectory.position_m[tunnel_bounds.y].y
-	tunnel_margin = minf(tunnel_margin, tunnel_drop_m)
+	var tunnel_margin := exit_overshoot_margin_m
+	for term in [tunnel.minimum_outward_step_m, tunnel.minimum_height_down_step_m,
+			planned_exit_margin_m, planned_span_margin_m, tunnel_drop_m]:
+		tunnel_margin = minf(tunnel_margin, term)
 	if apron_cross < 0 or tunnel_margin < -0.0001:
 		return _terrain_failure("tunnel-lsm3", "apron_edge",
 			{"from_side": 1, "to_side": -1, "monotonic": ["outward", "height_down"]},

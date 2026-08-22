@@ -279,8 +279,8 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 		var world_position := station_position + tangent * native_position.x \
 			+ up * native_position.y + right * native_position.z
 		var native_up: Vector3 = opener_rider_up[sample_index]
-		var world_up := tangent * native_up.x + up * native_up.y + right * native_up.z
-		var lower_spine := world_position - world_up * RouteContract.LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower_spine := _lower_spine(world_position, world_up)
 		var edge_m := Terrain.edge_distance(terrain, lower_spine.x, lower_spine.z)
 		if not world_position.is_finite() or not world_up.is_finite() or not is_finite(edge_m):
 			return _failure("terrain story capability has a non-finite station/opener sample")
@@ -335,6 +335,17 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	}
 
 
+## Native-frame offset into the world frame, term order fixed (tangent, then up, then right) so
+## every call site folds identically.
+static func _world_offset(tangent: Vector3, right: Vector3, v: Vector3) -> Vector3:
+	return tangent * v.x + Vector3.UP * v.y + right * v.z
+
+
+## The lower-spine point below a world offset/position, given its world-frame rider-up vector.
+static func _lower_spine(world_offset: Vector3, world_up: Vector3) -> Vector3:
+	return world_offset - world_up * RouteContract.LOWER_SPINE_SURFACE_OFFSET_M
+
+
 ## Closed-form placement, one evaluation, no search. Edge distance is exact along `inward` (the
 ## wobble is a function of the along-edge coordinate alone), so sliding the station until the dive
 ## entry lands on `entry_edge_m` is arithmetic; the station height is then the highest of the
@@ -365,28 +376,24 @@ static func _place_station(terrain: Dictionary, inward: Vector3, footprint: Dict
 		- world_entry_offset.y
 	for sample_index in positions.size():
 		var native_position: Vector3 = positions[sample_index]
-		var world_offset := tangent * native_position.x + Vector3.UP * native_position.y \
-			+ right * native_position.z
+		var world_offset := _world_offset(tangent, right, native_position)
 		var center := station_position + world_offset
 		required_station_y = maxf(required_station_y,
 			Terrain.height(terrain, center.x, center.z) + DIVE_CENTERLINE_CLEARANCE_M \
 			- world_offset.y)
 		var native_up: Vector3 = rider_up[sample_index]
-		var world_up := tangent * native_up.x + Vector3.UP * native_up.y \
-			+ right * native_up.z
-		var lower_offset := world_offset - world_up * RouteContract.LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower_offset := _lower_spine(world_offset, world_up)
 		var lower := station_position + lower_offset
 		required_station_y = maxf(required_station_y,
 			Terrain.height(terrain, lower.x, lower.z) + DIVE_LOWER_SPINE_CLEARANCE_M \
 			- lower_offset.y)
 	for sample_index in opener_positions.size():
 		var native_position: Vector3 = opener_positions[sample_index]
-		var world_offset := tangent * native_position.x + Vector3.UP * native_position.y \
-			+ right * native_position.z
+		var world_offset := _world_offset(tangent, right, native_position)
 		var native_up: Vector3 = opener_up[sample_index]
-		var world_up := tangent * native_up.x + Vector3.UP * native_up.y \
-			+ right * native_up.z
-		var lower_offset := world_offset - world_up * RouteContract.LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower_offset := _lower_spine(world_offset, world_up)
 		var lower := station_position + lower_offset
 		var required_clearance := STATION_LOWER_SPINE_CLEARANCE_M \
 			if sample_index < station_sample_count else DIVE_LOWER_SPINE_CLEARANCE_M
@@ -667,15 +674,13 @@ static func _dive_placement_observation(
 	var minimum_lower_spine_agl_m := INF
 	for sample_index in positions.size():
 		var native_position: Vector3 = positions[sample_index]
-		var world_offset := tangent * native_position.x + Vector3.UP * native_position.y \
-			+ right * native_position.z
+		var world_offset := _world_offset(tangent, right, native_position)
 		var center := station_position + world_offset
 		minimum_centerline_agl_m = minf(minimum_centerline_agl_m,
 			center.y - Terrain.height(terrain, center.x, center.z))
 		var native_up: Vector3 = rider_up[sample_index]
-		var world_up := tangent * native_up.x + Vector3.UP * native_up.y \
-			+ right * native_up.z
-		var lower := center - world_up * RouteContract.LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower := _lower_spine(center, world_up)
 		minimum_lower_spine_agl_m = minf(minimum_lower_spine_agl_m,
 			lower.y - Terrain.height(terrain, lower.x, lower.z))
 	var entry_position := station_position \

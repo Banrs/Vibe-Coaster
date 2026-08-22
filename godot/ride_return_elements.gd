@@ -32,7 +32,9 @@ extends RefCounted
 ##   curvature and zero twist. Its pitch curvature is one staged narrative through the knots
 ##   `[0, pull_up, crest, pullout, 0]`; every knot joins two quintics whose value, spatial slope
 ##   and spatial acceleration all agree there, so the stages are numerical knots of one motion and
-##   never a pulse restart, a neutral pause or a micro-hold.
+##   never a pulse restart, a neutral pause or a micro-hold. `elevation_bound_m` publishes the net
+##   elevation it can crest through, so the macro stage may not assign an elevation this family
+##   would then refuse.
 ##
 ## Both families enter and leave at zero curvature, zero curvature slope and zero curvature
 ## acceleration, which is what lets adjacent elements meet the C4 seam contract.
@@ -93,6 +95,22 @@ const TURN_BANK_CEILING_RAD := 77.0 * PI / 180.0
 ## own drawn `unload_g` overrides it.
 const DEFAULT_UNLOAD_G := -0.45
 const UNLOAD_TOLERANCE_G := 0.01
+## The height a beat's crest must stand above its endpoints before it is a height beat at all,
+## derived from the same counterpart row the unload above comes from. Intimidator 305's last
+## airtime pop - the `return-height-a` row's own class corroboration - measures -0.45 g held below
+## 0 g for 0.78 s. A crest that unloads a rider to `n` at speed `v` curves at `(1 - n) g0 / v^2`,
+## so the apex of the arc holding that stands `(1 - n) g0 T^2 / 8` above the ends of the window,
+## which is speed-free: 0.746 m at the 0 g threshold across the measured 0.78 s. The element's own
+## endpoints sit below the ends of that window, so this is a floor on the published prominence
+## rather than a target for it, and geometry is never scaled off the counterpart.
+const PROMINENCE_FLOOR_M := 0.7458
+## The elevation bound's quadrature: steps per curvature stage - which is also the sample count of
+## the scan that finds the deepest crest - corrections of the crest knot, and bisections of each
+## window edge. Nothing here integrates a trajectory: these are counts on a commanded analytic
+## profile, evaluated once per role by the macro stage and never inside a solve.
+const BOUND_SAMPLES := 24
+const BOUND_CREST_PASSES := 3
+const BOUND_BISECTIONS := 16
 ## Curvature bounds for the height solve, stated as loads rather than as radii: no stage may ask
 ## for more than the 4.0 g held normal limit the macro stage also reasons against, and none may
 ## unload past -1.0 g, which is twice the deepest authored airtime. Both signs are open on the
@@ -267,6 +285,32 @@ static func level_out_pitch_rad(entry_pitch_rad: float, u: float) -> float:
 	return entry_pitch_rad * (1.0 - plateau_fraction(u))
 
 
+## The net elevation a height beat can be assigned and still be one: the family's counterpart to
+## `max_bank_rad`, published so no layout may assign an elevation this family then refuses. The
+## height solve's own bounds fix the pull-up knot's range, the exit-pitch condition fixes the
+## pullout knot from it, and the crest is pinned by the authored unload, so the whole profile -
+## and with it the net elevation, the crest prominence and the peak normal load - is a function of
+## that one knot. The window is the elevation either side of the deepest crest at which the
+## prominence floor or the load envelope is first missed. A handover this family cannot crest out
+## of publishes an inverted, empty window rather than a bound. The crest here is the family's own
+## `DEFAULT_UNLOAD_G`; a role that publishes a drawn unload must pass it to both this and `build`.
+static func elevation_bound_m(length_m: float, speed_mps: float,
+		entry_pitch_rad: float) -> Vector2:
+	var box := _height_knot_box(length_m, speed_mps, entry_pitch_rad)
+	var deepest := box.x
+	var prominence := -INF
+	for index in BOUND_SAMPLES + 1:
+		var knot := lerpf(box.x, box.y, float(index) / BOUND_SAMPLES)
+		var traced := _height_profile(length_m, speed_mps, entry_pitch_rad, knot)
+		if float(traced.prominence_m) > prominence and float(traced.load_slack_g) >= 0.0:
+			prominence = float(traced.prominence_m)
+			deepest = knot
+	if prominence < PROMINENCE_FLOOR_M:
+		return Vector2(INF, -INF)
+	return Vector2(_height_edge(length_m, speed_mps, entry_pitch_rad, box.x, deepest),
+		_height_edge(length_m, speed_mps, entry_pitch_rad, box.y, deepest))
+
+
 ## The seam evidence, split by the order at which each part is measurable: position, tangent and
 ## the world curvature vector are compared directly from both integrated routes, while the third
 ## and fourth position derivatives come from each side's published analytic jets. Differencing
@@ -438,7 +482,7 @@ static func _solve_height(start: Dictionary, assignment: Dictionary, settings: D
 	var length := float(assignment.target_length_m)
 	var elevation := float(assignment.elevation_change_m)
 	var unload := float(assignment.get("unload_g", DEFAULT_UNLOAD_G))
-	var crest := (unload - 1.0) * Motion.G0 / (speed * speed)
+	var crest := _crest_curvature_m_inv(unload, speed)
 	var nominal := _height_nominal(entry_pitch, length, elevation, [0.0, 1.0, 0.0], crest)
 	var ceiling := NORMAL_CEILING_G * Motion.G0 / (speed * speed)
 	var floor_curvature := (AIRTIME_FLOOR_G - 1.0) * Motion.G0 / (speed * speed)
@@ -516,6 +560,125 @@ static func _pitch_moment() -> Array:
 			moment[stage] += fraction * (0.5 * (1.0 - start) - fraction * 5.0 / 14.0)
 		start += fraction
 	return moment
+
+
+## The crest curvature one authored unload asks for: `n = v^2 kappa / g0 + cos(theta)` is exactly
+## `1 + v^2 kappa / g0` at the apex, where the track is level.
+static func _crest_curvature_m_inv(unload_g: float, speed_mps: float) -> float:
+	return (unload_g - 1.0) * Motion.G0 / (speed_mps * speed_mps)
+
+
+## The three curvature knots one pull-up knot implies: the crest is the authored unload, and the
+## pullout is whatever levels the exit pitch, so the family's own endpoint conditions leave exactly
+## one free knot.
+static func _height_knots(length_m: float, entry_pitch_rad: float, pull_up_m_inv: float,
+		crest_m_inv: float) -> Array:
+	var area := _pitch_area(1.0)
+	return [0.0, pull_up_m_inv, crest_m_inv,
+		(-entry_pitch_rad / length_m - float(area[0]) * pull_up_m_inv
+			- float(area[1]) * crest_m_inv) / float(area[2]), 0.0]
+
+
+## One candidate profile, converged the way the build converges it: the crest the height solve
+## targets is the deepest unload over the whole beat, not the load at one nominal station, and the
+## speed there is not the entry speed. The crest knot is therefore corrected from the traced
+## minimum - `dn = v^2 dkappa / g0` makes that exact to first order - until the two agree.
+static func _height_profile(length_m: float, speed_mps: float, entry_pitch_rad: float,
+		pull_up_m_inv: float) -> Dictionary:
+	var crest := _crest_curvature_m_inv(DEFAULT_UNLOAD_G, speed_mps)
+	var traced := _height_trace(length_m, speed_mps, entry_pitch_rad, pull_up_m_inv, crest)
+	for _pass in BOUND_CREST_PASSES:
+		crest += (DEFAULT_UNLOAD_G - float(traced.minimum_normal_g)) * Motion.G0 \
+			/ float(traced.minimum_speed_squared)
+		traced = _height_trace(length_m, speed_mps, entry_pitch_rad, pull_up_m_inv, crest)
+	return traced
+
+
+## The pull-up knot's own range: the height solve's bounds on it, narrowed to where the pullout
+## knot the exit-pitch condition implies stays inside the solve's bounds as well.
+static func _height_knot_box(length_m: float, speed_mps: float,
+		entry_pitch_rad: float) -> Vector2:
+	var area := _pitch_area(1.0)
+	var scale := Motion.G0 / (speed_mps * speed_mps)
+	var reach := (-entry_pitch_rad / length_m - float(area[1])
+		* _crest_curvature_m_inv(DEFAULT_UNLOAD_G, speed_mps)) / float(area[0])
+	return Vector2(maxf((AIRTIME_FLOOR_G - 1.0) * scale,
+			reach - NORMAL_CEILING_G * scale * float(area[2]) / float(area[0])),
+		minf(NORMAL_CEILING_G * scale, reach))
+
+
+## One candidate height profile, traced from the family's own commanded curvature: track pitch is
+## exactly the integral of that curvature and height exactly the integral of its sine, and speed
+## follows the same arc-length energy equation the production integrator does, so this is the
+## profile the build lands on rather than a small-angle sketch of it. A profile with no interior
+## crest publishes no prominence.
+static func _height_trace(length_m: float, speed_mps: float, entry_pitch_rad: float,
+		pull_up_m_inv: float, crest_m_inv: float) -> Dictionary:
+	var knots := _height_knots(length_m, entry_pitch_rad, pull_up_m_inv, crest_m_inv)
+	var pitch := entry_pitch_rad
+	var height := 0.0
+	var energy := 0.5 * speed_mps * speed_mps
+	var apex_height := INF
+	var climb_height := 0.0
+	var climbing := pitch >= 0.0
+	var peak_normal := -INF
+	var minimum_normal := INF
+	var minimum_squared := 2.0 * energy
+	var duration := 0.0
+	# Every stage ends on the knot the next one starts from, so the curvature at a step's far node
+	# is the near node of the step after it and is carried rather than evaluated twice.
+	var curvature := 0.0
+	for stage in HEIGHT_FRACTIONS.size():
+		var step: float = float(HEIGHT_FRACTIONS[stage]) * length_m / BOUND_SAMPLES
+		for index in BOUND_SAMPLES:
+			var u1 := float(index + 1) / BOUND_SAMPLES
+			var ahead := _height_curvature(knots, stage, u1)
+			var next := pitch + step / 6.0 * (curvature + 4.0
+				* _height_curvature(knots, stage, u1 - 0.5 / BOUND_SAMPLES) + ahead)
+			curvature = ahead
+			height += 0.5 * step * (sin(pitch) + sin(next))
+			energy += step * (-Motion.G0 * sin(0.5 * (pitch + next))
+				- RideProgram.ROLLING_MPS2 - 2.0 * RideProgram.AERO_PER_M * energy)
+			var squared := maxf(2.0 * energy, 1.0)
+			duration += step / sqrt(squared)
+			var normal := squared * ahead / Motion.G0 + cos(next)
+			peak_normal = maxf(peak_normal, normal)
+			if normal < minimum_normal:
+				minimum_normal = normal
+				minimum_squared = squared
+			if not climbing and next >= 0.0:
+				climbing = true
+				climb_height = height
+			if is_inf(apex_height) and pitch > 0.0 and next <= 0.0:
+				apex_height = height
+			pitch = next
+	return {"elevation_m": height, "minimum_normal_g": minimum_normal,
+		"minimum_speed_squared": minimum_squared,
+		"prominence_m": -INF if is_inf(apex_height) \
+			else apex_height - maxf(climb_height, height),
+		"load_slack_g": RideVerify.limit_at(RideVerify.POSITIVE_LIMIT, duration) - peak_normal}
+
+
+## One edge of the window: bisect the pull-up knot between the deepest crest and a knot outside
+## the contract, and publish the net elevation of the last knot still inside it.
+static func _height_edge(length_m: float, speed_mps: float, entry_pitch_rad: float,
+		outside: float, inside: float) -> float:
+	for _iteration in BOUND_BISECTIONS:
+		var knot := 0.5 * (outside + inside)
+		if _height_crests(_height_profile(length_m, speed_mps, entry_pitch_rad, knot)):
+			inside = knot
+		else:
+			outside = knot
+	return float(_height_profile(length_m, speed_mps, entry_pitch_rad, inside).elevation_m)
+
+
+static func _height_crests(traced: Dictionary) -> bool:
+	return float(traced.prominence_m) >= PROMINENCE_FLOOR_M \
+		and float(traced.load_slack_g) >= 0.0
+
+
+static func _height_curvature(knots: Array, stage: int, u: float) -> float:
+	return lerpf(float(knots[stage]), float(knots[stage + 1]), _quintic(u))
 
 
 static func _integrate(start: Dictionary, spans: Array, settings: Dictionary,
@@ -610,10 +773,10 @@ static func _observe(assignment: Dictionary, solved: Dictionary,
 ## entry is measured rather than refused: the beat may lose height while it is still nose-down,
 ## and its apex is the one downward `theta = 0` crossing strictly inside the role. Height must be
 ## monotone from where the climb starts - the upward crossing, or the entry when the beat is handed
-## a level or climbing frame - to that apex, and monotone the other way after it. Prominence is
-## published against the assignment's entry height; the crest rise that has to be positive is
-## measured from where the climb started, because a beat entered at -35 deg necessarily gives up
-## height before it can gain any.
+## a level or climbing frame - to that apex, and monotone the other way after it. Prominence is the
+## design's `y_apex - max(y_entry, y_exit)` with the entry taken where the climb starts, because a
+## beat entered at -35 deg necessarily gives up height before it can gain any; it carries the
+## counterpart floor above as a refusing margin, so a hump is not a height beat.
 static func _apex(route: Dictionary, entry_tangent: Vector3) -> Dictionary:
 	var count: int = route.time_s.size()
 	var climb_start := _climb_start(route)
@@ -652,8 +815,7 @@ static func _apex(route: Dictionary, entry_tangent: Vector3) -> Dictionary:
 		apex_distance = float(route.distance_m[apex]) - float(route.distance_m[0])
 	return {"pitch_zero_crossings": crossings, "apex_distance_m": apex_distance,
 		"apex_height_m": apex_height, "apex_pitch_rate_m_inv": apex_rate,
-		"prominence_m": apex_height - route.position_m[0].y,
-		"crest_rise_m": apex_height - maxf(route.position_m[climb_start].y,
+		"prominence_m": apex_height - maxf(route.position_m[climb_start].y,
 			route.position_m[-1].y),
 		"monotone_phases": monotone, "out_of_plane_m": out_of_plane}
 
@@ -728,7 +890,7 @@ static func _margins(assignment: Dictionary, observation: Dictionary) -> Diction
 		margins.crest_unload_g = UNLOAD_TOLERANCE_G - absf(
 			float(observation.crest_normal_g) - float(observation.unload_g))
 		margins.apex_pitch_rate_m_inv = -float(observation.apex_pitch_rate_m_inv)
-		margins.crest_rise_m = float(observation.crest_rise_m)
+		margins.prominence_m = float(observation.prominence_m) - PROMINENCE_FLOOR_M
 		margins.pitch_zero_crossings = 0.0 if observation.pitch_zero_crossings == 1 else -1.0
 		margins.monotone_phases = 0.0 if observation.monotone_phases else -1.0
 		margins.out_of_plane_m = PLANARITY_TOLERANCE_FRACTION * arc \

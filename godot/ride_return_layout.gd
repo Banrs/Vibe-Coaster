@@ -203,26 +203,47 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 		"start_position": start_position, "start_tangent": tangent, "start_up": start_up,
 		"start_speed_mps": start_speed, "start_psi_rad": psi_start,
 		"speed_ceiling_mps": start_speed, "terrain": plan.get("terrain", {})}
-	# The heading box is a feasibility bound, so it is built at the shortest allocable arc and at
-	# a speed the chain reaches rather than at the speed handed over: a descending role enters
-	# faster than the start, and a box built under that would let the solve walk into a region the
-	# accepted chain is then refused from, with no retry to recover. The nominal chain measures
-	# that speed. It is not an upper bound over the whole control box - the elevation controls can
-	# descend further than the nominal split - so the accepted chain is still re-checked against
-	# each turn's own allocated arc and entry speed, and names the shortfall if it drifts past.
-	for role: Dictionary in _chain(context, nominal).roles:
+	# Both control boxes are feasibility bounds the owning family publishes - the turn's heading
+	# against `max_bank_rad`, the height beat's net elevation against the crest it has to stand -
+	# so they are built at the shortest allocable arc and at a speed the chain reaches rather than
+	# at the speed handed over: a role can be water-filled to its band minimum for a legal total, a
+	# descending role enters faster than the start, and a box built under either would let the
+	# solve walk into a region the accepted chain is then refused from, with no retry to recover.
+	# The nominal chain measures that speed. It is not an upper bound over the whole control box -
+	# the elevation controls can descend further than the nominal split - so the accepted chain is
+	# still re-checked against each role's own allocated arc, entry speed and entry pitch, and
+	# names the shortfall if it drifts past.
+	var nominal_chain := _chain(context, nominal)
+	for role: Dictionary in nominal_chain.roles:
 		context.speed_ceiling_mps = maxf(float(context.speed_ceiling_mps),
 			float(role.entry_speed_mps))
+	# The nominal chain is the centre of every control box and the speed each one is built at, so
+	# a nominal that has already stopped makes no box worth building: the passive energy law is
+	# the refusal that matters, and naming an element bound instead would hide it.
+	if float(nominal_chain.minimum_speed_mps) < MOVING_FLOOR_MPS:
+		return {"ok": false, "errors": [{"code": "energy_moving_floor",
+			"shortfall_mps": MOVING_FLOOR_MPS - float(nominal_chain.minimum_speed_mps)}]}
 	var heading_budget := 0.0
 	for index in order.size():
 		var band: Vector2 = length_bands[index]
-		var bound := 0.5 * band.x * sin(PITCH_CEILING_RAD)
+		var box := Vector2.ZERO
 		if families[index] == TURN_FAMILY:
-			bound = heading_bound_rad(band.x, float(context.speed_ceiling_mps))
+			var bound := heading_bound_rad(band.x, float(context.speed_ceiling_mps))
 			heading_budget += bound
-		lower.append(-bound)
-		upper.append(bound)
-		nominal[index] = clampf(float(nominal[index]), -bound, bound)
+			box = Vector2(-bound, bound)
+		else:
+			# Every family exits level by contract, so a role's entry pitch is the handover for
+			# the first role and exactly zero for every later one, whatever the controls do.
+			box = RideReturnElements.elevation_bound_m(band.x,
+				float(context.speed_ceiling_mps),
+				0.0 if index > 0 else asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0)))
+			if box.x >= box.y:
+				return {"ok": false, "errors": [{"code": "elevation_bound",
+					"role_id": order[index], "length_m": band.x,
+					"entry_speed_mps": context.speed_ceiling_mps}]}
+		lower.append(box.x)
+		upper.append(box.y)
+		nominal[index] = clampf(float(nominal[index]), box.x, box.y)
 	lower.append(budget.x)
 	upper.append(budget.y)
 	if absf(heading_request) > heading_budget:
@@ -276,7 +297,7 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 		var entry_tangent := tangent
 		var entry_pitch := asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0))
 		var bump := 0.0 if is_turn else 2.0 * control / length - sin(entry_pitch)
-		var entry_speed := sqrt(2.0 * energy)
+		var entry_speed := sqrt(2.0 * maxf(energy, 0.0))
 		var step := length / CHAIN_SAMPLES_PER_ROLE
 		var centerline := PackedVector3Array([position])
 		var minimum_agl := INF
@@ -335,6 +356,14 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 	for index in context.order.size():
 		var role: Dictionary = chain.roles[index]
 		if context.families[index] != TURN_FAMILY:
+			var window := RideReturnElements.elevation_bound_m(role.length_m,
+				role.entry_speed_mps,
+				asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0)))
+			var elevation: float = role.elevation_change_m
+			if elevation < window.x or elevation > window.y:
+				errors.append({"code": "elevation_bound", "role_id": context.order[index],
+					"window_m": window, "elevation_change_m": elevation,
+					"shortfall_m": maxf(window.x - elevation, elevation - window.y)})
 			continue
 		var bound := heading_bound_rad(role.length_m, role.entry_speed_mps)
 		if absf(role.heading_change_rad) > bound:

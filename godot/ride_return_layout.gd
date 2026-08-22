@@ -8,10 +8,11 @@ extends RefCounted
 ##
 ## Curvature basis (design 2026-08-22 section 3): world-referenced pitch/yaw, so track pitch obeys
 ## `d(theta)/ds = kappa_pitch` - `kappa_pitch < 0` at a crest - and plan-view heading obeys
-## `d(psi)/ds = kappa_yaw / cos(theta)`. The nominal chain authors `theta` through the element
-## families' own level-out and `psi` through their own heading fraction - the same shouldered
-## plateau, weighted by the `sec(theta)` the identity above puts on it - whose value, spatial slope
-## and spatial acceleration vanish at both ends, so every role leaves the chain level and unbanked
+## `d(psi)/ds = kappa_yaw / cos(theta)`. The nominal chain traces `theta` through each family's own
+## profile - the turn's pitch level-out, the height beat's staged crest - and `psi` through their
+## shared heading fraction, the same shouldered plateau weighted by the `sec(theta)` the identity
+## above puts on it. All of them start and end with zero value, spatial slope and spatial
+## acceleration, so every role leaves the chain level and unbanked
 ## and no role's traced path drifts off the one it is built on. That is why the gate's
 ## pitch and roll are not residuals: the element contracts close them by construction. The shapes
 ## and ceilings below are the families' - this stage models what they build, it does not declare a
@@ -288,21 +289,26 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 		var entry_position := position
 		var entry_tangent := tangent
 		var entry_pitch := asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0))
-		var bump := 0.0 if is_turn else 2.0 * control / length - sin(entry_pitch)
 		var entry_speed := sqrt(2.0 * maxf(energy, 0.0))
+		# A turn levels its handover out and holds that; a height beat traces the family's own
+		# staged crest through the knots its local solve starts from. Evaluating the element's
+		# own profile rather than restating it is what makes a role's assigned elevation, its
+		# published corridor and the centreline it is built on one geometry.
+		var knots: Array = [] if is_turn else RideReturnElements.height_knots(length,
+			entry_speed, entry_pitch, control, RideReturnElements.DEFAULT_UNLOAD_G)
 		var step := length / CHAIN_SAMPLES_PER_ROLE
 		var centerline := PackedVector3Array([position])
 		var minimum_agl := INF
 		for sample in CHAIN_SAMPLES_PER_ROLE:
 			var u0 := float(sample) / CHAIN_SAMPLES_PER_ROLE
 			var u1 := float(sample + 1) / CHAIN_SAMPLES_PER_ROLE
-			var pitch0 := _sin_pitch(entry_pitch, bump, u0)
-			var pitch1 := _sin_pitch(entry_pitch, bump, u1)
+			var pitch0 := _sin_pitch(entry_pitch, knots, length, u0)
+			var pitch1 := _sin_pitch(entry_pitch, knots, length, u1)
 			position += step / 6.0 * (
-				_tangent(context, psi, heading_change, entry_pitch, bump, u0)
-				+ 4.0 * _tangent(context, psi, heading_change, entry_pitch, bump,
+				_tangent(context, psi, heading_change, entry_pitch, knots, length, u0)
+				+ 4.0 * _tangent(context, psi, heading_change, entry_pitch, knots, length,
 					0.5 * (u0 + u1))
-				+ _tangent(context, psi, heading_change, entry_pitch, bump, u1))
+				+ _tangent(context, psi, heading_change, entry_pitch, knots, length, u1))
 			var rate0 := _energy_rate(pitch0, energy)
 			energy += 0.5 * step * (rate0 + _energy_rate(pitch1, energy + step * rate0))
 			minimum_energy = minf(minimum_energy, energy)
@@ -311,7 +317,7 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 			if not terrain.is_empty():
 				minimum_agl = minf(minimum_agl,
 					position.y - RideTerrain.height(terrain, position.x, position.z))
-		tangent = _tangent(context, psi, heading_change, entry_pitch, bump, 1.0)
+		tangent = _tangent(context, psi, heading_change, entry_pitch, knots, length, 1.0)
 		psi = atan2(tangent.dot(context.right), tangent.dot(context.forward))
 		if not terrain.is_empty():
 			terrain_margins[context.order[index]] = minimum_agl
@@ -451,36 +457,28 @@ static func _refused(errors: Array, report: Dictionary = {}) -> Dictionary:
 
 
 static func _tangent(context: Dictionary, psi: float, heading_change: float,
-		entry_pitch_rad: float, bump: float, u: float) -> Vector3:
-	var sin_pitch := _sin_pitch(entry_pitch_rad, bump, u)
+		entry_pitch_rad: float, knots: Array, length_m: float, u: float) -> Vector3:
+	var sin_pitch := _sin_pitch(entry_pitch_rad, knots, length_m, u)
 	var cos_pitch := sqrt(maxf(1.0 - sin_pitch * sin_pitch, 0.0))
 	var heading := psi + heading_change * RideReturnElements.heading_fraction(entry_pitch_rad, u)
 	return ((context.forward as Vector3) * cos(heading)
 		+ (context.right as Vector3) * sin(heading)) * cos_pitch + Vector3.UP * sin_pitch
 
 
-## `sin(theta)` over one role: the family's own pitch level-out from the entry pitch to a level
-## exit, plus a symmetric quintic bump for a height beat's net elevation. Evaluating the element's
-## profile rather than restating it is what makes a role's assigned elevation and the elevation it
-## is built at one number. The bump is the only part this stage owns; it has zero value, slope and
-## curvature at both ends and integrates to half its amplitude, so the elevation control maps to it
-## in closed form rather than through another solve.
-static func _sin_pitch(entry_pitch_rad: float, bump: float, u: float) -> float:
-	return clampf(sin(RideReturnElements.level_out_pitch_rad(entry_pitch_rad, u))
-		+ bump * _bump(u), -1.0, 1.0)
+## `sin(theta)` over one role, from the owning family's own profile: a turn levels its handover out
+## through the shouldered plateau of pitch curvature it commands, and a height beat runs the staged
+## crest its own knots describe. Neither shape is authored here - this stage evaluates the element's
+## definition - so a role's assigned elevation, the corridor it publishes and the centreline the
+## build lands on are one geometry rather than three descriptions of one.
+static func _sin_pitch(entry_pitch_rad: float, knots: Array, length_m: float,
+		u: float) -> float:
+	if knots.is_empty():
+		return sin(RideReturnElements.level_out_pitch_rad(entry_pitch_rad, u))
+	return sin(RideReturnElements.height_pitch_rad(knots, length_m, entry_pitch_rad, u))
 
 
 static func _energy_rate(sin_pitch: float, energy: float) -> float:
 	return -Motion.G0 * sin_pitch - RideProgram.ROLLING_MPS2 - 2.0 * RideProgram.AERO_PER_M * energy
-
-
-static func _quintic(u: float) -> float:
-	var c := clampf(u, 0.0, 1.0)
-	return c * c * c * (10.0 + c * (-15.0 + 6.0 * c))
-
-
-static func _bump(u: float) -> float:
-	return _quintic(2.0 * u) if u <= 0.5 else _quintic(2.0 - 2.0 * u)
 
 
 static func _frame(position: Vector3, tangent: Vector3, up: Vector3) -> Dictionary:

@@ -117,6 +117,10 @@ const PROMINENCE_FLOOR_M := 0.7458
 ## commanded analytic profile, evaluated once per role by the macro stage and never inside a solve.
 const BOUND_SAMPLES := 24
 const BOUND_CREST_PASSES := 3
+## Corrections of the knot solve's two approximations: its small-angle height reading, and a crest
+## pinned at the entry speed rather than at the speed the beat carries over its own apex. Both maps
+## have unit slope in their own residual, so the passes converge geometrically.
+const HEIGHT_KNOT_PASSES := 3
 const BOUND_BISECTIONS := 16
 const TURN_BOUND_SAMPLES := 384
 ## What a bound's analytic profile and the production integration of the same assignment were
@@ -175,12 +179,13 @@ const LENGTH_TOLERANCE_M := 0.001
 ## 0.1 m of elevation and 0.01 g of crest unload.
 const HEIGHT_RESIDUAL_SCALES := [0.02, 5.0, 0.5]
 
-## Corridor compliance. Task 3 publishes a nominal centreline and a length band but no half-width,
-## and the nominal models a role's net heading and net elevation rather than the crest a height
-## beat rises through, so the two centrelines differ by the beat's prominence by construction.
-## This fraction of the allocated arc is the stated stand-in: it admits that difference at the
-## declared role lengths while still refusing a centreline that has left its corridor. It is not a
-## derived half-width, and Task 6 must replace it with the one the layout derives.
+## Corridor compliance. The macro stage publishes a nominal centreline and a length band but no
+## half-width. Both stages now trace one shape per family - the turn's level-out and the height
+## beat's own staged crest through the knots below - so what is left between the corridor and the
+## build is the local solve's own convergence: measured at 0.29 m of offset and 0.12 m of crest
+## height over the declared role bands, against the 14.5-29.5 m this fraction of the allocated arc
+## admits. It stays a stated stand-in rather than a derived half-width, and the stage that derives
+## one must replace it.
 const CORRIDOR_TOLERANCE_FRACTION := 0.05
 ## Zero yaw curvature makes a height beat planar by construction, so what the planarity
 ## measurement can find is float32 position quantisation: one ulp at these coordinates is about
@@ -514,6 +519,48 @@ static func elevation_bound_m(length_m: float, speed_mps: float, entry_pitch_rad
 		_height_edge(length_m, speed_mps, entry_pitch_rad, unload_g, box.y, deepest))
 
 
+## The curvature knots one height assignment starts from: the crest pinned by the authored unload
+## at the entry speed, the pullout closed by the level exit, and the pull-up carrying the assigned
+## net elevation. Those three conditions are linear in the knots under the small-angle reading of
+## `dy/ds = sin(theta)`, so one 3x3 solve answers them; the corrections feed the height that
+## reading actually delivers back through the same solve, which converges because the map from
+## asked height to delivered height has unit slope up to the sine's own curvature. `_solve_height`
+## converges from here and `RideReturnLayout` traces the same knots, so the corridor the macro
+## stage publishes is the crest this family stands rather than a second description of it.
+static func height_knots(length_m: float, speed_mps: float, entry_pitch_rad: float,
+		elevation_m: float, unload_g: float) -> Array:
+	var crest := _crest_curvature_m_inv(unload_g, speed_mps)
+	var asked := elevation_m
+	var knots := _height_nominal(entry_pitch_rad, length_m, asked, [0.0, 1.0, 0.0], crest)
+	for _pass in HEIGHT_KNOT_PASSES:
+		var traced := _height_trace(_height_values(knots), length_m, speed_mps, entry_pitch_rad)
+		asked += elevation_m - float(traced.elevation_m)
+		crest += (unload_g - float(traced.minimum_normal_g)) \
+			* Motion.G0 / float(traced.minimum_speed_squared)
+		knots = _height_nominal(entry_pitch_rad, length_m, asked, [0.0, 1.0, 0.0], crest)
+	return knots
+
+
+## Track pitch over one height beat, exactly and in closed form: `d(theta)/ds = kappa_pitch` is the
+## integrator's own identity, and every stage commands `lerp(k, k_next, quintic)` over its own arc,
+## so the whole profile is the quintic's antiderivative and there is no quadrature to disagree
+## about. This is the single definition of that shape - `_height_spans` commands the curvature whose
+## integral it is - which is what keeps a role's assigned elevation, its published corridor and the
+## centreline it is built on one geometry.
+static func height_pitch_rad(knots: Array, length_m: float, entry_pitch_rad: float,
+		u: float) -> float:
+	var values := _height_values(knots)
+	var pitch := entry_pitch_rad
+	var start := 0.0
+	for stage in HEIGHT_FRACTIONS.size():
+		var fraction := float(HEIGHT_FRACTIONS[stage])
+		var x := clampf((u - start) / fraction, 0.0, 1.0)
+		pitch += length_m * fraction * (float(values[stage]) * x
+			+ (float(values[stage + 1]) - float(values[stage])) * _quintic_integral(x))
+		start += fraction
+	return pitch
+
+
 ## The seam evidence, split by the order at which each part is measurable: position, tangent and
 ## the world curvature vector are compared directly from both integrated routes, while the third
 ## and fourth position derivatives come from each side's published analytic jets. Differencing
@@ -623,7 +670,7 @@ static func _height_spans(assignment: Dictionary, knots: Array) -> Array:
 	var role_id := str(assignment.role_id)
 	var length := float(assignment.target_length_m)
 	var names := ["pull-up", "crest-in", "crest-out", "pullout"]
-	var values := [0.0, float(knots[0]), float(knots[1]), float(knots[2]), 0.0]
+	var values := _height_values(knots)
 	var zero := Motion.constant(0.0)
 	var spans: Array = []
 	for index in HEIGHT_FRACTIONS.size():
@@ -702,8 +749,7 @@ static func _solve_height(start: Dictionary, assignment: Dictionary, settings: D
 	var length := float(assignment.target_length_m)
 	var elevation := float(assignment.elevation_change_m)
 	var unload := float(assignment.get("unload_g", DEFAULT_UNLOAD_G))
-	var crest := _crest_curvature_m_inv(unload, speed)
-	var nominal := _height_nominal(entry_pitch, length, elevation, [0.0, 1.0, 0.0], crest)
+	var nominal := height_knots(length, speed, entry_pitch, elevation, unload)
 	var box := _knot_bounds(speed)
 	var lower := [box.x, box.x, 0.0]
 	var upper := [box.y, 0.0, box.y]
@@ -811,11 +857,13 @@ static func _height_knots(length_m: float, entry_pitch_rad: float, pull_up_m_inv
 static func _height_profile(length_m: float, speed_mps: float, entry_pitch_rad: float,
 		pull_up_m_inv: float, unload_g: float) -> Dictionary:
 	var crest := _crest_curvature_m_inv(unload_g, speed_mps)
-	var traced := _height_trace(length_m, speed_mps, entry_pitch_rad, pull_up_m_inv, crest)
+	var traced := _height_trace(_height_knots(length_m, entry_pitch_rad, pull_up_m_inv, crest),
+		length_m, speed_mps, entry_pitch_rad)
 	for _pass in BOUND_CREST_PASSES:
 		crest += (unload_g - float(traced.minimum_normal_g)) * Motion.G0 \
 			/ float(traced.minimum_speed_squared)
-		traced = _height_trace(length_m, speed_mps, entry_pitch_rad, pull_up_m_inv, crest)
+		traced = _height_trace(_height_knots(length_m, entry_pitch_rad, pull_up_m_inv, crest),
+			length_m, speed_mps, entry_pitch_rad)
 	traced.knot_slack_g = _knot_slack(_knot_bounds(speed_mps), traced.knots) \
 		* speed_mps * speed_mps / Motion.G0
 	return traced
@@ -841,9 +889,8 @@ static func _knot_slack(bounds: Vector2, knots: Array) -> float:
 ## follows the same arc-length energy equation the production integrator does, so this is the
 ## profile the build lands on rather than a small-angle sketch of it. A profile with no interior
 ## crest publishes no prominence.
-static func _height_trace(length_m: float, speed_mps: float, entry_pitch_rad: float,
-		pull_up_m_inv: float, crest_m_inv: float) -> Dictionary:
-	var knots := _height_knots(length_m, entry_pitch_rad, pull_up_m_inv, crest_m_inv)
+static func _height_trace(knots: Array, length_m: float, speed_mps: float,
+		entry_pitch_rad: float) -> Dictionary:
 	var pitch := entry_pitch_rad
 	var height := 0.0
 	var energy := 0.5 * speed_mps * speed_mps
@@ -909,6 +956,12 @@ static func _height_crests(traced: Dictionary) -> bool:
 
 static func _height_curvature(knots: Array, stage: int, u: float) -> float:
 	return lerpf(float(knots[stage]), float(knots[stage + 1]), _quintic(u))
+
+
+## The three solved knots as the five stage endpoints the profile runs between: a beat enters and
+## leaves at zero curvature, which is what lets it meet the C4 seam contract.
+static func _height_values(knots: Array) -> Array:
+	return [0.0, float(knots[0]), float(knots[1]), float(knots[2]), 0.0]
 
 
 static func _integrate(start: Dictionary, spans: Array, settings: Dictionary,

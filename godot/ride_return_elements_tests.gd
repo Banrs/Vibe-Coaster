@@ -200,7 +200,7 @@ func _test_the_pitch_level_out_is_one_shared_profile() -> void:
 		var pitch := deg_to_rad(pitch_deg)
 		for index in 21:
 			var u := float(index) / 20.0
-			_t.expect_close(Layout._sin_pitch(pitch, 0.0, u),
+			_t.expect_close(Layout._sin_pitch(pitch, [], 420.0, u),
 				sin(Elements.level_out_pitch_rad(pitch, u)),
 				"the macro elevation model is the element's pitch profile at u=%.2f" % u,
 				0.000000000001)
@@ -620,10 +620,10 @@ func _chain_end(start: Dictionary, heading_change_rad: float, length_m: float) -
 		var u0 := float(index) / samples
 		var u1 := float(index + 1) / samples
 		position += step / 6.0 * (
-			Layout._tangent(context, 0.0, heading_change_rad, pitch, 0.0, u0)
-			+ 4.0 * Layout._tangent(context, 0.0, heading_change_rad, pitch, 0.0,
+			Layout._tangent(context, 0.0, heading_change_rad, pitch, [], length_m, u0)
+			+ 4.0 * Layout._tangent(context, 0.0, heading_change_rad, pitch, [], length_m,
 				0.5 * (u0 + u1))
-			+ Layout._tangent(context, 0.0, heading_change_rad, pitch, 0.0, u1))
+			+ Layout._tangent(context, 0.0, heading_change_rad, pitch, [], length_m, u1))
 	return position
 
 
@@ -671,19 +671,21 @@ func _height_assignment_of(start: Dictionary, length_m: float,
 	}
 
 
-## The macro chain's own trace of that assignment: one vertical plane, the shared level-out plus
-## the chain's symmetric elevation bump, integrated the way `RideReturnLayout` integrates it.
+## The macro chain's own trace of that assignment: one vertical plane running the height family's
+## own staged crest, integrated the way `RideReturnLayout` integrates it.
 func _macro_centerline(start: Dictionary, length_m: float,
 		elevation_m: float) -> PackedVector3Array:
 	var pitch := _entry_pitch(start)
-	var bump := 2.0 * elevation_m / length_m - sin(pitch)
+	var knots := Elements.height_knots(length_m, float(start.speed_mps), pitch, elevation_m,
+		Elements.DEFAULT_UNLOAD_G)
 	var tangent: Vector3 = (start.tangent as Vector3).normalized()
 	var forward := (tangent - Vector3.UP * tangent.dot(Vector3.UP)).normalized()
 	var position: Vector3 = start.position_m
 	var line := PackedVector3Array([position])
 	var samples := 24
 	for index in samples:
-		var sin_pitch := Layout._sin_pitch(pitch, bump, (float(index) + 0.5) / samples)
+		var sin_pitch := Layout._sin_pitch(pitch, knots, length_m,
+			(float(index) + 0.5) / samples)
 		position += (length_m / samples) * (forward
 			* sqrt(maxf(1.0 - sin_pitch * sin_pitch, 0.0)) + Vector3.UP * sin_pitch)
 		line.append(position)

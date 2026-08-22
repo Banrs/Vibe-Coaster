@@ -50,8 +50,15 @@ const HEIGHT_FAMILY := "return_height"
 ## where no curvature is commanded at all, and the curvature ramp then has the whole remaining
 ## shoulder. Two consequences are load-bearing:
 ##
-## - the peak roll rate is `1.875 phi v / shoulder` in both twist stages, so `max_bank_rad` below
-##   is the exact roll-rate ceiling rather than an estimate of one; and
+## - each pair of twist stages carries the same peak roll rate - `0.35 phi` over `0.35` of the
+##   shoulder has the slope `phi` over the whole shoulder has - so the peak is exactly
+##   `1.875 v max(|phi|, |phi - phi_exit|) / shoulder`, where `phi_exit` cancels the frame's own
+##   bank drift. The drift sits on the bank's own side for every level or descending handover,
+##   which makes `max_bank_rad` below the exact ceiling there; a climbing handover reverses it, so
+##   `_solve_turn` takes the same ceiling against `|phi| + |phi_exit|` instead of assuming the
+##   entry pair is the larger. The macro heading bound consumes the level-handover value, which is
+##   the only one it can reach: a climbing entry is refused by the counter-lateral band below
+##   before its roll ever matters; and
 ## - the shoulder never carries outward lateral. Sharing one quintic between curvature and twist
 ##   does: with `c = v^2 kappa / g0` and bank `phi`, `l = c h cos(phi h) - sin(phi h)` is outward
 ##   for small `h` whenever `c > phi` in radians, which the counter-lateral identity reaches at
@@ -162,9 +169,6 @@ const PLANARITY_TOLERANCE_FRACTION := 0.00001
 ## the same 32-evaluation cap the terminal's one-dimensional brake bracket declares.
 const MAX_HEIGHT_EVALUATIONS := 41
 const MAX_TURN_EVALUATIONS := 32
-## Simpson intervals for the two profile quadratures below. They integrate commanded analytic
-## profiles, never a trajectory, so this is a quadrature count and not an evaluation count.
-const PROFILE_QUADRATURE_INTERVALS := 64
 
 
 ## The assignment's target centreline: the same integrator with gravity and resistance removed.
@@ -285,6 +289,21 @@ static func level_out_pitch_rad(entry_pitch_rad: float, u: float) -> float:
 	return entry_pitch_rad * (1.0 - plateau_fraction(u))
 
 
+## The fraction of a turn's heading delivered by arc `u`. Heading obeys
+## `d(psi)/ds = kappa_yaw / cos(theta)`, so a plateau of yaw curvature delivers heading weighted by
+## `sec(theta)` and the plateau's own fraction is only the level case. Under the level-out above
+## that weighting integrates in closed form: substituting `p = plateau_fraction(u)` turns the
+## quadrature into `integral of sec(theta0 (1 - p)) dp`, whose antiderivative is the inverse
+## Gudermannian `G(x) = ln|sec(x) + tan(x)|`. This is therefore the whole shared heading profile,
+## exact at every entry pitch, and `_turn_geometry` normalizes the commanded curvature by the same
+## `G(theta0) / theta0` its denominator is.
+static func heading_fraction(entry_pitch_rad: float, u: float) -> float:
+	if is_zero_approx(entry_pitch_rad):
+		return plateau_fraction(u)
+	return 1.0 - _inverse_gudermannian(entry_pitch_rad * (1.0 - plateau_fraction(u))) \
+		/ _inverse_gudermannian(entry_pitch_rad)
+
+
 ## The net elevation a height beat can be assigned and still be one: the family's counterpart to
 ## `max_bank_rad`, published so no layout may assign an elevation this family then refuses. The
 ## height solve's own bounds fix the pull-up knot's range, the exit-pitch condition fixes the
@@ -358,31 +377,28 @@ static func seam_residuals(previous: Dictionary, next: Dictionary) -> Dictionary
 ## shape and normalizing its peak by `J = integral of plateau(u) sec(theta(u)) du` delivers that
 ## exactly, for any entry pitch and with no extra solve; the `sec(theta)` factor rides on the
 ## heading-rate shape rather than on the commanded curvature, which keeps the curvature channel
-## inside the integrator's own profile vocabulary.
+## inside the integrator's own profile vocabulary. `J` is `heading_fraction`'s own denominator in
+## closed form, so the shape the layout traces and the peak commanded here come from one identity.
 ##
-## The bank drift is the same integral against `tan`. With zero commanded twist the rider frame is
-## transported with no rotation about the tangent, while the world level frame rotates about it at
-## `-d(psi)/ds sin(theta)`, so measured bank accumulates `integral of d(psi)/ds sin(theta) ds`.
-## Ending the twist at minus that closes the frame analytically instead of with a second solved
-## scalar.
+## The bank drift is the same integral against `tan`, and closes the same way: with zero commanded
+## twist the rider frame is transported with no rotation about the tangent, while the world level
+## frame rotates about it at `-d(psi)/ds sin(theta)`, so measured bank accumulates
+## `integral of d(psi)/ds sin(theta) ds` - `-ln(cos(theta0))` against `G(theta0)`. Ending the twist
+## at minus that closes the frame analytically instead of with a second solved scalar.
 static func _turn_geometry(assignment: Dictionary) -> Dictionary:
 	var length := float(assignment.target_length_m)
 	var heading := float(assignment.heading_change_rad)
 	var entry_pitch := _pitch((assignment.entry_frame.tangent as Vector3).normalized())
-	var secant := 0.0
-	var tangent_moment := 0.0
-	for index in PROFILE_QUADRATURE_INTERVALS + 1:
-		var u := float(index) / PROFILE_QUADRATURE_INTERVALS
-		var weight := 1.0 if index == 0 or index == PROFILE_QUADRATURE_INTERVALS \
-			else (4.0 if index % 2 == 1 else 2.0)
-		var shape := weight * _plateau(u) / (3.0 * PROFILE_QUADRATURE_INTERVALS)
-		var pitch := level_out_pitch_rad(entry_pitch, u)
-		secant += shape / cos(pitch)
-		tangent_moment += shape * tan(pitch)
+	var secant := LOADED_ARC_FRACTION
+	var drift := 0.0
+	if not is_zero_approx(entry_pitch):
+		var gudermannian := _inverse_gudermannian(entry_pitch)
+		secant = LOADED_ARC_FRACTION * gudermannian / entry_pitch
+		drift = -heading * log(cos(entry_pitch)) / gudermannian
 	return {"entry_pitch_rad": entry_pitch,
 		"yaw_peak_m_inv": heading / (length * secant),
 		"pitch_peak_m_inv": -entry_pitch / (LOADED_ARC_FRACTION * length),
-		"bank_drift_rad": heading * tangent_moment / secant}
+		"bank_drift_rad": drift}
 
 
 ## One turn: five stages of one motion. The two leads carry bank alone, the two shoulders ramp
@@ -445,8 +461,13 @@ static func _solve_turn(start: Dictionary, assignment: Dictionary, settings: Dic
 		return {"ok": false, "errors": [{"code": "degenerate_turn",
 			"role_id": assignment.role_id}]}
 	var length := float(assignment.target_length_m)
+	# The roll-rate ceiling governs the larger of the two twist pairs. The exit pair rolls through
+	# `|phi - phi_exit|`, so a bank drift that leans against the bank - a climbing handover - buys
+	# its own reduction here rather than being assumed away.
+	var ceiling := maxf(0.0, max_bank_rad(length, float(start.speed_mps))
+		- maxf(0.0, direction * float(geometry.bank_drift_rad)))
 	var low := 0.0
-	var high := max_bank_rad(length, float(start.speed_mps))
+	var high := ceiling
 	var bank := 0.0
 	var route := {}
 	var spans: Array = []
@@ -466,7 +487,7 @@ static func _solve_turn(start: Dictionary, assignment: Dictionary, settings: Dic
 			high = bank
 	return {"ok": true, "errors": [], "route": route, "spans": spans,
 		"controls": [direction * bank], "curvature_m_inv": curvature,
-		"bank_ceiling_rad": max_bank_rad(length, float(start.speed_mps)),
+		"bank_ceiling_rad": ceiling,
 		"balanced_bank_rad": direction * atan(float(start.speed_mps)
 			* float(start.speed_mps) * absf(curvature) / Motion.G0)}
 
@@ -560,6 +581,12 @@ static func _pitch_moment() -> Array:
 			moment[stage] += fraction * (0.5 * (1.0 - start) - fraction * 5.0 / 14.0)
 		start += fraction
 	return moment
+
+
+## `G(x) = ln|sec(x) + tan(x)|`, the antiderivative of `sec` and so of the heading a pitched
+## plateau delivers.
+static func _inverse_gudermannian(pitch_rad: float) -> float:
+	return log(absf(1.0 / cos(pitch_rad) + tan(pitch_rad)))
 
 
 ## The crest curvature one authored unload asks for: `n = v^2 kappa / g0 + cos(theta)` is exactly

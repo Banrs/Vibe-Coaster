@@ -8,9 +8,11 @@ extends RefCounted
 ##
 ## Curvature basis (design 2026-08-22 section 3): world-referenced pitch/yaw, so track pitch obeys
 ## `d(theta)/ds = kappa_pitch` - `kappa_pitch < 0` at a crest - and plan-view heading obeys
-## `d(psi)/ds = kappa_yaw / cos(theta)`. The nominal chain authors `theta` and `psi` through the
-## element families' own shouldered plateau, whose value, spatial slope and spatial acceleration
-## vanish at both ends, so every role leaves the chain level and unbanked. That is why the gate's
+## `d(psi)/ds = kappa_yaw / cos(theta)`. The nominal chain authors `theta` through the element
+## families' own level-out and `psi` through their own heading fraction - the same shouldered
+## plateau, weighted by the `sec(theta)` the identity above puts on it - whose value, spatial slope
+## and spatial acceleration vanish at both ends, so every role leaves the chain level and unbanked
+## and no role's traced path drifts off the one it is built on. That is why the gate's
 ## pitch and roll are not residuals: the element contracts close them by construction. The shapes
 ## and ceilings below are the families' - this stage models what they build, it does not declare a
 ## second geometry for them.
@@ -459,7 +461,7 @@ static func _tangent(context: Dictionary, psi: float, heading_change: float,
 		entry_pitch_rad: float, bump: float, u: float) -> Vector3:
 	var sin_pitch := _sin_pitch(entry_pitch_rad, bump, u)
 	var cos_pitch := sqrt(maxf(1.0 - sin_pitch * sin_pitch, 0.0))
-	var heading := psi + heading_change * RideReturnElements.plateau_fraction(u)
+	var heading := psi + heading_change * RideReturnElements.heading_fraction(entry_pitch_rad, u)
 	return ((context.forward as Vector3) * cos(heading)
 		+ (context.right as Vector3) * sin(heading)) * cos_pitch + Vector3.UP * sin_pitch
 

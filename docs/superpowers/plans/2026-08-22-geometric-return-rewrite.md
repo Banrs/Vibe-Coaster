@@ -666,13 +666,25 @@ for speed in [70.0, 75.0, 80.0]:
 	_expect(built.ok, "terminal builds at %.1f m/s" % speed)
 	_expect(built.report.capture_steering_controls == 0,
 		"capture has no visible steering solve")
-	_expect(absf(built.report.moving_boundary_speed_mps - 2.0) <= 0.0001,
+	_expect(absf(built.report.moving_boundary_speed_mps - 2.0) <= 0.00015,
 		"spatial brake reaches the moving boundary speed")
 	_expect(built.report.unique_evaluations <= 32,
 		"one-dimensional brake stays inside its cap")
 ```
 
-Also require exact station pose, no positive drive, peak brake no greater than the existing 3.6 g cap, and structured rejection outside the 70–80 m/s/corridor partition.
+Also require no positive drive, peak brake no greater than the existing 3.6 g cap, and structured
+rejection outside the 70–80 m/s/corridor partition.
+
+The 1e-4 m/s acceptance above was a pre-measurement figure and is corrected here to the measured
+one. The residual is discontinuous at its root — the brake's target endpoint speed *is* Motion's
+moving floor, so one step past the last accepted peak an RK stage crosses it and the candidate is
+refused outright — and the smallest residual any solver can reach is therefore the last pre-cliff
+sample, not zero. Measured over 61 speeds of the entry band at the 0.01 s step: worst 1.026889e-4
+m/s, at 73.6667 m/s. 1.5e-4 is that worst plus 46%; 1e-4 is below it and would refuse the build it
+is meant to accept. The station pose that follows is likewise not exact: the residual rides through
+the fixed-duration station creep as up to `residual × station_creep_duration_s` of along-track
+error, measured worst 1.449585 mm. Both figures are 0.01 s figures, and the sweep is to be re-run at
+whatever step Task 7 hands the terminal.
 
 Use these test-local constructors; rotate all three frame vectors together for the rotated fixture:
 
@@ -715,11 +727,11 @@ Build the capture with `Motion.spatial_span(... curvature=0, drive=0, twist=0)`.
 F(peak_brake_g) = integrated_end_speed_mps - 2.0
 ```
 
-`F` must be **defined over the whole bracket**, including the upper half where the integration cannot reach the end of the span. Above the operating point the train stops before the span ends — at 3.6 g it stops in about 90 m of the 147 m moving span — and the integrator terminates early. That is not a failure to abort on: return the **stopping shortfall** (the metres of span left unused, expressed as a positive residual) in place of the speed residual. `F` then stays monotone and the bracket stays valid across all of `[0.0, 3.6]`, which is what makes bisection legitimate rather than lucky.
+`F` must be **defined over the whole bracket**, including the upper half where the integration cannot reach the end of the span. Above the operating point the train stops before the span ends — at 3.6 g it stops in 77.7048 m (70 m/s entry) to 98.3562 m (80 m/s entry) of the 131.2938 m moving span — and the integrator terminates early. That is not a failure to abort on: return the **stopping shortfall** (metres achieved less metres declared, so a negative residual) in place of the speed residual; that is the sign that keeps `F` monotone decreasing through its root. `F` then stays monotone and the bracket stays valid across all of `[0.0, 3.6]`, which is what makes bisection legitimate rather than lucky.
 
 Use monotone bounded bisection on `[0.0, 3.6]`, at most 32 unique evaluations. Append the existing physical 2→1 m/s station creep only after the moving brake reaches its exact boundary.
 
-The operating point sits comfortably inside the bound: shedding 80 m/s over the 147 m moving span needs a mean of 2.19 g, and the shouldered profile peaks at roughly 2.0–2.6 g across the 70–80 m/s entry band against the 3.6 g bound. That is above real magnetic practice — measured eddy-current brake runs sit at 1.0–1.5 g — because this is a held friction/hydraulic deceleration profile, whose retardation does not decay with speed the way an eddy-current brake's does. Say so where the profile is defined; do not describe it as an eddy-current brake.
+The operating point sits comfortably inside the bound: the reserved 150 m brake length carries the 18.7062 m station creep, so shedding 80 m/s over the 131.2938 m moving span needs a mean of 2.4853 g, and the shouldered profile peaks at a measured 2.1790 g (70 m/s entry) to 2.8513 g (80 m/s entry) against the 3.6 g bound. That is above real magnetic practice — measured eddy-current brake runs sit at 1.0–1.5 g — because this is a held friction/hydraulic deceleration profile, whose retardation does not decay with speed the way an eddy-current brake's does. Say so where the profile is defined; do not describe it as an eddy-current brake.
 
 - [ ] **Step 4: Push GREEN and simplify**
 

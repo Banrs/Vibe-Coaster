@@ -22,6 +22,11 @@ const HEIGHT_LENGTH_M := 380.0
 ## fastest role entry, so those are the corners the contract has to hold at.
 const ELEVATION_PROBES := [[290.0, 80.0, 0.0], [290.0, 70.0, 0.0], [450.0, 80.0, 0.0],
 	[450.0, 70.0, 0.0], [290.0, 80.0, -6.0], [450.0, 70.0, -20.0]]
+## What the macro chain and the build may differ by. Both trace the same profiles; what is left is
+## the chain's 24-interval Simpson quadrature against the integrator's own pitch tracking, and the
+## sum is three orders inside the 5 m residual scale the macro stage converges its chain at.
+const HEADING_CHAIN_TOLERANCE_M := 0.05
+
 var _t := TestUtil.new()
 
 
@@ -36,6 +41,8 @@ func _initialize() -> void:
 	_test_a_dive_too_steep_to_pull_out_of_is_refused_by_name()
 	_test_the_bank_ceiling_is_the_roll_the_envelope_allows()
 	_test_the_macro_heading_bound_consumes_the_bank_ceiling()
+	_test_the_heading_profile_is_one_shared_profile()
+	_test_the_roll_ceiling_covers_the_exit_shoulder()
 	_test_height_absorbs_its_entry_pitch_and_hands_over_a_level_frame()
 	_test_height_is_vertical_plane_at_70_and_80_mps()
 	_test_height_has_one_pitch_zero_apex_and_monotone_phases()
@@ -303,6 +310,48 @@ func _test_a_dive_too_steep_to_pull_out_of_is_refused_by_name() -> void:
 			"the refusal names the load it could not pull out inside: %s" % str(built.errors))
 
 
+## The macro chain traces the same centreline the family builds. Heading is delivered against
+## `sec(theta)`, so the plateau's own fraction is the level case only, and a chain that used it
+## under the handover pitch drifted metres from the built path while still agreeing at both ends.
+func _test_the_heading_profile_is_one_shared_profile() -> void:
+	for index in 21:
+		var u := float(index) / 20.0
+		_t.expect_close(Elements.heading_fraction(0.0, u), Elements.plateau_fraction(u),
+			"a level role delivers heading on the plateau fraction at u=%.2f" % u,
+			0.000000000001)
+	for pitch_deg: float in ENTRY_PITCH_DEG:
+		var start := _state(80.0, pitch_deg)
+		var built := Elements.build(start, _turn_assignment(0.40, start), _settings())
+		if not _expect_built(built, "the shared-heading turn builds from %.0f deg" % pitch_deg):
+			continue
+		_t.expect_max(_chain_end(start, 0.40, 420.0).distance_to(built.end_state.position_m),
+			HEADING_CHAIN_TOLERANCE_M,
+			"the macro chain lands where the turn builds from %.0f deg" % pitch_deg)
+
+
+## The roll-rate ceiling governs the larger of the two twist pairs, not the entry one. A climbing
+## handover signs the frame's bank drift against the bank, so the exit shoulder rolls through
+## `|phi| + |drift|` and the ceiling is taken against that. The turn itself is refused - a pushover
+## cannot press the rider down the bank - but its measured roll still has to be legal.
+func _test_the_roll_ceiling_covers_the_exit_shoulder() -> void:
+	var length: float = TURN_LENGTH_BAND_EDGES_M[0]
+	for pitch_deg: float in [10.0, 20.0]:
+		var start := _state(80.0, pitch_deg)
+		var built := Elements.build(start, _turn_assignment(
+			Layout.heading_bound_rad(length, 80.0), start, length,
+			Vector2(length - 10.0, length + 10.0)), _settings())
+		var observation: Dictionary = built.observation
+		if not _t.expect(not observation.is_empty(),
+				"the climbing turn is measured from %.0f deg: %s" % [pitch_deg, built.errors]):
+			continue
+		_t.expect_max(rad_to_deg(float(observation.peak_roll_rate_rad_s)),
+			RideVerify.ROLL_RATE_LIMIT,
+			"the roll stays inside the envelope from %.0f deg" % pitch_deg)
+		_t.expect(float(observation.bank_ceiling_rad) < Elements.max_bank_rad(length, 80.0),
+			"the ceiling gives up the drift that leans against the bank from %.0f deg"
+				% pitch_deg)
+
+
 ## What the macro stage may assign is what this family can build: every net elevation inside the
 ## published window crests, stands the counterpart prominence above its endpoints and stays inside
 ## the load envelope - at the declared role lengths, entry speeds and handover pitches.
@@ -425,6 +474,28 @@ func _local_end(result: Dictionary) -> Dictionary:
 
 func _angle(a: Vector3, b: Vector3) -> float:
 	return acos(clampf(a.normalized().dot(b.normalized()), -1.0, 1.0))
+
+
+## The macro chain's own trace of one turn, integrated the way `RideReturnLayout._chain` does:
+## Simpson over the shared pitch and heading profiles, with the chain's heading measured from the
+## start's own horizontal direction.
+func _chain_end(start: Dictionary, heading_change_rad: float, length_m: float) -> Vector3:
+	var tangent: Vector3 = (start.tangent as Vector3).normalized()
+	var forward := (tangent - Vector3.UP * tangent.dot(Vector3.UP)).normalized()
+	var context := {"forward": forward, "right": forward.cross(Vector3.UP)}
+	var pitch := _entry_pitch(start)
+	var position: Vector3 = start.position_m
+	var samples := 24
+	var step := length_m / samples
+	for index in samples:
+		var u0 := float(index) / samples
+		var u1 := float(index + 1) / samples
+		position += step / 6.0 * (
+			Layout._tangent(context, 0.0, heading_change_rad, pitch, 0.0, u0)
+			+ 4.0 * Layout._tangent(context, 0.0, heading_change_rad, pitch, 0.0,
+				0.5 * (u0 + u1))
+			+ Layout._tangent(context, 0.0, heading_change_rad, pitch, 0.0, u1))
+	return position
 
 
 ## A 420 m turn through 0.40 rad: the counter-lateral band is reachable inside the family's bank

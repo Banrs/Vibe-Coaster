@@ -24,6 +24,9 @@ const Fidelity := preload("res://fidelity.gd")
 const Counterparts := preload("res://fidelity_counterparts.gd")
 const Verify := preload("res://verify.gd")
 const Sampling := preload("res://route_sampling.gd")
+const Motion := preload("res://motion.gd")
+const ElementContract := preload("res://element_contract.gd")
+const Terrain := preload("res://terrain.gd")
 
 const SCHEMA := "ride-geometry-metrics@1"
 const COUNTERPART_SCHEMA := "ride-geometry-counterpart-comparison@1"
@@ -50,6 +53,9 @@ const COUNTERPART_ROW_OFFSET_M := 6.45
 ## A counterpart axis quoted as a single number is compared against this diagnostic tolerance.
 ## It is a labelling convenience for reading the report, NOT a reviewed threshold and NOT a gate.
 const SCALAR_BAND_FRACTION := 0.15
+
+const TRANSITION_ZERO_TOLERANCE := 0.000001
+const SEMANTIC_SPAN_MIN_S := 0.30
 
 const REQUIRED_FIELDS := [
 	"positions", "tangents", "ups", "banks", "roll_rates", "times", "distances",
@@ -83,6 +89,7 @@ const MATERIAL_ROLE_BY_WINDOW := {
 	"cliff-dive/pullout/0": "outward-dive",
 	"cliff-dive/exit/0": "outward-dive",
 	"tunnel-lsm3/core/0": "tunnel-lsm3",
+	"record-release-turn/record-release-turn/0": "record-release-turn",
 	"marquee-camelback/rise/0": "camelback",
 	"marquee-camelback/crest/0": "camelback",
 	"marquee-camelback/fall/0": "camelback",
@@ -95,6 +102,176 @@ const MATERIAL_ROLE_BY_WINDOW := {
 	"brakes-station-capture/brakes/0": "terminal-capture-brakes",
 	"brakes-station-capture/station/0": "terminal-capture-brakes",
 }
+
+
+## Audit authored transition ownership before FVD integration. A transition ID is deliberately
+## explicit: this function never guesses whether two adjacent spans belong to one gesture from
+## their names or observed geometry. The same transition returning both roll and lateral controls
+## to zero at an internal boundary is the pulse/restart defect this audit is meant to expose.
+static func transition_audit(spans: Array) -> Dictionary:
+	var errors := PackedStringArray()
+	var seams := []
+	var short_spans := []
+	var unowned := []
+	for index in spans.size():
+		var span: Variant = spans[index]
+		if not span is Dictionary:
+			errors.append("span %d is not a Dictionary" % index)
+			continue
+		var duration := float(span.get("duration_s", NAN))
+		if not is_finite(duration) or duration <= 0.0:
+			errors.append("span %d has an invalid duration" % index)
+		# Motion.span records are semantic by construction unless a future diagnostic-only
+		# producer explicitly opts out. This keeps authored micro-spans visible in production
+		# without adding another field to the serialized span digest.
+		elif bool(span.get("semantic", true)) and duration < SEMANTIC_SPAN_MIN_S:
+			short_spans.append({"index": index, "span_id": str(span.get("span_id", "")),
+				"duration_s": duration})
+			errors.append("semantic span %s is shorter than %.2f s" % [
+				str(span.get("span_id", index)), SEMANTIC_SPAN_MIN_S])
+		var transition_id := str(span.get("transition_id", ""))
+		if transition_id.is_empty():
+			var unowned_channels := PackedStringArray()
+			for channel in ["lateral_g", "roll_rate_rad_s"]:
+				var profile: Variant = span.get(channel)
+				if profile is Dictionary and _profile_has_motion(profile):
+					unowned_channels.append(channel)
+			if not unowned_channels.is_empty():
+				unowned.append({"index": index, "span_id": str(span.get("span_id", "")),
+					"channels": unowned_channels})
+			continue
+		if index == 0:
+			continue
+		var previous: Variant = spans[index - 1]
+		if not previous is Dictionary or str(previous.get("transition_id", "")) != transition_id:
+			continue
+		var restarted_channels := PackedStringArray()
+		for channel in ["lateral_g", "roll_rate_rad_s"]:
+			var before_profile: Variant = previous.get(channel)
+			var after_profile: Variant = span.get(channel)
+			if not before_profile is Dictionary or not after_profile is Dictionary:
+				errors.append("transition %s has incomplete %s profiles" % [transition_id, channel])
+				continue
+			var before_end := _profile_value(before_profile, 1.0)
+			var after_start := _profile_value(after_profile, 0.0)
+			if absf(before_end) <= TRANSITION_ZERO_TOLERANCE \
+					and absf(after_start) <= TRANSITION_ZERO_TOLERANCE \
+					and (_profile_has_motion(before_profile) or _profile_has_motion(after_profile)):
+				restarted_channels.append(channel)
+		if not restarted_channels.is_empty():
+			seams.append({"index": index, "transition_id": transition_id,
+				"before_span_id": str(previous.get("span_id", "")),
+				"after_span_id": str(span.get("span_id", "")),
+				"restarted_channels": restarted_channels})
+			errors.append("transition %s restarts %s at span %d" % [
+				transition_id, ", ".join(restarted_channels), index])
+	return {"schema_version": SCHEMA, "metric": "transition_audit", "ok": errors.is_empty(),
+		"semantic_span_min_s": SEMANTIC_SPAN_MIN_S, "seams": seams,
+		"short_spans": short_spans, "unowned": unowned, "errors": errors}
+
+
+## Measure every declared material role through one evidence path. `role_bounds` contains inclusive
+## published trajectory sample bounds, not authored span indices. Missing terrain is an explicit
+## unavailable AGL record; it never becomes a fabricated zero.
+static func role_audit(
+	route: Dictionary, role_bounds: Dictionary, expected_role_ids: Array = [],
+	terrain: Dictionary = {}, geometry_intents: Dictionary = {}
+) -> Dictionary:
+	var required := ["positions", "tangents", "banks", "times", "distances", "speeds",
+		"normal_g", "lateral_g", "roll_rates"]
+	var missing := []
+	for field in required:
+		if not route.has(field):
+			missing.append(field)
+	if not missing.is_empty():
+		return {"schema_version": SCHEMA, "metric": "role_audit", "ok": false,
+			"errors": PackedStringArray(["role audit missing fields: %s" % ", ".join(missing)]),
+			"roles": {}}
+	var role_ids: Array = expected_role_ids.duplicate()
+	if role_ids.is_empty():
+		role_ids = role_bounds.keys()
+	role_ids.sort()
+	var errors := PackedStringArray()
+	var roles := {}
+	for role_value in role_ids:
+		var role_id := str(role_value)
+		var bounds_value: Variant = role_bounds.get(role_id)
+		if not bounds_value is Vector2i or bounds_value.x < 0 or bounds_value.y < bounds_value.x:
+			errors.append("role %s has no published sample bounds" % role_id)
+			roles[role_id] = {"status": "missing", "role_id": role_id}
+			continue
+		var bounds: Vector2i = bounds_value
+		var measurement := ElementContract.measure(route, bounds.x, bounds.y)
+		if measurement.get("status") != "measured":
+			errors.append("role %s measurement unavailable: %s" % [
+				role_id, str(measurement.get("reason", "unknown"))])
+			roles[role_id] = {"status": "unavailable", "role_id": role_id,
+				"measurement": measurement}
+			continue
+		var shape := shape_of(route, bounds.x, bounds.y)
+		var agl := _agl_distribution(route, bounds.x, bounds.y, terrain)
+		var intent: Dictionary = geometry_intents.get(role_id, {})
+		var violations := PackedStringArray()
+		if agl.get("status") == "measured" and intent.get("apex_agl_m") is Vector2:
+			var apex_band: Vector2 = intent.apex_agl_m
+			var apex_agl := float(agl.apex_m)
+			if apex_agl < apex_band.x or apex_agl > apex_band.y:
+				violations.append("apex AGL %.3f m is outside %.3f–%.3f m" % [
+					apex_agl, apex_band.x, apex_band.y])
+		roles[role_id] = {"status": "measured", "role_id": role_id,
+			"first_sample": bounds.x, "last_sample": bounds.y,
+			"measurement": measurement, "shape": shape, "agl": agl,
+			"speed_mps": _range(route.speeds, bounds.x, bounds.y),
+			"normal_g": _range(route.normal_g, bounds.x, bounds.y),
+			"lateral_g": _range(route.lateral_g, bounds.x, bounds.y),
+			"roll_rate_dps": _range(route.roll_rates, bounds.x, bounds.y),
+			"geometry_intent": intent.duplicate(true), "violations": violations}
+	return {"schema_version": SCHEMA, "metric": "role_audit", "ok": errors.is_empty(),
+		"roles": roles, "errors": errors}
+
+
+static func _agl_distribution(
+	route: Dictionary, first: int, last: int, terrain: Dictionary
+) -> Dictionary:
+	if terrain.is_empty() or str(terrain.get("kind", "")) != "material":
+		return {"status": "unavailable", "reason": "terrain evidence is not available"}
+	var values := PackedFloat64Array()
+	var apex_index := first
+	for index in range(first, last + 1):
+		var position: Vector3 = route.positions[index]
+		if position.y > route.positions[apex_index].y:
+			apex_index = index
+		values.append(position.y - Terrain.height(terrain, position.x, position.z))
+	if values.is_empty():
+		return {"status": "unavailable", "reason": "role has no terrain samples"}
+	var sorted := values.duplicate()
+	sorted.sort()
+	return {"status": "measured", "minimum_m": float(sorted[0]),
+		"median_m": float(sorted[int(sorted.size() / 2)]),
+		"p90_m": float(sorted[mini(sorted.size() - 1, ceili(sorted.size() * 0.9) - 1)]),
+		"maximum_m": float(sorted[-1]), "apex_m": float(values[apex_index - first]),
+		"apex_sample": apex_index}
+
+
+static func _range(values: Variant, first: int, last: int) -> Dictionary:
+	var low := INF
+	var high := -INF
+	for index in range(first, last + 1):
+		var value := float(values[index])
+		low = minf(low, value)
+		high = maxf(high, value)
+	return {"minimum": low, "maximum": high}
+
+
+static func _profile_value(profile: Dictionary, u: float) -> float:
+	return float(Motion.profile_sample(profile, clampf(u, 0.0, 1.0)).x)
+
+
+static func _profile_has_motion(profile: Dictionary) -> bool:
+	for u in [0.25, 0.5, 0.75]:
+		if absf(_profile_value(profile, u)) > TRANSITION_ZERO_TOLERANCE:
+			return true
+	return false
 
 
 # ---------------------------------------------------------------------------------------------

@@ -165,12 +165,14 @@ static func build_with_decisions(seed_value: int, decisions: Dictionary) -> Dict
 		return _failure("motion integration failed", trajectory.get("errors", []))
 	accepted_integrations += 1
 	var accepted: Dictionary = compiled.duplicate(true)
+	var accepted_plan: Dictionary = compiled.get("plan", {})
 	accepted["generation_stats"] = {
 		"accepted_integrations": accepted_integrations,
-		"planning_integrations": int(plan.terrain_frame.planning.planning_integrations),
+		"planning_integrations": int(accepted_plan.terrain_frame.planning.planning_integrations),
 		"repair_count": 0,
 	}
-	return RouteContract.build(seed_value, terrain, initial_state, plan, accepted, trajectory)
+	return RouteContract.build(seed_value, terrain, initial_state, accepted_plan, accepted,
+		trajectory)
 
 
 static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
@@ -783,11 +785,20 @@ static func _material_role(role_id: String) -> Dictionary:
 			return _role("tunnel-lsm3", "tunnel_lsm3", Vector2(150.0, 220.0), {}, [],
 				{"boundary_crossings": [{"boundary_id": &"apron_edge", "from_side": 1,
 					"to_side": -1}]}, 3)
+		"record-release-turn":
+			var record_release := _role("record-release-turn", "record_release_turn",
+				Vector2(340.0, 390.0))
+			record_release["geometry"] = {"bank_deg": Vector2(55.0, 65.0),
+				"planarity": "horizontal-turn"}
+			return record_release
 		"camelback":
 			# The record camelback is longer than the 328 km/h one: the same authored normal-g
 			# profile sweeps more track per second at the 340 km/h entry, and the fall lengthens
 			# to keep the marquee standing ~250 m above its valley.
-			return _role("camelback", "camelback", Vector2(900.0, 1180.0))
+			var camelback := _role("camelback", "camelback", Vector2(900.0, 1180.0))
+			camelback["geometry"] = {"apex_agl_m": Vector2(140.0, 170.0),
+				"prominence_m": Vector2(245.0, 255.0), "planarity": "vertical-plane"}
+			return camelback
 		"return-turn-a":
 			# Turn-a lengthens and height-a shortens against the old bands: the widened
 			# capture-entry corridor lets the passive return carry more speed, and the solve

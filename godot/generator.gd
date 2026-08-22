@@ -841,13 +841,21 @@ static func _material_role(role_id: String) -> Dictionary:
 			# Turn-a lengthens and height-a shortens against the old bands: the widened
 			# capture-entry corridor lets the passive return carry more speed, and the solve
 			# spends it in the loaded arc rather than the first airtime beat.
-			return _role("return-turn-a", "return_turn", Vector2(420.0, 620.0))
+			var turn_a := _role("return-turn-a", "return_turn", Vector2(420.0, 620.0))
+			turn_a["geometry"] = {"planarity": "horizontal-turn"}
+			return turn_a
 		"return-height-a":
-			return _role("return-height-a", "return_height", Vector2(290.0, 480.0))
+			var height_a := _role("return-height-a", "return_height", Vector2(290.0, 480.0))
+			height_a["geometry"] = {"planarity": "vertical-plane"}
+			return height_a
 		"return-turn-b":
-			return _role("return-turn-b", "return_turn", Vector2(430.0, 570.0))
+			var turn_b := _role("return-turn-b", "return_turn", Vector2(430.0, 570.0))
+			turn_b["geometry"] = {"planarity": "horizontal-turn"}
+			return turn_b
 		"return-height-b":
-			return _role("return-height-b", "return_height", Vector2(450.0, 590.0))
+			var height_b := _role("return-height-b", "return_height", Vector2(450.0, 590.0))
+			height_b["geometry"] = {"planarity": "vertical-plane"}
+			return height_b
 		"terminal-capture-brakes":
 			return _role("terminal-capture-brakes", "terminal_capture_brakes",
 				Vector2(200.0, 240.0))

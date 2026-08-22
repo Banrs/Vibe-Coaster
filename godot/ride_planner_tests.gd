@@ -21,6 +21,8 @@ func _initialize() -> void:
 	_test_streams_are_deterministic_and_independent()
 	_test_stream_seeds_are_stable_integers()
 	_test_grammar_legality()
+	_test_return_order_is_generic()
+	_test_return_order_stream_isolation()
 	_test_draw_provenance_is_recorded()
 	_test_overrides_do_not_disturb_stream_alignment()
 	_test_undrawn_story_reproduces_the_authored_recipe()
@@ -98,8 +100,8 @@ func _test_grammar_legality() -> void:
 	var return_moved: Array = canonical.duplicate()
 	return_moved[15] = canonical[17]
 	return_moved[17] = canonical[15]
-	_t.expect(not RidePlanner.is_legal_sequence(return_moved),
-		"permuting the return cell is illegal at this checkpoint")
+	_t.expect(RidePlanner.is_legal_sequence(return_moved),
+		"permuting the return roles is grammar-legal")
 	var dropped_optional: Array = canonical.duplicate()
 	dropped_optional.erase("act-one-wave")
 	_t.expect(RidePlanner.is_legal_sequence(dropped_optional),
@@ -117,6 +119,56 @@ func _test_grammar_legality() -> void:
 	duplicated[5] = "act-one-loop"
 	_t.expect(not RidePlanner.is_legal_sequence(duplicated),
 		"repeating an act-one member is illegal")
+
+
+## Every one of the 24 return-role orderings is grammar-legal and round-trips through
+## `return_order()`/`with_return_order()`; a duplicated role stays illegal. Generated recursively
+## rather than pasted as a 24-entry table.
+func _test_return_order_is_generic() -> void:
+	var canonical := RidePlanner.canonical_role_ids()
+	for order in _permutations(RidePlanner.RETURN_ROLES):
+		var sequence := RidePlanner.with_return_order(canonical, order)
+		_t.expect(RidePlanner.is_legal_sequence(sequence),
+			"return permutation is grammar-legal: %s" % str(order))
+		_t.expect(RidePlanner.return_order(sequence) == order,
+			"return order round-trips: %s" % str(order))
+	var duplicated := RidePlanner.RETURN_ROLES.duplicate()
+	duplicated[3] = duplicated[0]
+	_t.expect(not RidePlanner.is_legal_sequence(
+		RidePlanner.with_return_order(canonical, duplicated)),
+		"duplicate return role is illegal")
+
+
+func _permutations(values: Array) -> Array:
+	if values.is_empty(): return [[]]
+	var result: Array = []
+	for index in values.size():
+		var rest := values.duplicate()
+		var head: Variant = rest.pop_at(index)
+		for suffix: Array in _permutations(rest):
+			result.append([head] + suffix)
+	return result
+
+
+## Exploring return-role orderings is a pure array operation with no `RandomNumberGenerator`
+## involved: resolving one seed before and after constructing all 24 orderings must draw
+## byte-identical terrain, placement, act-one, and target values, proving the grammar's ordering
+## check cannot perturb any named decision stream.
+func _test_return_order_stream_isolation() -> void:
+	var seed_value := 42
+	var before := RidePlanner.resolve(seed_value)
+	var canonical := RidePlanner.canonical_role_ids()
+	for order in _permutations(RidePlanner.RETURN_ROLES):
+		var sequence := RidePlanner.with_return_order(canonical, order)
+		RidePlanner.is_legal_sequence(sequence)
+		RidePlanner.return_order(sequence)
+	var after := RidePlanner.resolve(seed_value)
+	_t.expect(var_to_bytes(before.draws) == var_to_bytes(after.draws),
+		"exploring every return-order permutation disturbs no target draw")
+	for stream_name in RidePlanner.stream_ids():
+		var name := str(stream_name)
+		_t.expect(before.streams[name].seed == after.streams[name].seed,
+			"stream %s seed is unaffected by return-order exploration" % name)
 
 
 func _test_draw_provenance_is_recorded() -> void:

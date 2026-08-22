@@ -12,7 +12,6 @@ extends RefCounted
 ## rather than reimplemented.
 
 const Motion := preload("res://motion.gd")
-const RideProgram := preload("res://ride_program.gd")
 const RideReturnSolve := preload("res://ride_return_solve.gd")
 
 const ENTRY_SPEED_BAND_MPS := Vector2(70.0, 80.0)

@@ -397,9 +397,8 @@ func _test_the_elevation_window_is_what_the_family_crests_through() -> void:
 			var start := _state(speed, pitch_deg)
 			var elevation := lerpf(window.x, window.y, fraction)
 			var assignment := _height_assignment_of(start, length, elevation)
-			# What this test measures is the elevation contract, so it publishes no corridor
-			# centreline: the macro corridor is a stated stand-in that models net elevation
-			# rather than the crest, and the fixtures that carry one measure it.
+			# What this test measures is the elevation contract alone, so it publishes no
+			# corridor centreline; the corridor has its own test directly below.
 			assignment.corridor = {"centerline_m": PackedVector3Array(),
 				"length_band_m": assignment.corridor.length_band_m}
 			var built := Elements.build(start, assignment, _settings())

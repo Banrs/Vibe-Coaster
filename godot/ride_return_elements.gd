@@ -136,7 +136,12 @@ const TURN_BOUND_SAMPLES := 384
 ## crest term dominates and grows with arc, so it was measured over the whole declared span of
 ## both role bands (290-590 m x 70-80 m/s x -10 to +20 deg of handover): the worst edge
 ## disagreement is 0.084 m, and every one of those 144 published edges builds with this margin.
-const BOUND_AGREEMENT_G := 0.002
+## The load figure is the same story on the other axis: the solve trades peak normal load against
+## its three residuals, and the envelope it is measured against is duration-dependent, so a build
+## that converged elsewhere in its residual box reaches a different peak from the trace's. Measured
+## over the same grid, the worst edge disagreement is 0.0023 g, and this margin leaves 0.0027 g
+## over it.
+const BOUND_AGREEMENT_G := 0.005
 const BOUND_AGREEMENT_M := 0.11
 ## Curvature bounds for the height solve, stated as loads rather than as radii: no stage's own
 ## `v^2 kappa / g0` may pass the 4.0 g held normal limit the macro stage also reasons against, and

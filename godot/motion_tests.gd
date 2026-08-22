@@ -22,6 +22,12 @@ func _initialize() -> void:
 	_test_boundary_roundoff_does_not_emit_a_sliver()
 	_test_degenerate_frame_rejection()
 	_test_rk4_step_halving()
+	_test_spatial_straight_ends_at_exact_length()
+	_test_spatial_quarter_circle_matches_curvature()
+	_test_spatial_twist_uses_actual_distance()
+	_test_spatial_force_projection_matches_curvature()
+	_test_spatial_step_halving_converges()
+	_test_spatial_rejects_vertical_tangent_and_stalling_speed()
 	_test_dense_output_native_identity()
 	_test_dense_output_distance_and_defect()
 	_t.finish(self)
@@ -386,6 +392,152 @@ func _test_rk4_step_halving() -> void:
 		"projected RK4 leaves a unit orthogonal frame")
 
 
+func _test_spatial_straight_ends_at_exact_length() -> void:
+	var state := _moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 40.0)
+	var span := Motion.spatial_span("spatial/straight", 100.0,
+		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0),
+		Motion.constant(0.0))
+	var route := Motion.integrate(state, [span], {"step_s": 0.01,
+		"gravity_mps2": Vector3.ZERO, "rolling_mps2": 0.0, "aero_per_m": 0.0})
+	_t.expect(route.get("ok", false), "spatial straight integrates")
+	_t.expect_close(route.distance_m[-1], 100.0, "spatial span ends at its exact length", 0.000001)
+	# Positions are published as Float32, so 250 accumulated steps out to 100 m carry about
+	# 2.4e-4 m of representation error. The equivalent 2.5 s time span lands on the same value.
+	_t.expect(route.position_m[-1].distance_to(Vector3(100.0, 0.0, 0.0)) <= 0.0005,
+		"spatial straight endpoint follows its tangent")
+	_t.expect_close(route.time_s[-1], 2.5, "spatial elapsed time is an integration result", 0.000001)
+
+
+func _test_spatial_quarter_circle_matches_curvature() -> void:
+	var radius := 100.0
+	var length_m := 0.5 * PI * radius
+	var span := Motion.spatial_span("spatial/quarter-circle", length_m,
+		Motion.constant(0.0), Motion.constant(1.0 / radius), Motion.constant(0.0),
+		Motion.constant(0.0))
+	var route := Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 40.0),
+		[span], {"step_s": 0.005, "gravity_mps2": Vector3.ZERO,
+			"rolling_mps2": 0.0, "aero_per_m": 0.0})
+	if not _expect_route(route, "spatial quarter circle integrates"):
+		return
+	_t.expect(route.position_m[-1].distance_to(Vector3(radius, 0.0, radius)) <= 0.02,
+		"constant spatial curvature makes a quarter circle")
+	_t.expect(route.tangent[-1].distance_to(Vector3.BACK) <= 0.0002,
+		"quarter circle turns its tangent by ninety degrees")
+	_t.expect_close(route.curvature_m_inv[-1], 1.0 / radius,
+		"published curvature is the authored spatial curvature", 0.000001)
+
+
+func _test_spatial_twist_uses_actual_distance() -> void:
+	var length_m := 120.0
+	var twist := Motion.quintic(0.0, PI * 0.5)
+	var slow := _spatial_route(20.0, Motion.spatial_span("spatial/twist", length_m,
+		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0), twist))
+	var fast := _spatial_route(60.0, Motion.spatial_span("spatial/twist", length_m,
+		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0), twist))
+	if not _expect_route(slow, "slow spatial twist integrates") \
+			or not _expect_route(fast, "fast spatial twist integrates"):
+		return
+	_t.expect_vector(slow.rider_up[-1], Vector3.BACK,
+		"a quarter twist over arc length rolls rider-up onto the right axis", 0.0001)
+	_t.expect_vector(fast.rider_up[-1], Vector3.BACK,
+		"tripling speed does not change the twist angle", 0.0001)
+	_t.expect_close(fast.time_s[-1], slow.time_s[-1] / 3.0,
+		"the same span at triple speed takes a third of the time", 0.000001)
+	_t.expect_close(_peak_abs(slow.roll_rate_rad_s), 20.0 * 1.875 * PI * 0.5 / length_m,
+		"roll rate is speed times the analytic quintic twist slope", 0.0005)
+	_t.expect_close(_peak_abs(fast.roll_rate_rad_s), 3.0 * _peak_abs(slow.roll_rate_rad_s),
+		"roll rate scales with speed at the same spatial twist slope", 0.0005)
+
+
+func _test_spatial_force_projection_matches_curvature() -> void:
+	var pitch_curvature := -0.004
+	var yaw_curvature := 0.006
+	var speed := 45.0
+	var pitch := deg_to_rad(10.0)
+	var tangent := Vector3(cos(pitch), sin(pitch), 0.0)
+	var up := Vector3(-sin(pitch), cos(pitch), 0.0).rotated(tangent, deg_to_rad(30.0))
+	var gravity := Vector3.DOWN * Motion.G0
+	var route := Motion.integrate(_moving_state(Vector3.ZERO, tangent, up, speed), [
+		Motion.spatial_span("spatial/projection", 90.0,
+			Motion.constant(pitch_curvature), Motion.constant(yaw_curvature),
+			Motion.constant(0.0), Motion.constant(0.0)),
+	], _settings(0.01))
+	if not _expect_route(route, "pitched and banked spatial span integrates"):
+		return
+	var worst_normal := 0.0
+	var worst_lateral := 0.0
+	var worst_curvature := 0.0
+	for index in route.time_s.size():
+		var stage_tangent: Vector3 = route.tangent[index]
+		var stage_up: Vector3 = route.rider_up[index]
+		var stage_right := stage_tangent.cross(stage_up)
+		var stage_speed: float = route.speed_mps[index]
+		var yaw_normal := stage_tangent.cross(Vector3.UP).normalized()
+		var curvature := pitch_curvature * yaw_normal.cross(stage_tangent) \
+			+ yaw_curvature * yaw_normal
+		var perpendicular := gravity - stage_tangent * gravity.dot(stage_tangent)
+		var squared := stage_speed * stage_speed
+		worst_normal = maxf(worst_normal, absf(route.normal_g[index]
+			- (squared * curvature.dot(stage_up) - perpendicular.dot(stage_up)) / Motion.G0))
+		worst_lateral = maxf(worst_lateral, absf(route.lateral_g[index]
+			- (squared * curvature.dot(stage_right) - perpendicular.dot(stage_right)) / Motion.G0))
+		worst_curvature = maxf(worst_curvature,
+			route.curvature_vector_m_inv[index].distance_to(curvature))
+	_t.expect(worst_normal <= 0.0005,
+		"published normal g is the rider-up projection of the spatial curvature: %.9f"
+			% worst_normal)
+	_t.expect(worst_lateral <= 0.0005,
+		"published lateral g is the rider-right projection of the spatial curvature: %.9f"
+			% worst_lateral)
+	_t.expect(worst_curvature <= 0.000001,
+		"published curvature is the authored world pitch/yaw vector: %.9f" % worst_curvature)
+	_t.expect(route.tangent[-1].y < tangent.y,
+		"negative pitch curvature pitches the tangent downward")
+
+
+func _test_spatial_step_halving_converges() -> void:
+	var radius := 10.0
+	var theta := 2.0
+	var exact := Vector3(cos(theta), 0.0, sin(theta))
+	var span := Motion.spatial_span("spatial/arc", theta * radius,
+		Motion.constant(0.0), Motion.constant(1.0 / radius), Motion.constant(0.0),
+		Motion.constant(0.0))
+	var coarse := Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 10.0),
+		[span], _zero_gravity_settings(0.4))
+	var fine := Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 10.0),
+		[span], _zero_gravity_settings(0.2))
+	if not _expect_route(coarse, "coarse spatial convergence probe integrates") \
+			or not _expect_route(fine, "fine spatial convergence probe integrates"):
+		return
+	var coarse_error: float = coarse.tangent[-1].distance_to(exact)
+	var fine_error: float = fine.tangent[-1].distance_to(exact)
+	_t.expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
+		"spatial step halving demonstrates fourth-order convergence: %.9f then %.9f"
+			% [coarse_error, fine_error])
+	_t.expect(fine_error <= 0.0001, "fine spatial result has bounded absolute error")
+	_t.expect_close(coarse.distance_m[-1], theta * radius,
+		"a coarse spatial span still ends at its exact length", 0.000001)
+	_expect_unit_frame(fine.tangent[-1], fine.rider_up[-1],
+		"projected spatial RK4 leaves a unit orthogonal frame")
+
+
+func _test_spatial_rejects_vertical_tangent_and_stalling_speed() -> void:
+	var vertical := Motion.integrate(
+		_moving_state(Vector3.ZERO, Vector3.UP, Vector3.RIGHT, 40.0), [
+			Motion.spatial_span("spatial/vertical", 10.0, Motion.constant(0.0),
+				Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0)),
+		], _settings(0.01))
+	_expect_rejected(vertical, "world vertical",
+		"a spatial span rejects a tangent on the pitch/yaw basis singularity")
+	var stalling := Motion.integrate(
+		_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 3.0), [
+			Motion.spatial_span("spatial/stall", 200.0, Motion.constant(0.0),
+				Motion.constant(0.0), Motion.constant(-0.05), Motion.constant(0.0)),
+		], _zero_gravity_settings(0.01))
+	_expect_rejected(stalling, "moving speed floor",
+		"a spatial span rejects a train that stops inside it")
+
+
 func _test_dense_output_native_identity() -> void:
 	var route := Motion.integrate(_initial(10.0), [
 		_span("dense", 0.035, "moving", 1.0, 0.0, 0.25, 0.2),
@@ -485,6 +637,24 @@ func _initial(
 		"distance_m": 0.0,
 		"time_s": 0.0,
 	}
+
+
+func _moving_state(position: Vector3, tangent: Vector3, up: Vector3, speed_mps: float) -> Dictionary:
+	return {"position_m": position, "tangent": tangent.normalized(),
+		"rider_up": up.normalized(), "speed_mps": speed_mps,
+		"distance_m": 0.0, "time_s": 0.0}
+
+
+func _spatial_route(speed_mps: float, motion_span: Dictionary) -> Dictionary:
+	return Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, speed_mps),
+		[motion_span], _zero_gravity_settings(0.01))
+
+
+func _peak_abs(channel: PackedFloat64Array) -> float:
+	var peak := 0.0
+	for value in channel:
+		peak = maxf(peak, absf(value))
+	return peak
 
 
 func _span(

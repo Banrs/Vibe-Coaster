@@ -681,9 +681,17 @@ moving floor, so one step past the last accepted peak an RK stage crosses it and
 refused outright — and the smallest residual any solver can reach is therefore the last pre-cliff
 sample, not zero. Measured over 61 speeds of the entry band at the 0.01 s step: worst 1.026889e-4
 m/s, at 73.6667 m/s. 1.5e-4 is that worst plus 46%; 1e-4 is below it and would refuse the build it
-is meant to accept. The station pose that follows is likewise not exact: the residual rides through
-the fixed-duration station creep as up to `residual × station_creep_duration_s` of along-track
-error, measured worst 1.449585 mm. Both figures are 0.01 s figures, and the sweep is to be re-run at
+is meant to accept. The station pose that follows is likewise not exact, and its error carries two
+terms. The dominant one is the residual riding through the fixed-duration station creep: that creep
+is rolling-dominated, so its distance moves with entry speed at the duration itself, making the
+along-track error `residual × station_creep_duration_s` — predicted 1.280811 mm at the worst speed,
+measured 1.278815 mm along the path. The second is float32 quantization of the published
+`position_m`, a `PackedVector3Array` whose ulp at the 230 m station is 1.52588e-5 m: every reported
+error is an integer multiple of that, scattering up to ±1.85e-4 m around the creep term, which is
+why 70.0 m/s reads 9.1553e-5 m (6 ulp) against a 1.797e-6 m creep term and 79.5 m/s reads exactly
+zero. Worst measured total 1.449585 mm at 73.6667 m/s — 1.278815 mm of creep plus 0.170770 mm of
+quantization — and that total, not either term alone, is what `MEASURED_POSE_BOUND_M` carries its
+1.10× headroom over. Every figure here is a 0.01 s figure, and the sweep is to be re-run at
 whatever step Task 7 hands the terminal.
 
 Use these test-local constructors; rotate all three frame vectors together for the rotated fixture:

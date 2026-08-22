@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development — fresh
 > implementer subagent per task, task review (spec + quality) after each, broad final review.
-> Steps use `- [ ]`. Model routing per task is advisory (haiku → sonnet → opus → fable).
+> Steps use `- [ ]`. Routing is 10-80-10: the coordinator (fable) orchestrates and reviews; opus/sonnet implement;
+> fable implements only the very hardest pieces.
 
 **Goal:** Replace the globally coupled return/capture solve with order-generic macro geometry and
 local distance-domain FVD elements (priority), and deflate the whole codebase under the global
@@ -188,14 +189,17 @@ already carry RED tests, interfaces, equations, and commit steps — with these 
 2. New suites use `TestUtil` / `RouteFixture` from Phase A.
 3. No terrace: Task 6/7 must not reference `RETURN_TERRACE_*` or a 155 m AGL relationship;
    the camelback contract is planarity + pitch-zero apex + 245–255 m prominence only.
-4. Model routing — T1 spatial kernel: **fable** (opus math review, sonnet dup-code review);
-   T2 grammar: **sonnet**; T3 layout: **opus** (fable architecture gate); T4 elements: **fable**
-   (opus physics review); T5 terminal: **sonnet** (opus energy review); T6+T7 atomic cutover:
-   **fable**, single agent, sole writer of `ride_program.gd` during it; T8 evidence: **sonnet**
+4. Model routing — T1 spatial kernel: **opus** (fable math review, sonnet dup-code review);
+   T2 grammar: **sonnet**; T3 layout: **opus** (fable architecture gate); T4 elements: **opus**
+   (fable physics review); T5 terminal: **sonnet** (opus energy review); T6+T7 atomic cutover:
+   **opus** (fable review gate; fable implements only if opus fails it), single agent, sole writer of `ride_program.gd` during it; T8 evidence: **sonnet**
    impl, **opus** visual/physics review of seeds 42/11/20260809.
 5. Parallelism: T1 ∥ T2 ∥ T3 (worktrees); T4, T5 after T1; T6/T7 after all; T8 last.
-6. Temporal-path bytes must stay identical through T1 (oracle = `baseline-hashes.json`).
-7. GREEN = import, 20 focused suites incl. `camelback_geometry_tests.gd` restored to the manifest,
+6. Before T1 starts, a real-world basis check (Task B0) cross-examines every numeric the spec
+   and plan rely on against docs/TELEMETRY*.md, counterpart bands, verify.gd and real coaster
+   references; discrepancies are fixed in the spec before implementation.
+7. Temporal-path bytes must stay identical through T1 (oracle = `baseline-hashes.json`).
+8. GREEN = import, 20 focused suites incl. `camelback_geometry_tests.gd` restored to the manifest,
    15-seed smoke incl. seed 4096 unspecial, viewer frame/runtime, visual audit pack; every scaled
    residual ≤ 0.02, every margin positive.
 
@@ -208,7 +212,7 @@ already carry RED tests, interfaces, equations, and commit steps — with these 
   and hardcodes the code-derived `target`. Keep derivation rule, caveats, per-role prose; drop
   numeric table bodies; point at `RideFidelityCounterparts.BANDS` (−~250 md).
 
-### Task C2 (fable): one filtered-window slicer
+### Task C2 (opus, fable review): one filtered-window slicer
 - `fidelity.gd:1006-1104` (`_bands_for_row`+`_sample_filtered_window`) and
   `geometry_metrics.gd:507-578` (`material_role_bands`+`_time_at_distance`) → one
   `Fidelity.filtered_window(route, first, last, row_offset)`. Changes `geometry-metrics.json` /

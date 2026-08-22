@@ -7,16 +7,15 @@ const SAMPLING_PATH := "res://route_sampling.gd"
 const VIEWER_PATH := "res://main.gd"
 const FIDELITY_PATH := "res://fidelity.gd"
 const INSPECT_PATH := "res://_inspect.gd"
-const LEGACY_BASE_COMMIT := "3fa14885bef2daf3a7d9c0e544424cb6a296fd99"
-const AUDIT_SEEDS := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
-const DEEP_REVIEW_SEEDS := [11, 42, 20260809]
+const LEGACY_BASE_COMMIT := RideFidelity.LEGACY_BASE_COMMIT
+const AUDIT_SEEDS := RideFidelity.CANONICAL_FLEET
+const DEEP_REVIEW_SEEDS := RideFidelity.DEEP_SEEDS
 
 
 func _initialize() -> void:
-	var errors := run()
-	for error in errors:
-		printerr(error)
-	quit(0 if errors.is_empty() else 1)
+	var _t := TestUtil.new()
+	_t.errors = run()
+	_t.finish(self)
 
 
 static func run() -> PackedStringArray:
@@ -365,11 +364,6 @@ static func _test_audit_fleet(errors: PackedStringArray) -> void:
 		errors.append("the inspector is missing")
 		return
 	var inspect: Script = load(INSPECT_PATH)
-	var fidelity: Script = load(FIDELITY_PATH)
-	_expect(errors, inspect.get_script_constant_map().get("AUDIT_SEEDS") == AUDIT_SEEDS,
-		"the inspector pins the canonical fifteen-seed fleet in its documented order")
-	_expect(errors, fidelity.get_script_constant_map().get("CANONICAL_FLEET") == AUDIT_SEEDS,
-		"the audited fleet is the fleet the comparison calls canonical")
 	_test_one_build_per_seed(Callable(inspect, "_run_audit"), errors)
 
 
@@ -1302,7 +1296,7 @@ static func _expected_report() -> Dictionary:
 		issue_records.append(_expected_issue(issue_id))
 	return {
 		"schema_version": "ride-fidelity-audit@1",
-		"legacy_base_commit": "3fa14885bef2daf3a7d9c0e544424cb6a296fd99",
+		"legacy_base_commit": LEGACY_BASE_COMMIT,
 		"catalog": {
 			"schema_version": 2, "catalog_version": "test",
 			"canonical_sha256": "2fc1b0c7df31bf9a6fff87cee24ff5e0dce85b02bcd2508110c87ab43f124d8b", "validation_status": "valid",
@@ -1465,7 +1459,7 @@ const PROMPT_FOR_ISSUE := {
 
 static func _expected_render_requests() -> Array:
 	var requests := []
-	for seed in [11, 42, 20260809]:
+	for seed in DEEP_REVIEW_SEEDS:
 		for kind in ["channels", "elevation", "top"]:
 			requests.append({
 				"path": "review/seed-%d/%s.png" % [seed, kind],
@@ -1671,21 +1665,34 @@ static func _pack_fixture() -> Dictionary:
 
 static func _pack_routes() -> Dictionary:
 	var routes := {}
-	for seed_value in [11, 42, 20260809]:
+	for seed_value in DEEP_REVIEW_SEEDS:
 		routes[seed_value] = _pack_route(seed_value)
 	return routes
 
 
 static func _pack_route(seed_value: int) -> Dictionary:
-	var route := {
-		"seed": seed_value, "length": 200.0, "duration": 20.0,
-		"positions": PackedVector3Array(), "tangents": PackedVector3Array(),
-		"ups": PackedVector3Array(), "rights": PackedVector3Array(),
-		"curvatures": PackedVector3Array(), "banks": PackedFloat32Array(),
-		"speeds": PackedFloat32Array(), "normal_g": PackedFloat32Array(),
-		"lateral_g": PackedFloat32Array(), "longitudinal_g": PackedFloat32Array(),
-		"roll_rates": PackedFloat32Array(), "distances": PackedFloat32Array(),
-		"times": PackedFloat32Array(), "span_indices": PackedInt32Array(),
+	const COUNT := 41
+	var positions := PackedVector3Array()
+	var distances := PackedFloat32Array()
+	var times := PackedFloat32Array()
+	var span_indices := PackedInt32Array()
+	for index in COUNT:
+		positions.append(Vector3(index * 5.0, 30.0, 0.0))
+		distances.append(index * 5.0)
+		times.append(index * 0.5)
+		span_indices.append(0 if index < 20 else 1)
+	var fixture := RouteFixture.new().seed(seed_value).length(200.0).duration(20.0)
+	fixture.points(positions).distances(distances).times(times).span_indices(span_indices)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, COUNT))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, COUNT))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.BACK, COUNT))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, COUNT))
+	fixture.banks(RouteFixture.flat_float(0.0, COUNT)).speeds(RouteFixture.flat_float(10.0, COUNT))
+	fixture.channel("normal_g", RouteFixture.flat_float(1.0, COUNT))
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, COUNT))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, COUNT))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, COUNT))
+	fixture.extra({
 		"terrain": {
 			"relief": 1.0, "face_height": 0.0, "apron_height": 0.0,
 			"edge_normal": Vector2(0.0, -1.0), "edge_offset": 0.0, "apron_width": 1.0,
@@ -1717,23 +1724,8 @@ static func _pack_route(seed_value: int) -> Dictionary:
 				"start_time_s": 10.0, "end_time_s": 20.0,
 			}],
 		}],
-	}
-	for index in 41:
-		route.positions.append(Vector3(index * 5.0, 30.0, 0.0))
-		route.tangents.append(Vector3.RIGHT)
-		route.ups.append(Vector3.UP)
-		route.rights.append(Vector3.BACK)
-		route.curvatures.append(Vector3.ZERO)
-		route.banks.append(0.0)
-		route.speeds.append(10.0)
-		route.normal_g.append(1.0)
-		route.lateral_g.append(0.0)
-		route.longitudinal_g.append(0.0)
-		route.roll_rates.append(0.0)
-		route.distances.append(index * 5.0)
-		route.times.append(index * 0.5)
-		route.span_indices.append(0 if index < 20 else 1)
-	return route
+	})
+	return fixture.build()
 
 
 static func _overlay_fixture(count: int) -> Dictionary:

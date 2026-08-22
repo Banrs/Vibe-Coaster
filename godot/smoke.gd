@@ -9,7 +9,7 @@ const RouteContract := preload("res://route_contract.gd")
 const Terrain := preload("res://terrain.gd")
 const Verify := preload("res://verify.gd")
 
-const DEEP_SEEDS := [11, 42, 20260809]
+const DEEP_SEEDS := RideFidelity.DEEP_SEEDS
 const LAUNCH_DRIVE_BAND_G := Vector2(3.7, 4.1)
 const SWEEP_SEEDS := [1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
 ## The fleet must not be one ride fifteen times. Measured spread on 2026-08-16 with the landed
@@ -23,21 +23,6 @@ const FLEET_DURATION_SPREAD_FLOOR_S := 0.1
 ## `ride_program_tests.gd` gates five seeds fast; every seed of the fifteen must stay inside
 ## this fraction of it, measured here because the compile is already paid.
 const RETURN_EVALUATION_ALLOWANCE := 0.6
-## The prefix-closure margins the whole fleet must carry, and the fraction of the closure's own
-## derived cap it must converge inside — all four margins and the allowance are `generator.gd`'s
-## constants, read here rather than copied, since the closure aims at the same numbers. This is the
-## fifteen-seed half of the prefix convergence claim `ride_program_tests.gd` makes on the canonical
-## and seed-42 stories. The closure aims inside every margin and the closed-form placement lands
-## inside them by construction; measuring them on all fifteen seeds is what turns the aim into a
-## gate. Measured on the grid-search placement this replaced: four seeds missed the dive-entry
-## margin, nine the apron margin, and seven sat exactly on the summit band's floor. Read the summit
-## margin as one-sided: `generator.gd` floors the station at the inner band's 17.99 m (the 40%
-## interior of the 15.01-24.95 band) and every other clearance term can only raise it, so the low
-## side carries 2.98 m by construction and only the high side can ever approach this gate. The
-## fleet's tightest summit margin (+2.96 m, seed 77777) is therefore high-side evidence alone, not
-## a two-sided measurement of the 1.5 m floor. The dive-entry margin reads the other way round
-## since the rim aim landed: it is the *low* side that binds now (+4.30 m worst, seed 1234), which
-## is the measurement of issue 22 — the dive starts at the rim end of its band on every seed.
 ## The viewer's POV camera bounds. Measured on seed 42 (2026-08-15): the camera stays within
 ## 6.3° of the tangent, the look direction stays 84.5° clear of the pose up axis, and the rumble
 ## moves the eye 4.41 mm between 60 fps frames at top speed. The cone and clearance are the
@@ -322,21 +307,10 @@ func _validate_prefix_closure(
 	if terrain.is_empty() or fine.size() != PrefixSolve.PREFIX_RESIDUAL_IDS.size():
 		issues.append("the plan publishes no measurable prefix closure")
 		return
-	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
-	var measured := [
-		["dive-entry edge", float(planning.get("dive_entry_edge_m", NAN)) - shelf_m,
-			Generator.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, Generator.DIVE_ENTRY_EDGE_MARGIN_M],
-		["dive-exit apron fraction", float(planning.get("dive_exit_apron_fraction", NAN)),
-			Generator.DIVE_EXIT_APRON_BAND, Generator.DIVE_EXIT_APRON_MARGIN],
-		["summit track AGL", float(planning.get("summit_track_agl_m", NAN)),
-			Generator.SUMMIT_TRACK_AGL_BAND_M, Generator.PREFIX_MARGIN_SUMMIT_M],
-		["record exit speed", float(fine[3]), Generator.RECORD_EXIT_SPEED_BAND_MPS,
-			Generator.PREFIX_MARGIN_RECORD_MPS],
-	]
 	var report := PackedStringArray()
-	for entry: Array in measured:
+	for entry: Array in Generator.prefix_closure_margins(planning, terrain, fine):
+		var margin := float(entry[1])
 		var band: Vector2 = entry[2]
-		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
 		report.append("%s %+.4f" % [entry[0], margin])
 		if not is_finite(margin) or margin < float(entry[3]):
 			issues.append("%s sits only %.4f inside %s; the fleet requires %.4f"

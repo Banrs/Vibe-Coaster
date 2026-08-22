@@ -236,10 +236,7 @@ static func _accept_prefix_closure(closure: Dictionary, trajectory: Dictionary,
 	var report: Dictionary = closure.report
 	var coarse: Array = report.coarse_observation
 	var fine := _prefix_observation(trajectory, program.dive_start, program.dive_end, closure.axis)
-	var agrees := fine.size() == coarse.size()
-	for index in PREFIX_RESIDUAL_IDS.size():
-		agrees = agrees and absf(float(fine[index]) - float(coarse[index])) \
-			<= float(PREFIX_FINE_TOLERANCES[index])
+	var agrees := RideProgram._observations_agree(fine, coarse, PREFIX_FINE_TOLERANCES)
 	if not agrees:
 		return _prefix_refusal("prefix closure coarse and fine observations disagree",
 			str(report.solver_status), report.accepted_values, report.target_error,

@@ -11,8 +11,12 @@ const PLATEAU_PULSE_AREA := 2.0 / 3.0
 const COMPACT_PULSE_AREA := 100.0 / 231.0
 const STEP_FOLD_FRACTION := 0.005
 const DENSE_DEFECT_U := [0.25, 0.5, 0.75]
+## Floor on |tangent x world-up| for a distance span. The world pitch/yaw curvature basis is
+## singular at a vertical tangent; this rejects anything steeper than about 87.1 degrees of
+## pitch, far beyond the steepest family handed to it (the camelback's ~33.6 degrees).
+const SPATIAL_HORIZONTAL_EPS := 0.05
 
-## One RK stage's derivative, handed back through five typed slots instead of a boxed Array.
+## One RK stage's derivative, handed back through six typed slots instead of a boxed Array.
 ## Integration is single-threaded and never reentrant — `_rk4_derivative`
 ## writes the slots and its caller reads them before the next call — so the slots hold no state
 ## across steps and are not part of any published result.
@@ -21,6 +25,16 @@ static var _stage_tangent_rate: Vector3
 static var _stage_rider_up_rate: Vector3
 static var _stage_speed_rate: float
 static var _stage_distance_rate: float
+static var _stage_time_rate: float
+
+## The same stage's resolved commands, in the same typed-slot style: the two proper-load
+## components, drive, roll rate, and the transverse (proper minus gravity) acceleration both
+## domains steer with.
+static var _stage_normal_g: float
+static var _stage_lateral_g: float
+static var _stage_drive_g: float
+static var _stage_roll_rate_rad_s: float
+static var _stage_transverse: Vector3
 
 
 static func constant(value: float) -> Dictionary:
@@ -135,15 +149,25 @@ static func profile_sample(profile: Dictionary, u: float) -> Vector3:
 	return Vector3.ZERO
 
 
-## One span's four control profiles paired with the kind each dispatches on, resolved once for
-## the whole span. Both are constant across the span's thousands of samples.
+## One span's four control profiles paired with the kind each dispatches on, then the domain flag
+## and the span extent — seconds for a time span, metres for a distance span. All of it is
+## resolved once for the whole span and constant across its thousands of samples.
 static func _span_controls(motion_span: Dictionary) -> Array:
+	if motion_span.get("domain", "time") == "distance":
+		var pitch: Dictionary = motion_span.pitch_curvature_m_inv
+		var yaw: Dictionary = motion_span.yaw_curvature_m_inv
+		var spatial_drive: Dictionary = motion_span.drive_g
+		var twist: Dictionary = motion_span.twist_rad
+		return [pitch, pitch.get("kind", ""), yaw, yaw.get("kind", ""),
+			spatial_drive, spatial_drive.get("kind", ""), twist, twist.get("kind", ""),
+			true, float(motion_span.length_m)]
 	var normal: Dictionary = motion_span.normal_g
 	var lateral: Dictionary = motion_span.lateral_g
 	var drive: Dictionary = motion_span.drive_g
 	var roll: Dictionary = motion_span.roll_rate_rad_s
 	return [normal, normal.get("kind", ""), lateral, lateral.get("kind", ""),
-		drive, drive.get("kind", ""), roll, roll.get("kind", "")]
+		drive, drive.get("kind", ""), roll, roll.get("kind", ""),
+		false, float(motion_span.duration_s)]
 
 
 ## The value component of `profile_sample`, bit-identical to its `.x`. The derivative components
@@ -228,11 +252,28 @@ static func span(
 	normal_g: Dictionary,
 	lateral_g: Dictionary,
 	drive_g: Dictionary,
-	roll_rate_rad_s: Dictionary
+	roll_rate_rad_s: Dictionary,
+	transition_id: String = ""
 ) -> Dictionary:
 	assert(is_finite(duration_s) and duration_s > 0.0, "span duration must be positive and finite")
 	assert(mode == "moving" or mode == "station", "invalid span mode")
-	for profile in [normal_g, lateral_g, drive_g, roll_rate_rad_s]:
+	_assert_profiles([normal_g, lateral_g, drive_g, roll_rate_rad_s])
+	var record := {
+		"span_id": span_id,
+		"duration_s": duration_s,
+		"mode": mode,
+		"normal_g": normal_g,
+		"lateral_g": lateral_g,
+		"drive_g": drive_g,
+		"roll_rate_rad_s": roll_rate_rad_s,
+		"transition_id": transition_id,
+	}
+	record.make_read_only()
+	return record
+
+
+static func _assert_profiles(profiles: Array) -> void:
+	for profile in profiles:
 		assert(profile.has("kind"), "invalid span profile")
 		match profile.kind:
 			"constant": assert(profile.has("value"), "invalid constant profile")
@@ -249,14 +290,32 @@ static func span(
 				and absf(float(profile.from)) < PI * 0.5
 				and absf(float(profile.to)) < PI * 0.5, "invalid bank balance profile")
 			_: assert(false, "invalid span profile kind")
+
+
+## A moving span authored over arc length instead of time. Its two curvature channels are the
+## world pitch/yaw components of §3's basis (`kappa_pitch < 0` at a crest) and `twist_rad` is the
+## intentional roll angle relative to the transported frame; the integrator differentiates it.
+## Duration is an integration result, never a shape control.
+static func spatial_span(
+	span_id: String,
+	length_m: float,
+	pitch_curvature_m_inv: Dictionary,
+	yaw_curvature_m_inv: Dictionary,
+	drive_g: Dictionary,
+	twist_rad: Dictionary,
+	transition_id: String = ""
+) -> Dictionary:
+	assert(is_finite(length_m) and length_m > 0.0, "span length must be positive and finite")
+	_assert_profiles([pitch_curvature_m_inv, yaw_curvature_m_inv, drive_g, twist_rad])
 	var record := {
 		"span_id": span_id,
-		"duration_s": duration_s,
-		"mode": mode,
-		"normal_g": normal_g,
-		"lateral_g": lateral_g,
+		"domain": "distance",
+		"length_m": length_m,
+		"pitch_curvature_m_inv": pitch_curvature_m_inv,
+		"yaw_curvature_m_inv": yaw_curvature_m_inv,
 		"drive_g": drive_g,
-		"roll_rate_rad_s": roll_rate_rad_s,
+		"twist_rad": twist_rad,
+		"transition_id": transition_id,
 	}
 	record.make_read_only()
 	return record
@@ -299,32 +358,38 @@ static func integrate(
 	up = up.normalized()
 	if speed < 0.0:
 		return _reject(result, "initial speed must be nonnegative")
-	if spans[0].mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
+	var first_mode: String = spans[0].get("mode", "moving")
+	if first_mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
 		return _reject(result, "moving speed floor is 2 m/s")
 
 	_append_native(result, time, distance, position, tangent, up, speed, 0,
-		_span_controls(spans[0]), spans[0].mode, 0.0, gravity, rolling, aero)
+		_span_controls(spans[0]), first_mode, 0.0, gravity, rolling, aero)
 
 	for span_index in spans.size():
 		var motion_span: Dictionary = spans[span_index]
-		# Span mode and duration are invariant across the span's steps and are passed down as typed locals.
-		var span_mode: String = motion_span.mode
-		var span_duration_s := float(motion_span.duration_s)
+		# Span mode, domain, and extent are invariant across the span's steps and are passed down
+		# as typed locals; the extent is seconds for a time span and metres for a distance span.
 		var controls := _span_controls(motion_span)
+		var spatial: bool = controls[8]
+		var span_extent: float = controls[9]
+		var span_mode: String = motion_span.get("mode", "moving")
 		var span_elapsed := 0.0
 		if span_index > 0:
 			if span_mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
 				return _reject(result, "moving speed floor is 2 m/s")
 			_set_native_controls(result, result.time_s.size() - 1, span_index, controls,
 				span_mode, 0.0, tangent, up, speed, gravity, rolling, aero)
-		while span_elapsed < span_duration_s - 0.000000000001:
-			var remaining_s := span_duration_s - span_elapsed
+		while span_elapsed < span_extent - 0.000000000001:
+			var remaining_s := span_extent - span_elapsed
+			# A distance span advances metres, so its nominal step is the distance this speed
+			# covers in one time step; the step still ends exactly on the declared length.
+			var nominal := speed * step_s if spatial else step_s
 			# Fold a sub-public-resolution remainder into the adjacent RK step. Otherwise
 			# the native Float64 node can collapse when the route publishes Float32 time.
-			var h := remaining_s if remaining_s <= step_s + maxf(0.000000000001,
-				step_s * STEP_FOLD_FRACTION) else step_s
+			var h := remaining_s if remaining_s <= nominal + maxf(0.000000000001,
+				nominal * STEP_FOLD_FRACTION) else nominal
 			var error := _rk4_derivative(position, tangent, up, speed,
-				controls, span_mode, span_duration_s, span_elapsed, gravity, rolling, aero,
+				controls, span_mode, span_extent, span_elapsed, gravity, rolling, aero,
 				false)
 			if not error.is_empty():
 				return _reject(result, error)
@@ -333,11 +398,12 @@ static func integrate(
 			var d0u := _stage_rider_up_rate
 			var d0v := _stage_speed_rate
 			var d0s := _stage_distance_rate
+			var d0m := _stage_time_rate
 			error = _rk4_derivative(
 				position + d0p * (0.5 * h),
 				tangent + d0t * (0.5 * h),
 				up + d0u * (0.5 * h), speed + d0v * (0.5 * h),
-				controls, span_mode, span_duration_s, span_elapsed + 0.5 * h,
+				controls, span_mode, span_extent, span_elapsed + 0.5 * h,
 				gravity, rolling, aero, true)
 			if not error.is_empty():
 				return _reject(result, error)
@@ -346,11 +412,12 @@ static func integrate(
 			var d1u := _stage_rider_up_rate
 			var d1v := _stage_speed_rate
 			var d1s := _stage_distance_rate
+			var d1m := _stage_time_rate
 			error = _rk4_derivative(
 				position + d1p * (0.5 * h),
 				tangent + d1t * (0.5 * h),
 				up + d1u * (0.5 * h), speed + d1v * (0.5 * h),
-				controls, span_mode, span_duration_s, span_elapsed + 0.5 * h,
+				controls, span_mode, span_extent, span_elapsed + 0.5 * h,
 				gravity, rolling, aero, true)
 			if not error.is_empty():
 				return _reject(result, error)
@@ -359,9 +426,10 @@ static func integrate(
 			var d2u := _stage_rider_up_rate
 			var d2v := _stage_speed_rate
 			var d2s := _stage_distance_rate
+			var d2m := _stage_time_rate
 			error = _rk4_derivative(position + d2p * h,
 				tangent + d2t * h, up + d2u * h,
-				speed + d2v * h, controls, span_mode, span_duration_s, span_elapsed + h,
+				speed + d2v * h, controls, span_mode, span_extent, span_elapsed + h,
 				gravity, rolling, aero, true)
 			if not error.is_empty():
 				return _reject(result, error)
@@ -370,6 +438,7 @@ static func integrate(
 			var d3u := _stage_rider_up_rate
 			var d3v := _stage_speed_rate
 			var d3s := _stage_distance_rate
+			var d3m := _stage_time_rate
 
 			var next_position: Vector3 = position + h / 6.0 * (d0p
 				+ 2.0 * d1p
@@ -387,6 +456,8 @@ static func integrate(
 				+ 2.0 * d1s + 2.0 * d2s + d3s)
 			var next_distance := distance + distance_step
 			var next_time := time + h
+			if spatial:
+				next_time = time + h / 6.0 * (d0m + 2.0 * d1m + 2.0 * d2m + d3m)
 			if not _finite_vector(next_position) or not _finite_vector(next_tangent) \
 					or not _finite_vector(next_up) or not is_finite(next_speed) \
 					or not is_finite(distance_step) or not is_finite(next_distance) \
@@ -416,7 +487,7 @@ static func integrate(
 			if span_mode == "moving" and speed < MIN_MOVING_SPEED_MPS:
 				return _reject(result, "moving speed floor crossed during RK stage")
 			_append_native(result, time, distance, position, tangent, up, speed, span_index,
-				controls, span_mode, span_elapsed / span_duration_s, gravity, rolling, aero)
+				controls, span_mode, span_elapsed / span_extent, gravity, rolling, aero)
 	# The independent dense-output residuals are an O(3N) pass with three vector residuals per
 	# interval. Production's one accepted integration and the focused tests measure it; the
 	# solver evaluations (~250 per build) pass `measure_dense_output: false` and leave it empty.
@@ -463,9 +534,35 @@ static func _finite_vector(value: Vector3) -> bool:
 	return is_finite(value.x) and is_finite(value.y) and is_finite(value.z)
 
 
+## One stage's commanded loads, roll rate, and transverse (proper minus gravity) acceleration.
+## A time span authors normal and lateral load directly. A distance span authors world pitch/yaw
+## curvature and a twist angle instead, so its loads are the projection of `v^2 kappa` onto
+## rider-up and rider-right, and its roll rate is speed times the twist's arc-length slope.
+static func _stage_commands(
+	controls: Array, u: float, tangent: Vector3, up: Vector3, right: Vector3,
+	speed: float, gravity: Vector3, extent: float
+) -> void:
+	var first := _profile_value(controls[0], controls[1], u)
+	var second := _profile_value(controls[2], controls[3], u)
+	_stage_drive_g = _profile_value(controls[4], controls[5], u)
+	if not controls[8]:
+		_stage_normal_g = first
+		_stage_lateral_g = second
+		_stage_roll_rate_rad_s = _profile_value(controls[6], controls[7], u)
+		_stage_transverse = gravity - tangent * gravity.dot(tangent) \
+			+ G0 * (first * up + second * right)
+		return
+	var yaw_normal := tangent.cross(Vector3.UP).normalized()
+	var perpendicular_gravity := gravity - tangent * gravity.dot(tangent)
+	_stage_transverse = (speed * speed) * (first * yaw_normal.cross(tangent) + second * yaw_normal)
+	_stage_normal_g = (_stage_transverse.dot(up) - perpendicular_gravity.dot(up)) / G0
+	_stage_lateral_g = (_stage_transverse.dot(right) - perpendicular_gravity.dot(right)) / G0
+	_stage_roll_rate_rad_s = speed * profile_sample(controls[6], u).y / extent
+
+
 static func _rk4_derivative(
 	position: Vector3, tangent: Vector3, up: Vector3, speed: float,
-	controls: Array, mode: String, duration_s: float, elapsed: float,
+	controls: Array, mode: String, extent: float, elapsed: float,
 	gravity: Vector3, rolling: float, aero: float, is_stage: bool
 ) -> String:
 	if not _finite_vector(position) or not _finite_vector(tangent) or not _finite_vector(up) \
@@ -484,27 +581,40 @@ static func _rk4_derivative(
 		return "station RK stage has negative speed"
 	if mode == "station" and is_stage and speed <= 0.0:
 		return "station RK stage has nonpositive speed"
-	var u: float = clampf(elapsed / duration_s, 0.0, 1.0)
-	var normal := _profile_value(controls[0], controls[1], u)
-	var lateral := _profile_value(controls[2], controls[3], u)
-	var drive := _profile_value(controls[4], controls[5], u)
-	var roll := _profile_value(controls[6], controls[7], u)
+	var spatial: bool = controls[8]
+	if spatial and tangent.cross(Vector3.UP).length_squared() \
+			<= SPATIAL_HORIZONTAL_EPS * SPATIAL_HORIZONTAL_EPS:
+		return "distance span tangent approaches world vertical"
 	var right := tangent.cross(up)
-	var transverse := gravity - tangent * gravity.dot(tangent) + G0 * (normal * up + lateral * right)
+	_stage_commands(controls, clampf(elapsed / extent, 0.0, 1.0), tangent, up, right,
+		speed, gravity, extent)
+	var transverse := _stage_transverse
 	if mode == "station":
 		if transverse.length() > G0 * STATION_TRANSVERSE_TOLERANCE_G:
 			return "station transverse acceleration must be zero"
-		if absf(roll) > FRAME_EPS:
+		if absf(_stage_roll_rate_rad_s) > FRAME_EPS:
 			return "station roll must be zero"
 		_stage_tangent_rate = Vector3.ZERO
 		_stage_rider_up_rate = Vector3.ZERO
 	else:
 		_stage_tangent_rate = transverse / speed
 		var tangent_rate := _stage_tangent_rate
-		_stage_rider_up_rate = -tangent * tangent_rate.dot(up) + roll * right
+		_stage_rider_up_rate = -tangent * tangent_rate.dot(up) + _stage_roll_rate_rad_s * right
 	_stage_position_rate = speed * tangent
-	_stage_speed_rate = gravity.dot(tangent) + G0 * drive - resistance(speed, rolling, aero).x
+	_stage_speed_rate = gravity.dot(tangent) + G0 * _stage_drive_g \
+		- resistance(speed, rolling, aero).x
 	_stage_distance_rate = speed
+	_stage_time_rate = 1.0
+	if spatial:
+		# Arc length is the independent variable. Since ds/dt = v > 0, every rate above divides
+		# by speed to become d/ds, distance advances one metre per metre, and elapsed time is an
+		# integrated result rather than the step itself.
+		_stage_position_rate = tangent
+		_stage_tangent_rate /= speed
+		_stage_rider_up_rate /= speed
+		_stage_speed_rate /= speed
+		_stage_distance_rate = 1.0
+		_stage_time_rate = 1.0 / speed
 	return ""
 
 
@@ -535,18 +645,14 @@ static func _set_native_controls(
 	result: Dictionary, index: int, span_index: int, controls: Array, mode: String, u: float,
 	tangent: Vector3, up: Vector3, speed: float, gravity: Vector3, rolling: float, aero: float
 ) -> void:
-	var normal := _profile_value(controls[0], controls[1], u)
-	var lateral := _profile_value(controls[2], controls[3], u)
-	var drive := _profile_value(controls[4], controls[5], u)
-	var roll := _profile_value(controls[6], controls[7], u)
 	var right := tangent.cross(up)
-	var transverse := gravity - tangent * gravity.dot(tangent) + G0 * (normal * up + lateral * right)
-	var curvature := Vector3.ZERO if mode == "station" else transverse / (speed * speed)
-	result.normal_g[index] = normal
-	result.lateral_g[index] = lateral
-	result.drive_g[index] = drive
-	result.longitudinal_g[index] = drive - resistance(speed, rolling, aero).x / G0
-	result.roll_rate_rad_s[index] = roll
+	_stage_commands(controls, u, tangent, up, right, speed, gravity, float(controls[9]))
+	var curvature := Vector3.ZERO if mode == "station" else _stage_transverse / (speed * speed)
+	result.normal_g[index] = _stage_normal_g
+	result.lateral_g[index] = _stage_lateral_g
+	result.drive_g[index] = _stage_drive_g
+	result.longitudinal_g[index] = _stage_drive_g - resistance(speed, rolling, aero).x / G0
+	result.roll_rate_rad_s[index] = _stage_roll_rate_rad_s
 	result.curvature_vector_m_inv[index] = curvature
 	result.curvature_m_inv[index] = curvature.length()
 	result.span_index[index] = span_index

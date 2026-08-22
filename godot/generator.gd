@@ -18,13 +18,9 @@ const PRESET_ID := "material-v1"
 const STATION_SPEED_MPS := 6.0
 const SUMMIT_TRACK_AGL_BAND_M := Vector2(15.01, 24.95)
 const INTEGRATION_STEP_S := 0.01
-const DIVE_EXIT_APRON_BAND := Vector2(0.20, 0.55)
-const DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M := Vector2(12.0, 40.0)
-const TUNNEL_EXIT_PLAIN_OVERSHOOT_M := 8.0
 const DIVE_CENTERLINE_CLEARANCE_M := 4.05
 const DIVE_LOWER_SPINE_CLEARANCE_M := 2.05
 const STATION_LOWER_SPINE_CLEARANCE_M := 4.05
-const LOWER_SPINE_SURFACE_OFFSET_M := 1.79
 const APPROACH_LENGTH_M := 230.0
 const APPROACH_SAMPLE_STEP_M := 5.0
 ## The record the tunnel booster is authored for; `smoke.gd` gates the built top speed on it.
@@ -32,6 +28,21 @@ const RECORD_EXIT_SPEED_BAND_MPS := Vector2(93.9, 95.6)
 ## The margins the fifteen-seed fleet gate certifies. Placement builds its aim bands from these,
 ## so an accepted plan carries the margin by construction rather than hoping for it; `smoke.gd`
 ## measures what each seed actually achieved and fails on a miss.
+## The prefix-closure margins the whole fleet must carry, and the fraction of the closure's own
+## derived cap it must converge inside — all four margins and the allowance are `generator.gd`'s
+## constants, read here rather than copied, since the closure aims at the same numbers. This is the
+## fifteen-seed half of the prefix convergence claim `ride_program_tests.gd` makes on the canonical
+## and seed-42 stories. The closure aims inside every margin and the closed-form placement lands
+## inside them by construction; measuring them on all fifteen seeds is what turns the aim into a
+## gate. Measured on the grid-search placement this replaced: four seeds missed the dive-entry
+## margin, nine the apron margin, and seven sat exactly on the summit band's floor. Read the summit
+## margin as one-sided: `generator.gd` floors the station at the inner band's 17.99 m (the 40%
+## interior of the 15.01-24.95 band) and every other clearance term can only raise it, so the low
+## side carries 2.98 m by construction and only the high side can ever approach this gate. The
+## fleet's tightest summit margin (+2.96 m, seed 77777) is therefore high-side evidence alone, not
+## a two-sided measurement of the 1.5 m floor. The dive-entry margin reads the other way round
+## since the rim aim landed: it is the *low* side that binds now (+4.30 m worst, seed 1234), which
+## is the measurement of issue 22 — the dive starts at the rim end of its band on every seed.
 const DIVE_ENTRY_EDGE_MARGIN_M := 3.0
 const DIVE_EXIT_APRON_MARGIN := 0.05
 ## The other two fleet margins and the closure's evaluation allowance. Unlike the two above,
@@ -165,12 +176,14 @@ static func build_with_decisions(seed_value: int, decisions: Dictionary) -> Dict
 		return _failure("motion integration failed", trajectory.get("errors", []))
 	accepted_integrations += 1
 	var accepted: Dictionary = compiled.duplicate(true)
+	var accepted_plan: Dictionary = compiled.get("plan", {})
 	accepted["generation_stats"] = {
 		"accepted_integrations": accepted_integrations,
-		"planning_integrations": int(plan.terrain_frame.planning.planning_integrations),
+		"planning_integrations": int(accepted_plan.terrain_frame.planning.planning_integrations),
 		"repair_count": 0,
 	}
-	return RouteContract.build(seed_value, terrain, initial_state, plan, accepted, trajectory)
+	return RouteContract.build(seed_value, terrain, initial_state, accepted_plan, accepted,
+		trajectory)
 
 
 static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
@@ -202,7 +215,7 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	var shelf_edge_m := apron_width_m + float(terrain.face_width)
 	var terrain_dive_span_m := _terrain_dive_span_m(shelf_edge_m, apron_width_m)
 	var minimum_total_span_m := shelf_edge_m \
-		+ DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x + TUNNEL_EXIT_PLAIN_OVERSHOOT_M
+		+ RouteContract.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x + RouteContract.TUNNEL_EXIT_PLAIN_OVERSHOOT_M
 	var outward_local := _outward_local(
 		preflight, dive_intent, terrain_dive_span_m, minimum_total_span_m)
 	if outward_local == Vector2.ZERO:
@@ -281,8 +294,8 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 		var world_position := station_position + tangent * native_position.x \
 			+ up * native_position.y + right * native_position.z
 		var native_up: Vector3 = opener_rider_up[sample_index]
-		var world_up := tangent * native_up.x + up * native_up.y + right * native_up.z
-		var lower_spine := world_position - world_up * LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower_spine := _lower_spine(world_position, world_up)
 		var edge_m := Terrain.edge_distance(terrain, lower_spine.x, lower_spine.z)
 		if not world_position.is_finite() or not world_up.is_finite() or not is_finite(edge_m):
 			return _failure("terrain story capability has a non-finite station/opener sample")
@@ -337,6 +350,17 @@ static func _plan(terrain: Dictionary, decisions: Dictionary) -> Dictionary:
 	}
 
 
+## Native-frame offset into the world frame, term order fixed (tangent, then up, then right) so
+## every call site folds identically.
+static func _world_offset(tangent: Vector3, right: Vector3, v: Vector3) -> Vector3:
+	return tangent * v.x + Vector3.UP * v.y + right * v.z
+
+
+## The lower-spine point below a world offset/position, given its world-frame rider-up vector.
+static func _lower_spine(world_offset: Vector3, world_up: Vector3) -> Vector3:
+	return world_offset - world_up * RouteContract.LOWER_SPINE_SURFACE_OFFSET_M
+
+
 ## Closed-form placement, one evaluation, no search. Edge distance is exact along `inward` (the
 ## wobble is a function of the along-edge coordinate alone), so sliding the station until the dive
 ## entry lands on `entry_edge_m` is arithmetic; the station height is then the highest of the
@@ -367,28 +391,24 @@ static func _place_station(terrain: Dictionary, inward: Vector3, footprint: Dict
 		- world_entry_offset.y
 	for sample_index in positions.size():
 		var native_position: Vector3 = positions[sample_index]
-		var world_offset := tangent * native_position.x + Vector3.UP * native_position.y \
-			+ right * native_position.z
+		var world_offset := _world_offset(tangent, right, native_position)
 		var center := station_position + world_offset
 		required_station_y = maxf(required_station_y,
 			Terrain.height(terrain, center.x, center.z) + DIVE_CENTERLINE_CLEARANCE_M \
 			- world_offset.y)
 		var native_up: Vector3 = rider_up[sample_index]
-		var world_up := tangent * native_up.x + Vector3.UP * native_up.y \
-			+ right * native_up.z
-		var lower_offset := world_offset - world_up * LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower_offset := _lower_spine(world_offset, world_up)
 		var lower := station_position + lower_offset
 		required_station_y = maxf(required_station_y,
 			Terrain.height(terrain, lower.x, lower.z) + DIVE_LOWER_SPINE_CLEARANCE_M \
 			- lower_offset.y)
 	for sample_index in opener_positions.size():
 		var native_position: Vector3 = opener_positions[sample_index]
-		var world_offset := tangent * native_position.x + Vector3.UP * native_position.y \
-			+ right * native_position.z
+		var world_offset := _world_offset(tangent, right, native_position)
 		var native_up: Vector3 = opener_up[sample_index]
-		var world_up := tangent * native_up.x + Vector3.UP * native_up.y \
-			+ right * native_up.z
-		var lower_offset := world_offset - world_up * LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower_offset := _lower_spine(world_offset, world_up)
 		var lower := station_position + lower_offset
 		var required_clearance := STATION_LOWER_SPINE_CLEARANCE_M \
 			if sample_index < station_sample_count else DIVE_LOWER_SPINE_CLEARANCE_M
@@ -405,7 +425,7 @@ static func _place_station(terrain: Dictionary, inward: Vector3, footprint: Dict
 		var approach := station_position - tangent * back_m
 		required_station_y = maxf(required_station_y,
 			Terrain.height(terrain, approach.x, approach.z) \
-			+ STATION_LOWER_SPINE_CLEARANCE_M + LOWER_SPINE_SURFACE_OFFSET_M)
+			+ STATION_LOWER_SPINE_CLEARANCE_M + RouteContract.LOWER_SPINE_SURFACE_OFFSET_M)
 	station_position.y = required_station_y
 	return {"station_position_m": station_position,
 		"summit_track_agl_m": required_station_y + world_entry_offset.y - entry_surface_m}
@@ -577,13 +597,13 @@ static func _inner_band(band: Vector2) -> Vector2:
 ## by the margin `smoke.gd` certifies on the fleet, so an accepted placement carries that margin.
 static func _entry_edge_limits(shelf_edge_m: float) -> Vector2:
 	return Vector2(
-		shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x + DIVE_ENTRY_EDGE_MARGIN_M,
-		shelf_edge_m + DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.y - DIVE_ENTRY_EDGE_MARGIN_M)
+		shelf_edge_m + RouteContract.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.x + DIVE_ENTRY_EDGE_MARGIN_M,
+		shelf_edge_m + RouteContract.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M.y - DIVE_ENTRY_EDGE_MARGIN_M)
 
 
 static func _exit_edge_limits(apron_width_m: float) -> Vector2:
-	return Vector2(DIVE_EXIT_APRON_BAND.x + DIVE_EXIT_APRON_MARGIN,
-		DIVE_EXIT_APRON_BAND.y - DIVE_EXIT_APRON_MARGIN) * apron_width_m
+	return Vector2(RouteContract.DIVE_EXIT_APRON_BAND.x + DIVE_EXIT_APRON_MARGIN,
+		RouteContract.DIVE_EXIT_APRON_BAND.y - DIVE_EXIT_APRON_MARGIN) * apron_width_m
 
 
 ## The outward run the terrain wants from the dive: the chord that lands the exit on its apron
@@ -612,7 +632,7 @@ static func _entry_edge_aim_band(shelf_edge_m: float, apron_width_m: float,
 	var exit_limits := _exit_edge_limits(apron_width_m)
 	var rim_m := maxf(entry_limits.x, exit_limits.x + dive_edge_span_m)
 	var ceiling_m := minf(entry_limits.y, minf(exit_limits.y + dive_edge_span_m,
-		dive_edge_span_m + tunnel_edge_span_m - TUNNEL_EXIT_PLAIN_OVERSHOOT_M))
+		dive_edge_span_m + tunnel_edge_span_m - RouteContract.TUNNEL_EXIT_PLAIN_OVERSHOOT_M))
 	return Vector2(rim_m + DIVE_ENTRY_RIM_AIM_M.x,
 		minf(ceiling_m, rim_m + DIVE_ENTRY_RIM_AIM_M.y))
 
@@ -644,7 +664,7 @@ static func _closure_target(footprint: Dictionary, outward_local: Vector2, shelf
 		maxf(terrain_dive_span_m - DIVE_SPAN_AIM_HALF_WIDTH_M, entry_limits.x - exit_limits.y),
 		minf(terrain_dive_span_m + DIVE_SPAN_AIM_HALF_WIDTH_M, entry_limits.y - exit_limits.x))
 	var tunnel_aim := Vector2(
-		entry_band.y - dive_aim.x + TUNNEL_EXIT_PLAIN_OVERSHOOT_M, tunnel_length_m.y)
+		entry_band.y - dive_aim.x + RouteContract.TUNNEL_EXIT_PLAIN_OVERSHOOT_M, tunnel_length_m.y)
 	return {
 		"outward_local": outward_local,
 		"dive_edge_span_m": dive_aim - Vector2.ONE * dive_wobble_m,
@@ -669,15 +689,13 @@ static func _dive_placement_observation(
 	var minimum_lower_spine_agl_m := INF
 	for sample_index in positions.size():
 		var native_position: Vector3 = positions[sample_index]
-		var world_offset := tangent * native_position.x + Vector3.UP * native_position.y \
-			+ right * native_position.z
+		var world_offset := _world_offset(tangent, right, native_position)
 		var center := station_position + world_offset
 		minimum_centerline_agl_m = minf(minimum_centerline_agl_m,
 			center.y - Terrain.height(terrain, center.x, center.z))
 		var native_up: Vector3 = rider_up[sample_index]
-		var world_up := tangent * native_up.x + Vector3.UP * native_up.y \
-			+ right * native_up.z
-		var lower := center - world_up * LOWER_SPINE_SURFACE_OFFSET_M
+		var world_up := _world_offset(tangent, right, native_up)
+		var lower := _lower_spine(center, world_up)
 		minimum_lower_spine_agl_m = minf(minimum_lower_spine_agl_m,
 			lower.y - Terrain.height(terrain, lower.x, lower.z))
 	var entry_position := station_position \
@@ -699,13 +717,35 @@ static func _dive_placement_observation(
 	}
 
 
+## The prefix closure's four measured margins against the design's aim bands: dive-entry edge,
+## dive-exit apron fraction, summit track AGL, and the fine solve's record exit speed. `fine` is
+## `closure.fine_observation`; callers own the residual-count check before calling this. Returns
+## `[label, margin, band, required]` rows in this fixed order.
+static func prefix_closure_margins(planning: Dictionary, terrain: Dictionary, fine: Array) -> Array:
+	var shelf_m := float(terrain.apron_width) + float(terrain.face_width)
+	var rows := []
+	for entry: Array in [
+			["dive-entry edge", float(planning.get("dive_entry_edge_m", NAN)) - shelf_m,
+				RouteContract.DIVE_ENTRY_PLATEAU_CLEARANCE_BAND_M, DIVE_ENTRY_EDGE_MARGIN_M],
+			["dive-exit apron fraction", float(planning.get("dive_exit_apron_fraction", NAN)),
+				RouteContract.DIVE_EXIT_APRON_BAND, DIVE_EXIT_APRON_MARGIN],
+			["summit track AGL", float(planning.get("summit_track_agl_m", NAN)),
+				SUMMIT_TRACK_AGL_BAND_M, PREFIX_MARGIN_SUMMIT_M],
+			["record exit speed", float(fine[3]), RECORD_EXIT_SPEED_BAND_MPS,
+				PREFIX_MARGIN_RECORD_MPS]]:
+		var band: Vector2 = entry[2]
+		var margin := minf(float(entry[1]) - band.x, band.y - float(entry[1]))
+		rows.append([entry[0], margin, band, entry[3]])
+	return rows
+
+
 ## The declared roles of one plan, in the planner's drawn order. Role identity, length band and
 ## terrain intents come from the one table below; the per-seed resolved targets stay in
 ## `plan.decisions.targets` with their draw provenance, so the declared role bands remain a
 ## claim about the built ride rather than a mixture of bands and drawn scalars.
-static func _material_roles(sequence: Array = []) -> Array:
+static func _material_roles(sequence: Array) -> Array:
 	var roles: Array = []
-	for role_id in (sequence if not sequence.is_empty() else RidePlanner.canonical_role_ids()):
+	for role_id in sequence:
 		roles.append(_material_role(str(role_id)))
 	return roles
 
@@ -783,22 +823,39 @@ static func _material_role(role_id: String) -> Dictionary:
 			return _role("tunnel-lsm3", "tunnel_lsm3", Vector2(150.0, 220.0), {}, [],
 				{"boundary_crossings": [{"boundary_id": &"apron_edge", "from_side": 1,
 					"to_side": -1}]}, 3)
+		"record-release-turn":
+			var record_release := _role("record-release-turn", "record_release_turn",
+				Vector2(340.0, 390.0))
+			record_release["geometry"] = {"bank_deg": Vector2(55.0, 65.0),
+				"planarity": "horizontal-turn"}
+			return record_release
 		"camelback":
 			# The record camelback is longer than the 328 km/h one: the same authored normal-g
 			# profile sweeps more track per second at the 340 km/h entry, and the fall lengthens
 			# to keep the marquee standing ~250 m above its valley.
-			return _role("camelback", "camelback", Vector2(900.0, 1180.0))
+			var camelback := _role("camelback", "camelback", Vector2(900.0, 1180.0))
+			camelback["geometry"] = {"apex_agl_m": Vector2(140.0, 170.0),
+				"prominence_m": Vector2(245.0, 255.0), "planarity": "vertical-plane"}
+			return camelback
 		"return-turn-a":
 			# Turn-a lengthens and height-a shortens against the old bands: the widened
 			# capture-entry corridor lets the passive return carry more speed, and the solve
 			# spends it in the loaded arc rather than the first airtime beat.
-			return _role("return-turn-a", "return_turn", Vector2(420.0, 620.0))
+			var turn_a := _role("return-turn-a", "return_turn", Vector2(420.0, 620.0))
+			turn_a["geometry"] = {"planarity": "horizontal-turn"}
+			return turn_a
 		"return-height-a":
-			return _role("return-height-a", "return_height", Vector2(290.0, 480.0))
+			var height_a := _role("return-height-a", "return_height", Vector2(290.0, 480.0))
+			height_a["geometry"] = {"planarity": "vertical-plane"}
+			return height_a
 		"return-turn-b":
-			return _role("return-turn-b", "return_turn", Vector2(430.0, 570.0))
+			var turn_b := _role("return-turn-b", "return_turn", Vector2(430.0, 570.0))
+			turn_b["geometry"] = {"planarity": "horizontal-turn"}
+			return turn_b
 		"return-height-b":
-			return _role("return-height-b", "return_height", Vector2(450.0, 590.0))
+			var height_b := _role("return-height-b", "return_height", Vector2(450.0, 590.0))
+			height_b["geometry"] = {"planarity": "vertical-plane"}
+			return height_b
 		"terminal-capture-brakes":
 			return _role("terminal-capture-brakes", "terminal_capture_brakes",
 				Vector2(200.0, 240.0))

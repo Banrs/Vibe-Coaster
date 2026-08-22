@@ -41,7 +41,7 @@ const _OVERLAY_TARGET_COLOR := Color(0.95, 0.75, 0.35)
 const _OVERLAY_GENERATED_COLOR := Color(0.95, 0.55, 0.95)
 const _OVERLAY_MARKER_COLOR := Color(0.75, 0.62, 0.25)
 
-const _DEEP_SEEDS := [11, 42, 20260809]
+const _DEEP_SEEDS := _FIDELITY.DEEP_SEEDS
 const _COMPARISON_KEYS := ["fleet", "findings", "observed_only", "evidence_gaps", "recommendation"]
 const _PAIR_STEMS := ["artifact", "diagnostic", "metadata_artifact", "metadata_diagnostic", "review"]
 const _CHECKLIST_SPECS := [
@@ -527,7 +527,7 @@ static func _center_row_resolution(measurement: Dictionary, anchor: Dictionary, 
 	var duration: Variant = measurement.duration
 	var beats: Array = measurement.beats
 	for beat in beats:
-		if not _matches_compiled_anchor(beat, anchor):
+		if not _FIDELITY._matches_compiled_anchor(beat, anchor):
 			continue
 		var rows_value: Variant = beat.get("rows")
 		if not rows_value is Array:
@@ -562,15 +562,6 @@ static func _center_row_resolution(measurement: Dictionary, anchor: Dictionary, 
 		errors.append("artifact_report: aligned observation must resolve exactly one row-04")
 		return {}
 	return matches[0]
-
-static func _matches_compiled_anchor(beat: Dictionary, anchor: Dictionary) -> bool:
-	if beat.get("story_slot_id") != anchor.get("story_slot_id") \
-			or beat.get("window_role") != anchor.get("window_role"):
-		return false
-	for field in ["kind", "occurrence", "window_id"]:
-		if anchor.has(field) and beat.get(field) != anchor[field]:
-			return false
-	return true
 
 static func _source_time(landmark: Dictionary) -> Dictionary:
 	if landmark.has("time_s") == landmark.has("window_s"):
@@ -1452,6 +1443,13 @@ static func _write(
 			"path": path, "artifact_kind": artifact_kind, "seed": seed_value, "beat_id": beat_id,
 		})
 	errors.append_array(failures)
+
+
+static func write_recorded(
+	root: String, path: String, artifact_kind: String, content: Variant,
+	seed_value: Variant, records: Array, errors: PackedStringArray
+) -> void:
+	_write(root, path, artifact_kind, content, seed_value, null, records, errors)
 
 
 static func _manifest_files(root: String, records: Array, errors: PackedStringArray) -> Array:

@@ -43,7 +43,7 @@ static func measure(route: Dictionary, first: int, last: int) -> Dictionary:
 	for index in range(first, last + 1):
 		var position: Vector3 = positions[index]
 		var tangent: Vector3 = tangents[index]
-		var bank := _bank_at(banks_value, index)
+		var bank := float(banks_value[index])
 		if not position.is_finite() or not tangent.is_finite() or not is_finite(bank):
 			return _unavailable("whole-element samples must be finite")
 		if tangent.length_squared() <= FRAME_EPS_SQ:
@@ -102,8 +102,8 @@ static func measure(route: Dictionary, first: int, last: int) -> Dictionary:
 		"net_heading_change_deg": float(heading.net_change_deg),
 		"entry_pitch_deg": _pitch_deg(tangents[first]),
 		"exit_pitch_deg": _pitch_deg(tangents[last]),
-		"entry_bank_deg": _bank_at(banks_value, first),
-		"exit_bank_deg": _bank_at(banks_value, last),
+		"entry_bank_deg": float(banks_value[first]),
+		"exit_bank_deg": float(banks_value[last]),
 	}
 
 
@@ -259,10 +259,6 @@ static func _heading_metrics(
 
 static func _pitch_deg(tangent: Vector3) -> float:
 	return rad_to_deg(asin(clampf(tangent.normalized().y, -1.0, 1.0)))
-
-
-static func _bank_at(banks: Variant, index: int) -> float:
-	return float(banks[index])
 
 
 static func _unavailable(reason: String) -> Dictionary:

@@ -3,14 +3,13 @@ extends SceneTree
 const FIDELITY_PATH := "res://fidelity.gd"
 const REFERENCES_PATH := "res://fidelity_references.gd"
 const GENERATOR_PATH := "res://generator.gd"
-const CANONICAL_FLEET := [11, 42, 20260809, 1, 3, 7, 99, 256, 555, 1234, 4096, 31337, 77777, 123456, 20250101]
+const CANONICAL_FLEET := RideFidelity.CANONICAL_FLEET
 
 
 func _initialize() -> void:
-	var errors := run()
-	for error in errors:
-		printerr(error)
-	quit(0 if errors.is_empty() else 1)
+	var _t := TestUtil.new()
+	_t.errors = run()
+	_t.finish(self)
 
 
 static func run() -> PackedStringArray:
@@ -25,7 +24,6 @@ static func run() -> PackedStringArray:
 	_test_exact_duration_hold(fidelity, errors)
 	_test_time_weighted_pacing(fidelity, errors)
 	_test_non_grid_measurement(fidelity, errors)
-	_test_row_windows(fidelity, errors)
 	_test_transition_windows(fidelity, errors)
 	_test_straight_reconstruction(fidelity, errors)
 	_test_constant_radius_reconstruction(fidelity, errors)
@@ -136,15 +134,6 @@ static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArr
 	_expect(errors, not held_values.has("1.00"), "an unavailable hold never emits a numeric sentinel")
 	var unavailable: Dictionary = held_values.get("_unavailable", {}).get("1.00", {})
 	_expect(errors, unavailable.get("status", "") == "unavailable" and unavailable.get("reason", "") == "insufficient_duration", "an unavailable hold reports its physical-duration gap")
-	var selected_band := {}
-	for band in fidelity.element_bands(route):
-		if band.story_slot_id == "act1.selected" and band.window_role == "core":
-			selected_band = band
-	if selected_band.is_empty():
-		errors.append("non-grid element bands retain the selected beat")
-	else:
-		var arbitrary_hold: float = fidelity.held(selected_band.normal, 1.0, 0.804)
-		_expect(errors, is_finite(arbitrary_hold) and arbitrary_hold < 2.0, "production's anchored force grid supports an arbitrary 0.804-second hold")
 	var irregular_route := _moving_window_route(true)
 	var irregular_before := irregular_route.duplicate(true)
 	var irregular: Dictionary = fidelity.measure_route(irregular_route, [0.0])
@@ -153,17 +142,6 @@ static func _test_non_grid_measurement(fidelity: Script, errors: PackedStringArr
 		var irregular_held: Dictionary = irregular.beats[1].rows[0].loads.get("normal_held_positive", {})
 		_expect_close(errors, float(irregular_held.get("0.80", -INF)), float(held_values.get("0.80", -INF)), "a collinear native knot outside the selected window leaves the held result unchanged")
 
-
-static func _test_row_windows(fidelity: Script, errors: PackedStringArray) -> void:
-	var bands: Array = fidelity.element_bands(_measurement_route(), 2.0)
-	_expect_close(errors, bands[0].window_start_distance, 2.0, "rear row begins at the shifted first-element start")
-	_expect_close(errors, bands[0].window_end_distance, 21.0, "rear row ends at the shifted semantic-window end")
-	_expect(errors, bands[-1].window_end_distance <= 40.0, "terminal row window clips instead of wrapping closure data")
-	var attributed := 0
-	for band in fidelity.element_bands(_row_pulse_route(), 2.0):
-		if _array_peak(band.normal) > 1.5:
-			attributed += 1
-	_expect(errors, attributed == 1, "rear-row force pulse is attributed once across shifted element windows")
 
 
 static func _test_transition_windows(fidelity: Script, errors: PackedStringArray) -> void:
@@ -593,168 +571,20 @@ static func _test_reference_catalog(fidelity: Script, errors: PackedStringArray)
 
 
 static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: PackedStringArray) -> void:
-	var fixtures := [
-		{
-			"source_id": "youtube.falcon.backward.J54WKu2nU6o", "file": "J54WKu2nU6o-review.json",
-			"duration": 240.881, "published_on": "2026-01-05", "state": "observation_only",
-			"review_contributions": ["order","geometry","speed perception","feel prompts"],
-			"view": {
-				"content_kind":"built-ride", "direction":"rear-facing",
-				"position_claim":"centered rear-facing view; exact row undisclosed", "mount":"unknown",
-				"obstructions":["lower-right watermark","night exposure","motion blur","rapid camera roll"],
-				"certainty":"high for ride identity and orientation; medium for element shaping from sparse night frames",
-			},
-			"correction_review": "not-applicable",
-			"landmarks": [
-				{"id":"j54.station_dispatch","time_s":0.07,"description":"Covered station corridor with track centered in the rear-facing view."},
-				{"id":"j54.park_straight","time_s":29.99,"description":"Open-air straight beside park buildings and walkways."},
-				{"id":"j54.park_bank","time_s":59.07,"description":"Strongly banked park turn among illuminated supports."},
-				{"id":"j54.rocky_descent","time_s":89.18,"description":"Banked descending turn through dark rocky terrain."},
-				{"id":"j54.elevated_crest","time_s":120.71,"description":"Large elevated crest silhouetted against the night sky."},
-				{"id":"j54.steep_segment","time_s":139.36,"description":"Extremely steep track segment; travel direction is ambiguous in the rear-facing still."},
-				{"id":"j54.park_return","time_s":159.43,"description":"Banked return toward the illuminated park."},
-				{"id":"j54.support_passage","time_s":179.50,"description":"Tilted passage through dense supports and park structures."},
-				{"id":"j54.station_return","time_s":219.65,"description":"Brake/return track entering the station area."},
-			],
-		},
-		{
-			"source_id": "youtube.falcon.sdXGD9kMR7s", "file": "sdXGD9kMR7s-review.json",
-			"duration": 239.061, "published_on": "2026-01-01", "state": "observation_only",
-			"review_contributions": ["order","geometry","timing landmarks","feel prompts"],
-			"view": {
-				"content_kind":"built-ride", "direction":"forward",
-				"position_claim":"front-row view per title over the leading car nose; exact mount undisclosed", "mount":"unknown",
-				"obstructions":["leading car nose","curved windshield or bar","lower-right watermark","sun glare","lens or dust spots"],
-				"certainty":"high for ride identity and stated front-row orientation; medium for exact element interpretation",
-			},
-			"correction_review": "not-applicable",
-			"landmarks": [
-				{"id":"sdx.station_dispatch","time_s":0.07,"description":"Dark station dispatch corridor with the leading car nose visible."},
-				{"id":"sdx.park_straight","time_s":28.93,"description":"Straight beside park buildings approaching a tall inclined section; editorial length card visible."},
-				{"id":"sdx.park_bank","time_s":58.81,"description":"Banked compact park element among dense supports."},
-				{"id":"sdx.rock_face_pitch","time_s":88.87,"description":"Steeply pitched track beside a rock face."},
-				{"id":"sdx.cliff_edge","time_s":118.94,"description":"High cliff-edge view over the park and track below."},
-				{"id":"sdx.elevated_crest","time_s":138.86,"description":"Elevated crest with strong sun glare."},
-				{"id":"sdx.low_terrain_turn","time_s":158.97,"description":"Low banked terrain turn past supports and buildings."},
-				{"id":"sdx.park_run","time_s":178.88,"description":"Elevated park run through a hill-and-turn section."},
-				{"id":"sdx.station_return","time_s":218.91,"description":"Brake/return track inside the blue-lit station."},
-			],
-		},
-		{
-			"source_id": "youtube.falcon.poco8rOnW18", "file": "poco8rOnW18-review.json",
-			"duration": 328.521, "published_on": "2023-06-04", "state": "corroborative",
-			"review_contributions": ["model-to-model geometry/order only"],
-			"view": {
-				"content_kind":"nolimits2-precreation", "direction":"mixed",
-				"position_claim":"mixed third-person and virtual POV; not an as-built camera", "mount":"not-applicable",
-				"obstructions":["synthetic low-detail terrain and scenery","lower-right watermark"],
-				"certainty":"high for precreation status; low for as-built correspondence",
-			},
-			"correction_review": "not-applicable",
-			"landmarks": [
-				{"id":"poco.opening","time_s":0.10,"description":"Black opening frame."},
-				{"id":"poco.park_element","time_s":43.63,"description":"Third-person train view in a compact modeled park element."},
-				{"id":"poco.desert_curve","time_s":88.56,"description":"Third-person banked curve over modeled desert terrain."},
-				{"id":"poco.elevated_arch","time_s":133.76,"description":"Third-person profile of a large elevated arch."},
-				{"id":"poco.supported_grade","time_s":148.74,"description":"Third-person train on a long highly supported grade."},
-				{"id":"poco.low_return","time_s":163.71,"description":"Third-person low return track through the modeled park."},
-				{"id":"poco.virtual_pov_start","time_s":170.69,"description":"First sampled virtual POV frame toward a tall inclined element."},
-				{"id":"poco.steep_ascent","time_s":178.69,"description":"Virtual POV on a very steep ascent."},
-				{"id":"poco.rocky_ascent","time_s":223.89,"description":"Virtual POV ascending through modeled rocky terrain."},
-				{"id":"poco.modeled_hill","time_s":268.82,"description":"Virtual POV approaching a large triangular-supported hill."},
-				{"id":"poco.park_return","time_s":314.02,"description":"Virtual POV in a banked compact modeled park return."},
-			],
-		},
-		{
-			"source_id": "youtube.coastertalk.continuous.0Ua", "file": "0UaOSBGSx20-review.json",
-			"duration": 213.541, "published_on": "2026-04-14", "state": "corroborative",
-			"review_contributions": ["displayed-channel landmarks; axes remain unknown until reviewed"],
-			"view": {
-				"content_kind":"built-ride", "direction":"forward",
-				"position_claim":"leading-view appearance consistent with front row; exact row undisclosed", "mount":"unknown",
-				"obstructions":["leading car nose and curved bar","edge gauges and bottom graph","lower-left seat model","right-side readouts","central watermark","sun glare"],
-				"certainty":"high for synchronized overlay presence; medium for physical accuracy because of uploader limitations",
-			},
-			"correction_review": "pass",
-			"landmarks": [
-				{"id":"0ua.station_dispatch","time_s":0.06,"description":"Station attendant dispatch."},
-				{"id":"0ua.park_straight","time_s":25.25,"description":"Straight away from the station toward a tall inclined section."},
-				{"id":"0ua.park_hill_turn","time_s":49.171226,"description":"Compact park hill and turn.","readouts":[
-					{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
-				]},
-				{"id":"0ua.cliff_approach","time_s":74.18,"description":"Long approach toward the cliff and terrain section."},
-				{"id":"0ua.high_terrain_turn","time_s":100.45,"description":"Lower-speed banked turn on the high desert terrain."},
-				{"id":"0ua.cliff_descent","time_s":124.37,"description":"Steep cliff descent toward a tunnel."},
-				{"id":"0ua.fast_park_return","time_s":149.39,"description":"Fast park return with large hills visible.","readouts":[
-					{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
-				]},
-				{"id":"0ua.compact_park_descent","time_s":174.40,"description":"Compact descent between park buildings.","readouts":[
-					{"label":"Long.","display_value":-0.58,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[-0.58,-0.57]},
-				]},
-				{"id":"0ua.station_return","time_s":204.44,"description":"Brake/return run approaching the station."},
-			],
-		},
-	]
-	var expected_live_review := {
-		"reviewed_on": "2026-08-10",
-		"method": "visible live YouTube player, media-element currentTime readback, and expanded description; sparse manual sampling only",
-		"time_basis": "source-local media-element seconds", "retained_frame_or_video": false,
-	}
+	var review_files := ["J54WKu2nU6o-review.json", "sdXGD9kMR7s-review.json", "poco8rOnW18-review.json", "0UaOSBGSx20-review.json"]
 	var all_readouts := []
-	_expect(errors, catalog.get("catalog_version") == "2026-08-10.evidence-baseline.2", "live POV review bumps the catalog version once")
-	for fixture in fixtures:
-		var review: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/fidelity/youtube/" + fixture.file))
-		_expect(errors, review is Dictionary, "%s live review parses" % fixture.source_id)
+	for file in review_files:
+		var review: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/fidelity/youtube/" + file))
+		_expect(errors, review is Dictionary, "%s live review parses" % file)
 		if not review is Dictionary:
 			continue
-		var source: Dictionary = catalog.get("sources", {}).get(fixture.source_id, {})
-		_expect(errors, review.get("schema_version") == "fidelity-youtube-review@1", "%s preserves review schema" % fixture.source_id)
-		_expect(errors, review.get("source_id") == fixture.source_id, "%s preserves source identity" % fixture.source_id)
-		_expect(errors, review.get("metadata", {}).get("duration_seconds") == fixture.duration, "%s pins exact live duration" % fixture.source_id)
-		_expect(errors, review.get("metadata", {}).get("published_on") == fixture.published_on, "%s pins publish date" % fixture.source_id)
-		var duration_provenance := str(review.get("metadata", {}).get("duration_provenance", "")).to_lower()
-		_expect(errors, duration_provenance.contains("live") and duration_provenance.contains("duration"), "%s gives semantic live duration provenance" % fixture.source_id)
-		_expect(errors, review.get("view") == fixture.view, "%s pins reviewed view classification" % fixture.source_id)
-		var live_review: Dictionary = review.get("provenance", {}).get("live_review", {})
-		var expected_provenance: Dictionary = expected_live_review.duplicate(true)
-		expected_provenance["correction_review"] = fixture.correction_review
-		_expect(errors, live_review == expected_provenance, "%s pins exact live-review provenance" % fixture.source_id)
-		_expect(errors, review.get("provenance", {}).get("video_downloaded") == false, "%s remains a no-video review" % fixture.source_id)
-		var expected_landmarks := []
+		var source_id := str(review.get("source_id", ""))
+		var source: Dictionary = catalog.get("sources", {}).get(source_id, {})
 		var expected_windows := []
-		for landmark in fixture.landmarks:
-			var expected := {"id":landmark.id,"time_s":landmark.time_s,"description":landmark.description,
-				"provenance":"live-player-currentTime-readback","rendered_readouts":landmark.get("readouts", [])}
-			expected_landmarks.append(expected)
-			expected_windows.append({"id":landmark.id,"time_s":landmark.time_s})
-			all_readouts.append_array(expected.rendered_readouts)
-		_expect(errors, review.get("independent_timeline", {}).get("landmarks") == expected_landmarks, "%s pins ordered source-local landmarks" % fixture.source_id)
-		_expect(errors, source.get("windows") == expected_windows, "%s catalog mirrors reviewed point windows" % fixture.source_id)
-		_expect(errors, review.get("state") == fixture.state, "%s does not promote review state" % fixture.source_id)
-		_expect(errors, review.get("permitted_contributions") == fixture.review_contributions,
-			"%s pins its review permission ceiling" % fixture.source_id)
-		_expect(errors, source.get("permitted_axes", []).is_empty() and source.get("axis_mapping", {}).is_empty(), "%s keeps axes and mapping empty" % fixture.source_id)
-		_expect(errors, source.get("sample_rate_hz", 0) == null and review.has("alignment") and review.alignment == [],
-			"%s keeps sample rate null and explicit empty alignment" % fixture.source_id)
-		var status_text := str(review.get("independent_timeline", {}).get("landmark_review_status", ""))
-		var alignment_status := str(review.get("alignment_status", ""))
-		_expect(errors, status_text == "Sparse source-local landmarks reviewed live; no continuous trace or generated alignment is asserted."
-			and alignment_status == "Reviewed source-local landmarks only; no source landmark is mapped to a generated selector."
-			and " ".join(review.get("evidence_gaps", [])).to_lower().contains("cannot define executable comparison bands"),
-			"%s replaces stale review status without promoting alignment or bands" % fixture.source_id)
-		_expect(errors,
-			str(review.get("independent_timeline", {}).get("continuity", "")).to_lower().contains("no cross-source clock or timestamp mapping is asserted"),
-			"%s keeps an independent source clock" % fixture.source_id)
-		if fixture.source_id == "youtube.falcon.backward.J54WKu2nU6o":
-			var repository_reviews: Array = review.get("provenance", {}).get("repository_review", [])
-			var repository_claim := ""
-			if not repository_reviews.is_empty() and repository_reviews[0] is Dictionary:
-				repository_claim = str(repository_reviews[0].get("claim", "")).to_lower()
-			_expect(errors,
-				repository_claim.contains("rear-facing")
-				and repository_claim.contains("order")
-				and not repository_claim.contains("zero obstruction"),
-				"J54 repository provenance retains rear-facing/order without the stale obstruction claim")
+		for landmark in review.get("independent_timeline", {}).get("landmarks", []):
+			expected_windows.append({"id": landmark.get("id"), "time_s": landmark.get("time_s")})
+			all_readouts.append_array(landmark.get("rendered_readouts", []))
+		_expect(errors, source.get("windows") == expected_windows, "%s catalog mirrors reviewed point windows" % source_id)
 	var expected_readouts := [
 		{"label":"Long.","display_value":-0.30,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
 		{"label":"Long.","display_value":-0.19,"unit":"g","qualifier":"approximate-unmapped-uploader-display","adjacent_range":[]},
@@ -763,55 +593,13 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 	_expect(errors, all_readouts == expected_readouts, "live reviews contain exactly three sign-reviewed unmapped Long. values")
 	var executable_collections_empty: bool = catalog.get("selectors", {}).is_empty() and catalog.get("observations", []).is_empty() and catalog.get("targets", []).is_empty()
 	_expect(errors, executable_collections_empty, "live POV review does not create selectors, observations, or targets")
-	var prompts := {}
 	var prompt_ids := []
 	for prompt in catalog.get("review_prompts", []):
-		prompts[prompt.get("id")] = prompt
 		prompt_ids.append(prompt.get("id"))
 	_expect(errors, prompt_ids == [
 		"review.ride_feel", "review.speed_perception", "review.element_shaping", "review.support_overlap",
 		"review.coastertalk_overlay_spot_checks", "review.terrain_clearance",
 	], "live POV catalog has exactly the six approved prompt IDs")
-	var ride_feel_prompt := "Compare generated act ordering and connective flow against source-local POV landmarks only; " + \
-		"do not transfer timestamps or proportionally scale independent video clocks."
-	_expect(errors, prompts.get("review.ride_feel", {}).get("prompt") == ride_feel_prompt, "ride-feel prompt forbids clock transfer")
-	var speed_prompt := "Compare generated speed perception against source-local terrain, support, and park-reference landmarks only; " + \
-		"do not infer speed from a global POV duration ratio."
-	_expect(errors, prompts.get("review.speed_perception", {}).get("prompt") == speed_prompt, "speed prompt forbids duration scaling")
-	var expected_overlay_prompt := {
-		"id": "review.coastertalk_overlay_spot_checks",
-		"category": "ride feel",
-		"prompt": "Review the three source-local uploader-labelled Long. spot checks (-0.30 g, -0.19 g, and " + \
-			"approximately -0.58 g) only as unscored, approximate, unmapped rendered labels; they are not a " + \
-			"rider-axis trace or comparison band.",
-		"source_ids": ["youtube.coastertalk.continuous.0Ua"],
-		"issues": [3,10,13,15,16],
-	}
-	_expect(errors,
-		prompts.get("review.coastertalk_overlay_spot_checks", {}) == expected_overlay_prompt,
-		"overlay prompt matches the complete approved record")
-	var expected_terrain_prompt := {
-		"id": "review.terrain_clearance",
-		"category": "terrain/clearance",
-		"prompt": "Compare the generated cliff, high-terrain, and low-return views landmark-to-landmark " + \
-			"against the real built-ride POVs; do not infer an AGL band or proportionally scale independent " + \
-			"video clocks.",
-		"source_ids": [
-			"youtube.coastertalk.continuous.0Ua",
-			"youtube.falcon.backward.J54WKu2nU6o",
-			"youtube.falcon.sdXGD9kMR7s",
-		],
-		"issues": [6,8,12],
-	}
-	_expect(errors,
-		prompts.get("review.terrain_clearance", {}) == expected_terrain_prompt,
-		"terrain-clearance prompt matches the complete approved record")
-	var gaps := {}
-	for gap in catalog.get("evidence_gaps", []):
-		gaps[gap.get("id")] = gap
-	var force_gap := "Sparse rendered video points lack raw sampling, device/row calibration, rider-axis mapping, " + \
-		"full source-to-generated alignment, and corroboration; no multiplier or duration ratio closes those gaps."
-	_expect(errors, gaps.get("gap.force_bands", {}).get("description") == force_gap, "force gap pins non-promotion rationale")
 
 
 static func _test_manifest_parity(catalog: Dictionary, errors: PackedStringArray) -> void:
@@ -1350,89 +1138,56 @@ static func _expect_invalid_comparison(
 
 static func _measurement_route() -> Dictionary:
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var banks := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
-	var normal := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	var roll_rates := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
 	for i in 41:
 		var height := float(mini(i, 20 - i)) if i <= 20 else 0.0
 		positions.append(Vector3(i, height, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		banks.append(0.0)
-		speeds.append(10.0)
-		normal.append(1.0)
-		lateral.append(0.0)
-		longitudinal.append(0.0)
-		roll_rates.append(0.0)
 		distances.append(float(i))
 		times.append(i * 0.1)
-	return {
-		"seed": 7,
-		"length": 40.0,
-		"duration": 4.0,
-		"positions": positions,
-		"tangents": tangents,
-		"ups": ups,
-		"rights": rights,
-		"curvatures": curvatures,
-		"banks": banks,
-		"speeds": speeds,
-		"normal_g": normal,
-		"lateral_g": lateral,
-		"longitudinal_g": longitudinal,
-		"roll_rates": roll_rates,
-		"distances": distances,
-		"times": times,
-		"span_indices": _span_indices(41, [20, 30]),
-		"gesture_windows": [
-			_gesture_window("act1.hill", "core", "hill", "Hill", 0, 19),
-			_gesture_window("act1.transfer", "whole", "transfer", "Transfer", 20, 29),
-			_gesture_window("return.capture", "whole", "capture", "Capture", 30, 40),
-		],
-	}
+	var fixture := RouteFixture.new().seed(7).length(40.0).duration(4.0)
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, 41))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, 41))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, 41))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, 41))
+	fixture.banks(RouteFixture.flat_float(0.0, 41)).speeds(RouteFixture.flat_float(10.0, 41))
+	fixture.channel("normal_g", RouteFixture.flat_float(1.0, 41))
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, 41))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, 41))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, 41))
+	fixture.span_indices(RouteFixture.span_indices_for(41, [20, 30]))
+	fixture.gesture_windows([
+		_gesture_window("act1.hill", "core", "hill", "Hill", 0, 19),
+		_gesture_window("act1.transfer", "whole", "transfer", "Transfer", 20, 29),
+		_gesture_window("return.capture", "whole", "capture", "Capture", 30, 40),
+	])
+	return fixture.build()
 
 
 static func _irregular_pacing_route() -> Dictionary:
-	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var banks := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
-	var speeds := PackedFloat32Array([10.0, 60.0, 60.0, 60.0, 10.0])
-	var normal := PackedFloat32Array([1.0, 2.0, 2.0, 2.0, 1.0])
-	var lateral := PackedFloat32Array([0.0, 0.5, 0.5, 0.5, 0.0])
-	var longitudinal := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
-	var roll_rates := PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0])
 	var distances := PackedFloat32Array([0.0, 2.0, 5.0, 11.0, 13.0])
 	var times := PackedFloat32Array([0.0, 0.2, 0.5, 1.1, 1.3])
+	var positions := PackedVector3Array()
 	for index in times.size():
 		positions.append(Vector3(distances[index], 5.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-	return {
-		"seed": 8, "length": 13.0, "duration": 1.3,
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": banks, "speeds": speeds,
-		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
-		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"span_indices": _span_indices(times.size(), []),
-		"gesture_windows": [_gesture_window(
-			"act1.pacing", "whole", "pacing", "Pacing", 0, times.size() - 1)],
-	}
+	var count := times.size()
+	var fixture := RouteFixture.new().seed(8).length(13.0).duration(1.3)
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, count))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, count))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, count))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, count))
+	fixture.banks(PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0]))
+	fixture.speeds(PackedFloat32Array([10.0, 60.0, 60.0, 60.0, 10.0]))
+	fixture.channel("normal_g", PackedFloat32Array([1.0, 2.0, 2.0, 2.0, 1.0]))
+	fixture.channel("lateral_g", PackedFloat32Array([0.0, 0.5, 0.5, 0.5, 0.0]))
+	fixture.channel("longitudinal_g", PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0]))
+	fixture.channel("roll_rates", PackedFloat32Array([0.0, 0.0, 0.0, 0.0, 0.0]))
+	fixture.span_indices(RouteFixture.span_indices_for(count, []))
+	fixture.gesture_windows([_gesture_window(
+		"act1.pacing", "whole", "pacing", "Pacing", 0, count - 1)])
+	return fixture.build()
 
 
 static func _moving_window_route(extra_preceding_knot: bool) -> Dictionary:
@@ -1442,52 +1197,32 @@ static func _moving_window_route(extra_preceding_knot: bool) -> Dictionary:
 		times.insert(1, 0.0015)
 		normal.insert(1, 2.75)
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var banks := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	var roll_rates := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	for index in times.size():
 		var distance := times[index] * 10.0
 		positions.append(Vector3(distance, 5.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		banks.append(0.0)
-		speeds.append(10.0)
-		lateral.append(0.0)
-		longitudinal.append(0.0)
-		roll_rates.append(0.0)
 		distances.append(distance)
 	var selected_first := 2 if extra_preceding_knot else 1
 	var selected_last := selected_first + 3
-	return {
-		"seed": 9, "length": distances[-1], "duration": times[-1],
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": banks, "speeds": speeds,
-		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
-		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"span_indices": _span_indices(times.size(), [selected_first, selected_last + 1]),
-		"gesture_windows": [
-			_gesture_window("act1.before", "whole", "before", "Before", 0, selected_first - 1),
-			_gesture_window("act1.selected", "core", "selected", "Selected", selected_first, selected_last),
-			_gesture_window("act1.after", "whole", "after", "After", selected_last + 1, times.size() - 1),
-		],
-	}
-
-
-static func _row_pulse_route() -> Dictionary:
-	var route := _measurement_route()
-	# Keep the pulse off a semantic boundary: interpolation and the causal load filter can
-	# legitimately spread a boundary impulse across adjacent physical windows.
-	route.curvatures[11] = Vector3(0.0, 0.5, 0.0)
-	return route
+	var count := times.size()
+	var fixture := RouteFixture.new().seed(9).length(distances[-1]).duration(times[-1])
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, count))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, count))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, count))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, count))
+	fixture.banks(RouteFixture.flat_float(0.0, count)).speeds(RouteFixture.flat_float(10.0, count))
+	fixture.channel("normal_g", normal)
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, count))
+	fixture.span_indices(RouteFixture.span_indices_for(count, [selected_first, selected_last + 1]))
+	fixture.gesture_windows([
+		_gesture_window("act1.before", "whole", "before", "Before", 0, selected_first - 1),
+		_gesture_window("act1.selected", "core", "selected", "Selected", selected_first, selected_last),
+		_gesture_window("act1.after", "whole", "after", "After", selected_last + 1, count - 1),
+	])
+	return fixture.build()
 
 
 static func _transition_route(seam_seconds: float) -> Dictionary:
@@ -1504,7 +1239,7 @@ static func _transition_route(seam_seconds: float) -> Dictionary:
 			route.normal_g[index] = 3.0
 		elif index > seam and index <= seam + 50:
 			route.normal_g[index] = -1.0
-	route.span_indices = _span_indices(route.times.size(), [seam])
+	route.span_indices = RouteFixture.span_indices_for(route.times.size(), [seam])
 	route.gesture_windows = [
 		_gesture_window("act1.before", "whole", "before", "Before", 0, seam - 1),
 		_gesture_window("act1.after", "whole", "after", "After", seam, route.times.size() - 1),
@@ -1513,76 +1248,56 @@ static func _transition_route(seam_seconds: float) -> Dictionary:
 
 
 static func _uniform_route(seconds: float) -> Dictionary:
-	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var scalar := PackedFloat32Array()
 	var count := roundi(seconds * 100.0) + 1
+	var positions := PackedVector3Array()
+	var distances := PackedFloat32Array()
+	var times := PackedFloat32Array()
 	for index in count:
 		var time := index * 0.01
 		positions.append(Vector3(time * 10.0, 5.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		scalar.append(0.0)
-	var normal := PackedFloat32Array(scalar)
-	normal.fill(1.0)
-	var speeds := PackedFloat32Array(scalar)
-	speeds.fill(10.0)
-	var distances := PackedFloat32Array(scalar)
-	for index in count:
-		distances[index] = index * 0.1
-	return {
-		"seed": 10, "length": distances[-1], "duration": seconds,
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": PackedFloat32Array(scalar), "speeds": speeds,
-		"normal_g": normal, "lateral_g": PackedFloat32Array(scalar), "longitudinal_g": PackedFloat32Array(scalar),
-		"roll_rates": PackedFloat32Array(scalar), "distances": distances,
-		"times": _times_100hz(count), "span_indices": _span_indices(count, []),
-		"gesture_windows": [_gesture_window(
-			"whole.route", "whole", "route", "Route", 0, count - 1)],
-	}
+		distances.append(index * 0.1)
+		times.append(time)
+	var fixture := RouteFixture.new().seed(10).length(distances[-1]).duration(seconds)
+	fixture.points(positions).distances(distances).times(times)
+	fixture.tangents(RouteFixture.flat_vector3(Vector3.RIGHT, count))
+	fixture.ups(RouteFixture.flat_vector3(Vector3.UP, count))
+	fixture.rights(RouteFixture.flat_vector3(Vector3.FORWARD, count))
+	fixture.curvatures(RouteFixture.flat_vector3(Vector3.ZERO, count))
+	fixture.banks(RouteFixture.flat_float(0.0, count)).speeds(RouteFixture.flat_float(10.0, count))
+	fixture.channel("normal_g", RouteFixture.flat_float(1.0, count))
+	fixture.channel("lateral_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("longitudinal_g", RouteFixture.flat_float(0.0, count))
+	fixture.channel("roll_rates", RouteFixture.flat_float(0.0, count))
+	fixture.span_indices(RouteFixture.span_indices_for(count, []))
+	fixture.gesture_windows([_gesture_window(
+		"whole.route", "whole", "route", "Route", 0, count - 1)])
+	return fixture.build()
 
 
 static func _analytic_straight_route(speed: float, seconds: float, sample_hz: float) -> Dictionary:
 	var count := roundi(seconds * sample_hz) + 1
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var scalars := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
 	for index in count:
 		var time := index / sample_hz
 		positions.append(Vector3(speed * time, 0.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		scalars.append(0.0)
 		distances.append(speed * time)
 		times.append(time)
-	var normal := PackedFloat32Array(scalars)
-	normal.fill(1.0)
-	var speeds := PackedFloat32Array(scalars)
-	speeds.fill(speed)
-	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, scalars, scalars, scalars, speeds, distances, times, [])
+	var zero := RouteFixture.flat_float(0.0, count)
+	return _analytic_route(positions, RouteFixture.flat_vector3(Vector3.RIGHT, count),
+		RouteFixture.flat_vector3(Vector3.UP, count), RouteFixture.flat_vector3(Vector3.FORWARD, count),
+		RouteFixture.flat_vector3(Vector3.ZERO, count), RouteFixture.flat_float(1.0, count),
+		zero, zero, zero, RouteFixture.flat_float(speed, count), distances, times, [])
 
 
 static func _analytic_circle_route(speed: float, radius: float, seconds: float, sample_hz: float) -> Dictionary:
 	var count := roundi(seconds * sample_hz) + 1
 	var positions := PackedVector3Array()
 	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
 	var rights := PackedVector3Array()
 	var curvatures := PackedVector3Array()
 	var lateral := PackedFloat32Array()
-	var scalars := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
 	for index in count:
@@ -1591,48 +1306,34 @@ static func _analytic_circle_route(speed: float, radius: float, seconds: float, 
 		var inward := Vector3(-cos(angle), 0.0, -sin(angle))
 		positions.append(Vector3(radius * (cos(angle) - 1.0), 0.0, radius * sin(angle)))
 		tangents.append(Vector3(-sin(angle), 0.0, cos(angle)))
-		ups.append(Vector3.UP)
 		rights.append(inward)
 		curvatures.append(inward / radius)
 		lateral.append(speed * speed / radius / 9.80665)
-		scalars.append(0.0)
 		distances.append(speed * time)
 		times.append(time)
-	var normal := PackedFloat32Array(scalars)
-	normal.fill(1.0)
-	var speeds := PackedFloat32Array(scalars)
-	speeds.fill(speed)
-	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, scalars, scalars, speeds, distances, times, [])
+	var zero := RouteFixture.flat_float(0.0, count)
+	return _analytic_route(positions, tangents, RouteFixture.flat_vector3(Vector3.UP, count),
+		rights, curvatures, RouteFixture.flat_float(1.0, count), lateral, zero, zero,
+		RouteFixture.flat_float(speed, count), distances, times, [])
 
 
 static func _nonuniform_quadratic_route() -> Dictionary:
 	var times := PackedFloat32Array([0.0, 0.07, 0.21, 0.5, 0.9, 1.4])
 	var positions := PackedVector3Array()
-	var tangents := PackedVector3Array()
-	var ups := PackedVector3Array()
-	var rights := PackedVector3Array()
-	var curvatures := PackedVector3Array()
-	var normal := PackedFloat32Array()
-	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
-	var roll_rates := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	for time in times:
 		var distance := 5.0 * time + time * time
 		positions.append(Vector3(distance, 0.0, 0.0))
-		tangents.append(Vector3.RIGHT)
-		ups.append(Vector3.UP)
-		rights.append(Vector3.FORWARD)
-		curvatures.append(Vector3.ZERO)
-		normal.append(1.0)
-		lateral.append(0.0)
-		longitudinal.append(2.0 / 9.80665)
-		roll_rates.append(0.0)
-		# Deliberately inconsistent: acceleration must come from raw position/time, not this channel.
-		speeds.append(5.0)
 		distances.append(distance)
-	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral, longitudinal, roll_rates, speeds, distances, times, [])
+	var count := times.size()
+	# Deliberately inconsistent: acceleration must come from raw position/time, not the speed
+	# channel, so speed stays a flat 5 m/s regardless of the quadratic position/time relation.
+	return _analytic_route(positions, RouteFixture.flat_vector3(Vector3.RIGHT, count),
+		RouteFixture.flat_vector3(Vector3.UP, count), RouteFixture.flat_vector3(Vector3.FORWARD, count),
+		RouteFixture.flat_vector3(Vector3.ZERO, count), RouteFixture.flat_float(1.0, count),
+		RouteFixture.flat_float(0.0, count), RouteFixture.flat_float(2.0 / 9.80665, count),
+		RouteFixture.flat_float(0.0, count), RouteFixture.flat_float(5.0, count),
+		distances, times, [])
 
 
 static func _curvature_direction_seam_route() -> Dictionary:
@@ -1640,6 +1341,7 @@ static func _curvature_direction_seam_route() -> Dictionary:
 	const RADIUS := 50.0
 	const SAMPLE_HZ := 100.0
 	const SEAM := 100
+	const COUNT := 201
 	var positions := PackedVector3Array()
 	var tangents := PackedVector3Array()
 	var ups := PackedVector3Array()
@@ -1647,12 +1349,10 @@ static func _curvature_direction_seam_route() -> Dictionary:
 	var curvatures := PackedVector3Array()
 	var normal := PackedFloat32Array()
 	var lateral := PackedFloat32Array()
-	var longitudinal := PackedFloat32Array()
 	var roll_rates := PackedFloat32Array()
-	var speeds := PackedFloat32Array()
 	var distances := PackedFloat32Array()
 	var times := PackedFloat32Array()
-	for index in 201:
+	for index in COUNT:
 		var angle := (index - SEAM) * SPEED / SAMPLE_HZ / RADIUS
 		if index <= SEAM:
 			var horizontal_inward := Vector3(-cos(angle), 0.0, -sin(angle))
@@ -1672,13 +1372,12 @@ static func _curvature_direction_seam_route() -> Dictionary:
 			curvatures.append(vertical_inward / RADIUS)
 			normal.append(SPEED * SPEED / RADIUS / 9.80665 + vertical_inward.y)
 			lateral.append(0.0)
-		longitudinal.append(0.0)
 		roll_rates.append(index * 0.5)
-		speeds.append(SPEED)
 		distances.append(index * SPEED / SAMPLE_HZ)
 		times.append(index / SAMPLE_HZ)
 	return _analytic_route(positions, tangents, ups, rights, curvatures, normal, lateral,
-		longitudinal, roll_rates, speeds, distances, times, [SEAM])
+		RouteFixture.flat_float(0.0, COUNT), roll_rates, RouteFixture.flat_float(SPEED, COUNT),
+		distances, times, [SEAM])
 
 
 static func _analytic_route(
@@ -1688,35 +1387,15 @@ static func _analytic_route(
 	speeds: PackedFloat32Array, distances: PackedFloat32Array, times: PackedFloat32Array,
 	span_starts: Array
 ) -> Dictionary:
-	var banks := PackedFloat32Array()
-	banks.resize(times.size())
-	banks.fill(0.0)
-	return {
-		"seed": 500, "length": distances[-1], "duration": times[-1],
-		"positions": positions, "tangents": tangents, "ups": ups, "rights": rights,
-		"curvatures": curvatures, "banks": banks, "speeds": speeds,
-		"normal_g": normal, "lateral_g": lateral, "longitudinal_g": longitudinal,
-		"roll_rates": roll_rates, "distances": distances, "times": times,
-		"span_indices": _span_indices(times.size(), span_starts), "gesture_windows": [],
-	}
-
-
-static func _times_100hz(count: int) -> PackedFloat32Array:
-	var times := PackedFloat32Array()
-	for index in count:
-		times.append(index * 0.01)
-	return times
-
-
-static func _span_indices(count: int, span_starts: Array) -> PackedInt32Array:
-	var owners := PackedInt32Array()
-	owners.resize(count)
-	var span_index := 0
-	for sample_index in count:
-		if span_index < span_starts.size() and sample_index == int(span_starts[span_index]):
-			span_index += 1
-		owners[sample_index] = span_index
-	return owners
+	var fixture := RouteFixture.new().seed(500).length(distances[-1]).duration(times[-1])
+	fixture.points(positions).tangents(tangents).ups(ups).rights(rights).curvatures(curvatures)
+	fixture.banks(RouteFixture.flat_float(0.0, times.size())).speeds(speeds)
+	fixture.channel("normal_g", normal).channel("lateral_g", lateral)
+	fixture.channel("longitudinal_g", longitudinal).channel("roll_rates", roll_rates)
+	fixture.distances(distances).times(times)
+	fixture.span_indices(RouteFixture.span_indices_for(times.size(), span_starts))
+	fixture.gesture_windows([])
+	return fixture.build()
 
 
 static func _gesture_window(

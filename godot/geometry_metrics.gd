@@ -21,9 +21,11 @@ extends RefCounted
 ## a source, creates a catalog target, or licenses closing a ride-quality issue.
 
 const Fidelity := preload("res://fidelity.gd")
+const Artifacts := preload("res://fidelity_artifacts.gd")
 const Counterparts := preload("res://fidelity_counterparts.gd")
-const Verify := preload("res://verify.gd")
-const Sampling := preload("res://route_sampling.gd")
+const Motion := preload("res://motion.gd")
+const ElementContract := preload("res://element_contract.gd")
+const Terrain := preload("res://terrain.gd")
 
 const SCHEMA := "ride-geometry-metrics@1"
 const COUNTERPART_SCHEMA := "ride-geometry-counterpart-comparison@1"
@@ -50,6 +52,9 @@ const COUNTERPART_ROW_OFFSET_M := 6.45
 ## A counterpart axis quoted as a single number is compared against this diagnostic tolerance.
 ## It is a labelling convenience for reading the report, NOT a reviewed threshold and NOT a gate.
 const SCALAR_BAND_FRACTION := 0.15
+
+const TRANSITION_ZERO_TOLERANCE := 0.000001
+const SEMANTIC_SPAN_MIN_S := 0.30
 
 const REQUIRED_FIELDS := [
 	"positions", "tangents", "ups", "banks", "roll_rates", "times", "distances",
@@ -83,6 +88,7 @@ const MATERIAL_ROLE_BY_WINDOW := {
 	"cliff-dive/pullout/0": "outward-dive",
 	"cliff-dive/exit/0": "outward-dive",
 	"tunnel-lsm3/core/0": "tunnel-lsm3",
+	"record-release-turn/record-release-turn/0": "record-release-turn",
 	"marquee-camelback/rise/0": "camelback",
 	"marquee-camelback/crest/0": "camelback",
 	"marquee-camelback/fall/0": "camelback",
@@ -95,6 +101,176 @@ const MATERIAL_ROLE_BY_WINDOW := {
 	"brakes-station-capture/brakes/0": "terminal-capture-brakes",
 	"brakes-station-capture/station/0": "terminal-capture-brakes",
 }
+
+
+## Audit authored transition ownership before FVD integration. A transition ID is deliberately
+## explicit: this function never guesses whether two adjacent spans belong to one gesture from
+## their names or observed geometry. The same transition returning both roll and lateral controls
+## to zero at an internal boundary is the pulse/restart defect this audit is meant to expose.
+static func transition_audit(spans: Array) -> Dictionary:
+	var errors := PackedStringArray()
+	var seams := []
+	var short_spans := []
+	var unowned := []
+	for index in spans.size():
+		var span: Variant = spans[index]
+		if not span is Dictionary:
+			errors.append("span %d is not a Dictionary" % index)
+			continue
+		var duration := float(span.get("duration_s", NAN))
+		if not is_finite(duration) or duration <= 0.0:
+			errors.append("span %d has an invalid duration" % index)
+		# Motion.span records are semantic by construction unless a future diagnostic-only
+		# producer explicitly opts out. This keeps authored micro-spans visible in production
+		# without adding another field to the serialized span digest.
+		elif bool(span.get("semantic", true)) and duration < SEMANTIC_SPAN_MIN_S:
+			short_spans.append({"index": index, "span_id": str(span.get("span_id", "")),
+				"duration_s": duration})
+			errors.append("semantic span %s is shorter than %.2f s" % [
+				str(span.get("span_id", index)), SEMANTIC_SPAN_MIN_S])
+		var transition_id := str(span.get("transition_id", ""))
+		if transition_id.is_empty():
+			var unowned_channels := PackedStringArray()
+			for channel in ["lateral_g", "roll_rate_rad_s"]:
+				var profile: Variant = span.get(channel)
+				if profile is Dictionary and _profile_has_motion(profile):
+					unowned_channels.append(channel)
+			if not unowned_channels.is_empty():
+				unowned.append({"index": index, "span_id": str(span.get("span_id", "")),
+					"channels": unowned_channels})
+			continue
+		if index == 0:
+			continue
+		var previous: Variant = spans[index - 1]
+		if not previous is Dictionary or str(previous.get("transition_id", "")) != transition_id:
+			continue
+		var restarted_channels := PackedStringArray()
+		for channel in ["lateral_g", "roll_rate_rad_s"]:
+			var before_profile: Variant = previous.get(channel)
+			var after_profile: Variant = span.get(channel)
+			if not before_profile is Dictionary or not after_profile is Dictionary:
+				errors.append("transition %s has incomplete %s profiles" % [transition_id, channel])
+				continue
+			var before_end := _profile_value(before_profile, 1.0)
+			var after_start := _profile_value(after_profile, 0.0)
+			if absf(before_end) <= TRANSITION_ZERO_TOLERANCE \
+					and absf(after_start) <= TRANSITION_ZERO_TOLERANCE \
+					and (_profile_has_motion(before_profile) or _profile_has_motion(after_profile)):
+				restarted_channels.append(channel)
+		if not restarted_channels.is_empty():
+			seams.append({"index": index, "transition_id": transition_id,
+				"before_span_id": str(previous.get("span_id", "")),
+				"after_span_id": str(span.get("span_id", "")),
+				"restarted_channels": restarted_channels})
+			errors.append("transition %s restarts %s at span %d" % [
+				transition_id, ", ".join(restarted_channels), index])
+	return {"schema_version": SCHEMA, "metric": "transition_audit", "ok": errors.is_empty(),
+		"semantic_span_min_s": SEMANTIC_SPAN_MIN_S, "seams": seams,
+		"short_spans": short_spans, "unowned": unowned, "errors": errors}
+
+
+## Measure every declared material role through one evidence path. `role_bounds` contains inclusive
+## published trajectory sample bounds, not authored span indices. Missing terrain is an explicit
+## unavailable AGL record; it never becomes a fabricated zero.
+static func role_audit(
+	route: Dictionary, role_bounds: Dictionary, expected_role_ids: Array = [],
+	terrain: Dictionary = {}, geometry_intents: Dictionary = {}
+) -> Dictionary:
+	var required := ["positions", "tangents", "banks", "times", "distances", "speeds",
+		"normal_g", "lateral_g", "roll_rates"]
+	var missing := []
+	for field in required:
+		if not route.has(field):
+			missing.append(field)
+	if not missing.is_empty():
+		return {"schema_version": SCHEMA, "metric": "role_audit", "ok": false,
+			"errors": PackedStringArray(["role audit missing fields: %s" % ", ".join(missing)]),
+			"roles": {}}
+	var role_ids: Array = expected_role_ids.duplicate()
+	if role_ids.is_empty():
+		role_ids = role_bounds.keys()
+	role_ids.sort()
+	var errors := PackedStringArray()
+	var roles := {}
+	for role_value in role_ids:
+		var role_id := str(role_value)
+		var bounds_value: Variant = role_bounds.get(role_id)
+		if not bounds_value is Vector2i or bounds_value.x < 0 or bounds_value.y < bounds_value.x:
+			errors.append("role %s has no published sample bounds" % role_id)
+			roles[role_id] = {"status": "missing", "role_id": role_id}
+			continue
+		var bounds: Vector2i = bounds_value
+		var measurement := ElementContract.measure(route, bounds.x, bounds.y)
+		if measurement.get("status") != "measured":
+			errors.append("role %s measurement unavailable: %s" % [
+				role_id, str(measurement.get("reason", "unknown"))])
+			roles[role_id] = {"status": "unavailable", "role_id": role_id,
+				"measurement": measurement}
+			continue
+		var shape := shape_of(route, bounds.x, bounds.y)
+		var agl := _agl_distribution(route, bounds.x, bounds.y, terrain)
+		var intent: Dictionary = geometry_intents.get(role_id, {})
+		var violations := PackedStringArray()
+		if agl.get("status") == "measured" and intent.get("apex_agl_m") is Vector2:
+			var apex_band: Vector2 = intent.apex_agl_m
+			var apex_agl := float(agl.apex_m)
+			if apex_agl < apex_band.x or apex_agl > apex_band.y:
+				violations.append("apex AGL %.3f m is outside %.3f–%.3f m" % [
+					apex_agl, apex_band.x, apex_band.y])
+		roles[role_id] = {"status": "measured", "role_id": role_id,
+			"first_sample": bounds.x, "last_sample": bounds.y,
+			"measurement": measurement, "shape": shape, "agl": agl,
+			"speed_mps": _range(route.speeds, bounds.x, bounds.y),
+			"normal_g": _range(route.normal_g, bounds.x, bounds.y),
+			"lateral_g": _range(route.lateral_g, bounds.x, bounds.y),
+			"roll_rate_dps": _range(route.roll_rates, bounds.x, bounds.y),
+			"geometry_intent": intent.duplicate(true), "violations": violations}
+	return {"schema_version": SCHEMA, "metric": "role_audit", "ok": errors.is_empty(),
+		"roles": roles, "errors": errors}
+
+
+static func _agl_distribution(
+	route: Dictionary, first: int, last: int, terrain: Dictionary
+) -> Dictionary:
+	if terrain.is_empty() or str(terrain.get("kind", "")) != "material":
+		return {"status": "unavailable", "reason": "terrain evidence is not available"}
+	var values := PackedFloat64Array()
+	var apex_index := first
+	for index in range(first, last + 1):
+		var position: Vector3 = route.positions[index]
+		if position.y > route.positions[apex_index].y:
+			apex_index = index
+		values.append(position.y - Terrain.height(terrain, position.x, position.z))
+	if values.is_empty():
+		return {"status": "unavailable", "reason": "role has no terrain samples"}
+	var sorted := values.duplicate()
+	sorted.sort()
+	return {"status": "measured", "minimum_m": float(sorted[0]),
+		"median_m": float(sorted[int(sorted.size() / 2)]),
+		"p90_m": float(sorted[mini(sorted.size() - 1, ceili(sorted.size() * 0.9) - 1)]),
+		"maximum_m": float(sorted[-1]), "apex_m": float(values[apex_index - first]),
+		"apex_sample": apex_index}
+
+
+static func _range(values: Variant, first: int, last: int) -> Dictionary:
+	var low := INF
+	var high := -INF
+	for index in range(first, last + 1):
+		var value := float(values[index])
+		low = minf(low, value)
+		high = maxf(high, value)
+	return {"minimum": low, "maximum": high}
+
+
+static func _profile_value(profile: Dictionary, u: float) -> float:
+	return float(Motion.profile_sample(profile, clampf(u, 0.0, 1.0)).x)
+
+
+static func _profile_has_motion(profile: Dictionary) -> bool:
+	for u in [0.25, 0.5, 0.75]:
+		if absf(_profile_value(profile, u)) > TRANSITION_ZERO_TOLERANCE:
+			return true
+	return false
 
 
 # ---------------------------------------------------------------------------------------------
@@ -390,7 +566,8 @@ static func shape_of(route: Dictionary, first: int, last: int) -> Dictionary:
 			angle_difference(deg_to_rad(entry_heading), deg_to_rad(exit_heading))
 		),
 		"total_heading_change_deg": accumulated,
-		"entry_pitch_deg": _pitch_deg(tangents[first]), "exit_pitch_deg": _pitch_deg(tangents[last]),
+		"entry_pitch_deg": Fidelity._pitch_degrees(tangents[first], true),
+		"exit_pitch_deg": Fidelity._pitch_degrees(tangents[last], true),
 		"entry_bank_deg": float(route.banks[first]), "exit_bank_deg": float(route.banks[last]),
 		"entry_speed_mps": float(route.speeds[first]), "exit_speed_mps": float(route.speeds[last]),
 		"apex_height_m": height_high, "base_height_m": height_low,
@@ -523,34 +700,21 @@ static func material_role_bands(route: Dictionary, row_offset: float) -> Diction
 		spans[role].last = maxi(int(spans[role].last), int(window.last))
 		spans[role].windows.append(str(window.window_id))
 
-	var native: Dictionary = Fidelity.native_row_series(route, row_offset)
-	var series := {
-		"normal": Verify.filter(Verify.resample(route.times, native.normal_g)),
-		"lateral": Verify.filter(Verify.resample(route.times, native.lateral_g)),
-		"longitudinal": Verify.filter(Verify.resample(route.times, native.longitudinal_g)),
-	}
+	var series: Dictionary = Fidelity.row_series(route, row_offset)
 	var bands := {}
 	for role in order:
 		var span: Dictionary = spans[role]
-		var start_time := _time_at_distance(
-			route, float(route.distances[int(span.first)]) + row_offset)
-		var end_time := _time_at_distance(
-			route, float(route.distances[int(span.last)]) + row_offset)
-		var first := int(ceil(start_time * Verify.SAMPLE_HZ - 1e-9))
-		var last := int(floor(end_time * Verify.SAMPLE_HZ + 1e-9))
-		var count: int = series.normal.size()
-		first = clampi(first, 0, maxi(0, count - 1))
-		last = clampi(last, 0, maxi(0, count - 1))
-		if last - first + 1 < 5:
+		var window: Dictionary = Fidelity.filtered_window(
+			route, int(span.first), int(span.last), row_offset, series)
+		if window.normal.size() < 5:
 			continue
 		bands[role] = {
 			"role_id": role, "window_ids": span.windows,
 			"first_sample": int(span.first), "last_sample": int(span.last),
-			"window_start_s": start_time, "window_end_s": end_time,
-			"seconds": end_time - start_time,
-			"normal": series.normal.slice(first, last + 1),
-			"lateral": series.lateral.slice(first, last + 1),
-			"longitudinal": series.longitudinal.slice(first, last + 1),
+			"window_start_s": window.window_start_s, "window_end_s": window.window_end_s,
+			"seconds": window.seconds,
+			"normal": window.normal, "lateral": window.lateral,
+			"longitudinal": window.longitudinal,
 		}
 	var missing := []
 	for role in Counterparts.bands().keys():
@@ -563,18 +727,6 @@ static func material_role_bands(route: Dictionary, row_offset: float) -> Diction
 		"bands": bands, "mapped_window_count": mapped, "unmapped_windows": unmapped,
 		"roles_without_window": missing,
 	}
-
-
-static func _time_at_distance(route: Dictionary, distance_m: float) -> float:
-	var distances: PackedFloat32Array = route.distances
-	var times: PackedFloat32Array = route.times
-	var clamped := clampf(distance_m, float(distances[0]), float(distances[-1]))
-	var index := Sampling.lower_index(distances, clamped)
-	var low := float(distances[index])
-	var high := float(distances[index + 1])
-	if high <= low:
-		return float(times[index])
-	return lerpf(float(times[index]), float(times[index + 1]), (clamped - low) / (high - low))
 
 
 static func _counterpart_row(role: String, band: Dictionary, axis: Dictionary, entry: Dictionary) -> Dictionary:
@@ -629,17 +781,17 @@ static func _counterpart_row(role: String, band: Dictionary, axis: Dictionary, e
 static func _axis_series(band: Dictionary, axis: String) -> Dictionary:
 	match axis:
 		"gz_positive":
-			return {"value": _maximum(band.normal), "metric": "normal_peak_positive"}
+			return {"value": Fidelity._maximum(band.normal, 0.0), "metric": "normal_peak_positive"}
 		"gz_negative":
-			return {"value": _minimum(band.normal), "metric": "normal_peak_negative"}
+			return {"value": Fidelity._minimum(band.normal, 0.0), "metric": "normal_peak_negative"}
 		"gz_level":
 			return {"value": _mean(band.normal), "metric": "normal_window_mean"}
 		"gy":
-			return {"value": _absolute_peak(band.lateral), "metric": "lateral_peak_absolute"}
+			return {"value": Fidelity._absolute_peak(band.lateral), "metric": "lateral_peak_absolute"}
 		"gx_positive":
-			return {"value": _maximum(band.longitudinal), "metric": "longitudinal_peak_positive"}
+			return {"value": Fidelity._maximum(band.longitudinal, 0.0), "metric": "longitudinal_peak_positive"}
 		"gx_negative":
-			return {"value": _minimum(band.longitudinal), "metric": "longitudinal_peak_negative"}
+			return {"value": Fidelity._minimum(band.longitudinal, 0.0), "metric": "longitudinal_peak_negative"}
 	return {}
 
 
@@ -730,26 +882,26 @@ static func markdown(pack: Dictionary, reference: Dictionary) -> String:
 		"%d seams. A coherent roll crosses a seam with a small rate jump; a step shows up" \
 			% int(seams.seam_count),
 		"as a large jump or a large change of roll acceleration.", "",
-		_row(["rank", "seam", "roll rate jump deg/s", "roll accel break deg/s^2",
+		Artifacts._markdown_row(["rank", "seam", "roll rate jump deg/s", "roll accel break deg/s^2",
 			"before", "after", "gesture seam"]),
-		_row(["---:", "---", "---:", "---:", "---", "---", "---"])])
+		Artifacts._markdown_row(["---:", "---", "---:", "---:", "---", "---", "---"])])
 	for entry: Dictionary in seams.worst_roll_rate_jumps:
 		var seam := _seam_by_window(seams.seams, str(entry.window_id))
-		lines.append(_row([int(entry.rank), str(entry.window_id), _num(entry.value, 3),
-			_num(seam.get("roll_acceleration_break_dps2"), 3),
+		lines.append(Artifacts._markdown_row([int(entry.rank), str(entry.window_id), _num(entry.value),
+			_num(seam.get("roll_acceleration_break_dps2")),
 			str(seam.get("before_role", "")), str(seam.get("after_role", "")),
 			str(seam.get("gesture_boundary", ""))]))
 	lines.append_array(["", "### Roll delivery per role", "",
 		"`roll segments` counts the separate runs of actual rolling inside the window;",
 		"two or more with a high `banked flat share` is the roll -> flat -> roll pattern.", "",
-		_row(["role window", "seconds", "peak deg/s", "roll segments", "reversals",
+		Artifacts._markdown_row(["role window", "seconds", "peak deg/s", "roll segments", "reversals",
 			"flat share", "banked flat share"]),
-		_row(["---", "---:", "---:", "---:", "---:", "---:", "---:"])])
+		Artifacts._markdown_row(["---", "---:", "---:", "---:", "---:", "---:", "---:"])])
 	for profile: Dictionary in seams.role_roll_profiles:
-		lines.append(_row([str(profile.window_id), _num(profile.seconds, 2),
-			_num(profile.roll_rate_peak_dps, 2), int(profile.roll_segment_count),
-			int(profile.roll_reversal_count), _num(profile.flat_roll_share, 3),
-			_num(profile.banked_flat_roll_share, 3)]))
+		lines.append(Artifacts._markdown_row([str(profile.window_id), _num(profile.seconds),
+			_num(profile.roll_rate_peak_dps), int(profile.roll_segment_count),
+			int(profile.roll_reversal_count), _num(profile.flat_roll_share),
+			_num(profile.banked_flat_roll_share)]))
 	var planarity: Dictionary = pack.element_planarity
 	lines.append_array(["", "## Element planarity (issue 23)", "",
 		"Least-squares best-fit plane per role window. `tilt off vertical` is how far the",
@@ -761,26 +913,26 @@ static func markdown(pack: Dictionary, reference: Dictionary) -> String:
 		"fault. The reading bites on elements whose plane should contain the vertical —",
 		"hills, drops, the camelback — where anything above a few degrees is a lean the",
 		"shape should not have.", "",
-		_row(["role window", "class", "rms off-plane m", "max off-plane m",
+		Artifacts._markdown_row(["role window", "class", "rms off-plane m", "max off-plane m",
 			"off-plane ratio", "tilt off vertical deg", "tilt meaningful"]),
-		_row(["---", "---", "---:", "---:", "---:", "---:", "---"])])
+		Artifacts._markdown_row(["---", "---", "---:", "---:", "---:", "---:", "---"])])
 	for element: Dictionary in planarity.elements:
-		lines.append(_row([str(element.window_id), str(element.planarity_class),
-			_num(element.get("rms_out_of_plane_m"), 3), _num(element.get("max_out_of_plane_m"), 3),
-			_num(element.get("out_of_plane_ratio"), 4),
-			_num(element.get("vertical_plane_tilt_deg"), 2), str(element.tilt_is_meaningful)]))
+		lines.append(Artifacts._markdown_row([str(element.window_id), str(element.planarity_class),
+			_num(element.get("rms_out_of_plane_m")), _num(element.get("max_out_of_plane_m")),
+			_num(element.get("out_of_plane_ratio")),
+			_num(element.get("vertical_plane_tilt_deg")), str(element.tilt_is_meaningful)]))
 	var shapes: Dictionary = pack.shape_ratios
 	lines.append_array(["", "## Shape ratios — the numeric silhouette", "",
-		_row(["role window", "height m", "horizontal m", "length m", "h:l",
+		Artifacts._markdown_row(["role window", "height m", "horizontal m", "length m", "h:l",
 			"heading change deg", "entry pitch", "exit pitch", "entry bank", "exit bank"]),
-		_row(["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:"])])
+		Artifacts._markdown_row(["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:"])])
 	for element: Dictionary in shapes.elements:
-		lines.append(_row([str(element.window_id), _num(element.get("height_extent_m"), 1),
-			_num(element.get("horizontal_extent_m"), 1), _num(element.get("track_length_m"), 1),
-			_num(element.get("height_to_length_ratio"), 3),
-			_num(element.get("total_heading_change_deg"), 1), _num(element.get("entry_pitch_deg"), 1),
-			_num(element.get("exit_pitch_deg"), 1), _num(element.get("entry_bank_deg"), 1),
-			_num(element.get("exit_bank_deg"), 1)]))
+		lines.append(Artifacts._markdown_row([str(element.window_id), _num(element.get("height_extent_m")),
+			_num(element.get("horizontal_extent_m")), _num(element.get("track_length_m")),
+			_num(element.get("height_to_length_ratio")),
+			_num(element.get("total_heading_change_deg")), _num(element.get("entry_pitch_deg")),
+			_num(element.get("exit_pitch_deg")), _num(element.get("entry_bank_deg")),
+			_num(element.get("exit_bank_deg"))]))
 	return "\n".join(lines) + "\n"
 
 
@@ -811,11 +963,11 @@ static func _reference_lines(reference: Dictionary) -> PackedStringArray:
 			int(reference.entry_count), int(reference.available_count)], "",
 		"Reference media is local, personal-use and never committed; only these",
 		"landmarks, provenance strings and digests are.", "",
-		_row(["element", "status", "source", "acquisition", "timestamp s", "sha256"]),
-		_row(["---", "---", "---", "---", "---:", "---"])])
+		Artifacts._markdown_row(["element", "status", "source", "acquisition", "timestamp s", "sha256"]),
+		Artifacts._markdown_row(["---", "---", "---", "---", "---:", "---"])])
 	for entry: Dictionary in reference.entries:
-		lines.append(_row([str(entry.element_id), str(entry.status), str(entry.source_id),
-			str(entry.acquisition), _num(entry.get("timestamp_s"), 2),
+		lines.append(Artifacts._markdown_row([str(entry.element_id), str(entry.status), str(entry.source_id),
+			str(entry.acquisition), _num(entry.get("timestamp_s")),
 			str(entry.expected_sha256).substr(0, 16)]))
 	lines.append("")
 	return lines
@@ -858,17 +1010,17 @@ static func counterpart_markdown(seeds: Array) -> String:
 			"Mapping: %d compiled windows bridged, %d unmapped, %d material roles without a window." % [
 				int(mapping.mapped_window_count), mapping.unmapped_windows.size(),
 				mapping.material_roles_without_window.size()], "",
-			_row(["role", "axis", "label", "measured g", "target", "band",
+			Artifacts._markdown_row(["role", "axis", "label", "measured g", "target", "band",
 				"status", "normalized miss", "held"]),
-			_row(["---", "---", "---", "---:", "---", "---", "---", "---:", "---"])])
+			Artifacts._markdown_row(["---", "---", "---", "---:", "---", "---", "---", "---:", "---"])])
 		for row: Dictionary in entry.rows:
 			var hold: Variant = row.get("measured_hold")
 			var hold_text := "—"
 			if hold is Dictionary:
-				hold_text = "%s g / %s s" % [_num(hold.get("held_g"), 2), _num(hold.get("seconds"), 2)]
-			lines.append(_row([str(row.role_id), str(row.get("axis", "")), str(row.get("label", "")),
-				_num(row.get("measured_g"), 3), _value(row.get("target")), _value(row.get("band")),
-				str(row.status), _num(row.get("normalized_miss"), 3), hold_text]))
+				hold_text = "%s g / %s s" % [_num(hold.get("held_g")), _num(hold.get("seconds"))]
+			lines.append(Artifacts._markdown_row([str(row.role_id), str(row.get("axis", "")), str(row.get("label", "")),
+				_num(row.get("measured_g")), _value(row.get("target")), _value(row.get("band")),
+				str(row.status), _num(row.get("normalized_miss")), hold_text]))
 		lines.append("")
 		if not entry.evidence_gaps.is_empty():
 			lines.append_array(["### Evidence gaps", ""])
@@ -885,26 +1037,19 @@ static func _seam_by_window(seams: Array, window_id: String) -> Dictionary:
 	return {}
 
 
-static func _row(cells: Array) -> String:
-	var parts := PackedStringArray()
-	for cell in cells:
-		parts.append(str(cell))
-	return "| %s |" % " | ".join(parts)
-
-
-static func _num(value: Variant, digits: int) -> String:
+static func _num(value: Variant) -> String:
 	if not _number(value):
 		return "—"
-	return String.num(float(value), digits)
+	return Artifacts._f6(value)
 
 
 static func _value(value: Variant) -> String:
 	if value is Array:
 		var parts := PackedStringArray()
 		for item in value:
-			parts.append(_num(item, 3))
+			parts.append(_num(item))
 		return "[%s]" % ", ".join(parts)
-	return _num(value, 3)
+	return _num(value)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1083,33 +1228,6 @@ static func _plan_headings_deg(tangents: PackedVector3Array, first: int, last: i
 			previous = heading
 		headings[index - first] = previous if not is_nan(previous) else 0.0
 	return headings
-
-
-static func _pitch_deg(tangent: Vector3) -> float:
-	if tangent.length_squared() <= 0.0:
-		return 0.0
-	return rad_to_deg(asin(clampf(tangent.normalized().y, -1.0, 1.0)))
-
-
-static func _maximum(values: PackedFloat32Array) -> float:
-	var output := -INF
-	for value in values:
-		output = maxf(output, float(value))
-	return output if is_finite(output) else 0.0
-
-
-static func _minimum(values: PackedFloat32Array) -> float:
-	var output := INF
-	for value in values:
-		output = minf(output, float(value))
-	return output if is_finite(output) else 0.0
-
-
-static func _absolute_peak(values: PackedFloat32Array) -> float:
-	var output := 0.0
-	for value in values:
-		output = maxf(output, absf(float(value)))
-	return output
 
 
 static func _mean(values: PackedFloat32Array) -> float:

@@ -12,7 +12,7 @@ const MATERIAL_ROLE_IDS := [
 const ROLE_FIXTURE_BAND_M := Vector2(10.0, 20.0)
 const ROLE_FIXTURE_STEP_M := 15.0
 
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 
 func _initialize() -> void:
@@ -26,19 +26,17 @@ func _initialize() -> void:
 	_test_generated_role_length_outside_its_declared_band_is_rejected()
 	_test_missing_role_span_ownership_is_rejected()
 	_test_unstamped_terrain_is_refused_not_exempted()
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 func _test_smoke_has_no_legacy_authoring_dependency() -> void:
 	var source := FileAccess.get_file_as_string("res://smoke.gd")
-	_expect(not source.is_empty(), "the smoke gate source can be inspected")
+	_t.expect(not source.is_empty(), "the smoke gate source can be inspected")
 	for forbidden in [
 		"elements.gd", "Elements.", "RideElements", "FVD", "GRADE", "CLOSURE", "author_",
 		"integrate_fvd", "route.sections", "route.plan", "route.lsm_ids",
 	]:
-		_expect(not source.contains(forbidden),
+		_t.expect(not source.contains(forbidden),
 			"the smoke gate has no legacy authoring token '%s'" % forbidden)
 
 
@@ -46,22 +44,22 @@ func _test_fixed_terminal_contract_accepts_matching_trajectory() -> void:
 	var fixture := _fixture()
 	var route := RouteContract.build(42, fixture.terrain, fixture.initial, fixture.plan,
 		fixture.compiled, fixture.trajectory)
-	_expect(route.get("ok", false),
+	_t.expect(route.get("ok", false),
 		"a matching fixed terminal contract is accepted: %s" % str(route.get("errors", [])))
-	_expect(_positive_propulsion_zones(route) == PackedInt32Array([1, 2, 3]),
+	_t.expect(_positive_propulsion_zones(route) == PackedInt32Array([1, 2, 3]),
 		"the accepted synthetic contract preserves exactly three propulsion zones")
-	_expect(route.get("gesture_windows", []).size() == 1 \
+	_t.expect(route.get("gesture_windows", []).size() == 1 \
 		and route.gesture_windows[0].get("first", -1) == 0 \
 		and route.gesture_windows[0].get("last", -1) == 3,
 		"the accepted synthetic contract preserves its complete gesture window")
-	_expect(route.gesture_windows[0].get("peak_profile_normal_onset_estimate_gps") == 7.875,
+	_t.expect(route.gesture_windows[0].get("peak_profile_normal_onset_estimate_gps") == 7.875,
 		"the public gesture window preserves its compiled analytic normal onset")
-	_expect(route.get("span_indices") == fixture.trajectory.span_index,
+	_t.expect(route.get("span_indices") == fixture.trajectory.span_index,
 		"the public route preserves native motion-span ownership")
-	_expect(route.get("terrain_story_plan", {}).get("integration_frame") == "planned-world",
+	_t.expect(route.get("terrain_story_plan", {}).get("integration_frame") == "planned-world",
 		"the contract labels accepted positions as direct planned-world integration")
 	for legacy_field in ["sections", "section_indices", "lsm_ids", "tunnel_sections"]:
-		_expect(not route.has(legacy_field),
+		_t.expect(not route.has(legacy_field),
 			"the public route does not expose legacy field '%s'" % legacy_field)
 
 
@@ -104,7 +102,7 @@ func _test_initial_state_uses_tight_finite_tolerances() -> void:
 	close.initial.tangent = Vector3(cos(angle), 0.0, sin(angle))
 	var accepted := RouteContract.build(42, close.terrain, close.initial, close.plan,
 		close.compiled, close.trajectory)
-	_expect(accepted.get("ok", false),
+	_t.expect(accepted.get("ok", false),
 		"finite initial-state roundoff inside the tight tolerance is accepted")
 
 	var far := _fixture()
@@ -133,9 +131,9 @@ func _test_gesture_analytic_onset_contract() -> void:
 
 func _test_generated_role_lengths_inside_declared_bands_are_accepted() -> void:
 	var route := _built_role_route(_role_fixture())
-	_expect(not _contains(route.get("errors", []), "generated length"),
+	_t.expect(not _t.contains(route.get("errors", []), "generated length"),
 		"in-band generated role lengths report no band miss: %s" % str(route.get("errors", [])))
-	_expect(not _contains(route.get("errors", []), "span ownership"),
+	_t.expect(not _t.contains(route.get("errors", []), "span ownership"),
 		"complete role ownership reports no ownership miss: %s" % str(route.get("errors", [])))
 
 
@@ -144,7 +142,7 @@ func _test_generated_role_length_outside_its_declared_band_is_rejected() -> void
 	_expect_rejected(fixture, "generated length",
 		"a generated role longer than its declared band")
 	var route := _built_role_route(fixture)
-	_expect(_contains(route.get("errors", []), "return-turn-a"),
+	_t.expect(_t.contains(route.get("errors", []), "return-turn-a"),
 		"the out-of-band diagnostic names the offending role: %s" % str(route.get("errors", [])))
 	_expect_rejected(_role_fixture({4: 1.0}), "generated length",
 		"a generated role shorter than its declared band")
@@ -379,8 +377,8 @@ func _fixture() -> Dictionary:
 func _expect_rejected(fixture: Dictionary, fragment: String, message: String) -> void:
 	var route := RouteContract.build(42, fixture.terrain, fixture.initial, fixture.plan,
 		fixture.compiled, fixture.trajectory)
-	_expect(not route.get("ok", true), "%s is rejected" % message)
-	_expect(_contains(route.get("errors", []), fragment),
+	_t.expect(not route.get("ok", true), "%s is rejected" % message)
+	_t.expect(_t.contains(route.get("errors", []), fragment),
 		"%s reports a diagnostic containing '%s': %s" % [
 			message, fragment, str(route.get("errors", [])),
 		])
@@ -395,14 +393,3 @@ func _positive_propulsion_zones(route: Dictionary) -> PackedInt32Array:
 		previous = value
 	return result
 
-
-func _contains(values: Variant, fragment: String) -> bool:
-	for value in values:
-		if str(value).contains(fragment):
-			return true
-	return false
-
-
-func _expect(condition: bool, message: String) -> void:
-	if not condition:
-		_errors.append(message)

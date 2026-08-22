@@ -364,12 +364,12 @@ func _build_ties() -> void:
 	mesh.size = Vector3(2.65, 0.12, 0.24)
 	mesh.material = _material(Color("858e92"), 0.55, 0.42)
 	var count := floori(route.length / TIE_SPACING)
-	var multimesh := _new_multimesh(mesh, count)
+	var transforms: Array[Transform3D] = []
 	for i in count:
 		var pose := pose_at_distance(route, i * TIE_SPACING)
 		pose.origin -= pose.basis.y * 1.18
-		multimesh.set_instance_transform(i, pose)
-	$Track/Ties.multimesh = multimesh
+		transforms.append(pose)
+	$Track/Ties.multimesh = _multimesh_from(mesh, transforms)
 
 
 func _build_supports() -> void:
@@ -400,10 +400,7 @@ func _build_supports() -> void:
 	mesh.radial_segments = 8
 	mesh.rings = 1
 	mesh.material = _material(Color("9c978b"), 0.35, 0.58)
-	var multimesh := _new_multimesh(mesh, transforms.size())
-	for i in transforms.size():
-		multimesh.set_instance_transform(i, transforms[i])
-	$Track/Supports.multimesh = multimesh
+	$Track/Supports.multimesh = _multimesh_from(mesh, transforms)
 
 
 func _build_launches() -> void:
@@ -424,10 +421,7 @@ func _build_launches() -> void:
 				pose.origin -= pose.basis.y * 0.94
 				poses.append(pose)
 			distance += 3.0
-		var multimesh := _new_multimesh(mesh, poses.size())
-		for i in poses.size():
-			multimesh.set_instance_transform(i, poses[i])
-		get_node("Track/LSM%d" % launch).multimesh = multimesh
+		get_node("Track/LSM%d" % launch).multimesh = _multimesh_from(mesh, poses)
 
 
 func _build_train() -> void:
@@ -632,6 +626,13 @@ func _new_multimesh(mesh: Mesh, count: int) -> MultiMesh:
 	multimesh.mesh = mesh
 	multimesh.instance_count = count
 	multimesh.custom_aabb = route.bounds.grow(300.0)
+	return multimesh
+
+
+func _multimesh_from(mesh: Mesh, transforms: Array[Transform3D]) -> MultiMesh:
+	var multimesh := _new_multimesh(mesh, transforms.size())
+	for i in transforms.size():
+		multimesh.set_instance_transform(i, transforms[i])
 	return multimesh
 
 

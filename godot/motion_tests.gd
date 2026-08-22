@@ -1,9 +1,8 @@
 extends SceneTree
 
 const Motion := preload("res://motion.gd")
-const EPS := 0.000001
 
-var _errors := PackedStringArray()
+var _t := TestUtil.new()
 
 
 func _initialize() -> void:
@@ -23,79 +22,83 @@ func _initialize() -> void:
 	_test_boundary_roundoff_does_not_emit_a_sliver()
 	_test_degenerate_frame_rejection()
 	_test_rk4_step_halving()
+	_test_spatial_straight_ends_at_exact_length()
+	_test_spatial_quarter_circle_matches_curvature()
+	_test_spatial_twist_uses_actual_distance()
+	_test_spatial_force_projection_matches_curvature()
+	_test_spatial_step_halving_converges()
+	_test_spatial_rejects_vertical_tangent_and_stalling_speed()
 	_test_dense_output_native_identity()
 	_test_dense_output_distance_and_defect()
-	for error in _errors:
-		printerr(error)
-	quit(0 if _errors.is_empty() else 1)
+	_t.finish(self)
 
 
 func _test_c2_profiles() -> void:
 	var held := Motion.constant(4.0)
-	_expect_vector(Motion.profile_sample(held, 0.37), Vector3(4.0, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(held, 0.37), Vector3(4.0, 0.0, 0.0),
 		"constant profile has its value and zero derivatives")
 	var transition := Motion.quintic(2.0, 5.0)
-	_expect_vector(Motion.profile_sample(transition, 0.0), Vector3(2.0, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(transition, 0.0), Vector3(2.0, 0.0, 0.0),
 		"quintic starts with exact value and zero first/second derivatives")
-	_expect_vector(Motion.profile_sample(transition, 1.0), Vector3(5.0, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(transition, 1.0), Vector3(5.0, 0.0, 0.0),
 		"quintic ends with exact value and zero first/second derivatives")
-	_expect_vector(Motion.profile_sample(transition, 0.25),
+	_t.expect_vector(Motion.profile_sample(transition, 0.25),
 		Vector3(2.310546875, 3.1640625, 16.875),
 		"quintic interior value and analytic first/second derivatives are exact")
 	var pulse := Motion.compact_pulse(3.0)
-	_expect_vector(Motion.profile_sample(pulse, 0.0), Vector3.ZERO,
+	_t.expect_vector(Motion.profile_sample(pulse, 0.0), Vector3.ZERO,
 		"compact pulse has a zero C2 entry jet")
-	_expect_vector(Motion.profile_sample(pulse, 1.0), Vector3.ZERO,
+	_t.expect_vector(Motion.profile_sample(pulse, 1.0), Vector3.ZERO,
 		"compact pulse has a zero C2 exit jet")
-	_expect_close(Motion.profile_sample(pulse, 0.5).x, 3.0,
+	_t.expect_close(Motion.profile_sample(pulse, 0.5).x, 3.0,
 		"compact pulse reaches its authored amplitude")
 	var notch := Motion.balanced_notch(4.6, 1.1)
-	_expect_vector(Motion.profile_sample(notch, 0.0), Vector3(4.6, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(notch, 0.0), Vector3(4.6, 0.0, 0.0),
 		"balanced notch has an exact C2 entry jet")
-	_expect_vector(Motion.profile_sample(notch, 1.0), Vector3(4.6, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(notch, 1.0), Vector3(4.6, 0.0, 0.0),
 		"balanced notch has an exact C2 exit jet")
-	_expect_close(Motion.profile_sample(notch, 0.5).x, 3.5,
+	_t.expect_close(Motion.profile_sample(notch, 0.5).x, 3.5,
 		"balanced notch reaches its authored center load")
 	var plateau := Motion.plateau_pulse(2.0)
-	_expect_vector(Motion.profile_sample(plateau, 0.0), Vector3.ZERO,
+	_t.expect_vector(Motion.profile_sample(plateau, 0.0), Vector3.ZERO,
 		"plateau pulse has a zero C2 entry jet")
-	_expect_vector(Motion.profile_sample(plateau, 1.0), Vector3.ZERO,
+	_t.expect_vector(Motion.profile_sample(plateau, 1.0), Vector3.ZERO,
 		"plateau pulse has a zero C2 exit jet")
-	_expect_vector(Motion.profile_sample(plateau, 0.5), Vector3(2.0, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(plateau, 0.5), Vector3(2.0, 0.0, 0.0),
 		"plateau pulse holds its authored center rate")
 	var bank := Motion.bank_balance(0.0, deg_to_rad(60.0))
-	_expect_vector(Motion.profile_sample(bank, 0.0), Vector3(1.0, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(bank, 0.0), Vector3(1.0, 0.0, 0.0),
 		"bank balance starts at the exact level-load jet")
-	_expect_vector(Motion.profile_sample(bank, 1.0), Vector3(2.0, 0.0, 0.0),
+	_t.expect_vector(Motion.profile_sample(bank, 1.0), Vector3(2.0, 0.0, 0.0),
 		"bank balance ends at the exact banked level-load jet")
-	_expect_close(Motion.profile_sample(bank, 0.5).x, 1.0 / cos(deg_to_rad(30.0)),
+	_t.expect_close(Motion.profile_sample(bank, 0.5).x, 1.0 / cos(deg_to_rad(30.0)),
 		"bank balance follows the integrated compact-roll angle")
 	var span_record := Motion.span("immutable", 1.0, "moving", held, held, held, held)
-	_expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only()
+	_t.expect(held.is_read_only() and transition.is_read_only() and pulse.is_read_only()
 		and notch.is_read_only() and plateau.is_read_only() and bank.is_read_only(),
 		"profile records are immutable")
-	_expect(span_record.is_read_only(), "span records are immutable")
+	_t.expect(span_record.is_read_only(), "span records are immutable")
 
 
 func _test_profile_peak_abs_derivative_estimate() -> void:
-	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.constant(-4.0)), 0.0,
+	_t.expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.constant(-4.0)), 0.0,
 		"constant profile has zero peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.quintic(1.0, 5.2)), 7.875,
+	_t.expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.quintic(1.0, 5.2)), 7.875,
 		"rising quintic reports its exact analytic peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.quintic(5.2, 1.0)), 7.875,
+	_t.expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.quintic(5.2, 1.0)), 7.875,
 		"falling quintic has the same absolute peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(3.0)),
+	_t.expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(3.0)),
 		10.699182439179779, "positive compact pulse reports its exact analytic peak derivative")
-	_expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(-3.0)),
+	_t.expect_close(Motion.profile_peak_abs_derivative_estimate(Motion.compact_pulse(-3.0)),
 		10.699182439179779, "negative compact pulse has the same absolute peak derivative")
 
 
 func _test_resistance_law() -> void:
 	var measured := Motion.resistance(20.0, 0.15, 0.002)
-	_expect_vector(measured, Vector3(0.95, 0.08, 0.004),
+	_t.expect_vector(measured, Vector3(0.95, 0.08, 0.004),
 		"resistance and analytic derivatives follow rolling plus quadratic drag")
 	var stopped := Motion.resistance(0.0, 0.15, 0.002)
-	_expect_vector(stopped, Vector3(0.15, 0.0, 0.004),
+	_t.expect_vector(stopped, Vector3(0.15, 0.0, 0.004),
 		"resistance is smooth and one-sided at zero forward speed")
 
 
@@ -112,13 +115,13 @@ func _test_constant_rolling_coast() -> void:
 		return
 	var expected_speed := initial_speed - rolling * duration
 	var expected_distance := initial_speed * duration - 0.5 * rolling * duration * duration
-	_expect_close(route.speed_mps[-1], expected_speed,
+	_t.expect_close(route.speed_mps[-1], expected_speed,
 		"constant rolling resistance reduces speed linearly")
-	_expect_close(route.position_m[-1].x, expected_distance,
+	_t.expect_close(route.position_m[-1].x, expected_distance,
 		"constant rolling resistance gives the analytic coast position", 0.00005)
-	_expect_close(0.5 * (initial_speed * initial_speed - route.speed_mps[-1] * route.speed_mps[-1]),
+	_t.expect_close(0.5 * (initial_speed * initial_speed - route.speed_mps[-1] * route.speed_mps[-1]),
 		rolling * route.distance_m[-1], "rolling work equals mechanical energy loss per unit mass")
-	_expect_close(route.longitudinal_g[-1], -rolling / Motion.G0,
+	_t.expect_close(route.longitudinal_g[-1], -rolling / Motion.G0,
 		"rolling loss appears in longitudinal proper g without gravity")
 
 
@@ -136,13 +139,13 @@ func _test_quadratic_drag_coast() -> void:
 	var factor := 1.0 + aero_per_m * initial_speed * duration
 	var expected_speed := initial_speed / factor
 	var expected_distance := log(factor) / aero_per_m
-	_expect_close(route.speed_mps[-1], expected_speed,
+	_t.expect_close(route.speed_mps[-1], expected_speed,
 		"quadratic drag gives the analytic reciprocal speed decay")
-	_expect_close(route.position_m[-1].x, expected_distance,
+	_t.expect_close(route.position_m[-1].x, expected_distance,
 		"quadratic drag gives the analytic logarithmic coast position")
-	_expect_close(route.distance_m[-1], expected_distance,
+	_t.expect_close(route.distance_m[-1], expected_distance,
 		"quadratic-drag distance matches the analytic position")
-	_expect_close(route.longitudinal_g[-1], -aero_per_m * expected_speed * expected_speed / Motion.G0,
+	_t.expect_close(route.longitudinal_g[-1], -aero_per_m * expected_speed * expected_speed / Motion.G0,
 		"quadratic drag appears in longitudinal proper g")
 
 
@@ -152,9 +155,9 @@ func _test_straight_coast() -> void:
 	], _vacuum_settings(0.01))
 	if not _expect_route(route, "straight coast integrates"):
 		return
-	_expect_vector(route.position_m[-1], Vector3(20.0, 0.0, 0.0),
+	_t.expect_vector(route.position_m[-1], Vector3(20.0, 0.0, 0.0),
 		"straight coast advances at constant speed", 0.00005)
-	_expect_close(route.speed_mps[-1], 10.0, "straight coast preserves speed")
+	_t.expect_close(route.speed_mps[-1], 10.0, "straight coast preserves speed")
 
 
 func _test_straight_launch() -> void:
@@ -163,11 +166,11 @@ func _test_straight_launch() -> void:
 	], _vacuum_settings(0.01))
 	if not _expect_route(route, "straight launch integrates"):
 		return
-	_expect_close(route.speed_mps[-1], 10.0 + 2.0 * Motion.G0,
+	_t.expect_close(route.speed_mps[-1], 10.0 + 2.0 * Motion.G0,
 		"straight launch speed follows authored drive")
-	_expect_close(route.position_m[-1].x, 20.0 + 2.0 * Motion.G0,
+	_t.expect_close(route.position_m[-1].x, 20.0 + 2.0 * Motion.G0,
 		"straight launch position follows constant acceleration", 0.00005)
-	_expect_close(route.longitudinal_g[-1], 1.0,
+	_t.expect_close(route.longitudinal_g[-1], 1.0,
 		"straight launch reports authored proper longitudinal g")
 
 
@@ -180,11 +183,11 @@ func _test_pitched_gravity_cancellation() -> void:
 	], _settings(0.01))
 	if not _expect_route(route, "pitched straight gravity-cancellation case integrates"):
 		return
-	_expect_close(route.speed_mps[-1], 20.0,
+	_t.expect_close(route.speed_mps[-1], 20.0,
 		"drive cancels gravity along a pitched straight exactly once")
-	_expect_vector(route.tangent[-1], tangent,
+	_t.expect_vector(route.tangent[-1], tangent,
 		"normal support cancels transverse gravity without curving the track")
-	_expect_close(route.longitudinal_g[-1], sin(angle),
+	_t.expect_close(route.longitudinal_g[-1], sin(angle),
 		"longitudinal telemetry excludes gravity")
 
 
@@ -197,7 +200,7 @@ func _test_zero_gravity_circle() -> void:
 	], _zero_gravity_settings(0.0025))
 	if not _expect_route(route, "zero-gravity circular motion integrates"):
 		return
-	_expect_vector(route.tangent[-1], Vector3(cos(theta), 0.0, sin(theta)),
+	_t.expect_vector(route.tangent[-1], Vector3(cos(theta), 0.0, sin(theta)),
 		"constant lateral proper force produces the analytic circular tangent", 0.0001)
 
 
@@ -215,9 +218,9 @@ func _test_banked_lateral_curvature() -> void:
 	], _zero_gravity_settings(0.001))
 	if not _expect_route(route, "banked lateral-curvature case integrates"):
 		return
-	_expect_vector(route.tangent[-1], expected_tangent,
+	_t.expect_vector(route.tangent[-1], expected_tangent,
 		"banked controls produce the analytic tangent", 0.000001)
-	_expect_close(route.curvature_m_inv[-1], Motion.G0 * force_magnitude / 400.0,
+	_t.expect_close(route.curvature_m_inv[-1], Motion.G0 * force_magnitude / 400.0,
 		"banked controls produce the analytic curvature magnitude", 0.000001)
 	_expect_unit_frame(route.tangent[-1], route.rider_up[-1],
 		"banked integration preserves an orthonormal rider frame")
@@ -229,9 +232,9 @@ func _test_roll_only_frame_twist() -> void:
 	], _zero_gravity_settings(0.005))
 	if not _expect_route(route, "roll-only frame twist integrates"):
 		return
-	_expect_vector(route.tangent[-1], Vector3.RIGHT,
+	_t.expect_vector(route.tangent[-1], Vector3.RIGHT,
 		"roll-only motion does not change tangent")
-	_expect_vector(route.rider_up[-1], Vector3.BACK,
+	_t.expect_vector(route.rider_up[-1], Vector3.BACK,
 		"roll-only motion twists rider up ninety degrees", 0.0001)
 
 
@@ -245,11 +248,11 @@ func _test_low_speed_station_handoff() -> void:
 	if not _expect_route(route, "zero-speed station start and strict-above-floor handoff integrate"):
 		return
 	var seam: int = route.span_index.find(1)
-	_expect(seam > 0, "station-to-moving boundary owns an exact native node")
+	_t.expect(seam > 0, "station-to-moving boundary owns an exact native node")
 	if seam > 0:
-		_expect_close(route.speed_mps[seam], handoff_speed,
+		_t.expect_close(route.speed_mps[seam], handoff_speed,
 			"moving mode begins unambiguously above the two metre-per-second floor")
-		_expect_vector(route.tangent[seam], Vector3.RIGHT,
+		_t.expect_vector(route.tangent[seam], Vector3.RIGHT,
 			"station mode keeps its straight frame fixed")
 	_expect_rejected(Motion.integrate(_initial(1.5), [
 		_span("too-slow", 0.1, "moving", 0.0, 0.0, 0.0, 0.0),
@@ -276,7 +279,7 @@ func _test_low_speed_station_handoff() -> void:
 			0.5 * Motion.STATION_TRANSVERSE_TOLERANCE_G, 0.0, 0.0),
 	], _settings(0.01))
 	if _expect_route(tolerated_station, "station accepts sub-tolerance transverse roundoff"):
-		_expect_vector(tolerated_station.tangent[-1], Vector3.RIGHT,
+		_t.expect_vector(tolerated_station.tangent[-1], Vector3.RIGHT,
 			"station freezes its frame when transverse roundoff is tolerated")
 	_expect_rejected(Motion.integrate(_initial(5.0), [
 		_span("tilted", 0.1, "station", 1.0,
@@ -300,13 +303,13 @@ func _test_exact_span_boundary_splitting() -> void:
 	], _vacuum_settings(0.01))
 	if not _expect_route(route, "non-grid span boundaries integrate"):
 		return
-	_expect(route.time_s == PackedFloat64Array([0.0, 0.01, 0.015, 0.025, 0.032]),
+	_t.expect(route.time_s == PackedFloat64Array([0.0, 0.01, 0.015, 0.025, 0.032]),
 		"RK4 steps split exactly at every span boundary")
-	_expect(route.span_index == PackedInt32Array([0, 0, 1, 1, 1]),
+	_t.expect(route.span_index == PackedInt32Array([0, 0, 1, 1, 1]),
 		"no RK stage crosses into the next owning span")
-	_expect_close(route.longitudinal_g[1], first_drive,
+	_t.expect_close(route.longitudinal_g[1], first_drive,
 		"the pre-seam native state retains the first control")
-	_expect_close(route.longitudinal_g[2], second_drive,
+	_t.expect_close(route.longitudinal_g[2], second_drive,
 		"the seam native state is owned by the second control")
 	var seam_speed := 10.0 + Motion.G0 * first_drive * first_duration
 	var expected_speed := seam_speed + Motion.G0 * second_drive * second_duration
@@ -314,9 +317,9 @@ func _test_exact_span_boundary_splitting() -> void:
 		+ 0.5 * Motion.G0 * first_drive * first_duration * first_duration \
 		+ seam_speed * second_duration \
 		+ 0.5 * Motion.G0 * second_drive * second_duration * second_duration
-	_expect_close(route.speed_mps[-1], expected_speed,
+	_t.expect_close(route.speed_mps[-1], expected_speed,
 		"discontinuous drive owns only its exact span stages")
-	_expect_close(route.position_m[-1].x, expected_position,
+	_t.expect_close(route.position_m[-1].x, expected_position,
 		"boundary splitting preserves the analytic piecewise-acceleration position", 0.00005)
 
 
@@ -328,9 +331,9 @@ func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
 	], _zero_gravity_settings(0.01))
 	if not _expect_route(route, "roundoff-adjacent span boundaries integrate"):
 		return
-	_expect(route.time_s.size() == 101,
+	_t.expect(route.time_s.size() == 101,
 		"sub-public-resolution boundary roundoff is folded into the adjacent RK step")
-	_expect(route.span_index.find(1) == 50,
+	_t.expect(route.span_index.find(1) == 50,
 		"the exact boundary node remains owned by the next span")
 	var public_times := PackedFloat32Array()
 	var public_distances := PackedFloat32Array()
@@ -340,12 +343,12 @@ func _test_boundary_roundoff_does_not_emit_a_sliver() -> void:
 		public_times[index] = route.time_s[index]
 		public_distances[index] = route.distance_m[index]
 	for index in range(1, public_times.size()):
-		_expect(public_times[index] > public_times[index - 1]
+		_t.expect(public_times[index] > public_times[index - 1]
 			and public_distances[index] > public_distances[index - 1],
 			"public-compatible time and distance stay strict at sample %d" % index)
-	_expect_close(route.time_s[-1], 2.0 * DURATION_S,
+	_t.expect_close(route.time_s[-1], 2.0 * DURATION_S,
 		"roundoff folding retains the exact terminal time")
-	_expect_close(route.position_m[-1].x, 20.0 * DURATION_S,
+	_t.expect_close(route.position_m[-1].x, 20.0 * DURATION_S,
 		"roundoff folding retains the analytic terminal position", 0.000003)
 
 
@@ -382,11 +385,157 @@ func _test_rk4_step_halving() -> void:
 		return
 	var coarse_error: float = coarse.tangent[-1].distance_to(exact)
 	var fine_error: float = fine.tangent[-1].distance_to(exact)
-	_expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
+	_t.expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
 		"step halving demonstrates fourth-order convergence")
-	_expect(fine_error <= 0.00001, "fine RK4 result has bounded absolute error")
+	_t.expect(fine_error <= 0.00001, "fine RK4 result has bounded absolute error")
 	_expect_unit_frame(fine.tangent[-1], fine.rider_up[-1],
 		"projected RK4 leaves a unit orthogonal frame")
+
+
+func _test_spatial_straight_ends_at_exact_length() -> void:
+	var state := _moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 40.0)
+	var span := Motion.spatial_span("spatial/straight", 100.0,
+		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0),
+		Motion.constant(0.0))
+	var route := Motion.integrate(state, [span], {"step_s": 0.01,
+		"gravity_mps2": Vector3.ZERO, "rolling_mps2": 0.0, "aero_per_m": 0.0})
+	_t.expect(route.get("ok", false), "spatial straight integrates")
+	_t.expect_close(route.distance_m[-1], 100.0, "spatial span ends at its exact length", 0.000001)
+	# Positions are published as Float32, so 250 accumulated steps out to 100 m carry about
+	# 2.4e-4 m of representation error. The equivalent 2.5 s time span lands on the same value.
+	_t.expect(route.position_m[-1].distance_to(Vector3(100.0, 0.0, 0.0)) <= 0.0005,
+		"spatial straight endpoint follows its tangent")
+	_t.expect_close(route.time_s[-1], 2.5, "spatial elapsed time is an integration result", 0.000001)
+
+
+func _test_spatial_quarter_circle_matches_curvature() -> void:
+	var radius := 100.0
+	var length_m := 0.5 * PI * radius
+	var span := Motion.spatial_span("spatial/quarter-circle", length_m,
+		Motion.constant(0.0), Motion.constant(1.0 / radius), Motion.constant(0.0),
+		Motion.constant(0.0))
+	var route := Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 40.0),
+		[span], {"step_s": 0.005, "gravity_mps2": Vector3.ZERO,
+			"rolling_mps2": 0.0, "aero_per_m": 0.0})
+	if not _expect_route(route, "spatial quarter circle integrates"):
+		return
+	_t.expect(route.position_m[-1].distance_to(Vector3(radius, 0.0, radius)) <= 0.02,
+		"constant spatial curvature makes a quarter circle")
+	_t.expect(route.tangent[-1].distance_to(Vector3.BACK) <= 0.0002,
+		"quarter circle turns its tangent by ninety degrees")
+	_t.expect_close(route.curvature_m_inv[-1], 1.0 / radius,
+		"published curvature is the authored spatial curvature", 0.000001)
+
+
+func _test_spatial_twist_uses_actual_distance() -> void:
+	var length_m := 120.0
+	var twist := Motion.quintic(0.0, PI * 0.5)
+	var slow := _spatial_route(20.0, Motion.spatial_span("spatial/twist", length_m,
+		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0), twist))
+	var fast := _spatial_route(60.0, Motion.spatial_span("spatial/twist", length_m,
+		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0), twist))
+	if not _expect_route(slow, "slow spatial twist integrates") \
+			or not _expect_route(fast, "fast spatial twist integrates"):
+		return
+	_t.expect_vector(slow.rider_up[-1], Vector3.BACK,
+		"a quarter twist over arc length rolls rider-up onto the right axis", 0.0001)
+	_t.expect_vector(fast.rider_up[-1], Vector3.BACK,
+		"tripling speed does not change the twist angle", 0.0001)
+	_t.expect_close(fast.time_s[-1], slow.time_s[-1] / 3.0,
+		"the same span at triple speed takes a third of the time", 0.000001)
+	_t.expect_close(_peak_abs(slow.roll_rate_rad_s), 20.0 * 1.875 * PI * 0.5 / length_m,
+		"roll rate is speed times the analytic quintic twist slope", 0.0005)
+	_t.expect_close(_peak_abs(fast.roll_rate_rad_s), 3.0 * _peak_abs(slow.roll_rate_rad_s),
+		"roll rate scales with speed at the same spatial twist slope", 0.0005)
+
+
+func _test_spatial_force_projection_matches_curvature() -> void:
+	var pitch_curvature := -0.004
+	var yaw_curvature := 0.006
+	var speed := 45.0
+	var pitch := deg_to_rad(10.0)
+	var tangent := Vector3(cos(pitch), sin(pitch), 0.0)
+	var up := Vector3(-sin(pitch), cos(pitch), 0.0).rotated(tangent, deg_to_rad(30.0))
+	var gravity := Vector3.DOWN * Motion.G0
+	var route := Motion.integrate(_moving_state(Vector3.ZERO, tangent, up, speed), [
+		Motion.spatial_span("spatial/projection", 90.0,
+			Motion.constant(pitch_curvature), Motion.constant(yaw_curvature),
+			Motion.constant(0.0), Motion.constant(0.0)),
+	], _settings(0.01))
+	if not _expect_route(route, "pitched and banked spatial span integrates"):
+		return
+	var worst_normal := 0.0
+	var worst_lateral := 0.0
+	var worst_curvature := 0.0
+	for index in route.time_s.size():
+		var stage_tangent: Vector3 = route.tangent[index]
+		var stage_up: Vector3 = route.rider_up[index]
+		var stage_right := stage_tangent.cross(stage_up)
+		var stage_speed: float = route.speed_mps[index]
+		var yaw_normal := stage_tangent.cross(Vector3.UP).normalized()
+		var curvature := pitch_curvature * yaw_normal.cross(stage_tangent) \
+			+ yaw_curvature * yaw_normal
+		var perpendicular := gravity - stage_tangent * gravity.dot(stage_tangent)
+		var squared := stage_speed * stage_speed
+		worst_normal = maxf(worst_normal, absf(route.normal_g[index]
+			- (squared * curvature.dot(stage_up) - perpendicular.dot(stage_up)) / Motion.G0))
+		worst_lateral = maxf(worst_lateral, absf(route.lateral_g[index]
+			- (squared * curvature.dot(stage_right) - perpendicular.dot(stage_right)) / Motion.G0))
+		worst_curvature = maxf(worst_curvature,
+			route.curvature_vector_m_inv[index].distance_to(curvature))
+	_t.expect(worst_normal <= 0.0005,
+		"published normal g is the rider-up projection of the spatial curvature: %.9f"
+			% worst_normal)
+	_t.expect(worst_lateral <= 0.0005,
+		"published lateral g is the rider-right projection of the spatial curvature: %.9f"
+			% worst_lateral)
+	_t.expect(worst_curvature <= 0.000001,
+		"published curvature is the authored world pitch/yaw vector: %.9f" % worst_curvature)
+	_t.expect(route.tangent[-1].y < tangent.y,
+		"negative pitch curvature pitches the tangent downward")
+
+
+func _test_spatial_step_halving_converges() -> void:
+	var radius := 10.0
+	var theta := 2.0
+	var exact := Vector3(cos(theta), 0.0, sin(theta))
+	var span := Motion.spatial_span("spatial/arc", theta * radius,
+		Motion.constant(0.0), Motion.constant(1.0 / radius), Motion.constant(0.0),
+		Motion.constant(0.0))
+	var coarse := Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 10.0),
+		[span], _zero_gravity_settings(0.4))
+	var fine := Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 10.0),
+		[span], _zero_gravity_settings(0.2))
+	if not _expect_route(coarse, "coarse spatial convergence probe integrates") \
+			or not _expect_route(fine, "fine spatial convergence probe integrates"):
+		return
+	var coarse_error: float = coarse.tangent[-1].distance_to(exact)
+	var fine_error: float = fine.tangent[-1].distance_to(exact)
+	_t.expect(fine_error > 0.0 and coarse_error / fine_error >= 12.0,
+		"spatial step halving demonstrates fourth-order convergence: %.9f then %.9f"
+			% [coarse_error, fine_error])
+	_t.expect(fine_error <= 0.0001, "fine spatial result has bounded absolute error")
+	_t.expect_close(coarse.distance_m[-1], theta * radius,
+		"a coarse spatial span still ends at its exact length", 0.000001)
+	_expect_unit_frame(fine.tangent[-1], fine.rider_up[-1],
+		"projected spatial RK4 leaves a unit orthogonal frame")
+
+
+func _test_spatial_rejects_vertical_tangent_and_stalling_speed() -> void:
+	var vertical := Motion.integrate(
+		_moving_state(Vector3.ZERO, Vector3.UP, Vector3.RIGHT, 40.0), [
+			Motion.spatial_span("spatial/vertical", 10.0, Motion.constant(0.0),
+				Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0)),
+		], _settings(0.01))
+	_expect_rejected(vertical, "world vertical",
+		"a spatial span rejects a tangent on the pitch/yaw basis singularity")
+	var stalling := Motion.integrate(
+		_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, 3.0), [
+			Motion.spatial_span("spatial/stall", 200.0, Motion.constant(0.0),
+				Motion.constant(0.0), Motion.constant(-0.05), Motion.constant(0.0)),
+		], _zero_gravity_settings(0.01))
+	_expect_rejected(stalling, "moving speed floor",
+		"a spatial span rejects a train that stops inside it")
 
 
 func _test_dense_output_native_identity() -> void:
@@ -406,21 +555,21 @@ func _test_dense_output_native_identity() -> void:
 		return
 	var sample_time := 0.0125
 	var analytic: Dictionary = Motion.sample_time(analytic_route, sample_time)
-	_expect_close(analytic.get("time_s", -1.0), sample_time,
+	_t.expect_close(analytic.get("time_s", -1.0), sample_time,
 		"off-grid dense sample retains requested time")
-	_expect_close(analytic.get("speed_mps", -1.0), 10.0 + 0.25 * Motion.G0 * sample_time,
+	_t.expect_close(analytic.get("speed_mps", -1.0), 10.0 + 0.25 * Motion.G0 * sample_time,
 		"off-grid dense speed matches analytic straight launch")
-	_expect_vector(analytic.get("position_m", Vector3.INF),
+	_t.expect_vector(analytic.get("position_m", Vector3.INF),
 		Vector3.RIGHT * (10.0 * sample_time + 0.125 * Motion.G0 * sample_time * sample_time),
 		"off-grid dense position matches analytic straight launch")
-	_expect_close(analytic.get("distance_m", -1.0),
+	_t.expect_close(analytic.get("distance_m", -1.0),
 		10.0 * sample_time + 0.125 * Motion.G0 * sample_time * sample_time,
 		"off-grid dense distance matches analytic straight launch")
-	_expect_vector(analytic.get("tangent", Vector3.ZERO), Vector3.RIGHT,
+	_t.expect_vector(analytic.get("tangent", Vector3.ZERO), Vector3.RIGHT,
 		"off-grid analytic tangent stays straight")
-	_expect_vector(analytic.get("rider_up", Vector3.ZERO), Vector3.UP,
+	_t.expect_vector(analytic.get("rider_up", Vector3.ZERO), Vector3.UP,
 		"off-grid analytic rider frame stays level")
-	_expect_close(analytic.get("longitudinal_g", -1.0), 0.25,
+	_t.expect_close(analytic.get("longitudinal_g", -1.0), 0.25,
 		"off-grid analytic state retains proper longitudinal g")
 
 
@@ -432,7 +581,7 @@ func _test_dense_output_distance_and_defect() -> void:
 		return
 	var midpoint: float = 0.5 * (route.distance_m[0] + route.distance_m[-1])
 	var sampled: Dictionary = Motion.sample_distance(route, midpoint)
-	_expect_close(float(sampled.get("distance_m", -1.0)), midpoint,
+	_t.expect_close(float(sampled.get("distance_m", -1.0)), midpoint,
 		"dense distance inversion is monotone and returns the requested coordinate")
 	var dense: Dictionary = route.dense_output
 	var component_fields := [
@@ -443,22 +592,22 @@ func _test_dense_output_distance_and_defect() -> void:
 	var component_maximum := 0.0
 	for field in component_fields:
 		var value := float(dense.get(field, INF))
-		_expect(is_finite(value) and value >= 0.0,
+		_t.expect(is_finite(value) and value >= 0.0,
 			"dense output publishes finite independent residual '%s'" % field)
 		component_maximum = maxf(component_maximum, value)
 	var kinematic_defect: float = dense.get("max_kinematic_defect_mps", INF)
-	_expect(absf(kinematic_defect - component_maximum) <= 0.000000001,
+	_t.expect(absf(kinematic_defect - component_maximum) <= 0.000000001,
 		"the compatibility defect is the maximum independent residual")
 	# This constant-control curved fixture measures 1.28433e-4 m/s on the real
 	# Hermite-versus-channel comparison. 1.5e-4 is a measured guardrail with headroom for
 	# PackedVector3 narrowing, not the old 1e-5 bound on an algebraic identity.
-	_expect(kinematic_defect <= 0.00015,
+	_t.expect(kinematic_defect <= 0.00015,
 		"independent dense-output residual stays below 1.5e-4 m/s; got %.9f"
 			% kinematic_defect)
 	var by_time: Dictionary = Motion.sample_time(route, sampled.get("time_s", -1.0))
-	_expect_vector(by_time.get("position_m", Vector3.INF), sampled.get("position_m", Vector3.ZERO),
+	_t.expect_vector(by_time.get("position_m", Vector3.INF), sampled.get("position_m", Vector3.ZERO),
 		"time and distance sampling agree on position", 0.000001)
-	_expect_close(by_time.get("distance_m", -1.0), sampled.get("distance_m", -2.0),
+	_t.expect_close(by_time.get("distance_m", -1.0), sampled.get("distance_m", -2.0),
 		"time and distance sampling are inverse-consistent")
 	var probe_time := 0.25
 	var half_width := 0.001
@@ -471,7 +620,7 @@ func _test_dense_output_distance_and_defect() -> void:
 		* float(center.get("speed_mps", 0.0))
 	# PackedVector3 is Float32; the 2 ms central difference keeps its amplified position
 	# quantization below this tolerance while remaining local to one 10 ms native interval.
-	_expect_vector(finite_difference, expected_velocity,
+	_t.expect_vector(finite_difference, expected_velocity,
 		"independent finite difference bounds dense dr/dt minus vT", 0.002)
 
 
@@ -488,6 +637,24 @@ func _initial(
 		"distance_m": 0.0,
 		"time_s": 0.0,
 	}
+
+
+func _moving_state(position: Vector3, tangent: Vector3, up: Vector3, speed_mps: float) -> Dictionary:
+	return {"position_m": position, "tangent": tangent.normalized(),
+		"rider_up": up.normalized(), "speed_mps": speed_mps,
+		"distance_m": 0.0, "time_s": 0.0}
+
+
+func _spatial_route(speed_mps: float, motion_span: Dictionary) -> Dictionary:
+	return Motion.integrate(_moving_state(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, speed_mps),
+		[motion_span], _zero_gravity_settings(0.01))
+
+
+func _peak_abs(channel: PackedFloat64Array) -> float:
+	var peak := 0.0
+	for value in channel:
+		peak = maxf(peak, absf(value))
+	return peak
 
 
 func _span(
@@ -522,7 +689,7 @@ func _zero_gravity_settings(step_s: float) -> Dictionary:
 
 func _expect_route(route: Dictionary, message: String) -> bool:
 	var ok: bool = route.get("ok", false)
-	_expect(ok, "%s: %s" % [message, ", ".join(route.get("errors", []))])
+	_t.expect(ok, "%s: %s" % [message, ", ".join(route.get("errors", []))])
 	var required := [
 		"time_s", "distance_m", "position_m", "tangent", "rider_up", "speed_mps",
 		"longitudinal_g", "span_index", "curvature_m_inv",
@@ -534,31 +701,31 @@ func _expect_route(route: Dictionary, message: String) -> bool:
 		var packed_array: bool = values is PackedFloat64Array \
 			or values is PackedVector3Array or values is PackedInt32Array
 		if not packed_array:
-			_expect(false, "%s: trajectory channel %s is a packed array" % [message, key])
+			_t.expect(false, "%s: trajectory channel %s is a packed array" % [message, key])
 			schema_ok = false
 			continue
 		var channel_size: int = values.size()
 		if sample_count < 0:
 			sample_count = channel_size
 		elif channel_size != sample_count:
-			_expect(false, "%s: trajectory channel %s has %d samples, expected %d"
+			_t.expect(false, "%s: trajectory channel %s has %d samples, expected %d"
 				% [message, key, channel_size, sample_count])
 			schema_ok = false
-	_expect(sample_count >= 2, "%s: trajectory contains initial and final native nodes" % message)
+	_t.expect(sample_count >= 2, "%s: trajectory contains initial and final native nodes" % message)
 	return ok and schema_ok and sample_count >= 2
 
 
 func _expect_rejected(route: Dictionary, fragment: String, message: String) -> void:
-	_expect(not route.get("ok", true), message)
-	_expect(_contains(route.get("errors", []), fragment),
+	_t.expect(not route.get("ok", true), message)
+	_t.expect(_t.contains(route.get("errors", []), fragment),
 		"%s with a diagnostic containing '%s'" % [message, fragment])
 
 
 func _expect_unit_frame(tangent: Vector3, rider_up: Vector3, message: String) -> void:
-	_expect_close(tangent.length(), 1.0, "%s tangent is unit" % message, 0.000001)
-	_expect_close(rider_up.length(), 1.0, "%s up is unit" % message, 0.000001)
-	_expect_close(tangent.dot(rider_up), 0.0, "%s axes are orthogonal" % message, 0.000001)
-	_expect_close(tangent.cross(rider_up).length(), 1.0,
+	_t.expect_close(tangent.length(), 1.0, "%s tangent is unit" % message, 0.000001)
+	_t.expect_close(rider_up.length(), 1.0, "%s up is unit" % message, 0.000001)
+	_t.expect_close(tangent.dot(rider_up), 0.0, "%s axes are orthogonal" % message, 0.000001)
+	_t.expect_close(tangent.cross(rider_up).length(), 1.0,
 		"%s right axis is unit" % message, 0.000001)
 
 
@@ -569,28 +736,4 @@ func _expect_dense_state(
 		"time_s", "distance_m", "position_m", "tangent", "rider_up", "speed_mps",
 		"longitudinal_g", "span_index", "curvature_m_inv",
 	]:
-		_expect(sampled.get(key) == route[key][index], "%s: %s" % [message, key])
-
-
-func _contains(values: Variant, fragment: String) -> bool:
-	for value in values:
-		if str(value).contains(fragment):
-			return true
-	return false
-
-
-func _expect(condition: bool, message: String) -> void:
-	if not condition:
-		_errors.append(message)
-
-
-func _expect_close(actual: float, expected: float, message: String, tolerance: float = EPS) -> void:
-	_expect(absf(actual - expected) <= tolerance,
-		"%s: expected %.9f, got %.9f" % [message, expected, actual])
-
-
-func _expect_vector(
-	actual: Vector3, expected: Vector3, message: String, tolerance: float = EPS
-) -> void:
-	_expect(actual.distance_to(expected) <= tolerance,
-		"%s: expected %s, got %s" % [message, str(expected), str(actual)])
+		_t.expect(sampled.get(key) == route[key][index], "%s: %s" % [message, key])

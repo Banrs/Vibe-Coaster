@@ -557,8 +557,8 @@ static func _margins(assignment: Dictionary, observation: Dictionary) -> Diction
 	if str(assignment.family) == TURN_FAMILY:
 		var lateral := absf(float(observation.signed_peak_lateral_g))
 		var direction := signf(float(assignment.heading_change_rad))
-		margins.heading_change_rad = HEADING_TOLERANCE_RAD 			- absf(float(observation.heading_change_rad)
-				- float(assignment.heading_change_rad))
+		margins.heading_change_rad = HEADING_TOLERANCE_RAD - absf(
+			float(observation.heading_change_rad) - float(assignment.heading_change_rad))
 		margins.counter_lateral_low_g = lateral - COUNTER_LATERAL_BAND_G.x
 		margins.counter_lateral_high_g = COUNTER_LATERAL_BAND_G.y - lateral
 		margins.counter_lateral_sign = -direction * float(observation.signed_peak_lateral_g)
@@ -567,14 +567,15 @@ static func _margins(assignment: Dictionary, observation: Dictionary) -> Diction
 		margins.counter_bank_rad = BANK_TOLERANCE_RAD - float(observation.counter_bank_rad)
 	else:
 		margins.exit_pitch_rad = PITCH_TOLERANCE_RAD - absf(float(observation.exit_pitch_rad))
-		margins.elevation_change_m = ELEVATION_TOLERANCE_M 			- absf(float(observation.elevation_change_m)
-				- float(assignment.elevation_change_m))
+		margins.elevation_change_m = ELEVATION_TOLERANCE_M - absf(
+			float(observation.elevation_change_m) - float(assignment.elevation_change_m))
 		margins.crest_unload_g = UNLOAD_TOLERANCE_G - absf(
 			float(observation.crest_normal_g) - float(observation.unload_g))
 		margins.apex_pitch_rate_m_inv = -float(observation.apex_pitch_rate_m_inv)
 		margins.prominence_m = float(observation.prominence_m)
 		margins.monotone_phases = 0.0 if observation.monotone_phases else -1.0
-		margins.out_of_plane_m = PLANARITY_TOLERANCE_FRACTION * arc 			- float(observation.out_of_plane_m)
+		margins.out_of_plane_m = PLANARITY_TOLERANCE_FRACTION * arc \
+			- float(observation.out_of_plane_m)
 	return margins
 
 

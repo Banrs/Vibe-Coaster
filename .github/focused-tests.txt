@@ -1,5 +1,6 @@
 res://motion_tests.gd
 res://ride_return_layout_tests.gd
+res://ride_return_elements_tests.gd
 res://route_sampling_tests.gd
 res://bounded_solver_tests.gd
 res://route_contract_tests.gd

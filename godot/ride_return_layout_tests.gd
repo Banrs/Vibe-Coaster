@@ -10,6 +10,7 @@ const RETURN_ROLE_IDS := ["return-turn-a", "return-height-a", "return-turn-b", "
 const ASSIGNMENT_KEYS := ["role_id", "family", "entry_frame", "exit_frame", "target_length_m",
 	"corridor", "terrain_intent", "curvature_sign", "heading_change_rad", "elevation_change_m"]
 const FRAME_KEYS := ["position_m", "tangent", "rider_up"]
+const CORRIDOR_KEYS := ["centerline_m", "length_band_m"]
 const NOMINALS := [480.0, 420.0, 500.0, 520.0]
 const BANDS := [Vector2(420.0, 620.0), Vector2(290.0, 480.0),
 	Vector2(430.0, 570.0), Vector2(450.0, 590.0)]
@@ -38,6 +39,11 @@ func _initialize() -> void:
 	_test_local_failure_feedback_cannot_change_layout()
 	_test_energy_bound_rejects_hidden_drive()
 	_test_terrain_margins_refuse_a_buried_chain()
+	_test_heading_shoulders_deliver_the_whole_turn()
+	_test_published_tangents_are_the_chain_tangents()
+	_test_a_signless_turn_is_refused()
+	_test_corridor_publishes_only_derived_bounds()
+	_test_the_control_box_speed_is_not_optimistic()
 	for error in _errors:
 		printerr(error)
 	quit(0 if _errors.is_empty() else 1)
@@ -199,10 +205,7 @@ func _test_energy_bound_rejects_hidden_drive() -> void:
 	var result := Layout.build(start, plan, RETURN_ROLE_IDS)
 	_expect(not result.ok,
 		"a climb the passive law cannot pay for is refused instead of driven")
-	var codes: Array = []
-	for error: Dictionary in result.errors:
-		codes.append(error.get("code", ""))
-	_expect(codes.has("energy_moving_floor"),
+	_expect(_codes(result.errors).has("energy_moving_floor"),
 		"the refusal names the moving floor the passive energy bound missed")
 
 
@@ -217,10 +220,110 @@ func _test_terrain_margins_refuse_a_buried_chain() -> void:
 	plan["terrain"] = _flat_terrain(400.0)
 	var buried := Layout.build(_seed_start(plan, RETURN_ROLE_IDS), plan, RETURN_ROLE_IDS)
 	_expect(not buried.ok, "a chain inside the terrain is refused at the macro stage")
-	var codes: Array = []
-	for error: Dictionary in buried.errors:
-		codes.append(error.get("code", ""))
-	_expect(codes.has("terrain_clearance"), "the refusal names terrain clearance")
+	_expect(_codes(buried.errors).has("terrain_clearance"), "the refusal names terrain clearance")
+
+
+## The shouldered heading profile is one shared geometry: the arc the chain leaves unloaded is
+## exactly the arc the feasibility bound reserves, and the profile delivers the whole commanded
+## heading change monotonically, with no jump or reversal at either shoulder knot.
+func _test_heading_shoulders_deliver_the_whole_turn() -> void:
+	_expect(absf(1.0 - Layout.SHOULDER_FRACTION - Layout.LOADED_ARC_FRACTION) <= 0.000000000001,
+		"the chain's shoulders reserve exactly the arc the heading bound calls unloaded")
+	_expect(absf(Layout._heading_fraction(0.0)) <= 0.000000000001,
+		"no heading is delivered before the turn starts")
+	_expect(absf(Layout._heading_fraction(1.0) - 1.0) <= 0.000000000001,
+		"the whole commanded heading change is delivered by the end of the turn")
+	var samples := 4001
+	var previous := 0.0
+	var largest_step := 0.0
+	var deepest_reversal := 0.0
+	for index in samples:
+		var fraction := Layout._heading_fraction(float(index) / float(samples - 1))
+		deepest_reversal = maxf(deepest_reversal, previous - fraction)
+		largest_step = maxf(largest_step, fraction - previous)
+		previous = fraction
+	_expect(deepest_reversal <= 0.000000000001,
+		"the heading profile never runs backwards (deepest reversal %f)" % deepest_reversal)
+	_expect(largest_step <= 2.0 / float(samples - 1),
+		"the heading profile has no jump at a shoulder knot (largest step %f)" % largest_step)
+
+
+## One geometry, one tangent: what an assignment publishes as its exit frame is the tangent the
+## chain integrated, so the terminal yaw residual and the corridor polyline cannot disagree with
+## the frames handed to the local builders.
+func _test_published_tangents_are_the_chain_tangents() -> void:
+	var plan := _plan()
+	for order: Array in _permutations(RETURN_ROLE_IDS):
+		var label := str(order)
+		var result := Layout.build(_seed_start(plan, order), plan, order)
+		if not _expect(result.ok, "return order lays out: %s %s" % [label, str(result.errors)]):
+			continue
+		var last: Dictionary = result.assignments[-1].exit_frame
+		_expect(absf(atan2(last.tangent.z, last.tangent.x)) <= 0.0004,
+			"the published terminal tangent is the yaw the residual scale claims: %s" % label)
+		for index in result.assignments.size():
+			var assignment: Dictionary = result.assignments[index]
+			var centerline: PackedVector3Array = assignment.corridor.centerline_m
+			_expect(_angle(centerline[-1] - centerline[-2],
+				assignment.exit_frame.tangent) <= 0.01,
+				"the corridor ends along the published exit tangent: %s %s"
+					% [assignment.role_id, label])
+			_expect(_angle(centerline[1] - centerline[0],
+				assignment.entry_frame.tangent) <= 0.01,
+				"the corridor starts along the published entry tangent: %s %s"
+					% [assignment.role_id, label])
+			if index == 0:
+				continue
+			var previous: Dictionary = result.assignments[index - 1].exit_frame
+			_expect(previous.tangent.distance_to(assignment.entry_frame.tangent) <= 0.000001
+				and previous.position_m.distance_to(assignment.entry_frame.position_m) <= 0.000001,
+				"the seam frames are one frame: %s %s" % [assignment.role_id, label])
+
+
+## A turn whose solved heading change is exactly zero has no sign to publish, and nothing in the
+## control box excludes it. The declared interface says a turn sign is exactly -1 or 1, so the
+## degenerate case is refused by name rather than published without a sign.
+func _test_a_signless_turn_is_refused() -> void:
+	var plan := _plan()
+	var context: Dictionary = Layout._context(_seed_start(plan, RETURN_ROLE_IDS), plan,
+		RETURN_ROLE_IDS)
+	var controls: Array = context.nominal.duplicate()
+	controls[context.control_index["return-turn-a"]] = 0.0
+	var refusals: Array = Layout._refusals(context, Layout._chain(context, controls))
+	_expect(_codes(refusals).has("degenerate_turn"),
+		"a turn with no signed heading is refused, not published without a sign")
+
+
+## The corridor publishes only bounds this stage derives. A half-width with no derivation would be
+## either vacuous or wrongly tight when a local builder proves corridor compliance against it.
+func _test_corridor_publishes_only_derived_bounds() -> void:
+	var plan := _plan()
+	var result := Layout.build(_seed_start(plan, RETURN_ROLE_IDS), plan, RETURN_ROLE_IDS)
+	if not _expect(result.ok, "the canonical order lays out: %s" % str(result.errors)):
+		return
+	for assignment: Dictionary in result.assignments:
+		_expect(assignment.corridor.keys() == CORRIDOR_KEYS,
+			"the corridor publishes exactly its derived bounds: %s" % assignment.role_id)
+
+
+## The heading box is a feasibility contract only if the speed it is built at is not below the
+## speed the chain reaches: a box built under the chain lets the solve walk into a region the
+## accepted-chain check then refuses, and no retry exists to recover from that.
+func _test_the_control_box_speed_is_not_optimistic() -> void:
+	var plan := _plan()
+	var start := _seed_start(plan, RETURN_ROLE_IDS)
+	var context: Dictionary = Layout._context(start, plan, RETURN_ROLE_IDS)
+	var fastest := 0.0
+	for role: Dictionary in Layout._chain(context, context.nominal).roles:
+		fastest = maxf(fastest, float(role.entry_speed_mps))
+	var ceiling := float(context.get("speed_ceiling_mps", 0.0))
+	_expect(ceiling >= fastest - 0.000001,
+		"the control box is built at or above the chain's fastest role entry")
+	_expect(ceiling >= float(start.speed_mps) - 0.000001,
+		"the control box is never built below the accepted entry speed")
+	var result := Layout.build(start, plan, RETURN_ROLE_IDS)
+	_expect(result.ok and absf(float(result.report.get("speed_ceiling_mps", 0.0)) - ceiling)
+		<= 0.000001, "the accepted layout publishes the speed its heading box was built at")
 
 
 ## The synthetic start for an order is where that order's nominal chain lands on the gate,
@@ -283,6 +386,17 @@ func _permutations(values: Array) -> Array:
 		for suffix: Array in _permutations(rest):
 			result.append([head] + suffix)
 	return result
+
+
+func _codes(errors: Array) -> Array:
+	var codes: Array = []
+	for error: Dictionary in errors:
+		codes.append(error.get("code", ""))
+	return codes
+
+
+func _angle(a: Vector3, b: Vector3) -> float:
+	return acos(clampf(a.normalized().dot(b.normalized()), -1.0, 1.0))
 
 
 func _sum(values: Array) -> float:

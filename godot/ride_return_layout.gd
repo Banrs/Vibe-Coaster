@@ -16,10 +16,13 @@ extends RefCounted
 const Motion := preload("res://motion.gd")  # `G0` only; this stage never integrates.
 const BoundedSolver := preload("res://bounded_solver.gd")
 
-## The shoulder pair each role reserves at its ends, and the fraction of the allocated arc that
-## therefore carries loaded curvature. `LOADED_ARC_FRACTION` is the 0.8 of the heading bound.
-const SHOULDER_FRACTION := 0.1
-const LOADED_ARC_FRACTION := 0.8
+## The shoulder each role reserves at both of its ends, and the fraction of the allocated arc that
+## therefore carries loaded curvature. One shoulder geometry serves the nominal chain, the heading
+## feasibility bound, and the local turn family, so the frame this stage assigns is a frame that
+## family can reach: two quintic shoulders of `SHOULDER_FRACTION` plus a plateau integrate to
+## `LOADED_ARC_FRACTION`, the 0.8 of the bound.
+const SHOULDER_FRACTION := 0.2
+const LOADED_ARC_FRACTION := 1.0 - SHOULDER_FRACTION
 ## The return turn family's bank ceiling: the same 66 deg the existing turn-a bank bound holds,
 ## taken for both turns because the conservative ceiling is the one a feasibility bound may use.
 const TURN_BANK_CEILING_RAD := 66.0 * PI / 180.0
@@ -139,15 +142,6 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 	var forward := (gate_tangent - Vector3.UP * gate_tangent.dot(Vector3.UP)).normalized()
 	var right := forward.cross(Vector3.UP)
 	var tangent: Vector3 = (start_tangent as Vector3).normalized()
-	var entry_band: Vector2 = corridor.get("entry_speed_mps", Vector2(start_speed, start_speed))
-	# The heading box is the conservative feasibility bound - shortest allocable arc, fastest
-	# entry the plan declares - so the solve cannot spend a turn past its bank ceiling, and the
-	# extra freedom of five controls against four residuals resolves near the nominal split
-	# instead of drifting to one enormous turn and one vestigial one. A role that descends past
-	# this ceiling is not hidden: the accepted chain is re-checked against each turn's own
-	# entry speed below, and names the shortfall if the box turned out to be optimistic.
-	var speed_ceiling := maxf(start_speed, entry_band.y)
-	var heading_budget := 0.0
 	var order: Array = []
 	var families: Array = []
 	var nominal_lengths: Array = []
@@ -177,16 +171,9 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 		if family == TURN_FAMILY:
 			turns += 1
 			control_ids.append("%s/heading_change_rad" % role_id)
-			var bound := heading_bound_rad(band.x, speed_ceiling)
-			heading_budget += bound
-			lower.append(-bound)
-			upper.append(bound)
 		else:
 			heights += 1
 			control_ids.append("%s/elevation_change_m" % role_id)
-			var reach := 0.5 * band.x * sin(PITCH_CEILING_RAD)
-			lower.append(-reach)
-			upper.append(reach)
 	if turns != 2 or heights != 2:
 		errors.append({"code": "return_family_count", "turns": turns, "heights": heights})
 	if not errors.is_empty():
@@ -198,19 +185,12 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 			"lower_m": budget.x, "upper_m": budget.y}]}
 	var psi_start := atan2(tangent.dot(right), tangent.dot(forward))
 	var heading_request := wrapf(-psi_start, -PI, PI)
-	if absf(heading_request) > heading_budget:
-		return {"ok": false, "errors": [{"code": "heading_request",
-			"requested_rad": heading_request, "bound_rad": heading_budget,
-			"shortfall_rad": absf(heading_request) - heading_budget}]}
 	var drop := (gate_position - (start_position as Vector3)).dot(Vector3.UP)
 	for index in order.size():
-		nominal.append(clampf(0.5 * heading_request if families[index] == TURN_FAMILY \
-			else 0.5 * drop, lower[index], upper[index]))
+		nominal.append(0.5 * heading_request if families[index] == TURN_FAMILY else 0.5 * drop)
 	control_ids.append("return_total_length_m")
-	lower.append(budget.x)
-	upper.append(budget.y)
 	nominal.append(0.5 * (budget.x + budget.y))
-	return {"ok": true, "errors": errors, "order": order, "families": families,
+	var context := {"ok": true, "errors": errors, "order": order, "families": families,
 		"terrain_intents": terrain_intents,
 		"nominal_lengths": nominal_lengths, "length_bands": length_bands,
 		"length_weights": _ones(order.size()), "control_index": control_index,
@@ -220,7 +200,34 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 		"gate_tangent": gate_tangent, "gate_up": _orthonormal_up(gate_tangent, station.up),
 		"start_position": start_position, "start_tangent": tangent, "start_up": start_up,
 		"start_speed_mps": start_speed, "start_psi_rad": psi_start,
-		"start_sin_pitch": tangent.dot(Vector3.UP), "terrain": plan.get("terrain", {})}
+		"speed_ceiling_mps": start_speed, "terrain": plan.get("terrain", {})}
+	# The heading box is a feasibility bound, so it is built at the shortest allocable arc and at
+	# a speed the chain reaches rather than at the speed handed over: a descending role enters
+	# faster than the start, and a box built under that would let the solve walk into a region the
+	# accepted chain is then refused from, with no retry to recover. The nominal chain measures
+	# that speed. It is not an upper bound over the whole control box - the elevation controls can
+	# descend further than the nominal split - so the accepted chain is still re-checked against
+	# each turn's own allocated arc and entry speed, and names the shortfall if it drifts past.
+	for role: Dictionary in _chain(context, nominal).roles:
+		context.speed_ceiling_mps = maxf(float(context.speed_ceiling_mps),
+			float(role.entry_speed_mps))
+	var heading_budget := 0.0
+	for index in order.size():
+		var band: Vector2 = length_bands[index]
+		var bound := 0.5 * band.x * sin(PITCH_CEILING_RAD)
+		if families[index] == TURN_FAMILY:
+			bound = heading_bound_rad(band.x, float(context.speed_ceiling_mps))
+			heading_budget += bound
+		lower.append(-bound)
+		upper.append(bound)
+		nominal[index] = clampf(float(nominal[index]), -bound, bound)
+	lower.append(budget.x)
+	upper.append(budget.y)
+	if absf(heading_request) > heading_budget:
+		return {"ok": false, "errors": [{"code": "heading_request",
+			"requested_rad": heading_request, "bound_rad": heading_budget,
+			"shortfall_rad": absf(heading_request) - heading_budget}]}
+	return context
 
 
 ## The return budget is a band, not a number: the route band gives it bounds once the prefix
@@ -240,16 +247,20 @@ static func _budget(route_band: Vector2, prefix_m: float, approach_m: float,
 ## One nominal spatial chain in the planner's order. Turn roles consume signed heading change and
 ## height roles signed net elevation; both leave the chain level, so `sin(theta)` and the heading
 ## fraction below are all the geometry a macro target needs.
+##
+## The chain's own tangent is the single authority: every frame it publishes, the heading it
+## carries into the next role, and the terminal yaw residual are all read from `_tangent` at
+## `u = 1`. Nothing accumulates a commanded heading alongside it, so a published frame cannot
+## drift away from the geometry the corridor polyline traces.
 static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 	var allocation := allocate_lengths(context.nominal_lengths, context.length_bands,
 		context.length_weights, float(controls[context.length_index]))
 	var position: Vector3 = context.start_position
+	var tangent: Vector3 = context.start_tangent
 	var psi: float = context.start_psi_rad
-	var sin_pitch: float = context.start_sin_pitch
-	var speed: float = context.start_speed_mps
-	var energy := 0.5 * speed * speed
+	var energy := 0.5 * float(context.start_speed_mps) * float(context.start_speed_mps)
 	var minimum_energy := energy
-	var maximum_pitch := absf(asin(clampf(sin_pitch, -1.0, 1.0)))
+	var maximum_pitch := absf(asin(clampf(tangent.dot(Vector3.UP), -1.0, 1.0)))
 	var terrain: Dictionary = context.terrain
 	var terrain_margins := {}
 	var roles: Array = []
@@ -259,11 +270,10 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 		var is_turn: bool = context.families[index] == TURN_FAMILY
 		var control := float(controls[context.control_index[context.order[index]]])
 		var heading_change := control if is_turn else 0.0
-		var bump := 0.0 if is_turn else 2.0 * control / length - sin_pitch
 		var entry_position := position
-		var entry_sin_pitch := sin_pitch
-		var entry_tangent: Vector3 = _level_tangent(context, psi) if index > 0 \
-			else context.start_tangent
+		var entry_tangent := tangent
+		var entry_sin_pitch := tangent.dot(Vector3.UP)
+		var bump := 0.0 if is_turn else 2.0 * control / length - entry_sin_pitch
 		var entry_speed := sqrt(2.0 * energy)
 		var step := length / CHAIN_SAMPLES_PER_ROLE
 		var centerline := PackedVector3Array([position])
@@ -286,28 +296,31 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 			if not terrain.is_empty():
 				minimum_agl = minf(minimum_agl,
 					position.y - RideTerrain.height(terrain, position.x, position.z))
-		psi += heading_change
-		sin_pitch = 0.0
+		tangent = _tangent(context, psi, heading_change, entry_sin_pitch, bump, 1.0)
+		psi = atan2(tangent.dot(context.right), tangent.dot(context.forward))
 		if not terrain.is_empty():
 			terrain_margins[context.order[index]] = minimum_agl
 		roles.append({"length_m": length, "entry_position": entry_position,
 			"entry_tangent": entry_tangent, "entry_speed_mps": entry_speed,
-			"exit_position": position, "exit_tangent": _level_tangent(context, psi),
+			"exit_position": position, "exit_tangent": tangent,
 			"centerline": centerline, "heading_change_rad": heading_change,
 			"elevation_change_m": position.y - entry_position.y})
 	return {"ok": allocation.ok, "allocation": allocation, "roles": roles,
-		"end_position": position, "end_psi_rad": psi, "terrain_margins": terrain_margins,
+		"end_position": position, "end_tangent": tangent, "terrain_margins": terrain_margins,
 		"maximum_pitch_rad": maximum_pitch, "gate_speed_mps": sqrt(2.0 * maxf(energy, 0.0)),
 		"minimum_speed_mps": sqrt(2.0 * maxf(minimum_energy, 0.0))}
 
 
+## All four residuals are read off one geometry: the chain's own end position and end tangent.
 static func _residuals(context: Dictionary, controls: Array) -> Array:
 	var chain := _chain(context, controls)
 	var offset: Vector3 = chain.end_position - context.gate_position
+	var end_tangent: Vector3 = chain.end_tangent
 	return [offset.dot(context.right) / RESIDUAL_SCALES[0],
 		offset.dot(Vector3.UP) / RESIDUAL_SCALES[1],
 		offset.dot(context.forward) / RESIDUAL_SCALES[2],
-		wrapf(chain.end_psi_rad, -PI, PI) / RESIDUAL_SCALES[3]]
+		atan2(end_tangent.dot(context.right), end_tangent.dot(context.forward))
+			/ RESIDUAL_SCALES[3]]
 
 
 ## Every macro contract that refuses a candidate, named with its shortfall. Nothing here is a
@@ -325,6 +338,12 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 		if absf(role.heading_change_rad) > bound:
 			errors.append({"code": "heading_bound", "role_id": context.order[index],
 				"bound_rad": bound, "shortfall_rad": absf(role.heading_change_rad) - bound})
+		# A turn whose heading change is exactly zero has no side to bank toward, so it cannot
+		# publish the signed curvature the local turn family and its bank/curvature agreement
+		# check require. Refuse it by name rather than publish a signless turn.
+		if absf(role.heading_change_rad) <= 0.0:
+			errors.append({"code": "degenerate_turn", "role_id": context.order[index],
+				"margin_rad": absf(role.heading_change_rad)})
 	if chain.maximum_pitch_rad > PITCH_CEILING_RAD:
 		errors.append({"code": "pitch_ceiling",
 			"shortfall_rad": chain.maximum_pitch_rad - PITCH_CEILING_RAD})
@@ -338,12 +357,15 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 	return errors
 
 
+## The corridor publishes only what this stage derives: the nominal centreline a local build is
+## measured against and the band its length must stay inside. A lateral or vertical half-width
+## has no derivation here - the macro chain models net elevation, not a height beat's crest - so
+## none is published until the measurement that consumes it is defined.
 static func _assignments(context: Dictionary, chain: Dictionary) -> Array:
 	var assignments: Array = []
 	for index in context.order.size():
 		var role: Dictionary = chain.roles[index]
 		var is_turn: bool = context.families[index] == TURN_FAMILY
-		var band: Vector2 = context.length_bands[index]
 		assignments.append({
 			"role_id": context.order[index],
 			"family": context.families[index],
@@ -352,7 +374,7 @@ static func _assignments(context: Dictionary, chain: Dictionary) -> Array:
 			"exit_frame": _frame(role.exit_position, role.exit_tangent, Vector3.UP),
 			"target_length_m": role.length_m,
 			"corridor": {"centerline_m": role.centerline,
-				"radius_m": 0.5 * (band.y - band.x), "length_band_m": band},
+				"length_band_m": context.length_bands[index]},
 			"terrain_intent": context.terrain_intents[index],
 			"curvature_sign": signf(role.heading_change_rad) if is_turn else 0.0,
 			"heading_change_rad": role.heading_change_rad,
@@ -378,7 +400,8 @@ static func _report(context: Dictionary, chain: Dictionary, solved: Dictionary) 
 		"iterations": int(solved.iterations), "max_evaluations": RideReturnSolve.MAX_RETURN_EVALUATIONS,
 		"controls": controls, "scaled_residuals": solved.residuals.duplicate(),
 		"return_length_band_m": context.budget_m, "heading_bound_margin_rad": heading_bounds,
-		"role_entry_speed_mps": entry_speeds, "gate_speed_mps": chain.gate_speed_mps,
+		"role_entry_speed_mps": entry_speeds, "speed_ceiling_mps": context.speed_ceiling_mps,
+		"gate_speed_mps": chain.gate_speed_mps,
 		"minimum_speed_mps": chain.minimum_speed_mps, "maximum_pitch_rad": chain.maximum_pitch_rad}
 
 
@@ -447,8 +470,8 @@ static func _heading_fraction(u: float) -> float:
 		area = 0.5 * SHOULDER_FRACTION + c - SHOULDER_FRACTION
 	else:
 		area = 1.0 - 1.5 * SHOULDER_FRACTION \
-			+ SHOULDER_FRACTION * _quintic_integral((1.0 - c) / SHOULDER_FRACTION)
-	return area / (1.0 - SHOULDER_FRACTION)
+			+ SHOULDER_FRACTION * (0.5 - _quintic_integral((1.0 - c) / SHOULDER_FRACTION))
+	return area / LOADED_ARC_FRACTION
 
 
 static func _frame(position: Vector3, tangent: Vector3, up: Vector3) -> Dictionary:
@@ -459,10 +482,6 @@ static func _frame(position: Vector3, tangent: Vector3, up: Vector3) -> Dictiona
 static func _orthonormal_up(tangent: Vector3, up: Variant) -> Vector3:
 	var candidate: Vector3 = up if up is Vector3 else Vector3.UP
 	return (candidate - tangent * candidate.dot(tangent)).normalized()
-
-
-static func _level_tangent(context: Dictionary, psi: float) -> Vector3:
-	return (context.forward as Vector3) * cos(psi) + (context.right as Vector3) * sin(psi)
 
 
 static func _role(roles: Array, role_id: String) -> Dictionary:

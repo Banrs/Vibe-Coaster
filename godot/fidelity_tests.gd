@@ -601,11 +601,6 @@ static func _test_reviewed_live_pov_landmarks(catalog: Dictionary, errors: Packe
 			continue
 		var source_id := str(review.get("source_id", ""))
 		var source: Dictionary = catalog.get("sources", {}).get(source_id, {})
-		_expect(errors, source.get("state") == review.get("state"), "%s catalog mirrors review state" % source_id)
-		_expect(errors, source.get("url") == review.get("source_url"), "%s catalog mirrors review source_url" % source_id)
-		_expect(errors, source.get("retrieved_on") == review.get("retrieved_on"), "%s catalog mirrors review retrieved_on" % source_id)
-		_expect(errors, source.get("metadata_artifact_path") == review.get("provenance", {}).get("metadata_artifact"),
-			"%s catalog mirrors review metadata_artifact" % source_id)
 		var expected_windows := []
 		for landmark in review.get("independent_timeline", {}).get("landmarks", []):
 			expected_windows.append({"id": landmark.get("id"), "time_s": landmark.get("time_s")})

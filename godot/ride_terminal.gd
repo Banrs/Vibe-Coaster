@@ -25,12 +25,15 @@ const MAX_BRAKE_EVALUATIONS := 32
 ## but one step past the last accepted peak an RK stage crosses `Motion.MIN_MOVING_SPEED_MPS`,
 ## Motion refuses the whole candidate, and the residual jumps to the stopping shortfall - measured
 ## +1.0485e-4 m/s at peak 2.507318377 g and -6.13e-3 m at 2e-8 g above it. Nothing below that last
-## pre-cliff sample is reachable by any step or any budget. Measured worst floor over a 61-speed
-## sweep of the 70-80 m/s band at an 80-evaluation reference: 1.0235e-4 m/s. It is a property of
-## the cliff and not of truncation - at 75.05 m/s it reads 1.0485/1.0327/1.0309/1.0293e-4 m/s at
-## step 0.01/0.005/0.0025/0.00125 s. The tolerance sits at 2.4x that measured floor, far enough
-## above it not to chase its speed and step dependence.
-const BRAKE_SPEED_TOLERANCE_MPS := 0.00025
+## pre-cliff sample is reachable by any step or any budget. Measured worst residual over a 61-speed
+## sweep of the 70-80 m/s band at the 0.01 s step: 1.026889e-4 m/s, at 73.6667 m/s. Refining the
+## step does not shed it - at 75.05 m/s the floor reads 1.0485/1.0327/1.0309/1.0293e-4 m/s at step
+## 0.01/0.005/0.0025/0.00125 s - but it is a property of where the cliff falls on the sample grid,
+## not a converged constant: the same entry speed floors at 2.3277e-5 m/s at step 0.02. The
+## tolerance is that measured worst plus 46%. Every figure here is measured at the 0.01 s step
+## only, so whichever step production hands the terminal, this sweep has to be re-run at that step
+## before the terminal is wired into a build.
+const BRAKE_SPEED_TOLERANCE_MPS := 0.00015
 
 
 static func build(start: Dictionary, layout: Dictionary, settings: Dictionary) -> Dictionary:

@@ -13,7 +13,6 @@ extends RefCounted
 
 const Motion := preload("res://motion.gd")
 
-const ENTRY_SPEED_BAND_MPS := Vector2(70.0, 80.0)
 const BRAKE_PEAK_BOUNDS_G := Vector2(0.0, 3.6)
 const BRAKE_SHOULDER_LENGTH_M := 20.0
 const MOVING_BOUNDARY_SPEED_MPS := 2.0

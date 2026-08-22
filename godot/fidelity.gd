@@ -1356,18 +1356,18 @@ static func _aggregate_flow(beats: Array) -> Dictionary:
 	return output
 
 
-static func _maximum(values: PackedFloat32Array) -> float:
+static func _maximum(values: PackedFloat32Array, empty_value: float = -INF) -> float:
 	var result := -INF
 	for value in values:
 		result = maxf(result, value)
-	return result
+	return result if not values.is_empty() else empty_value
 
 
-static func _minimum(values: PackedFloat32Array) -> float:
+static func _minimum(values: PackedFloat32Array, empty_value: float = INF) -> float:
 	var result := INF
 	for value in values:
 		result = minf(result, value)
-	return result
+	return result if not values.is_empty() else empty_value
 
 
 static func _absolute_peak(values: PackedFloat32Array) -> float:
@@ -1385,7 +1385,11 @@ static func _median(sorted_values: Array) -> float:
 	return (float(sorted_values[middle - 1]) + float(sorted_values[middle])) * 0.5
 
 
-static func _pitch_degrees(tangent: Vector3) -> float:
+static func _pitch_degrees(tangent: Vector3, normalize: bool = false) -> float:
+	if normalize:
+		if tangent.length_squared() <= 0.0:
+			return 0.0
+		return rad_to_deg(asin(clampf(tangent.normalized().y, -1.0, 1.0)))
 	return rad_to_deg(asin(clampf(tangent.y, -1.0, 1.0)))
 
 

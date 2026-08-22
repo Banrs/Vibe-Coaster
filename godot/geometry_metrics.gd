@@ -21,6 +21,7 @@ extends RefCounted
 ## a source, creates a catalog target, or licenses closing a ride-quality issue.
 
 const Fidelity := preload("res://fidelity.gd")
+const Artifacts := preload("res://fidelity_artifacts.gd")
 const Counterparts := preload("res://fidelity_counterparts.gd")
 const Verify := preload("res://verify.gd")
 const Sampling := preload("res://route_sampling.gd")
@@ -567,7 +568,8 @@ static func shape_of(route: Dictionary, first: int, last: int) -> Dictionary:
 			angle_difference(deg_to_rad(entry_heading), deg_to_rad(exit_heading))
 		),
 		"total_heading_change_deg": accumulated,
-		"entry_pitch_deg": _pitch_deg(tangents[first]), "exit_pitch_deg": _pitch_deg(tangents[last]),
+		"entry_pitch_deg": Fidelity._pitch_degrees(tangents[first], true),
+		"exit_pitch_deg": Fidelity._pitch_degrees(tangents[last], true),
 		"entry_bank_deg": float(route.banks[first]), "exit_bank_deg": float(route.banks[last]),
 		"entry_speed_mps": float(route.speeds[first]), "exit_speed_mps": float(route.speeds[last]),
 		"apex_height_m": height_high, "base_height_m": height_low,
@@ -806,17 +808,17 @@ static func _counterpart_row(role: String, band: Dictionary, axis: Dictionary, e
 static func _axis_series(band: Dictionary, axis: String) -> Dictionary:
 	match axis:
 		"gz_positive":
-			return {"value": _maximum(band.normal), "metric": "normal_peak_positive"}
+			return {"value": Fidelity._maximum(band.normal, 0.0), "metric": "normal_peak_positive"}
 		"gz_negative":
-			return {"value": _minimum(band.normal), "metric": "normal_peak_negative"}
+			return {"value": Fidelity._minimum(band.normal, 0.0), "metric": "normal_peak_negative"}
 		"gz_level":
 			return {"value": _mean(band.normal), "metric": "normal_window_mean"}
 		"gy":
-			return {"value": _absolute_peak(band.lateral), "metric": "lateral_peak_absolute"}
+			return {"value": Fidelity._absolute_peak(band.lateral), "metric": "lateral_peak_absolute"}
 		"gx_positive":
-			return {"value": _maximum(band.longitudinal), "metric": "longitudinal_peak_positive"}
+			return {"value": Fidelity._maximum(band.longitudinal, 0.0), "metric": "longitudinal_peak_positive"}
 		"gx_negative":
-			return {"value": _minimum(band.longitudinal), "metric": "longitudinal_peak_negative"}
+			return {"value": Fidelity._minimum(band.longitudinal, 0.0), "metric": "longitudinal_peak_negative"}
 	return {}
 
 
@@ -907,26 +909,26 @@ static func markdown(pack: Dictionary, reference: Dictionary) -> String:
 		"%d seams. A coherent roll crosses a seam with a small rate jump; a step shows up" \
 			% int(seams.seam_count),
 		"as a large jump or a large change of roll acceleration.", "",
-		_row(["rank", "seam", "roll rate jump deg/s", "roll accel break deg/s^2",
+		Artifacts._markdown_row(["rank", "seam", "roll rate jump deg/s", "roll accel break deg/s^2",
 			"before", "after", "gesture seam"]),
-		_row(["---:", "---", "---:", "---:", "---", "---", "---"])])
+		Artifacts._markdown_row(["---:", "---", "---:", "---:", "---", "---", "---"])])
 	for entry: Dictionary in seams.worst_roll_rate_jumps:
 		var seam := _seam_by_window(seams.seams, str(entry.window_id))
-		lines.append(_row([int(entry.rank), str(entry.window_id), _num(entry.value, 3),
-			_num(seam.get("roll_acceleration_break_dps2"), 3),
+		lines.append(Artifacts._markdown_row([int(entry.rank), str(entry.window_id), _num(entry.value),
+			_num(seam.get("roll_acceleration_break_dps2")),
 			str(seam.get("before_role", "")), str(seam.get("after_role", "")),
 			str(seam.get("gesture_boundary", ""))]))
 	lines.append_array(["", "### Roll delivery per role", "",
 		"`roll segments` counts the separate runs of actual rolling inside the window;",
 		"two or more with a high `banked flat share` is the roll -> flat -> roll pattern.", "",
-		_row(["role window", "seconds", "peak deg/s", "roll segments", "reversals",
+		Artifacts._markdown_row(["role window", "seconds", "peak deg/s", "roll segments", "reversals",
 			"flat share", "banked flat share"]),
-		_row(["---", "---:", "---:", "---:", "---:", "---:", "---:"])])
+		Artifacts._markdown_row(["---", "---:", "---:", "---:", "---:", "---:", "---:"])])
 	for profile: Dictionary in seams.role_roll_profiles:
-		lines.append(_row([str(profile.window_id), _num(profile.seconds, 2),
-			_num(profile.roll_rate_peak_dps, 2), int(profile.roll_segment_count),
-			int(profile.roll_reversal_count), _num(profile.flat_roll_share, 3),
-			_num(profile.banked_flat_roll_share, 3)]))
+		lines.append(Artifacts._markdown_row([str(profile.window_id), _num(profile.seconds),
+			_num(profile.roll_rate_peak_dps), int(profile.roll_segment_count),
+			int(profile.roll_reversal_count), _num(profile.flat_roll_share),
+			_num(profile.banked_flat_roll_share)]))
 	var planarity: Dictionary = pack.element_planarity
 	lines.append_array(["", "## Element planarity (issue 23)", "",
 		"Least-squares best-fit plane per role window. `tilt off vertical` is how far the",
@@ -938,26 +940,26 @@ static func markdown(pack: Dictionary, reference: Dictionary) -> String:
 		"fault. The reading bites on elements whose plane should contain the vertical —",
 		"hills, drops, the camelback — where anything above a few degrees is a lean the",
 		"shape should not have.", "",
-		_row(["role window", "class", "rms off-plane m", "max off-plane m",
+		Artifacts._markdown_row(["role window", "class", "rms off-plane m", "max off-plane m",
 			"off-plane ratio", "tilt off vertical deg", "tilt meaningful"]),
-		_row(["---", "---", "---:", "---:", "---:", "---:", "---"])])
+		Artifacts._markdown_row(["---", "---", "---:", "---:", "---:", "---:", "---"])])
 	for element: Dictionary in planarity.elements:
-		lines.append(_row([str(element.window_id), str(element.planarity_class),
-			_num(element.get("rms_out_of_plane_m"), 3), _num(element.get("max_out_of_plane_m"), 3),
-			_num(element.get("out_of_plane_ratio"), 4),
-			_num(element.get("vertical_plane_tilt_deg"), 2), str(element.tilt_is_meaningful)]))
+		lines.append(Artifacts._markdown_row([str(element.window_id), str(element.planarity_class),
+			_num(element.get("rms_out_of_plane_m")), _num(element.get("max_out_of_plane_m")),
+			_num(element.get("out_of_plane_ratio")),
+			_num(element.get("vertical_plane_tilt_deg")), str(element.tilt_is_meaningful)]))
 	var shapes: Dictionary = pack.shape_ratios
 	lines.append_array(["", "## Shape ratios — the numeric silhouette", "",
-		_row(["role window", "height m", "horizontal m", "length m", "h:l",
+		Artifacts._markdown_row(["role window", "height m", "horizontal m", "length m", "h:l",
 			"heading change deg", "entry pitch", "exit pitch", "entry bank", "exit bank"]),
-		_row(["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:"])])
+		Artifacts._markdown_row(["---", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:", "---:"])])
 	for element: Dictionary in shapes.elements:
-		lines.append(_row([str(element.window_id), _num(element.get("height_extent_m"), 1),
-			_num(element.get("horizontal_extent_m"), 1), _num(element.get("track_length_m"), 1),
-			_num(element.get("height_to_length_ratio"), 3),
-			_num(element.get("total_heading_change_deg"), 1), _num(element.get("entry_pitch_deg"), 1),
-			_num(element.get("exit_pitch_deg"), 1), _num(element.get("entry_bank_deg"), 1),
-			_num(element.get("exit_bank_deg"), 1)]))
+		lines.append(Artifacts._markdown_row([str(element.window_id), _num(element.get("height_extent_m")),
+			_num(element.get("horizontal_extent_m")), _num(element.get("track_length_m")),
+			_num(element.get("height_to_length_ratio")),
+			_num(element.get("total_heading_change_deg")), _num(element.get("entry_pitch_deg")),
+			_num(element.get("exit_pitch_deg")), _num(element.get("entry_bank_deg")),
+			_num(element.get("exit_bank_deg"))]))
 	return "\n".join(lines) + "\n"
 
 
@@ -988,11 +990,11 @@ static func _reference_lines(reference: Dictionary) -> PackedStringArray:
 			int(reference.entry_count), int(reference.available_count)], "",
 		"Reference media is local, personal-use and never committed; only these",
 		"landmarks, provenance strings and digests are.", "",
-		_row(["element", "status", "source", "acquisition", "timestamp s", "sha256"]),
-		_row(["---", "---", "---", "---", "---:", "---"])])
+		Artifacts._markdown_row(["element", "status", "source", "acquisition", "timestamp s", "sha256"]),
+		Artifacts._markdown_row(["---", "---", "---", "---", "---:", "---"])])
 	for entry: Dictionary in reference.entries:
-		lines.append(_row([str(entry.element_id), str(entry.status), str(entry.source_id),
-			str(entry.acquisition), _num(entry.get("timestamp_s"), 2),
+		lines.append(Artifacts._markdown_row([str(entry.element_id), str(entry.status), str(entry.source_id),
+			str(entry.acquisition), _num(entry.get("timestamp_s")),
 			str(entry.expected_sha256).substr(0, 16)]))
 	lines.append("")
 	return lines
@@ -1035,17 +1037,17 @@ static func counterpart_markdown(seeds: Array) -> String:
 			"Mapping: %d compiled windows bridged, %d unmapped, %d material roles without a window." % [
 				int(mapping.mapped_window_count), mapping.unmapped_windows.size(),
 				mapping.material_roles_without_window.size()], "",
-			_row(["role", "axis", "label", "measured g", "target", "band",
+			Artifacts._markdown_row(["role", "axis", "label", "measured g", "target", "band",
 				"status", "normalized miss", "held"]),
-			_row(["---", "---", "---", "---:", "---", "---", "---", "---:", "---"])])
+			Artifacts._markdown_row(["---", "---", "---", "---:", "---", "---", "---", "---:", "---"])])
 		for row: Dictionary in entry.rows:
 			var hold: Variant = row.get("measured_hold")
 			var hold_text := "—"
 			if hold is Dictionary:
-				hold_text = "%s g / %s s" % [_num(hold.get("held_g"), 2), _num(hold.get("seconds"), 2)]
-			lines.append(_row([str(row.role_id), str(row.get("axis", "")), str(row.get("label", "")),
-				_num(row.get("measured_g"), 3), _value(row.get("target")), _value(row.get("band")),
-				str(row.status), _num(row.get("normalized_miss"), 3), hold_text]))
+				hold_text = "%s g / %s s" % [_num(hold.get("held_g")), _num(hold.get("seconds"))]
+			lines.append(Artifacts._markdown_row([str(row.role_id), str(row.get("axis", "")), str(row.get("label", "")),
+				_num(row.get("measured_g")), _value(row.get("target")), _value(row.get("band")),
+				str(row.status), _num(row.get("normalized_miss")), hold_text]))
 		lines.append("")
 		if not entry.evidence_gaps.is_empty():
 			lines.append_array(["### Evidence gaps", ""])
@@ -1062,26 +1064,19 @@ static func _seam_by_window(seams: Array, window_id: String) -> Dictionary:
 	return {}
 
 
-static func _row(cells: Array) -> String:
-	var parts := PackedStringArray()
-	for cell in cells:
-		parts.append(str(cell))
-	return "| %s |" % " | ".join(parts)
-
-
-static func _num(value: Variant, digits: int) -> String:
+static func _num(value: Variant) -> String:
 	if not _number(value):
 		return "—"
-	return String.num(float(value), digits)
+	return Artifacts._f6(value)
 
 
 static func _value(value: Variant) -> String:
 	if value is Array:
 		var parts := PackedStringArray()
 		for item in value:
-			parts.append(_num(item, 3))
+			parts.append(_num(item))
 		return "[%s]" % ", ".join(parts)
-	return _num(value, 3)
+	return _num(value)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1260,33 +1255,6 @@ static func _plan_headings_deg(tangents: PackedVector3Array, first: int, last: i
 			previous = heading
 		headings[index - first] = previous if not is_nan(previous) else 0.0
 	return headings
-
-
-static func _pitch_deg(tangent: Vector3) -> float:
-	if tangent.length_squared() <= 0.0:
-		return 0.0
-	return rad_to_deg(asin(clampf(tangent.normalized().y, -1.0, 1.0)))
-
-
-static func _maximum(values: PackedFloat32Array) -> float:
-	var output := -INF
-	for value in values:
-		output = maxf(output, float(value))
-	return output if is_finite(output) else 0.0
-
-
-static func _minimum(values: PackedFloat32Array) -> float:
-	var output := INF
-	for value in values:
-		output = minf(output, float(value))
-	return output if is_finite(output) else 0.0
-
-
-static func _absolute_peak(values: PackedFloat32Array) -> float:
-	var output := 0.0
-	for value in values:
-		output = maxf(output, absf(float(value)))
-	return output
 
 
 static func _mean(values: PackedFloat32Array) -> float:

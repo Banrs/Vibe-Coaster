@@ -52,7 +52,7 @@ const ACT_ONE_POOL := ["act-one-cutback", "act-one-loop", "act-one-airtime", "ac
 const ACT_ONE_OPTIONAL := ["act-one-airtime", "act-one-wave"]
 const SPINE_TAIL := ["climb-lsm2", "clifftop-slow-crest", "clifftop-outward-rim",
 	"outward-dive", "tunnel-lsm3", "camelback"]
-const RETURN_CELL := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
+const RETURN_ROLES := ["return-turn-a", "return-height-a", "return-turn-b", "return-height-b"]
 const SPINE_CLOSE := ["terminal-capture-brakes"]
 
 ## Certified per-seed target draws, in fixed order. Each entry declares the stream it is drawn
@@ -109,7 +109,7 @@ static func canonical_role_ids() -> Array:
 	ids.append(ACT_ONE_ANCHOR)
 	ids.append_array(ACT_ONE_POOL)
 	ids.append_array(SPINE_TAIL)
-	ids.append_array(RETURN_CELL)
+	ids.append_array(RETURN_ROLES)
 	ids.append_array(SPINE_CLOSE)
 	return ids
 
@@ -189,16 +189,17 @@ static func _draw_sequence(_rngs: Dictionary) -> Array:
 	sequence.append(ACT_ONE_ANCHOR)
 	sequence.append_array(pool)
 	sequence.append_array(SPINE_TAIL)
-	sequence.append_array(RETURN_CELL)
+	sequence.append_array(RETURN_ROLES)
 	sequence.append_array(SPINE_CLOSE)
 	return sequence
 
 
 ## The grammar-legality check shared by production plan validation and the tests: the spine is
 ## ordered, act one opens on its Immelmann anchor, the rest of act one is a permutation of the
-## pool with at most one optional member dropped, and the return cell keeps its declared order.
+## pool with at most one optional member dropped, and the return roles are a permutation of
+## `RETURN_ROLES` — any of the 24 orderings is legal, not just the canonical one.
 static func is_legal_sequence(ids: Array) -> bool:
-	var fixed_count := SPINE_OPENER.size() + 1 + SPINE_TAIL.size() + RETURN_CELL.size() \
+	var fixed_count := SPINE_OPENER.size() + 1 + SPINE_TAIL.size() + RETURN_ROLES.size() \
 		+ SPINE_CLOSE.size()
 	var pool_count := ids.size() - fixed_count
 	if pool_count < ACT_ONE_POOL.size() - 1 or pool_count > ACT_ONE_POOL.size():
@@ -223,11 +224,18 @@ static func is_legal_sequence(ids: Array) -> bool:
 		if not ACT_ONE_OPTIONAL.has(role_id):
 			return false
 	cursor += pool_count
-	var tail: Array = []
-	tail.append_array(SPINE_TAIL)
-	tail.append_array(RETURN_CELL)
-	tail.append_array(SPINE_CLOSE)
-	for role_id in tail:
+	for role_id in SPINE_TAIL:
+		if ids[cursor] != role_id:
+			return false
+		cursor += 1
+	var return_drawn: Array = []
+	for index in RETURN_ROLES.size():
+		var role_id: Variant = ids[cursor + index]
+		if not RETURN_ROLES.has(role_id) or return_drawn.has(role_id):
+			return false
+		return_drawn.append(role_id)
+	cursor += RETURN_ROLES.size()
+	for role_id in SPINE_CLOSE:
 		if ids[cursor] != role_id:
 			return false
 		cursor += 1
@@ -241,6 +249,28 @@ static func act_one_order(sequence: Array) -> Array:
 		if role_id == ACT_ONE_ANCHOR or ACT_ONE_POOL.has(role_id):
 			order.append(role_id)
 	return order
+
+
+## The return roles of a declared sequence, in their authored order. Order-generic: it reads
+## whichever positions in `sequence` hold a return role, regardless of where they sit.
+static func return_order(sequence: Array) -> Array:
+	var order: Array = []
+	for role_id in sequence:
+		if RETURN_ROLES.has(role_id):
+			order.append(role_id)
+	return order
+
+
+## Returns `sequence` with its return-role entries replaced, in place, by `order`. Every other
+## role stays exactly where `sequence` put it; only the values at return-role positions move.
+static func with_return_order(sequence: Array, order: Array) -> Array:
+	var result: Array = sequence.duplicate()
+	var cursor := 0
+	for index in result.size():
+		if RETURN_ROLES.has(result[index]):
+			result[index] = order[cursor]
+			cursor += 1
+	return result
 
 
 ## The resolved value for one recipe key, or its authored default when the plan carries no draw.

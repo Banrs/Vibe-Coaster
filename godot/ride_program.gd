@@ -951,6 +951,29 @@ static func _settings(step_s: float) -> Dictionary:
 		"measure_dense_output": false}
 
 
+## The two coast closed forms over `ROLLING_MPS2`/`AERO_PER_M`: the time and the distance an
+## unpowered level run takes to fall from one speed to another. Both solve seams and the terminal
+## read them, so they live once, here, with the constants they integrate.
+static func _coast_time(from_speed: float, to_speed: float) -> float:
+	if from_speed <= to_speed or ROLLING_MPS2 <= 0.0:
+		return INF
+	if AERO_PER_M <= 0.0:
+		return (from_speed - to_speed) / ROLLING_MPS2
+	var scale := sqrt(AERO_PER_M / ROLLING_MPS2)
+	return (atan(from_speed * scale) - atan(to_speed * scale)) \
+		/ sqrt(ROLLING_MPS2 * AERO_PER_M)
+
+
+static func _coast_distance(from_speed: float, to_speed: float) -> float:
+	if from_speed <= to_speed or ROLLING_MPS2 <= 0.0:
+		return INF
+	if AERO_PER_M <= 0.0:
+		return (from_speed * from_speed - to_speed * to_speed) / (2.0 * ROLLING_MPS2)
+	return log((ROLLING_MPS2 + AERO_PER_M * from_speed * from_speed) \
+		/ (ROLLING_MPS2 + AERO_PER_M * to_speed * to_speed)) \
+		/ (2.0 * AERO_PER_M)
+
+
 static func _failure(
 	message: String, stage: String, diagnostics: Dictionary = {}
 ) -> Dictionary:

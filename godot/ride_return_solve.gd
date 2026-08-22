@@ -847,8 +847,8 @@ static func _solve_brakes(start: Dictionary, layout: Dictionary) -> Dictionary:
 	if remaining > float(corridor.brake_length_m) + TERMINAL_DISTANCE_TOLERANCE_M:
 		return RideProgram._failure("brake entry exceeds its declared reserve", "brake",
 			{"remaining_distance_m": remaining, "brake_length_m": corridor.brake_length_m})
-	var station_duration := _coast_time(2.0, 1.0)
-	var station_distance := _coast_distance(2.0, 1.0)
+	var station_duration := RideProgram._coast_time(2.0, 1.0)
+	var station_distance := RideProgram._coast_distance(2.0, 1.0)
 	var frame_residuals := _capture_residuals(start, layout)
 	if absf(float(frame_residuals[2])) > CAPTURE_RESIDUAL_TOLERANCES[2] \
 			or absf(float(frame_residuals[3])) > CAPTURE_RESIDUAL_TOLERANCES[3] \
@@ -999,26 +999,6 @@ static func _brake_spans(parameters: Array) -> Array:
 			Motion.constant(1.0), Motion.constant(0.0), Motion.quintic(-peak_g, 0.0),
 			Motion.constant(0.0)),
 	]
-
-
-static func _coast_time(from_speed: float, to_speed: float) -> float:
-	if from_speed <= to_speed or RideProgram.ROLLING_MPS2 <= 0.0:
-		return INF
-	if RideProgram.AERO_PER_M <= 0.0:
-		return (from_speed - to_speed) / RideProgram.ROLLING_MPS2
-	var scale := sqrt(RideProgram.AERO_PER_M / RideProgram.ROLLING_MPS2)
-	return (atan(from_speed * scale) - atan(to_speed * scale)) \
-		/ sqrt(RideProgram.ROLLING_MPS2 * RideProgram.AERO_PER_M)
-
-
-static func _coast_distance(from_speed: float, to_speed: float) -> float:
-	if from_speed <= to_speed or RideProgram.ROLLING_MPS2 <= 0.0:
-		return INF
-	if RideProgram.AERO_PER_M <= 0.0:
-		return (from_speed * from_speed - to_speed * to_speed) / (2.0 * RideProgram.ROLLING_MPS2)
-	return log((RideProgram.ROLLING_MPS2 + RideProgram.AERO_PER_M * from_speed * from_speed) \
-		/ (RideProgram.ROLLING_MPS2 + RideProgram.AERO_PER_M * to_speed * to_speed)) \
-		/ (2.0 * RideProgram.AERO_PER_M)
 
 
 static func _capture_failure(

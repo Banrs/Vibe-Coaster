@@ -8,11 +8,10 @@ extends RefCounted
 ## exactly-declared distance with one solved scalar (peak negative drive_g), found by a bounded
 ## Illinois solve; its held deceleration is a friction/hydraulic profile, not an eddy-current
 ## brake, so it does not decay with speed the way a real eddy-current unit's does. The physical
-## 2->1 m/s station creep that follows is the same physics `RideReturnSolve` uses today, reused
+## 2->1 m/s station creep that follows is the same physics the return solve uses today, reused
 ## rather than reimplemented.
 
 const Motion := preload("res://motion.gd")
-const RideReturnSolve := preload("res://ride_return_solve.gd")
 
 const ENTRY_SPEED_BAND_MPS := Vector2(70.0, 80.0)
 const BRAKE_PEAK_BOUNDS_G := Vector2(0.0, 3.6)
@@ -38,9 +37,9 @@ static func build(start: Dictionary, layout: Dictionary, settings: Dictionary) -
 	var capture_length: float = float(corridor.capture_length_m)
 	var capture_span := Motion.spatial_span("terminal/capture", capture_length,
 		Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0), Motion.constant(0.0))
-	var creep_distance := RideReturnSolve._coast_distance(
+	var creep_distance := RideProgram._coast_distance(
 		MOVING_BOUNDARY_SPEED_MPS, STATION_CREEP_TARGET_MPS)
-	var station_duration := RideReturnSolve._coast_time(
+	var station_duration := RideProgram._coast_time(
 		MOVING_BOUNDARY_SPEED_MPS, STATION_CREEP_TARGET_MPS)
 	var moving_length: float = float(corridor.brake_length_m) - creep_distance
 	if not is_finite(moving_length) or moving_length <= 2.0 * BRAKE_SHOULDER_LENGTH_M:

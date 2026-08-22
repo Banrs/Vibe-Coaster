@@ -262,8 +262,9 @@ static func max_bank_rad(length_m: float, speed_mps: float) -> float:
 
 
 ## The fraction of a shouldered-plateau channel delivered by arc `u`: the normalized integral of
-## the commanded shape, so it starts and ends with zero value, slope and acceleration. One shape
-## serves the turn's heading, both families' pitch level-out, and the macro chain that models them.
+## the commanded shape - zero through each lead, one quintic shoulder either side, flat across the
+## core - so it starts and ends with zero value, slope and acceleration. One shape serves the
+## turn's heading, both families' pitch level-out, and the macro chain that models them.
 static func plateau_fraction(u: float) -> float:
 	var c := clampf(u, 0.0, 1.0)
 	var width := SHOULDER_FRACTION - LEAD_FRACTION
@@ -1078,20 +1079,6 @@ static func _core_peak_signed(route: Dictionary, length_m: float) -> float:
 		if absf(float(route.lateral_g[index])) > absf(peak):
 			peak = float(route.lateral_g[index])
 	return peak
-
-
-## The commanded shouldered plateau, peak 1: zero through each lead, one quintic shoulder either
-## side, flat across the core.
-static func _plateau(u: float) -> float:
-	var c := clampf(u, 0.0, 1.0)
-	var width := SHOULDER_FRACTION - LEAD_FRACTION
-	if c <= LEAD_FRACTION or c >= 1.0 - LEAD_FRACTION:
-		return 0.0
-	if c < SHOULDER_FRACTION:
-		return _quintic((c - LEAD_FRACTION) / width)
-	if c <= 1.0 - SHOULDER_FRACTION:
-		return 1.0
-	return 1.0 - _quintic((c - (1.0 - SHOULDER_FRACTION)) / width)
 
 
 static func _quintic(u: float) -> float:

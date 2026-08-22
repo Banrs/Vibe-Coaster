@@ -133,6 +133,7 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 	var nominal_lengths: Array = []
 	var length_bands: Array = []
 	var terrain_intents: Array = []
+	var unloads: Array = []
 	var control_index := {}
 	var lower: Array = []
 	var upper: Array = []
@@ -151,6 +152,10 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 		order.append(role_id)
 		families.append(family)
 		terrain_intents.append(role.get("terrain", {}))
+		# The crest a height beat is authored to hold is a per-seed draw and the elevation window
+		# its family publishes is a function of it, so the box below is cut at the value the
+		# assignment then carries into the build rather than at the family's own default.
+		unloads.append(float(role.get("unload_g", RideReturnElements.DEFAULT_UNLOAD_G)))
 		length_bands.append(band)
 		nominal_lengths.append(0.5 * (band.x + band.y))
 		control_index[role_id] = control_ids.size()
@@ -177,7 +182,7 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 	control_ids.append("return_total_length_m")
 	nominal.append(0.5 * (budget.x + budget.y))
 	var context := {"ok": true, "errors": errors, "order": order, "families": families,
-		"terrain_intents": terrain_intents,
+		"terrain_intents": terrain_intents, "unloads": unloads,
 		"nominal_lengths": nominal_lengths, "length_bands": length_bands,
 		"length_weights": _ones(order.size()), "control_index": control_index,
 		"control_ids": control_ids, "lower": lower, "upper": upper, "nominal": nominal,
@@ -229,7 +234,7 @@ static func _context(start: Dictionary, plan: Dictionary, ordered_roles: Array) 
 			box = Vector2(-bound, bound)
 		else:
 			box = RideReturnElements.elevation_bound_m(band.x,
-				float(context.speed_ceiling_mps), entry_pitch)
+				float(context.speed_ceiling_mps), entry_pitch, float(unloads[index]))
 			if box.x >= box.y:
 				return {"ok": false, "errors": [{"code": "elevation_bound",
 					"role_id": order[index], "length_m": band.x,
@@ -295,7 +300,7 @@ static func _chain(context: Dictionary, controls: Array) -> Dictionary:
 		# own profile rather than restating it is what makes a role's assigned elevation, its
 		# published corridor and the centreline it is built on one geometry.
 		var knots: Array = [] if is_turn else RideReturnElements.height_knots(length,
-			entry_speed, entry_pitch, control, RideReturnElements.DEFAULT_UNLOAD_G)
+			entry_speed, entry_pitch, control, float(context.unloads[index]))
 		var step := length / CHAIN_SAMPLES_PER_ROLE
 		var centerline := PackedVector3Array([position])
 		var minimum_agl := INF
@@ -356,7 +361,8 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 		if context.families[index] != TURN_FAMILY:
 			var window := RideReturnElements.elevation_bound_m(role.length_m,
 				role.entry_speed_mps,
-				asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0)))
+				asin(clampf((role.entry_tangent as Vector3).dot(Vector3.UP), -1.0, 1.0)),
+				float(context.unloads[index]))
 			var elevation: float = role.elevation_change_m
 			if elevation < window.x or elevation > window.y:
 				errors.append({"code": "elevation_bound", "role_id": context.order[index],
@@ -388,15 +394,16 @@ static func _refusals(context: Dictionary, chain: Dictionary) -> Array:
 
 
 ## The corridor publishes only what this stage derives: the nominal centreline a local build is
-## measured against and the band its length must stay inside. A lateral or vertical half-width
-## has no derivation here - the macro chain models net elevation, not a height beat's crest - so
-## none is published until the measurement that consumes it is defined.
+## measured against and the band its length must stay inside. A lateral or vertical half-width has
+## no derivation here, so none is published until the measurement that consumes it is defined. A
+## height beat also carries the crest its own elevation window was cut at, because that draw is
+## what makes the window a bound the family will honour.
 static func _assignments(context: Dictionary, chain: Dictionary) -> Array:
 	var assignments: Array = []
 	for index in context.order.size():
 		var role: Dictionary = chain.roles[index]
 		var is_turn: bool = context.families[index] == TURN_FAMILY
-		assignments.append({
+		var assignment := {
 			"role_id": context.order[index],
 			"family": context.families[index],
 			"entry_frame": _frame(role.entry_position, role.entry_tangent,
@@ -409,7 +416,10 @@ static func _assignments(context: Dictionary, chain: Dictionary) -> Array:
 			"curvature_sign": signf(role.heading_change_rad) if is_turn else 0.0,
 			"heading_change_rad": role.heading_change_rad,
 			"elevation_change_m": role.elevation_change_m,
-		})
+		}
+		if not is_turn:
+			assignment["unload_g"] = context.unloads[index]
+		assignments.append(assignment)
 	return assignments
 
 
